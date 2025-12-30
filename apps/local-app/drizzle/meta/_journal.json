@@ -1,0 +1,153 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1760125771107,
+      "tag": "0000_flippant_the_spike",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1760213202128,
+      "tag": "0001_shiny_snowbird",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1760245676602,
+      "tag": "0002_high_zemo",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1760250914974,
+      "tag": "0003_noisy_scarecrow",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1760289998562,
+      "tag": "0004_mcp_metadata",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1760349069797,
+      "tag": "0005_agent_profile_instructions",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1760368057349,
+      "tag": "0006_wakeful_marvex",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1760454117453,
+      "tag": "0007_agent_profile_options",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1760500000000,
+      "tag": "0008_event_logs",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1760643862021,
+      "tag": "0009_chat_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1760648175802,
+      "tag": "0010_amazing_the_initiative",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1760886322178,
+      "tag": "0011_curved_payback",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1760909362178,
+      "tag": "0012_terminal_activity",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1760909602178,
+      "tag": "0013_chat_activities",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1760909662178,
+      "tag": "0014_chat_activities_start_msg_nullable",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "6",
+      "when": 1760909722178,
+      "tag": "0015_projects_is_template",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1760909782178,
+      "tag": "0016_agent_profiles_project_scoped",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1764969284566,
+      "tag": "0017_agents_description",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1765630484836,
+      "tag": "0018_whole_zodiak",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1765706174462,
+      "tag": "0019_flat_avengers",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1765926498445,
+      "tag": "0020_statuses_mcp_hidden",
+      "breakpoints": true
+    }
+  ]
+}

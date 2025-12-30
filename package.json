@@ -1,0 +1,156 @@
+{
+  "name": "devchain-cli",
+  "version": "0.4.2",
+  "description": "AI driven development platform",
+  "homepage": "https://devchain.twitechlab.com/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/twitech-lab/devchain.git"
+  },
+  "changelog": {
+    "0.4.2": [
+      "Fix @devchain/shared module not found when installed globally",
+      "Fix CLI version command showing incorrect version"
+    ],
+    "0.4.1": [
+      "Bug fixes and improvements"
+    ],
+    "0.4.0": [
+      "Template Registry Service with download tracking",
+      "Message pooling service with activity monitor for agent sessions",
+      "Terminal improvements: sequence-based history refresh, scrollback settings, performance optimizations",
+      "Unified templates API with embedded metadata support",
+      "Collapsible sidebar sections and simplified project upgrade flow",
+      "Epic events (epic.created, epic.updated) for automation"
+    ],
+    "0.3.2": [
+      "Create watchers and subscribers in new projects from templates",
+      "Increase send message length limit",
+      "Hide activity MCP tool",
+      "Updated all templates to follow advanced logic"
+    ],
+    "0.3.1": [
+      "Advanced subscriber automation with terminal watchers",
+      "Advanced Claude-Codex template",
+      "Terminal Dock improvements (collapsed bar, session pills, UX shortcuts, API optimizations)",
+      "Board ListView with URL-based filtering and pagination",
+      "Export/import automation config",
+      "Session-based MCP authentication",
+      "Prompt Reference Autocomplete in Profiles"
+    ],
+    "0.2.2": [
+      "Update check on startup with prompt to update",
+      "Import modal with template selector",
+      "Fix detached mode hanging on Claude bypass prompt",
+      "Simplify template path resolution"
+    ],
+    "0.2.1": [
+      "Template updates and improvements",
+      "Fix test failures across local-app test suites"
+    ],
+    "0.2.0": [
+      "Status Auto-Clean feature for automatic agent unassignment",
+      "Agent description field in export/import",
+      "Session coordinator to prevent duplicate agent sessions"
+    ]
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=8.0.0"
+  },
+  "scripts": {
+    "start": "node dist/cli.js start",
+    "stop": "node scripts/cli.js stop",
+    "dev": "node scripts/cli.js start --dev",
+    "dev:pure": "pnpm --filter local-app dev",
+    "dev:ui": "pnpm --filter local-app dev:ui",
+    "build": "pnpm --filter shared build && pnpm --filter local-app build && node scripts/copy-local-app-dist.js && node scripts/copy-cli.js",
+    "build:fast": "pnpm --filter local-app build",
+    "prepack": "npm run build",
+    "postinstall": "node scripts/postinstall.js",
+    "lint": "pnpm --filter local-app lint",
+    "format": "pnpm --filter local-app format",
+    "test": "pnpm --filter local-app test"
+  },
+  "keywords": [
+    "devchain",
+    "ai",
+    "orchestration"
+  ],
+  "author": "Devchain Team",
+  "license": "Elastic-2.0",
+  "bin": {
+    "devchain": "dist/cli.js"
+  },
+  "files": [
+    "dist/**",
+    "prebuilds/**",
+    "scripts/postinstall.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@fastify/static": "^7.0.4",
+    "@modelcontextprotocol/sdk": "1.20.1",
+    "@nestjs/common": "^10.3.3",
+    "@nestjs/core": "^10.3.3",
+    "@nestjs/event-emitter": "3.0.1",
+    "@nestjs/platform-fastify": "^10.3.3",
+    "@nestjs/platform-socket.io": "^10.3.3",
+    "@nestjs/swagger": "^7.3.0",
+    "@nestjs/websockets": "^10.3.3",
+    "@radix-ui/react-avatar": "1.1.10",
+    "@radix-ui/react-checkbox": "1.3.3",
+    "@radix-ui/react-context-menu": "2.2.16",
+    "@radix-ui/react-dialog": "1.1.15",
+    "@radix-ui/react-dropdown-menu": "2.1.16",
+    "@radix-ui/react-label": "2.1.7",
+    "@radix-ui/react-popover": "1.1.15",
+    "@radix-ui/react-scroll-area": "1.2.10",
+    "@radix-ui/react-select": "2.2.6",
+    "@radix-ui/react-separator": "1.1.7",
+    "@radix-ui/react-slot": "1.2.3",
+    "@radix-ui/react-toast": "1.2.15",
+    "@radix-ui/react-tooltip": "1.2.8",
+    "@tanstack/react-query": "5.90.2",
+    "@tanstack/react-table": "8.21.3",
+    "@xterm/addon-fit": "0.10.0",
+    "@xterm/addon-serialize": "0.13.0",
+    "@xterm/headless": "5.5.0",
+    "@xterm/xterm": "5.5.0",
+    "ansi-to-html": "0.7.2",
+    "better-sqlite3": "11.5.0",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.1",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "commander": "^12.1.0",
+    "devchain-cli": "0.4.1",
+    "dotenv": "^16.4.5",
+    "drizzle-orm": "0.44.6",
+    "fastify": "^4.26.2",
+    "get-port": "^5.1.1",
+    "hterm": "2.0.2",
+    "hterm-umd": "1.0.1",
+    "lucide-react": "0.545.0",
+    "node-pty": "1.1.0-beta37",
+    "open": "^8.4.2",
+    "pino": "^8.19.0",
+    "pino-http": "^9.0.0",
+    "pino-pretty": "^11.0.0",
+    "prebuild-install": "^7.1.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-rnd": "10.5.2",
+    "react-router-dom": "7.9.4",
+    "reflect-metadata": "^0.2.1",
+    "rxjs": "^7.8.1",
+    "socket.io": "4.8.1",
+    "socket.io-client": "4.8.1",
+    "tailwind-merge": "3.3.1",
+    "zod": "^3.22.4"
+  }
+}

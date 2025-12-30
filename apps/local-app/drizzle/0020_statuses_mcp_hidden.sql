@@ -1,0 +1,1 @@
+ALTER TABLE `statuses` ADD `mcp_hidden` integer DEFAULT 0 NOT NULL;

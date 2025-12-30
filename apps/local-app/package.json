@@ -1,0 +1,214 @@
+{
+  "name": "local-app",
+  "version": "0.0.0-internal",
+  "private": true,
+  "description": "Devchain Local App - NestJS + Vite SSR + React (internal workspace, not published)",
+  "main": "dist/main.js",
+  "scripts": {
+    "prebuild": "rimraf dist",
+    "build": "nest build && vite build && cp -r templates dist/templates",
+    "build:ui": "vite build",
+    "format": "prettier --write \"src/**/*.ts\" \"src/**/*.tsx\"",
+    "start": "node dist/main",
+    "dev": "concurrently -n \"api,ui\" -c \"bgBlue.bold,bgMagenta.bold\" \"pnpm dev:api\" \"pnpm dev:ui\"",
+    "dev:api": "nest start --watch",
+    "dev:ui": "vite --port 5175 --host 127.0.0.1 --open",
+    "dev:debug": "nest start --debug --watch",
+    "preview:ui": "vite preview --host 127.0.0.1 --port 5176",
+    "lint": "eslint \"{src,test}/**/*.{ts,tsx}\" --max-warnings=0",
+    "lint:fix": "eslint \"{src,test}/**/*.{ts,tsx}\" --fix",
+    "test": "cross-env NODE_ENV=test jest --maxWorkers=50% --workerIdleMemoryLimit=512MB",
+    "test:watch": "cross-env NODE_ENV=test jest --watch --maxWorkers=50%",
+    "test:cov": "cross-env NODE_ENV=test jest --coverage --maxWorkers=50% --workerIdleMemoryLimit=512MB",
+    "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "test:ui": "playwright test",
+    "test:ui:headed": "playwright test --headed",
+    "test:ui:ci": "playwright test --reporter=github",
+    "test:lowmem": "cross-env NODE_ENV=test jest --maxWorkers=4",
+    "test:integration": "jest --runInBand --testPathPattern=storage/local",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio"
+  },
+  "dependencies": {
+    "@devchain/shared": "workspace:*",
+    "@fastify/static": "^7.0.4",
+    "@modelcontextprotocol/sdk": "1.20.1",
+    "@multiavatar/multiavatar": "1.0.7",
+    "@nestjs/common": "^10.3.3",
+    "@nestjs/core": "^10.3.3",
+    "@nestjs/event-emitter": "3.0.1",
+    "@nestjs/platform-fastify": "^10.3.3",
+    "@nestjs/platform-socket.io": "^10.3.3",
+    "@nestjs/swagger": "^7.3.0",
+    "@nestjs/websockets": "^10.3.3",
+    "@radix-ui/react-avatar": "1.1.10",
+    "@radix-ui/react-checkbox": "1.3.3",
+    "@radix-ui/react-context-menu": "2.2.16",
+    "@radix-ui/react-dialog": "1.1.15",
+    "@radix-ui/react-dropdown-menu": "2.1.16",
+    "@radix-ui/react-label": "2.1.7",
+    "@radix-ui/react-popover": "1.1.15",
+    "@radix-ui/react-scroll-area": "1.2.10",
+    "@radix-ui/react-select": "2.2.6",
+    "@radix-ui/react-separator": "1.1.7",
+    "@radix-ui/react-slot": "1.2.3",
+    "@radix-ui/react-switch": "1.2.6",
+    "@radix-ui/react-tabs": "1.1.13",
+    "@radix-ui/react-toast": "1.2.15",
+    "@radix-ui/react-tooltip": "1.2.8",
+    "@radix-ui/react-visually-hidden": "1.2.4",
+    "@tanstack/react-query": "5.90.2",
+    "@tanstack/react-table": "8.21.3",
+    "@xterm/addon-fit": "0.10.0",
+    "@xterm/addon-serialize": "0.13.0",
+    "@xterm/headless": "5.5.0",
+    "@xterm/xterm": "5.5.0",
+    "ansi-to-html": "0.7.2",
+    "better-sqlite3": "11.5.0",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.1",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "dotenv": "^16.4.5",
+    "drizzle-orm": "0.44.6",
+    "fastify": "^4.26.2",
+    "lucide-react": "0.545.0",
+    "node-pty": "1.1.0-beta37",
+    "pino": "^8.19.0",
+    "pino-http": "^9.0.0",
+    "pino-pretty": "^11.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-rnd": "10.5.2",
+    "react-router-dom": "7.9.4",
+    "reflect-metadata": "^0.2.1",
+    "rxjs": "^7.8.1",
+    "semver": "^7.6.0",
+    "socket.io": "4.8.1",
+    "socket.io-client": "4.8.1",
+    "tailwind-merge": "3.3.1",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^10.3.2",
+    "@nestjs/schematics": "^10.1.1",
+    "@nestjs/testing": "^10.3.3",
+    "@playwright/test": "1.56.0",
+    "@radix-ui/react-menu": "2.1.6",
+    "@tailwindcss/forms": "0.5.10",
+    "@tailwindcss/typography": "0.5.19",
+    "@testing-library/jest-dom": "^6.1.3",
+    "@testing-library/react": "^14.1.2",
+    "@testing-library/user-event": "14.6.1",
+    "@types/better-sqlite3": "7.6.13",
+    "@types/express": "^4.17.21",
+    "@types/jest": "^29.5.12",
+    "@types/node": "^20.11.24",
+    "@types/react": "^18.2.61",
+    "@types/react-dom": "^18.2.19",
+    "@types/semver": "^7.5.8",
+    "@typescript-eslint/eslint-plugin": "^7.1.0",
+    "@typescript-eslint/parser": "^7.1.0",
+    "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "10.4.21",
+    "concurrently": "9.2.1",
+    "cross-env": "^7.0.3",
+    "drizzle-kit": "0.31.5",
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-prettier": "^5.1.3",
+    "identity-obj-proxy": "3.0.0",
+    "jest": "^29.7.0",
+    "jest-environment-jsdom": "^29.7.0",
+    "postcss": "8.5.6",
+    "prettier": "^3.2.5",
+    "rimraf": "^5.0.5",
+    "source-map-support": "^0.5.21",
+    "tailwindcss": "3.4.18",
+    "ts-jest": "^29.1.2",
+    "ts-loader": "^9.5.1",
+    "ts-node": "^10.9.2",
+    "tsconfig-paths": "^4.2.0",
+    "typescript": "^5.3.3",
+    "vite": "^5.1.4"
+  },
+  "jest": {
+    "moduleFileExtensions": [
+      "js",
+      "json",
+      "ts",
+      "tsx"
+    ],
+    "rootDir": "src",
+    "transform": {
+      "^.+\\.(t|j)sx?$": [
+        "ts-jest",
+        {
+          "isolatedModules": true
+        }
+      ]
+    },
+    "collectCoverageFrom": [
+      "**/*.(t|j)s"
+    ],
+    "coverageDirectory": "../coverage",
+    "moduleNameMapper": {
+      "^@/(.*)$": "<rootDir>/$1",
+      "^@devchain/shared$": "<rootDir>/test/mocks/devchain-shared.ts",
+      "\\.(css|less|scss|sass)$": "identity-obj-proxy"
+    },
+    "projects": [
+      {
+        "displayName": "backend",
+        "rootDir": "src",
+        "testMatch": [
+          "<rootDir>/modules/**/*.spec.ts",
+          "<rootDir>/common/**/*.spec.ts"
+        ],
+        "testEnvironment": "node",
+        "setupFilesAfterEnv": [
+          "<rootDir>/test-setup-node.ts"
+        ],
+        "transform": {
+          "^.+\\.(t|j)sx?$": [
+            "ts-jest",
+            {
+              "isolatedModules": true
+            }
+          ]
+        },
+        "moduleNameMapper": {
+          "^@/(.*)$": "<rootDir>/$1",
+          "^@devchain/shared$": "<rootDir>/../test/mocks/devchain-shared.ts"
+        }
+      },
+      {
+        "displayName": "ui",
+        "rootDir": "src",
+        "testMatch": [
+          "<rootDir>/ui/**/*.spec.{ts,tsx}"
+        ],
+        "testEnvironment": "jsdom",
+        "setupFilesAfterEnv": [
+          "<rootDir>/test-setup.ts"
+        ],
+        "transform": {
+          "^.+\\.(t|j)sx?$": [
+            "ts-jest",
+            {
+              "isolatedModules": true
+            }
+          ]
+        },
+        "moduleNameMapper": {
+          "^@/(.*)$": "<rootDir>/$1",
+          "^@devchain/shared$": "<rootDir>/../test/mocks/devchain-shared.ts",
+          "\\.(css|less|scss|sass)$": "identity-obj-proxy"
+        }
+      }
+    ]
+  }
+}

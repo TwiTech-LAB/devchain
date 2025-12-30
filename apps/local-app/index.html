@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Devchain - Local App</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      (function() {
+        try {
+          var key = 'devchain:theme';
+          var t = localStorage.getItem(key);
+          var cls = document.documentElement.classList;
+          cls.remove('dark');
+          cls.remove('theme-ocean');
+          if (t === 'dark') cls.add('dark');
+          else if (t === 'ocean') cls.add('theme-ocean');
+        } catch (e) { /* no-op */ }
+      })();
+    </script>
+    <script type="module" src="/src/ui/entry-client.tsx"></script>
+  </body>
+</html>

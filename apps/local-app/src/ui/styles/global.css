@@ -1,0 +1,190 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+    --primary: 221.2 83.2% 53.3%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 221.2 83.2% 53.3%;
+    --radius: 0.5rem;
+    --terminal-background: 210 40% 98%;
+    --terminal-foreground: 222.2 47.4% 11.2%;
+    --terminal-cursor: 221.2 83.2% 53.3%;
+    --terminal-selection: 221.2 83.2% 53.3%;
+    --terminal-selection-opacity: 0.22;
+    --font-mono: 'Ubuntu Mono', 'JetBrains Mono', 'Fira Code', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'Liberation Mono', 'Courier New', monospace;
+  }
+
+  .dark {
+    /* Neutral dark theme matching terminal #1a1a1a style */
+    --background: 0 0% 10%; /* #1a1a1a - matches terminal */
+    --foreground: 0 0% 90%; /* light gray text */
+    --card: 0 0% 13%; /* slightly lifted cards */
+    --card-foreground: 0 0% 90%;
+    --popover: 0 0% 15%; /* lifted popovers */
+    --popover-foreground: 0 0% 90%;
+    --primary: 210 90% 55%; /* blue accent */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 18%; /* neutral secondary */
+    --secondary-foreground: 0 0% 90%;
+    --muted: 0 0% 16%; /* neutral muted */
+    --muted-foreground: 0 0% 65%; /* readable muted text */
+    --accent: 0 0% 20%; /* neutral accent */
+    --accent-foreground: 0 0% 90%;
+    --destructive: 0 70% 50%; /* visible red */
+    --destructive-foreground: 0 0% 100%;
+    --border: 0 0% 22%; /* visible neutral borders */
+    --input: 0 0% 18%;
+    --ring: 210 90% 55%;
+    --terminal-background: 0 0% 10%; /* matches main background */
+    --terminal-foreground: 0 0% 88%;
+    --terminal-cursor: 210 90% 55%;
+    --terminal-selection: 210 90% 55%;
+    --terminal-selection-opacity: 0.38;
+    --font-mono: 'Ubuntu Mono', 'JetBrains Mono', 'Fira Code', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'Liberation Mono', 'Courier New', monospace;
+  }
+
+  /* Ocean theme: calm, refined palette with depth */
+  .theme-ocean {
+    --background: 210 25% 95%; /* soft gray-blue, calm and easy on eyes */
+    --foreground: 215 25% 20%; /* deep blue-gray text */
+    --card: 210 30% 98%; /* crisp white cards for contrast */
+    --card-foreground: 215 25% 20%;
+    --popover: 210 30% 99%; /* clean popover */
+    --popover-foreground: 215 25% 20%;
+    --primary: 205 80% 45%; /* rich ocean blue */
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 20% 90%; /* subtle cool gray */
+    --secondary-foreground: 215 25% 25%;
+    --muted: 210 15% 92%; /* gentle muted tone */
+    --muted-foreground: 215 15% 45%;
+    --accent: 195 60% 85%; /* soft teal accent */
+    --accent-foreground: 215 30% 22%;
+    --destructive: 0 65% 50%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 210 20% 85%; /* visible but soft borders */
+    --input: 210 25% 88%;
+    --ring: 205 80% 45%;
+    --terminal-background: 210 20% 93%;
+    --terminal-foreground: 215 25% 18%;
+    --terminal-cursor: 205 80% 45%;
+    --terminal-selection: 205 80% 50%;
+    --terminal-selection-opacity: 0.25;
+    --font-mono: 'Ubuntu Mono', 'JetBrains Mono', 'Fira Code', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'Liberation Mono', 'Courier New', monospace;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+}
+
+@layer utilities {
+  .loading {
+    @apply flex justify-center items-center h-screen text-xl;
+  }
+}
+
+/* ===== Global Scrollbar Styling ===== */
+
+/* Base scrollbar (light theme) */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+  background: #e8e8e8;
+}
+
+*::-webkit-scrollbar-track {
+  background: #e8e8e8;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #b0b0b0;
+  border-radius: 5px;
+  border: 2px solid #e8e8e8;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #909090;
+}
+
+*::-webkit-scrollbar-corner {
+  background: #e8e8e8;
+}
+
+/* Light Firefox scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #b0b0b0 #e8e8e8;
+}
+
+/* Dark theme scrollbars - use higher specificity */
+.dark *::-webkit-scrollbar {
+  background: #252525;
+}
+
+.dark *::-webkit-scrollbar-track {
+  background: #252525;
+}
+
+.dark *::-webkit-scrollbar-thumb {
+  background: #5a5a5a;
+  border: 2px solid #252525;
+}
+
+.dark *::-webkit-scrollbar-thumb:hover {
+  background: #6a6a6a;
+}
+
+.dark *::-webkit-scrollbar-corner {
+  background: #252525;
+}
+
+/* Dark theme Firefox scrollbar */
+.dark * {
+  scrollbar-color: #5a5a5a #252525;
+}
+
+/* xterm terminal always uses dark scrollbar */
+.xterm-viewport::-webkit-scrollbar {
+  background: #252525 !important;
+}
+
+.xterm-viewport::-webkit-scrollbar-track {
+  background: #252525 !important;
+}
+
+.xterm-viewport::-webkit-scrollbar-thumb {
+  background: #5a5a5a !important;
+  border: 2px solid #252525 !important;
+}
+
+.xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: #6a6a6a !important;
+}
+
+.xterm-viewport {
+  scrollbar-color: #5a5a5a #252525 !important;
+}

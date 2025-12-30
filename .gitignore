@@ -1,0 +1,15 @@
+node_modules/
+dev-flow/
+.devchain/
+.aider*
+apps/mcp-server/dist/
+dist/
+.idea/
+.env.local
+.env
+*.tsbuildinfo
+tmp/
+coverage/
+packages/shared/src/**/*.js
+packages/shared/src/**/*.d.ts
+packages/shared/src/**/*.js.map
