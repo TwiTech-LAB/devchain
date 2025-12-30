@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "AI driven development platform",
   "homepage": "https://devchain.twitechlab.com/",
   "repository": {
@@ -8,6 +8,9 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.4.4": [
+      "Fix bundled templates not found when version is specified"
+    ],
     "0.4.3": [
       "Fix auto-update removing package instead of updating"
     ],

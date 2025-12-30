@@ -265,7 +265,7 @@ export class UnifiedTemplateService {
   /**
    * Get template content by slug and optional version
    *
-   * - If version is specified: try downloaded cache only
+   * - If version is specified: try downloaded cache first, then bundled (if version matches)
    * - If version is not specified:
    *   - If downloaded exists: return latest downloaded version
    *   - Otherwise: return bundled template
@@ -279,7 +279,19 @@ export class UnifiedTemplateService {
 
     if (version) {
       this.validateVersion(version);
-      return this.getDownloadedTemplate(slug, version);
+      // Try downloaded cache first
+      try {
+        return await this.getDownloadedTemplate(slug, version);
+      } catch (error) {
+        // If not in cache, check if bundled template has matching version
+        if (error instanceof NotFoundError) {
+          const bundled = this.tryGetBundledTemplateWithVersion(slug, version);
+          if (bundled) {
+            return bundled;
+          }
+        }
+        throw error;
+      }
     }
 
     // No version specified - check for downloaded first, then bundled
@@ -293,6 +305,32 @@ export class UnifiedTemplateService {
 
     // Fall back to bundled
     return this.getBundledTemplate(slug);
+  }
+
+  /**
+   * Try to get a bundled template if its version matches the requested version
+   */
+  private tryGetBundledTemplateWithVersion(
+    slug: string,
+    version: string,
+  ): UnifiedTemplateContent | null {
+    try {
+      const bundled = this.getBundledTemplate(slug);
+      const manifest = (bundled.content as Record<string, unknown>)._manifest as
+        | { version?: string }
+        | undefined;
+
+      // Return bundled template if version matches or if bundled has no version
+      if (!manifest?.version || manifest.version === version) {
+        return {
+          ...bundled,
+          version: manifest?.version || null,
+        };
+      }
+      return null;
+    } catch {
+      return null;
+    }
   }
 
   /**
