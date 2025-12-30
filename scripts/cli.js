@@ -133,7 +133,8 @@ async function checkForUpdates(cli, askYesNoFn) {
         cli.info('Updating devchain...');
         try {
           // Try without sudo first (works for nvm/fnm/Windows)
-          execSync(`npm update -g ${packageName}`, { stdio: 'inherit' });
+          // Use npm install -g instead of update -g (update can remove packages)
+          execSync(`npm install -g ${packageName}@latest`, { stdio: 'inherit' });
           cli.success('Update complete! Please restart devchain.');
           process.exit(0);
         } catch (e) {
@@ -141,14 +142,14 @@ async function checkForUpdates(cli, askYesNoFn) {
           if (platform() !== 'win32') {
             cli.info('Retrying with sudo...');
             try {
-              execSync(`sudo npm update -g ${packageName}`, { stdio: 'inherit' });
+              execSync(`sudo npm install -g ${packageName}@latest`, { stdio: 'inherit' });
               cli.success('Update complete! Please restart devchain.');
               process.exit(0);
             } catch (e2) {
-              cli.error('Update failed. You can manually run: sudo npm update -g ' + packageName);
+              cli.error('Update failed. You can manually run: sudo npm install -g ' + packageName);
             }
           } else {
-            cli.error('Update failed. You can manually run: npm update -g ' + packageName);
+            cli.error('Update failed. You can manually run: npm install -g ' + packageName);
           }
         }
       }

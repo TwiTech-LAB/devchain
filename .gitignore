@@ -7,9 +7,13 @@ dist/
 .idea/
 .env.local
 .env
-*.tsbuildinfo
 tmp/
-coverage/
+
+# Build artifacts
+*.tsbuildinfo
 packages/shared/src/**/*.js
 packages/shared/src/**/*.d.ts
 packages/shared/src/**/*.js.map
+
+# Test coverage
+coverage/
