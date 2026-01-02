@@ -398,6 +398,7 @@ export class LocalStorageService implements StorageService {
           projectId: project.id,
           name: a.name,
           profileId: newProfileId,
+          description: a.description ?? null,
           createdAt: now,
           updatedAt: now,
         });

@@ -191,6 +191,7 @@ export interface TemplateImportPayload {
     id?: string;
     name: string;
     profileId?: string;
+    description?: string | null;
   }>;
   statuses: Array<{
     id?: string;
