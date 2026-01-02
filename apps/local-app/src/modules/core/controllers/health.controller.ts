@@ -9,9 +9,9 @@ function getVersion(): string {
   try {
     // Try multiple possible locations for root package.json
     const possiblePaths = [
-      // From dist/server/modules/core/controllers -> root
-      join(__dirname, '..', '..', '..', '..', '..', '..', 'package.json'),
-      // From apps/local-app/src/modules/core/controllers -> root (dev mode)
+      // From dist/server/modules/core/controllers -> root (5 levels up)
+      join(__dirname, '..', '..', '..', '..', '..', 'package.json'),
+      // From apps/local-app/src/modules/core/controllers -> root (dev mode, 6 levels up)
       join(__dirname, '..', '..', '..', '..', '..', '..', 'package.json'),
       // From cwd (usually repo root)
       join(process.cwd(), 'package.json'),

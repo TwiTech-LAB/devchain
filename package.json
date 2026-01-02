@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "description": "AI driven development platform",
   "homepage": "https://devchain.twitechlab.com/",
   "repository": {
@@ -8,6 +8,9 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.4.6": [
+      "Fix version showing as 'unknown' when running from installed npm package"
+    ],
     "0.4.5": [
       "Fix agent description lost when creating projects from templates"
     ],
