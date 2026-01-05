@@ -1,3 +1,4 @@
+import { Injectable } from '@nestjs/common';
 import { ProviderAdapter, AddMcpServerOptions, McpServerEntry } from './provider-adapter.interface';
 
 /**
@@ -5,6 +6,7 @@ import { ProviderAdapter, AddMcpServerOptions, McpServerEntry } from './provider
  *
  * Implements MCP command building and output parsing for the Codex CLI.
  */
+@Injectable()
 export class CodexAdapter implements ProviderAdapter {
   readonly providerName = 'codex';
 

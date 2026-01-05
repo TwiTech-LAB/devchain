@@ -78,6 +78,7 @@ export interface AgentProfile {
   projectId?: string | null;
   name: string;
   providerId: string; // FK to providers.id
+  familySlug: string | null; // Groups equivalent profiles across providers
   options: string | null;
   systemPrompt: string | null;
   instructions: string | null;
@@ -163,10 +164,11 @@ export type UpdateProviderMcpMetadata = Partial<ProviderMcpMetadata>;
 
 export type CreateAgentProfile = Omit<
   AgentProfile,
-  'id' | 'createdAt' | 'updatedAt' | 'instructions'
+  'id' | 'createdAt' | 'updatedAt' | 'instructions' | 'familySlug'
 > & {
   instructions?: string | null;
   options?: string | null;
+  familySlug?: string | null;
 };
 export type UpdateAgentProfile = Partial<Omit<AgentProfile, 'id' | 'createdAt' | 'updatedAt'>>;
 

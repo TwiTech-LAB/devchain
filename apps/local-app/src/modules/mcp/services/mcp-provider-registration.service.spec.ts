@@ -2,7 +2,12 @@ import { EventEmitter } from 'events';
 import { McpProviderRegistrationService } from './mcp-provider-registration.service';
 import type { Provider } from '../../storage/models/domain.models';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
-import { ProviderAdapterFactory } from '../../providers/adapters';
+import {
+  ProviderAdapterFactory,
+  ClaudeAdapter,
+  CodexAdapter,
+  GeminiAdapter,
+} from '../../providers/adapters';
 
 jest.mock('fs/promises', () => ({
   access: jest.fn(),
@@ -36,7 +41,11 @@ describe('McpProviderRegistrationService', () => {
   };
 
   beforeEach(() => {
-    factory = new ProviderAdapterFactory();
+    factory = new ProviderAdapterFactory(
+      new ClaudeAdapter(),
+      new CodexAdapter(),
+      new GeminiAdapter(),
+    );
     storage = {
       updateProviderMcpMetadata: jest.fn(),
     };
@@ -220,6 +229,42 @@ describe('McpProviderRegistrationService', () => {
       expect(spawnMock).toHaveBeenCalledWith(baseProvider.binPath, ['mcp', 'remove', 'devchain'], {
         env: process.env,
       });
+    });
+  });
+
+  describe('unsupported provider handling', () => {
+    const unsupportedProvider: Provider = {
+      ...baseProvider,
+      name: 'unsupported-provider',
+    };
+
+    beforeEach(() => {
+      accessMock.mockResolvedValue(undefined);
+    });
+
+    it('registerProvider returns failure for unsupported provider', async () => {
+      const result = await service.registerProvider(unsupportedProvider, {
+        endpoint: 'http://127.0.0.1:3000/mcp',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('Unsupported provider');
+      expect(result.message).toContain('unsupported-provider');
+    });
+
+    it('listRegistrations returns failure for unsupported provider', async () => {
+      const result = await service.listRegistrations(unsupportedProvider);
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('Unsupported provider');
+      expect(result.entries).toEqual([]);
+    });
+
+    it('removeRegistration returns failure for unsupported provider', async () => {
+      const result = await service.removeRegistration(unsupportedProvider, 'devchain');
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('Unsupported provider');
     });
   });
 });

@@ -346,17 +346,29 @@ export class UnifiedTemplateService {
       throw new NotFoundError('Template', `${slug}@${version}`);
     }
 
+    // Inject slug into _manifest if present (for template metadata tracking during import)
+    const content = cached.content as Record<string, unknown>;
+    if (content._manifest && typeof content._manifest === 'object') {
+      (content._manifest as Record<string, unknown>).slug = slug;
+    } else {
+      // Create minimal _manifest with slug if not present
+      content._manifest = { slug };
+    }
+
     return {
-      content: cached.content,
+      content,
       source: 'registry',
       version,
     };
   }
 
   /**
-   * Get a bundled template
+   * Get a bundled template by slug.
+   * @throws NotFoundError if template doesn't exist
+   * @throws ValidationError if template contains invalid JSON
    */
-  private getBundledTemplate(slug: string): UnifiedTemplateContent {
+  getBundledTemplate(slug: string): UnifiedTemplateContent {
+    this.validateSlug(slug);
     const templatesDir = this.findTemplatesDirectory();
 
     if (!templatesDir) {
@@ -381,8 +393,18 @@ export class UnifiedTemplateService {
 
     try {
       const content = readFileSync(templatePath, 'utf-8');
+      const parsed = JSON.parse(content) as Record<string, unknown>;
+
+      // Inject slug into _manifest if present (for template metadata tracking during import)
+      if (parsed._manifest && typeof parsed._manifest === 'object') {
+        (parsed._manifest as Record<string, unknown>).slug = slug;
+      } else {
+        // Create minimal _manifest with slug if not present
+        parsed._manifest = { slug };
+      }
+
       return {
-        content: JSON.parse(content) as Record<string, unknown>,
+        content: parsed,
         source: 'bundled',
         version: null,
       };

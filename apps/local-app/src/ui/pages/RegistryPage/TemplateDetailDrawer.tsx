@@ -14,15 +14,23 @@ import { Skeleton } from '@/ui/components/ui/skeleton';
 import { ScrollArea } from '@/ui/components/ui/scroll-area';
 import { Separator } from '@/ui/components/ui/separator';
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/ui/components/ui/tooltip';
+import {
   CheckCircle2,
   Calendar,
   User,
   Plus,
   FolderOpen,
   AlertCircle,
+  AlertTriangle,
   ChevronDown,
   ChevronUp,
 } from 'lucide-react';
+import { isLessThan } from '@devchain/shared';
 import { VersionList } from './VersionList';
 import { CreateFromRegistryDialog } from './CreateFromRegistryDialog';
 
@@ -81,6 +89,30 @@ async function fetchProjectsUsingTemplate(slug: string): Promise<ProjectsUsingTe
   return res.json();
 }
 
+async function fetchAppVersion(): Promise<string | null> {
+  const res = await fetch('/health');
+  if (!res.ok) return null;
+  const data = await res.json();
+  return data?.version || null;
+}
+
+/**
+ * Check if a template version is compatible with the current Devchain version.
+ * Returns true if compatible, false if incompatible.
+ */
+function isVersionCompatible(
+  minDevchainVersion: string | null,
+  currentVersion: string | null,
+): boolean {
+  if (!minDevchainVersion || !currentVersion) return true;
+  try {
+    return !isLessThan(currentVersion, minDevchainVersion);
+  } catch {
+    // If version comparison fails, assume compatible
+    return true;
+  }
+}
+
 interface TemplateDetailDrawerProps {
   slug: string | undefined;
   onClose: () => void;
@@ -106,10 +138,23 @@ export function TemplateDetailDrawer({ slug, onClose }: TemplateDetailDrawerProp
     enabled: !!slug,
   });
 
+  // Get current Devchain version for compatibility checks
+  const { data: currentVersion } = useQuery({
+    queryKey: ['health'],
+    queryFn: fetchAppVersion,
+    staleTime: Infinity, // Version doesn't change during runtime
+  });
+
   const template = data?.template;
   const versions = data?.versions || [];
   const latestVersion = versions.find((v) => v.isLatest);
   const projectsUsingTemplate = projectsData?.projects || [];
+
+  // Check if latest version is compatible with current Devchain version
+  const isLatestCompatible = isVersionCompatible(
+    latestVersion?.minDevchainVersion ?? null,
+    currentVersion ?? null,
+  );
 
   // Check if any project has an update available
   const getUpdateStatus = (installedVersion: string) => {
@@ -292,10 +337,32 @@ export function TemplateDetailDrawer({ slug, onClose }: TemplateDetailDrawerProp
               <Button variant="outline" onClick={onClose}>
                 Close
               </Button>
-              <Button onClick={() => setShowCreateDialog(true)} disabled={!latestVersion}>
-                <Plus className="mr-2 h-4 w-4" />
-                Create New Project
-              </Button>
+              <TooltipProvider>
+                {!isLatestCompatible && latestVersion?.minDevchainVersion ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span>
+                        <Button disabled>
+                          <AlertTriangle className="mr-2 h-4 w-4" />
+                          Incompatible Version
+                        </Button>
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>
+                        Requires Devchain v{latestVersion.minDevchainVersion}+
+                        <br />
+                        Current: v{currentVersion}
+                      </p>
+                    </TooltipContent>
+                  </Tooltip>
+                ) : (
+                  <Button onClick={() => setShowCreateDialog(true)} disabled={!latestVersion}>
+                    <Plus className="mr-2 h-4 w-4" />
+                    Create New Project
+                  </Button>
+                )}
+              </TooltipProvider>
             </div>
 
             {/* Create Project Dialog */}

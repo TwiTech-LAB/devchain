@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { epicAssignedEvent } from './epic.assigned';
 import { epicCreatedEvent } from './epic.created';
 import { epicUpdatedEvent } from './epic.updated';
 import { sessionStartedEvent } from './session.started';
@@ -12,8 +11,6 @@ import { settingsTerminalChangedEvent } from './settings.terminal.changed';
 export { settingsTerminalChangedEvent } from './settings.terminal.changed';
 
 export const eventCatalog = {
-  /** @deprecated Use epic.updated with changes.agentId instead */
-  [epicAssignedEvent.name]: epicAssignedEvent.schema,
   [epicCreatedEvent.name]: epicCreatedEvent.schema,
   [epicUpdatedEvent.name]: epicUpdatedEvent.schema,
   [sessionStartedEvent.name]: sessionStartedEvent.schema,

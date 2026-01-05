@@ -74,6 +74,7 @@ export const ExportSchema = z
           id: z.string().uuid().optional(),
           name: z.string().min(1),
           provider: z.object({ id: z.string().optional(), name: z.string().min(1) }),
+          familySlug: z.string().nullable().optional(),
           options: z.unknown().nullable().optional(),
           instructions: z.string().nullable().optional(),
           temperature: z.number().nullable().optional(),

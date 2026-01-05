@@ -8,6 +8,7 @@ import type { StorageService } from '../../storage/interfaces/storage.interface'
 import type { AgentProfile, Provider } from '../../storage/models/domain.models';
 import { McpProviderRegistrationService } from '../../mcp/services/mcp-provider-registration.service';
 import { parseProfileOptions, ProfileOptionsError } from '../../sessions/utils/profile-options';
+import { ProviderAdapterFactory } from '../../providers/adapters';
 
 const execAsync = promisify(exec);
 const logger = createLogger('PreflightService');
@@ -39,6 +40,7 @@ export interface PreflightResult {
   overall: 'pass' | 'fail' | 'warn';
   checks: PreflightCheck[];
   providers: ProviderCheck[];
+  supportedMcpProviders: string[];
   timestamp: string;
 }
 
@@ -61,6 +63,7 @@ export class PreflightService {
     @Inject('STORAGE_SERVICE') private readonly storage: StorageService,
     @Inject(forwardRef(() => McpProviderRegistrationService))
     private readonly mcpRegistration: McpProviderRegistrationService,
+    private readonly adapterFactory: ProviderAdapterFactory,
   ) {}
 
   /**
@@ -87,6 +90,7 @@ export class PreflightService {
           },
         ],
         providers: [],
+        supportedMcpProviders: this.adapterFactory.getSupportedProviders(),
         timestamp: new Date().toISOString(),
       };
 
@@ -175,6 +179,7 @@ export class PreflightService {
       overall,
       checks,
       providers: providerChecks,
+      supportedMcpProviders: this.adapterFactory.getSupportedProviders(),
       timestamp: new Date().toISOString(),
     };
 
@@ -250,7 +255,7 @@ export class PreflightService {
   }
 
   private isMcpSupported(name: string): boolean {
-    return ['claude', 'codex'].includes(name);
+    return this.adapterFactory.isSupported(name);
   }
 
   /**

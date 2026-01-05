@@ -508,7 +508,72 @@ describe('ProjectsPage — template creation and badge', () => {
     });
   });
 
-  it('does not show upgrade badge for bundled templates', async () => {
+  it('shows update badge for bundled templates when bundledUpgradeAvailable is set', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (global as unknown as { fetch: unknown }).fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/projects') {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [
+              {
+                id: 'p1',
+                name: 'Bundled Project',
+                description: null,
+                rootPath: '/tmp/bundled',
+                isTemplate: false,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+                templateMetadata: {
+                  slug: 'claude-codex-advanced',
+                  version: '1.0.0',
+                  source: 'bundled',
+                },
+                bundledUpgradeAvailable: '1.1.0', // Newer bundled version available
+              },
+            ],
+          }),
+        } as Response;
+      }
+      if (url.endsWith('/stats')) {
+        return { ok: true, json: async () => ({ epicsCount: 0, agentsCount: 0 }) } as Response;
+      }
+      if (url === '/api/templates') {
+        return {
+          ok: true,
+          json: async () => ({
+            templates: [
+              {
+                slug: 'claude-codex-advanced',
+                name: 'Claude Codex Advanced',
+                source: 'bundled',
+                versions: null,
+                latestVersion: null,
+              },
+            ],
+            total: 1,
+          }),
+        } as Response;
+      }
+      return { ok: true, json: async () => ({}) } as Response;
+    });
+
+    renderWithQuery(<ProjectsPage />);
+
+    // Wait for project to load
+    await waitFor(() => expect(screen.getByText('Bundled Project')).toBeInTheDocument());
+
+    // Look for upgrade badge showing bundled upgrade version
+    // Note: Button uses "Upgrade to" universally, while the dialog uses "Update" for bundled
+    await waitFor(() => {
+      const upgradeButton = screen.getByTitle('Upgrade to v1.1.0');
+      expect(upgradeButton).toBeInTheDocument();
+      expect(upgradeButton).toHaveTextContent('v1.1.0');
+    });
+  });
+
+  it('does not show upgrade badge for bundled templates without upgrade available', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (global as unknown as { fetch: unknown }).fetch = jest.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

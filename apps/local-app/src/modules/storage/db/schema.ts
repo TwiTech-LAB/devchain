@@ -65,6 +65,7 @@ export const agentProfiles = sqliteTable(
     providerId: text('provider_id')
       .notNull()
       .references(() => providers.id),
+    familySlug: text('family_slug'), // Groups equivalent profiles across providers
     options: text('options'),
     systemPrompt: text('system_prompt'),
     instructions: text('instructions'),

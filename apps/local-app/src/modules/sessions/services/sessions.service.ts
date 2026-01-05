@@ -178,7 +178,7 @@ export class SessionsService {
     await this.tmuxService.sendCommandArgs(tmuxSessionName, commandArgs);
 
     // Wait for agent to initialize
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await new Promise((resolve) => setTimeout(resolve, 5000));
 
     // Insert session into database
     this.sqlite

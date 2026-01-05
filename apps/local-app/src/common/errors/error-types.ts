@@ -67,3 +67,17 @@ export class TimeoutError extends AppError {
     super(message, 'timeout', 408, details);
   }
 }
+
+export class UnsupportedProviderError extends AppError {
+  constructor(
+    public readonly providerName: string,
+    supportedProviders: string[],
+  ) {
+    super(
+      `Unsupported provider: ${providerName}. Supported providers: ${supportedProviders.join(', ')}`,
+      'unsupported_provider',
+      400,
+      { providerName, supportedProviders },
+    );
+  }
+}

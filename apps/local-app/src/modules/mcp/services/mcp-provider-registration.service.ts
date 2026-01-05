@@ -8,6 +8,7 @@ import { Provider } from '../../storage/models/domain.models';
 import { createLogger } from '../../../common/logging/logger';
 import { ProviderAdapterFactory, McpServerEntry } from '../../providers/adapters';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
+import { UnsupportedProviderError } from '../../../common/errors/error-types';
 
 const execFileAsync = promisify(execFile);
 const logger = createLogger('McpProviderRegistrationService');
@@ -193,13 +194,26 @@ export class McpProviderRegistrationService implements OnModuleDestroy {
       };
     }
 
-    const adapter = this.adapterFactory.getAdapter(provider.name);
-    const args = adapter.addMcpServer({
-      endpoint: options.endpoint,
-      alias: options.alias,
-      extraArgs: options.extraArgs,
-    });
-    return this.runCommand(resolution.binaryPath, args, execOptions);
+    try {
+      const adapter = this.adapterFactory.getAdapter(provider.name);
+      const args = adapter.addMcpServer({
+        endpoint: options.endpoint,
+        alias: options.alias,
+        extraArgs: options.extraArgs,
+      });
+      return this.runCommand(resolution.binaryPath, args, execOptions);
+    } catch (error) {
+      if (error instanceof UnsupportedProviderError) {
+        return {
+          success: false,
+          message: error.message,
+          stdout: '',
+          stderr: '',
+          exitCode: null,
+        };
+      }
+      throw error;
+    }
   }
 
   async listRegistrations(
@@ -218,33 +232,47 @@ export class McpProviderRegistrationService implements OnModuleDestroy {
       };
     }
 
-    const adapter = this.adapterFactory.getAdapter(provider.name);
-    const args = adapter.listMcpServers();
-    const result = await this.runCommand(resolution.binaryPath, args, {
-      timeoutMs: execOptions?.timeoutMs ?? 10_000,
-      cwd: execOptions?.cwd,
-    });
+    try {
+      const adapter = this.adapterFactory.getAdapter(provider.name);
+      const args = adapter.listMcpServers();
+      const result = await this.runCommand(resolution.binaryPath, args, {
+        timeoutMs: execOptions?.timeoutMs ?? 10_000,
+        cwd: execOptions?.cwd,
+      });
 
-    if (!result.success) {
+      if (!result.success) {
+        return {
+          success: false,
+          message: result.message,
+          entries: [],
+          binaryPath: result.binaryPath,
+          stdout: result.stdout,
+          stderr: result.stderr,
+        };
+      }
+
+      const entries = adapter.parseListOutput(result.stdout, result.stderr);
       return {
-        success: false,
+        success: true,
         message: result.message,
-        entries: [],
+        entries,
         binaryPath: result.binaryPath,
         stdout: result.stdout,
         stderr: result.stderr,
       };
+    } catch (error) {
+      if (error instanceof UnsupportedProviderError) {
+        return {
+          success: false,
+          message: error.message,
+          entries: [],
+          binaryPath: resolution.binaryPath,
+          stdout: '',
+          stderr: '',
+        };
+      }
+      throw error;
     }
-
-    const entries = adapter.parseListOutput(result.stdout, result.stderr);
-    return {
-      success: true,
-      message: result.message,
-      entries,
-      binaryPath: result.binaryPath,
-      stdout: result.stdout,
-      stderr: result.stderr,
-    };
   }
 
   async removeRegistration(
@@ -263,12 +291,25 @@ export class McpProviderRegistrationService implements OnModuleDestroy {
       };
     }
 
-    const adapter = this.adapterFactory.getAdapter(provider.name);
-    const args = adapter.removeMcpServer(alias);
-    return this.runCommand(resolution.binaryPath, args, {
-      timeoutMs: execOptions?.timeoutMs ?? 10_000,
-      cwd: execOptions?.cwd,
-    });
+    try {
+      const adapter = this.adapterFactory.getAdapter(provider.name);
+      const args = adapter.removeMcpServer(alias);
+      return this.runCommand(resolution.binaryPath, args, {
+        timeoutMs: execOptions?.timeoutMs ?? 10_000,
+        cwd: execOptions?.cwd,
+      });
+    } catch (error) {
+      if (error instanceof UnsupportedProviderError) {
+        return {
+          success: false,
+          message: error.message,
+          stdout: '',
+          stderr: '',
+          exitCode: null,
+        };
+      }
+      throw error;
+    }
   }
 
   private async verifyBinary(

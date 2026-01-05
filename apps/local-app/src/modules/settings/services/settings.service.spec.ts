@@ -231,7 +231,7 @@ describe('SettingsService (registry config)', () => {
 
   it('returns default registry URL when nothing configured', () => {
     const config = service.getRegistryConfig();
-    expect(config.url).toBe('https://templates.devchain.twitechlab.com');
+    expect(config.url).toBe('https://a1-devchain.twitechlab.com');
     expect(config.cacheDir).toBe('');
     expect(config.checkUpdatesOnStartup).toBe(true);
   });

@@ -371,10 +371,12 @@ export class LocalStorageService implements StorageService {
           projectId: project.id,
           name: prof.name,
           providerId: prof.providerId,
+          familySlug: prof.familySlug ?? null,
           options: prof.options,
           systemPrompt: null,
           instructions: prof.instructions,
-          temperature: prof.temperature,
+          // Temperature stored as integer (×100) to match createAgentProfile convention
+          temperature: prof.temperature != null ? Math.round(prof.temperature * 100) : null,
           maxTokens: prof.maxTokens,
           createdAt: now,
           updatedAt: now,
@@ -2279,6 +2281,7 @@ export class LocalStorageService implements StorageService {
       projectId: data.projectId ?? null,
       name: data.name,
       providerId: data.providerId,
+      familySlug: data.familySlug ?? null,
       options: data.options ?? null,
       systemPrompt: data.systemPrompt ?? null,
       instructions: data.instructions ?? null,
@@ -2293,10 +2296,11 @@ export class LocalStorageService implements StorageService {
       projectId: profile.projectId,
       name: profile.name,
       providerId: profile.providerId,
+      familySlug: profile.familySlug,
       options: profile.options,
       systemPrompt: profile.systemPrompt,
       instructions: profile.instructions,
-      temperature: profile.temperature ? Math.round(profile.temperature * 100) : null,
+      temperature: profile.temperature != null ? Math.round(profile.temperature * 100) : null,
       maxTokens: profile.maxTokens,
       createdAt: profile.createdAt,
       updatedAt: profile.updatedAt,
@@ -2319,7 +2323,7 @@ export class LocalStorageService implements StorageService {
     const profile = result[0];
     return {
       ...profile,
-      temperature: profile.temperature ? profile.temperature / 100 : null,
+      temperature: profile.temperature != null ? profile.temperature / 100 : null,
       options: profile.options ?? null,
     } as AgentProfile;
   }
@@ -2348,7 +2352,7 @@ export class LocalStorageService implements StorageService {
     return {
       items: items.map((p) => ({
         ...p,
-        temperature: p.temperature ? p.temperature / 100 : null,
+        temperature: p.temperature != null ? p.temperature / 100 : null,
         options: p.options ?? null,
       })) as AgentProfile[],
       total: items.length,
@@ -2374,6 +2378,9 @@ export class LocalStorageService implements StorageService {
     }
     if (data.options !== undefined) {
       updateData.options = data.options ?? null;
+    }
+    if (data.familySlug !== undefined) {
+      updateData.familySlug = data.familySlug ?? null;
     }
 
     await this.db

@@ -2,7 +2,7 @@
  * Provider Adapter Interface
  *
  * Defines the contract for provider-specific MCP command logic.
- * Each known provider (claude, codex) implements this interface
+ * Each known provider (claude, codex, gemini) implements this interface
  * to encapsulate command building and output parsing.
  */
 
@@ -32,7 +32,7 @@ export interface AddMcpServerOptions {
  */
 export interface ProviderAdapter {
   /**
-   * Provider name (e.g., 'claude', 'codex')
+   * Provider name (e.g., 'claude', 'codex', 'gemini')
    */
   readonly providerName: string;
 

@@ -31,6 +31,8 @@ interface UpgradeDialogProps {
   templateSlug: string;
   currentVersion: string;
   targetVersion: string;
+  /** Template source - used to differentiate copy between registry and bundled */
+  source: 'bundled' | 'registry';
   open: boolean;
   onClose: () => void;
 }
@@ -67,9 +69,14 @@ export function UpgradeDialog({
   templateSlug,
   currentVersion,
   targetVersion,
+  source,
   open,
   onClose,
 }: UpgradeDialogProps) {
+  // Conditional copy based on source
+  const isRegistry = source === 'registry';
+  const actionVerb = isRegistry ? 'Upgrade' : 'Update';
+  const actionVerbPastParticiple = isRegistry ? 'upgraded' : 'updated';
   // Start at 'confirm' - no download step needed (versions are cached)
   const [step, setStep] = useState<UpgradeStep>('confirm');
   const [error, setError] = useState<string | null>(null);
@@ -88,15 +95,15 @@ export function UpgradeDialog({
       if (result.success) {
         setStep('done');
         toast({
-          title: 'Upgrade Complete',
-          description: `${projectName} upgraded to v${result.newVersion}`,
+          title: `${actionVerb} Complete`,
+          description: `${projectName} ${actionVerbPastParticiple} to v${result.newVersion}`,
         });
         queryClient.invalidateQueries({ queryKey: ['project-template-metadata', projectId] });
       } else if (result.restored) {
         // Auto-restore succeeded - show toast and close dialog directly
         // (can't use handleClose here as mutation isPending check would block)
         toast({
-          title: 'Upgrade Failed',
+          title: `${actionVerb} Failed`,
           description: 'Project was automatically restored to its previous state',
           variant: 'destructive',
         });
@@ -106,7 +113,7 @@ export function UpgradeDialog({
         onClose();
       } else {
         // Auto-restore failed or no backup - show error step for manual restore
-        setError(result.error || 'Upgrade failed');
+        setError(result.error || `${actionVerb} failed`);
         if (result.backupId) {
           setBackupId(result.backupId);
         }
@@ -170,10 +177,13 @@ export function UpgradeDialog({
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
                 <Upload className="h-5 w-5" />
-                Update Project
+                {actionVerb} Project
               </DialogTitle>
               <DialogDescription>
-                Update {projectName} to a newer template version
+                {actionVerb} {projectName} to{' '}
+                {isRegistry
+                  ? 'a newer template version from the registry'
+                  : 'the bundled template version'}
               </DialogDescription>
             </DialogHeader>
 
@@ -206,7 +216,7 @@ export function UpgradeDialog({
               </Button>
               <Button onClick={handleApply}>
                 <Upload className="h-4 w-4 mr-2" />
-                Update
+                {actionVerb}
               </Button>
             </DialogFooter>
           </>
@@ -216,7 +226,7 @@ export function UpgradeDialog({
         {step === 'applying' && (
           <>
             <DialogHeader>
-              <DialogTitle>Applying Update</DialogTitle>
+              <DialogTitle>Applying {actionVerb}</DialogTitle>
               <DialogDescription>Creating backup and applying changes...</DialogDescription>
             </DialogHeader>
 
@@ -233,10 +243,10 @@ export function UpgradeDialog({
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2 text-green-600">
                 <CheckCircle2 className="h-5 w-5" />
-                Update Complete
+                {actionVerb} Complete
               </DialogTitle>
               <DialogDescription>
-                {projectName} has been updated to v{targetVersion}
+                {projectName} has been {actionVerbPastParticiple} to v{targetVersion}
               </DialogDescription>
             </DialogHeader>
 
@@ -259,7 +269,7 @@ export function UpgradeDialog({
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2 text-destructive">
                 <AlertCircle className="h-5 w-5" />
-                Update Failed
+                {actionVerb} Failed
               </DialogTitle>
             </DialogHeader>
 

@@ -14,6 +14,7 @@ import {
 } from '../../../common/errors/error-types';
 import * as fs from 'fs';
 import * as envConfig from '../../../common/config/env.config';
+import * as devchainShared from '@devchain/shared';
 
 jest.mock('../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
@@ -80,6 +81,7 @@ describe('ProjectsService', () => {
   };
   let unifiedTemplateService: {
     getTemplate: jest.Mock;
+    getBundledTemplate: jest.Mock;
     listTemplates: jest.Mock;
     hasTemplate: jest.Mock;
   };
@@ -147,6 +149,7 @@ describe('ProjectsService', () => {
 
     unifiedTemplateService = {
       getTemplate: jest.fn(),
+      getBundledTemplate: jest.fn(),
       listTemplates: jest.fn(),
       hasTemplate: jest.fn(),
     };
@@ -602,13 +605,69 @@ describe('ProjectsService', () => {
       );
     });
 
-    it('should set template metadata for bundled template', async () => {
+    it('should set template metadata for bundled template with version from _manifest', async () => {
       const validTemplate = {
         version: 1,
         prompts: [],
         profiles: [],
         agents: [],
         statuses: [],
+        _manifest: {
+          slug: 'bundled-template',
+          name: 'Bundled Template',
+          version: '1.1.0',
+        },
+      };
+
+      // Mock ExportSchema.parse to return the expected parsed output
+      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
+        ...validTemplate,
+        watchers: [],
+        subscribers: [],
+        exportedAt: undefined,
+        initialPrompt: undefined,
+        projectSettings: undefined,
+      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+      unifiedTemplateService.getTemplate.mockResolvedValue({
+        content: validTemplate,
+        source: 'bundled',
+        version: null, // UnifiedTemplateService returns null for bundled templates
+      });
+
+      storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      storage.createProjectWithTemplate.mockResolvedValue({
+        project: { id: 'p1', name: 'Test' },
+        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
+        mappings: { promptIdMap: {}, profileIdMap: {}, agentIdMap: {}, statusIdMap: {} },
+      });
+
+      await service.createFromTemplate({
+        name: 'Test Project',
+        rootPath: '/test',
+        slug: 'bundled-template',
+      });
+
+      // Should read version from _manifest when getTemplate returns version: null
+      expect(settings.setProjectTemplateMetadata).toHaveBeenCalledWith('p1', {
+        templateSlug: 'bundled-template',
+        source: 'bundled',
+        installedVersion: '1.1.0',
+        registryUrl: null,
+        installedAt: expect.any(String),
+      });
+
+      jest.restoreAllMocks();
+    });
+
+    it('should set installedVersion as null for bundled template without _manifest version', async () => {
+      const validTemplate = {
+        version: 1,
+        prompts: [],
+        profiles: [],
+        agents: [],
+        statuses: [],
+        // No _manifest or _manifest without version
       };
       unifiedTemplateService.getTemplate.mockResolvedValue({
         content: validTemplate,
@@ -626,11 +685,11 @@ describe('ProjectsService', () => {
       await service.createFromTemplate({
         name: 'Test Project',
         rootPath: '/test',
-        slug: 'empty-project',
+        slug: 'legacy-template',
       });
 
       expect(settings.setProjectTemplateMetadata).toHaveBeenCalledWith('p1', {
-        templateSlug: 'empty-project',
+        templateSlug: 'legacy-template',
         source: 'bundled',
         installedVersion: null,
         registryUrl: null,
@@ -804,7 +863,8 @@ describe('ProjectsService', () => {
         counts: {
           toImport: {
             prompts: 1,
-            profiles: 1,
+            // Profile count is 0 because the provider is missing and profile can't be created
+            profiles: 0,
             agents: 1,
             statuses: 1,
             watchers: 0,
@@ -1063,6 +1123,714 @@ describe('ProjectsService', () => {
           maxTokens: 2000,
         }),
       );
+    });
+
+    describe('with familyProviderMappings', () => {
+      const projectId = 'project-123';
+      const profileId1 = '11111111-1111-1111-1111-111111111111';
+      const profileId2 = '22222222-2222-2222-2222-222222222222';
+      const agentId = '33333333-3333-3333-3333-333333333333';
+      const providerId = '44444444-4444-4444-4444-444444444444';
+
+      it('should return providerMappingRequired in dry-run when default provider is missing', async () => {
+        // Directly test computeFamilyAlternatives since import dry-run uses it
+        storage.listProviders.mockResolvedValue({
+          items: [{ id: providerId, name: 'claude' }], // codex is missing
+          total: 1,
+          limit: 100,
+          offset: 0,
+        });
+
+        // Test computeFamilyAlternatives directly to verify the logic
+        const profiles = [
+          { id: profileId1, name: 'Coder Codex', provider: { name: 'codex' }, familySlug: 'coder' },
+          {
+            id: profileId2,
+            name: 'Coder Claude',
+            provider: { name: 'claude' },
+            familySlug: 'coder',
+          },
+        ];
+        const agents = [{ id: agentId, name: 'Coder', profileId: profileId1 }];
+
+        const familyResult = await service.computeFamilyAlternatives(profiles, agents);
+
+        // Verify the conditions that would trigger providerMappingRequired in dry-run
+        const needsMapping = familyResult.alternatives.some((alt) => !alt.defaultProviderAvailable);
+        expect(needsMapping).toBe(true);
+        expect(familyResult.missingProviders).toContain('codex');
+        expect(familyResult.canImport).toBe(true);
+        expect(familyResult.alternatives[0].availableProviders).toContain('claude');
+      });
+
+      it('should import with remapped profiles when mappings are provided', async () => {
+        const payload = {
+          prompts: [],
+          profiles: [
+            {
+              id: profileId1,
+              name: 'Coder Codex',
+              provider: { name: 'codex' },
+              familySlug: 'coder',
+            },
+            {
+              id: profileId2,
+              name: 'Coder Claude',
+              provider: { name: 'claude' },
+              familySlug: 'coder',
+            },
+          ],
+          agents: [{ id: agentId, name: 'Coder', profileId: profileId1 }],
+          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+        };
+
+        // Mock ExportSchema.parse to preserve familySlug (ESM compatibility workaround)
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
+          ...payload,
+          version: 1,
+          exportedAt: undefined,
+          initialPrompt: undefined,
+          projectSettings: undefined,
+          watchers: [],
+          subscribers: [],
+          _manifest: undefined,
+        } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+        // Only claude is available
+        storage.listProviders.mockResolvedValue({
+          items: [{ id: providerId, name: 'claude' }],
+          total: 1,
+          limit: 100,
+          offset: 0,
+        });
+
+        // Mock existing data (empty project)
+        storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        storage.listAgentProfiles.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 10000,
+          offset: 0,
+        });
+        storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        sessions.getActiveSessionsForProject.mockReturnValue([]);
+        settings.updateSettings.mockResolvedValue(undefined);
+
+        // Mock create operations
+        storage.createStatus.mockResolvedValue({ id: 'new-status-1' });
+        storage.createAgentProfile.mockResolvedValue({ id: 'new-profile-1' });
+        storage.createAgent.mockResolvedValue({ id: 'new-agent-1' });
+
+        await service.importProject({
+          projectId,
+          payload,
+          dryRun: false,
+          familyProviderMappings: { coder: 'claude' }, // Remap coder family to claude
+        });
+
+        // Verify createAgentProfile was called with the claude profile (not codex)
+        expect(storage.createAgentProfile).toHaveBeenCalledTimes(1);
+        expect(storage.createAgentProfile).toHaveBeenCalledWith(
+          expect.objectContaining({
+            name: 'Coder Claude',
+            providerId,
+            familySlug: 'coder',
+          }),
+        );
+
+        // Cleanup
+        jest.restoreAllMocks();
+      });
+
+      it('should import ALL profiles whose provider is available (not just agent-referenced ones)', async () => {
+        // Template with multiple profiles per family - all should be imported if provider available
+        const profile1 = '11111111-1111-1111-1111-111111111111';
+        const profile2 = '22222222-2222-2222-2222-222222222222';
+        const profile3 = '33333333-3333-3333-3333-333333333333';
+        const agentIdLocal = '44444444-4444-4444-4444-444444444444';
+        const claudeProviderId = '55555555-5555-5555-5555-555555555555';
+        const geminiProviderId = '66666666-6666-6666-6666-666666666666';
+
+        const payload = {
+          prompts: [],
+          profiles: [
+            // Coder family - Claude profile (agent uses this)
+            {
+              id: profile1,
+              name: 'Coder Claude',
+              provider: { name: 'claude' },
+              familySlug: 'coder',
+            },
+            // Coder family - Gemini profile (NOT used by any agent, but should be imported)
+            {
+              id: profile2,
+              name: 'Coder Gemini',
+              provider: { name: 'gemini' },
+              familySlug: 'coder',
+            },
+            // Another family - Gemini profile (also not used by agent)
+            {
+              id: profile3,
+              name: 'Reviewer Gemini',
+              provider: { name: 'gemini' },
+              familySlug: 'reviewer',
+            },
+          ],
+          agents: [{ id: agentIdLocal, name: 'Coder', profileId: profile1 }], // Only references profile1
+          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+        };
+
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
+          ...payload,
+          version: 1,
+          exportedAt: undefined,
+          initialPrompt: undefined,
+          projectSettings: undefined,
+          watchers: [],
+          subscribers: [],
+          _manifest: undefined,
+        } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+        // Both claude and gemini are available
+        storage.listProviders.mockResolvedValue({
+          items: [
+            { id: claudeProviderId, name: 'claude' },
+            { id: geminiProviderId, name: 'gemini' },
+          ],
+          total: 2,
+          limit: 100,
+          offset: 0,
+        });
+
+        // Mock existing data (empty project)
+        storage.listPrompts.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 10000,
+          offset: 0,
+        });
+        storage.listAgentProfiles.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 10000,
+          offset: 0,
+        });
+        storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        sessions.getActiveSessionsForProject.mockReturnValue([]);
+        settings.updateSettings.mockResolvedValue(undefined);
+
+        // Mock create operations
+        storage.createStatus.mockResolvedValue({ id: 'new-status-1' });
+        storage.createAgentProfile.mockResolvedValue({ id: 'new-profile-1' });
+        storage.createAgent.mockResolvedValue({ id: 'new-agent-1' });
+
+        await service.importProject({
+          projectId,
+          payload,
+          dryRun: false,
+        });
+
+        // ALL 3 profiles should be imported (not just the one referenced by agent)
+        expect(storage.createAgentProfile).toHaveBeenCalledTimes(3);
+
+        // Verify all profiles were created
+        const createdProfiles = storage.createAgentProfile.mock.calls.map((call) => call[0].name);
+        expect(createdProfiles).toContain('Coder Claude');
+        expect(createdProfiles).toContain('Coder Gemini');
+        expect(createdProfiles).toContain('Reviewer Gemini');
+
+        jest.restoreAllMocks();
+      });
+
+      it('should assign agent to original profile provider when all providers available (no mapping)', async () => {
+        // This tests the bug fix: when all providers are available (no mapping needed),
+        // agents should use their original profile's provider, not the first one in template order
+        const codexProfileId = '11111111-1111-1111-1111-111111111111';
+        const claudeProfileId = '22222222-2222-2222-2222-222222222222';
+        const coderAgentId = '33333333-3333-3333-3333-333333333333';
+        const codexProviderId = '44444444-4444-4444-4444-444444444444';
+        const claudeProviderId = '55555555-5555-5555-5555-555555555555';
+
+        const payload = {
+          prompts: [],
+          profiles: [
+            // IMPORTANT: Codex profile comes FIRST in the array
+            {
+              id: codexProfileId,
+              name: 'CodeGPT',
+              provider: { name: 'codex' },
+              familySlug: 'coder',
+            },
+            // Claude profile comes SECOND in the array
+            {
+              id: claudeProfileId,
+              name: 'CodeOpus',
+              provider: { name: 'claude' },
+              familySlug: 'coder',
+            },
+          ],
+          // Agent is assigned to Claude profile (second in array)
+          agents: [{ id: coderAgentId, name: 'Coder', profileId: claudeProfileId }],
+          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+        };
+
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
+          ...payload,
+          version: 1,
+          exportedAt: undefined,
+          initialPrompt: undefined,
+          projectSettings: undefined,
+          watchers: [],
+          subscribers: [],
+          _manifest: undefined,
+        } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+        // BOTH providers are available - this is the key condition
+        storage.listProviders.mockResolvedValue({
+          items: [
+            { id: codexProviderId, name: 'codex' },
+            { id: claudeProviderId, name: 'claude' },
+          ],
+          total: 2,
+          limit: 100,
+          offset: 0,
+        });
+
+        // Mock existing data (empty project)
+        storage.listPrompts.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 10000,
+          offset: 0,
+        });
+        storage.listAgentProfiles.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 10000,
+          offset: 0,
+        });
+        storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        sessions.getActiveSessionsForProject.mockReturnValue([]);
+        settings.updateSettings.mockResolvedValue(undefined);
+
+        // Track profile ID mappings
+        let newClaudeProfileId: string | undefined;
+        storage.createAgentProfile.mockImplementation(async (input) => {
+          const id = `new-profile-${input.name}`;
+          if (input.name === 'CodeOpus') {
+            newClaudeProfileId = id;
+          }
+          return { id };
+        });
+        storage.createStatus.mockResolvedValue({ id: 'new-status-1' });
+
+        // Track which profile the agent is assigned to
+        let agentAssignedProfileId: string | undefined;
+        storage.createAgent.mockImplementation(async (input) => {
+          agentAssignedProfileId = input.profileId;
+          return { id: 'new-agent-1' };
+        });
+
+        // Import WITHOUT providing familyProviderMappings (all providers available)
+        await service.importProject({
+          projectId,
+          payload,
+          dryRun: false,
+          // No familyProviderMappings - should use original provider assignment
+        });
+
+        // Agent should be assigned to Claude profile (original assignment), NOT Codex (first in array)
+        expect(agentAssignedProfileId).toBe(newClaudeProfileId);
+
+        jest.restoreAllMocks();
+      });
+
+      it('should fall back to first available provider when original provider is not available', async () => {
+        // When the agent's original provider is unavailable, fall back to first available
+        const codexProfileId = '11111111-1111-1111-1111-111111111111';
+        const claudeProfileId = '22222222-2222-2222-2222-222222222222';
+        const coderAgentId = '33333333-3333-3333-3333-333333333333';
+        const claudeProviderId = '55555555-5555-5555-5555-555555555555';
+
+        const payload = {
+          prompts: [],
+          profiles: [
+            // Codex profile comes FIRST
+            {
+              id: codexProfileId,
+              name: 'CodeGPT',
+              provider: { name: 'codex' },
+              familySlug: 'coder',
+            },
+            // Claude profile comes SECOND
+            {
+              id: claudeProfileId,
+              name: 'CodeOpus',
+              provider: { name: 'claude' },
+              familySlug: 'coder',
+            },
+          ],
+          // Agent is assigned to Codex profile (first in array)
+          agents: [{ id: coderAgentId, name: 'Coder', profileId: codexProfileId }],
+          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+        };
+
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
+          ...payload,
+          version: 1,
+          exportedAt: undefined,
+          initialPrompt: undefined,
+          projectSettings: undefined,
+          watchers: [],
+          subscribers: [],
+          _manifest: undefined,
+        } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+        // Only Claude is available - Codex (agent's original) is missing
+        storage.listProviders.mockResolvedValue({
+          items: [{ id: claudeProviderId, name: 'claude' }],
+          total: 1,
+          limit: 100,
+          offset: 0,
+        });
+
+        // Mock existing data (empty project)
+        storage.listPrompts.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 10000,
+          offset: 0,
+        });
+        storage.listAgentProfiles.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 10000,
+          offset: 0,
+        });
+        storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        sessions.getActiveSessionsForProject.mockReturnValue([]);
+        settings.updateSettings.mockResolvedValue(undefined);
+
+        // Track profile ID mappings
+        let newClaudeProfileId: string | undefined;
+        storage.createAgentProfile.mockImplementation(async (input) => {
+          const id = `new-profile-${input.name}`;
+          if (input.name === 'CodeOpus') {
+            newClaudeProfileId = id;
+          }
+          return { id };
+        });
+        storage.createStatus.mockResolvedValue({ id: 'new-status-1' });
+
+        // Track which profile the agent is assigned to
+        let agentAssignedProfileId: string | undefined;
+        storage.createAgent.mockImplementation(async (input) => {
+          agentAssignedProfileId = input.profileId;
+          return { id: 'new-agent-1' };
+        });
+
+        // Import with mapping since Codex is unavailable
+        await service.importProject({
+          projectId,
+          payload,
+          dryRun: false,
+          familyProviderMappings: { coder: 'claude' },
+        });
+
+        // Agent should be assigned to Claude profile (mapped provider) since Codex is unavailable
+        expect(agentAssignedProfileId).toBe(newClaudeProfileId);
+
+        jest.restoreAllMocks();
+      });
+
+      it('should throw ValidationError when canImport is false (no alternatives available)', async () => {
+        const payload = {
+          prompts: [],
+          profiles: [
+            {
+              id: profileId1,
+              name: 'Special Profile',
+              provider: { name: 'special-provider' },
+              familySlug: 'special',
+            },
+          ],
+          agents: [{ id: agentId, name: 'Special Agent', profileId: profileId1 }],
+          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+        };
+
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
+          ...payload,
+          version: 1,
+          exportedAt: undefined,
+          initialPrompt: undefined,
+          projectSettings: undefined,
+          watchers: [],
+          subscribers: [],
+          _manifest: undefined,
+        } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+        // No providers available at all
+        storage.listProviders.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 100,
+          offset: 0,
+        });
+
+        // Mock existing data (empty project)
+        storage.listPrompts.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 10000,
+          offset: 0,
+        });
+        storage.listAgentProfiles.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 10000,
+          offset: 0,
+        });
+        storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+
+        // Even with mappings provided, should fail because canImport is false
+        await expect(
+          service.importProject({
+            projectId,
+            payload,
+            dryRun: false,
+            familyProviderMappings: { special: 'anything' },
+          }),
+        ).rejects.toThrow('Cannot import: some profile families have no available providers');
+
+        jest.restoreAllMocks();
+      });
+
+      it('should return providerMappingRequired when defaults missing and no mappings provided (non-dry-run)', async () => {
+        const payload = {
+          prompts: [],
+          profiles: [
+            {
+              id: profileId1,
+              name: 'Coder Codex',
+              provider: { name: 'codex' },
+              familySlug: 'coder',
+            },
+            {
+              id: profileId2,
+              name: 'Coder Claude',
+              provider: { name: 'claude' },
+              familySlug: 'coder',
+            },
+          ],
+          agents: [{ id: agentId, name: 'Coder', profileId: profileId1 }],
+          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+        };
+
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
+          ...payload,
+          version: 1,
+          exportedAt: undefined,
+          initialPrompt: undefined,
+          projectSettings: undefined,
+          watchers: [],
+          subscribers: [],
+          _manifest: undefined,
+        } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+        // Only claude is available (codex is missing)
+        storage.listProviders.mockResolvedValue({
+          items: [{ id: providerId, name: 'claude' }],
+          total: 1,
+          limit: 100,
+          offset: 0,
+        });
+
+        // Mock existing data (empty project)
+        storage.listPrompts.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 10000,
+          offset: 0,
+        });
+        storage.listAgentProfiles.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 10000,
+          offset: 0,
+        });
+        storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+
+        // Non-dry-run without mappings should return providerMappingRequired
+        const result = await service.importProject({
+          projectId,
+          payload,
+          dryRun: false,
+          // No familyProviderMappings provided
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.providerMappingRequired).toBeDefined();
+        expect(result.providerMappingRequired?.missingProviders).toContain('codex');
+        expect(result.providerMappingRequired?.canImport).toBe(true);
+        expect(result.providerMappingRequired?.familyAlternatives).toHaveLength(1);
+        expect(result.providerMappingRequired?.familyAlternatives[0].familySlug).toBe('coder');
+
+        jest.restoreAllMocks();
+      });
+    });
+
+    describe('template source detection', () => {
+      const projectId = 'project-123';
+      const providerId = '44444444-4444-4444-4444-444444444444';
+
+      it('should set source as bundled when importing a bundled template', async () => {
+        const payload = {
+          prompts: [],
+          profiles: [],
+          agents: [],
+          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+          _manifest: {
+            slug: 'bundled-template',
+            name: 'Bundled Template',
+            version: '1.0.0',
+          },
+        };
+
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
+          ...payload,
+          version: 1,
+          exportedAt: undefined,
+          initialPrompt: undefined,
+          projectSettings: undefined,
+          watchers: [],
+          subscribers: [],
+        } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+        storage.listProviders.mockResolvedValue({
+          items: [{ id: providerId, name: 'claude' }],
+          total: 1,
+          limit: 100,
+          offset: 0,
+        });
+        storage.listPrompts.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 10000,
+          offset: 0,
+        });
+        storage.listAgentProfiles.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 10000,
+          offset: 0,
+        });
+        storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        sessions.getActiveSessionsForProject.mockReturnValue([]);
+
+        storage.createStatus.mockResolvedValue({ id: 'new-status-1' });
+
+        // Mock getBundledTemplate to succeed (template is bundled)
+        unifiedTemplateService.getBundledTemplate.mockReturnValue({
+          content: {},
+          source: 'bundled',
+        });
+
+        await service.importProject({
+          projectId,
+          payload,
+          dryRun: false,
+        });
+
+        // Verify template metadata was set with source: 'bundled'
+        expect(settings.setProjectTemplateMetadata).toHaveBeenCalledWith(
+          projectId,
+          expect.objectContaining({
+            templateSlug: 'bundled-template',
+            source: 'bundled',
+            installedVersion: '1.0.0',
+          }),
+        );
+
+        jest.restoreAllMocks();
+      });
+
+      it('should set source as registry when importing a non-bundled template', async () => {
+        const payload = {
+          prompts: [],
+          profiles: [],
+          agents: [],
+          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+          _manifest: {
+            slug: 'registry-only-template',
+            name: 'Registry Template',
+            version: '2.0.0',
+          },
+        };
+
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
+          ...payload,
+          version: 1,
+          exportedAt: undefined,
+          initialPrompt: undefined,
+          projectSettings: undefined,
+          watchers: [],
+          subscribers: [],
+        } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+        storage.listProviders.mockResolvedValue({
+          items: [{ id: providerId, name: 'claude' }],
+          total: 1,
+          limit: 100,
+          offset: 0,
+        });
+        storage.listPrompts.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 10000,
+          offset: 0,
+        });
+        storage.listAgentProfiles.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 10000,
+          offset: 0,
+        });
+        storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        sessions.getActiveSessionsForProject.mockReturnValue([]);
+
+        storage.createStatus.mockResolvedValue({ id: 'new-status-1' });
+
+        // Mock getBundledTemplate to throw (template is NOT bundled)
+        unifiedTemplateService.getBundledTemplate.mockImplementation(() => {
+          throw new Error('Template not found');
+        });
+
+        await service.importProject({
+          projectId,
+          payload,
+          dryRun: false,
+        });
+
+        // Verify template metadata was set with source: 'registry'
+        expect(settings.setProjectTemplateMetadata).toHaveBeenCalledWith(
+          projectId,
+          expect.objectContaining({
+            templateSlug: 'registry-only-template',
+            source: 'registry',
+            installedVersion: '2.0.0',
+          }),
+        );
+
+        jest.restoreAllMocks();
+      });
     });
   });
 
@@ -1361,6 +2129,952 @@ describe('ProjectsService', () => {
       const result = await service.exportProject(projectId);
 
       expect(result._manifest.slug).toBe('my-special-project-v2');
+    });
+  });
+
+  describe('computeFamilyAlternatives', () => {
+    const coderProfileId = '11111111-1111-1111-1111-111111111111';
+    const reviewerProfileId = '22222222-2222-2222-2222-222222222222';
+    const coderAgentId = '33333333-3333-3333-3333-333333333333';
+    const reviewerAgentId = '44444444-4444-4444-4444-444444444444';
+
+    it('should return canImport: true when all family providers are available', async () => {
+      storage.listProviders.mockResolvedValue({
+        items: [
+          { id: 'p1', name: 'claude' },
+          { id: 'p2', name: 'codex' },
+        ],
+        total: 2,
+        limit: 100,
+        offset: 0,
+      });
+
+      const profiles = [
+        {
+          id: coderProfileId,
+          name: 'Coder Profile',
+          provider: { name: 'claude' },
+          familySlug: 'coder',
+        },
+        {
+          id: reviewerProfileId,
+          name: 'Reviewer Profile',
+          provider: { name: 'codex' },
+          familySlug: 'reviewer',
+        },
+      ];
+      const agents = [
+        { id: coderAgentId, name: 'Coder', profileId: coderProfileId },
+        { id: reviewerAgentId, name: 'Reviewer', profileId: reviewerProfileId },
+      ];
+
+      const result = await service.computeFamilyAlternatives(profiles, agents);
+
+      expect(result.canImport).toBe(true);
+      expect(result.missingProviders).toEqual([]);
+      expect(result.alternatives).toHaveLength(2);
+    });
+
+    it('should return canImport: false when a family has no available providers', async () => {
+      storage.listProviders.mockResolvedValue({
+        items: [{ id: 'p1', name: 'claude' }], // codex is missing
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+
+      const profiles = [
+        {
+          id: coderProfileId,
+          name: 'Coder Profile',
+          provider: { name: 'claude' },
+          familySlug: 'coder',
+        },
+        {
+          id: reviewerProfileId,
+          name: 'Reviewer Profile',
+          provider: { name: 'codex' },
+          familySlug: 'reviewer',
+        },
+      ];
+      const agents = [
+        { id: coderAgentId, name: 'Coder', profileId: coderProfileId },
+        { id: reviewerAgentId, name: 'Reviewer', profileId: reviewerProfileId },
+      ];
+
+      const result = await service.computeFamilyAlternatives(profiles, agents);
+
+      expect(result.canImport).toBe(false);
+      expect(result.missingProviders).toContain('codex');
+
+      const reviewerFamily = result.alternatives.find((a) => a.familySlug === 'reviewer');
+      expect(reviewerFamily?.hasAlternatives).toBe(false);
+      expect(reviewerFamily?.availableProviders).toEqual([]);
+    });
+
+    it('should identify available alternatives for a family', async () => {
+      storage.listProviders.mockResolvedValue({
+        items: [
+          { id: 'p1', name: 'claude' },
+          { id: 'p2', name: 'gemini' },
+        ], // codex is missing but gemini is available
+        total: 2,
+        limit: 100,
+        offset: 0,
+      });
+
+      // Coder family has profiles for both codex (default) and gemini (alternative)
+      const profiles = [
+        {
+          id: coderProfileId,
+          name: 'Coder Codex',
+          provider: { name: 'codex' },
+          familySlug: 'coder',
+        },
+        {
+          id: '55555555-5555-5555-5555-555555555555',
+          name: 'Coder Gemini',
+          provider: { name: 'gemini' },
+          familySlug: 'coder',
+        },
+      ];
+      const agents = [{ id: coderAgentId, name: 'Coder', profileId: coderProfileId }];
+
+      const result = await service.computeFamilyAlternatives(profiles, agents);
+
+      expect(result.canImport).toBe(true);
+      expect(result.missingProviders).toContain('codex');
+
+      const coderFamily = result.alternatives.find((a) => a.familySlug === 'coder');
+      expect(coderFamily?.defaultProvider).toBe('codex');
+      expect(coderFamily?.defaultProviderAvailable).toBe(false);
+      expect(coderFamily?.availableProviders).toContain('gemini');
+      expect(coderFamily?.hasAlternatives).toBe(true);
+    });
+
+    it('should only consider families used by agents', async () => {
+      storage.listProviders.mockResolvedValue({
+        items: [{ id: 'p1', name: 'claude' }],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+
+      // Template has profiles for 'coder' and 'reviewer' families
+      // But only 'coder' is used by an agent
+      const profiles = [
+        {
+          id: coderProfileId,
+          name: 'Coder Profile',
+          provider: { name: 'claude' },
+          familySlug: 'coder',
+        },
+        {
+          id: reviewerProfileId,
+          name: 'Reviewer Profile',
+          provider: { name: 'codex' },
+          familySlug: 'reviewer',
+        },
+      ];
+      const agents = [{ id: coderAgentId, name: 'Coder', profileId: coderProfileId }];
+
+      const result = await service.computeFamilyAlternatives(profiles, agents);
+
+      // Only coder family should be in alternatives
+      expect(result.alternatives).toHaveLength(1);
+      expect(result.alternatives[0].familySlug).toBe('coder');
+      // codex should not be in missingProviders since reviewer family is not used
+      expect(result.missingProviders).not.toContain('codex');
+    });
+
+    it('should ignore profiles without familySlug', async () => {
+      storage.listProviders.mockResolvedValue({
+        items: [{ id: 'p1', name: 'claude' }],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+
+      const profiles = [
+        {
+          id: coderProfileId,
+          name: 'No Family Profile',
+          provider: { name: 'claude' },
+          familySlug: null,
+        },
+      ];
+      const agents = [{ id: coderAgentId, name: 'Agent', profileId: coderProfileId }];
+
+      const result = await service.computeFamilyAlternatives(profiles, agents);
+
+      expect(result.alternatives).toHaveLength(0);
+      expect(result.canImport).toBe(true);
+    });
+
+    it('should handle empty template profiles and agents', async () => {
+      storage.listProviders.mockResolvedValue({
+        items: [{ id: 'p1', name: 'claude' }],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+
+      const result = await service.computeFamilyAlternatives([], []);
+
+      expect(result.alternatives).toEqual([]);
+      expect(result.missingProviders).toEqual([]);
+      expect(result.canImport).toBe(true);
+    });
+
+    it('should normalize provider names to lowercase', async () => {
+      storage.listProviders.mockResolvedValue({
+        items: [{ id: 'p1', name: 'Claude' }], // uppercase in storage
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+
+      const profiles = [
+        {
+          id: coderProfileId,
+          name: 'Coder Profile',
+          provider: { name: 'CLAUDE' },
+          familySlug: 'coder',
+        }, // uppercase in template
+      ];
+      const agents = [{ id: coderAgentId, name: 'Coder', profileId: coderProfileId }];
+
+      const result = await service.computeFamilyAlternatives(profiles, agents);
+
+      expect(result.canImport).toBe(true);
+      expect(result.alternatives[0].defaultProviderAvailable).toBe(true);
+    });
+  });
+
+  describe('createFromTemplate with familyProviderMappings', () => {
+    const profileId1 = '11111111-1111-1111-1111-111111111111';
+    const profileId2 = '22222222-2222-2222-2222-222222222222';
+    const agentId = '33333333-3333-3333-3333-333333333333';
+    const providerId = '44444444-4444-4444-4444-444444444444';
+
+    it('should return providerMappingRequired when default provider is missing and no mappings provided', async () => {
+      // Directly test computeFamilyAlternatives since createFromTemplate's schema parsing
+      // has ESM compatibility issues in Jest. The createFromTemplate integration is tested
+      // in e2e tests where the full schema works correctly.
+      storage.listProviders.mockResolvedValue({
+        items: [{ id: providerId, name: 'claude' }], // codex is missing
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+
+      // Test computeFamilyAlternatives directly to verify the logic
+      const profiles = [
+        { id: profileId1, name: 'Coder Codex', provider: { name: 'codex' }, familySlug: 'coder' },
+        { id: profileId2, name: 'Coder Claude', provider: { name: 'claude' }, familySlug: 'coder' },
+      ];
+      const agents = [{ id: agentId, name: 'Coder', profileId: profileId1 }];
+
+      const familyResult = await service.computeFamilyAlternatives(profiles, agents);
+
+      // Verify the conditions that would trigger providerMappingRequired return
+      const needsMapping = familyResult.alternatives.some((alt) => !alt.defaultProviderAvailable);
+      expect(needsMapping).toBe(true);
+      expect(familyResult.missingProviders).toContain('codex');
+      expect(familyResult.canImport).toBe(true);
+      expect(familyResult.alternatives).toHaveLength(1);
+      expect(familyResult.alternatives[0].familySlug).toBe('coder');
+      expect(familyResult.alternatives[0].availableProviders).toContain('claude');
+    });
+
+    it('should create project with remapped profiles when mappings are provided', async () => {
+      const templateWithMissingProvider = {
+        version: 1,
+        prompts: [],
+        profiles: [
+          { id: profileId1, name: 'Coder Codex', provider: { name: 'codex' }, familySlug: 'coder' },
+          {
+            id: profileId2,
+            name: 'Coder Claude',
+            provider: { name: 'claude' },
+            familySlug: 'coder',
+          },
+        ],
+        agents: [{ id: agentId, name: 'Coder', profileId: profileId1 }],
+        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+      };
+
+      // Mock ExportSchema.parse to return input with defaults applied (preserving familySlug)
+      // This works around ESM compatibility issues in Jest
+      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
+        ...templateWithMissingProvider,
+        exportedAt: undefined,
+        initialPrompt: undefined,
+        projectSettings: undefined,
+        watchers: [],
+        subscribers: [],
+        _manifest: undefined,
+      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+      unifiedTemplateService.getTemplate.mockResolvedValue({
+        content: templateWithMissingProvider,
+        source: 'bundled',
+        version: null,
+      });
+
+      // Only claude is available
+      storage.listProviders.mockResolvedValue({
+        items: [{ id: providerId, name: 'claude' }],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+
+      storage.createProjectWithTemplate.mockResolvedValue({
+        project: { id: 'new-project-1', name: 'Test' },
+        imported: { prompts: 0, profiles: 1, agents: 1, statuses: 1 },
+        mappings: {
+          promptIdMap: {},
+          profileIdMap: { [profileId2]: 'new-profile-1' },
+          agentIdMap: { [agentId]: 'new-agent-1' },
+          statusIdMap: {},
+        },
+      });
+
+      const result = await service.createFromTemplate({
+        name: 'Test Project',
+        rootPath: '/test',
+        slug: 'test-template',
+        familyProviderMappings: { coder: 'claude' }, // Remap coder family to claude
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.project).toBeDefined();
+
+      // Verify createProjectWithTemplate was called with the claude profile (not codex)
+      expect(storage.createProjectWithTemplate).toHaveBeenCalled();
+      const [, templatePayload] = storage.createProjectWithTemplate.mock.calls[0];
+      expect(templatePayload.profiles).toHaveLength(1);
+      expect(templatePayload.profiles[0].name).toBe('Coder Claude');
+      expect(templatePayload.profiles[0].providerId).toBe(providerId);
+
+      // Cleanup
+      jest.restoreAllMocks();
+    });
+
+    it('should proceed normally when all default providers are available', async () => {
+      const templateWithAvailableProvider = {
+        version: 1,
+        prompts: [],
+        profiles: [
+          {
+            id: profileId1,
+            name: 'Coder Claude',
+            provider: { name: 'claude' },
+            familySlug: 'coder',
+          },
+        ],
+        agents: [{ id: agentId, name: 'Coder', profileId: profileId1 }],
+        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+      };
+
+      // Mock ExportSchema.parse to return input with defaults applied (preserving familySlug)
+      // This works around ESM compatibility issues in Jest
+      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
+        ...templateWithAvailableProvider,
+        exportedAt: undefined,
+        initialPrompt: undefined,
+        projectSettings: undefined,
+        watchers: [],
+        subscribers: [],
+        _manifest: undefined,
+      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+      unifiedTemplateService.getTemplate.mockResolvedValue({
+        content: templateWithAvailableProvider,
+        source: 'bundled',
+        version: null,
+      });
+
+      storage.listProviders.mockResolvedValue({
+        items: [{ id: providerId, name: 'claude' }],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+
+      storage.createProjectWithTemplate.mockResolvedValue({
+        project: { id: 'new-project-1', name: 'Test' },
+        imported: { prompts: 0, profiles: 1, agents: 1, statuses: 1 },
+        mappings: {
+          promptIdMap: {},
+          profileIdMap: { [profileId1]: 'new-profile-1' },
+          agentIdMap: { [agentId]: 'new-agent-1' },
+          statusIdMap: {},
+        },
+      });
+
+      const result = await service.createFromTemplate({
+        name: 'Test Project',
+        rootPath: '/test',
+        slug: 'test-template',
+        // No mappings needed
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.providerMappingRequired).toBeUndefined();
+
+      // Cleanup
+      jest.restoreAllMocks();
+    });
+
+    it('should remap watcher profile scope when profile is remapped via family mappings', async () => {
+      const watcherId = '55555555-5555-5555-5555-555555555555';
+      const templateWithWatcher = {
+        version: 1,
+        prompts: [],
+        profiles: [
+          { id: profileId1, name: 'Coder Codex', provider: { name: 'codex' }, familySlug: 'coder' },
+          {
+            id: profileId2,
+            name: 'Coder Claude',
+            provider: { name: 'claude' },
+            familySlug: 'coder',
+          },
+        ],
+        agents: [{ id: agentId, name: 'Coder', profileId: profileId1 }],
+        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+        // Watcher references 'Coder Codex' profile which won't be created (Coder Claude will be selected)
+        watchers: [
+          {
+            id: watcherId,
+            name: 'Test Watcher',
+            enabled: true,
+            scope: 'profile' as const,
+            scopeFilterName: 'Coder Codex', // References the original profile
+            pollIntervalMs: 1000,
+            viewportLines: 50,
+            condition: { type: 'contains' as const, pattern: 'error' },
+            cooldownMs: 5000,
+            cooldownMode: 'time' as const,
+            eventName: 'test-event',
+          },
+        ],
+        subscribers: [],
+      };
+
+      // Mock ExportSchema.parse to preserve familySlug
+      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
+        ...templateWithWatcher,
+        exportedAt: undefined,
+        initialPrompt: undefined,
+        projectSettings: undefined,
+        _manifest: undefined,
+      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+      unifiedTemplateService.getTemplate.mockResolvedValue({
+        content: templateWithWatcher,
+        source: 'bundled',
+        version: null,
+      });
+
+      // Only claude is available
+      storage.listProviders.mockResolvedValue({
+        items: [{ id: providerId, name: 'claude' }],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+
+      const newProfileId = 'new-profile-uuid';
+      storage.createProjectWithTemplate.mockResolvedValue({
+        project: { id: 'new-project-1', name: 'Test' },
+        imported: { prompts: 0, profiles: 1, agents: 1, statuses: 1 },
+        mappings: {
+          promptIdMap: {},
+          profileIdMap: { [profileId2]: newProfileId },
+          agentIdMap: { [agentId]: 'new-agent-1' },
+          statusIdMap: {},
+        },
+      });
+
+      // Mock watcher creation
+      watchersService.createWatcher.mockResolvedValue({ id: 'new-watcher-id', enabled: true });
+
+      await service.createFromTemplate({
+        name: 'Test Project',
+        rootPath: '/test',
+        slug: 'test-template',
+        familyProviderMappings: { coder: 'claude' },
+      });
+
+      // Verify watcher was created with the remapped profile scope
+      expect(watchersService.createWatcher).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scope: 'profile',
+          // scopeFilterId should be the new profile ID (remapped from Coder Codex to Coder Claude)
+          scopeFilterId: newProfileId,
+        }),
+      );
+
+      // Cleanup
+      jest.restoreAllMocks();
+    });
+
+    it('should throw ValidationError when canImport is false (no alternatives available)', async () => {
+      // Template with a profile that has no available provider alternatives
+      const templateWithNoAlternatives = {
+        version: 1,
+        prompts: [],
+        profiles: [
+          {
+            id: profileId1,
+            name: 'Special Profile',
+            provider: { name: 'special-provider' },
+            familySlug: 'special',
+          },
+        ],
+        agents: [{ id: agentId, name: 'Special Agent', profileId: profileId1 }],
+        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+      };
+
+      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
+        ...templateWithNoAlternatives,
+        exportedAt: undefined,
+        initialPrompt: undefined,
+        projectSettings: undefined,
+        watchers: [],
+        subscribers: [],
+        _manifest: undefined,
+      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+      unifiedTemplateService.getTemplate.mockResolvedValue({
+        content: templateWithNoAlternatives,
+        source: 'bundled',
+        version: null,
+      });
+
+      // No providers available at all
+      storage.listProviders.mockResolvedValue({
+        items: [],
+        total: 0,
+        limit: 100,
+        offset: 0,
+      });
+
+      // Even with mappings provided, should fail because canImport is false
+      await expect(
+        service.createFromTemplate({
+          name: 'Test Project',
+          rootPath: '/test',
+          slug: 'test-template',
+          familyProviderMappings: { special: 'anything' },
+        }),
+      ).rejects.toThrow('Cannot import: some profile families have no available providers');
+
+      jest.restoreAllMocks();
+    });
+  });
+
+  describe('getTemplateManifestForProject', () => {
+    it('should return null when no template metadata exists', async () => {
+      settings.getProjectTemplateMetadata.mockReturnValue(null);
+
+      const result = await service.getTemplateManifestForProject('project-123');
+
+      expect(result).toBeNull();
+      expect(settings.getProjectTemplateMetadata).toHaveBeenCalledWith('project-123');
+    });
+
+    it('should return null when metadata has no templateSlug', async () => {
+      settings.getProjectTemplateMetadata.mockReturnValue({
+        templateSlug: '',
+        installedVersion: '1.0.0',
+        source: 'registry',
+      });
+
+      const result = await service.getTemplateManifestForProject('project-123');
+
+      expect(result).toBeNull();
+    });
+
+    it('should return manifest from bundled template', async () => {
+      const manifest = {
+        name: 'Test Template',
+        version: '1.0.0',
+        description: 'A test template',
+      };
+
+      settings.getProjectTemplateMetadata.mockReturnValue({
+        templateSlug: 'test-template',
+        installedVersion: null,
+        source: 'bundled',
+      });
+
+      unifiedTemplateService.getBundledTemplate.mockReturnValue({
+        content: { _manifest: manifest },
+        source: 'bundled',
+        version: null,
+      });
+
+      const result = await service.getTemplateManifestForProject('project-123');
+
+      expect(result).toEqual(manifest);
+      expect(unifiedTemplateService.getBundledTemplate).toHaveBeenCalledWith('test-template');
+      expect(unifiedTemplateService.getTemplate).not.toHaveBeenCalled();
+    });
+
+    it('should return manifest from registry template with installedVersion', async () => {
+      const manifest = {
+        name: 'Registry Template',
+        version: '2.5.0',
+        description: 'A registry template',
+      };
+
+      settings.getProjectTemplateMetadata.mockReturnValue({
+        templateSlug: 'registry-template',
+        installedVersion: '2.5.0',
+        source: 'registry',
+      });
+
+      unifiedTemplateService.getTemplate.mockResolvedValue({
+        content: { _manifest: manifest },
+        source: 'registry',
+        version: '2.5.0',
+      });
+
+      const result = await service.getTemplateManifestForProject('project-123');
+
+      expect(result).toEqual(manifest);
+      expect(unifiedTemplateService.getTemplate).toHaveBeenCalledWith('registry-template', '2.5.0');
+      expect(unifiedTemplateService.getBundledTemplate).not.toHaveBeenCalled();
+    });
+
+    it('should return null when bundled template throws error', async () => {
+      settings.getProjectTemplateMetadata.mockReturnValue({
+        templateSlug: 'missing-template',
+        installedVersion: null,
+        source: 'bundled',
+      });
+
+      unifiedTemplateService.getBundledTemplate.mockImplementation(() => {
+        throw new Error('Template not found');
+      });
+
+      const result = await service.getTemplateManifestForProject('project-123');
+
+      expect(result).toBeNull();
+    });
+
+    it('should return null when registry template throws error', async () => {
+      settings.getProjectTemplateMetadata.mockReturnValue({
+        templateSlug: 'missing-template',
+        installedVersion: '1.0.0',
+        source: 'registry',
+      });
+
+      unifiedTemplateService.getTemplate.mockRejectedValue(new Error('Template not found'));
+
+      const result = await service.getTemplateManifestForProject('project-123');
+
+      expect(result).toBeNull();
+    });
+
+    it('should return null when template has no _manifest field', async () => {
+      settings.getProjectTemplateMetadata.mockReturnValue({
+        templateSlug: 'no-manifest',
+        installedVersion: null,
+        source: 'bundled',
+      });
+
+      unifiedTemplateService.getBundledTemplate.mockReturnValue({
+        content: { profiles: [], agents: [] }, // No _manifest
+        source: 'bundled',
+        version: null,
+      });
+
+      const result = await service.getTemplateManifestForProject('project-123');
+
+      expect(result).toBeNull();
+    });
+
+    it('should return null when registry source requested but bundled returned (honor stored source)', async () => {
+      settings.getProjectTemplateMetadata.mockReturnValue({
+        templateSlug: 'registry-template',
+        installedVersion: '1.0.0',
+        source: 'registry', // Project was created from registry template
+      });
+
+      // UnifiedTemplateService fell back to bundled (registry version not cached)
+      unifiedTemplateService.getTemplate.mockResolvedValue({
+        content: { _manifest: { name: 'Bundled Version' } },
+        source: 'bundled', // Wrong source - should be registry
+        version: null,
+      });
+
+      const result = await service.getTemplateManifestForProject('project-123');
+
+      // Should reject bundled fallback and return null
+      expect(result).toBeNull();
+      expect(unifiedTemplateService.getTemplate).toHaveBeenCalledWith('registry-template', '1.0.0');
+    });
+  });
+
+  describe('getBundledUpgradeVersion', () => {
+    it('should return new version when bundled is newer', () => {
+      unifiedTemplateService.getBundledTemplate.mockReturnValue({
+        content: { _manifest: { version: '2.0.0' } },
+        source: 'bundled',
+        version: null,
+      });
+
+      const result = service.getBundledUpgradeVersion('test-template', '1.0.0');
+
+      expect(result).toBe('2.0.0');
+      expect(unifiedTemplateService.getBundledTemplate).toHaveBeenCalledWith('test-template');
+    });
+
+    it('should return null when versions are equal', () => {
+      unifiedTemplateService.getBundledTemplate.mockReturnValue({
+        content: { _manifest: { version: '1.0.0' } },
+        source: 'bundled',
+        version: null,
+      });
+
+      const result = service.getBundledUpgradeVersion('test-template', '1.0.0');
+
+      expect(result).toBeNull();
+    });
+
+    it('should return null when installed is newer', () => {
+      unifiedTemplateService.getBundledTemplate.mockReturnValue({
+        content: { _manifest: { version: '1.0.0' } },
+        source: 'bundled',
+        version: null,
+      });
+
+      const result = service.getBundledUpgradeVersion('test-template', '2.0.0');
+
+      expect(result).toBeNull();
+    });
+
+    it('should return null when installed version is null', () => {
+      const result = service.getBundledUpgradeVersion('test-template', null);
+
+      expect(result).toBeNull();
+      expect(unifiedTemplateService.getBundledTemplate).not.toHaveBeenCalled();
+    });
+
+    it('should return null when bundled template has no version', () => {
+      unifiedTemplateService.getBundledTemplate.mockReturnValue({
+        content: { _manifest: {} }, // No version
+        source: 'bundled',
+        version: null,
+      });
+
+      const result = service.getBundledUpgradeVersion('test-template', '1.0.0');
+
+      expect(result).toBeNull();
+    });
+
+    it('should return null when bundled template not found', () => {
+      unifiedTemplateService.getBundledTemplate.mockImplementation(() => {
+        throw new Error('Template not found');
+      });
+
+      const result = service.getBundledUpgradeVersion('nonexistent', '1.0.0');
+
+      expect(result).toBeNull();
+    });
+
+    it('should return null when installed version is invalid semver', () => {
+      unifiedTemplateService.getBundledTemplate.mockReturnValue({
+        content: { _manifest: { version: '2.0.0' } },
+        source: 'bundled',
+        version: null,
+      });
+
+      // Invalid semver strings that would throw in isLessThan
+      const invalidVersions = ['1.0', 'v1.0.0', 'latest', 'invalid', ''];
+      for (const invalidVersion of invalidVersions) {
+        const result = service.getBundledUpgradeVersion('test-template', invalidVersion);
+        expect(result).toBeNull();
+      }
+    });
+
+    it('should return null when bundled version is invalid semver', () => {
+      unifiedTemplateService.getBundledTemplate.mockReturnValue({
+        content: { _manifest: { version: 'invalid-version' } },
+        source: 'bundled',
+        version: null,
+      });
+
+      const result = service.getBundledUpgradeVersion('test-template', '1.0.0');
+
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('getBundledUpgradesForProjects', () => {
+    it('should return upgrades for bundled projects with newer versions', () => {
+      unifiedTemplateService.getBundledTemplate.mockReturnValue({
+        content: { _manifest: { version: '2.0.0' } },
+        source: 'bundled',
+        version: null,
+      });
+
+      const projects = [
+        {
+          projectId: 'p1',
+          templateSlug: 'template-a',
+          installedVersion: '1.0.0',
+          source: 'bundled' as const,
+        },
+        {
+          projectId: 'p2',
+          templateSlug: 'template-a',
+          installedVersion: '2.0.0',
+          source: 'bundled' as const,
+        },
+      ];
+
+      const result = service.getBundledUpgradesForProjects(projects);
+
+      expect(result.get('p1')).toBe('2.0.0'); // Upgrade available
+      expect(result.get('p2')).toBeNull(); // Already at latest
+    });
+
+    it('should return null for registry projects', () => {
+      const projects = [
+        {
+          projectId: 'p1',
+          templateSlug: 'template-a',
+          installedVersion: '1.0.0',
+          source: 'registry' as const,
+        },
+      ];
+
+      const result = service.getBundledUpgradesForProjects(projects);
+
+      expect(result.get('p1')).toBeNull();
+      expect(unifiedTemplateService.getBundledTemplate).not.toHaveBeenCalled();
+    });
+
+    it('should return null for projects without template slug', () => {
+      const projects = [
+        {
+          projectId: 'p1',
+          templateSlug: null,
+          installedVersion: '1.0.0',
+          source: 'bundled' as const,
+        },
+      ];
+
+      const result = service.getBundledUpgradesForProjects(projects);
+
+      expect(result.get('p1')).toBeNull();
+    });
+
+    it('should cache bundled template lookups', () => {
+      unifiedTemplateService.getBundledTemplate.mockReturnValue({
+        content: { _manifest: { version: '2.0.0' } },
+        source: 'bundled',
+        version: null,
+      });
+
+      const projects = [
+        {
+          projectId: 'p1',
+          templateSlug: 'template-a',
+          installedVersion: '1.0.0',
+          source: 'bundled' as const,
+        },
+        {
+          projectId: 'p2',
+          templateSlug: 'template-a',
+          installedVersion: '1.5.0',
+          source: 'bundled' as const,
+        },
+        {
+          projectId: 'p3',
+          templateSlug: 'template-a',
+          installedVersion: '2.0.0',
+          source: 'bundled' as const,
+        },
+      ];
+
+      const result = service.getBundledUpgradesForProjects(projects);
+
+      // Should only call getBundledTemplate once due to caching
+      expect(unifiedTemplateService.getBundledTemplate).toHaveBeenCalledTimes(1);
+      expect(result.get('p1')).toBe('2.0.0');
+      expect(result.get('p2')).toBe('2.0.0');
+      expect(result.get('p3')).toBeNull();
+    });
+
+    it('should return null for projects with invalid semver versions (not crash)', () => {
+      unifiedTemplateService.getBundledTemplate.mockReturnValue({
+        content: { _manifest: { version: '2.0.0' } },
+        source: 'bundled',
+        version: null,
+      });
+
+      const projects = [
+        {
+          projectId: 'p1',
+          templateSlug: 'template-a',
+          installedVersion: 'invalid-version', // Invalid semver
+          source: 'bundled' as const,
+        },
+        {
+          projectId: 'p2',
+          templateSlug: 'template-a',
+          installedVersion: '1.0', // Missing patch
+          source: 'bundled' as const,
+        },
+        {
+          projectId: 'p3',
+          templateSlug: 'template-a',
+          installedVersion: 'v1.0.0', // Has 'v' prefix
+          source: 'bundled' as const,
+        },
+        {
+          projectId: 'p4',
+          templateSlug: 'template-a',
+          installedVersion: '1.0.0', // Valid - should work
+          source: 'bundled' as const,
+        },
+      ];
+
+      // Should not throw - gracefully handle invalid versions
+      const result = service.getBundledUpgradesForProjects(projects);
+
+      expect(result.get('p1')).toBeNull(); // Invalid - no upgrade
+      expect(result.get('p2')).toBeNull(); // Invalid - no upgrade
+      expect(result.get('p3')).toBeNull(); // Invalid - no upgrade
+      expect(result.get('p4')).toBe('2.0.0'); // Valid - upgrade available
+    });
+
+    it('should return null when bundled template has invalid semver version', () => {
+      unifiedTemplateService.getBundledTemplate.mockReturnValue({
+        content: { _manifest: { version: 'not-a-valid-semver' } },
+        source: 'bundled',
+        version: null,
+      });
+
+      const projects = [
+        {
+          projectId: 'p1',
+          templateSlug: 'template-a',
+          installedVersion: '1.0.0',
+          source: 'bundled' as const,
+        },
+      ];
+
+      // Should not throw - gracefully handle invalid bundled version
+      const result = service.getBundledUpgradesForProjects(projects);
+
+      expect(result.get('p1')).toBeNull();
     });
   });
 });

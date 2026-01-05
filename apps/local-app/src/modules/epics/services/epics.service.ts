@@ -52,31 +52,6 @@ export class EpicsService {
       // Don't fail the create - gracefully continue
     }
 
-    // DEPRECATED: Emit synthetic epic.assigned for backward compatibility (create with agent)
-    // Remove after deprecation period (see docs/operations.md)
-    if (epic.agentId) {
-      try {
-        this.logger.warn(
-          { epicId: epic.id, agentId: epic.agentId },
-          'Emitting deprecated epic.assigned event for backward compatibility',
-        );
-        await this.eventsService.publish('epic.assigned', {
-          epicId: epic.id,
-          projectId: epic.projectId,
-          agentId: epic.agentId,
-          previousAgentId: null,
-          epicTitle: epic.title,
-          projectName: resolvedNames.projectName,
-          agentName: resolvedNames.agentName,
-        });
-      } catch (error) {
-        this.logger.error(
-          { epicId: epic.id, projectId: epic.projectId, error },
-          'Failed to publish deprecated epic.assigned event',
-        );
-      }
-    }
-
     this.broadcastEpicEvent(epic.projectId, 'created', {
       epic: this.buildEpicSnapshot(epic),
     });
@@ -147,31 +122,6 @@ export class EpicsService {
       // Don't fail the create - gracefully continue
     }
 
-    // DEPRECATED: Emit synthetic epic.assigned for backward compatibility (create with agent)
-    // Remove after deprecation period (see docs/operations.md)
-    if (epic.agentId) {
-      try {
-        this.logger.warn(
-          { epicId: epic.id, agentId: epic.agentId },
-          'Emitting deprecated epic.assigned event for backward compatibility',
-        );
-        await this.eventsService.publish('epic.assigned', {
-          epicId: epic.id,
-          projectId: epic.projectId,
-          agentId: epic.agentId,
-          previousAgentId: null,
-          epicTitle: epic.title,
-          projectName: resolvedNames.projectName,
-          agentName: resolvedNames.agentName,
-        });
-      } catch (error) {
-        this.logger.error(
-          { epicId: epic.id, projectId: epic.projectId, error },
-          'Failed to publish deprecated epic.assigned event',
-        );
-      }
-    }
-
     this.broadcastEpicEvent(epic.projectId, 'created', {
       epic: this.buildEpicSnapshot(epic),
     });
@@ -214,31 +164,6 @@ export class EpicsService {
           projectName,
           changes,
         });
-
-        // DEPRECATED: Emit synthetic epic.assigned for backward compatibility
-        // Remove after deprecation period (see docs/operations.md)
-        if (changes.agentId && changes.agentId.current !== null) {
-          try {
-            this.logger.warn(
-              { epicId: updated.id },
-              'Emitting deprecated epic.assigned event for backward compatibility',
-            );
-            await this.eventsService.publish('epic.assigned', {
-              epicId: updated.id,
-              projectId: updated.projectId,
-              agentId: changes.agentId.current,
-              previousAgentId: changes.agentId.previous,
-              epicTitle: updated.title,
-              projectName,
-              agentName: changes.agentId.currentName,
-            });
-          } catch (error) {
-            this.logger.error(
-              { epicId: updated.id, projectId: updated.projectId, error },
-              'Failed to publish deprecated epic.assigned event',
-            );
-          }
-        }
       }
     } catch (error) {
       this.logger.error(

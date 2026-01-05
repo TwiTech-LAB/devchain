@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.4.6",
+  "version": "0.5.1",
   "description": "AI driven development platform",
   "homepage": "https://devchain.twitechlab.com/",
   "repository": {
@@ -8,6 +8,15 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.5.1": [
+      "Add upgrade detection and support for bundled templates",
+      "Fix upgrade validation and semver comparison edge cases"
+    ],
+    "0.5.0": [
+      "Add Gemini provider support (beta) with per-agent provider configuration",
+      "Improved template system: enhanced export/import flow, updated bundled templates (v1.1.0), ability to change providers without re-applying templates",
+      "Bug fixes: minDevchainVersion enforcement in registry, agent notification on epic creation with assignment"
+    ],
     "0.4.6": [
       "Fix version showing as 'unknown' when running from installed npm package"
     ],

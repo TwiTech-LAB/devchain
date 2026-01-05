@@ -14,7 +14,7 @@ import {
 import { join, resolve, sep } from 'path';
 import { existsSync, readdirSync, readFileSync } from 'fs';
 import { getEnvConfig } from '../../../common/config/env.config';
-import { ExportSchema, type ManifestData } from '@devchain/shared';
+import { ExportSchema, type ManifestData, isLessThan, isValidSemVer } from '@devchain/shared';
 import { UnifiedTemplateService } from '../../registry/services/unified-template.service';
 
 const logger = createLogger('ProjectsService');
@@ -32,6 +32,21 @@ export interface CreateFromTemplateInput {
   slug: string;
   /** Optional version - if null, uses bundled or latest downloaded */
   version?: string | null;
+  /** Optional family-to-provider mappings for remapping profiles when default providers are unavailable */
+  familyProviderMappings?: Record<string, string>;
+}
+
+/**
+ * Result returned when provider mapping is required but not provided.
+ * Signals to the client that a mapping modal should be shown.
+ */
+export interface ProviderMappingRequired {
+  /** Provider names required by template but not available locally */
+  missingProviders: string[];
+  /** Per-family alternative provider information */
+  familyAlternatives: FamilyAlternative[];
+  /** Whether import can proceed (all families have at least one available provider) */
+  canImport: boolean;
 }
 
 export interface ImportProjectInput {
@@ -39,6 +54,36 @@ export interface ImportProjectInput {
   payload: unknown;
   dryRun?: boolean;
   statusMappings?: Record<string, string>; // oldStatusId -> templateStatusLabel
+  familyProviderMappings?: Record<string, string>; // familySlug -> providerName
+}
+
+/**
+ * Represents a family of profiles and their provider alternatives.
+ * Used for provider mapping during template import when default providers are unavailable.
+ */
+export interface FamilyAlternative {
+  /** The family slug (e.g., 'coder', 'reviewer') */
+  familySlug: string;
+  /** The default provider name from the template */
+  defaultProvider: string;
+  /** Whether the default provider is available locally */
+  defaultProviderAvailable: boolean;
+  /** Provider names that have profiles for this family and are available locally */
+  availableProviders: string[];
+  /** Whether there are alternative providers available */
+  hasAlternatives: boolean;
+}
+
+/**
+ * Result of computing family alternatives for a template import.
+ */
+export interface FamilyAlternativesResult {
+  /** Per-family alternative provider information */
+  alternatives: FamilyAlternative[];
+  /** Provider names required by template but not available locally */
+  missingProviders: string[];
+  /** Whether import can proceed (all families have at least one available provider) */
+  canImport: boolean;
 }
 
 @Injectable()
@@ -181,20 +226,53 @@ export class ProjectsService {
       });
     }
 
-    // 3. Provider precheck and mapping
+    // 3. Compute family alternatives to determine if mapping is needed
+    const familyResult = await this.computeFamilyAlternatives(payload.profiles, payload.agents);
+
+    // 4. Check if provider mapping is required
+    const needsMapping = familyResult.alternatives.some((alt) => !alt.defaultProviderAvailable);
+
+    if (needsMapping && !input.familyProviderMappings) {
+      // Return provider mapping info so UI can show mapping modal
+      return {
+        success: false,
+        providerMappingRequired: {
+          missingProviders: familyResult.missingProviders,
+          familyAlternatives: familyResult.alternatives,
+          canImport: familyResult.canImport,
+        },
+      };
+    }
+
+    // 4b. Enforce canImport server-side - block if no alternatives available
+    if (!familyResult.canImport) {
+      throw new ValidationError(
+        'Cannot import: some profile families have no available providers',
+        {
+          hint: 'Install the required providers or use a different template',
+          missingProviders: familyResult.missingProviders,
+          familyAlternatives: familyResult.alternatives,
+        },
+      );
+    }
+
+    // 5. Provider precheck and mapping
     const providerNames = new Set(
       (payload.profiles ?? []).map((p) => p.provider.name.trim().toLowerCase()),
     );
-    const { available, missing: missingProviders } = await this.resolveProviders(providerNames);
+    const { available } = await this.resolveProviders(providerNames);
 
-    if (missingProviders.length > 0) {
-      throw new ValidationError('Import aborted: missing providers', {
-        missingProviders,
-        hint: 'Install/configure providers by name before creating project from template.',
-      });
-    }
+    // 6. Build profile selection map based on family mappings
+    // When mappings are provided, select the profile for each family that matches the mapped provider
+    const selectedProfilesByFamily = this.selectProfilesForFamilies(
+      payload.profiles,
+      payload.agents,
+      input.familyProviderMappings,
+      available,
+    );
 
-    // 4. Prepare template payload with resolved provider IDs
+    // 7. Prepare template payload with resolved provider IDs
+    // Filter profiles to only include those selected based on family mappings
     const templatePayload: import('../../storage/interfaces/storage.interface').TemplateImportPayload =
       {
         prompts: payload.prompts.map((p) => ({
@@ -204,7 +282,7 @@ export class ProjectsService {
           version: p.version,
           tags: p.tags,
         })),
-        profiles: payload.profiles.map((prof) => {
+        profiles: selectedProfilesByFamily.profilesToCreate.map((prof) => {
           const providerId = available.get(prof.provider.name.trim().toLowerCase());
           if (!providerId) {
             throw new NotFoundError('Provider', prof.provider.name);
@@ -213,18 +291,24 @@ export class ProjectsService {
             id: prof.id,
             name: prof.name,
             providerId,
+            familySlug: prof.familySlug ?? null,
             options: this.normalizeProfileOptions(prof.options),
             instructions: prof.instructions ?? null,
             temperature: prof.temperature ?? null,
             maxTokens: prof.maxTokens ?? null,
           };
         }),
-        agents: payload.agents.map((a) => ({
-          id: a.id,
-          name: a.name,
-          profileId: a.profileId,
-          description: a.description,
-        })),
+        agents: payload.agents.map((a) => {
+          // Remap agent's profileId if family was remapped
+          const remappedProfileId =
+            selectedProfilesByFamily.agentProfileMap.get(a.id ?? '') ?? a.profileId;
+          return {
+            id: a.id,
+            name: a.name,
+            profileId: remappedProfileId,
+            description: a.description,
+          };
+        }),
         statuses: payload.statuses.map((s) => ({
           id: s.id,
           label: s.label,
@@ -304,6 +388,7 @@ export class ProjectsService {
     const initialPromptSet = settingsResult.initialPromptSet;
 
     // 7. Create watchers from template using helper
+    // Pass profileNameRemapMap to handle watcher scope fallback when profiles are remapped
     const { created: watchersCreated } = await this.createWatchersFromPayload(
       result.project.id,
       payload.watchers,
@@ -311,6 +396,7 @@ export class ProjectsService {
         agentNameToId: agentNameToNewId,
         profileNameToId: profileNameToNewId,
         providerNameToId: available,
+        profileNameRemapMap: selectedProfilesByFamily.profileNameRemapMap,
       },
     );
 
@@ -321,11 +407,16 @@ export class ProjectsService {
     );
 
     // 9. Set template metadata for upgrade tracking
+    // For bundled templates, read version from _manifest since getTemplate returns version: null
+    const manifestVersion =
+      (payload._manifest as { version?: string } | undefined)?.version ?? null;
+    const installedVersion = templateResult.version ?? manifestVersion;
+
     const registryConfig = this.settings.getRegistryConfig();
     await this.settings.setProjectTemplateMetadata(result.project.id, {
       templateSlug: input.slug,
       source: templateResult.source,
-      installedVersion: templateResult.version,
+      installedVersion,
       registryUrl: templateResult.source === 'registry' ? registryConfig.url : null,
       installedAt: new Date().toISOString(),
     });
@@ -335,7 +426,7 @@ export class ProjectsService {
         projectId: result.project.id,
         slug: input.slug,
         source: templateResult.source,
-        version: templateResult.version,
+        version: installedVersion,
       },
       'Template metadata set for project',
     );
@@ -450,6 +541,7 @@ export class ProjectsService {
           id: prof.id,
           name: prof.name,
           provider: { id: provider.id, name: provider.name },
+          familySlug: prof.familySlug,
           options: sanitizeOptionsString(prof.options),
           instructions: prof.instructions,
           temperature: prof.temperature,
@@ -616,11 +708,23 @@ export class ProjectsService {
     const isDryRun = input.dryRun ?? false;
     const payload = ExportSchema.parse(input.payload ?? {});
 
-    // Provider precheck
+    // Compute family alternatives to determine if mapping is needed
+    const familyResult = await this.computeFamilyAlternatives(payload.profiles, payload.agents);
+    const needsMapping = familyResult.alternatives.some((alt) => !alt.defaultProviderAvailable);
+
+    // Provider precheck - get all available providers
     const providerNames = new Set(
       (payload.profiles ?? []).map((p) => p.provider.name.trim().toLowerCase()),
     );
     const { available, missing: missingProviders } = await this.resolveProviders(providerNames);
+
+    // Build profile selection based on family mappings (used for both dry-run info and actual import)
+    const selectedProfilesByFamily = this.selectProfilesForFamilies(
+      payload.profiles,
+      payload.agents,
+      input.familyProviderMappings,
+      available,
+    );
 
     const [
       existingPrompts,
@@ -663,7 +767,36 @@ export class ProjectsService {
     }
 
     if (isDryRun) {
-      return {
+      // Build base dry-run response
+      const dryRunResponse: {
+        dryRun: true;
+        missingProviders: string[];
+        unmatchedStatuses: typeof unmatchedStatuses;
+        templateStatuses: { label: string; color: string }[];
+        providerMappingRequired?: {
+          missingProviders: string[];
+          familyAlternatives: FamilyAlternative[];
+          canImport: boolean;
+        };
+        counts: {
+          toImport: {
+            prompts: number;
+            profiles: number;
+            agents: number;
+            statuses: number;
+            watchers: number;
+            subscribers: number;
+          };
+          toDelete: {
+            prompts: number;
+            profiles: number;
+            agents: number;
+            statuses: number;
+            watchers: number;
+            subscribers: number;
+          };
+        };
+      } = {
         dryRun: true,
         missingProviders,
         unmatchedStatuses,
@@ -674,7 +807,8 @@ export class ProjectsService {
         counts: {
           toImport: {
             prompts: payload.prompts.length,
-            profiles: payload.profiles.length,
+            // Profile count reflects selected profiles after mapping
+            profiles: selectedProfilesByFamily.profilesToCreate.length,
             agents: payload.agents.length,
             statuses: payload.statuses.length,
             watchers: payload.watchers.length,
@@ -690,11 +824,56 @@ export class ProjectsService {
           },
         },
       };
+
+      // Only include providerMappingRequired if mapping is needed and not provided
+      if (needsMapping && !input.familyProviderMappings) {
+        dryRunResponse.providerMappingRequired = {
+          missingProviders: familyResult.missingProviders,
+          familyAlternatives: familyResult.alternatives,
+          canImport: familyResult.canImport,
+        };
+      }
+
+      return dryRunResponse;
     }
 
-    if (missingProviders.length > 0) {
+    // Require provider mapping if defaults are missing (mirrors createFromTemplate behavior)
+    if (needsMapping && !input.familyProviderMappings) {
+      return {
+        success: false,
+        providerMappingRequired: {
+          missingProviders: familyResult.missingProviders,
+          familyAlternatives: familyResult.alternatives,
+          canImport: familyResult.canImport,
+        },
+      };
+    }
+
+    // Enforce canImport server-side - block if no alternatives available
+    if (!familyResult.canImport) {
+      throw new ValidationError(
+        'Cannot import: some profile families have no available providers',
+        {
+          hint: 'Install the required providers or use a different template',
+          missingProviders: familyResult.missingProviders,
+          familyAlternatives: familyResult.alternatives,
+        },
+      );
+    }
+
+    // Check if import can proceed based on selected profiles
+    // When familyProviderMappings is provided, we use only the selected profiles, not all
+    // So we check if the selected profiles' providers are all available
+    const selectedProviderNames = new Set(
+      selectedProfilesByFamily.profilesToCreate.map((p) => p.provider.name.trim().toLowerCase()),
+    );
+    const unavailableSelectedProviders = Array.from(selectedProviderNames).filter(
+      (name) => !available.has(name),
+    );
+
+    if (unavailableSelectedProviders.length > 0) {
       throw new ValidationError('Import aborted: missing providers', {
-        missingProviders,
+        missingProviders: unavailableSelectedProviders,
         hint: 'Install/configure providers by name before importing profiles.',
       });
     }
@@ -838,7 +1017,8 @@ export class ProjectsService {
       }
 
       // Profiles - build ID map (with synthetic keys for items without IDs)
-      for (const prof of payload.profiles) {
+      // Use selectedProfilesByFamily to only create profiles needed after family mapping
+      for (const prof of selectedProfilesByFamily.profilesToCreate) {
         const providerId = available.get(prof.provider.name.trim().toLowerCase());
         if (!providerId) {
           // Should not happen due to precheck
@@ -848,6 +1028,7 @@ export class ProjectsService {
           projectId: input.projectId,
           name: prof.name,
           providerId,
+          familySlug: prof.familySlug ?? null,
           options: this.normalizeProfileOptions(prof.options),
           systemPrompt: null,
           instructions: prof.instructions ?? null,
@@ -860,8 +1041,11 @@ export class ProjectsService {
       }
 
       // Agents - build ID map (with synthetic keys for items without IDs)
+      // Use agentProfileMap to remap profile assignments based on family mappings
       for (const a of payload.agents) {
-        const oldProfileId = a.profileId ?? '';
+        // Check if agent's profile was remapped due to family provider mapping
+        const remappedProfileId = selectedProfilesByFamily.agentProfileMap.get(a.id ?? '');
+        const oldProfileId = remappedProfileId ?? a.profileId ?? '';
         const newProfileId =
           oldProfileId && profileIdMap[oldProfileId] ? profileIdMap[oldProfileId] : undefined;
         if (!newProfileId) {
@@ -882,12 +1066,13 @@ export class ProjectsService {
 
       // Build name-to-ID maps for scope resolution using helper
       // Create augmented payload with synthetic IDs for items without original IDs
+      // Use selectedProfilesByFamily.profilesToCreate for profiles to match what was actually created
       const augmentedPayload = {
         agents: payload.agents.map((a) => ({
           ...a,
           id: a.id || `name:${a.name.trim().toLowerCase()}`,
         })),
-        profiles: payload.profiles.map((p) => ({
+        profiles: selectedProfilesByFamily.profilesToCreate.map((p) => ({
           ...p,
           id: p.id || `name:${p.name.trim().toLowerCase()}`,
         })),
@@ -896,6 +1081,7 @@ export class ProjectsService {
         this.buildNameToIdMaps(augmentedPayload, { agentIdMap, profileIdMap });
 
       // Create watchers using helper (handles scope resolution and auto-start)
+      // Pass profileNameRemapMap to handle watcher scope fallback when profiles are remapped
       const { watcherIdMap } = await this.createWatchersFromPayload(
         input.projectId,
         payload.watchers,
@@ -903,6 +1089,7 @@ export class ProjectsService {
           agentNameToId: agentNameToNewId,
           profileNameToId: profileNameToNewId,
           providerNameToId: available,
+          profileNameRemapMap: selectedProfilesByFamily.profileNameRemapMap,
         },
       );
 
@@ -999,6 +1186,31 @@ export class ProjectsService {
       );
       const initialPromptSet = settingsResult.initialPromptSet;
 
+      // Update template metadata if manifest is present
+      if (payload._manifest?.slug) {
+        // Determine if template is bundled or registry-sourced
+        let templateSource: 'bundled' | 'registry' = 'registry';
+        try {
+          this.unifiedTemplateService.getBundledTemplate(payload._manifest.slug);
+          templateSource = 'bundled';
+        } catch {
+          // Not a bundled template, use registry source
+          templateSource = 'registry';
+        }
+
+        await this.settings.setProjectTemplateMetadata(input.projectId, {
+          templateSlug: payload._manifest.slug,
+          source: templateSource,
+          installedVersion: payload._manifest.version ?? null,
+          registryUrl: null, // Unknown source URL during import
+          installedAt: new Date().toISOString(),
+        });
+        logger.info(
+          { projectId: input.projectId, slug: payload._manifest.slug, source: templateSource },
+          'Updated template metadata after import',
+        );
+      }
+
       return {
         success: true,
         mode: 'replace',
@@ -1063,6 +1275,307 @@ export class ProjectsService {
     }
     const missing = Array.from(providerNames).filter((n) => !available.has(n));
     return { available, missing };
+  }
+
+  /**
+   * Compute per-family provider alternatives based on template profiles and locally available providers.
+   * Used to determine which providers can substitute for missing defaults during template import.
+   *
+   * Only considers families that are actually used by agents in the template.
+   *
+   * @param templateProfiles - Profile definitions from the template
+   * @param templateAgents - Agent definitions from the template (to filter to used families)
+   * @returns Family alternatives, missing providers, and whether import can proceed
+   */
+  async computeFamilyAlternatives(
+    templateProfiles: Array<{
+      id?: string;
+      name: string;
+      provider: { name: string };
+      familySlug?: string | null;
+    }>,
+    templateAgents: Array<{
+      id?: string;
+      name: string;
+      profileId?: string;
+    }>,
+  ): Promise<FamilyAlternativesResult> {
+    // 1. Get locally available providers
+    const localProviders = await this.storage.listProviders();
+    const availableProviderNames = new Set(
+      localProviders.items.map((p) => p.name.trim().toLowerCase()),
+    );
+
+    // 2. Build profileId -> profile map for agent lookups
+    const profileById = new Map<string, (typeof templateProfiles)[0]>();
+    for (const prof of templateProfiles) {
+      if (prof.id) {
+        profileById.set(prof.id, prof);
+      }
+    }
+
+    // 3. Identify families actually used by agents
+    const usedFamilySlugs = new Set<string>();
+    for (const agent of templateAgents) {
+      if (agent.profileId) {
+        const profile = profileById.get(agent.profileId);
+        if (profile?.familySlug) {
+          usedFamilySlugs.add(profile.familySlug);
+        }
+      }
+    }
+
+    // 4. Group profiles by familySlug and track providers per family
+    // Map: familySlug -> Map<providerName, profileName[]>
+    const familyProviders = new Map<string, Map<string, string[]>>();
+
+    for (const prof of templateProfiles) {
+      const familySlug = prof.familySlug;
+      if (!familySlug) continue;
+
+      if (!familyProviders.has(familySlug)) {
+        familyProviders.set(familySlug, new Map());
+      }
+
+      const providerName = prof.provider.name.trim().toLowerCase();
+      const familyMap = familyProviders.get(familySlug)!;
+
+      if (!familyMap.has(providerName)) {
+        familyMap.set(providerName, []);
+      }
+      familyMap.get(providerName)!.push(prof.name);
+    }
+
+    // 5. For each used family, compute alternatives
+    const alternatives: FamilyAlternative[] = [];
+    const allMissingProviders = new Set<string>();
+    let canImport = true;
+
+    for (const familySlug of usedFamilySlugs) {
+      const providersForFamily = familyProviders.get(familySlug);
+
+      if (!providersForFamily || providersForFamily.size === 0) {
+        // Family has no profiles - shouldn't happen but handle gracefully
+        logger.warn({ familySlug }, 'Family used by agent has no profiles');
+        continue;
+      }
+
+      // Get all provider names for this family
+      const providerNamesForFamily = Array.from(providersForFamily.keys());
+
+      // Find the default provider (first profile's provider in the family)
+      // We use the first one as the "default" since template order matters
+      const defaultProvider = providerNamesForFamily[0];
+      const defaultProviderAvailable = availableProviderNames.has(defaultProvider);
+
+      // Find available providers for this family
+      const availableForFamily = providerNamesForFamily.filter((name) =>
+        availableProviderNames.has(name),
+      );
+
+      // Track missing providers
+      for (const provName of providerNamesForFamily) {
+        if (!availableProviderNames.has(provName)) {
+          allMissingProviders.add(provName);
+        }
+      }
+
+      // Determine if import can proceed for this family
+      const hasAlternatives = availableForFamily.length > 0;
+      if (!hasAlternatives) {
+        canImport = false;
+      }
+
+      alternatives.push({
+        familySlug,
+        defaultProvider,
+        defaultProviderAvailable,
+        availableProviders: availableForFamily.sort(),
+        hasAlternatives,
+      });
+    }
+
+    return {
+      alternatives,
+      missingProviders: Array.from(allMissingProviders).sort(),
+      canImport,
+    };
+  }
+
+  /**
+   * Select profiles for each family based on family-provider mappings.
+   * Returns the profiles to create and a map of agent IDs to their (possibly remapped) profile IDs.
+   *
+   * @param templateProfiles - All profiles from the template
+   * @param templateAgents - All agents from the template
+   * @param familyProviderMappings - Optional mappings of familySlug -> providerName
+   * @param availableProviders - Map of provider name -> provider ID
+   * @returns Profiles to create and agent->profile remapping
+   */
+  private selectProfilesForFamilies(
+    templateProfiles: Array<{
+      id?: string;
+      name: string;
+      provider: { name: string };
+      familySlug?: string | null;
+      options?: unknown;
+      instructions?: string | null;
+      temperature?: number | null;
+      maxTokens?: number | null;
+    }>,
+    templateAgents: Array<{
+      id?: string;
+      name: string;
+      profileId?: string;
+    }>,
+    familyProviderMappings: Record<string, string> | undefined,
+    availableProviders: Map<string, string>,
+  ): {
+    profilesToCreate: typeof templateProfiles;
+    agentProfileMap: Map<string, string | undefined>;
+    /** Maps original profile names to selected profile names for profiles in the same family (for watcher scope remap) */
+    profileNameRemapMap: Map<string, string>;
+  } {
+    // Build profile lookup maps
+    const profileById = new Map<string, (typeof templateProfiles)[0]>();
+    for (const prof of templateProfiles) {
+      if (prof.id) {
+        profileById.set(prof.id, prof);
+      }
+    }
+
+    // Group profiles by familySlug and provider
+    // Map: familySlug -> Map<providerName, profile>
+    const profilesByFamilyAndProvider = new Map<
+      string,
+      Map<string, (typeof templateProfiles)[0]>
+    >();
+    for (const prof of templateProfiles) {
+      if (!prof.familySlug) continue;
+      const family = prof.familySlug;
+      const providerName = prof.provider.name.trim().toLowerCase();
+
+      if (!profilesByFamilyAndProvider.has(family)) {
+        profilesByFamilyAndProvider.set(family, new Map());
+      }
+      // Keep only the first profile per family/provider combo
+      const familyMap = profilesByFamilyAndProvider.get(family)!;
+      if (!familyMap.has(providerName)) {
+        familyMap.set(providerName, prof);
+      }
+    }
+
+    // Build a map of family -> original provider based on agent profileId assignments
+    // This determines which provider agents in each family were originally using
+    const familyOriginalProviders = new Map<string, string>();
+    for (const agent of templateAgents) {
+      if (!agent.profileId) continue;
+      const profile = profileById.get(agent.profileId);
+      if (!profile?.familySlug) continue;
+
+      const providerName = profile.provider.name.trim().toLowerCase();
+      // Track which provider agents in this family are using
+      // If multiple agents use different providers, we keep the last one (arbitrary but consistent)
+      familyOriginalProviders.set(profile.familySlug, providerName);
+    }
+
+    // Determine which profile to use for each family (for agent mapping)
+    // This only affects which profile agents are assigned to, NOT which profiles are imported
+    const selectedProfileIdsByFamily = new Map<string, string>();
+
+    for (const [familySlug, providerMap] of profilesByFamilyAndProvider) {
+      let selectedProvider: string | undefined;
+
+      if (familyProviderMappings?.[familySlug]) {
+        // Use mapped provider
+        selectedProvider = familyProviderMappings[familySlug].trim().toLowerCase();
+      } else {
+        // Use agent's original provider if available, otherwise fall back to first available
+        const originalProvider = familyOriginalProviders.get(familySlug);
+        if (
+          originalProvider &&
+          availableProviders.has(originalProvider) &&
+          providerMap.has(originalProvider)
+        ) {
+          selectedProvider = originalProvider;
+        } else {
+          // Fall back to first available provider for this family
+          for (const provName of providerMap.keys()) {
+            if (availableProviders.has(provName)) {
+              selectedProvider = provName;
+              break;
+            }
+          }
+        }
+      }
+
+      if (selectedProvider && providerMap.has(selectedProvider)) {
+        const profile = providerMap.get(selectedProvider)!;
+        if (profile.id) {
+          selectedProfileIdsByFamily.set(familySlug, profile.id);
+        }
+      }
+    }
+
+    // Import ALL profiles whose provider is available (not just one per family)
+    const profilesToCreate: typeof templateProfiles = [];
+    const usedProfileIds = new Set<string>();
+
+    for (const prof of templateProfiles) {
+      if (!prof.id || usedProfileIds.has(prof.id)) continue;
+
+      const providerName = prof.provider.name.trim().toLowerCase();
+      if (availableProviders.has(providerName)) {
+        usedProfileIds.add(prof.id);
+        profilesToCreate.push(prof);
+      }
+    }
+
+    // Build agent -> profile mapping
+    const agentProfileMap = new Map<string, string | undefined>();
+    for (const agent of templateAgents) {
+      if (!agent.id || !agent.profileId) continue;
+
+      const originalProfile = profileById.get(agent.profileId);
+      if (!originalProfile) {
+        agentProfileMap.set(agent.id, agent.profileId);
+        continue;
+      }
+
+      if (originalProfile.familySlug) {
+        // This agent uses a family - remap to selected profile for that family
+        const selectedProfileId = selectedProfileIdsByFamily.get(originalProfile.familySlug);
+        agentProfileMap.set(agent.id, selectedProfileId ?? agent.profileId);
+      } else {
+        // No family - keep original profile reference
+        agentProfileMap.set(agent.id, agent.profileId);
+      }
+    }
+
+    // Build profile name remap map for watcher scope resolution
+    // Maps original profile names to selected profile names for profiles in the same family
+    const profileNameRemapMap = new Map<string, string>();
+    for (const [familySlug, providerMap] of profilesByFamilyAndProvider) {
+      // Find the selected profile for this family
+      const selectedProfileId = selectedProfileIdsByFamily.get(familySlug);
+      const selectedProfile = selectedProfileId
+        ? templateProfiles.find((p) => p.id === selectedProfileId)
+        : undefined;
+
+      if (selectedProfile) {
+        const selectedNameLower = selectedProfile.name.trim().toLowerCase();
+        // Map all profile names in this family to the selected profile name
+        // providerMap.values() contains profile objects (one per provider)
+        for (const profile of providerMap.values()) {
+          const profileNameLower = profile.name.trim().toLowerCase();
+          if (profileNameLower !== selectedNameLower) {
+            profileNameRemapMap.set(profileNameLower, selectedNameLower);
+          }
+        }
+      }
+    }
+
+    return { profilesToCreate, agentProfileMap, profileNameRemapMap };
   }
 
   /**
@@ -1154,6 +1667,8 @@ export class ProjectsService {
       agentNameToId: Map<string, string>;
       profileNameToId: Map<string, string>;
       providerNameToId: Map<string, string>;
+      /** Optional map for remapping profile names when provider families are remapped */
+      profileNameRemapMap?: Map<string, string>;
     },
   ): Promise<{
     created: number;
@@ -1173,7 +1688,26 @@ export class ProjectsService {
             break;
           }
           case 'profile': {
+            // First try direct lookup
             scopeFilterId = maps.profileNameToId.get(scopeFilterNameLower) ?? null;
+            // If not found and we have a remap map, try to find remapped profile name
+            if (!scopeFilterId && maps.profileNameRemapMap) {
+              const remappedName = maps.profileNameRemapMap.get(scopeFilterNameLower);
+              if (remappedName) {
+                scopeFilterId = maps.profileNameToId.get(remappedName) ?? null;
+                if (scopeFilterId) {
+                  logger.info(
+                    {
+                      projectId,
+                      watcherName: w.name,
+                      originalProfile: w.scopeFilterName,
+                      remappedProfile: remappedName,
+                    },
+                    'Watcher profile scope remapped due to provider family selection',
+                  );
+                }
+              }
+            }
             break;
           }
           case 'provider': {
@@ -1479,5 +2013,172 @@ export class ProjectsService {
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/(^-|-$)/g, '');
+  }
+
+  /**
+   * Get the original template manifest for a project.
+   * Uses stored metadata to fetch the correct template version from the appropriate source.
+   *
+   * @param projectId - The project ID
+   * @returns The template manifest or null if unavailable
+   */
+  async getTemplateManifestForProject(projectId: string): Promise<ManifestData | null> {
+    // 1. Get template metadata from settings
+    const metadata = this.settings.getProjectTemplateMetadata(projectId);
+    if (!metadata?.templateSlug) {
+      logger.debug({ projectId }, 'No template metadata for project');
+      return null;
+    }
+
+    try {
+      // 2. Fetch template based on source
+      if (metadata.source === 'bundled') {
+        // Use getBundledTemplate directly to avoid registry preference
+        const template = this.unifiedTemplateService.getBundledTemplate(metadata.templateSlug);
+        return (template.content as { _manifest?: ManifestData })._manifest ?? null;
+      } else {
+        // Registry: use installedVersion, not latest
+        const template = await this.unifiedTemplateService.getTemplate(
+          metadata.templateSlug,
+          metadata.installedVersion ?? undefined,
+        );
+        // Honor stored source: reject if UnifiedTemplateService fell back to bundled
+        if (template.source !== 'registry') {
+          logger.debug(
+            {
+              projectId,
+              templateSlug: metadata.templateSlug,
+              expectedSource: 'registry',
+              actualSource: template.source,
+            },
+            'Template source mismatch - registry template not available, rejecting bundled fallback',
+          );
+          return null;
+        }
+        return (template.content as { _manifest?: ManifestData })._manifest ?? null;
+      }
+    } catch (error) {
+      // Graceful fallback: return null if template unavailable
+      logger.debug(
+        { projectId, templateSlug: metadata.templateSlug, error },
+        'Failed to fetch template manifest for project',
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Check if a bundled template has an upgrade available.
+   * Compares the project's installed version with the current bundled template version.
+   *
+   * @param templateSlug The template slug
+   * @param installedVersion The version installed in the project
+   * @returns The new version if upgrade is available, null otherwise
+   */
+  getBundledUpgradeVersion(templateSlug: string, installedVersion: string | null): string | null {
+    // Can't compare if installed version is unknown
+    if (!installedVersion) {
+      return null;
+    }
+
+    try {
+      const bundled = this.unifiedTemplateService.getBundledTemplate(templateSlug);
+      const manifest = (bundled.content as { _manifest?: { version?: string } })._manifest;
+      const bundledVersion = manifest?.version;
+
+      // Can't compare if bundled template has no version
+      if (!bundledVersion) {
+        return null;
+      }
+
+      // Guard against invalid semver strings - treat as no upgrade available
+      if (!isValidSemVer(installedVersion) || !isValidSemVer(bundledVersion)) {
+        logger.warn(
+          { templateSlug, installedVersion, bundledVersion },
+          'Invalid semver version detected, skipping upgrade check',
+        );
+        return null;
+      }
+
+      // Check if bundled version is newer than installed version
+      if (isLessThan(installedVersion, bundledVersion)) {
+        return bundledVersion;
+      }
+
+      return null;
+    } catch {
+      // Template not found or other error - no upgrade available
+      return null;
+    }
+  }
+
+  /**
+   * Batch check bundled upgrades for multiple projects.
+   * Returns a map of projectId -> upgrade version (or null if no upgrade).
+   *
+   * @param projects Array of { projectId, templateSlug, installedVersion, source }
+   * @returns Map of projectId to upgrade version
+   */
+  getBundledUpgradesForProjects(
+    projects: Array<{
+      projectId: string;
+      templateSlug: string | null;
+      installedVersion: string | null;
+      source: 'bundled' | 'registry' | null;
+    }>,
+  ): Map<string, string | null> {
+    const result = new Map<string, string | null>();
+
+    // Cache bundled template versions to avoid repeated reads
+    const bundledVersionCache = new Map<string, string | null>();
+
+    for (const project of projects) {
+      // Only check bundled templates
+      if (project.source !== 'bundled' || !project.templateSlug) {
+        result.set(project.projectId, null);
+        continue;
+      }
+
+      // Check cache first
+      if (!bundledVersionCache.has(project.templateSlug)) {
+        try {
+          const bundled = this.unifiedTemplateService.getBundledTemplate(project.templateSlug);
+          const manifest = (bundled.content as { _manifest?: { version?: string } })._manifest;
+          bundledVersionCache.set(project.templateSlug, manifest?.version ?? null);
+        } catch {
+          bundledVersionCache.set(project.templateSlug, null);
+        }
+      }
+
+      const bundledVersion = bundledVersionCache.get(project.templateSlug);
+      if (!bundledVersion || !project.installedVersion) {
+        result.set(project.projectId, null);
+        continue;
+      }
+
+      // Guard against invalid semver strings - treat as no upgrade available
+      if (!isValidSemVer(project.installedVersion) || !isValidSemVer(bundledVersion)) {
+        logger.warn(
+          {
+            projectId: project.projectId,
+            templateSlug: project.templateSlug,
+            installedVersion: project.installedVersion,
+            bundledVersion,
+          },
+          'Invalid semver version detected, skipping upgrade check',
+        );
+        result.set(project.projectId, null);
+        continue;
+      }
+
+      // Check if bundled version is newer
+      if (isLessThan(project.installedVersion, bundledVersion)) {
+        result.set(project.projectId, bundledVersion);
+      } else {
+        result.set(project.projectId, null);
+      }
+    }
+
+    return result;
   }
 }

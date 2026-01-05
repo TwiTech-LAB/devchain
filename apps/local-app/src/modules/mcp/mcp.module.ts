@@ -11,6 +11,7 @@ import { SessionsModule } from '../sessions/sessions.module';
 import { TerminalModule } from '../terminal/terminal.module';
 import { EpicsModule } from '../epics/epics.module';
 import { SettingsModule } from '../settings/settings.module';
+import { ProviderAdaptersModule } from '../providers/adapters';
 import { McpHttpController } from './controllers/mcp-http.controller';
 import { McpSdkController } from './controllers/mcp-sdk.controller';
 import { McpTestController } from './controllers/mcp-test.controller';
@@ -23,8 +24,8 @@ import { McpTestController } from './controllers/mcp-test.controller';
     forwardRef(() => SessionsModule),
     forwardRef(() => TerminalModule),
     forwardRef(() => EpicsModule),
-    forwardRef(() => import('../providers/providers.module').then((m) => m.ProvidersModule)),
     forwardRef(() => SettingsModule),
+    ProviderAdaptersModule,
   ],
   controllers: [McpHttpController, McpSdkController, McpTestController],
   providers: [

@@ -16,6 +16,12 @@ import {
   SelectValue,
 } from '@/ui/components/ui/select';
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/ui/components/ui/dropdown-menu';
+import {
   Dialog,
   DialogContent,
   DialogHeader,
@@ -29,6 +35,11 @@ import { useToast } from '@/ui/hooks/use-toast';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import { UpgradeDialog } from '@/ui/components/project/UpgradeDialog';
 import { ExportDialog } from '@/ui/components/project/ExportDialog';
+import { ProjectConfigurationModal } from '@/ui/components/project/ProjectConfigurationModal';
+import {
+  ProviderMappingModal,
+  FamilyAlternative,
+} from '@/ui/components/project/ProviderMappingModal';
 import {
   Plus,
   Search,
@@ -45,8 +56,10 @@ import {
   Download,
   Upload,
   ArrowUp,
+  Settings,
+  MoreHorizontal,
 } from 'lucide-react';
-import { isLessThan } from '@devchain/shared';
+import { isLessThan, type ManifestData } from '@devchain/shared';
 
 interface TemplateMetadata {
   slug: string;
@@ -60,9 +73,12 @@ interface Project {
   description: string | null;
   rootPath: string;
   isTemplate?: boolean;
+  isConfigurable?: boolean;
   createdAt: string;
   updatedAt: string;
   templateMetadata?: TemplateMetadata | null;
+  /** Available bundled upgrade version from server-side detection */
+  bundledUpgradeAvailable?: string | null;
 }
 
 interface ProjectStats {
@@ -151,13 +167,36 @@ async function fetchTemplates(): Promise<ProjectTemplate[]> {
   );
 }
 
+async function fetchTemplateManifest(projectId: string): Promise<Partial<ManifestData> | null> {
+  try {
+    const res = await fetch(`/api/projects/${projectId}/template-manifest`);
+    if (!res.ok) return null;
+    return (await res.json()) as Partial<ManifestData> | null;
+  } catch {
+    // Graceful fallback: return null on any failure (network, parse, etc.)
+    return null;
+  }
+}
+
+interface CreateFromTemplateResponse {
+  success: boolean;
+  project?: { id: string; name: string };
+  message?: string;
+  providerMappingRequired?: {
+    missingProviders: string[];
+    familyAlternatives: FamilyAlternative[];
+    canImport: boolean;
+  };
+}
+
 async function createProjectFromTemplate(data: {
   name: string;
   description?: string;
   rootPath: string;
   templateId: string;
   version?: string;
-}) {
+  familyProviderMappings?: Record<string, string>;
+}): Promise<CreateFromTemplateResponse> {
   // Convert empty version string to null for bundled templates
   // The controller rejects empty strings but accepts null/undefined
   const payload = {
@@ -252,6 +291,11 @@ export function ProjectsPage() {
     unmatchedStatuses?: Array<{ id: string; label: string; color: string; epicCount: number }>;
     templateStatuses?: Array<{ label: string; color: string }>;
     counts: { toImport: Record<string, number>; toDelete: Record<string, number> };
+    providerMappingRequired?: {
+      missingProviders: string[];
+      familyAlternatives: FamilyAlternative[];
+      canImport: boolean;
+    };
   }>(null);
   const [statusMappings, setStatusMappings] = useState<Record<string, string>>({});
   const [showImportModal, setShowImportModal] = useState(false);
@@ -266,6 +310,44 @@ export function ProjectsPage() {
 
   // Export dialog state
   const [exportTarget, setExportTarget] = useState<ProjectWithStats | null>(null);
+
+  // Fetch template manifest for export dialog (must complete before dialog renders)
+  const { data: exportManifest, isFetching: isLoadingExportManifest } = useQuery({
+    queryKey: ['template-manifest', exportTarget?.id],
+    queryFn: () => fetchTemplateManifest(exportTarget!.id),
+    enabled: !!exportTarget,
+    staleTime: 0, // Always refetch when export target changes
+  });
+
+  // Configuration modal state
+  const [configureTarget, setConfigureTarget] = useState<ProjectWithStats | null>(null);
+
+  // Provider mapping modal state for create-from-template flow
+  const [showProviderMappingModal, setShowProviderMappingModal] = useState(false);
+  const [providerMappingData, setProviderMappingData] = useState<{
+    missingProviders: string[];
+    familyAlternatives: FamilyAlternative[];
+    canImport: boolean;
+  } | null>(null);
+  const [pendingTemplateData, setPendingTemplateData] = useState<{
+    name: string;
+    description: string;
+    rootPath: string;
+    templateId: string;
+    version: string;
+  } | null>(null);
+
+  // Provider mapping modal state for import flow
+  const [showImportProviderMappingModal, setShowImportProviderMappingModal] = useState(false);
+  const [importProviderMappingData, setImportProviderMappingData] = useState<{
+    missingProviders: string[];
+    familyAlternatives: FamilyAlternative[];
+    canImport: boolean;
+  } | null>(null);
+  const [importFamilyProviderMappings, setImportFamilyProviderMappings] = useState<Record<
+    string,
+    string
+  > | null>(null);
 
   // Templates query for upgrade checking (always enabled)
   const { data: allTemplates } = useQuery({
@@ -288,10 +370,15 @@ export function ProjectsPage() {
   const getUpgradeAvailable = useCallback(
     (project: ProjectWithStats): string | null => {
       const metadata = project.templateMetadata;
-      // No metadata or bundled template - no upgrade
-      if (!metadata || metadata.source !== 'registry' || !metadata.version) {
-        return null;
+      if (!metadata) return null;
+
+      // Bundled templates: use server-side detection (bundledUpgradeAvailable)
+      if (metadata.source === 'bundled') {
+        return project.bundledUpgradeAvailable ?? null;
       }
+
+      // Registry templates: client-side detection using cached templates
+      if (!metadata.version) return null;
 
       // Find the template in downloaded templates
       const template = allTemplates?.find(
@@ -432,7 +519,17 @@ export function ProjectsPage() {
   const createFromTemplateMutation = useMutation({
     mutationFn: createProjectFromTemplate,
     onSuccess: async (data) => {
-      // Refetch projects and wait for it to complete before navigating
+      // Check if provider mapping is required
+      if (data.providerMappingRequired) {
+        // Store the pending form data and show the provider mapping modal
+        setPendingTemplateData({ ...templateFormData });
+        setProviderMappingData(data.providerMappingRequired);
+        setShowTemplateDialog(false);
+        setShowProviderMappingModal(true);
+        return;
+      }
+
+      // Project created successfully
       await queryClient.invalidateQueries({ queryKey: ['projects'] });
       setShowTemplateDialog(false);
       resetTemplateForm();
@@ -465,6 +562,49 @@ export function ProjectsPage() {
   const resetTemplateForm = () => {
     setTemplateFormData({ name: '', description: '', rootPath: '', templateId: '', version: '' });
     setTemplatePathValidation({ isAbsolute: true, exists: false, checked: false });
+  };
+
+  // Handler for provider mapping modal confirm
+  const handleProviderMappingConfirm = async (mappings: Record<string, string>) => {
+    if (!pendingTemplateData) return;
+
+    // Re-submit with provider mappings
+    createFromTemplateMutation.mutate({
+      ...pendingTemplateData,
+      familyProviderMappings: mappings,
+    });
+
+    // Close the modal and clear pending data
+    setShowProviderMappingModal(false);
+    setProviderMappingData(null);
+    setPendingTemplateData(null);
+  };
+
+  // Handler for provider mapping modal cancel
+  const handleProviderMappingCancel = () => {
+    setShowProviderMappingModal(false);
+    setProviderMappingData(null);
+    setPendingTemplateData(null);
+    // Reopen the template dialog so user can try again or cancel
+    setShowTemplateDialog(true);
+  };
+
+  // Handler for import provider mapping modal confirm
+  const handleImportProviderMappingConfirm = (mappings: Record<string, string>) => {
+    // Store the mappings and proceed to import confirm dialog
+    setImportFamilyProviderMappings(mappings);
+    setShowImportProviderMappingModal(false);
+    setImportProviderMappingData(null);
+    setShowImportConfirm(true);
+  };
+
+  // Handler for import provider mapping modal cancel
+  const handleImportProviderMappingCancel = () => {
+    setShowImportProviderMappingModal(false);
+    setImportProviderMappingData(null);
+    setImportFamilyProviderMappings(null);
+    // Reopen the import modal so user can try again or cancel
+    setShowImportModal(true);
   };
 
   // Filter and sort projects
@@ -731,7 +871,12 @@ export function ProjectsPage() {
       }
       const body = await dryRes.json();
       setDryRunResult(body);
-      if (Array.isArray(body.missingProviders) && body.missingProviders.length > 0) {
+      // Check if provider mapping is required (new flow)
+      if (body.providerMappingRequired) {
+        setImportProviderMappingData(body.providerMappingRequired);
+        setShowImportProviderMappingModal(true);
+      } else if (Array.isArray(body.missingProviders) && body.missingProviders.length > 0) {
+        // Fallback to old missing providers dialog if providerMappingRequired not present
         setShowMissingProviders(true);
       } else {
         setShowImportConfirm(true);
@@ -770,7 +915,12 @@ export function ProjectsPage() {
       }
       const body = await res.json();
       setDryRunResult(body);
-      if (Array.isArray(body.missingProviders) && body.missingProviders.length > 0) {
+      // Check if provider mapping is required (new flow)
+      if (body.providerMappingRequired) {
+        setImportProviderMappingData(body.providerMappingRequired);
+        setShowImportProviderMappingModal(true);
+      } else if (Array.isArray(body.missingProviders) && body.missingProviders.length > 0) {
+        // Fallback to old missing providers dialog if providerMappingRequired not present
         setShowMissingProviders(true);
       } else {
         setShowImportConfirm(true);
@@ -792,10 +942,17 @@ export function ProjectsPage() {
     if (!importTarget || !importPayload) return;
     try {
       setImportingProjectId(importTarget.id);
-      const requestBody =
-        Object.keys(statusMappings).length > 0
-          ? { ...(importPayload as object), statusMappings }
-          : importPayload;
+      // Build request body with optional statusMappings and familyProviderMappings
+      let requestBody = importPayload;
+      if (Object.keys(statusMappings).length > 0 || importFamilyProviderMappings) {
+        requestBody = {
+          ...(importPayload as object),
+          ...(Object.keys(statusMappings).length > 0 && { statusMappings }),
+          ...(importFamilyProviderMappings && {
+            familyProviderMappings: importFamilyProviderMappings,
+          }),
+        };
+      }
       const res = await fetch(`/api/projects/${importTarget.id}/import`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -818,6 +975,9 @@ export function ProjectsPage() {
       setImportResult(body);
       setShowImportConfirm(false);
       setShowImportResult(true);
+      // Clear mapping state after successful import
+      setStatusMappings({});
+      setImportFamilyProviderMappings(null);
       toast({ title: 'Import complete', description: body.message || 'Project replaced.' });
       // Refresh projects to update stats if needed
       queryClient.invalidateQueries({ queryKey: ['projects'] });
@@ -825,6 +985,7 @@ export function ProjectsPage() {
       // Close dialog and clear state on error
       setShowImportConfirm(false);
       setStatusMappings({});
+      setImportFamilyProviderMappings(null);
       toast({
         title: 'Import failed',
         description: err instanceof Error ? err.message : 'Unable to import project',
@@ -970,9 +1131,19 @@ export function ProjectsPage() {
                           {project.templateMetadata.slug}
                         </span>
                         {project.templateMetadata.source === 'bundled' ? (
-                          <Badge variant="outline" className="text-xs text-muted-foreground">
-                            Built-in
-                          </Badge>
+                          <>
+                            <Badge variant="outline" className="text-xs text-muted-foreground">
+                              Built-in
+                            </Badge>
+                            {project.templateMetadata.version && (
+                              <Badge
+                                variant="outline"
+                                className="text-xs text-blue-600 border-blue-600/50"
+                              >
+                                v{project.templateMetadata.version}
+                              </Badge>
+                            )}
+                          </>
                         ) : project.templateMetadata.version ? (
                           <Badge
                             variant="outline"
@@ -1011,29 +1182,16 @@ export function ProjectsPage() {
                   </td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex gap-2 justify-end">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => startImport(project)}
-                        disabled={importingProjectId === project.id}
-                        title="Import project from JSON (replace)"
-                      >
-                        {importingProjectId === project.id ? (
-                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                        ) : (
-                          <Download className="h-4 w-4 mr-2" />
-                        )}
-                        Import
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleExport(project)}
-                        title="Export project as JSON"
-                      >
-                        <Upload className="h-4 w-4 mr-2" />
-                        Export
-                      </Button>
+                      {project.isConfigurable && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setConfigureTarget(project)}
+                          title="Configure project"
+                        >
+                          <Settings className="h-4 w-4" />
+                        </Button>
+                      )}
                       <Button variant="ghost" size="sm" onClick={() => handleEdit(project)}>
                         <Edit className="h-4 w-4" />
                       </Button>
@@ -1045,6 +1203,30 @@ export function ProjectsPage() {
                       >
                         <Trash2 className="h-4 w-4" />
                       </Button>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="sm">
+                            <MoreHorizontal className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem
+                            onClick={() => startImport(project)}
+                            disabled={importingProjectId === project.id}
+                          >
+                            {importingProjectId === project.id ? (
+                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                            ) : (
+                              <Download className="h-4 w-4 mr-2" />
+                            )}
+                            Import
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => handleExport(project)}>
+                            <Upload className="h-4 w-4 mr-2" />
+                            Export
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </div>
                   </td>
                 </tr>
@@ -1626,18 +1808,63 @@ export function ProjectsPage() {
           templateSlug={upgradeTarget.project.templateMetadata.slug}
           currentVersion={upgradeTarget.project.templateMetadata.version || ''}
           targetVersion={upgradeTarget.targetVersion}
+          source={upgradeTarget.project.templateMetadata.source}
           open={true}
           onClose={handleCloseUpgradeDialog}
         />
       )}
 
-      {/* Export Dialog */}
-      {exportTarget && (
+      {/* Export Dialog - waits for manifest fetch before rendering */}
+      {exportTarget && !isLoadingExportManifest && (
         <ExportDialog
           projectId={exportTarget.id}
           projectName={exportTarget.name}
+          existingManifest={exportManifest ?? undefined}
           open={true}
           onClose={handleCloseExportDialog}
+        />
+      )}
+
+      {/* Configuration Modal */}
+      {configureTarget && (
+        <ProjectConfigurationModal
+          projectId={configureTarget.id}
+          open={true}
+          onOpenChange={(open) => !open && setConfigureTarget(null)}
+        />
+      )}
+
+      {/* Provider Mapping Modal for create-from-template */}
+      {providerMappingData && (
+        <ProviderMappingModal
+          open={showProviderMappingModal}
+          onOpenChange={(open) => {
+            if (!open) {
+              handleProviderMappingCancel();
+            }
+          }}
+          missingProviders={providerMappingData.missingProviders}
+          familyAlternatives={providerMappingData.familyAlternatives}
+          canImport={providerMappingData.canImport}
+          onConfirm={handleProviderMappingConfirm}
+          loading={createFromTemplateMutation.isPending}
+        />
+      )}
+
+      {/* Provider Mapping Modal for import flow */}
+      {importProviderMappingData && (
+        <ProviderMappingModal
+          open={showImportProviderMappingModal}
+          onOpenChange={(open) => {
+            if (!open) {
+              handleImportProviderMappingCancel();
+            }
+          }}
+          missingProviders={importProviderMappingData.missingProviders}
+          familyAlternatives={importProviderMappingData.familyAlternatives}
+          canImport={importProviderMappingData.canImport}
+          onConfirm={handleImportProviderMappingConfirm}
+          loading={!!importingProjectId}
         />
       )}
     </div>

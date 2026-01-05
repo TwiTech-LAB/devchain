@@ -29,7 +29,7 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
  * URL Configuration Priority:
  * 1. Settings (stored in DB via SettingsService)
  * 2. Environment variable (REGISTRY_URL)
- * 3. Default (https://templates.devchain.twitechlab.com)
+ * 3. Default (https://a1-devchain.twitechlab.com)
  */
 @Injectable()
 export class RegistryClientService {

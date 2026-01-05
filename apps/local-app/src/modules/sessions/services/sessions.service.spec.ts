@@ -168,7 +168,7 @@ describe('SessionsService', () => {
       epicId: 'epic-1',
     });
 
-    await jest.advanceTimersByTimeAsync(2000);
+    await jest.advanceTimersByTimeAsync(5000);
     const result = await launchPromise;
 
     expect(storage.getEpic).toHaveBeenCalledWith('epic-1');
@@ -248,7 +248,7 @@ describe('SessionsService', () => {
       agentId: 'agent-2',
     });
 
-    await jest.advanceTimersByTimeAsync(2000);
+    await jest.advanceTimersByTimeAsync(5000);
     const result = await launchPromise;
 
     expect(storage.getEpic).not.toHaveBeenCalled();
@@ -417,7 +417,7 @@ describe('SessionsService', () => {
       agentId: 'agent-1',
     });
 
-    await jest.advanceTimersByTimeAsync(2000);
+    await jest.advanceTimersByTimeAsync(5000);
     await launchPromise;
 
     expect(storage.getInitialSessionPrompt).toHaveBeenCalled();
@@ -478,7 +478,7 @@ describe('SessionsService', () => {
       agentId: 'agent-1',
     });
 
-    await jest.advanceTimersByTimeAsync(2000);
+    await jest.advanceTimersByTimeAsync(5000);
     await launchPromise;
 
     const rendered = (tmuxService.pasteAndSubmit as jest.Mock).mock.calls[0][1] as string;

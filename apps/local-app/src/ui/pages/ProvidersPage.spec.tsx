@@ -103,6 +103,7 @@ describe('ProvidersPage - Provider Type presets and command previews', () => {
               overall: 'pass',
               checks: [],
               providers: [],
+              supportedMcpProviders: ['claude', 'codex', 'gemini'],
               timestamp: new Date().toISOString(),
             }),
           });

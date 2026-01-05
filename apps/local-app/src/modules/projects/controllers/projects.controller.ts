@@ -39,6 +39,9 @@ interface ProjectTemplateMetadata {
 /** Project with template metadata */
 interface ProjectWithMetadata extends Project {
   templateMetadata: ProjectTemplateMetadata | null;
+  isConfigurable?: boolean;
+  /** Available bundled upgrade version, or null if no upgrade available */
+  bundledUpgradeAvailable?: string | null;
 }
 
 const CreateProjectSchema = z.object({
@@ -49,6 +52,28 @@ const CreateProjectSchema = z.object({
 });
 
 const UpdateProjectSchema = CreateProjectSchema.partial();
+
+/**
+ * Schema for familyProviderMappings: familySlug → providerName
+ * - Keys (familySlug) must be non-empty strings
+ * - Values (providerName) must be non-empty strings
+ */
+const FamilyProviderMappingsSchema = z.record(z.string().min(1), z.string().min(1)).optional();
+
+/**
+ * Normalize familyProviderMappings values to lowercase for consistent matching.
+ * Returns undefined if input is undefined.
+ */
+function normalizeFamilyProviderMappings(
+  mappings: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+  if (!mappings) return undefined;
+  const normalized: Record<string, string> = {};
+  for (const [key, value] of Object.entries(mappings)) {
+    normalized[key.trim().toLowerCase()] = value.trim().toLowerCase();
+  }
+  return normalized;
+}
 
 @Controller('api/projects')
 export class ProjectsController {
@@ -113,11 +138,77 @@ export class ProjectsController {
     // Batch-load all template metadata in one query (avoids N+1)
     const metadataMap = this.settings.getAllProjectTemplateMetadataMap();
 
-    // Enrich each project with template metadata using the pre-loaded map
+    // Batch-load all profiles to compute isConfigurable (avoids N+1)
+    const allProfiles = await this.storage.listAgentProfiles({ limit: 10000 });
+    const configurableProjects = this.computeConfigurableProjects(allProfiles.items);
+
+    // Batch-check bundled upgrades for all projects
+    const projectsForUpgradeCheck = result.items.map((project) => {
+      const metadata = metadataMap.get(project.id);
+      return {
+        projectId: project.id,
+        templateSlug: metadata?.templateSlug ?? null,
+        installedVersion: metadata?.installedVersion ?? null,
+        source: metadata?.source ?? null,
+      };
+    });
+    const bundledUpgrades = this.projects.getBundledUpgradesForProjects(projectsForUpgradeCheck);
+
+    // Enrich each project with template metadata, isConfigurable, and bundled upgrade info
     return {
       ...result,
-      items: result.items.map((project) => this.enrichProjectWithMap(project, metadataMap)),
+      items: result.items.map((project) => ({
+        ...this.enrichProjectWithMap(project, metadataMap),
+        isConfigurable: configurableProjects.has(project.id),
+        bundledUpgradeAvailable: bundledUpgrades.get(project.id) ?? null,
+      })),
     };
+  }
+
+  /**
+   * Compute which projects are configurable (have switchable provider families)
+   * A project is configurable when it has at least one familySlug with 2+ profiles
+   * from different providers.
+   */
+  private computeConfigurableProjects(
+    profiles: Array<{
+      projectId?: string | null;
+      familySlug?: string | null;
+      providerId: string;
+    }>,
+  ): Set<string> {
+    const configurable = new Set<string>();
+
+    // Group profiles by projectId
+    const byProject = new Map<string, typeof profiles>();
+    for (const profile of profiles) {
+      if (!profile.projectId) continue;
+      const existing = byProject.get(profile.projectId) || [];
+      existing.push(profile);
+      byProject.set(profile.projectId, existing);
+    }
+
+    // For each project, check if any family has 2+ providers
+    for (const [projectId, projectProfiles] of byProject) {
+      // Group by familySlug
+      const byFamily = new Map<string, Set<string>>();
+      for (const profile of projectProfiles) {
+        if (!profile.familySlug) continue;
+        const providers = byFamily.get(profile.familySlug) || new Set();
+        providers.add(profile.providerId);
+        byFamily.set(profile.familySlug, providers);
+      }
+
+      // Check if any family has 2+ different providers
+      for (const providers of byFamily.values()) {
+        if (providers.size > 1) {
+          configurable.add(projectId);
+          break;
+        }
+      }
+    }
+
+    return configurable;
   }
 
   // Legacy template endpoints removed - use /api/templates instead
@@ -172,6 +263,12 @@ export class ProjectsController {
     };
   }
 
+  @Get(':id/template-manifest')
+  async getTemplateManifest(@Param('id') id: string) {
+    logger.info({ projectId: id }, 'GET /api/projects/:id/template-manifest');
+    return this.projects.getTemplateManifestForProject(id);
+  }
+
   // Removed legacy create project endpoint.
   // Project creation must go through POST /api/projects/from-template which
   // requires a template selection and performs transactional import.
@@ -198,6 +295,7 @@ export class ProjectsController {
           .min(1)
           .regex(SLUG_PATTERN, VALIDATION_MESSAGES.INVALID_SLUG)
           .optional(), // Legacy: alias for slug
+        familyProviderMappings: FamilyProviderMappingsSchema,
       })
       .refine((data) => data.slug || data.templateId, {
         message: 'Either slug or templateId is required',
@@ -210,6 +308,7 @@ export class ProjectsController {
       rootPath: parsed.rootPath,
       slug: parsed.slug ?? parsed.templateId!, // Use slug if provided, else templateId
       version: parsed.version ?? null,
+      familyProviderMappings: normalizeFamilyProviderMappings(parsed.familyProviderMappings),
     };
     return this.projects.createFromTemplate(input);
   }
@@ -255,16 +354,36 @@ export class ProjectsController {
   async importProject(
     @Param('id') id: string,
     @Query('dryRun') dryRun?: string,
-    @Body() body?: { statusMappings?: Record<string, string>; [key: string]: unknown },
+    @Body()
+    body?: {
+      statusMappings?: Record<string, string>;
+      familyProviderMappings?: Record<string, string>;
+      [key: string]: unknown;
+    },
   ) {
     logger.info({ projectId: id, dryRun }, 'POST /api/projects/:id/import');
     const isDryRun = (dryRun ?? '').toString().toLowerCase() === 'true';
-    const { statusMappings, ...payload } = body ?? {};
+    const { statusMappings, familyProviderMappings: rawMappings, ...payload } = body ?? {};
+
+    // Validate familyProviderMappings if provided
+    let familyProviderMappings: Record<string, string> | undefined;
+    if (rawMappings !== undefined) {
+      const parseResult = FamilyProviderMappingsSchema.safeParse(rawMappings);
+      if (!parseResult.success) {
+        const errors = parseResult.error.errors
+          .map((e) => `${e.path.join('.')}: ${e.message}`)
+          .join('; ');
+        throw new BadRequestException(`Invalid familyProviderMappings: ${errors}`);
+      }
+      familyProviderMappings = normalizeFamilyProviderMappings(parseResult.data);
+    }
+
     return this.projects.importProject({
       projectId: id,
       payload,
       dryRun: isDryRun,
       statusMappings,
+      familyProviderMappings,
     });
   }
 }

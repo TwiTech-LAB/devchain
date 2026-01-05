@@ -122,7 +122,7 @@ describe('Events & Epic Assignment flow', () => {
     }
   }
 
-  it('publishes epic.assigned event and invokes notifier', async () => {
+  it('publishes epic.updated event with agentId change and invokes notifier', async () => {
     const createResponse = await app.inject({
       method: 'POST',
       url: '/api/epics',
@@ -160,10 +160,10 @@ describe('Events & Epic Assignment flow', () => {
     });
 
     expect(updateResponse.statusCode).toBe(200);
-    const eventsPayload = await waitForEventHandled('epic.assigned');
+    const eventsPayload = await waitForEventHandled('epic.updated');
     expect(eventsPayload.items.length).toBeGreaterThan(0);
     const recordedEvent = eventsPayload.items[0];
-    expect(recordedEvent.name).toBe('epic.assigned');
+    expect(recordedEvent.name).toBe('epic.updated');
     expect(recordedEvent.handlers[0].handler).toBe('EpicAssignmentNotifier');
 
     // Message should be enqueued to the message pool
@@ -172,13 +172,13 @@ describe('Events & Epic Assignment flow', () => {
       agentId,
       expect.stringContaining('[Epic Assignment]'),
       expect.objectContaining({
-        source: 'epic.assigned',
+        source: 'epic.assigned', // Source kept for UX continuity
       }),
     );
     expect(launchSessionMock).not.toHaveBeenCalled();
   });
 
-  it('does not publish epic.assigned when updating with same agentId (no-op)', async () => {
+  it('does not invoke notifier when updating with same agentId (no-op)', async () => {
     // Step 1: Create epic and assign agent
     const createResponse = await app.inject({
       method: 'POST',
@@ -221,7 +221,7 @@ describe('Events & Epic Assignment flow', () => {
     const updatedEpic = JSON.parse(firstUpdate.payload);
 
     // Count events after first assignment
-    const eventsAfterFirst = await waitForEventHandled('epic.assigned');
+    const eventsAfterFirst = await waitForEventHandled('epic.updated');
     const countAfterFirst = eventsAfterFirst.items.length;
 
     // Step 2: Update with the SAME agentId (no-op)
@@ -238,10 +238,10 @@ describe('Events & Epic Assignment flow', () => {
 
     expect(secondUpdate.statusCode).toBe(200);
 
-    // Verify no new epic.assigned event was published
+    // Verify no new epic.updated event was published (same agentId = no change)
     const eventsAfterSecond = await app.inject({
       method: 'GET',
-      url: '/api/events?name=epic.assigned',
+      url: '/api/events?name=epic.updated',
     });
     const countAfterSecond = JSON.parse(eventsAfterSecond.payload).items.length;
 

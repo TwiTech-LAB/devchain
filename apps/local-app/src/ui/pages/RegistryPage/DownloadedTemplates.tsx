@@ -481,7 +481,7 @@ export function DownloadedTemplates() {
           )}
         </CardTitle>
       </CardHeader>
-      <CardContent>
+      <CardContent className="max-h-[280px] overflow-y-auto">
         {installedTemplates.length === 0 ? (
           <EmptyState />
         ) : (

@@ -182,6 +182,7 @@ export interface TemplateImportPayload {
     id?: string;
     name: string;
     providerId: string;
+    familySlug?: string | null;
     options?: string | null;
     instructions?: string | null;
     temperature?: number | null;

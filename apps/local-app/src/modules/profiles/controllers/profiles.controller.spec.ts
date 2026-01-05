@@ -29,6 +29,7 @@ describe('ProfilesController', () => {
     projectId: 'project-1',
     name: 'Test Profile',
     providerId: 'provider-1',
+    familySlug: null,
     options: '--model test',
     systemPrompt: null,
     instructions: null,
@@ -102,6 +103,56 @@ describe('ProfilesController', () => {
       expect.objectContaining({ options: '--flag value' }),
     );
     expect(result.options).toBe('--flag value');
+  });
+
+  it('converts whitespace-only familySlug to null during create', async () => {
+    const createdProfile: AgentProfile = { ...baseProfile, familySlug: null };
+    storage.createAgentProfile.mockResolvedValue(createdProfile);
+
+    await controller.createProfile({
+      projectId: 'project-1',
+      name: 'Test Profile',
+      providerId: 'provider-1',
+      familySlug: '   ',
+    });
+
+    expect(storage.createAgentProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ familySlug: null }),
+    );
+  });
+
+  it('trims and lowercases familySlug during create', async () => {
+    const createdProfile: AgentProfile = { ...baseProfile, familySlug: 'my-family' };
+    storage.createAgentProfile.mockResolvedValue(createdProfile);
+
+    await controller.createProfile({
+      projectId: 'project-1',
+      name: 'Test Profile',
+      providerId: 'provider-1',
+      familySlug: '  My-Family  ',
+    });
+
+    expect(storage.createAgentProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ familySlug: 'my-family' }),
+    );
+  });
+
+  it('converts whitespace-only familySlug to null during update', async () => {
+    const updatedProfile: AgentProfile = { ...baseProfile, familySlug: null };
+    storage.updateAgentProfile.mockResolvedValue(updatedProfile);
+
+    await controller.updateProfile('profile-1', { familySlug: '   ' });
+
+    expect(storage.updateAgentProfile).toHaveBeenCalledWith('profile-1', { familySlug: null });
+  });
+
+  it('allows clearing familySlug by sending null during update', async () => {
+    const updatedProfile: AgentProfile = { ...baseProfile, familySlug: null };
+    storage.updateAgentProfile.mockResolvedValue(updatedProfile);
+
+    await controller.updateProfile('profile-1', { familySlug: null });
+
+    expect(storage.updateAgentProfile).toHaveBeenCalledWith('profile-1', { familySlug: null });
   });
 
   it('GET /api/profiles requires projectId and lists by project', async () => {

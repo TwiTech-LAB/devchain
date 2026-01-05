@@ -148,6 +148,13 @@
       "when": 1765926498445,
       "tag": "0020_statuses_mcp_hidden",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1767571200000,
+      "tag": "0021_agent_profiles_family_slug",
+      "breakpoints": true
     }
   ]
 }

@@ -3,6 +3,7 @@ import { createLogger } from '../../../common/logging/logger';
 import { ValidationError, NotFoundError } from '../../../common/errors/error-types';
 import { RegistryOrchestrationService } from './registry-orchestration.service';
 import { TemplateCacheService } from './template-cache.service';
+import { UnifiedTemplateService } from './unified-template.service';
 import { SettingsService } from '../../settings/services/settings.service';
 import { ProjectsService } from '../../projects/services/projects.service';
 
@@ -14,6 +15,7 @@ interface BackupEntry {
   createdAt: string;
   templateSlug: string;
   fromVersion: string;
+  source: 'bundled' | 'registry';
 }
 
 export interface UpgradeProjectInput {
@@ -63,6 +65,7 @@ export class TemplateUpgradeService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly orchestrationService: RegistryOrchestrationService,
     private readonly cacheService: TemplateCacheService,
+    private readonly unifiedTemplateService: UnifiedTemplateService,
     private readonly settingsService: SettingsService,
     @Inject(forwardRef(() => ProjectsService))
     private readonly projectsService: ProjectsService,
@@ -90,7 +93,7 @@ export class TemplateUpgradeService implements OnModuleInit, OnModuleDestroy {
    * by `upgradeProject()`, exceptions are caught and converted to result objects.
    *
    * @throws {NotFoundError} When project has no template metadata (404)
-   * @throws {ValidationError} When project uses a bundled template (400)
+   * @throws {ValidationError} When project has no installed version (unknown state)
    */
   async createBackup(projectId: string): Promise<string> {
     logger.info({ projectId }, 'Creating backup before upgrade');
@@ -101,9 +104,9 @@ export class TemplateUpgradeService implements OnModuleInit, OnModuleDestroy {
       throw new NotFoundError('Project template metadata', projectId);
     }
 
-    // Bundled templates cannot be upgraded
+    // Must have installedVersion to know what we're upgrading from
     if (!metadata.installedVersion) {
-      throw new ValidationError('Bundled templates cannot be upgraded', {
+      throw new ValidationError('Cannot upgrade: project has no installed version', {
         projectId,
         templateSlug: metadata.templateSlug,
       });
@@ -115,17 +118,18 @@ export class TemplateUpgradeService implements OnModuleInit, OnModuleDestroy {
     // Generate backup ID
     const backupId = `backup-${projectId}-${Date.now()}`;
 
-    // Store backup
+    // Store backup with source for proper restore
     this.backups.set(backupId, {
       projectId,
       data: exportData,
       createdAt: new Date().toISOString(),
       templateSlug: metadata.templateSlug,
       fromVersion: metadata.installedVersion,
+      source: metadata.source ?? 'registry',
     });
 
     logger.info(
-      { projectId, backupId, templateSlug: metadata.templateSlug },
+      { projectId, backupId, templateSlug: metadata.templateSlug, source: metadata.source },
       'Backup created successfully',
     );
 
@@ -160,7 +164,7 @@ export class TemplateUpgradeService implements OnModuleInit, OnModuleDestroy {
     if (!metadata) {
       return {
         success: false,
-        error: 'Project not linked to registry template',
+        error: 'Project not linked to a template',
       };
     }
 
@@ -172,17 +176,43 @@ export class TemplateUpgradeService implements OnModuleInit, OnModuleDestroy {
       };
     }
 
-    // Validate target version is cached (no download during upgrade - versions must be pre-cached)
-    const cached = await this.cacheService.getTemplate(metadata.templateSlug, targetVersion);
-    if (!cached) {
-      logger.warn(
-        { projectId, templateSlug: metadata.templateSlug, targetVersion },
-        'Upgrade attempted with uncached version',
-      );
-      return {
-        success: false,
-        error: `Version ${targetVersion} is not cached. Please download it first from the Registry page.`,
-      };
+    const isBundled = metadata.source === 'bundled';
+    let templateContent: Record<string, unknown>;
+
+    if (isBundled) {
+      // Bundled template: fetch from local bundled templates
+      try {
+        const bundled = this.unifiedTemplateService.getBundledTemplate(metadata.templateSlug);
+        templateContent = bundled.content as Record<string, unknown>;
+
+        // Verify the bundled template has the target version
+        const manifest = templateContent._manifest as { version?: string } | undefined;
+        if (manifest?.version !== targetVersion) {
+          return {
+            success: false,
+            error: `Bundled template version is ${manifest?.version ?? 'unknown'}, not ${targetVersion}`,
+          };
+        }
+      } catch {
+        return {
+          success: false,
+          error: `Bundled template "${metadata.templateSlug}" not found`,
+        };
+      }
+    } else {
+      // Registry template: validate target version is cached
+      const cached = await this.cacheService.getTemplate(metadata.templateSlug, targetVersion);
+      if (!cached) {
+        logger.warn(
+          { projectId, templateSlug: metadata.templateSlug, targetVersion },
+          'Upgrade attempted with uncached version',
+        );
+        return {
+          success: false,
+          error: `Version ${targetVersion} is not cached. Please download it first from the Registry page.`,
+        };
+      }
+      templateContent = cached.content as Record<string, unknown>;
     }
 
     // Create backup before upgrade
@@ -197,13 +227,38 @@ export class TemplateUpgradeService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      // Apply template (imports over existing project) - cached template already validated above
-      const templateContent = cached.content as Record<string, unknown>;
-      await this.projectsService.importProject({
+      // Apply template (imports over existing project)
+      const importResult = await this.projectsService.importProject({
         projectId,
         payload: templateContent,
         dryRun: false,
       });
+
+      // Validate import succeeded - importProject can return { success: false } without throwing
+      // Type guard: dryRun=false means result always has 'success' property, but TS needs help
+      if (!('success' in importResult) || !importResult.success) {
+        // Check if provider mapping is required
+        if ('providerMappingRequired' in importResult && importResult.providerMappingRequired) {
+          const { missingProviders } = importResult.providerMappingRequired;
+          logger.warn(
+            { projectId, targetVersion, missingProviders },
+            'Upgrade requires provider mapping - aborting',
+          );
+          return {
+            success: false,
+            error: `Upgrade requires provider configuration. Missing providers: ${missingProviders.join(', ')}`,
+            backupId, // Keep backup for retry after provider setup
+          };
+        }
+
+        // Generic import failure
+        logger.error({ projectId, targetVersion, importResult }, 'Import returned failure status');
+        return {
+          success: false,
+          error: 'Template import failed',
+          backupId, // Keep backup for manual recovery
+        };
+      }
 
       // Update metadata with new version
       await this.settingsService.setProjectTemplateMetadata(projectId, {
@@ -216,7 +271,12 @@ export class TemplateUpgradeService implements OnModuleInit, OnModuleDestroy {
       this.backups.delete(backupId);
 
       logger.info(
-        { projectId, fromVersion: metadata.installedVersion, toVersion: targetVersion },
+        {
+          projectId,
+          source: isBundled ? 'bundled' : 'registry',
+          fromVersion: metadata.installedVersion,
+          toVersion: targetVersion,
+        },
         'Project upgraded successfully',
       );
 
@@ -289,12 +349,13 @@ export class TemplateUpgradeService implements OnModuleInit, OnModuleDestroy {
       dryRun: false,
     });
 
-    // Restore original metadata (registry templates only - bundled cannot be upgraded)
+    // Restore original metadata with correct source
     await this.settingsService.setProjectTemplateMetadata(backup.projectId, {
       templateSlug: backup.templateSlug,
-      source: 'registry',
+      source: backup.source,
       installedVersion: backup.fromVersion,
-      registryUrl: this.settingsService.getRegistryConfig().url,
+      registryUrl:
+        backup.source === 'registry' ? this.settingsService.getRegistryConfig().url : null,
       installedAt: new Date().toISOString(),
     });
 

@@ -28,6 +28,7 @@ export interface PreflightResult {
   overall: PreflightStatus;
   checks: PreflightCheck[];
   providers: ProviderCheck[];
+  supportedMcpProviders: string[];
   timestamp: string;
 }
 

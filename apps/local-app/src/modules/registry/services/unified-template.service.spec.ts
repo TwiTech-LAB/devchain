@@ -339,8 +339,9 @@ describe('UnifiedTemplateService', () => {
 
       const result = await service.getTemplate('my-template', '1.0.0');
 
+      // Slug is injected into _manifest for template metadata tracking
       expect(result).toEqual({
-        content: { name: 'Test Template', agents: [] },
+        content: { name: 'Test Template', agents: [], _manifest: { slug: 'my-template' } },
         source: 'registry',
         version: '1.0.0',
       });
@@ -391,14 +392,15 @@ describe('UnifiedTemplateService', () => {
 
       const result = await service.getTemplate('bundled-template');
 
+      // Slug is injected into _manifest for template metadata tracking
       expect(result).toEqual({
-        content: { name: 'Bundled Template' },
+        content: { name: 'Bundled Template', _manifest: { slug: 'bundled-template' } },
         source: 'bundled',
         version: null,
       });
     });
 
-    it('should preserve _manifest in bundled template content', async () => {
+    it('should preserve _manifest in bundled template content and inject slug', async () => {
       mockCacheService.listCached.mockReturnValue([]);
       mockExistsSyncFn.mockImplementation((p: string) => {
         if (p.includes('templates') && !p.endsWith('.json')) {
@@ -425,11 +427,12 @@ describe('UnifiedTemplateService', () => {
 
       const result = await service.getTemplate('manifest-template');
 
-      expect(result.content).toEqual(templateWithManifest);
       expect(result.content._manifest).toBeDefined();
       expect((result.content._manifest as Record<string, unknown>).name).toBe(
         'Template With Manifest',
       );
+      // Slug should be injected into _manifest for template metadata tracking
+      expect((result.content._manifest as Record<string, unknown>).slug).toBe('manifest-template');
     });
 
     it('should throw NotFoundError for non-existent bundled template', async () => {

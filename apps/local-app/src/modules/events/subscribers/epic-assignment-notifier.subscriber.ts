@@ -9,6 +9,7 @@ import { SessionCoordinatorService } from '../../sessions/services/session-coord
 import { SessionsMessagePoolService } from '../../sessions/services/sessions-message-pool.service';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
 import type { EpicUpdatedEventPayload } from '../catalog/epic.updated';
+import type { EpicCreatedEventPayload } from '../catalog/epic.created';
 
 const TEMPLATE_SETTING_KEY = 'events.epicAssigned.template';
 const DEFAULT_TEMPLATE =
@@ -29,6 +30,85 @@ export class EpicAssignmentNotifierSubscriber {
     private readonly messagePoolService: SessionsMessagePoolService,
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
   ) {}
+
+  @OnEvent('epic.created', { async: true })
+  async handleEpicCreated(payload: EpicCreatedEventPayload): Promise<void> {
+    // Only process if agent is assigned on creation
+    if (!payload.agentId) {
+      return;
+    }
+
+    const metadata = getEventMetadata(payload);
+    const eventId = metadata?.id;
+    const handler = 'EpicAssignmentNotifier';
+    const startedAt = new Date().toISOString();
+
+    try {
+      const template = this.resolveTemplate();
+      const message = this.renderTemplate(template, {
+        epic_id: payload.epicId,
+        agent_name: payload.agentName ?? payload.agentId,
+        epic_title: payload.title,
+        project_name: payload.projectName ?? payload.projectId,
+      });
+
+      // Ensure agent has an active session (launch if needed)
+      const { sessionId, launched } = await this.sessionCoordinator.withAgentLock(
+        payload.agentId,
+        () => this.ensureAgentSessionForCreated(payload),
+      );
+
+      // Enqueue message to pool for batched delivery
+      const result = await this.messagePoolService.enqueue(payload.agentId, message, {
+        source: 'epic.created',
+        submitKeys: ['Enter'],
+        projectId: payload.projectId,
+        agentName: payload.agentName ?? undefined,
+      });
+
+      this.logger.debug(
+        { agentId: payload.agentId, sessionId, status: result.status },
+        'EpicAssignmentNotifier: message enqueued to pool (epic.created)',
+      );
+
+      if (eventId) {
+        await this.eventLogService.recordHandledOk({
+          eventId,
+          handler,
+          detail: {
+            sessionId,
+            launched,
+            poolStatus: result.status,
+          },
+          startedAt,
+          endedAt: new Date().toISOString(),
+        });
+      }
+
+      this.logger.log(
+        { eventId, sessionId, launched, poolStatus: result.status },
+        'Notified agent about epic assignment (epic.created)',
+      );
+    } catch (error) {
+      this.logger.error(
+        { error, payload },
+        'Failed to notify agent about epic assignment (epic.created)',
+      );
+
+      if (eventId) {
+        await this.eventLogService.recordHandledFail({
+          eventId,
+          handler,
+          detail:
+            error instanceof Error
+              ? { message: error.message }
+              : { message: 'Unknown error', value: String(error) },
+          startedAt,
+          endedAt: new Date().toISOString(),
+        });
+      }
+    }
+  }
 
   @OnEvent('epic.updated', { async: true })
   async handleEpicUpdated(payload: EpicUpdatedEventPayload): Promise<void> {
@@ -210,6 +290,43 @@ export class EpicAssignmentNotifierSubscriber {
     const session = await this.getSessionsService().launchSession({
       projectId: payload.projectId,
       agentId: agentId,
+      epicId: payload.epicId,
+    });
+
+    if (!session.tmuxSessionId) {
+      throw new Error('Launched session missing tmuxSessionId');
+    }
+
+    return {
+      sessionId: session.id,
+      tmuxSessionId: session.tmuxSessionId,
+      launched: true,
+    };
+  }
+
+  private async ensureAgentSessionForCreated(payload: EpicCreatedEventPayload): Promise<{
+    sessionId: string;
+    tmuxSessionId: string;
+    launched: boolean;
+  }> {
+    if (!payload.agentId) {
+      throw new Error('Cannot ensure session for epic without agentId');
+    }
+
+    const activeSessions = await this.getSessionsService().listActiveSessions();
+    const existing = activeSessions.find((session) => session.agentId === payload.agentId);
+
+    if (existing?.tmuxSessionId) {
+      return {
+        sessionId: existing.id,
+        tmuxSessionId: existing.tmuxSessionId,
+        launched: false,
+      };
+    }
+
+    const session = await this.getSessionsService().launchSession({
+      projectId: payload.projectId,
+      agentId: payload.agentId,
       epicId: payload.epicId,
     });
 

@@ -2,6 +2,7 @@ import { ValidationError, NotFoundError } from '../../../common/errors/error-typ
 import { TemplateUpgradeService } from './template-upgrade.service';
 import { RegistryOrchestrationService } from './registry-orchestration.service';
 import { TemplateCacheService } from './template-cache.service';
+import { UnifiedTemplateService } from './unified-template.service';
 import { SettingsService } from '../../settings/services/settings.service';
 import { ProjectsService } from '../../projects/services/projects.service';
 
@@ -20,6 +21,7 @@ const createMockExportData = (prompts: any[] = []): any => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const createMockImportResult = (): any => ({
+  success: true,
   dryRun: false,
   missingProviders: [],
   unmatchedStatuses: [],
@@ -28,10 +30,21 @@ const createMockImportResult = (): any => ({
   imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
 });
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const createMockProviderMappingRequired = (missingProviders: string[]): any => ({
+  success: false,
+  providerMappingRequired: {
+    missingProviders,
+    familyAlternatives: [],
+    canImport: false,
+  },
+});
+
 describe('TemplateUpgradeService', () => {
   let service: TemplateUpgradeService;
   let mockOrchestrationService: jest.Mocked<RegistryOrchestrationService>;
   let mockCacheService: jest.Mocked<TemplateCacheService>;
+  let mockUnifiedTemplateService: jest.Mocked<UnifiedTemplateService>;
   let mockSettingsService: jest.Mocked<SettingsService>;
   let mockProjectsService: jest.Mocked<ProjectsService>;
 
@@ -43,6 +56,10 @@ describe('TemplateUpgradeService', () => {
     mockCacheService = {
       getTemplate: jest.fn(),
     } as unknown as jest.Mocked<TemplateCacheService>;
+
+    mockUnifiedTemplateService = {
+      getBundledTemplate: jest.fn(),
+    } as unknown as jest.Mocked<UnifiedTemplateService>;
 
     mockSettingsService = {
       getProjectTemplateMetadata: jest.fn(),
@@ -58,6 +75,7 @@ describe('TemplateUpgradeService', () => {
     service = new TemplateUpgradeService(
       mockOrchestrationService,
       mockCacheService,
+      mockUnifiedTemplateService,
       mockSettingsService,
       mockProjectsService,
     );
@@ -85,7 +103,7 @@ describe('TemplateUpgradeService', () => {
       await expect(service.createBackup('project-123')).rejects.toThrow(NotFoundError);
     });
 
-    it('should throw for bundled templates (no installedVersion)', async () => {
+    it('should throw when project has no installed version', async () => {
       mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
         templateSlug: 'empty-project',
         source: 'bundled',
@@ -96,8 +114,25 @@ describe('TemplateUpgradeService', () => {
 
       await expect(service.createBackup('project-123')).rejects.toThrow(ValidationError);
       await expect(service.createBackup('project-123')).rejects.toThrow(
-        'Bundled templates cannot be upgraded',
+        'Cannot upgrade: project has no installed version',
       );
+    });
+
+    it('should store source in backup for bundled templates', async () => {
+      mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
+        templateSlug: 'bundled-template',
+        source: 'bundled',
+        installedVersion: '1.0.0',
+        registryUrl: null,
+        installedAt: new Date().toISOString(),
+      });
+      mockProjectsService.exportProject.mockResolvedValue(createMockExportData());
+
+      const backupId = await service.createBackup('project-123');
+
+      expect(backupId).toMatch(/^backup-project-123-\d+$/);
+      const info = service.getBackupInfo(backupId);
+      expect(info).not.toBeNull();
     });
   });
 
@@ -307,6 +342,169 @@ describe('TemplateUpgradeService', () => {
       const backups = service.getProjectBackups('project-123');
       expect(backups).toHaveLength(0);
     });
+
+    it('should return error and keep backup when provider mapping is required', async () => {
+      mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
+        templateSlug: 'test-template',
+        installedVersion: '1.0.0',
+        registryUrl: 'https://test.com',
+        installedAt: new Date().toISOString(),
+      });
+      mockProjectsService.exportProject.mockResolvedValue(createMockExportData());
+      mockCacheService.getTemplate.mockResolvedValue({
+        content: { prompts: [] },
+        metadata: { slug: 'test', version: '2.0.0', checksum: 'abc', cachedAt: '', size: 0 },
+      });
+      // importProject returns provider mapping required
+      mockProjectsService.importProject.mockResolvedValue(
+        createMockProviderMappingRequired(['claude', 'gpt-4']),
+      );
+
+      const result = await service.upgradeProject({
+        projectId: 'project-123',
+        targetVersion: '2.0.0',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('provider configuration');
+      expect(result.error).toContain('claude');
+      expect(result.error).toContain('gpt-4');
+      expect(result.backupId).toBeDefined();
+      // Metadata should NOT be updated
+      expect(mockSettingsService.setProjectTemplateMetadata).not.toHaveBeenCalled();
+      // Backup should be kept for retry
+      const backups = service.getProjectBackups('project-123');
+      expect(backups).toHaveLength(1);
+    });
+
+    it('should return error and keep backup when import fails without throwing', async () => {
+      mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
+        templateSlug: 'test-template',
+        installedVersion: '1.0.0',
+        registryUrl: 'https://test.com',
+        installedAt: new Date().toISOString(),
+      });
+      mockProjectsService.exportProject.mockResolvedValue(createMockExportData());
+      mockCacheService.getTemplate.mockResolvedValue({
+        content: { prompts: [] },
+        metadata: { slug: 'test', version: '2.0.0', checksum: 'abc', cachedAt: '', size: 0 },
+      });
+      // importProject returns generic failure (success: false without providerMappingRequired)
+      mockProjectsService.importProject.mockResolvedValue({ success: false });
+
+      const result = await service.upgradeProject({
+        projectId: 'project-123',
+        targetVersion: '2.0.0',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Template import failed');
+      expect(result.backupId).toBeDefined();
+      // Metadata should NOT be updated
+      expect(mockSettingsService.setProjectTemplateMetadata).not.toHaveBeenCalled();
+      // Backup should be kept for manual recovery
+      const backups = service.getProjectBackups('project-123');
+      expect(backups).toHaveLength(1);
+    });
+
+    describe('bundled templates', () => {
+      it('should upgrade bundled template successfully', async () => {
+        mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
+          templateSlug: 'bundled-template',
+          source: 'bundled',
+          installedVersion: '1.0.0',
+          registryUrl: null,
+          installedAt: new Date().toISOString(),
+        });
+        mockProjectsService.exportProject.mockResolvedValue(createMockExportData());
+        mockUnifiedTemplateService.getBundledTemplate.mockReturnValue({
+          content: { prompts: [], _manifest: { version: '2.0.0' } },
+          source: 'bundled',
+          version: null,
+        });
+        mockProjectsService.importProject.mockResolvedValue(createMockImportResult());
+
+        const result = await service.upgradeProject({
+          projectId: 'project-123',
+          targetVersion: '2.0.0',
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.newVersion).toBe('2.0.0');
+        expect(mockUnifiedTemplateService.getBundledTemplate).toHaveBeenCalledWith(
+          'bundled-template',
+        );
+        expect(mockCacheService.getTemplate).not.toHaveBeenCalled();
+      });
+
+      it('should return error when bundled template not found', async () => {
+        mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
+          templateSlug: 'nonexistent-bundled',
+          source: 'bundled',
+          installedVersion: '1.0.0',
+          registryUrl: null,
+          installedAt: new Date().toISOString(),
+        });
+        mockUnifiedTemplateService.getBundledTemplate.mockImplementation(() => {
+          throw new Error('Template not found');
+        });
+
+        const result = await service.upgradeProject({
+          projectId: 'project-123',
+          targetVersion: '2.0.0',
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('not found');
+      });
+
+      it('should return error when bundled version does not match target', async () => {
+        mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
+          templateSlug: 'bundled-template',
+          source: 'bundled',
+          installedVersion: '1.0.0',
+          registryUrl: null,
+          installedAt: new Date().toISOString(),
+        });
+        mockUnifiedTemplateService.getBundledTemplate.mockReturnValue({
+          content: { prompts: [], _manifest: { version: '1.5.0' } }, // Different version
+          source: 'bundled',
+          version: null,
+        });
+
+        const result = await service.upgradeProject({
+          projectId: 'project-123',
+          targetVersion: '2.0.0', // Requesting 2.0.0 but bundled is 1.5.0
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('Bundled template version is 1.5.0, not 2.0.0');
+      });
+
+      it('should not use cache service for bundled templates', async () => {
+        mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
+          templateSlug: 'bundled-template',
+          source: 'bundled',
+          installedVersion: '1.0.0',
+          registryUrl: null,
+          installedAt: new Date().toISOString(),
+        });
+        mockProjectsService.exportProject.mockResolvedValue(createMockExportData());
+        mockUnifiedTemplateService.getBundledTemplate.mockReturnValue({
+          content: { prompts: [], _manifest: { version: '2.0.0' } },
+          source: 'bundled',
+          version: null,
+        });
+        mockProjectsService.importProject.mockResolvedValue(createMockImportResult());
+
+        await service.upgradeProject({
+          projectId: 'project-123',
+          targetVersion: '2.0.0',
+        });
+
+        expect(mockCacheService.getTemplate).not.toHaveBeenCalled();
+      });
+    });
   });
 
   describe('restoreBackup', () => {
@@ -362,7 +560,7 @@ describe('TemplateUpgradeService', () => {
       );
     });
 
-    it('should include source field when restoring metadata', async () => {
+    it('should include source field when restoring registry template metadata', async () => {
       mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
         templateSlug: 'test-template',
         source: 'registry',
@@ -382,6 +580,32 @@ describe('TemplateUpgradeService', () => {
           source: 'registry',
           templateSlug: 'test-template',
           installedVersion: '1.0.0',
+          registryUrl: 'https://test.com',
+        }),
+      );
+    });
+
+    it('should restore bundled template with correct source and null registryUrl', async () => {
+      mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
+        templateSlug: 'bundled-template',
+        source: 'bundled',
+        installedVersion: '1.0.0',
+        registryUrl: null,
+        installedAt: new Date().toISOString(),
+      });
+      mockProjectsService.exportProject.mockResolvedValue(createMockExportData());
+      mockProjectsService.importProject.mockResolvedValue(createMockImportResult());
+
+      const backupId = await service.createBackup('project-123');
+      await service.restoreBackup(backupId);
+
+      expect(mockSettingsService.setProjectTemplateMetadata).toHaveBeenCalledWith(
+        'project-123',
+        expect.objectContaining({
+          source: 'bundled',
+          templateSlug: 'bundled-template',
+          installedVersion: '1.0.0',
+          registryUrl: null,
         }),
       );
     });
@@ -509,6 +733,7 @@ describe('TemplateUpgradeService', () => {
       serviceWithFakeTimers = new TemplateUpgradeService(
         mockOrchestrationService,
         mockCacheService,
+        mockUnifiedTemplateService,
         mockSettingsService,
         mockProjectsService,
       );

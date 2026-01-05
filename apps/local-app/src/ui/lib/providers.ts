@@ -11,9 +11,15 @@ const CLAUDE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 12
 
 // OpenAI icon (Bootstrap Icons style, viewBox 0 0 16 16)
 // Source: https://icons.getbootstrap.com/icons/openai/
-// Official OpenAI brand color: black
-const OPENAI_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="#000000">
+// OpenAI brand green - visible on both light and dark themes
+const OPENAI_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="#10a37f">
   <path d="M14.245 6.426a3.49 3.49 0 0 0-.3-2.878 3.544 3.544 0 0 0-3.818-1.682 3.49 3.49 0 0 0-2.625-1.176 3.544 3.544 0 0 0-3.383 2.453 3.49 3.49 0 0 0-2.332 1.693 3.544 3.544 0 0 0 .436 4.157 3.49 3.49 0 0 0 .3 2.878 3.544 3.544 0 0 0 3.818 1.682 3.49 3.49 0 0 0 2.625 1.176 3.544 3.544 0 0 0 3.383-2.453 3.49 3.49 0 0 0 2.332-1.693 3.544 3.544 0 0 0-.436-4.157m-5.283 7.836a2.63 2.63 0 0 1-1.688-.612l.083-.047 2.804-1.62a.46.46 0 0 0 .228-.397V7.048l1.185.685a.04.04 0 0 1 .022.032v3.277a2.64 2.64 0 0 1-2.634 2.62m-5.664-2.42a2.62 2.62 0 0 1-.314-1.77l.083.05 2.804 1.619a.45.45 0 0 0 .456 0l3.424-1.977v1.371a.04.04 0 0 1-.017.035l-2.835 1.637a2.64 2.64 0 0 1-3.601-.965M2.32 5.59a2.62 2.62 0 0 1 1.372-1.156v3.337a.45.45 0 0 0 .228.394l3.424 1.977-1.186.686a.04.04 0 0 1-.038.003L3.285 9.195A2.64 2.64 0 0 1 2.32 5.59m9.715 2.262L8.61 5.875l1.185-.685a.04.04 0 0 1 .039-.004l2.835 1.637a2.64 2.64 0 0 1-.408 4.762V8.248a.45.45 0 0 0-.226-.396m1.18-1.786-.084-.05-2.803-1.62a.45.45 0 0 0-.456 0L6.448 6.374V5.003a.04.04 0 0 1 .017-.035l2.835-1.636a2.64 2.64 0 0 1 3.915 2.734M5.829 8.952l-1.185-.686a.04.04 0 0 1-.022-.031V4.957a2.64 2.64 0 0 1 4.323-2.029l-.083.047-2.804 1.62a.46.46 0 0 0-.228.397zm.644-1.389 1.525-.881 1.526.88v1.762l-1.526.881-1.525-.88z"/>
+</svg>`;
+
+// Google Gemini icon (four-pointed sparkle/star)
+// Source: Gemini brand sparkle shape, Google brand blue
+const GEMINI_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#4285F4">
+  <path d="M12 0C12 6.627 6.627 12 0 12c6.627 0 12 5.373 12 12 0-6.627 5.373-12 12-12-6.627 0-12-5.373-12-12z"/>
 </svg>`;
 
 // Map provider names to their SVG icons
@@ -23,6 +29,8 @@ const PROVIDER_ICONS: Record<string, string> = {
   openai: OPENAI_SVG,
   codex: OPENAI_SVG,
   gpt: OPENAI_SVG,
+  gemini: GEMINI_SVG,
+  google: GEMINI_SVG,
 };
 
 // Cache for data URIs
@@ -40,6 +48,9 @@ function normalizeProviderName(name: string | null | undefined): string | null {
   }
   if (normalized.includes('openai') || normalized.includes('codex') || normalized.includes('gpt')) {
     return 'openai';
+  }
+  if (normalized.includes('gemini') || normalized.includes('google')) {
+    return 'gemini';
   }
   return normalized;
 }
@@ -102,6 +113,8 @@ export function getProviderIconAltText(name: string | null | undefined): string 
     openai: 'OpenAI',
     codex: 'OpenAI Codex',
     gpt: 'OpenAI GPT',
+    gemini: 'Google Gemini',
+    google: 'Google',
   };
 
   return `${displayNames[normalized] ?? normalized} icon`;

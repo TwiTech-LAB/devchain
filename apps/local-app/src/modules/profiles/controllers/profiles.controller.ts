@@ -27,6 +27,19 @@ const CreateProfileSchema = z.object({
   projectId: z.string().min(1),
   name: z.string().min(1),
   providerId: z.string().min(1),
+  familySlug: z
+    .union([z.string(), z.null()])
+    .optional()
+    .transform((value) => {
+      if (value === undefined) {
+        return undefined;
+      }
+      if (value === null) {
+        return null;
+      }
+      const trimmed = value.trim().toLowerCase();
+      return trimmed.length > 0 ? trimmed : null;
+    }),
   options: z
     .union([z.string(), z.null()])
     .optional()

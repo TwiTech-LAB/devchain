@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/ui/components/ui/button';
 import { Input } from '@/ui/components/ui/input';
@@ -25,13 +25,12 @@ import { cn } from '@/ui/lib/utils';
 import { fetchPreflightChecks } from '@/ui/lib/preflight';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 
-const SUPPORTED_MCP_PROVIDERS = new Set(['claude', 'codex']);
-
-type ProviderType = 'codex' | 'claude';
+type ProviderType = 'codex' | 'claude' | 'gemini';
 
 function getDefaultBinPathForType(t: ProviderType) {
   if (t === 'codex') return 'codex';
   if (t === 'claude') return 'claude';
+  if (t === 'gemini') return 'gemini';
   return '';
 }
 
@@ -153,6 +152,11 @@ export function ProvidersPage() {
     staleTime: 30000,
     refetchInterval: 60000,
   });
+
+  const supportedProviders = useMemo(
+    () => preflightResult?.supportedMcpProviders ?? [],
+    [preflightResult?.supportedMcpProviders],
+  );
 
   const createMutation = useMutation({
     mutationFn: createProvider,
@@ -335,7 +339,13 @@ export function ProvidersPage() {
     setFormData({ binPath: provider.binPath || '' });
     // derive provider type from existing provider
     const t: ProviderType = (
-      provider.name === 'codex' ? 'codex' : provider.name === 'claude' ? 'claude' : 'codex'
+      provider.name === 'codex'
+        ? 'codex'
+        : provider.name === 'claude'
+          ? 'claude'
+          : provider.name === 'gemini'
+            ? 'gemini'
+            : 'codex'
     ) as ProviderType;
     setProviderType(t);
     setBinPathTouched(false);
@@ -355,7 +365,7 @@ export function ProvidersPage() {
   };
 
   const handleConfigure = (provider: Provider) => {
-    if (!SUPPORTED_MCP_PROVIDERS.has(provider.name)) {
+    if (!supportedProviders.includes(provider.name)) {
       toast({
         title: 'Unsupported provider',
         description: `${provider.name} does not support MCP registration.`,
@@ -411,7 +421,7 @@ export function ProvidersPage() {
           )}
 
           {providersData.items.map((provider: Provider) => {
-            const isSupported = SUPPORTED_MCP_PROVIDERS.has(provider.name);
+            const isSupported = supportedProviders.includes(provider.name);
             const pf = preflightResult?.providers?.find((p) => p.id === provider.id);
             const mcpStatus = pf?.mcpStatus;
             const mcpBadgeClass =
@@ -521,6 +531,7 @@ export function ProvidersPage() {
                 <SelectContent>
                   <SelectItem value="codex">Codex</SelectItem>
                   <SelectItem value="claude">Claude</SelectItem>
+                  <SelectItem value="gemini">Gemini</SelectItem>
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground mt-1">

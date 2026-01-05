@@ -20,6 +20,7 @@ describe('ProjectsController', () => {
       | 'listProjects'
       | 'findProjectByPath'
       | 'deleteProject'
+      | 'listAgentProfiles'
     >
   >;
   let projectsService: jest.Mocked<Partial<ProjectsService>>;
@@ -40,6 +41,9 @@ describe('ProjectsController', () => {
       listProjects: jest.fn(),
       findProjectByPath: jest.fn(),
       deleteProject: jest.fn(),
+      listAgentProfiles: jest
+        .fn()
+        .mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 }),
     };
 
     projectsService = {
@@ -47,6 +51,8 @@ describe('ProjectsController', () => {
       createFromTemplate: jest.fn(),
       exportProject: jest.fn(),
       importProject: jest.fn(),
+      getTemplateManifestForProject: jest.fn(),
+      getBundledUpgradesForProjects: jest.fn().mockReturnValue(new Map()),
     };
 
     settingsService = {
@@ -200,6 +206,64 @@ describe('ProjectsController', () => {
       const result = await controller.listProjects();
 
       expect(result.items[0].templateMetadata?.source).toBe('registry');
+    });
+
+    it('includes bundledUpgradeAvailable in response', async () => {
+      const project1 = makeProject({ id: 'p1', name: 'Project 1' });
+      const project2 = makeProject({ id: 'p2', name: 'Project 2' });
+      storage.listProjects.mockResolvedValue({
+        items: [project1, project2],
+        total: 2,
+        limit: 100,
+        offset: 0,
+      });
+
+      // p1 is a bundled template with upgrade available
+      const metadataMap = new Map();
+      metadataMap.set('p1', {
+        templateSlug: 'bundled-template',
+        installedVersion: '1.0.0',
+        source: 'bundled',
+        registryUrl: null,
+        installedAt: new Date().toISOString(),
+      });
+      // p2 is a registry template
+      metadataMap.set('p2', {
+        templateSlug: 'registry-template',
+        installedVersion: '2.0.0',
+        source: 'registry',
+        registryUrl: 'https://registry.example.com',
+        installedAt: new Date().toISOString(),
+      });
+      settingsService.getAllProjectTemplateMetadataMap.mockReturnValue(metadataMap);
+
+      // Mock upgrade check - p1 has upgrade available to 2.0.0
+      const upgradesMap = new Map<string, string | null>();
+      upgradesMap.set('p1', '2.0.0');
+      upgradesMap.set('p2', null);
+      projectsService.getBundledUpgradesForProjects.mockReturnValue(upgradesMap);
+
+      const result = await controller.listProjects();
+
+      expect(result.items).toHaveLength(2);
+      expect(result.items[0].bundledUpgradeAvailable).toBe('2.0.0');
+      expect(result.items[1].bundledUpgradeAvailable).toBeNull();
+
+      // Verify getBundledUpgradesForProjects was called with correct data
+      expect(projectsService.getBundledUpgradesForProjects).toHaveBeenCalledWith([
+        {
+          projectId: 'p1',
+          templateSlug: 'bundled-template',
+          installedVersion: '1.0.0',
+          source: 'bundled',
+        },
+        {
+          projectId: 'p2',
+          templateSlug: 'registry-template',
+          installedVersion: '2.0.0',
+          source: 'registry',
+        },
+      ]);
     });
   });
 
@@ -402,6 +466,50 @@ describe('ProjectsController', () => {
         }),
       ).rejects.toThrow('Either slug or templateId is required');
     });
+
+    it('accepts valid familyProviderMappings and normalizes to lowercase', async () => {
+      const mockResult = {
+        success: true,
+        project: makeProject({ id: 'p1' }),
+        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 5 },
+      };
+      (projectsService.createFromTemplate as jest.Mock).mockResolvedValue(mockResult);
+
+      await controller.createProjectFromTemplate({
+        name: 'New Project',
+        rootPath: '/tmp/new',
+        slug: 'my-template',
+        familyProviderMappings: { Coder: 'CLAUDE', Reviewer: 'Gemini' },
+      });
+
+      expect(projectsService.createFromTemplate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          familyProviderMappings: { coder: 'claude', reviewer: 'gemini' },
+        }),
+      );
+    });
+
+    it('rejects familyProviderMappings with empty key', async () => {
+      await expect(
+        controller.createProjectFromTemplate({
+          name: 'New Project',
+          rootPath: '/tmp/new',
+          slug: 'my-template',
+          familyProviderMappings: { '': 'claude' },
+        }),
+      ).rejects.toThrow();
+    });
+
+    it('rejects familyProviderMappings with empty value', async () => {
+      await expect(
+        controller.createProjectFromTemplate({
+          name: 'New Project',
+          rootPath: '/tmp/new',
+          slug: 'my-template',
+          familyProviderMappings: { coder: '' },
+        }),
+      ).rejects.toThrow();
+    });
   });
 
   describe('POST /api/projects/:id/export', () => {
@@ -544,6 +652,66 @@ describe('ProjectsController', () => {
     });
   });
 
+  describe('POST /api/projects/:id/import', () => {
+    it('accepts valid familyProviderMappings and normalizes to lowercase', async () => {
+      const mockResult = {
+        success: true,
+        counts: { imported: {}, deleted: {} },
+      };
+      (projectsService.importProject as jest.Mock).mockResolvedValue(mockResult);
+
+      await controller.importProject('p1', undefined, {
+        familyProviderMappings: { Coder: 'CLAUDE', Reviewer: 'Gemini' },
+      });
+
+      expect(projectsService.importProject).toHaveBeenCalledWith(
+        expect.objectContaining({
+          familyProviderMappings: { coder: 'claude', reviewer: 'gemini' },
+        }),
+      );
+    });
+
+    it('passes undefined familyProviderMappings when not provided', async () => {
+      const mockResult = {
+        success: true,
+        counts: { imported: {}, deleted: {} },
+      };
+      (projectsService.importProject as jest.Mock).mockResolvedValue(mockResult);
+
+      await controller.importProject('p1', undefined, {});
+
+      expect(projectsService.importProject).toHaveBeenCalledWith(
+        expect.objectContaining({
+          familyProviderMappings: undefined,
+        }),
+      );
+    });
+
+    it('rejects familyProviderMappings with empty key', async () => {
+      await expect(
+        controller.importProject('p1', undefined, {
+          familyProviderMappings: { '': 'claude' },
+        }),
+      ).rejects.toThrow('Invalid familyProviderMappings');
+    });
+
+    it('rejects familyProviderMappings with empty value', async () => {
+      await expect(
+        controller.importProject('p1', undefined, {
+          familyProviderMappings: { coder: '' },
+        }),
+      ).rejects.toThrow('Invalid familyProviderMappings');
+    });
+
+    it('rejects familyProviderMappings with non-string value', async () => {
+      await expect(
+        controller.importProject('p1', undefined, {
+          familyProviderMappings: { coder: 123 } as unknown as Record<string, string>,
+        }),
+      ).rejects.toThrow('Invalid familyProviderMappings');
+    });
+  });
+
   describe('DELETE /api/projects/:id', () => {
     it('deletes project and clears template metadata', async () => {
       storage.deleteProject.mockResolvedValue(undefined);
@@ -565,6 +733,31 @@ describe('ProjectsController', () => {
       expect(settingsService.clearProjectTemplateMetadata).toHaveBeenCalledWith(
         'project-without-metadata',
       );
+    });
+  });
+
+  describe('GET /api/projects/:id/template-manifest', () => {
+    it('returns manifest when available', async () => {
+      const manifest = {
+        name: 'Test Template',
+        version: '1.0.0',
+        description: 'A test template',
+      };
+      (projectsService.getTemplateManifestForProject as jest.Mock).mockResolvedValue(manifest);
+
+      const result = await controller.getTemplateManifest('p1');
+
+      expect(result).toEqual(manifest);
+      expect(projectsService.getTemplateManifestForProject).toHaveBeenCalledWith('p1');
+    });
+
+    it('returns null when no manifest available', async () => {
+      (projectsService.getTemplateManifestForProject as jest.Mock).mockResolvedValue(null);
+
+      const result = await controller.getTemplateManifest('p1');
+
+      expect(result).toBeNull();
+      expect(projectsService.getTemplateManifestForProject).toHaveBeenCalledWith('p1');
     });
   });
 });

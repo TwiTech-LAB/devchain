@@ -11,6 +11,7 @@ export const AgentProfileWithPromptsSchema = z.object({
   projectId: z.string().nullable(),
   name: z.string(),
   providerId: z.string(),
+  familySlug: z.string().nullable(),
   options: z.string().nullable(),
   systemPrompt: z.string().nullable(),
   instructions: z.string().nullable(),

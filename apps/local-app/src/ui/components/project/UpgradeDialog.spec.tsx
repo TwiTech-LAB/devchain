@@ -49,6 +49,7 @@ describe('UpgradeDialog', () => {
     templateSlug: 'test-template',
     currentVersion: '1.0.0',
     targetVersion: '2.0.0',
+    source: 'registry' as const,
     open: true,
     onClose: jest.fn(),
   };
@@ -84,14 +85,14 @@ describe('UpgradeDialog', () => {
     global.fetch = jest.fn() as unknown as typeof fetch;
     renderWithProviders(<UpgradeDialog {...defaultProps} open={false} />);
 
-    expect(screen.queryByText('Update Project')).not.toBeInTheDocument();
+    expect(screen.queryByText('Upgrade Project')).not.toBeInTheDocument();
   });
 
   it('shows confirm step with version badges', () => {
     global.fetch = jest.fn() as unknown as typeof fetch;
     renderWithProviders(<UpgradeDialog {...defaultProps} />);
 
-    expect(screen.getByText('Update Project')).toBeInTheDocument();
+    expect(screen.getByText('Upgrade Project')).toBeInTheDocument();
     expect(screen.getByText('v1.0.0')).toBeInTheDocument();
     expect(screen.getByText('v2.0.0')).toBeInTheDocument();
   });
@@ -107,11 +108,11 @@ describe('UpgradeDialog', () => {
     ).toBeInTheDocument();
   });
 
-  it('has Update and Cancel buttons in confirm step', () => {
+  it('has Upgrade and Cancel buttons in confirm step', () => {
     global.fetch = jest.fn() as unknown as typeof fetch;
     renderWithProviders(<UpgradeDialog {...defaultProps} />);
 
-    expect(screen.getByRole('button', { name: /update/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /upgrade/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /cancel/i })).toBeInTheDocument();
   });
 
@@ -127,7 +128,7 @@ describe('UpgradeDialog', () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it('transitions to applying step when Update is clicked', async () => {
+  it('transitions to applying step when Upgrade is clicked', async () => {
     let resolveUpgrade: (value: unknown) => void;
     const upgradePromise = new Promise((resolve) => {
       resolveUpgrade = resolve;
@@ -144,10 +145,10 @@ describe('UpgradeDialog', () => {
 
     renderWithProviders(<UpgradeDialog {...defaultProps} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /update/i }));
+    fireEvent.click(screen.getByRole('button', { name: /upgrade/i }));
 
     await waitFor(() => {
-      expect(screen.getByText('Applying Update')).toBeInTheDocument();
+      expect(screen.getByText('Applying Upgrade')).toBeInTheDocument();
       expect(screen.getByText(/Creating backup and applying changes/)).toBeInTheDocument();
     });
 
@@ -169,11 +170,11 @@ describe('UpgradeDialog', () => {
 
     renderWithProviders(<UpgradeDialog {...defaultProps} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /update/i }));
+    fireEvent.click(screen.getByRole('button', { name: /upgrade/i }));
 
     // Wait for ALL state updates to complete
     await waitFor(() => {
-      expect(screen.getByText('Update Complete')).toBeInTheDocument();
+      expect(screen.getByText('Upgrade Complete')).toBeInTheDocument();
       expect(mockToast).toHaveBeenCalledWith(
         expect.objectContaining({ title: 'Upgrade Complete' }),
       );
@@ -199,7 +200,7 @@ describe('UpgradeDialog', () => {
 
     renderWithProviders(<UpgradeDialog {...defaultProps} onClose={onClose} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /update/i }));
+    fireEvent.click(screen.getByRole('button', { name: /upgrade/i }));
 
     await waitFor(() => {
       expect(mockToast).toHaveBeenCalledWith(
@@ -232,10 +233,10 @@ describe('UpgradeDialog', () => {
 
     renderWithProviders(<UpgradeDialog {...defaultProps} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /update/i }));
+    fireEvent.click(screen.getByRole('button', { name: /upgrade/i }));
 
     await waitFor(() => {
-      expect(screen.getByText('Update Failed')).toBeInTheDocument();
+      expect(screen.getByText('Upgrade Failed')).toBeInTheDocument();
       expect(screen.getByText('Import failed')).toBeInTheDocument();
       expect(screen.getByText('Manual Restore Available')).toBeInTheDocument();
       expect(screen.getByRole('button', { name: /restore backup/i })).toBeInTheDocument();
@@ -266,8 +267,8 @@ describe('UpgradeDialog', () => {
     const onClose = jest.fn();
     renderWithProviders(<UpgradeDialog {...defaultProps} onClose={onClose} />);
 
-    // Click Update
-    fireEvent.click(screen.getByRole('button', { name: /update/i }));
+    // Click Upgrade
+    fireEvent.click(screen.getByRole('button', { name: /upgrade/i }));
 
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /restore backup/i })).toBeInTheDocument();
@@ -297,10 +298,10 @@ describe('UpgradeDialog', () => {
 
     renderWithProviders(<UpgradeDialog {...defaultProps} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /update/i }));
+    fireEvent.click(screen.getByRole('button', { name: /upgrade/i }));
 
     await waitFor(() => {
-      expect(screen.getByText('Update Failed')).toBeInTheDocument();
+      expect(screen.getByText('Upgrade Failed')).toBeInTheDocument();
     });
   });
 
@@ -320,11 +321,11 @@ describe('UpgradeDialog', () => {
     renderWithProviders(<UpgradeDialog {...defaultProps} onClose={onClose} />);
 
     // Complete the upgrade flow
-    fireEvent.click(screen.getByRole('button', { name: /update/i }));
+    fireEvent.click(screen.getByRole('button', { name: /upgrade/i }));
 
     // Wait for all state updates before clicking Done
     await waitFor(() => {
-      expect(screen.getByText('Update Complete')).toBeInTheDocument();
+      expect(screen.getByText('Upgrade Complete')).toBeInTheDocument();
       expect(mockToast).toHaveBeenCalled();
     });
 
@@ -357,15 +358,72 @@ describe('UpgradeDialog', () => {
 
     renderWithProviders(<UpgradeDialog {...defaultProps} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /update/i }));
+    fireEvent.click(screen.getByRole('button', { name: /upgrade/i }));
 
     await waitFor(() => {
-      expect(screen.getByText('Update Failed')).toBeInTheDocument();
+      expect(screen.getByText('Upgrade Failed')).toBeInTheDocument();
       expect(screen.getByText('Version not cached')).toBeInTheDocument();
     });
 
     // Should NOT show restore button when no backupId
     expect(screen.queryByRole('button', { name: /restore backup/i })).not.toBeInTheDocument();
     expect(screen.queryByText('Manual Restore Available')).not.toBeInTheDocument();
+  });
+
+  describe('bundled template source', () => {
+    const bundledProps = { ...defaultProps, source: 'bundled' as const };
+
+    it('shows "Update" terminology for bundled templates', () => {
+      global.fetch = jest.fn() as unknown as typeof fetch;
+      renderWithProviders(<UpgradeDialog {...bundledProps} />);
+
+      expect(screen.getByText('Update Project')).toBeInTheDocument();
+      expect(
+        screen.getByText(/Update My Project to the bundled template version/),
+      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /update/i })).toBeInTheDocument();
+    });
+
+    it('shows "Update Complete" for bundled templates on success', async () => {
+      global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/api/registry/upgrade-project') && init?.method === 'POST') {
+          return {
+            ok: true,
+            json: async () => ({ success: true, newVersion: '2.0.0' }),
+          };
+        }
+        return { ok: true, json: async () => ({}) };
+      }) as unknown as typeof fetch;
+
+      renderWithProviders(<UpgradeDialog {...bundledProps} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /update/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText('Update Complete')).toBeInTheDocument();
+        expect(mockToast).toHaveBeenCalledWith(
+          expect.objectContaining({ title: 'Update Complete' }),
+        );
+      });
+    });
+
+    it('shows "Update Failed" for bundled templates on error', async () => {
+      global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/api/registry/upgrade-project') && init?.method === 'POST') {
+          return { ok: false, status: 500, json: async () => ({ message: 'Server error' }) };
+        }
+        return { ok: true, json: async () => ({}) };
+      }) as unknown as typeof fetch;
+
+      renderWithProviders(<UpgradeDialog {...bundledProps} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /update/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText('Update Failed')).toBeInTheDocument();
+      });
+    });
   });
 });

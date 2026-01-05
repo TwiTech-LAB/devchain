@@ -3,6 +3,7 @@ import { PreflightService } from './preflight.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import { access } from 'fs/promises';
 import { McpProviderRegistrationService } from '../../mcp/services/mcp-provider-registration.service';
+import { ProviderAdapterFactory } from '../../providers/adapters';
 import { DEFAULT_FEATURE_FLAGS } from '../../../common/config/feature-flags';
 
 type ExecCallback = (error: Error | null, stdout: string, stderr: string) => void;
@@ -76,6 +77,10 @@ describe('PreflightService', () => {
     resolveBinary: jest.Mock;
     listRegistrations: jest.Mock;
   };
+  let mockAdapterFactory: {
+    isSupported: jest.Mock;
+    getSupportedProviders: jest.Mock;
+  };
 
   beforeEach(async () => {
     // Create mock storage service (partial mock - only methods needed for PreflightService)
@@ -94,6 +99,13 @@ describe('PreflightService', () => {
       listRegistrations: jest.fn(),
     };
 
+    mockAdapterFactory = {
+      isSupported: jest
+        .fn()
+        .mockImplementation((name: string) => ['claude', 'codex', 'gemini'].includes(name)),
+      getSupportedProviders: jest.fn().mockReturnValue(['claude', 'codex', 'gemini']),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         PreflightService,
@@ -104,6 +116,10 @@ describe('PreflightService', () => {
         {
           provide: McpProviderRegistrationService,
           useValue: mockMcpRegistration,
+        },
+        {
+          provide: ProviderAdapterFactory,
+          useValue: mockAdapterFactory,
         },
       ],
     }).compile();

@@ -1317,6 +1317,44 @@ describe('LocalStorageService', () => {
         // Temperature should be stored as 70 (0.7 * 100) in the DB
         expect(mockDb.insert).toHaveBeenCalled();
       });
+
+      it('should create profile with familySlug', async () => {
+        mockDb.insert = jest.fn().mockReturnValue({
+          values: jest.fn().mockResolvedValue(undefined),
+        });
+
+        const result = await service.createAgentProfile({
+          name: 'Coder Profile',
+          providerId: 'provider-1',
+          familySlug: 'coder',
+          options: '--model claude-opus-4-5',
+          systemPrompt: null,
+          temperature: null,
+          maxTokens: null,
+        });
+
+        expect(result.name).toBe('Coder Profile');
+        expect(result.familySlug).toBe('coder');
+        expect(mockDb.insert).toHaveBeenCalled();
+      });
+
+      it('should create profile with null familySlug when not provided', async () => {
+        mockDb.insert = jest.fn().mockReturnValue({
+          values: jest.fn().mockResolvedValue(undefined),
+        });
+
+        const result = await service.createAgentProfile({
+          name: 'Profile Without Family',
+          providerId: 'provider-1',
+          options: null,
+          systemPrompt: null,
+          temperature: null,
+          maxTokens: null,
+        });
+
+        expect(result.familySlug).toBeNull();
+        expect(mockDb.insert).toHaveBeenCalled();
+      });
     });
 
     describe('getAgentProfile', () => {

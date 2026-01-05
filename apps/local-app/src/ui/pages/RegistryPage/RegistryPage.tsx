@@ -97,9 +97,9 @@ export function RegistryPage() {
   const templates = useMemo(() => templatesData?.templates || [], [templatesData]);
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
       {/* Page Header */}
-      <div className="mb-6">
+      <div className="mb-6 flex-shrink-0">
         <div className="flex items-center gap-3">
           <Package className="h-8 w-8 text-primary" />
           <div>
@@ -118,7 +118,7 @@ export function RegistryPage() {
       )}
 
       {/* Downloaded Templates Section */}
-      <div className="mb-8">
+      <div className="mb-8 flex-shrink-0">
         <DownloadedTemplates />
       </div>
 
@@ -135,7 +135,7 @@ export function RegistryPage() {
       )}
 
       {/* Browse Registry Section */}
-      <div className="mb-4">
+      <div className="mb-4 flex-shrink-0">
         <h2 className="flex items-center gap-2 text-lg font-semibold">
           <Globe className="h-5 w-5" />
           Browse Registry
@@ -146,7 +146,7 @@ export function RegistryPage() {
       </div>
 
       {/* Template Grid */}
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 min-h-0 overflow-auto">
         {isLoading ? (
           <TemplateGridSkeleton />
         ) : error ? (

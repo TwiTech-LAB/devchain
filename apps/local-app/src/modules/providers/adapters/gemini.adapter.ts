@@ -2,17 +2,18 @@ import { Injectable } from '@nestjs/common';
 import { ProviderAdapter, AddMcpServerOptions, McpServerEntry } from './provider-adapter.interface';
 
 /**
- * Claude provider adapter
+ * Gemini provider adapter
  *
- * Implements MCP command building and output parsing for the Claude CLI.
+ * Implements MCP command building and output parsing for the Gemini CLI.
  */
 @Injectable()
-export class ClaudeAdapter implements ProviderAdapter {
-  readonly providerName = 'claude';
+export class GeminiAdapter implements ProviderAdapter {
+  readonly providerName = 'gemini';
 
   addMcpServer(options: AddMcpServerOptions): string[] {
-    const alias = options.alias ?? this.providerName;
-    const args = ['mcp', 'add', '--transport', 'http', alias, options.endpoint];
+    const alias = options.alias ?? 'devchain';
+    // gemini mcp add <alias> <endpoint> --type http
+    const args = ['mcp', 'add', alias, options.endpoint, '--type', 'http'];
     if (options.extraArgs?.length) {
       args.push(...options.extraArgs);
     }
@@ -27,27 +28,28 @@ export class ClaudeAdapter implements ProviderAdapter {
     return ['mcp', 'remove', alias];
   }
 
-  binaryCheck(alias: string): string[] {
-    return ['mcp', 'check', alias];
+  binaryCheck(_alias: string): string[] {
+    // Gemini has no separate check command, use list
+    return ['mcp', 'list'];
   }
 
   parseListOutput(stdout: string, _stderr?: string): McpServerEntry[] {
-    // Claude CLI output format:
-    // Checking MCP server health...
+    // Gemini CLI output format:
+    // Configured MCP servers:
     //
-    // devchain: http://127.0.0.1:3000/mcp (HTTP) - ✓ Connected
-    // claude: ws://127.0.0.1:4000 (HTTP) - ✗ Failed to connect
+    // ✓ devchain: http://127.0.0.1:3000/mcp (sse) - Connected
+    // ✗ server2: http://127.0.0.1:4000/mcp (sse) - Failed
     const entries: McpServerEntry[] = [];
     const lines = stdout.split('\n').filter((line) => line.trim().length > 0);
 
     for (const line of lines) {
-      // Skip header lines (e.g., "Checking MCP server health...")
-      if (line.toLowerCase().startsWith('checking')) {
+      // Skip header lines (e.g., "Configured MCP servers:")
+      if (line.toLowerCase().includes('configured mcp')) {
         continue;
       }
 
-      // Parse format: "alias: endpoint (transport) - status"
-      const match = line.match(/^(\S+):\s+(\S+)\s+\(([^)]+)\)/);
+      // Parse format: "✓ alias: endpoint (transport) - status" or "✗ alias: ..."
+      const match = line.match(/[✓✗]?\s*(\S+):\s+(\S+)\s+\(([^)]+)\)/);
       if (match) {
         const [, alias, endpoint, transport] = match;
         entries.push({

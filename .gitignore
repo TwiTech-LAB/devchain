@@ -1,15 +1,20 @@
 node_modules/
 dev-flow/
 .devchain/
+.gemini/
 .aider*
 apps/mcp-server/dist/
 dist/
 .idea/
 .env.local
 .env
-*.tsbuildinfo
 tmp/
-coverage/
+
+# Build artifacts
+*.tsbuildinfo
 packages/shared/src/**/*.js
 packages/shared/src/**/*.d.ts
 packages/shared/src/**/*.js.map
+
+# Test coverage
+coverage/

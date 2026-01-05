@@ -32,6 +32,19 @@ describe('providers', () => {
       expect(codexSvg).toBe(openaiSvg);
     });
 
+    it('returns SVG for gemini', () => {
+      const svg = getProviderIconSvg('gemini');
+      expect(svg).not.toBeNull();
+      expect(svg).toContain('<svg');
+      expect(svg).toContain('fill="#4285F4"'); // Google brand color
+    });
+
+    it('returns Gemini SVG for google', () => {
+      const googleSvg = getProviderIconSvg('google');
+      const geminiSvg = getProviderIconSvg('gemini');
+      expect(googleSvg).toBe(geminiSvg);
+    });
+
     it('returns null for unknown provider', () => {
       expect(getProviderIconSvg('unknown-provider')).toBeNull();
     });
@@ -51,6 +64,8 @@ describe('providers', () => {
       expect(getProviderIconSvg('claude-3-opus')).not.toBeNull();
       expect(getProviderIconSvg('anthropic-claude')).not.toBeNull();
       expect(getProviderIconSvg('gpt-4')).not.toBeNull();
+      expect(getProviderIconSvg('gemini-pro')).not.toBeNull();
+      expect(getProviderIconSvg('google-gemini')).not.toBeNull();
     });
   });
 
@@ -91,6 +106,8 @@ describe('providers', () => {
       expect(hasProviderIcon('claude')).toBe(true);
       expect(hasProviderIcon('openai')).toBe(true);
       expect(hasProviderIcon('codex')).toBe(true);
+      expect(hasProviderIcon('gemini')).toBe(true);
+      expect(hasProviderIcon('google')).toBe(true);
     });
 
     it('returns false for unknown providers', () => {
@@ -115,6 +132,14 @@ describe('providers', () => {
     it('returns proper alt text for codex (normalized to openai)', () => {
       // codex normalizes to openai
       expect(getProviderIconAltText('codex')).toBe('OpenAI icon');
+    });
+
+    it('returns proper alt text for gemini', () => {
+      expect(getProviderIconAltText('gemini')).toBe('Google Gemini icon');
+    });
+
+    it('returns proper alt text for google (normalized to gemini)', () => {
+      expect(getProviderIconAltText('google-ai')).toBe('Google Gemini icon');
     });
 
     it('returns fallback for unknown', () => {

@@ -40,6 +40,7 @@ interface AgentProfile {
   id: string;
   name: string;
   providerId: string;
+  familySlug?: string | null;
   options?: string | null;
   provider?: Provider;
   instructions?: string | null;
@@ -78,6 +79,7 @@ async function createProfile(data: {
   projectId: string;
   name: string;
   providerId: string;
+  familySlug?: string | null;
   options?: string | null;
   promptIds?: string[];
   instructions?: string | null;
@@ -96,6 +98,7 @@ async function updateProfile(
   data: {
     name?: string;
     providerId?: string;
+    familySlug?: string | null;
     options?: string | null;
     promptIds?: string[];
     instructions?: string | null;
@@ -258,6 +261,7 @@ export function ProfilesPage() {
   const [formData, setFormData] = useState({
     name: '',
     providerId: '',
+    familySlug: '',
     options: '',
     instructions: '',
     orderedPromptIds: [] as string[],
@@ -361,6 +365,7 @@ export function ProfilesPage() {
       data: {
         name?: string;
         providerId?: string;
+        familySlug?: string | null;
         options?: string | null;
         promptIds?: string[];
         instructions?: string | null;
@@ -466,6 +471,7 @@ export function ProfilesPage() {
     setFormData({
       name: '',
       providerId: '',
+      familySlug: '',
       options: '',
       instructions: '',
       orderedPromptIds: [],
@@ -488,6 +494,8 @@ export function ProfilesPage() {
       formData.instructions.trim().length > 0 ? formData.instructions : null;
     const optionsValue = formData.options.trim();
     const optionsPayload = optionsValue.length > 0 ? optionsValue : null;
+    const familySlugValue = formData.familySlug.trim();
+    const familySlugPayload = familySlugValue.length > 0 ? familySlugValue : null;
 
     if (editingProfile) {
       updateMutation.mutate({
@@ -495,6 +503,7 @@ export function ProfilesPage() {
         data: {
           name: formData.name,
           providerId: formData.providerId,
+          familySlug: familySlugPayload,
           options: optionsPayload,
           promptIds: formData.orderedPromptIds,
           instructions: instructionsValue,
@@ -505,6 +514,7 @@ export function ProfilesPage() {
         projectId: selectedProjectId,
         name: formData.name,
         providerId: formData.providerId,
+        familySlug: familySlugPayload,
         options: optionsPayload,
         promptIds: formData.orderedPromptIds,
         instructions: instructionsValue,
@@ -517,6 +527,7 @@ export function ProfilesPage() {
     setFormData({
       name: profile.name,
       providerId: profile.providerId,
+      familySlug: profile.familySlug ?? '',
       options: profile.options ?? '',
       instructions: profile.instructions ?? '',
       orderedPromptIds: (profile.prompts || [])
@@ -572,7 +583,14 @@ export function ProfilesPage() {
               <div className="flex justify-between items-start mb-3">
                 <div className="flex-1">
                   <div className="flex items-center gap-2 mb-1">
-                    <h3 className="text-lg font-semibold">{profile.name}</h3>
+                    <h3 className="text-lg font-semibold">
+                      {profile.name}
+                      {profile.familySlug && (
+                        <span className="ml-2 text-sm font-normal text-muted-foreground">
+                          ({profile.familySlug})
+                        </span>
+                      )}
+                    </h3>
                     <Badge variant="secondary">
                       {profile.provider?.name ||
                         providersById.get(profile.providerId)?.name ||
@@ -674,6 +692,21 @@ export function ProfilesPage() {
                       No providers available. Create a provider first.
                     </p>
                   )}
+                </div>
+
+                <div>
+                  <Label htmlFor="familySlug">Family Slug</Label>
+                  <Input
+                    id="familySlug"
+                    type="text"
+                    value={formData.familySlug}
+                    onChange={(e) => setFormData({ ...formData, familySlug: e.target.value })}
+                    placeholder="e.g., coder, architect"
+                  />
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Groups equivalent profiles across providers. Profiles with the same family slug
+                    can be switched between providers.
+                  </p>
                 </div>
 
                 <div>

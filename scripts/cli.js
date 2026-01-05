@@ -174,8 +174,10 @@ function detectInstalledProviders() {
   const detected = new Map();
   const codexPath = isBinaryInstalled('codex');
   const claudePath = isBinaryInstalled('claude');
+  const geminiPath = isBinaryInstalled('gemini');
   if (codexPath) detected.set('codex', codexPath);
   if (claudePath) detected.set('claude', claudePath);
+  if (geminiPath) detected.set('gemini', geminiPath);
   return detected; // Map<name, absolutePath>
 }
 
@@ -702,15 +704,16 @@ async function main(argv) {
           // Provide guidance and exit prior to server startup
           const guide = [
             'No provider binaries detected on PATH. Install at least one provider and retry.',
-            'Checked: "which codex" and "which claude"',
+            'Checked: "which codex", "which claude", and "which gemini"',
             'Examples:',
-            '  - Install Codex:   npm i -g @twitech/codex-cli (example) or follow provider docs',
-            '  - Install Claude:  brew install claude-cli (example) or follow provider docs',
+            '  - Install Codex:   npm i -g @openai/codex (example) or follow provider docs',
+            '  - Install Claude:  npm i -g @anthropic-ai/claude-code (example) or follow provider docs',
+            '  - Install Gemini:  npm i -g @google/gemini-cli (example) or follow provider docs',
             'Advanced: bypass with DEVCHAIN_SKIP_PROVIDER_CHECK=1',
           ].join('\n');
           if (opts.foreground) {
             log('error', 'No providers found; aborting startup', {
-              checked: ['which codex', 'which claude'],
+              checked: ['which codex', 'which claude', 'which gemini'],
             });
           } else {
             cli.stepDone('✗ none found');

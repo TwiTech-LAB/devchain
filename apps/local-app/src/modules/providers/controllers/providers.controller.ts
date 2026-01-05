@@ -59,8 +59,6 @@ const EnsureMcpSchema = z.object({
   projectPath: z.string().min(1).optional(),
 });
 
-const SUPPORTED_MCP_PROVIDERS = new Set(['claude', 'codex']);
-
 interface ClaudeSettingsLocal {
   permissions?: {
     allow?: string[];
@@ -98,7 +96,7 @@ export class ProvidersController {
     const normalizedPath = await this.normalizeBinPath(parsed.binPath ?? null);
 
     const payload: CreateProvider = {
-      name: parsed.name,
+      name: parsed.name.toLowerCase(),
       binPath: normalizedPath,
       mcpConfigured: false,
       mcpEndpoint: parsed.mcpEndpoint ?? null,
@@ -117,7 +115,7 @@ export class ProvidersController {
     const payload: UpdateProvider = {};
 
     if (parsed.name !== undefined) {
-      payload.name = parsed.name;
+      payload.name = parsed.name.toLowerCase();
     }
     if (parsed.binPath !== undefined) {
       payload.binPath = await this.normalizeBinPath(parsed.binPath);
@@ -433,7 +431,7 @@ export class ProvidersController {
   }
 
   private shouldAttemptMcpRegistration(name: string, endpoint: string | null | undefined) {
-    return SUPPORTED_MCP_PROVIDERS.has(name) && !!endpoint;
+    return this.adapterFactory.isSupported(name) && !!endpoint;
   }
 
   private composePreviewProvider(
