@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import {
   sqliteTable,
   text,
@@ -516,6 +517,44 @@ export const chatActivities = sqliteTable(
   (table) => ({
     threadAgentIdx: index('chat_activities_thread_agent_idx').on(table.threadId, table.agentId),
     startedAtIdx: index('chat_activities_started_at_idx').on(table.startedAt),
+  }),
+);
+
+// ============================================
+// GUESTS - External agents registered via MCP
+// ============================================
+// NOTE: SQLite COLLATE NOCASE Pattern
+// ------------------------------------
+// For case-insensitive unique constraints in SQLite, use:
+//   sql`${table.column} COLLATE NOCASE`
+// This generates: `column_name` COLLATE NOCASE in the index.
+// drizzle-kit may show minor quoting differences ("col" vs `col`) but they're
+// functionally equivalent for SQLite.
+export const guests = sqliteTable(
+  'guests',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    description: text('description'), // Optional description for guest purpose
+    tmuxSessionId: text('tmux_session_id').notNull(),
+    lastSeenAt: text('last_seen_at').notNull(),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    // Case-insensitive unique index on (project_id, name)
+    // Uses COLLATE NOCASE for SQLite case-insensitive comparison
+    projectNameUnique: uniqueIndex('guests_project_name_unique').on(
+      table.projectId,
+      sql`${table.name} COLLATE NOCASE`,
+    ),
+    // Unique index on tmux_session_id
+    tmuxSessionIdUnique: uniqueIndex('guests_tmux_session_id_unique').on(table.tmuxSessionId),
+    // Index for listing by project
+    projectIdIdx: index('guests_project_id_idx').on(table.projectId),
   }),
 );
 

@@ -46,8 +46,10 @@ describe('McpService', () => {
   let sessionsService: jest.Mocked<unknown>;
   let messagePoolService: jest.Mocked<unknown>;
   let terminalGateway: jest.Mocked<unknown>;
+  let tmuxService: jest.Mocked<unknown>;
   let epicsService: jest.Mocked<{ updateEpic: jest.Mock; createEpicForProject: jest.Mock }>;
   let settingsService: jest.Mocked<unknown>;
+  let guestsService: jest.Mocked<unknown>;
 
   beforeEach(() => {
     storage = {
@@ -80,6 +82,9 @@ describe('McpService', () => {
       getEpic: jest.fn(),
       createEpicComment: jest.fn(),
       getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
+      listGuests: jest.fn().mockResolvedValue([]),
+      getGuestByName: jest.fn().mockResolvedValue(null),
+      getGuestsByIdPrefix: jest.fn().mockResolvedValue([]),
     } as unknown as jest.Mocked<StorageService>;
 
     chatService = {
@@ -107,6 +112,7 @@ describe('McpService', () => {
       ]),
       injectTextIntoSession: jest.fn(),
       launchSession: jest.fn(),
+      getAgentPresence: jest.fn().mockResolvedValue(new Map()),
     };
 
     // Default session context mocks (can be overridden in individual tests)
@@ -138,14 +144,27 @@ describe('McpService', () => {
       }),
     };
 
+    tmuxService = {
+      getSessionCwd: jest.fn(),
+      hasSession: jest.fn().mockResolvedValue(false),
+      pasteAndSubmit: jest.fn().mockResolvedValue(undefined),
+      listAllSessionNames: jest.fn().mockResolvedValue(new Set<string>()),
+    };
+
+    guestsService = {
+      register: jest.fn(),
+    };
+
     service = new McpService(
       storage,
       chatService as never,
       sessionsService as never,
       messagePoolService as never,
       terminalGateway as never,
+      tmuxService as never,
       epicsService as never,
       settingsService as never,
+      guestsService as never,
     );
   });
 
@@ -427,7 +446,7 @@ describe('McpService', () => {
         }
       ).data;
       expect(data.mode).toBe('pooled');
-      expect(data.queued).toEqual([{ agentName: 'Beta', status: 'queued' }]);
+      expect(data.queued).toEqual([{ name: 'Beta', type: 'agent', status: 'queued' }]);
       expect(data.queuedCount).toBe(1);
       expect(data.estimatedDeliveryMs).toBe(10000);
       expect(
@@ -560,7 +579,7 @@ describe('McpService', () => {
 
         expect(data.mode).toBe('pooled');
         // Status should be 'launched' because agent was auto-launched
-        expect(data.queued).toEqual([{ agentName: 'Beta', status: 'launched' }]);
+        expect(data.queued).toEqual([{ name: 'Beta', type: 'agent', status: 'launched' }]);
         expect(data.queuedCount).toBe(1);
 
         // Verify launchSession was called for offline agent
@@ -674,7 +693,7 @@ describe('McpService', () => {
 
       expect(data.mode).toBe('pooled');
       // Status should be 'queued' (not 'launched') because NODE_ENV is 'test'
-      expect(data.queued).toEqual([{ agentName: 'Beta', status: 'queued' }]);
+      expect(data.queued).toEqual([{ name: 'Beta', type: 'agent', status: 'queued' }]);
 
       // launchSession should NOT be called in test environment
       expect(
@@ -887,6 +906,302 @@ describe('McpService', () => {
 
       expect(result.success).toBe(false);
       expect(result.error?.code).toBe('AGENT_REQUIRED');
+    });
+
+    it('send_message delivers to guest recipient via tmux', async () => {
+      const project = {
+        id: 'project-1',
+        name: 'Demo',
+        description: 'Demo project',
+        rootPath: '/tmp/demo-project',
+        isPrivate: false,
+        ownerUserId: null,
+        isTemplate: false,
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      } as Project;
+      storage.findProjectByPath.mockResolvedValue(project);
+
+      // Mock sender agent
+      storage.getAgentByName.mockRejectedValue(new NotFoundError('Agent', 'GuestBot'));
+
+      // Mock guest lookup
+      (storage as unknown as { getGuestByName: jest.Mock }).getGuestByName.mockResolvedValue({
+        id: 'guest-1',
+        projectId: 'project-1',
+        name: 'GuestBot',
+        tmuxSessionId: 'guest-tmux-session',
+        lastSeenAt: '2024-01-01T00:00:00Z',
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      });
+
+      // Guest is online
+      (tmuxService as { hasSession: jest.Mock }).hasSession.mockResolvedValue(true);
+
+      const result = await service.handleToolCall('devchain_send_message', {
+        sessionId: TEST_SESSION_ID,
+        recipientAgentNames: ['GuestBot'],
+        message: 'Hello guest!',
+      });
+
+      expect(result.success).toBe(true);
+      const data = result.data as {
+        mode: string;
+        queued: Array<{ name: string; type: 'agent' | 'guest'; status: string; error?: string }>;
+      };
+      expect(data.mode).toBe('pooled');
+      expect(data.queued).toHaveLength(1);
+      expect(data.queued[0]).toMatchObject({
+        name: 'GuestBot',
+        type: 'guest',
+        status: 'delivered', // Accurate status when tmux delivery succeeds
+      });
+      expect(data.queued[0].error).toBeUndefined();
+
+      // Verify tmux delivery was called
+      expect((tmuxService as { pasteAndSubmit: jest.Mock }).pasteAndSubmit).toHaveBeenCalledWith(
+        'guest-tmux-session',
+        expect.stringContaining('Hello guest!'),
+      );
+    });
+
+    it('send_message returns failed status when guest is offline', async () => {
+      const project = {
+        id: 'project-1',
+        name: 'Demo',
+        description: 'Demo project',
+        rootPath: '/tmp/demo-project',
+        isPrivate: false,
+        ownerUserId: null,
+        isTemplate: false,
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      } as Project;
+      storage.findProjectByPath.mockResolvedValue(project);
+
+      // Mock sender agent
+      storage.getAgentByName.mockRejectedValue(new NotFoundError('Agent', 'GuestBot'));
+
+      // Mock guest lookup
+      (storage as unknown as { getGuestByName: jest.Mock }).getGuestByName.mockResolvedValue({
+        id: 'guest-1',
+        projectId: 'project-1',
+        name: 'GuestBot',
+        tmuxSessionId: 'guest-tmux-session',
+        lastSeenAt: '2024-01-01T00:00:00Z',
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      });
+
+      // Guest is offline
+      (tmuxService as { hasSession: jest.Mock }).hasSession.mockResolvedValue(false);
+
+      const result = await service.handleToolCall('devchain_send_message', {
+        sessionId: TEST_SESSION_ID,
+        recipientAgentNames: ['GuestBot'],
+        message: 'Hello guest!',
+      });
+
+      expect(result.success).toBe(true);
+      const data = result.data as {
+        mode: string;
+        queued: Array<{ name: string; type: 'agent' | 'guest'; status: string; error?: string }>;
+      };
+      expect(data.mode).toBe('pooled');
+      expect(data.queued).toHaveLength(1);
+      expect(data.queued[0]).toMatchObject({
+        name: 'GuestBot',
+        type: 'guest',
+        status: 'failed',
+        error: 'Recipient offline',
+      });
+
+      // Verify tmux delivery was NOT called (guest offline)
+      expect((tmuxService as { pasteAndSubmit: jest.Mock }).pasteAndSubmit).not.toHaveBeenCalled();
+    });
+
+    it('send_message returns failed status when guest tmux delivery fails', async () => {
+      const project = {
+        id: 'project-1',
+        name: 'Demo',
+        description: 'Demo project',
+        rootPath: '/tmp/demo-project',
+        isPrivate: false,
+        ownerUserId: null,
+        isTemplate: false,
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      } as Project;
+      storage.findProjectByPath.mockResolvedValue(project);
+
+      // Mock sender agent
+      storage.getAgentByName.mockRejectedValue(new NotFoundError('Agent', 'GuestBot'));
+
+      // Mock guest lookup
+      (storage as unknown as { getGuestByName: jest.Mock }).getGuestByName.mockResolvedValue({
+        id: 'guest-1',
+        projectId: 'project-1',
+        name: 'GuestBot',
+        tmuxSessionId: 'guest-tmux-session',
+        lastSeenAt: '2024-01-01T00:00:00Z',
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      });
+
+      // Guest is online
+      (tmuxService as { hasSession: jest.Mock }).hasSession.mockResolvedValue(true);
+      // But tmux delivery fails
+      (tmuxService as { pasteAndSubmit: jest.Mock }).pasteAndSubmit.mockRejectedValue(
+        new Error('Tmux pane not responding'),
+      );
+
+      const result = await service.handleToolCall('devchain_send_message', {
+        sessionId: TEST_SESSION_ID,
+        recipientAgentNames: ['GuestBot'],
+        message: 'Hello guest!',
+      });
+
+      expect(result.success).toBe(true);
+      const data = result.data as {
+        mode: string;
+        queued: Array<{ name: string; type: 'agent' | 'guest'; status: string; error?: string }>;
+      };
+      expect(data.mode).toBe('pooled');
+      expect(data.queued).toHaveLength(1);
+      expect(data.queued[0]).toMatchObject({
+        name: 'GuestBot',
+        type: 'guest',
+        status: 'failed',
+        error: 'Tmux pane not responding',
+      });
+    });
+
+    it('send_message returns RECIPIENT_NOT_FOUND with available names', async () => {
+      const project = {
+        id: 'project-1',
+        name: 'Demo',
+        description: 'Demo project',
+        rootPath: '/tmp/demo-project',
+        isPrivate: false,
+        ownerUserId: null,
+        isTemplate: false,
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      } as Project;
+      storage.findProjectByPath.mockResolvedValue(project);
+
+      // Agent not found
+      storage.getAgentByName.mockRejectedValue(new NotFoundError('Agent', 'Unknown'));
+      // Guest not found
+      (storage as unknown as { getGuestByName: jest.Mock }).getGuestByName.mockResolvedValue(null);
+
+      // Available agents and guests for error message
+      storage.listAgents.mockResolvedValue({
+        items: [
+          {
+            id: 'agent-1',
+            name: 'Alpha',
+            projectId: 'project-1',
+            profileId: 'profile-1',
+            description: null,
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          },
+        ],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      (storage as unknown as { listGuests: jest.Mock }).listGuests.mockResolvedValue([
+        {
+          id: 'guest-1',
+          projectId: 'project-1',
+          name: 'GuestBot',
+          tmuxSessionId: 'guest-tmux-1',
+          lastSeenAt: '2024-01-01T00:00:00Z',
+          createdAt: '2024-01-01T00:00:00Z',
+          updatedAt: '2024-01-01T00:00:00Z',
+        },
+      ]);
+
+      const result = await service.handleToolCall('devchain_send_message', {
+        sessionId: TEST_SESSION_ID,
+        recipientAgentNames: ['Unknown'],
+        message: 'Hello',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('RECIPIENT_NOT_FOUND');
+      expect(result.error?.message).toContain('Alpha');
+      expect(result.error?.message).toContain('GuestBot (guest)');
+    });
+
+    it('propagates storage errors from agent lookup (not masked as NotFound)', async () => {
+      const project = {
+        id: 'project-1',
+        name: 'Demo',
+        description: null,
+        rootPath: '/tmp/demo',
+        isTemplate: false,
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      };
+
+      storage.findProjectByPath.mockResolvedValue(project);
+      // Simulate a real storage error (not NotFoundError)
+      storage.getAgentByName.mockRejectedValue(new Error('Database connection failed'));
+
+      const result = await service.handleToolCall('devchain_send_message', {
+        sessionId: TEST_SESSION_ID,
+        recipientAgentNames: ['SomeAgent'],
+        message: 'Hello',
+      });
+
+      // The storage error should propagate, not be masked
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('SEND_MESSAGE_FAILED');
+      expect(result.error?.message).toContain('Database connection failed');
+    });
+
+    it('falls back to guest lookup only when agent NotFoundError occurs', async () => {
+      const project = {
+        id: 'project-1',
+        name: 'Demo',
+        description: null,
+        rootPath: '/tmp/demo',
+        isTemplate: false,
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      };
+
+      storage.findProjectByPath.mockResolvedValue(project);
+      // Agent lookup throws NotFoundError - should proceed to guest lookup
+      storage.getAgentByName.mockRejectedValue(new NotFoundError('Agent', 'GuestBot'));
+      // Guest lookup succeeds
+      (storage as unknown as { getGuestByName: jest.Mock }).getGuestByName.mockResolvedValue({
+        id: 'guest-1',
+        projectId: 'project-1',
+        name: 'GuestBot',
+        tmuxSessionId: 'guest-tmux',
+        lastSeenAt: '2024-01-01T00:00:00Z',
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      });
+      (tmuxService as { hasSession: jest.Mock }).hasSession.mockResolvedValue(true);
+
+      const result = await service.handleToolCall('devchain_send_message', {
+        sessionId: TEST_SESSION_ID,
+        recipientAgentNames: ['GuestBot'],
+        message: 'Hello guest!',
+      });
+
+      expect(result.success).toBe(true);
+      // Verify guest lookup was called after agent NotFoundError
+      expect(storage.getAgentByName).toHaveBeenCalledWith('project-1', 'GuestBot');
+      expect(
+        (storage as unknown as { getGuestByName: jest.Mock }).getGuestByName,
+      ).toHaveBeenCalledWith('project-1', 'GuestBot');
     });
   });
 
@@ -1193,8 +1508,345 @@ describe('McpService', () => {
       id: 'agent-1',
       name: 'Alpha',
       profileId: 'profile-1',
+      type: 'agent',
+      online: false,
     });
-    expect(storage.listAgents).toHaveBeenCalledWith('project-1', { limit: 5, offset: 0 });
+    // With combined pagination, we fetch all agents (MAX_COMBINED_FETCH=1000) and paginate in memory
+    expect(storage.listAgents).toHaveBeenCalledWith('project-1', { limit: 1000, offset: 0 });
+  });
+
+  it('includes guests in list_agents response with type marker', async () => {
+    const project: Project = {
+      id: 'project-1',
+      name: 'Sample',
+      description: null,
+      rootPath: '/repo/project',
+      isTemplate: false,
+      createdAt: '2024-01-01T00:00:00Z',
+      updatedAt: '2024-01-01T00:00:00Z',
+    };
+
+    storage.findProjectByPath.mockResolvedValue(project);
+    storage.listAgents.mockResolvedValue({
+      items: [
+        {
+          id: 'agent-1',
+          projectId: 'project-1',
+          profileId: 'profile-1',
+          name: 'Alpha',
+          description: null,
+          createdAt: '2024-01-01T00:00:00Z',
+          updatedAt: '2024-01-01T00:00:00Z',
+        } satisfies Agent,
+      ],
+      total: 1,
+      limit: 100,
+      offset: 0,
+    });
+
+    (storage as unknown as { listGuests: jest.Mock }).listGuests.mockResolvedValue([
+      {
+        id: 'guest-1',
+        projectId: 'project-1',
+        name: 'GuestBot',
+        tmuxSessionId: 'guest-tmux-1',
+        lastSeenAt: '2024-01-01T00:00:00Z',
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      },
+    ]);
+
+    const response = await service.handleToolCall('devchain_list_agents', {
+      sessionId: TEST_SESSION_ID,
+    });
+
+    expect(response.success).toBe(true);
+    const payload = response.data as {
+      agents: Array<{
+        id: string;
+        name: string;
+        profileId: string | null;
+        type: 'agent' | 'guest';
+        online: boolean;
+      }>;
+      total: number;
+    };
+    expect(payload.agents).toHaveLength(2);
+    expect(payload.total).toBe(2);
+
+    // Verify agent
+    const agentItem = payload.agents.find((a) => a.id === 'agent-1');
+    expect(agentItem).toMatchObject({
+      id: 'agent-1',
+      name: 'Alpha',
+      profileId: 'profile-1',
+      type: 'agent',
+    });
+
+    // Verify guest
+    const guestItem = payload.agents.find((a) => a.id === 'guest-1');
+    expect(guestItem).toMatchObject({
+      id: 'guest-1',
+      name: 'GuestBot',
+      profileId: null,
+      type: 'guest',
+    });
+  });
+
+  it('includes online status for agents and guests', async () => {
+    const project: Project = {
+      id: 'project-1',
+      name: 'Sample',
+      description: null,
+      rootPath: '/repo/project',
+      isTemplate: false,
+      createdAt: '2024-01-01T00:00:00Z',
+      updatedAt: '2024-01-01T00:00:00Z',
+    };
+
+    storage.findProjectByPath.mockResolvedValue(project);
+    storage.listAgents.mockResolvedValue({
+      items: [
+        {
+          id: 'agent-1',
+          projectId: 'project-1',
+          profileId: 'profile-1',
+          name: 'Alpha',
+          description: null,
+          createdAt: '2024-01-01T00:00:00Z',
+          updatedAt: '2024-01-01T00:00:00Z',
+        } satisfies Agent,
+      ],
+      total: 1,
+      limit: 100,
+      offset: 0,
+    });
+
+    // Agent is online
+    (sessionsService as { getAgentPresence: jest.Mock }).getAgentPresence.mockResolvedValue(
+      new Map([['agent-1', { online: true }]]),
+    );
+
+    (storage as unknown as { listGuests: jest.Mock }).listGuests.mockResolvedValue([
+      {
+        id: 'guest-1',
+        projectId: 'project-1',
+        name: 'GuestBot',
+        tmuxSessionId: 'guest-tmux-1',
+        lastSeenAt: '2024-01-01T00:00:00Z',
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      },
+    ]);
+
+    // Guest tmux session is alive - use batch listAllSessionNames for O(1) lookup
+    (tmuxService as { listAllSessionNames: jest.Mock }).listAllSessionNames.mockResolvedValue(
+      new Set(['guest-tmux-1', 'other-session']),
+    );
+
+    const response = await service.handleToolCall('devchain_list_agents', {
+      sessionId: TEST_SESSION_ID,
+    });
+
+    expect(response.success).toBe(true);
+    const payload = response.data as {
+      agents: Array<{ id: string; type: 'agent' | 'guest'; online: boolean }>;
+    };
+
+    const agentItem = payload.agents.find((a) => a.id === 'agent-1');
+    expect(agentItem?.online).toBe(true);
+
+    const guestItem = payload.agents.find((a) => a.id === 'guest-1');
+    expect(guestItem?.online).toBe(true);
+
+    // Verify batch lookup was used instead of N individual hasSession calls
+    expect(
+      (tmuxService as { listAllSessionNames: jest.Mock }).listAllSessionNames,
+    ).toHaveBeenCalled();
+  });
+
+  describe('list_agents pagination', () => {
+    const project: Project = {
+      id: 'project-1',
+      name: 'Sample',
+      description: null,
+      rootPath: '/repo/project',
+      isTemplate: false,
+      createdAt: '2024-01-01T00:00:00Z',
+      updatedAt: '2024-01-01T00:00:00Z',
+    };
+
+    const makeAgent = (id: string, name: string): Agent => ({
+      id,
+      projectId: 'project-1',
+      profileId: 'profile-1',
+      name,
+      description: null,
+      createdAt: '2024-01-01T00:00:00Z',
+      updatedAt: '2024-01-01T00:00:00Z',
+    });
+
+    const makeGuest = (id: string, name: string) => ({
+      id,
+      projectId: 'project-1',
+      name,
+      tmuxSessionId: `tmux-${id}`,
+      lastSeenAt: '2024-01-01T00:00:00Z',
+      createdAt: '2024-01-01T00:00:00Z',
+      updatedAt: '2024-01-01T00:00:00Z',
+    });
+
+    beforeEach(() => {
+      storage.findProjectByPath.mockResolvedValue(project);
+      (sessionsService as { getAgentPresence: jest.Mock }).getAgentPresence.mockResolvedValue(
+        new Map(),
+      );
+      (tmuxService as { hasSession: jest.Mock }).hasSession.mockResolvedValue(false);
+    });
+
+    it('applies offset and limit to combined agents+guests list', async () => {
+      // 3 agents + 2 guests = 5 total, sorted by name
+      storage.listAgents.mockResolvedValue({
+        items: [makeAgent('a1', 'Charlie'), makeAgent('a2', 'Alpha'), makeAgent('a3', 'Echo')],
+        total: 3,
+        limit: 1000,
+        offset: 0,
+      });
+      (storage as unknown as { listGuests: jest.Mock }).listGuests.mockResolvedValue([
+        makeGuest('g1', 'Bravo'),
+        makeGuest('g2', 'Delta'),
+      ]);
+
+      // Request offset=1, limit=2 - should get items 2 and 3 (Bravo, Charlie)
+      const response = await service.handleToolCall('devchain_list_agents', {
+        sessionId: TEST_SESSION_ID,
+        offset: 1,
+        limit: 2,
+      });
+
+      expect(response.success).toBe(true);
+      const payload = response.data as {
+        agents: Array<{ name: string; type: 'agent' | 'guest' }>;
+        total: number;
+        offset: number;
+        limit: number;
+      };
+
+      expect(payload.total).toBe(5);
+      expect(payload.offset).toBe(1);
+      expect(payload.limit).toBe(2);
+      expect(payload.agents).toHaveLength(2);
+      // Sorted order: Alpha, Bravo, Charlie, Delta, Echo
+      // offset=1 skips Alpha, limit=2 returns Bravo, Charlie
+      expect(payload.agents[0].name).toBe('Bravo');
+      expect(payload.agents[0].type).toBe('guest');
+      expect(payload.agents[1].name).toBe('Charlie');
+      expect(payload.agents[1].type).toBe('agent');
+    });
+
+    it('returns correct total for combined list', async () => {
+      storage.listAgents.mockResolvedValue({
+        items: [makeAgent('a1', 'Agent1'), makeAgent('a2', 'Agent2')],
+        total: 2,
+        limit: 1000,
+        offset: 0,
+      });
+      (storage as unknown as { listGuests: jest.Mock }).listGuests.mockResolvedValue([
+        makeGuest('g1', 'Guest1'),
+        makeGuest('g2', 'Guest2'),
+        makeGuest('g3', 'Guest3'),
+      ]);
+
+      const response = await service.handleToolCall('devchain_list_agents', {
+        sessionId: TEST_SESSION_ID,
+        limit: 2,
+      });
+
+      expect(response.success).toBe(true);
+      const payload = response.data as { total: number; agents: unknown[] };
+      expect(payload.total).toBe(5); // 2 agents + 3 guests
+      expect(payload.agents).toHaveLength(2); // Limited to 2
+    });
+
+    it('sorts agents before guests when names are equal', async () => {
+      storage.listAgents.mockResolvedValue({
+        items: [makeAgent('a1', 'SameName')],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+      (storage as unknown as { listGuests: jest.Mock }).listGuests.mockResolvedValue([
+        makeGuest('g1', 'SameName'),
+      ]);
+
+      const response = await service.handleToolCall('devchain_list_agents', {
+        sessionId: TEST_SESSION_ID,
+      });
+
+      expect(response.success).toBe(true);
+      const payload = response.data as {
+        agents: Array<{ name: string; type: 'agent' | 'guest' }>;
+      };
+
+      expect(payload.agents).toHaveLength(2);
+      // Agent should come before guest with same name
+      expect(payload.agents[0].type).toBe('agent');
+      expect(payload.agents[1].type).toBe('guest');
+    });
+
+    it('handles offset beyond total items gracefully', async () => {
+      storage.listAgents.mockResolvedValue({
+        items: [makeAgent('a1', 'Alpha')],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+      (storage as unknown as { listGuests: jest.Mock }).listGuests.mockResolvedValue([
+        makeGuest('g1', 'Beta'),
+      ]);
+
+      const response = await service.handleToolCall('devchain_list_agents', {
+        sessionId: TEST_SESSION_ID,
+        offset: 100,
+        limit: 10,
+      });
+
+      expect(response.success).toBe(true);
+      const payload = response.data as { agents: unknown[]; total: number };
+      expect(payload.agents).toHaveLength(0);
+      expect(payload.total).toBe(2);
+    });
+
+    it('applies query filter before pagination', async () => {
+      storage.listAgents.mockResolvedValue({
+        items: [makeAgent('a1', 'AlphaBot'), makeAgent('a2', 'BetaBot')],
+        total: 2,
+        limit: 1000,
+        offset: 0,
+      });
+      (storage as unknown as { listGuests: jest.Mock }).listGuests.mockResolvedValue([
+        makeGuest('g1', 'GammaBot'),
+        makeGuest('g2', 'AlphaGuest'),
+      ]);
+
+      const response = await service.handleToolCall('devchain_list_agents', {
+        sessionId: TEST_SESSION_ID,
+        q: 'alpha',
+        offset: 0,
+        limit: 10,
+      });
+
+      expect(response.success).toBe(true);
+      const payload = response.data as {
+        agents: Array<{ name: string }>;
+        total: number;
+      };
+
+      // Only AlphaBot and AlphaGuest match
+      expect(payload.total).toBe(2);
+      expect(payload.agents).toHaveLength(2);
+      expect(payload.agents.map((a) => a.name).sort()).toEqual(['AlphaBot', 'AlphaGuest']);
+    });
   });
 
   it('rejects agent listing when sessionId is too short', async () => {
@@ -2924,6 +3576,216 @@ describe('McpService', () => {
       };
       expect(data.agent?.name).toBe('Test Agent');
       expect(data.project).toBeNull();
+    });
+  });
+
+  describe('devchain_register_guest', () => {
+    const TEST_TMUX_SESSION_ID = 'my-tmux-session';
+    const TEST_REGISTER_RESULT = {
+      guestId: 'guest-1',
+      projectId: 'project-1',
+      projectName: 'Test Project',
+      isSandbox: false,
+    };
+
+    it('registers a guest successfully', async () => {
+      (guestsService as { register: jest.Mock }).register.mockResolvedValue(TEST_REGISTER_RESULT);
+
+      const response = await service.handleToolCall('devchain_register_guest', {
+        tmuxSessionId: TEST_TMUX_SESSION_ID,
+        name: 'MyGuest',
+      });
+
+      expect(response.success).toBe(true);
+      const data = response.data as {
+        guestId: string;
+        name: string;
+        projectId: string;
+        projectName: string;
+        isSandbox: boolean;
+        registeredAt: string;
+      };
+      expect(data.guestId).toBe('guest-1');
+      expect(data.name).toBe('MyGuest');
+      expect(data.projectId).toBe('project-1');
+      expect(data.projectName).toBe('Test Project');
+      expect(data.isSandbox).toBe(false);
+      expect(data.registeredAt).toBeDefined();
+
+      // Verify description is passed (undefined when not provided)
+      expect((guestsService as { register: jest.Mock }).register).toHaveBeenCalledWith({
+        name: 'MyGuest',
+        tmuxSessionId: TEST_TMUX_SESSION_ID,
+        description: undefined,
+      });
+    });
+
+    it('passes description to guestsService.register()', async () => {
+      (guestsService as { register: jest.Mock }).register.mockResolvedValue(TEST_REGISTER_RESULT);
+
+      const response = await service.handleToolCall('devchain_register_guest', {
+        tmuxSessionId: TEST_TMUX_SESSION_ID,
+        name: 'MyGuest',
+        description: 'A helpful bot for testing',
+      });
+
+      expect(response.success).toBe(true);
+
+      // Verify description is forwarded to register()
+      expect((guestsService as { register: jest.Mock }).register).toHaveBeenCalledWith({
+        name: 'MyGuest',
+        tmuxSessionId: TEST_TMUX_SESSION_ID,
+        description: 'A helpful bot for testing',
+      });
+    });
+
+    it('returns error when guests service is unavailable', async () => {
+      // Create service without guestsService
+      const serviceNoGuests = new McpService(
+        storage,
+        chatService as never,
+        sessionsService as never,
+        messagePoolService as never,
+        terminalGateway as never,
+        tmuxService as never,
+        epicsService as never,
+        settingsService as never,
+        undefined, // No guestsService
+      );
+
+      const response = await serviceNoGuests.handleToolCall('devchain_register_guest', {
+        tmuxSessionId: TEST_TMUX_SESSION_ID,
+        name: 'MyGuest',
+      });
+
+      expect(response.success).toBe(false);
+      expect(response.error?.code).toBe('SERVICE_UNAVAILABLE');
+    });
+
+    it('returns error when guest registration fails with ValidationError', async () => {
+      (guestsService as { register: jest.Mock }).register.mockRejectedValue(
+        new ValidationError('Tmux session not found'),
+      );
+
+      const response = await service.handleToolCall('devchain_register_guest', {
+        tmuxSessionId: TEST_TMUX_SESSION_ID,
+        name: 'MyGuest',
+      });
+
+      expect(response.success).toBe(false);
+      expect(response.error?.code).toBe('VALIDATION_ERROR');
+      expect(response.error?.message).toBe('Tmux session not found');
+    });
+
+    it('returns internal error for unexpected failures', async () => {
+      (guestsService as { register: jest.Mock }).register.mockRejectedValue(
+        new Error('Unexpected error'),
+      );
+
+      const response = await service.handleToolCall('devchain_register_guest', {
+        tmuxSessionId: TEST_TMUX_SESSION_ID,
+        name: 'MyGuest',
+      });
+
+      expect(response.success).toBe(false);
+      expect(response.error?.code).toBe('INTERNAL_ERROR');
+      expect(response.error?.message).toBe('Unexpected error');
+    });
+  });
+
+  describe('guest restrictions - block thread-backed operations', () => {
+    const GUEST_ID = 'guest-00000000-0000-0000-0000-000000000001';
+    const GUEST_PROJECT = {
+      id: 'project-1',
+      name: 'GuestProject',
+      rootPath: '/tmp/guest-project',
+      createdAt: '2024-01-01T00:00:00Z',
+      updatedAt: '2024-01-01T00:00:00Z',
+    };
+    const GUEST_RECORD = {
+      id: GUEST_ID,
+      projectId: 'project-1',
+      name: 'GuestBot',
+      tmuxSessionId: 'guest-tmux-session',
+      lastSeenAt: '2024-01-01T00:00:00Z',
+      createdAt: '2024-01-01T00:00:00Z',
+      updatedAt: '2024-01-01T00:00:00Z',
+    };
+
+    beforeEach(() => {
+      // Mock guest context resolution
+      (storage as unknown as { getGuest: jest.Mock }).getGuest = jest
+        .fn()
+        .mockResolvedValue(GUEST_RECORD);
+      // Use getGuestsByIdPrefix for prefix-based lookup (optimized query)
+      (storage as unknown as { getGuestsByIdPrefix: jest.Mock }).getGuestsByIdPrefix = jest
+        .fn()
+        .mockResolvedValue([GUEST_RECORD]);
+      (storage as unknown as { getProject: jest.Mock }).getProject.mockResolvedValue(GUEST_PROJECT);
+      (tmuxService as { hasSession: jest.Mock }).hasSession.mockResolvedValue(true);
+    });
+
+    it('blocks guest from using threadId in send_message', async () => {
+      const response = await service.handleToolCall('devchain_send_message', {
+        sessionId: GUEST_ID,
+        threadId: '00000000-0000-0000-0000-000000000001',
+        message: 'Hello',
+      });
+
+      expect(response.success).toBe(false);
+      expect(response.error?.code).toBe('GUEST_THREAD_NOT_ALLOWED');
+      expect(response.error?.message).toContain('Guests cannot use threaded messaging');
+      expect(response.error?.message).toContain('recipientAgentNames');
+    });
+
+    it('blocks guest from sending DM to user (recipient=user)', async () => {
+      const response = await service.handleToolCall('devchain_send_message', {
+        sessionId: GUEST_ID,
+        recipient: 'user',
+        message: 'Hello user',
+      });
+
+      expect(response.success).toBe(false);
+      expect(response.error?.code).toBe('GUEST_USER_DM_NOT_ALLOWED');
+      expect(response.error?.message).toContain('Guests cannot send direct messages to users');
+    });
+
+    it('blocks guest from using devchain_activity_start', async () => {
+      const response = await service.handleToolCall('devchain_activity_start', {
+        sessionId: GUEST_ID,
+        title: 'Working on task',
+      });
+
+      expect(response.success).toBe(false);
+      expect(response.error?.code).toBe('GUEST_ACTIVITY_NOT_ALLOWED');
+      expect(response.error?.message).toContain('Guests cannot use activity tools');
+    });
+
+    it('blocks guest from using devchain_activity_finish', async () => {
+      const response = await service.handleToolCall('devchain_activity_finish', {
+        sessionId: GUEST_ID,
+        activity_id: 'some-activity-id',
+        summary: 'Done',
+      });
+
+      expect(response.success).toBe(false);
+      expect(response.error?.code).toBe('GUEST_ACTIVITY_NOT_ALLOWED');
+      expect(response.error?.message).toContain('Guests cannot use activity tools');
+    });
+
+    it('allows guest to use pooled messaging with recipientAgentNames', async () => {
+      // Mock agent lookup for recipient
+      storage.getAgentByName.mockResolvedValue(TEST_AGENT);
+
+      const response = await service.handleToolCall('devchain_send_message', {
+        sessionId: GUEST_ID,
+        recipientAgentNames: [TEST_AGENT.name],
+        message: 'Hello from guest',
+      });
+
+      expect(response.success).toBe(true);
+      const data = response.data as { mode: string };
+      expect(data.mode).toBe('pooled');
     });
   });
 });

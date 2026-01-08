@@ -51,6 +51,8 @@ import {
   Document,
   CreateDocument,
   UpdateDocument,
+  Guest,
+  CreateGuest,
   Watcher,
   CreateWatcher,
   UpdateWatcher,
@@ -554,6 +556,7 @@ export class LocalStorageService implements StorageService {
       agentProfiles,
       tags,
       statuses,
+      guests,
     } = await import('../db/schema');
     const { eq, inArray } = await import('drizzle-orm');
 
@@ -717,7 +720,10 @@ export class LocalStorageService implements StorageService {
     // 13. Statuses (must be after epics)
     await this.db.delete(statuses).where(eq(statuses.projectId, id));
 
-    // 14. Finally, delete the project itself
+    // 14. Guests
+    await this.db.delete(guests).where(eq(guests.projectId, id));
+
+    // 15. Finally, delete the project itself
     await this.db.delete(projects).where(eq(projects.id, id));
 
     logger.info({ projectId: id }, 'Deleted project and all related records');
@@ -3254,6 +3260,273 @@ export class LocalStorageService implements StorageService {
       eventFilter: row.eventFilter as Subscriber['eventFilter'],
       actionInputs: row.actionInputs as Subscriber['actionInputs'],
     })) as Subscriber[];
+  }
+
+  // ============================================
+  // PROJECT PATH LOOKUPS
+  // ============================================
+
+  async getProjectByRootPath(rootPath: string): Promise<Project | null> {
+    const { resolve } = await import('path');
+    const { projects } = await import('../db/schema');
+    const { eq } = await import('drizzle-orm');
+
+    const normalizedPath = resolve(rootPath);
+
+    const rows = await this.db
+      .select()
+      .from(projects)
+      .where(eq(projects.rootPath, normalizedPath))
+      .limit(1);
+
+    if (rows.length === 0) {
+      return null;
+    }
+
+    return {
+      id: rows[0].id,
+      name: rows[0].name,
+      description: rows[0].description,
+      rootPath: rows[0].rootPath,
+      isTemplate: rows[0].isTemplate,
+      createdAt: rows[0].createdAt,
+      updatedAt: rows[0].updatedAt,
+    };
+  }
+
+  async findProjectContainingPath(absolutePath: string): Promise<Project | null> {
+    const { resolve, sep } = await import('path');
+    const { projects } = await import('../db/schema');
+
+    const normalizedPath = resolve(absolutePath);
+
+    // Fetch all projects (handle pagination internally)
+    const allProjects: Project[] = [];
+    const pageSize = 100;
+    let offset = 0;
+    let hasMore = true;
+
+    while (hasMore) {
+      const rows = await this.db.select().from(projects).limit(pageSize).offset(offset);
+
+      if (rows.length === 0) {
+        hasMore = false;
+      } else {
+        for (const row of rows) {
+          allProjects.push({
+            id: row.id,
+            name: row.name,
+            description: row.description,
+            rootPath: row.rootPath,
+            isTemplate: row.isTemplate,
+            createdAt: row.createdAt,
+            updatedAt: row.updatedAt,
+          });
+        }
+        offset += pageSize;
+        if (rows.length < pageSize) {
+          hasMore = false;
+        }
+      }
+    }
+
+    // Find the most specific match (longest rootPath that is a prefix of the given path)
+    let bestMatch: Project | null = null;
+    let longestRootPath = 0;
+
+    for (const project of allProjects) {
+      const projectRoot = resolve(project.rootPath);
+
+      // Check if normalizedPath starts with projectRoot
+      // Must be exact match or followed by path separator
+      if (normalizedPath === projectRoot || normalizedPath.startsWith(projectRoot + sep)) {
+        if (projectRoot.length > longestRootPath) {
+          longestRootPath = projectRoot.length;
+          bestMatch = project;
+        }
+      }
+    }
+
+    return bestMatch;
+  }
+
+  // ============================================
+  // GUESTS - External agents registered via MCP
+  // ============================================
+
+  async createGuest(data: CreateGuest): Promise<Guest> {
+    const { randomUUID } = await import('crypto');
+    const { guests } = await import('../db/schema');
+    const { eq, and, sql } = await import('drizzle-orm');
+
+    const now = new Date().toISOString();
+
+    // Check for existing guest with same name in project (case-insensitive)
+    const existingByName = await this.db
+      .select()
+      .from(guests)
+      .where(
+        and(
+          eq(guests.projectId, data.projectId),
+          sql`${guests.name} = ${data.name} COLLATE NOCASE`,
+        ),
+      )
+      .limit(1);
+
+    if (existingByName.length > 0) {
+      throw new ConflictError(`Guest with name "${data.name}" already exists in project`, {
+        projectId: data.projectId,
+        name: data.name,
+      });
+    }
+
+    // Check for existing guest with same tmux session
+    const existingByTmux = await this.db
+      .select()
+      .from(guests)
+      .where(eq(guests.tmuxSessionId, data.tmuxSessionId))
+      .limit(1);
+
+    if (existingByTmux.length > 0) {
+      throw new ConflictError(`Guest with tmux session "${data.tmuxSessionId}" already exists`, {
+        tmuxSessionId: data.tmuxSessionId,
+      });
+    }
+
+    const guest: Guest = {
+      id: randomUUID(),
+      projectId: data.projectId,
+      name: data.name,
+      description: data.description ?? null,
+      tmuxSessionId: data.tmuxSessionId,
+      lastSeenAt: data.lastSeenAt,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    await this.db.insert(guests).values(guest);
+
+    logger.info({ guestId: guest.id, projectId: data.projectId, name: data.name }, 'Created guest');
+
+    return guest;
+  }
+
+  async getGuest(id: string): Promise<Guest> {
+    const { guests } = await import('../db/schema');
+    const { eq } = await import('drizzle-orm');
+
+    const rows = await this.db.select().from(guests).where(eq(guests.id, id)).limit(1);
+
+    if (rows.length === 0) {
+      throw new NotFoundError('Guest', id);
+    }
+
+    return rows[0] as Guest;
+  }
+
+  async getGuestByName(projectId: string, name: string): Promise<Guest | null> {
+    const { guests } = await import('../db/schema');
+    const { eq, and, sql } = await import('drizzle-orm');
+
+    const rows = await this.db
+      .select()
+      .from(guests)
+      .where(and(eq(guests.projectId, projectId), sql`${guests.name} = ${name} COLLATE NOCASE`))
+      .limit(1);
+
+    if (rows.length === 0) {
+      return null;
+    }
+
+    return rows[0] as Guest;
+  }
+
+  async getGuestByTmuxSessionId(tmuxSessionId: string): Promise<Guest | null> {
+    const { guests } = await import('../db/schema');
+    const { eq } = await import('drizzle-orm');
+
+    const rows = await this.db
+      .select()
+      .from(guests)
+      .where(eq(guests.tmuxSessionId, tmuxSessionId))
+      .limit(1);
+
+    if (rows.length === 0) {
+      return null;
+    }
+
+    return rows[0] as Guest;
+  }
+
+  async getGuestsByIdPrefix(prefix: string): Promise<Guest[]> {
+    const { guests } = await import('../db/schema');
+    const { like } = await import('drizzle-orm');
+
+    // Use SQL LIKE for efficient prefix matching (uses index)
+    const rows = await this.db
+      .select()
+      .from(guests)
+      .where(like(guests.id, `${prefix}%`));
+
+    return rows as Guest[];
+  }
+
+  async listGuests(projectId: string): Promise<Guest[]> {
+    const { guests } = await import('../db/schema');
+    const { eq, asc } = await import('drizzle-orm');
+
+    const rows = await this.db
+      .select()
+      .from(guests)
+      .where(eq(guests.projectId, projectId))
+      .orderBy(asc(guests.name));
+
+    return rows as Guest[];
+  }
+
+  async listAllGuests(): Promise<Guest[]> {
+    const { guests } = await import('../db/schema');
+    const { asc } = await import('drizzle-orm');
+
+    const rows = await this.db.select().from(guests).orderBy(asc(guests.createdAt));
+
+    return rows as Guest[];
+  }
+
+  async deleteGuest(id: string): Promise<void> {
+    const { guests } = await import('../db/schema');
+    const { eq } = await import('drizzle-orm');
+
+    // Verify guest exists
+    await this.getGuest(id);
+
+    await this.db.delete(guests).where(eq(guests.id, id));
+
+    logger.info({ guestId: id }, 'Deleted guest');
+  }
+
+  async updateGuestLastSeen(id: string, lastSeenAt: string): Promise<Guest> {
+    const { guests } = await import('../db/schema');
+    const { eq } = await import('drizzle-orm');
+
+    // Verify guest exists
+    const existing = await this.getGuest(id);
+
+    const now = new Date().toISOString();
+
+    await this.db
+      .update(guests)
+      .set({
+        lastSeenAt,
+        updatedAt: now,
+      })
+      .where(eq(guests.id, id));
+
+    return {
+      ...existing,
+      lastSeenAt,
+      updatedAt: now,
+    };
   }
 }
 

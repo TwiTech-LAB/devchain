@@ -34,6 +34,8 @@ import {
   UpdateDocument,
   EpicComment,
   CreateEpicComment,
+  Guest,
+  CreateGuest,
   Watcher,
   CreateWatcher,
   UpdateWatcher,
@@ -351,6 +353,40 @@ export interface StorageService {
 
   // Feature flags
   getFeatureFlags(): FeatureFlagConfig;
+
+  // ============================================
+  // PROJECT PATH LOOKUPS
+  // ============================================
+  /**
+   * Get project by exact rootPath match.
+   */
+  getProjectByRootPath(rootPath: string): Promise<Project | null>;
+
+  /**
+   * Find project containing a given path (subdirectory matching).
+   * Returns the most specific match (longest rootPath that is a prefix of the given path).
+   * Handles pagination internally to check all projects.
+   * Uses path.resolve for normalization.
+   */
+  findProjectContainingPath(absolutePath: string): Promise<Project | null>;
+
+  // ============================================
+  // GUESTS - External agents registered via MCP
+  // ============================================
+  createGuest(data: CreateGuest): Promise<Guest>;
+  getGuest(id: string): Promise<Guest>;
+  getGuestByName(projectId: string, name: string): Promise<Guest | null>;
+  getGuestByTmuxSessionId(tmuxSessionId: string): Promise<Guest | null>;
+  /**
+   * Find guests whose ID starts with the given prefix.
+   * Used for prefix-based session resolution (e.g., "abc123" matches "abc12345-...").
+   * Returns empty array if no matches.
+   */
+  getGuestsByIdPrefix(prefix: string): Promise<Guest[]>;
+  listGuests(projectId: string): Promise<Guest[]>;
+  listAllGuests(): Promise<Guest[]>;
+  deleteGuest(id: string): Promise<void>;
+  updateGuestLastSeen(id: string, lastSeenAt: string): Promise<Guest>;
 
   // ============================================
   // TERMINAL WATCHERS

@@ -23,7 +23,7 @@ describe('providers', () => {
       const svg = getProviderIconSvg('openai');
       expect(svg).not.toBeNull();
       expect(svg).toContain('<svg');
-      expect(svg).toContain('fill="#000000"'); // OpenAI brand color
+      expect(svg).toContain('fill="#10a37f"'); // OpenAI brand green
     });
 
     it('returns OpenAI SVG for codex', () => {

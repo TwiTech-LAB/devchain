@@ -38,6 +38,7 @@ import {
   ChevronDown,
   UserPlus,
   Users,
+  User,
   MessageSquare,
   Settings,
   Loader2,
@@ -197,7 +198,7 @@ export function ChatPage() {
     return () => clearInterval(id);
   }, []);
 
-  // Fetch agents
+  // Fetch agents (and guests)
   const {
     data: agentsResponse = [],
     isLoading: agentsLoading,
@@ -205,7 +206,7 @@ export function ChatPage() {
   } = useQuery({
     queryKey: ['agents', projectId],
     queryFn: async () => {
-      const response = await fetch(`/api/agents?projectId=${projectId}`);
+      const response = await fetch(`/api/agents?projectId=${projectId}&includeGuests=true`);
       if (!response.ok) {
         throw new Error('Failed to fetch agents');
       }
@@ -395,17 +396,38 @@ export function ChatPage() {
     },
   });
 
-  const agents = useMemo(() => {
+  // Type for agents/guests with type marker
+  type AgentOrGuest = {
+    id: string;
+    name: string;
+    profileId?: string | null;
+    description?: string | null;
+    type?: 'agent' | 'guest';
+    tmuxSessionId?: string;
+  };
+
+  const allAgentsAndGuests = useMemo((): AgentOrGuest[] => {
     if (Array.isArray(agentsResponse)) {
       return agentsResponse;
     }
 
     if (agentsResponse && Array.isArray((agentsResponse as { items?: unknown[] }).items)) {
-      return (agentsResponse as { items: Array<{ id: string; name: string }> }).items;
+      return (agentsResponse as { items: AgentOrGuest[] }).items;
     }
 
     return [];
   }, [agentsResponse]);
+
+  // Separate agents and guests
+  const agents = useMemo(
+    () => allAgentsAndGuests.filter((item) => item.type !== 'guest'),
+    [allAgentsAndGuests],
+  );
+
+  const guests = useMemo(
+    () => allAgentsAndGuests.filter((item) => item.type === 'guest'),
+    [allAgentsAndGuests],
+  );
 
   // Derived state for batch operations
   const offlineAgents = useMemo(
@@ -1629,6 +1651,59 @@ export function ChatPage() {
               )}
             </div>
           </div>
+
+          {/* Guests Section */}
+          {guests.length > 0 && (
+            <>
+              <Separator />
+              <div className="px-4 py-4">
+                <div className="mb-2">
+                  <h3 className="text-sm font-semibold text-muted-foreground">GUESTS</h3>
+                </div>
+                <div className="space-y-1" role="list" aria-label="Guest agents">
+                  {guests.map((guest) => {
+                    // For now, assume guests are online if they exist (they auto-cleanup when tmux dies)
+                    const isOnline = true;
+
+                    return (
+                      <button
+                        key={guest.id}
+                        className={cn(
+                          'flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-muted cursor-default',
+                        )}
+                        role="listitem"
+                        aria-label={`Guest: ${guest.name}${isOnline ? ' (online)' : ' (offline)'}`}
+                      >
+                        <Circle
+                          className={cn(
+                            'h-2 w-2 fill-current',
+                            isOnline ? 'text-green-500' : 'text-muted-foreground',
+                          )}
+                          aria-hidden="true"
+                        />
+                        <User
+                          className="h-4 w-4 flex-shrink-0 text-muted-foreground"
+                          aria-hidden="true"
+                        />
+                        <div className="flex-1 overflow-hidden text-left">
+                          <div className="flex items-center gap-2">
+                            <span className="truncate">{guest.name}</span>
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] uppercase"
+                              aria-label="Guest type"
+                            >
+                              Guest
+                            </Badge>
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </>
+          )}
 
           <Separator />
 

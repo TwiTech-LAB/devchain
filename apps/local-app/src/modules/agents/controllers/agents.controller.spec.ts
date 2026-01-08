@@ -14,6 +14,7 @@ describe('AgentsController', () => {
   let controller: AgentsController;
   let storage: {
     listAgents: jest.Mock;
+    listGuests: jest.Mock;
     getAgent: jest.Mock;
     getAgentProfile: jest.Mock;
     getProvider: jest.Mock;
@@ -68,6 +69,7 @@ describe('AgentsController', () => {
   beforeEach(async () => {
     storage = {
       listAgents: jest.fn(),
+      listGuests: jest.fn().mockResolvedValue([]),
       getAgent: jest.fn(),
       getAgentProfile: jest.fn(),
       getProvider: jest.fn(),
@@ -137,6 +139,71 @@ describe('AgentsController', () => {
       expect(storage.listAgents).toHaveBeenCalledWith('project-1');
       expect(result.items).toHaveLength(1);
       expect(result.items[0].id).toBe('agent-1');
+    });
+
+    it('returns only agents when includeGuests is not true', async () => {
+      storage.listAgents.mockResolvedValue({
+        items: [mockAgent],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+
+      const result = await controller.listAgents('project-1', 'false');
+
+      expect(storage.listAgents).toHaveBeenCalledWith('project-1');
+      expect(storage.listGuests).not.toHaveBeenCalled();
+      expect(result.items).toHaveLength(1);
+    });
+
+    it('includes guests when includeGuests=true', async () => {
+      storage.listAgents.mockResolvedValue({
+        items: [mockAgent],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      storage.listGuests.mockResolvedValue([
+        {
+          id: 'guest-1',
+          projectId: 'project-1',
+          name: 'GuestBot',
+          tmuxSessionId: 'tmux-guest-1',
+          lastSeenAt: '2024-01-01T00:00:00.000Z',
+          createdAt: '2024-01-01T00:00:00.000Z',
+          updatedAt: '2024-01-01T00:00:00.000Z',
+        },
+      ]);
+
+      const result = await controller.listAgents('project-1', 'true');
+
+      expect(storage.listAgents).toHaveBeenCalledWith('project-1');
+      expect(storage.listGuests).toHaveBeenCalledWith('project-1');
+      expect(result.items).toHaveLength(2);
+      expect(result.total).toBe(2);
+
+      // Verify agent item
+      const agentItem = result.items.find(
+        (item: { id: string; type: string }) => item.id === 'agent-1',
+      );
+      expect(agentItem).toMatchObject({
+        id: 'agent-1',
+        name: 'Test Agent',
+        profileId: 'profile-1',
+        type: 'agent',
+      });
+
+      // Verify guest item
+      const guestItem = result.items.find(
+        (item: { id: string; type: string }) => item.id === 'guest-1',
+      );
+      expect(guestItem).toMatchObject({
+        id: 'guest-1',
+        name: 'GuestBot',
+        profileId: null,
+        type: 'guest',
+        tmuxSessionId: 'tmux-guest-1',
+      });
     });
   });
 

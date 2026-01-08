@@ -28,6 +28,17 @@ export interface AgentWithProvider extends Agent {
   providerId?: string;
 }
 
+/** Agent or guest item with type marker */
+export interface AgentOrGuestItem {
+  id: string;
+  name: string;
+  profileId: string | null;
+  description?: string | null;
+  type: 'agent' | 'guest';
+  /** For guests, their tmux session ID */
+  tmuxSessionId?: string;
+}
+
 /** Response shape for the atomic restart endpoint */
 export interface RestartAgentResponse {
   session: SessionDto;
@@ -62,12 +73,48 @@ export class AgentsController {
   ) {}
 
   @Get()
-  async listAgents(@Query('projectId') projectId: string) {
-    logger.info({ projectId }, 'GET /api/agents');
+  async listAgents(
+    @Query('projectId') projectId: string,
+    @Query('includeGuests') includeGuests?: string,
+  ) {
+    logger.info({ projectId, includeGuests }, 'GET /api/agents');
     if (!projectId) {
       throw new BadRequestException('projectId query parameter required');
     }
-    return this.storage.listAgents(projectId);
+
+    const agentsResult = await this.storage.listAgents(projectId);
+
+    // If includeGuests is not 'true', return just agents (backward compatible)
+    if (includeGuests !== 'true') {
+      return agentsResult;
+    }
+
+    // Fetch guests and combine with agents
+    const guests = await this.storage.listGuests(projectId);
+
+    const agentItems: AgentOrGuestItem[] = agentsResult.items.map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      profileId: agent.profileId,
+      description: agent.description,
+      type: 'agent' as const,
+    }));
+
+    const guestItems: AgentOrGuestItem[] = guests.map((guest) => ({
+      id: guest.id,
+      name: guest.name,
+      profileId: null,
+      description: null,
+      type: 'guest' as const,
+      tmuxSessionId: guest.tmuxSessionId,
+    }));
+
+    return {
+      items: [...agentItems, ...guestItems],
+      total: agentsResult.total + guests.length,
+      limit: agentsResult.limit,
+      offset: agentsResult.offset,
+    };
   }
 
   @Get(':id')

@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "AI driven development platform",
   "homepage": "https://devchain.twitechlab.com/",
   "repository": {
@@ -8,6 +8,10 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.6.0": [
+      "Guest agents support: external tmux sessions can register and participate in messaging",
+      "Fix tmux session name overflow for projects with longer names"
+    ],
     "0.5.1": [
       "Add upgrade detection and support for bundled templates",
       "Fix upgrade validation and semver comparison edge cases"

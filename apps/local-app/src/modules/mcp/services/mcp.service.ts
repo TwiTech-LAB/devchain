@@ -8,8 +8,10 @@ import { ChatService } from '../../chat/services/chat.service';
 import { SessionsService } from '../../sessions/services/sessions.service';
 import { SessionsMessagePoolService } from '../../sessions/services/sessions-message-pool.service';
 import { TerminalGateway } from '../../terminal/gateways/terminal.gateway';
+import { TmuxService } from '../../terminal/services/tmux.service';
 import { EpicsService } from '../../epics/services/epics.service';
 import { SettingsService } from '../../settings/services/settings.service';
+import { GuestsService } from '../../guests/services/guests.service';
 import { Document, Prompt, Status, Epic, EpicComment } from '../../storage/models/domain.models';
 import { createLogger } from '../../../common/logging/logger';
 import {
@@ -48,6 +50,7 @@ import {
   GetAgentByNameParamsSchema,
   ListAgentsResponse,
   GetAgentByNameResponse,
+  AgentSummary,
   ListStatusesParamsSchema,
   ListStatusesResponse,
   StatusSummary,
@@ -79,6 +82,10 @@ import {
   ListSessionsResponse,
   SessionSummary,
   SessionContext,
+  AgentSessionContext,
+  GuestSessionContext,
+  RegisterGuestParamsSchema,
+  RegisterGuestResponse,
 } from '../dtos/mcp.dto';
 import { InstructionsResolver } from './instructions-resolver';
 import type { FeatureFlagConfig } from '../../../common/config/feature-flags';
@@ -87,6 +94,31 @@ import { BadRequestException } from '@nestjs/common';
 import { ZodError } from 'zod';
 
 const logger = createLogger('McpService');
+
+/** Helper to extract actor info from session context */
+function getActorFromContext(
+  ctx: SessionContext,
+): { id: string; name: string; projectId: string } | null {
+  if (ctx.type === 'agent') {
+    return ctx.agent;
+  } else if (ctx.type === 'guest') {
+    return {
+      id: ctx.guest.id,
+      name: ctx.guest.name,
+      projectId: ctx.guest.projectId,
+    };
+  }
+  return null;
+}
+
+/** Resolved recipient info for messaging */
+interface ResolvedRecipient {
+  type: 'agent' | 'guest';
+  id: string;
+  name: string;
+  /** For guests, their tmux session ID for direct delivery */
+  tmuxSessionId?: string;
+}
 
 /** Redact sessionId for logging - show only first 4 chars */
 function redactSessionId(sessionId: string | undefined): string {
@@ -120,8 +152,10 @@ export class McpService {
     @Inject(forwardRef(() => SessionsMessagePoolService))
     private readonly messagePoolService?: SessionsMessagePoolService,
     @Inject(forwardRef(() => TerminalGateway)) private readonly terminalGateway?: TerminalGateway,
+    @Inject(forwardRef(() => TmuxService)) private readonly tmuxService?: TmuxService,
     @Inject(forwardRef(() => EpicsService)) private readonly epicsService?: EpicsService,
     @Inject(forwardRef(() => SettingsService)) private readonly settingsService?: SettingsService,
+    @Inject(forwardRef(() => GuestsService)) private readonly guestsService?: GuestsService,
   ) {
     logger.info('McpService initialized');
     this.featureFlags = this.storage.getFeatureFlags();
@@ -236,6 +270,8 @@ export class McpService {
           return await this.activityFinish(params);
         case 'devchain_list_sessions':
           return await this.listSessions();
+        case 'devchain_register_guest':
+          return await this.registerGuest(params);
         default:
           logger.warn({ tool: normalizedTool }, 'Unknown MCP tool');
           return {
@@ -739,6 +775,8 @@ export class McpService {
 
   /**
    * devchain_list_agents
+   * Returns both agents and guests for the project with type markers and online status.
+   * Pagination is applied to the combined list with stable ordering (name ASC, then type).
    */
   private async listAgents(params: unknown): Promise<McpResponse> {
     const validated = ListAgentsParamsSchema.parse(params);
@@ -762,24 +800,67 @@ export class McpService {
     const offset = validated.offset ?? 0;
     const normalizedQuery = validated.q?.toLowerCase();
 
-    const fetchOptions = normalizedQuery ? { limit: limit + offset, offset: 0 } : { limit, offset };
+    // Fetch all agents and guests for combined pagination
+    // We fetch all to ensure correct pagination semantics across both types
+    const MAX_COMBINED_FETCH = 1000;
+    const [agentsResult, guests] = await Promise.all([
+      this.storage.listAgents(project.id, { limit: MAX_COMBINED_FETCH, offset: 0 }),
+      this.storage.listGuests(project.id),
+    ]);
 
-    const result = await this.storage.listAgents(project.id, fetchOptions);
+    // Get agent presence (online status) and tmux sessions in parallel
+    const [agentPresence, tmuxSessions] = await Promise.all([
+      this.sessionsService
+        ? this.sessionsService.getAgentPresence(project.id)
+        : Promise.resolve(new Map<string, { online: boolean }>()),
+      // Batch fetch all tmux session names for O(1) guest online checks
+      this.tmuxService
+        ? this.tmuxService.listAllSessionNames()
+        : Promise.resolve(new Set<string>()),
+    ]);
 
-    let agents = result.items;
+    // Map agents with type and online status
+    const agentItems: AgentSummary[] = agentsResult.items.map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      profileId: agent.profileId,
+      description: agent.description,
+      type: 'agent' as const,
+      online: agentPresence.get(agent.id)?.online ?? false,
+    }));
+
+    // Map guests with online status using O(1) Set lookup (no N+1 tmux calls)
+    const guestItems: AgentSummary[] = guests.map((guest) => ({
+      id: guest.id,
+      name: guest.name,
+      profileId: null,
+      description: guest.description,
+      type: 'guest' as const,
+      online: tmuxSessions.has(guest.tmuxSessionId),
+    }));
+
+    // Combine agents and guests with stable ordering (name ASC, then type: agent before guest)
+    let allItems = [...agentItems, ...guestItems].sort((a, b) => {
+      const nameCompare = a.name.localeCompare(b.name);
+      if (nameCompare !== 0) return nameCompare;
+      // Agents come before guests when names are equal
+      return a.type === 'agent' ? -1 : 1;
+    });
+
+    // Apply query filter if provided
     if (normalizedQuery) {
-      agents = agents.filter((agent) => agent.name.toLowerCase().includes(normalizedQuery));
+      allItems = allItems.filter((item) => item.name.toLowerCase().includes(normalizedQuery));
     }
 
-    const paginatedAgents = normalizedQuery ? agents.slice(offset, offset + limit) : agents;
+    // Calculate total before pagination
+    const total = allItems.length;
+
+    // Apply pagination to combined list
+    const paginatedItems = allItems.slice(offset, offset + limit);
+
     const response: ListAgentsResponse = {
-      agents: paginatedAgents.map((agent) => ({
-        id: agent.id,
-        name: agent.name,
-        profileId: agent.profileId,
-        description: agent.description,
-      })),
-      total: normalizedQuery ? agents.length : result.total,
+      agents: paginatedItems,
+      total,
       limit,
       offset,
     };
@@ -1357,19 +1438,21 @@ export class McpService {
     // Resolve session to get project context
     const ctx = await this.resolveSessionContext(validated.sessionId);
     if (!ctx.success) return ctx;
-    const { agent: authorAgent, project } = ctx.data as SessionContext;
+    const sessionCtx = ctx.data as SessionContext;
 
-    // Author identity is derived from session's agent (check before project since project requires agent)
-    if (!authorAgent) {
+    // Author identity is derived from session's agent or guest
+    const authorActor = getActorFromContext(sessionCtx);
+    if (!authorActor) {
       return {
         success: false,
         error: {
           code: 'AGENT_REQUIRED',
-          message: 'Session must be associated with an agent to add comments',
+          message: 'Session must be associated with an agent or guest to add comments',
         },
       };
     }
 
+    const project = sessionCtx.project;
     if (!project) {
       return {
         success: false,
@@ -1408,7 +1491,7 @@ export class McpService {
 
     const comment = await this.storage.createEpicComment({
       epicId: validated.epicId,
-      authorName: authorAgent.name,
+      authorName: authorActor.name,
       content: validated.content,
     });
 
@@ -1675,6 +1758,59 @@ export class McpService {
   }
 
   /**
+   * Resolves a recipient by name, checking agents first then guests.
+   * Returns null if not found. Propagates real storage errors.
+   */
+  private async resolveRecipientByName(
+    projectId: string,
+    name: string,
+  ): Promise<ResolvedRecipient | null> {
+    // Try to find as agent first
+    try {
+      const agent = await this.storage.getAgentByName(projectId, name);
+      return {
+        type: 'agent',
+        id: agent.id,
+        name: agent.name,
+      };
+    } catch (error) {
+      // Only proceed to guest lookup if agent was not found
+      // Propagate real storage errors (connection issues, etc.)
+      if (!(error instanceof NotFoundError)) {
+        throw error;
+      }
+    }
+
+    // Try to find as guest (getGuestByName returns null if not found)
+    const guest = await this.storage.getGuestByName(projectId, name);
+    if (guest) {
+      return {
+        type: 'guest',
+        id: guest.id,
+        name: guest.name,
+        tmuxSessionId: guest.tmuxSessionId,
+      };
+    }
+
+    return null;
+  }
+
+  /**
+   * Gets available recipient names (agents + guests) for error messages.
+   */
+  private async getAvailableRecipientNames(projectId: string): Promise<string[]> {
+    const [agentsResult, guests] = await Promise.all([
+      this.storage.listAgents(projectId, { limit: 100, offset: 0 }),
+      this.storage.listGuests(projectId),
+    ]);
+
+    const agentNames = agentsResult.items.map((a) => a.name);
+    const guestNames = guests.map((g) => `${g.name} (guest)`);
+
+    return [...agentNames, ...guestNames];
+  }
+
+  /**
    * devchain_send_message
    * Delivers a chat message to agent sessions via tmux injection
    */
@@ -1695,15 +1831,17 @@ export class McpService {
     // Resolve session to get project context
     const ctx = await this.resolveSessionContext(validated.sessionId);
     if (!ctx.success) return ctx;
-    const { agent: senderAgent, project } = ctx.data as SessionContext;
+    const sessionCtx = ctx.data as SessionContext;
+    const sender = getActorFromContext(sessionCtx);
+    const project = sessionCtx.project;
 
-    // Sender identity is derived from session's agent (check before project since project requires agent)
-    if (!senderAgent) {
+    // Sender identity is derived from session's agent or guest
+    if (!sender) {
       return {
         success: false,
         error: {
           code: 'AGENT_REQUIRED',
-          message: 'Session must be associated with an agent to send messages',
+          message: 'Session must be associated with an agent or guest to send messages',
         },
       };
     }
@@ -1718,29 +1856,67 @@ export class McpService {
       };
     }
 
+    // Block guests from thread-backed messaging and user DMs
+    // Guests can only use pooled direct messaging via recipientAgentNames
+    if (sessionCtx.type === 'guest') {
+      if (validated.threadId) {
+        return {
+          success: false,
+          error: {
+            code: 'GUEST_THREAD_NOT_ALLOWED',
+            message:
+              'Guests cannot use threaded messaging. Use recipientAgentNames for direct messaging.',
+          },
+        };
+      }
+      if (validated.recipient === 'user') {
+        return {
+          success: false,
+          error: {
+            code: 'GUEST_USER_DM_NOT_ALLOWED',
+            message: 'Guests cannot send direct messages to users.',
+          },
+        };
+      }
+    }
+
     try {
       const autoLaunchSessions = process.env.NODE_ENV !== 'test';
 
-      // Sender identity from session context
-      const senderAgentId = senderAgent.id;
-      const senderAgentName = senderAgent.name;
+      // Sender identity from session context (agent or guest)
+      const senderId = sender.id;
+      const senderName = sender.name;
+      const senderType = sessionCtx.type; // 'agent' or 'guest'
       const recipientType = validated.recipient ?? 'agents';
 
-      // Normalize recipients from names and IDs
-      let normalizedRecipientIds: string[] = [];
+      // Resolve recipients from names (agents and guests)
+      const resolvedRecipients: ResolvedRecipient[] = [];
       if (validated.recipientAgentNames && validated.recipientAgentNames.length > 0) {
         for (const name of validated.recipientAgentNames) {
-          const agent = await this.storage.getAgentByName(project.id, name);
-          normalizedRecipientIds.push(agent.id);
+          const recipient = await this.resolveRecipientByName(project.id, name);
+          if (!recipient) {
+            const availableNames = await this.getAvailableRecipientNames(project.id);
+            return {
+              success: false,
+              error: {
+                code: 'RECIPIENT_NOT_FOUND',
+                message: `Recipient "${name}" not found. Available: ${availableNames.join(', ') || 'none'}`,
+              },
+            };
+          }
+          // Skip sender
+          if (recipient.id !== senderId) {
+            resolvedRecipients.push(recipient);
+          }
         }
       }
-      // Deduplicate and avoid including sender as a recipient
-      normalizedRecipientIds = Array.from(
-        new Set(normalizedRecipientIds.filter((id) => id && id !== senderAgentId)),
+      // Deduplicate by id
+      const uniqueRecipients = resolvedRecipients.filter(
+        (r, i, arr) => arr.findIndex((x) => x.id === r.id) === i,
       );
 
-      // Special case: agent-to-agent without threadId uses pooled injection
-      if (!validated.threadId && senderAgentId && recipientType !== 'user') {
+      // Special case: direct messaging without threadId uses pooled injection
+      if (!validated.threadId && senderId && recipientType !== 'user') {
         if (!this.messagePoolService || !this.settingsService) {
           return {
             success: false,
@@ -1752,18 +1928,22 @@ export class McpService {
           };
         }
 
-        if (normalizedRecipientIds.length === 0) {
+        if (uniqueRecipients.length === 0) {
           return {
             success: false,
             error: {
               code: 'RECIPIENTS_REQUIRED',
-              message:
-                'Recipient agents must be provided when sending agent-to-agent without threadId.',
+              message: 'Recipients must be provided when sending without threadId.',
             },
           };
         }
 
-        const queued: Array<{ agentName: string; status: 'queued' | 'launched' }> = [];
+        const queued: Array<{
+          name: string;
+          type: 'agent' | 'guest';
+          status: 'queued' | 'launched' | 'delivered' | 'failed';
+          error?: string;
+        }> = [];
         const poolConfig = this.settingsService.getMessagePoolConfigForProject(project.id);
 
         // Fetch active sessions once before loop to check if agents need auto-launch
@@ -1771,41 +1951,88 @@ export class McpService {
           ? await this.sessionsService.listActiveSessions()
           : [];
 
-        for (const agentId of normalizedRecipientIds) {
-          const agent = await this.storage.getAgent(agentId);
+        for (const recipient of uniqueRecipients) {
+          const injectionText = `\n[This message is sent from "${senderName}" ${senderType} use devchain_send_message tool for communication]\n${validated.message}\n`;
 
-          // Auto-launch offline agents before queuing message
-          let session = activeSessions.find((s) => s.agentId === agentId);
-          let wasLaunched = false;
+          if (recipient.type === 'agent') {
+            // Agent recipient - use existing pooled delivery
+            let session = activeSessions.find((s) => s.agentId === recipient.id);
+            let wasLaunched = false;
 
-          if (!session && autoLaunchSessions && this.sessionsService) {
-            try {
-              const launched = await this.sessionsService.launchSession({
-                projectId: project.id,
-                agentId,
+            if (!session && autoLaunchSessions && this.sessionsService) {
+              try {
+                const launched = await this.sessionsService.launchSession({
+                  projectId: project.id,
+                  agentId: recipient.id,
+                });
+                session = launched;
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                activeSessions.push(launched as any);
+                wasLaunched = true;
+              } catch {
+                // Continue with queueing - agent will receive when online
+              }
+            }
+
+            await this.messagePoolService.enqueue(recipient.id, injectionText, {
+              source: 'mcp.send_message',
+              submitKeys: ['Enter'],
+              senderAgentId: senderId, // Note: interface uses 'senderAgentId' for historical reasons
+              projectId: project.id,
+              agentName: recipient.name,
+            });
+
+            queued.push({
+              name: recipient.name,
+              type: 'agent',
+              status: wasLaunched ? 'launched' : 'queued',
+            });
+          } else {
+            // Guest recipient - check if online and deliver directly via tmux
+            // Guests don't have message pooling, so we deliver immediately or fail
+            const isOnline = this.tmuxService
+              ? await this.tmuxService.hasSession(recipient.tmuxSessionId!)
+              : false;
+
+            if (!isOnline) {
+              // Guest is offline - no pooling available for guests
+              queued.push({
+                name: recipient.name,
+                type: 'guest',
+                status: 'failed',
+                error: 'Recipient offline',
               });
-              session = launched;
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              activeSessions.push(launched as any);
-              wasLaunched = true;
-            } catch {
-              // Continue with queueing - agent will receive when online
+            } else if (this.tmuxService) {
+              // Deliver directly to guest's tmux session
+              try {
+                await this.tmuxService.pasteAndSubmit(recipient.tmuxSessionId!, injectionText);
+                queued.push({
+                  name: recipient.name,
+                  type: 'guest',
+                  status: 'delivered',
+                });
+              } catch (error) {
+                logger.warn(
+                  { guestId: recipient.id, tmuxSessionId: recipient.tmuxSessionId, error },
+                  'Failed to deliver message to guest',
+                );
+                queued.push({
+                  name: recipient.name,
+                  type: 'guest',
+                  status: 'failed',
+                  error: error instanceof Error ? error.message : 'Delivery failed',
+                });
+              }
+            } else {
+              // tmuxService not available
+              queued.push({
+                name: recipient.name,
+                type: 'guest',
+                status: 'failed',
+                error: 'Tmux service unavailable',
+              });
             }
           }
-
-          const injectionText = `\n[This message is sent from "${senderAgentName}" agent use devchain_send_message tool for communication]\n${validated.message}\n`;
-          await this.messagePoolService.enqueue(agentId, injectionText, {
-            source: 'mcp.send_message',
-            submitKeys: ['Enter'],
-            senderAgentId: senderAgentId,
-            projectId: project.id,
-            agentName: agent.name,
-          });
-
-          queued.push({
-            agentName: agent.name,
-            status: wasLaunched ? 'launched' : 'queued',
-          });
         }
 
         const response: SendMessageResponse = {
@@ -1831,13 +2058,14 @@ export class McpService {
       }
 
       // Determine thread ID - create new group thread or DM if needed
+      // Note: This path is only for agents (guests are blocked above)
       let threadId = validated.threadId;
-      if (!threadId && senderAgentId) {
+      if (!threadId && senderId) {
         if (recipientType === 'user') {
           // Agent -> User DM: ensure/create direct thread
           const direct = await this.chatService.createDirectThread({
             projectId: project.id,
-            agentId: senderAgentId,
+            agentId: senderId,
           });
           threadId = direct.id;
         } else {
@@ -1859,24 +2087,20 @@ export class McpService {
       // Get thread to determine fan-out recipients
       const thread = await this.chatService.getThread(threadId);
 
-      // Create the message (sender is always an agent from session context)
+      // Create the message (sender is always an agent in thread mode - guests are blocked)
       const message = await this.chatService.createMessage(threadId, {
         authorType: 'agent',
-        authorAgentId: senderAgentId,
+        authorAgentId: senderId,
         content: validated.message,
       });
 
-      // Determine delivery targets (do not deliver to user)
-      let targetAgentIds = normalizedRecipientIds;
+      // Determine delivery targets (agents only for thread mode, do not deliver to user)
+      // Extract agent IDs from resolved recipients
+      let targetAgentIds = uniqueRecipients.filter((r) => r.type === 'agent').map((r) => r.id);
 
       // Fan-out rule: if author is agent and thread has multiple agents, deliver to all agents
-      if (
-        senderAgentId &&
-        thread.members &&
-        thread.members.length > 1 &&
-        targetAgentIds.length === 0
-      ) {
-        targetAgentIds = thread.members.filter((id) => id !== senderAgentId);
+      if (senderId && thread.members && thread.members.length > 1 && targetAgentIds.length === 0) {
+        targetAgentIds = thread.members.filter((id) => id !== senderId);
       }
 
       // Get active sessions and agent details
@@ -1912,7 +2136,7 @@ export class McpService {
         }
 
         // Inject message into tmux session
-        const injectionText = `\n[CHAT] From: ${senderAgentName} • Thread: ${threadId}\n${validated.message}\n[ACK] tools/call { name: "devchain_chat_ack", arguments: { sessionId: "${session.id}", thread_id: "${threadId}", message_id: "${message.id}" } }\n`;
+        const injectionText = `\n[CHAT] From: ${senderName} • Thread: ${threadId}\n${validated.message}\n[ACK] tools/call { name: "devchain_chat_ack", arguments: { sessionId: "${session.id}", thread_id: "${threadId}", message_id: "${message.id}" } }\n`;
 
         await this.sessionsService.injectTextIntoSession(session.id, injectionText);
 
@@ -1967,7 +2191,8 @@ export class McpService {
     // Resolve session to get agent identity
     const ctx = await this.resolveSessionContext(validated.sessionId);
     if (!ctx.success) return ctx;
-    const { agent } = ctx.data as SessionContext;
+    const sessionCtx = ctx.data as SessionContext;
+    const agent = getActorFromContext(sessionCtx);
 
     if (!agent) {
       return {
@@ -2256,7 +2481,20 @@ export class McpService {
     // Resolve session to get project and agent context
     const ctx = await this.resolveSessionContext(validated.sessionId);
     if (!ctx.success) return ctx;
-    const { project, agent } = ctx.data as SessionContext;
+    const sessionCtx = ctx.data as SessionContext;
+    const project = sessionCtx.project;
+    const agent = getActorFromContext(sessionCtx);
+
+    // Block guests from activity tools (they use thread-backed chat)
+    if (sessionCtx.type === 'guest') {
+      return {
+        success: false,
+        error: {
+          code: 'GUEST_ACTIVITY_NOT_ALLOWED',
+          message: 'Guests cannot use activity tools.',
+        },
+      };
+    }
 
     if (!project) {
       return {
@@ -2328,7 +2566,20 @@ export class McpService {
     // Resolve session to get project and agent context
     const ctx = await this.resolveSessionContext(validated.sessionId);
     if (!ctx.success) return ctx;
-    const { project, agent } = ctx.data as SessionContext;
+    const sessionCtx = ctx.data as SessionContext;
+    const project = sessionCtx.project;
+    const agent = getActorFromContext(sessionCtx);
+
+    // Block guests from activity tools (they use thread-backed chat)
+    if (sessionCtx.type === 'guest') {
+      return {
+        success: false,
+        error: {
+          code: 'GUEST_ACTIVITY_NOT_ALLOWED',
+          message: 'Guests cannot use activity tools.',
+        },
+      };
+    }
 
     if (!project) {
       return {
@@ -2516,13 +2767,19 @@ export class McpService {
         matchingSessions = activeSessions.filter((s) => s.id.startsWith(sessionId));
       }
 
-      // Handle no match
+      // Handle no match - check if it's a guest ID
       if (matchingSessions.length === 0) {
+        // Try to find a guest with this ID
+        const guestContext = await this.tryResolveGuestContext(sessionId);
+        if (guestContext) {
+          return { success: true, data: guestContext };
+        }
+
         return {
           success: false,
           error: {
             code: 'SESSION_NOT_FOUND',
-            message: `No active session found matching '${sessionId}'`,
+            message: `No active session or guest found matching '${sessionId}'`,
           },
         };
       }
@@ -2547,7 +2804,7 @@ export class McpService {
       const session = matchingSessions[0];
 
       // Resolve agent
-      let agent: SessionContext['agent'] = null;
+      let agent: AgentSessionContext['agent'] = null;
       if (session.agentId) {
         try {
           const agentEntity = await this.storage.getAgent(session.agentId);
@@ -2565,7 +2822,7 @@ export class McpService {
       }
 
       // Resolve project through agent
-      let project: SessionContext['project'] = null;
+      let project: AgentSessionContext['project'] = null;
       if (agent?.projectId) {
         try {
           const projectEntity = await this.storage.getProject(agent.projectId);
@@ -2582,7 +2839,8 @@ export class McpService {
         }
       }
 
-      const context: SessionContext = {
+      const context: AgentSessionContext = {
+        type: 'agent',
         session: {
           id: session.id,
           agentId: session.agentId,
@@ -2606,6 +2864,133 @@ export class McpService {
           message: error instanceof Error ? error.message : 'Failed to resolve session context',
         },
       };
+    }
+  }
+
+  /**
+   * Try to resolve a guest context by guest ID.
+   * Verifies the tmux session is still alive before returning.
+   */
+  private async tryResolveGuestContext(guestId: string): Promise<GuestSessionContext | null> {
+    if (!this.guestsService || !this.tmuxService) {
+      return null;
+    }
+
+    try {
+      // Try to find guest by ID (supports both full UUID and prefix)
+      let guest;
+      if (guestId.length === 36) {
+        // Full UUID - exact match
+        guest = await this.storage.getGuest(guestId);
+      } else {
+        // Prefix match - use targeted SQL query for O(1) lookup instead of loading all guests
+        const matches = await this.storage.getGuestsByIdPrefix(guestId);
+        if (matches.length === 1) {
+          guest = matches[0];
+        } else {
+          return null; // No match or ambiguous
+        }
+      }
+
+      // Verify tmux session is still alive
+      const sessionAlive = await this.tmuxService.hasSession(guest.tmuxSessionId);
+      if (!sessionAlive) {
+        logger.warn(
+          { guestId: guest.id, tmuxSessionId: guest.tmuxSessionId },
+          'Guest tmux session no longer exists',
+        );
+        return null;
+      }
+
+      // Resolve project
+      const project = await this.storage.getProject(guest.projectId);
+
+      const context: GuestSessionContext = {
+        type: 'guest',
+        guest: {
+          id: guest.id,
+          name: guest.name,
+          projectId: guest.projectId,
+          tmuxSessionId: guest.tmuxSessionId,
+        },
+        project: {
+          id: project.id,
+          name: project.name,
+          rootPath: project.rootPath,
+        },
+      };
+
+      return context;
+    } catch (error) {
+      // Guest not found or other error
+      logger.debug(
+        { guestId: redactSessionId(guestId), error: String(error) },
+        'Failed to resolve guest context',
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Register a new guest agent (bootstrap tool - no session required)
+   */
+  private async registerGuest(params: unknown): Promise<McpResponse> {
+    if (!this.guestsService) {
+      return {
+        success: false,
+        error: {
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'Guest registration requires full app context',
+        },
+      };
+    }
+
+    const validated = RegisterGuestParamsSchema.parse(params);
+
+    try {
+      const result = await this.guestsService.register({
+        name: validated.name,
+        tmuxSessionId: validated.tmuxSessionId,
+        description: validated.description,
+      });
+
+      const response: RegisterGuestResponse = {
+        guestId: result.guestId,
+        name: validated.name,
+        projectId: result.projectId,
+        projectName: result.projectName,
+        isSandbox: result.isSandbox,
+        registeredAt: new Date().toISOString(),
+      };
+
+      logger.info(
+        { guestId: result.guestId, projectId: result.projectId, isSandbox: result.isSandbox },
+        'Guest registered successfully',
+      );
+
+      return { success: true, data: response };
+    } catch (error) {
+      if (error instanceof ValidationError) {
+        return {
+          success: false,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: error.message,
+            data: error.details,
+          },
+        };
+      }
+      if (error instanceof Error && error.name === 'ConflictError') {
+        return {
+          success: false,
+          error: {
+            code: 'CONFLICT',
+            message: error.message,
+            data: (error as { data?: unknown }).data,
+          },
+        };
+      }
+      throw error;
     }
   }
 

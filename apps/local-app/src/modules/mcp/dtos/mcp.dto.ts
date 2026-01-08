@@ -420,8 +420,12 @@ export interface GetPromptResponse {
 export interface AgentSummary {
   id: string;
   name: string;
-  profileId: string;
+  profileId: string | null;
   description?: string | null;
+  /** 'agent' for regular agents, 'guest' for guest agents */
+  type?: 'agent' | 'guest';
+  /** Whether the agent/guest is currently online */
+  online?: boolean;
 }
 
 export interface AgentProfileSummary {
@@ -573,8 +577,10 @@ export type SendMessageResponse =
       mode: 'pooled';
       queuedCount: number;
       queued: Array<{
-        agentName: string;
-        status: 'queued' | 'launched';
+        name: string;
+        type: 'agent' | 'guest';
+        status: 'queued' | 'launched' | 'delivered' | 'failed';
+        error?: string;
       }>;
       estimatedDeliveryMs: number;
     }
@@ -587,7 +593,8 @@ export type SendMessageResponse =
         agentName: string;
         agentId: string;
         sessionId: string;
-        status: 'delivered' | 'queued';
+        status: 'delivered' | 'queued' | 'failed';
+        error?: string;
       }>;
     };
 
@@ -716,8 +723,81 @@ export interface ListSessionsResponse {
   sessions: SessionSummary[];
 }
 
-// resolveSessionContext
-export interface SessionContext {
+// Secure tmuxSessionId validation - prevents command injection
+// Only allows alphanumeric, dash, underscore, and period (common tmux session name chars)
+const TMUX_SESSION_ID_REGEX = /^[a-zA-Z0-9_.-]+$/;
+const TMUX_SESSION_ID_MAX_LENGTH = 128;
+
+export const TmuxSessionIdSchema = z
+  .string()
+  .min(1, 'tmuxSessionId is required')
+  .max(
+    TMUX_SESSION_ID_MAX_LENGTH,
+    `tmuxSessionId must be at most ${TMUX_SESSION_ID_MAX_LENGTH} characters`,
+  )
+  .regex(
+    TMUX_SESSION_ID_REGEX,
+    'tmuxSessionId must only contain alphanumeric characters, dashes, underscores, or periods',
+  );
+
+// devchain_register_guest (bootstrap tool - no sessionId required)
+export const RegisterGuestParamsSchema = z.object({
+  name: z.string().min(1),
+  tmuxSessionId: TmuxSessionIdSchema,
+  description: z.string().optional(),
+});
+
+export type RegisterGuestParams = z.infer<typeof RegisterGuestParamsSchema>;
+
+export interface RegisterGuestResponse {
+  guestId: string;
+  name: string;
+  projectId: string;
+  projectName: string;
+  isSandbox: boolean;
+  registeredAt: string;
+}
+
+// resolveSessionContext - discriminated union for agent and guest contexts
+export interface AgentSessionContext {
+  type: 'agent';
+  session: {
+    id: string;
+    agentId: string | null;
+    status: string;
+    startedAt: string;
+  };
+  agent: {
+    id: string;
+    name: string;
+    projectId: string;
+  } | null;
+  project: {
+    id: string;
+    name: string;
+    rootPath: string;
+  } | null;
+}
+
+export interface GuestSessionContext {
+  type: 'guest';
+  guest: {
+    id: string;
+    name: string;
+    projectId: string;
+    tmuxSessionId: string;
+  };
+  project: {
+    id: string;
+    name: string;
+    rootPath: string;
+  };
+}
+
+export type SessionContext = AgentSessionContext | GuestSessionContext;
+
+// Legacy SessionContext for backwards compatibility (agent context)
+export interface LegacySessionContext {
   session: {
     id: string;
     agentId: string | null;

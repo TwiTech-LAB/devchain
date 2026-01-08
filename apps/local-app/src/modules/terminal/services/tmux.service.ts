@@ -1,15 +1,39 @@
 import { Injectable, OnModuleDestroy, Inject, forwardRef } from '@nestjs/common';
-import { exec, spawn } from 'child_process';
+import { exec, spawn, execFile } from 'child_process';
 import { promisify } from 'util';
 import { createLogger } from '../../../common/logging/logger';
-import { IOError, NotFoundError } from '../../../common/errors/error-types';
+import { IOError, NotFoundError, ValidationError } from '../../../common/errors/error-types';
 import { EventsService } from '../../events/services/events.service';
 
 // Create execAsync with larger maxBuffer for tmux captures
 // 5MB buffer prevents failure on large scrollback captures
 const MAX_EXEC_BUFFER = 5 * 1024 * 1024; // 5MB
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const logger = createLogger('TmuxService');
+
+// Security: Validate tmux session ID to prevent command injection
+// Only allows alphanumeric, dash, underscore, and period
+const SAFE_SESSION_ID_REGEX = /^[a-zA-Z0-9_.-]+$/;
+const MAX_SESSION_ID_LENGTH = 128;
+
+/**
+ * Validates a tmux session ID to ensure it's safe for use in commands.
+ * Throws ValidationError if the session ID contains potentially dangerous characters.
+ */
+function validateSessionId(sessionId: string): void {
+  if (!sessionId || sessionId.length === 0) {
+    throw new ValidationError('Session ID is required');
+  }
+  if (sessionId.length > MAX_SESSION_ID_LENGTH) {
+    throw new ValidationError(`Session ID exceeds maximum length of ${MAX_SESSION_ID_LENGTH}`);
+  }
+  if (!SAFE_SESSION_ID_REGEX.test(sessionId)) {
+    throw new ValidationError(
+      'Session ID contains invalid characters. Only alphanumeric, dash, underscore, and period are allowed.',
+    );
+  }
+}
 
 export interface TmuxSessionInfo {
   name: string;
@@ -39,6 +63,9 @@ export class TmuxService implements OnModuleDestroy {
    * Create tmux session name following pattern:
    * devchain_<projectSlug>_<epicId>_<agentId>_<sessionId>
    * Using underscores instead of colons to avoid tmux window/pane syntax conflicts
+   *
+   * UUIDs are truncated to 8 characters to keep total length under 128 chars.
+   * This allows project slugs up to ~90 characters while staying within tmux limits.
    */
   createSessionName(
     projectSlug: string,
@@ -46,7 +73,11 @@ export class TmuxService implements OnModuleDestroy {
     agentId: string,
     sessionId: string,
   ): string {
-    return `devchain_${projectSlug}_${epicId}_${agentId}_${sessionId}`;
+    // Truncate UUIDs to 8 chars; keep 'independent' as-is
+    const shortEpic = epicId === 'independent' ? epicId : epicId.slice(0, 8);
+    const shortAgent = agentId.slice(0, 8);
+    const shortSession = sessionId.slice(0, 8);
+    return `devchain_${projectSlug}_${shortEpic}_${shortAgent}_${shortSession}`;
   }
 
   /**
@@ -93,12 +124,16 @@ export class TmuxService implements OnModuleDestroy {
   }
 
   /**
-   * Check if tmux session exists
+   * Check if tmux session exists.
+   * Uses execFile with argv to prevent command injection.
    */
   async hasSession(sessionName: string): Promise<boolean> {
     try {
-      // Use = prefix for exact match to avoid colon interpretation
-      await execAsync(`tmux has-session -t "=${sessionName}"`);
+      // Validate session name to prevent injection (defense-in-depth)
+      validateSessionId(sessionName);
+      // Use execFile with argv array - no shell, no injection risk
+      // The = prefix ensures exact match in tmux
+      await execFileAsync('tmux', ['has-session', '-t', `=${sessionName}`]);
       return true;
     } catch {
       return false;
@@ -165,6 +200,22 @@ export class TmuxService implements OnModuleDestroy {
     } catch (error) {
       // No sessions running
       return [];
+    }
+  }
+
+  /**
+   * List all tmux session names as a Set for O(1) lookup.
+   * Used for batch presence checks (e.g., in list_agents).
+   * Returns empty Set if no sessions exist or on error.
+   */
+  async listAllSessionNames(): Promise<Set<string>> {
+    try {
+      const { stdout } = await execAsync('tmux list-sessions -F "#{session_name}"');
+      const names = stdout.trim().split('\n').filter(Boolean);
+      return new Set(names);
+    } catch {
+      // No sessions running or tmux not available
+      return new Set();
     }
   }
 
@@ -306,6 +357,7 @@ export class TmuxService implements OnModuleDestroy {
 
   /**
    * Paste raw text into tmux session using load-buffer/paste-buffer.
+   * Uses execFile with argv to prevent command injection.
    *
    * When bracketed=true, embeds bracketed paste markers directly in the buffer:
    * `ESC[200~` + content + `ESC[201~`. The entire payload is loaded into a tmux
@@ -318,8 +370,11 @@ export class TmuxService implements OnModuleDestroy {
     text: string,
     options?: { bracketed?: boolean },
   ): Promise<void> {
+    // Validate session name to prevent injection (defense-in-depth)
+    validateSessionId(sessionName);
+
     // Use a unique buffer per paste to avoid cross-event collisions
-    const safeSession = sessionName.replace(/[^a-zA-Z0-9_-]/g, '');
+    const safeSession = sessionName.replace(/[^a-zA-Z0-9_.-]/g, '');
     const bufferName = `devchain-${safeSession}-${Date.now()}-${Math.random()
       .toString(16)
       .slice(2, 8)}`;
@@ -333,13 +388,13 @@ export class TmuxService implements OnModuleDestroy {
       // ESC[200~ = start bracket, ESC[201~ = end bracket
       const payload = options?.bracketed ? `\x1b[200~${prepared}\x1b[201~` : prepared;
 
-      // Load buffer and paste
+      // Load buffer and paste using execFile (no shell, no injection risk)
       await this.loadBuffer(bufferName, payload);
-      await execAsync(`tmux paste-buffer -b "${bufferName}" -t "${sessionName}"`);
+      await execFileAsync('tmux', ['paste-buffer', '-b', bufferName, '-t', sessionName]);
 
       // Clean up buffer
       try {
-        await execAsync(`tmux delete-buffer -b "${bufferName}"`);
+        await execFileAsync('tmux', ['delete-buffer', '-b', bufferName]);
       } catch {
         // Ignore cleanup errors
       }
@@ -360,23 +415,18 @@ export class TmuxService implements OnModuleDestroy {
   /**
    * Send raw key chords to the target tmux pane, e.g. Enter, C-j, C-d.
    * Keys are passed as tmux send-keys arguments (e.g., 'Enter', 'C-j').
+   * Uses execFile with argv to prevent command injection.
    */
   async sendKeys(sessionName: string, keys: string[]): Promise<void> {
     if (!keys.length) return;
 
-    // Properly escape each argument for the shell to prevent issues with spaces and special chars
-    const shellEscape = (arg: string): string => {
-      // If the argument is empty or contains special characters, wrap in single quotes
-      // and escape any single quotes within
-      if (arg === '' || /[ \t\n'"$`\\!*?[\](){}|&;<>]/.test(arg)) {
-        return "'" + arg.replace(/'/g, "'\\''") + "'";
-      }
-      return arg;
-    };
+    // Validate session name to prevent injection (defense-in-depth)
+    validateSessionId(sessionName);
 
-    const args = keys.map(shellEscape).join(' ');
     try {
-      await execAsync(`tmux send-keys -t "=${sessionName}:" ${args}`);
+      // Use execFile with argv array - no shell, no injection risk
+      // The -t argument uses = prefix for exact session match, : suffix for pane
+      await execFileAsync('tmux', ['send-keys', '-t', `=${sessionName}:`, ...keys]);
       logger.debug({ sessionName, keys }, 'Sent keys to tmux session');
     } catch (error) {
       logger.error({ error, sessionName, keys }, 'Failed to send keys');
@@ -461,6 +511,64 @@ export class TmuxService implements OnModuleDestroy {
       clearInterval(interval);
       this.healthCheckIntervals.delete(sessionName);
       logger.info({ sessionName }, 'Stopped health check');
+    }
+  }
+
+  /**
+   * Get the current working directory of a tmux session.
+   * Returns null if the session doesn't exist or on any error.
+   * Uses execFile with argv to prevent command injection.
+   *
+   * @param tmuxSessionId - The tmux session name/ID
+   * @returns The absolute path of the session's current working directory, or null on error
+   */
+  async getSessionCwd(tmuxSessionId: string): Promise<string | null> {
+    try {
+      // Validate session ID to prevent injection (defense-in-depth)
+      validateSessionId(tmuxSessionId);
+
+      // First, get the first pane ID for the session
+      // Use execFile with argv array - no shell, no injection risk
+      const { stdout: paneListOutput } = await execFileAsync('tmux', [
+        'list-panes',
+        '-t',
+        `=${tmuxSessionId}`,
+        '-F',
+        '#{pane_id}',
+      ]);
+
+      const paneId = paneListOutput.trim().split('\n')[0];
+      if (!paneId) {
+        logger.warn({ tmuxSessionId }, 'No panes found for tmux session');
+        return null;
+      }
+
+      // paneId is from tmux output (e.g., %0, %1) - validate it's safe
+      // Pane IDs should only contain % and digits
+      if (!/^%\d+$/.test(paneId)) {
+        logger.warn({ tmuxSessionId, paneId }, 'Unexpected pane ID format from tmux');
+        return null;
+      }
+
+      // Get the current path from the pane using execFile
+      const { stdout: cwdOutput } = await execFileAsync('tmux', [
+        'display-message',
+        '-t',
+        paneId,
+        '-p',
+        '#{pane_current_path}',
+      ]);
+
+      const cwd = cwdOutput.trim();
+      if (!cwd) {
+        logger.warn({ tmuxSessionId, paneId }, 'Empty pane_current_path from tmux');
+        return null;
+      }
+
+      return cwd;
+    } catch (error) {
+      logger.warn({ tmuxSessionId, error: String(error) }, 'Failed to get tmux session cwd');
+      return null;
     }
   }
 }

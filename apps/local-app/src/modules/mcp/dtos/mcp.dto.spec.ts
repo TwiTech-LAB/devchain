@@ -1,5 +1,116 @@
 import { ZodError } from 'zod';
-import { ChatAckParamsSchema, ChatListMembersParamsSchema } from './mcp.dto';
+import {
+  ChatAckParamsSchema,
+  ChatListMembersParamsSchema,
+  TmuxSessionIdSchema,
+  RegisterGuestParamsSchema,
+} from './mcp.dto';
+
+describe('TmuxSessionIdSchema - command injection prevention', () => {
+  describe('valid session IDs', () => {
+    it('accepts alphanumeric session IDs', () => {
+      expect(() => TmuxSessionIdSchema.parse('mysession123')).not.toThrow();
+    });
+
+    it('accepts session IDs with dashes', () => {
+      expect(() => TmuxSessionIdSchema.parse('my-session-name')).not.toThrow();
+    });
+
+    it('accepts session IDs with underscores', () => {
+      expect(() => TmuxSessionIdSchema.parse('my_session_name')).not.toThrow();
+    });
+
+    it('accepts session IDs with periods', () => {
+      expect(() => TmuxSessionIdSchema.parse('session.v1.0')).not.toThrow();
+    });
+
+    it('accepts devchain-style session names', () => {
+      expect(() =>
+        TmuxSessionIdSchema.parse('devchain_myproject_epic-123_agent-456_session-789'),
+      ).not.toThrow();
+    });
+  });
+
+  describe('malicious session IDs - command injection attempts', () => {
+    it('rejects semicolon command injection: "; rm -rf /"', () => {
+      expect(() => TmuxSessionIdSchema.parse('; rm -rf /')).toThrow(ZodError);
+    });
+
+    it('rejects command substitution: "$(whoami)"', () => {
+      expect(() => TmuxSessionIdSchema.parse('$(whoami)')).toThrow(ZodError);
+    });
+
+    it('rejects backtick command substitution: "`whoami`"', () => {
+      expect(() => TmuxSessionIdSchema.parse('`whoami`')).toThrow(ZodError);
+    });
+
+    it('rejects pipe injection: "| cat /etc/passwd"', () => {
+      expect(() => TmuxSessionIdSchema.parse('| cat /etc/passwd')).toThrow(ZodError);
+    });
+
+    it('rejects ampersand background: "& malicious-cmd"', () => {
+      expect(() => TmuxSessionIdSchema.parse('& malicious')).toThrow(ZodError);
+    });
+
+    it('rejects newline injection', () => {
+      expect(() => TmuxSessionIdSchema.parse('session\nmalicious')).toThrow(ZodError);
+    });
+
+    it('rejects carriage return injection', () => {
+      expect(() => TmuxSessionIdSchema.parse('session\rmalicious')).toThrow(ZodError);
+    });
+
+    it('rejects spaces (potential argument injection)', () => {
+      expect(() => TmuxSessionIdSchema.parse('session -t other')).toThrow(ZodError);
+    });
+
+    it('rejects quotes (shell escape attempts)', () => {
+      expect(() => TmuxSessionIdSchema.parse("session'; echo pwned")).toThrow(ZodError);
+      expect(() => TmuxSessionIdSchema.parse('session"; echo pwned')).toThrow(ZodError);
+    });
+
+    it('rejects redirection operators', () => {
+      expect(() => TmuxSessionIdSchema.parse('session > /tmp/pwned')).toThrow(ZodError);
+      expect(() => TmuxSessionIdSchema.parse('session < /etc/passwd')).toThrow(ZodError);
+    });
+  });
+
+  describe('length constraints', () => {
+    it('rejects empty session ID', () => {
+      expect(() => TmuxSessionIdSchema.parse('')).toThrow(ZodError);
+    });
+
+    it('rejects session ID exceeding 128 characters', () => {
+      const longId = 'a'.repeat(129);
+      expect(() => TmuxSessionIdSchema.parse(longId)).toThrow(ZodError);
+    });
+
+    it('accepts session ID at max length (128 chars)', () => {
+      const maxId = 'a'.repeat(128);
+      expect(() => TmuxSessionIdSchema.parse(maxId)).not.toThrow();
+    });
+  });
+});
+
+describe('RegisterGuestParamsSchema - uses secure tmuxSessionId validation', () => {
+  it('rejects malicious tmuxSessionId in guest registration', () => {
+    expect(() =>
+      RegisterGuestParamsSchema.parse({
+        name: 'MyGuest',
+        tmuxSessionId: '; rm -rf /',
+      }),
+    ).toThrow(ZodError);
+  });
+
+  it('accepts valid guest registration params', () => {
+    expect(() =>
+      RegisterGuestParamsSchema.parse({
+        name: 'MyGuest',
+        tmuxSessionId: 'valid-session-123',
+      }),
+    ).not.toThrow();
+  });
+});
 
 describe('MCP chat DTO schemas', () => {
   it('requires thread_id for list members tool', () => {

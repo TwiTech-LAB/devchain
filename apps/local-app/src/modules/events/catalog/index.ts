@@ -6,6 +6,8 @@ import { sessionStoppedEvent } from './session.stopped';
 import { sessionCrashedEvent } from './session.crashed';
 import { terminalWatcherTriggeredEvent } from './terminal.watcher.triggered';
 import { settingsTerminalChangedEvent } from './settings.terminal.changed';
+import { guestRegisteredEvent } from './guest.registered';
+import { guestUnregisteredEvent } from './guest.unregistered';
 
 // Re-export individual event definitions for direct import
 export { settingsTerminalChangedEvent } from './settings.terminal.changed';
@@ -18,6 +20,8 @@ export const eventCatalog = {
   [sessionCrashedEvent.name]: sessionCrashedEvent.schema,
   [terminalWatcherTriggeredEvent.name]: terminalWatcherTriggeredEvent.schema,
   [settingsTerminalChangedEvent.name]: settingsTerminalChangedEvent.schema,
+  [guestRegisteredEvent.name]: guestRegisteredEvent.schema,
+  [guestUnregisteredEvent.name]: guestUnregisteredEvent.schema,
 } as const;
 
 export type EventName = keyof typeof eventCatalog;

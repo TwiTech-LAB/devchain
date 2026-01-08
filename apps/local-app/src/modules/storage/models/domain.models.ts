@@ -195,6 +195,24 @@ export type CreateEpicComment = Omit<EpicComment, 'id' | 'createdAt' | 'updatedA
 export type UpdateEpicComment = Partial<Omit<EpicComment, 'id' | 'createdAt' | 'updatedAt'>>;
 
 // ============================================
+// GUESTS - External agents registered via MCP
+// ============================================
+
+export interface Guest {
+  id: string;
+  projectId: string;
+  name: string;
+  description: string | null;
+  tmuxSessionId: string;
+  lastSeenAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type CreateGuest = Omit<Guest, 'id' | 'createdAt' | 'updatedAt'>;
+export type UpdateGuest = Partial<Pick<Guest, 'lastSeenAt'>>;
+
+// ============================================
 // TERMINAL WATCHERS
 // ============================================
 
