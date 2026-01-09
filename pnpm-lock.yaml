@@ -114,6 +114,9 @@ importers:
       commander:
         specifier: ^12.1.0
         version: 12.1.0
+      devchain-cli:
+        specifier: 0.4.1
+        version: 0.4.1(@types/better-sqlite3@7.6.13)(@types/pg@8.15.5)(@types/react-dom@18.3.7(@types/react@18.3.26))(@types/react@18.3.26)(pg@8.16.3)
       dotenv:
         specifier: ^16.4.5
         version: 16.6.1
@@ -136,8 +139,8 @@ importers:
         specifier: 0.545.0
         version: 0.545.0(react@18.3.1)
       node-pty:
-        specifier: 1.1.0-beta37
-        version: 1.1.0-beta37
+        specifier: 1.2.0-beta.2
+        version: 1.2.0-beta.2
       open:
         specifier: ^8.4.2
         version: 8.4.2
@@ -579,8 +582,8 @@ importers:
         specifier: 0.545.0
         version: 0.545.0(react@18.3.1)
       node-pty:
-        specifier: 1.1.0-beta37
-        version: 1.1.0-beta37
+        specifier: 1.2.0-beta.2
+        version: 1.2.0-beta.2
       pino:
         specifier: ^8.19.0
         version: 8.21.0
@@ -943,7 +946,7 @@ importers:
     devDependencies:
       '@nestjs/cli':
         specifier: ^10.3.2
-        version: 10.4.9(esbuild@0.25.10)
+        version: 10.4.9
       '@nestjs/schematics':
         specifier: ^10.1.1
         version: 10.2.3(chokidar@3.6.0)(typescript@5.9.3)
@@ -1003,7 +1006,7 @@ importers:
         version: 29.4.5(@babel/core@7.28.4)(@jest/transform@29.7.0)(@jest/types@29.6.3)(babel-jest@29.7.0(@babel/core@7.28.4))(esbuild@0.25.10)(jest-util@29.7.0)(jest@29.7.0(@types/node@20.19.20)(ts-node@10.9.2(@types/node@20.19.20)(typescript@5.9.3)))(typescript@5.9.3)
       ts-loader:
         specifier: ^9.5.1
-        version: 9.5.4(typescript@5.9.3)(webpack@5.97.1(esbuild@0.25.10))
+        version: 9.5.4(typescript@5.9.3)(webpack@5.97.1)
       ts-node:
         specifier: ^10.9.2
         version: 10.9.2(@types/node@20.19.20)(typescript@5.9.3)
@@ -1108,6 +1111,9 @@ importers:
       commander:
         specifier: ^12.1.0
         version: 12.1.0
+      dotenv:
+        specifier: 16.4.7
+        version: 16.4.7
       inquirer:
         specifier: ^9.3.0
         version: 9.3.8(@types/node@20.19.20)
@@ -4718,6 +4724,11 @@ packages:
   detect-node-es@1.1.0:
     resolution: {integrity: sha512-ypdmJU/TbBby2Dxibuv7ZLW3Bs1QEmM7nHjEANfohJLvE0XVujisn1qPJcZxg+qDucsr+bP6fLD1rPS3AhJ7EQ==}
 
+  devchain-cli@0.4.1:
+    resolution: {integrity: sha512-8iSCfhdM5BqtpynJQ0R7Tw/liAQdmNmsL4aHNNKIvnXYF2RdPE6owjSR8QZXNKT7VqR3jLK15EjkJaj5VMIBZg==}
+    engines: {node: '>=20.0.0', pnpm: '>=8.0.0'}
+    hasBin: true
+
   dezalgo@1.0.4:
     resolution: {integrity: sha512-rXSP0bf+5n0Qonsb+SVVfNfIsimO4HEtmnIpPHY8Q1UCzKlQrDMfdobr8nJOOsRgWCyMRqeSBQzmWUMq7zvVig==}
 
@@ -4764,6 +4775,10 @@ packages:
 
   dotenv@16.4.5:
     resolution: {integrity: sha512-ZmdL2rui+eB2YwhsWzjInR8LldtZHGDoQ1ugH85ppHKwpUHL7j7rN0Ti9NCnGiQbhaZ11FpR+7ao1dNsmduNUg==}
+    engines: {node: '>=12'}
+
+  dotenv@16.4.7:
+    resolution: {integrity: sha512-47qPchRCykZC03FhkYAhrvwU4xDBFIj1QPqaarj6mdM/hgUzfPHcpkHJOn3mJAufFeeAxAzeGsr5X0M4k6fLZQ==}
     engines: {node: '>=12'}
 
   dotenv@16.6.1:
@@ -6319,6 +6334,9 @@ packages:
 
   node-pty@1.1.0-beta37:
     resolution: {integrity: sha512-Ys8AW98Atyu9cLV5QLQshvSTF+YMDksVi2ULkYNPAKLGzaDQbXuOEjStg4ZZuL4c8saOTh1+2PNlCoyuagBr1Q==}
+
+  node-pty@1.2.0-beta.2:
+    resolution: {integrity: sha512-i8nUF01z9ON49UopX3qKMr34zMqfXlzuOl8+eYPwQdH5CzbVy7FqKtIQEO07ZKU04ttWwnHRxv1td3WOQSGGVQ==}
 
   node-releases@2.0.23:
     resolution: {integrity: sha512-cCmFDMSm26S6tQSDpBCg/NR8NENrVPhAJSf+XbxBG4rPFaaonlEoE9wHQmun+cls499TQGSb7ZyPBRlzgKfpeg==}
@@ -12182,6 +12200,105 @@ snapshots:
 
   detect-node-es@1.1.0: {}
 
+  devchain-cli@0.4.1(@types/better-sqlite3@7.6.13)(@types/pg@8.15.5)(@types/react-dom@18.3.7(@types/react@18.3.26))(@types/react@18.3.26)(pg@8.16.3):
+    dependencies:
+      '@fastify/static': 7.0.4
+      '@modelcontextprotocol/sdk': 1.20.1
+      '@nestjs/common': 10.4.20(class-transformer@0.5.1)(class-validator@0.14.2)(reflect-metadata@0.2.2)(rxjs@7.8.2)
+      '@nestjs/core': 10.4.20(@nestjs/common@10.4.20(class-transformer@0.5.1)(class-validator@0.14.2)(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/websockets@10.4.20)(reflect-metadata@0.2.2)(rxjs@7.8.2)
+      '@nestjs/event-emitter': 3.0.1(@nestjs/common@10.4.20(class-transformer@0.5.1)(class-validator@0.14.2)(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@10.4.20)
+      '@nestjs/platform-fastify': 10.4.20(@fastify/static@7.0.4)(@nestjs/common@10.4.20(class-transformer@0.5.1)(class-validator@0.14.2)(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@10.4.20)
+      '@nestjs/platform-socket.io': 10.4.20(@nestjs/common@10.4.20(class-transformer@0.5.1)(class-validator@0.14.2)(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/websockets@10.4.20)(rxjs@7.8.2)
+      '@nestjs/swagger': 7.4.2(@fastify/static@7.0.4)(@nestjs/common@10.4.20(class-transformer@0.5.1)(class-validator@0.14.2)(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@10.4.20)(class-transformer@0.5.1)(class-validator@0.14.2)(reflect-metadata@0.2.2)
+      '@nestjs/websockets': 10.4.20(@nestjs/common@10.4.20(class-transformer@0.5.1)(class-validator@0.14.2)(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@10.4.20)(@nestjs/platform-socket.io@10.4.20)(reflect-metadata@0.2.2)(rxjs@7.8.2)
+      '@radix-ui/react-avatar': 1.1.10(@types/react-dom@18.3.7(@types/react@18.3.26))(@types/react@18.3.26)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@radix-ui/react-checkbox': 1.3.3(@types/react-dom@18.3.7(@types/react@18.3.26))(@types/react@18.3.26)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@radix-ui/react-context-menu': 2.2.16(@types/react-dom@18.3.7(@types/react@18.3.26))(@types/react@18.3.26)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@radix-ui/react-dialog': 1.1.15(@types/react-dom@18.3.7(@types/react@18.3.26))(@types/react@18.3.26)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@radix-ui/react-dropdown-menu': 2.1.16(@types/react-dom@18.3.7(@types/react@18.3.26))(@types/react@18.3.26)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@radix-ui/react-label': 2.1.7(@types/react-dom@18.3.7(@types/react@18.3.26))(@types/react@18.3.26)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@radix-ui/react-popover': 1.1.15(@types/react-dom@18.3.7(@types/react@18.3.26))(@types/react@18.3.26)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@radix-ui/react-scroll-area': 1.2.10(@types/react-dom@18.3.7(@types/react@18.3.26))(@types/react@18.3.26)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@radix-ui/react-select': 2.2.6(@types/react-dom@18.3.7(@types/react@18.3.26))(@types/react@18.3.26)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@radix-ui/react-separator': 1.1.7(@types/react-dom@18.3.7(@types/react@18.3.26))(@types/react@18.3.26)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@radix-ui/react-slot': 1.2.3(@types/react@18.3.26)(react@18.3.1)
+      '@radix-ui/react-toast': 1.2.15(@types/react-dom@18.3.7(@types/react@18.3.26))(@types/react@18.3.26)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@radix-ui/react-tooltip': 1.2.8(@types/react-dom@18.3.7(@types/react@18.3.26))(@types/react@18.3.26)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@tanstack/react-query': 5.90.2(react@18.3.1)
+      '@tanstack/react-table': 8.21.3(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@xterm/addon-fit': 0.10.0(@xterm/xterm@5.5.0)
+      '@xterm/addon-serialize': 0.13.0(@xterm/xterm@5.5.0)
+      '@xterm/headless': 5.5.0
+      '@xterm/xterm': 5.5.0
+      ansi-to-html: 0.7.2
+      better-sqlite3: 11.5.0
+      class-transformer: 0.5.1
+      class-validator: 0.14.2
+      class-variance-authority: 0.7.1
+      clsx: 2.1.1
+      commander: 12.1.0
+      dotenv: 16.4.7
+      drizzle-orm: 0.44.6(@types/better-sqlite3@7.6.13)(@types/pg@8.15.5)(better-sqlite3@11.5.0)(pg@8.16.3)
+      fastify: 4.29.1
+      get-port: 5.1.1
+      hterm: 2.0.2
+      hterm-umd: 1.0.1
+      lucide-react: 0.545.0(react@18.3.1)
+      node-pty: 1.1.0-beta37
+      open: 8.4.2
+      pino: 8.21.0
+      pino-http: 9.0.0
+      pino-pretty: 11.3.0
+      prebuild-install: 7.1.3
+      react: 18.3.1
+      react-dom: 18.3.1(react@18.3.1)
+      react-rnd: 10.5.2(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      react-router-dom: 7.9.4(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      reflect-metadata: 0.2.2
+      rxjs: 7.8.2
+      socket.io: 4.8.1
+      socket.io-client: 4.8.1
+      tailwind-merge: 3.3.1
+      zod: 3.25.76
+    transitivePeerDependencies:
+      - '@aws-sdk/client-rds-data'
+      - '@cloudflare/workers-types'
+      - '@electric-sql/pglite'
+      - '@fastify/view'
+      - '@libsql/client'
+      - '@libsql/client-wasm'
+      - '@neondatabase/serverless'
+      - '@nestjs/microservices'
+      - '@nestjs/platform-express'
+      - '@op-engineering/op-sqlite'
+      - '@opentelemetry/api'
+      - '@planetscale/database'
+      - '@prisma/client'
+      - '@tidbcloud/serverless'
+      - '@types/better-sqlite3'
+      - '@types/pg'
+      - '@types/react'
+      - '@types/react-dom'
+      - '@types/sql.js'
+      - '@upstash/redis'
+      - '@vercel/postgres'
+      - '@xata.io/client'
+      - bufferutil
+      - bun-types
+      - encoding
+      - expo-sqlite
+      - gel
+      - knex
+      - kysely
+      - mysql2
+      - pg
+      - postgres
+      - prisma
+      - sql.js
+      - sqlite3
+      - supports-color
+      - utf-8-validate
+
   dezalgo@1.0.4:
     dependencies:
       asap: 2.0.6
@@ -12218,6 +12335,8 @@ snapshots:
   dotenv-expand@10.0.0: {}
 
   dotenv@16.4.5: {}
+
+  dotenv@16.4.7: {}
 
   dotenv@16.6.1: {}
 
@@ -14229,6 +14348,10 @@ snapshots:
   node-int64@0.4.0: {}
 
   node-pty@1.1.0-beta37:
+    dependencies:
+      node-addon-api: 7.1.1
+
+  node-pty@1.2.0-beta.2:
     dependencies:
       node-addon-api: 7.1.1
 

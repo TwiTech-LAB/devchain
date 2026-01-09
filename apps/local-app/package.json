@@ -76,7 +76,7 @@
     "drizzle-orm": "0.44.6",
     "fastify": "^4.26.2",
     "lucide-react": "0.545.0",
-    "node-pty": "1.1.0-beta37",
+    "node-pty": "1.2.0-beta.2",
     "pino": "^8.19.0",
     "pino-http": "^9.0.0",
     "pino-pretty": "^11.0.0",

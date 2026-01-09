@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "AI driven development platform",
   "homepage": "https://devchain.twitechlab.com/",
   "repository": {
@@ -8,6 +8,9 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.6.1": [
+      "Fix macOS PTY streaming failure (posix_spawnp error) by updating node-pty to 1.2.0-beta.2"
+    ],
     "0.6.0": [
       "Guest agents support: external tmux sessions can register and participate in messaging",
       "Fix tmux session name overflow for projects with longer names"
@@ -161,7 +164,7 @@
     "hterm": "2.0.2",
     "hterm-umd": "1.0.1",
     "lucide-react": "0.545.0",
-    "node-pty": "1.1.0-beta37",
+    "node-pty": "1.2.0-beta.2",
     "open": "^8.4.2",
     "pino": "^8.19.0",
     "pino-http": "^9.0.0",
