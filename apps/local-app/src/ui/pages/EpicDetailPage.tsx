@@ -27,6 +27,7 @@ import {
 import { Alert, AlertDescription, AlertTitle } from '@/ui/components/ui/alert';
 import { Popover, PopoverContent, PopoverTrigger } from '@/ui/components/ui/popover';
 import { SubEpicsBoard } from '@/ui/components/shared/SubEpicsBoard';
+import { Breadcrumbs } from '@/ui/components/shared/Breadcrumbs';
 import {
   Play,
   Square,
@@ -365,6 +366,28 @@ export function EpicDetailPage() {
     queryFn: () => fetchEpic(id!),
     enabled: !!id,
   });
+
+  // Fetch parent epic for breadcrumb navigation (only when epic has a parent)
+  const { data: parentEpic, isLoading: parentEpicLoading } = useQuery({
+    queryKey: ['epic', epic?.parentId],
+    queryFn: () => fetchEpic(epic!.parentId!),
+    enabled: !!epic?.parentId,
+  });
+
+  // Build breadcrumb items for sub-epics (Board > Parent > Current)
+  const breadcrumbItems = useMemo(() => {
+    if (!epic?.parentId) return null;
+
+    const parentLabel = parentEpicLoading
+      ? 'Loading…'
+      : (parentEpic?.title ?? epic.parentId.slice(0, 8));
+
+    return [
+      { label: 'Board', href: '/board' },
+      { label: parentLabel, href: `/epics/${epic.parentId}` },
+      { label: epic.title },
+    ];
+  }, [epic?.parentId, epic?.title, parentEpic?.title, parentEpicLoading]);
 
   const { data: agentsData } = useQuery({
     queryKey: ['agents', epic?.projectId],
@@ -819,6 +842,8 @@ export function EpicDetailPage() {
     <div className="space-y-8">
       {/* Unified Header: Title above Controls */}
       <div className="space-y-2">
+        {/* Breadcrumb navigation for sub-epics */}
+        {breadcrumbItems && <Breadcrumbs items={breadcrumbItems} />}
         {/* Title Row - prominent, editable */}
         <div className="flex items-center gap-3">
           {titleEditing ? (

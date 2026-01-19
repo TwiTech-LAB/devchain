@@ -8,6 +8,12 @@ import { terminalWatcherTriggeredEvent } from './terminal.watcher.triggered';
 import { settingsTerminalChangedEvent } from './settings.terminal.changed';
 import { guestRegisteredEvent } from './guest.registered';
 import { guestUnregisteredEvent } from './guest.unregistered';
+import { reviewCreatedEvent } from './review.created';
+import { reviewUpdatedEvent } from './review.updated';
+import { reviewCommentCreatedEvent } from './review.comment.created';
+import { reviewCommentResolvedEvent } from './review.comment.resolved';
+import { reviewCommentDeletedEvent } from './review.comment.deleted';
+import { reviewCommentUpdatedEvent } from './review.comment.updated';
 
 // Re-export individual event definitions for direct import
 export { settingsTerminalChangedEvent } from './settings.terminal.changed';
@@ -22,6 +28,12 @@ export const eventCatalog = {
   [settingsTerminalChangedEvent.name]: settingsTerminalChangedEvent.schema,
   [guestRegisteredEvent.name]: guestRegisteredEvent.schema,
   [guestUnregisteredEvent.name]: guestUnregisteredEvent.schema,
+  [reviewCreatedEvent.name]: reviewCreatedEvent.schema,
+  [reviewUpdatedEvent.name]: reviewUpdatedEvent.schema,
+  [reviewCommentCreatedEvent.name]: reviewCommentCreatedEvent.schema,
+  [reviewCommentResolvedEvent.name]: reviewCommentResolvedEvent.schema,
+  [reviewCommentDeletedEvent.name]: reviewCommentDeletedEvent.schema,
+  [reviewCommentUpdatedEvent.name]: reviewCommentUpdatedEvent.schema,
 } as const;
 
 export type EventName = keyof typeof eventCatalog;

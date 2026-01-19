@@ -1322,6 +1322,39 @@ describe('McpService', () => {
     expect(response.error?.code).toBe('VALIDATION_ERROR');
   });
 
+  it('includes suggestions for misplaced params in validation errors', async () => {
+    // Passing agentName at top level instead of assignment.agentName
+    const response = await service.handleToolCall('devchain_update_epic', {
+      sessionId: TEST_SESSION_ID,
+      id: '00000000-0000-0000-0000-000000000001',
+      version: 1,
+      agentName: 'Epic Manager', // Wrong! Should be assignment.agentName
+    });
+
+    expect(response.success).toBe(false);
+    expect(response.error?.code).toBe('VALIDATION_ERROR');
+    // Verify suggestions are included
+    const data = response.error?.data as { issues: unknown[]; suggestions?: string[] };
+    expect(data.suggestions).toBeDefined();
+    expect(data.suggestions).toContain('Did you mean: assignment.agentName?');
+  });
+
+  it('does not include suggestions for unknown keys without nested alternatives', async () => {
+    // Passing a completely unknown field
+    const response = await service.handleToolCall('devchain_update_epic', {
+      sessionId: TEST_SESSION_ID,
+      id: '00000000-0000-0000-0000-000000000001',
+      version: 1,
+      totallyUnknownField: 'value',
+    });
+
+    expect(response.success).toBe(false);
+    expect(response.error?.code).toBe('VALIDATION_ERROR');
+    // Verify no suggestions for truly unknown keys
+    const data = response.error?.data as { issues: unknown[]; suggestions?: string[] };
+    expect(data.suggestions).toBeUndefined();
+  });
+
   it('returns document content for doc:// resource', async () => {
     const document: Document = {
       id: 'doc-1',
@@ -3381,6 +3414,45 @@ describe('McpService', () => {
       expect(data.sessions[0].agentName).toBe('Test Agent');
       expect(data.sessions[0].projectName).toBe('Unknown');
     });
+
+    it('rejects unknown params with VALIDATION_ERROR and unrecognized_keys', async () => {
+      const response = await service.handleToolCall('devchain_list_sessions', {
+        unknownParam: 'value',
+        anotherExtra: 123,
+      });
+
+      expect(response.success).toBe(false);
+      expect(response.error?.code).toBe('VALIDATION_ERROR');
+      const data = response.error?.data as { issues: Array<{ code: string; keys?: string[] }> };
+      const unrecognizedIssue = data.issues.find((issue) => issue.code === 'unrecognized_keys');
+      expect(unrecognizedIssue).toBeDefined();
+      expect(unrecognizedIssue?.keys).toContain('unknownParam');
+      expect(unrecognizedIssue?.keys).toContain('anotherExtra');
+    });
+
+    it('handles undefined params same as empty object', async () => {
+      (sessionsService as { listActiveSessions: jest.Mock }).listActiveSessions.mockResolvedValue(
+        [],
+      );
+
+      const response = await service.handleToolCall('devchain_list_sessions', undefined);
+
+      expect(response.success).toBe(true);
+      const data = response.data as { sessions: unknown[] };
+      expect(data.sessions).toHaveLength(0);
+    });
+
+    it('handles null params same as empty object', async () => {
+      (sessionsService as { listActiveSessions: jest.Mock }).listActiveSessions.mockResolvedValue(
+        [],
+      );
+
+      const response = await service.handleToolCall('devchain_list_sessions', null);
+
+      expect(response.success).toBe(true);
+      const data = response.data as { sessions: unknown[] };
+      expect(data.sessions).toHaveLength(0);
+    });
   });
 
   describe('resolveSessionContext', () => {
@@ -3762,10 +3834,11 @@ describe('McpService', () => {
     });
 
     it('blocks guest from using devchain_activity_finish', async () => {
+      // Use valid params for ActivityFinishParamsSchema (sessionId, threadId?, message?, status?)
       const response = await service.handleToolCall('devchain_activity_finish', {
         sessionId: GUEST_ID,
-        activity_id: 'some-activity-id',
-        summary: 'Done',
+        message: 'Done',
+        status: 'success',
       });
 
       expect(response.success).toBe(false);

@@ -54,7 +54,7 @@ import {
   serializeBoardFilters,
   type BoardFilterParams,
 } from '@/ui/lib/url-filters';
-import type { Epic, Status, Agent, EpicsQueryData } from '@/ui/components/board/types';
+import type { Epic, Status, Agent, EpicsQueryData } from '@/ui/types';
 
 // Helper to determine if a hex color is light (returns true) or dark (returns false)
 function isLightColor(hex: string): boolean {

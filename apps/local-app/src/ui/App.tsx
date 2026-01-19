@@ -13,6 +13,8 @@ import { SettingsPage } from './pages/SettingsPage';
 import { EventsPage } from './pages/EventsPage';
 import { MessagesPage } from './pages/MessagesPage';
 import { AutomationPage } from './pages/AutomationPage';
+import { ReviewsPageWithSuspense } from './pages/ReviewsPage.lazy';
+import { ReviewDetailPageWithSuspense } from './pages/ReviewDetailPage.lazy';
 import { NotFoundPage } from './pages/NotFoundPage';
 import { DocumentsDisabledPage } from './pages/DocumentsDisabledPage';
 import { ProjectSelectionProvider } from './hooks/useProjectSelection';
@@ -40,6 +42,8 @@ export function App() {
                 <Route path="/statuses" element={<StatusesPage />} />
                 <Route path="/board" element={<BoardPage />} />
                 <Route path="/chat" element={<ChatPage />} />
+                <Route path="/reviews" element={<ReviewsPageWithSuspense />} />
+                <Route path="/reviews/:reviewId" element={<ReviewDetailPageWithSuspense />} />
                 <Route path="/records" element={<RecordsDisabledPage />} />
                 <Route path="/epics/:id" element={<EpicDetailPage />} />
                 <Route path="/events" element={<EventsPage />} />

@@ -9,9 +9,9 @@ import {
   Inject,
   BadRequestException,
 } from '@nestjs/common';
-import { access, stat, mkdir, readFile, writeFile } from 'fs/promises';
+import { access, stat } from 'fs/promises';
 import { constants } from 'fs';
-import { isAbsolute, resolve, join } from 'path';
+import { isAbsolute, resolve } from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
@@ -25,7 +25,7 @@ import { z } from 'zod';
 import { createLogger } from '../../../common/logging/logger';
 import { McpProviderRegistrationService } from '../../mcp/services/mcp-provider-registration.service';
 import { PreflightService } from '../../core/services/preflight.service';
-import { getEnvConfig } from '../../../common/config/env.config';
+import { ProviderMcpEnsureService } from '../../core/services/provider-mcp-ensure.service';
 import { ProviderAdapterFactory } from '../adapters';
 
 const logger = createLogger('ProvidersController');
@@ -59,15 +59,6 @@ const EnsureMcpSchema = z.object({
   projectPath: z.string().min(1).optional(),
 });
 
-interface ClaudeSettingsLocal {
-  permissions?: {
-    allow?: string[];
-    deny?: string[];
-    ask?: string[];
-  };
-  [key: string]: unknown;
-}
-
 @Controller('api/providers')
 export class ProvidersController {
   constructor(
@@ -75,6 +66,7 @@ export class ProvidersController {
     private readonly mcpRegistration: McpProviderRegistrationService,
     private readonly preflight: PreflightService,
     private readonly adapterFactory: ProviderAdapterFactory,
+    private readonly mcpEnsureService: ProviderMcpEnsureService,
   ) {}
 
   @Get()
@@ -176,130 +168,21 @@ export class ProvidersController {
     const parsed = EnsureMcpSchema.parse(body);
     const provider = await this.storage.getProvider(id);
 
-    // Only support known providers
-    if (!this.adapterFactory.isSupported(provider.name)) {
+    // Delegate to shared service
+    const result = await this.mcpEnsureService.ensureMcp(provider, parsed.projectPath);
+
+    if (!result.success) {
       throw new BadRequestException({
-        message: `MCP ensure not supported for provider: ${provider.name}`,
+        message: result.message ?? 'MCP ensure failed',
         field: 'provider',
       });
     }
 
-    // Compute expected endpoint
-    const env = getEnvConfig();
-    const expectedEndpoint = `http://127.0.0.1:${env.PORT}/mcp`;
-    const expectedAlias = 'devchain';
-
-    // List current registrations with project context
-    const listResult = await this.mcpRegistration.listRegistrations(provider, {
-      cwd: parsed.projectPath,
-    });
-    if (!listResult.success) {
-      throw new BadRequestException({
-        message: 'Failed to list MCP registrations',
-        details: listResult.message,
-      });
-    }
-
-    // Check if devchain alias exists
-    const existingEntry = listResult.entries.find((e) => e.alias === expectedAlias);
-    let action: 'added' | 'fixed_mismatch' | 'already_configured';
-
-    if (existingEntry) {
-      if (existingEntry.endpoint === expectedEndpoint) {
-        // Already configured correctly
-        action = 'already_configured';
-        logger.debug({ provider: provider.name }, 'MCP already configured correctly');
-      } else {
-        // Endpoint mismatch - remove and re-add
-        logger.info(
-          { provider: provider.name, existing: existingEntry.endpoint, expected: expectedEndpoint },
-          'MCP endpoint mismatch, removing and re-adding',
-        );
-
-        // Remove existing
-        const removeResult = await this.mcpRegistration.removeRegistration(
-          provider,
-          expectedAlias,
-          { cwd: parsed.projectPath },
-        );
-        if (!removeResult.success) {
-          throw new BadRequestException({
-            message: 'Failed to remove existing MCP registration',
-            details: removeResult.message,
-          });
-        }
-
-        // Add with correct endpoint
-        const addResult = await this.mcpRegistration.registerProvider(
-          provider,
-          {
-            endpoint: expectedEndpoint,
-            alias: expectedAlias,
-          },
-          { cwd: parsed.projectPath },
-        );
-        if (!addResult.success) {
-          throw new BadRequestException({
-            message: 'Failed to re-register MCP after removal',
-            details: addResult.message,
-          });
-        }
-
-        action = 'fixed_mismatch';
-      }
-    } else {
-      // Not registered - add it
-      logger.info({ provider: provider.name }, 'MCP not registered, adding');
-      const addResult = await this.mcpRegistration.registerProvider(
-        provider,
-        {
-          endpoint: expectedEndpoint,
-          alias: expectedAlias,
-        },
-        { cwd: parsed.projectPath },
-      );
-      if (!addResult.success) {
-        throw new BadRequestException({
-          message: 'Failed to register MCP',
-          details: addResult.message,
-        });
-      }
-
-      action = 'added';
-    }
-
-    // Update metadata if changed
-    if (action !== 'already_configured') {
-      const metadata: UpdateProviderMcpMetadata = {
-        mcpConfigured: true,
-        mcpEndpoint: expectedEndpoint,
-        mcpRegisteredAt: new Date().toISOString(),
-      };
-      await this.storage.updateProviderMcpMetadata(id, metadata);
-
-      // For Claude provider, ensure project settings file has mcp__devchain allowed
-      if (parsed.projectPath && provider.name === 'claude') {
-        try {
-          await this.ensureClaudeProjectSettings(parsed.projectPath);
-        } catch (error) {
-          logger.warn(
-            { error, projectPath: parsed.projectPath },
-            'Failed to update Claude project settings (non-fatal)',
-          );
-          // Don't fail the request - MCP registration already succeeded
-        }
-      }
-    }
-
-    // Clear preflight cache
-    this.preflight.clearCache();
-    logger.debug('Cleared preflight cache after MCP ensure');
-
     return {
-      success: true,
-      action,
-      endpoint: expectedEndpoint,
-      alias: expectedAlias,
+      success: result.success,
+      action: result.action,
+      endpoint: result.endpoint,
+      alias: result.alias,
     };
   }
 
@@ -465,43 +348,5 @@ export class ProvidersController {
       });
     }
     return result;
-  }
-
-  /**
-   * Ensures the Claude project settings file exists and has mcp__devchain in the allow list.
-   * Creates .claude/settings.local.json if it doesn't exist, or updates it if needed.
-   */
-  private async ensureClaudeProjectSettings(projectPath: string): Promise<void> {
-    const settingsDir = join(projectPath, '.claude');
-    const settingsPath = join(settingsDir, 'settings.local.json');
-    const permission = 'mcp__devchain';
-
-    // Ensure .claude directory exists
-    await mkdir(settingsDir, { recursive: true });
-
-    // Read existing file or start with empty structure
-    let settings: ClaudeSettingsLocal;
-    try {
-      const content = await readFile(settingsPath, 'utf-8');
-      settings = JSON.parse(content);
-    } catch {
-      // File doesn't exist or invalid JSON - start fresh
-      settings = { permissions: { allow: [], deny: [], ask: [] } };
-    }
-
-    // Ensure permissions structure exists
-    if (!settings.permissions) {
-      settings.permissions = { allow: [], deny: [], ask: [] };
-    }
-    if (!Array.isArray(settings.permissions.allow)) {
-      settings.permissions.allow = [];
-    }
-
-    // Add permission if not already present
-    if (!settings.permissions.allow.includes(permission)) {
-      settings.permissions.allow.push(permission);
-      await writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf-8');
-      logger.info({ projectPath, settingsPath }, 'Added mcp__devchain to Claude settings');
-    }
   }
 }

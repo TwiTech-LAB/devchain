@@ -121,16 +121,46 @@ describe('MCP chat DTO schemas', () => {
   });
 
   it('validates devchain_chat_ack parameters', () => {
+    // Only required params: sessionId, thread_id, message_id
+    // agent_id and agent_name are response fields, not request params
     expect(() =>
       ChatAckParamsSchema.parse({
         sessionId: '00000000-0000-0000-0000-000000000003',
         thread_id: '00000000-0000-0000-0000-000000000000',
         message_id: '00000000-0000-0000-0000-000000000001',
-        agent_id: '00000000-0000-0000-0000-000000000002',
-        agent_name: 'Agent Example',
       }),
     ).not.toThrow();
 
     expect(() => ChatAckParamsSchema.parse({ thread_id: 'missing' })).toThrow(ZodError);
+  });
+
+  it('rejects unknown keys in strict mode', () => {
+    // Strict mode should reject extraneous fields
+    expect(() =>
+      ChatAckParamsSchema.parse({
+        sessionId: '00000000-0000-0000-0000-000000000003',
+        thread_id: '00000000-0000-0000-0000-000000000000',
+        message_id: '00000000-0000-0000-0000-000000000001',
+        unknown_field: 'should fail',
+      }),
+    ).toThrow(ZodError);
+  });
+
+  it('reports unrecognized_keys issue code for unknown params', () => {
+    const result = ChatAckParamsSchema.safeParse({
+      sessionId: '00000000-0000-0000-0000-000000000003',
+      thread_id: '00000000-0000-0000-0000-000000000000',
+      message_id: '00000000-0000-0000-0000-000000000001',
+      unknown_param: 'value',
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const unrecognizedIssue = result.error.issues.find(
+        (issue) => issue.code === 'unrecognized_keys',
+      );
+      expect(unrecognizedIssue).toBeDefined();
+      expect((unrecognizedIssue as { keys: string[] }).keys).toContain('unknown_param');
+    }
   });
 });

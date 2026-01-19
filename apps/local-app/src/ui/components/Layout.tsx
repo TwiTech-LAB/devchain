@@ -3,9 +3,10 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useSelectedProject } from '../hooks/useProjectSelection';
 import { fetchCachedTemplates, hasAnyTemplateUpdates } from '../lib/registry-updates';
+import { preloadReviewsPage } from '../pages/ReviewsPage.lazy';
 import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import { Breadcrumbs, ToastHost, type BreadcrumbItem } from './shared';
+import { Breadcrumbs, ToastHost, EpicSearchInput, type BreadcrumbItem } from './shared';
 import { TerminalDock, OPEN_TERMINAL_DOCK_EVENT } from './terminal-dock';
 import {
   TerminalWindowsProvider,
@@ -46,6 +47,7 @@ import {
   Waves,
   Zap,
   Package,
+  GitCompareArrows,
 } from 'lucide-react';
 import { ThemeSelect, type ThemeValue, getStoredTheme } from '@/ui/components/ThemeSelect';
 import { Popover, PopoverContent, PopoverTrigger } from '@/ui/components/ui/popover';
@@ -76,6 +78,7 @@ const navSections: NavSection[] = [
       { label: 'Projects', path: '/projects', icon: FolderOpen },
       { label: 'Chat', path: '/chat', icon: MessageSquare },
       { label: 'Board', path: '/board', icon: LayoutGrid },
+      { label: 'Reviews', path: '/reviews', icon: GitCompareArrows },
       { label: 'Registry', path: '/registry', icon: Package },
     ],
   },
@@ -108,6 +111,7 @@ const SHORTCUTS = [
   { keys: 'g p', description: 'Go to Projects' },
   { keys: 'g b', description: 'Go to Board' },
   { keys: 'g c', description: 'Go to Chat' },
+  { keys: 'g r', description: 'Go to Reviews' },
   { keys: 't', description: 'Toggle terminal dock' },
   { keys: 'Alt+Shift+X', description: 'Toggle all terminal windows' },
   { keys: 'Alt + `', description: 'Cycle terminal windows' },
@@ -460,7 +464,7 @@ function LayoutShell({ children }: LayoutProps) {
       }
 
       if (
-        (event.key === 'p' || event.key === 'b' || event.key === 'c') &&
+        (event.key === 'p' || event.key === 'b' || event.key === 'c' || event.key === 'r') &&
         !event.metaKey &&
         !event.ctrlKey &&
         !event.altKey
@@ -473,9 +477,12 @@ function LayoutShell({ children }: LayoutProps) {
           } else if (event.key === 'b') {
             navigate('/board');
             announceShortcut('nav-board', 'Navigated to Board (shortcut g b)');
-          } else {
+          } else if (event.key === 'c') {
             navigate('/chat');
             announceShortcut('nav-chat', 'Navigated to Chat (shortcut g c)');
+          } else if (event.key === 'r') {
+            navigate('/reviews');
+            announceShortcut('nav-reviews', 'Navigated to Reviews (shortcut g r)');
           }
         }
         lastKeyRef.current = null;
@@ -780,11 +787,21 @@ function LayoutShell({ children }: LayoutProps) {
                         const active = isActive(item.path);
                         const hasUpdates = item.label === 'Registry' && hasRegistryUpdates;
 
+                        // Preload lazy-loaded pages on hover for faster navigation
+                        const preloadHandlers =
+                          item.path === '/reviews'
+                            ? {
+                                onMouseEnter: preloadReviewsPage,
+                                onFocus: preloadReviewsPage,
+                              }
+                            : {};
+
                         return (
                           <li key={item.path}>
                             <Link
                               to={item.path}
                               onClick={() => setSidebarOpen(false)}
+                              {...preloadHandlers}
                               className={cn(
                                 'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
                                 'hover:bg-muted',
@@ -881,6 +898,10 @@ function LayoutShell({ children }: LayoutProps) {
                   No projects yet? Create one
                 </Link>
               )}
+              {/* Epic search: available when project selected, hidden on small screens */}
+              {selectedProjectId && (
+                <EpicSearchInput projectId={selectedProjectId} className="hidden lg:block" />
+              )}
               {/* Theme toggle: inline on >=sm, popover on small screens */}
               <div className="hidden sm:block">
                 <ThemeSelect value={theme} onChange={setTheme} />
@@ -914,7 +935,7 @@ function LayoutShell({ children }: LayoutProps) {
 
           {/* Main Content */}
           <main className="flex-1 overflow-y-auto">
-            <div className="container mx-auto flex h-full min-h-0 flex-col p-6">{children}</div>
+            <div className="flex h-full min-h-0 flex-col px-4 py-3">{children}</div>
           </main>
 
           <TerminalDock

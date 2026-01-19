@@ -103,6 +103,31 @@ function buildFetchMock(overrides?: {
       } as Response;
     }
 
+    if (url.startsWith('/api/preflight')) {
+      return {
+        ok: true,
+        json: async () => ({
+          overall: 'pass',
+          checks: [],
+          providers: [
+            {
+              id: baseProvider.id,
+              name: baseProvider.name,
+              status: 'pass',
+              message: 'Provider ready',
+              binPath: '/usr/bin/claude',
+              binaryStatus: 'pass',
+              binaryMessage: 'Binary found',
+              mcpStatus: 'pass',
+              mcpMessage: 'MCP configured',
+            },
+          ],
+          supportedMcpProviders: ['claude'],
+          timestamp: new Date().toISOString(),
+        }),
+      } as Response;
+    }
+
     if (url === '/api/sessions/launch' && init?.method === 'POST') {
       if (overrides?.onLaunch) {
         return overrides.onLaunch();

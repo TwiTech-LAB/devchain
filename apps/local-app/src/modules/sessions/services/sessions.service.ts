@@ -7,6 +7,7 @@ import { TmuxService } from '../../terminal/services/tmux.service';
 import { TerminalSendCoordinatorService } from '../../terminal/services/terminal-send-coordinator.service';
 import { PtyService } from '../../terminal/services/pty.service';
 import { PreflightService } from '../../core/services/preflight.service';
+import { ProviderMcpEnsureService } from '../../core/services/provider-mcp-ensure.service';
 import { STORAGE_SERVICE, StorageService } from '../../storage/interfaces/storage.interface';
 import { SessionDto, SessionDetailDto, LaunchSessionDto } from '../dtos/sessions.dto';
 import { DB_CONNECTION } from '../../storage/db/db.provider';
@@ -57,6 +58,8 @@ export class SessionsService {
     private readonly sendCoordinator: TerminalSendCoordinatorService,
     @Inject(forwardRef(() => PtyService)) private readonly ptyService: PtyService,
     @Inject(forwardRef(() => PreflightService)) private readonly preflightService: PreflightService,
+    @Inject(forwardRef(() => ProviderMcpEnsureService))
+    private readonly mcpEnsureService: ProviderMcpEnsureService,
     private readonly moduleRef: ModuleRef,
   ) {
     // Extract raw sqlite instance
@@ -105,7 +108,51 @@ export class SessionsService {
     const provider = await this.storage.getProvider(profile.providerId);
 
     // Run preflight checks
-    const preflightResult = await this.preflightService.runChecks(project.rootPath);
+    let preflightResult = await this.preflightService.runChecks(project.rootPath);
+
+    // Auto-configure MCP if not configured
+    let providerCheck = preflightResult.providers?.find((p) => p.id === provider.id);
+    if (providerCheck?.mcpStatus && providerCheck.mcpStatus !== 'pass') {
+      logger.info(
+        {
+          providerId: provider.id,
+          providerName: provider.name,
+          mcpStatus: providerCheck.mcpStatus,
+        },
+        'MCP not configured, attempting auto-ensure',
+      );
+
+      // Attempt to auto-configure MCP
+      const ensureResult = await this.mcpEnsureService.ensureMcp(provider, project.rootPath);
+
+      if (ensureResult.success) {
+        logger.info(
+          { providerId: provider.id, action: ensureResult.action },
+          'MCP auto-configured successfully',
+        );
+
+        // Re-run preflight to verify
+        preflightResult = await this.preflightService.runChecks(project.rootPath);
+        providerCheck = preflightResult.providers?.find((p) => p.id === provider.id);
+      } else {
+        logger.warn(
+          { providerId: provider.id, message: ensureResult.message },
+          'MCP auto-ensure failed',
+        );
+      }
+
+      // If still not configured after auto-ensure attempt, throw error
+      if (providerCheck?.mcpStatus && providerCheck.mcpStatus !== 'pass') {
+        throw new ValidationError('Provider MCP is not configured', {
+          code: 'MCP_NOT_CONFIGURED',
+          providerId: provider.id,
+          providerName: provider.name,
+          mcpStatus: providerCheck.mcpStatus,
+          mcpMessage: providerCheck.mcpMessage,
+        });
+      }
+    }
+
     if (preflightResult.overall === 'fail') {
       const failedChecks = preflightResult.checks
         .filter((c) => c.status === 'fail')

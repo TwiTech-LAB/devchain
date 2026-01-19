@@ -16,6 +16,8 @@ import {
 import { useToast } from '@/ui/hooks/use-toast';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import { Plus, Bot, AlertCircle, Loader2, Play, Pencil, RotateCcw, Power } from 'lucide-react';
+import { McpConfigurationModal } from '@/ui/components/shared/McpConfigurationModal';
+import { fetchPreflightChecks } from '@/ui/lib/preflight';
 import { useTerminalWindowManager } from '@/ui/terminal-windows';
 import { useAppSocket } from '@/ui/hooks/useAppSocket';
 import type { WsEnvelope } from '@/ui/lib/socket';
@@ -23,12 +25,13 @@ import {
   TERMINAL_SESSIONS_QUERY_KEY,
   OPEN_TERMINAL_DOCK_EVENT,
 } from '@/ui/components/terminal-dock';
-import type { ActiveSession } from '@/ui/lib/sessions';
 import {
   fetchAgentPresence,
   terminateSession,
   launchSession,
   restartSession,
+  SessionApiError,
+  type ActiveSession,
   type AgentPresenceMap,
 } from '@/ui/lib/sessions';
 import { Avatar, AvatarFallback, AvatarImage } from '@/ui/components/ui/avatar';
@@ -227,6 +230,16 @@ export function AgentsPage() {
   const createPreview = useAvatarPreview(formData.name);
   const editPreview = useAvatarPreview(editFormData.name);
 
+  // MCP configuration modal state
+  const [mcpModalOpen, setMcpModalOpen] = useState(false);
+  const [pendingLaunchAgent, setPendingLaunchAgent] = useState<{
+    agentId: string;
+    providerId: string;
+    providerName: string;
+    action: 'launch' | 'restart';
+    sessionId?: string; // For restart action
+  } | null>(null);
+
   const { data: profilesData } = useQuery({
     queryKey: ['profiles', selectedProjectId],
     queryFn: () => fetchProfiles(selectedProjectId as string),
@@ -237,6 +250,13 @@ export function AgentsPage() {
     queryKey: ['agents', selectedProjectId],
     queryFn: () => fetchAgents(selectedProjectId as string),
     enabled: !!selectedProjectId,
+  });
+
+  const { refetch: refetchPreflight } = useQuery({
+    queryKey: ['preflight', 'agents-page', activeProject?.rootPath ?? 'global'],
+    queryFn: () => fetchPreflightChecks(activeProject?.rootPath),
+    staleTime: 30000,
+    refetchInterval: 60000,
   });
 
   const providersById = useMemo(() => {
@@ -617,7 +637,24 @@ export function AgentsPage() {
         window.dispatchEvent(new CustomEvent(OPEN_TERMINAL_DOCK_EVENT));
       }
     },
-    onError: (error: unknown) => {
+    onError: (error: unknown, variables) => {
+      // Check if this is an MCP_NOT_CONFIGURED error from the backend
+      if (error instanceof SessionApiError && error.hasCode('MCP_NOT_CONFIGURED')) {
+        const details = error.payload?.details;
+        // Show MCP configuration modal with provider info from error
+        setPendingLaunchAgent({
+          agentId: variables.agentId,
+          providerId: details?.providerId ?? '',
+          providerName: details?.providerName ?? 'Unknown',
+          action: 'launch',
+        });
+        setMcpModalOpen(true);
+        // Invalidate preflight cache so user sees updated status
+        queryClient.invalidateQueries({ queryKey: ['preflight'] });
+        return;
+      }
+
+      // Generic error handling
       const message =
         error instanceof Error ? error.message : 'Unable to launch session for the agent.';
       toast({
@@ -630,6 +667,140 @@ export function AgentsPage() {
       setLaunchingAgentId(null);
     },
   });
+
+  /**
+   * Launch a session for an agent. Backend handles MCP auto-configuration.
+   * If MCP auto-config fails, an MCP_NOT_CONFIGURED error triggers the modal.
+   */
+  const handleLaunchClick = (agent: Agent) => {
+    if (!selectedProjectId) return;
+    launchMutation.mutate({ agentId: agent.id, projectId: selectedProjectId });
+  };
+
+  /**
+   * Restart a session for an agent. Backend handles MCP auto-configuration.
+   * If MCP auto-config fails, an MCP_NOT_CONFIGURED error triggers the modal.
+   */
+  const handleRestartClick = async (agent: Agent, sessionId: string) => {
+    if (!selectedProjectId) return;
+    await performRestart(agent.id, sessionId);
+  };
+
+  /**
+   * Perform the actual restart operation (extracted for reuse).
+   */
+  const performRestart = async (agentId: string, sessionId: string) => {
+    setRestartingAgentId(agentId);
+    try {
+      const result = await restartSession(agentId, selectedProjectId as string, sessionId);
+      const newSession = result.session;
+      // Open terminal window and update cache similar to launch flow
+      openTerminalWindow(newSession);
+      queryClient.setQueryData(
+        terminalSessionsQueryKey,
+        (existing: ActiveSession[] | undefined) => {
+          if (!existing || existing.length === 0) {
+            return [newSession];
+          }
+          const idx = existing.findIndex((s) => s.id === newSession.id);
+          if (idx >= 0) {
+            const copy = existing.slice();
+            copy[idx] = newSession;
+            return copy;
+          }
+          return [newSession, ...existing];
+        },
+      );
+      queryClient.invalidateQueries({ queryKey: terminalSessionsQueryKey });
+      queryClient.invalidateQueries({ queryKey: ['agent-presence', selectedProjectId] });
+      if (selectedProjectId) {
+        writeLastAgentId(selectedProjectId, agentId);
+        setLastUsedAgentId(agentId);
+      }
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent(OPEN_TERMINAL_DOCK_EVENT));
+      }
+      // Show warning or success toast
+      if (result.terminateWarning) {
+        toast({
+          title: 'Session restarted with warning',
+          description: result.terminateWarning,
+          variant: 'destructive',
+        });
+      } else {
+        toast({
+          title: 'Session restarted',
+          description: `Session ${newSession.id.slice(0, 8)} started successfully.`,
+        });
+      }
+    } catch (e) {
+      // Check if this is an MCP_NOT_CONFIGURED error from the backend
+      if (e instanceof SessionApiError && e.hasCode('MCP_NOT_CONFIGURED')) {
+        const details = e.payload?.details;
+        // Show MCP configuration modal with provider info from error
+        setPendingLaunchAgent({
+          agentId,
+          providerId: details?.providerId ?? '',
+          providerName: details?.providerName ?? 'Unknown',
+          action: 'restart',
+          sessionId,
+        });
+        setMcpModalOpen(true);
+        // Invalidate preflight cache so user sees updated status
+        queryClient.invalidateQueries({ queryKey: ['preflight'] });
+        return;
+      }
+
+      // Generic error handling
+      const msg = e instanceof Error ? e.message : 'Failed to restart session';
+      toast({
+        title: 'Restart failed',
+        description: msg,
+        variant: 'destructive',
+      });
+    } finally {
+      setRestartingAgentId(null);
+    }
+  };
+
+  /**
+   * Called when MCP is successfully configured via the modal.
+   * Refetch preflight and proceed with launch or restart.
+   */
+  const handleMcpConfigured = async () => {
+    // Invalidate ALL preflight queries so Layout badge updates too
+    queryClient.invalidateQueries({ queryKey: ['preflight'] });
+    // Refetch this page's preflight to update MCP status
+    await refetchPreflight();
+
+    // Proceed with launch or restart if we have a pending agent
+    if (pendingLaunchAgent && selectedProjectId) {
+      if (pendingLaunchAgent.action === 'restart' && pendingLaunchAgent.sessionId) {
+        performRestart(pendingLaunchAgent.agentId, pendingLaunchAgent.sessionId);
+      } else {
+        launchMutation.mutate({
+          agentId: pendingLaunchAgent.agentId,
+          projectId: selectedProjectId,
+        });
+      }
+    }
+
+    // Clean up modal state
+    setPendingLaunchAgent(null);
+  };
+
+  /**
+   * Verify MCP configuration by checking preflight.
+   */
+  const handleVerifyMcp = async (): Promise<boolean> => {
+    // Invalidate ALL preflight queries so Layout badge updates too
+    queryClient.invalidateQueries({ queryKey: ['preflight'] });
+    const result = await refetchPreflight();
+    if (!pendingLaunchAgent || !result.data) return false;
+
+    const providerCheck = result.data.providers.find((p) => p.id === pendingLaunchAgent.providerId);
+    return providerCheck?.mcpStatus === 'pass';
+  };
 
   const availableProfiles = useMemo(() => {
     if (profilesById.size > 0) {
@@ -789,76 +960,7 @@ export function AgentsPage() {
                                         aria-label="Restart session"
                                         title="Terminate the current session and start a new one"
                                         disabled={!selectedProjectId || anyBusy}
-                                        onClick={async () => {
-                                          setRestartingAgentId(agent.id);
-                                          try {
-                                            const result = await restartSession(
-                                              agent.id,
-                                              selectedProjectId as string,
-                                              sessionId,
-                                            );
-                                            const newSession = result.session;
-                                            // Open terminal window and update cache similar to launch flow
-                                            openTerminalWindow(newSession);
-                                            queryClient.setQueryData(
-                                              terminalSessionsQueryKey,
-                                              (existing: ActiveSession[] | undefined) => {
-                                                if (!existing || existing.length === 0) {
-                                                  return [newSession];
-                                                }
-                                                const idx = existing.findIndex(
-                                                  (s) => s.id === newSession.id,
-                                                );
-                                                if (idx >= 0) {
-                                                  const copy = existing.slice();
-                                                  copy[idx] = newSession;
-                                                  return copy;
-                                                }
-                                                return [newSession, ...existing];
-                                              },
-                                            );
-                                            queryClient.invalidateQueries({
-                                              queryKey: terminalSessionsQueryKey,
-                                            });
-                                            queryClient.invalidateQueries({
-                                              queryKey: ['agent-presence', selectedProjectId],
-                                            });
-                                            if (selectedProjectId) {
-                                              writeLastAgentId(selectedProjectId, agent.id);
-                                              setLastUsedAgentId(agent.id);
-                                            }
-                                            if (typeof window !== 'undefined') {
-                                              window.dispatchEvent(
-                                                new CustomEvent(OPEN_TERMINAL_DOCK_EVENT),
-                                              );
-                                            }
-                                            // Show warning or success toast
-                                            if (result.terminateWarning) {
-                                              toast({
-                                                title: 'Session restarted with warning',
-                                                description: result.terminateWarning,
-                                                variant: 'destructive',
-                                              });
-                                            } else {
-                                              toast({
-                                                title: 'Session restarted',
-                                                description: `Session ${newSession.id.slice(0, 8)} started successfully.`,
-                                              });
-                                            }
-                                          } catch (e) {
-                                            const msg =
-                                              e instanceof Error
-                                                ? e.message
-                                                : 'Failed to restart session';
-                                            toast({
-                                              title: 'Restart failed',
-                                              description: msg,
-                                              variant: 'destructive',
-                                            });
-                                          } finally {
-                                            setRestartingAgentId(null);
-                                          }
-                                        }}
+                                        onClick={() => handleRestartClick(agent, sessionId)}
                                       >
                                         {anyBusy ? (
                                           <>
@@ -916,12 +1018,7 @@ export function AgentsPage() {
                           return (
                             <Button
                               size="sm"
-                              onClick={() =>
-                                launchMutation.mutate({
-                                  agentId: agent.id,
-                                  projectId: selectedProjectId as string,
-                                })
-                              }
+                              onClick={() => handleLaunchClick(agent)}
                               disabled={!selectedProjectId || isLaunching}
                               aria-label="Launch session"
                               title="Launch a new session for this agent"
@@ -1239,6 +1336,24 @@ export function AgentsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* MCP Configuration Modal */}
+      {pendingLaunchAgent && (
+        <McpConfigurationModal
+          open={mcpModalOpen}
+          onOpenChange={(open) => {
+            setMcpModalOpen(open);
+            if (!open) {
+              setPendingLaunchAgent(null);
+            }
+          }}
+          providerId={pendingLaunchAgent.providerId}
+          providerName={pendingLaunchAgent.providerName}
+          projectPath={activeProject?.rootPath}
+          onConfigured={handleMcpConfigured}
+          onVerify={handleVerifyMcp}
+        />
+      )}
     </div>
   );
 }

@@ -42,6 +42,16 @@ import {
   Subscriber,
   CreateSubscriber,
   UpdateSubscriber,
+  Review,
+  CreateReview,
+  UpdateReview,
+  ReviewComment,
+  ReviewCommentEnriched,
+  CreateReviewComment,
+  UpdateReviewComment,
+  ReviewCommentTarget,
+  ReviewStatus,
+  ReviewCommentStatus,
 } from '../models/domain.models';
 
 export interface ListOptions {
@@ -165,6 +175,17 @@ export interface CreateEpicForProjectInput {
   agentId?: string | null;
   agentName?: string;
   parentId?: string | null;
+}
+
+export interface ListReviewsOptions extends ListOptions {
+  status?: ReviewStatus;
+  epicId?: string;
+}
+
+export interface ListReviewCommentsOptions extends ListOptions {
+  status?: ReviewCommentStatus;
+  filePath?: string;
+  parentId?: string | null; // null for top-level only, undefined for all
 }
 
 /**
@@ -407,6 +428,41 @@ export interface StorageService {
   updateSubscriber(id: string, data: UpdateSubscriber): Promise<Subscriber>;
   deleteSubscriber(id: string): Promise<void>;
   findSubscribersByEventName(projectId: string, eventName: string): Promise<Subscriber[]>;
+
+  // ============================================
+  // CODE REVIEWS
+  // ============================================
+  createReview(data: CreateReview): Promise<Review>;
+  getReview(id: string): Promise<Review>;
+  updateReview(id: string, data: UpdateReview, expectedVersion: number): Promise<Review>;
+  deleteReview(id: string): Promise<void>;
+  listReviews(projectId: string, options?: ListReviewsOptions): Promise<ListResult<Review>>;
+
+  // Review Comments
+  createReviewComment(data: CreateReviewComment, targetAgentIds?: string[]): Promise<ReviewComment>;
+  getReviewComment(id: string): Promise<ReviewComment>;
+  updateReviewComment(
+    id: string,
+    data: UpdateReviewComment,
+    expectedVersion: number,
+  ): Promise<ReviewComment>;
+  deleteReviewComment(id: string): Promise<void>;
+  listReviewComments(
+    reviewId: string,
+    options?: ListReviewCommentsOptions,
+  ): Promise<ListResult<ReviewCommentEnriched>>;
+
+  // Review Comment Targets
+  addReviewCommentTargets(commentId: string, agentIds: string[]): Promise<ReviewCommentTarget[]>;
+  getReviewCommentTargets(commentId: string): Promise<ReviewCommentTarget[]>;
+
+  /**
+   * Delete all non-resolved comments for a review.
+   * Keeps resolved and wont_fix comments (they have conversation value).
+   * @param reviewId - Review ID
+   * @returns Number of deleted comments
+   */
+  deleteNonResolvedComments(reviewId: string): Promise<number>;
 }
 
 export const STORAGE_SERVICE = 'STORAGE_SERVICE';

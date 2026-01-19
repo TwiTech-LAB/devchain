@@ -3,9 +3,67 @@
 process.env.NODE_ENV = 'test';
 
 import '@testing-library/jest-dom';
+import { toHaveNoViolations } from 'jest-axe';
 
 import { TextEncoder, TextDecoder } from 'util';
+
 import { Logger } from '@nestjs/common';
+
+/**
+ * Mock HTMLCanvasElement.getContext() to suppress xterm.js canvas warnings.
+ * xterm.js uses canvas for rendering, which jsdom doesn't fully support.
+ * This mock provides a minimal 2D context stub to prevent "getContext not implemented" errors.
+ */
+HTMLCanvasElement.prototype.getContext = jest.fn(function (
+  this: HTMLCanvasElement,
+  contextId: string,
+) {
+  if (contextId === '2d') {
+    return {
+      fillRect: jest.fn(),
+      clearRect: jest.fn(),
+      getImageData: jest.fn(() => ({ data: new Array(4) })),
+      putImageData: jest.fn(),
+      createImageData: jest.fn(() => []),
+      setTransform: jest.fn(),
+      drawImage: jest.fn(),
+      save: jest.fn(),
+      restore: jest.fn(),
+      beginPath: jest.fn(),
+      moveTo: jest.fn(),
+      lineTo: jest.fn(),
+      closePath: jest.fn(),
+      stroke: jest.fn(),
+      fill: jest.fn(),
+      translate: jest.fn(),
+      scale: jest.fn(),
+      rotate: jest.fn(),
+      arc: jest.fn(),
+      measureText: jest.fn(() => ({ width: 0 })),
+      transform: jest.fn(),
+      rect: jest.fn(),
+      clip: jest.fn(),
+      fillText: jest.fn(),
+      strokeText: jest.fn(),
+      createLinearGradient: jest.fn(() => ({
+        addColorStop: jest.fn(),
+      })),
+      createRadialGradient: jest.fn(() => ({
+        addColorStop: jest.fn(),
+      })),
+      createPattern: jest.fn(),
+      canvas: this,
+    } as unknown as CanvasRenderingContext2D;
+  }
+  if (contextId === 'webgl' || contextId === 'webgl2') {
+    // Return null for WebGL contexts - xterm falls back to canvas 2D
+    return null;
+  }
+  return null;
+}) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+
+// Extend Jest matchers with jest-axe accessibility testing matchers
+expect.extend(toHaveNoViolations);
 
 // Enable React 18 act() environment for testing-library
 // @ts-expect-error React 18 testing environment flag

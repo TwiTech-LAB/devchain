@@ -9,9 +9,10 @@ dist/
 .env.local
 .env
 tmp/
-
+*swe*.json
 # Build artifacts
 *.tsbuildinfo
+prebuilds/node-pty/
 packages/shared/src/**/*.js
 packages/shared/src/**/*.d.ts
 packages/shared/src/**/*.js.map

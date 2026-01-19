@@ -5,6 +5,7 @@ import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import type { TmuxService } from '../../terminal/services/tmux.service';
 import type { PtyService } from '../../terminal/services/pty.service';
 import type { PreflightService } from '../../core/services/preflight.service';
+import type { ProviderMcpEnsureService } from '../../core/services/provider-mcp-ensure.service';
 import type { EventsService } from '../../events/services/events.service';
 import type { TerminalSendCoordinatorService } from '../../terminal/services/terminal-send-coordinator.service';
 import { TerminalGateway } from '../../terminal/gateways/terminal.gateway';
@@ -33,6 +34,7 @@ describe('SessionsService', () => {
   };
   let ptyService: { startStreaming: jest.Mock };
   let preflightService: { runChecks: jest.Mock };
+  let mcpEnsureService: { ensureMcp: jest.Mock };
   let eventsService: { publish: jest.Mock };
   let sendCoordinator: TerminalSendCoordinatorService;
   let sqlitePrepare: jest.Mock;
@@ -67,6 +69,10 @@ describe('SessionsService', () => {
 
     preflightService = {
       runChecks: jest.fn().mockResolvedValue({ overall: 'pass', checks: [] }),
+    };
+
+    mcpEnsureService = {
+      ensureMcp: jest.fn().mockResolvedValue({ success: true, action: 'already_configured' }),
     };
 
     eventsService = {
@@ -113,6 +119,7 @@ describe('SessionsService', () => {
       sendCoordinator as unknown as TerminalSendCoordinatorService,
       ptyService as unknown as PtyService,
       preflightService as unknown as PreflightService,
+      mcpEnsureService as unknown as ProviderMcpEnsureService,
       moduleRef as unknown as ModuleRef,
     );
   });
@@ -159,6 +166,7 @@ describe('SessionsService', () => {
       id: 'provider-1',
       name: 'claude',
       binPath: '/usr/local/bin/claude',
+      mcpConfigured: true,
       createdAt: '2024-01-01T00:00:00.000Z',
       updatedAt: '2024-01-01T00:00:00.000Z',
     });
@@ -240,6 +248,7 @@ describe('SessionsService', () => {
       id: 'provider-1',
       name: 'claude',
       binPath: '/usr/local/bin/claude',
+      mcpConfigured: true,
       createdAt: '2024-01-01T00:00:00.000Z',
       updatedAt: '2024-01-01T00:00:00.000Z',
     });
@@ -317,6 +326,9 @@ describe('SessionsService', () => {
       id: 'provider-1',
       name: 'claude',
       binPath: null,
+      mcpConfigured: true,
+      mcpEndpoint: null,
+      mcpRegisteredAt: null,
       createdAt: '2024-01-01T00:00:00.000Z',
       updatedAt: '2024-01-01T00:00:00.000Z',
     });
@@ -327,6 +339,100 @@ describe('SessionsService', () => {
         agentId: 'agent-1',
       }),
     ).rejects.toThrow(ValidationError);
+  });
+
+  it('throws when provider MCP is not configured and auto-ensure fails', async () => {
+    storage.getAgent.mockResolvedValue({
+      id: 'agent-1',
+      name: 'Helper Agent',
+      projectId: 'project-1',
+      profileId: 'profile-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProject.mockResolvedValue({
+      id: 'project-1',
+      name: 'My Project',
+      rootPath: '/workspace/project-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getAgentProfile.mockResolvedValue({
+      id: 'profile-1',
+      name: 'Helper Profile',
+      options: '--model claude-3',
+      providerId: 'provider-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProvider.mockResolvedValue({
+      id: 'provider-1',
+      name: 'claude',
+      binPath: '/usr/local/bin/claude',
+      mcpConfigured: true,
+      mcpEndpoint: null,
+      mcpRegisteredAt: null,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+
+    const preflightResult = {
+      overall: 'pass',
+      checks: [],
+      providers: [
+        {
+          id: 'provider-1',
+          name: 'claude',
+          status: 'warn',
+          message: "MCP alias 'devchain' not found.",
+          binPath: '/usr/local/bin/claude',
+          binaryStatus: 'pass',
+          binaryMessage: 'Binary found',
+          mcpStatus: 'warn',
+          mcpMessage: "MCP alias 'devchain' not found.",
+        },
+      ],
+      supportedMcpProviders: ['claude'],
+      timestamp: new Date().toISOString(),
+    };
+
+    // Preflight always returns same result (MCP not configured)
+    preflightService.runChecks.mockResolvedValue(preflightResult);
+
+    // Auto-ensure fails
+    mcpEnsureService.ensureMcp.mockResolvedValue({
+      success: false,
+      action: 'error',
+      message: 'Failed to register MCP',
+    });
+
+    await expect(
+      service.launchSession({
+        projectId: 'project-1',
+        agentId: 'agent-1',
+      }),
+    ).rejects.toThrow(ValidationError);
+
+    // Verify the error has the correct details
+    try {
+      await service.launchSession({
+        projectId: 'project-1',
+        agentId: 'agent-1',
+      });
+    } catch (error) {
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).message).toBe('Provider MCP is not configured');
+      expect((error as ValidationError).details).toEqual({
+        code: 'MCP_NOT_CONFIGURED',
+        providerId: 'provider-1',
+        providerName: 'claude',
+        mcpMessage: "MCP alias 'devchain' not found.",
+        mcpStatus: 'warn',
+      });
+    }
+
+    // Verify auto-ensure was attempted
+    expect(mcpEnsureService.ensureMcp).toHaveBeenCalled();
   });
 
   it('rejects invalid profile options with ValidationError', async () => {
@@ -357,6 +463,9 @@ describe('SessionsService', () => {
       id: 'provider-1',
       name: 'claude',
       binPath: '/usr/local/bin/claude',
+      mcpConfigured: true,
+      mcpEndpoint: null,
+      mcpRegisteredAt: null,
       createdAt: '2024-01-01T00:00:00.000Z',
       updatedAt: '2024-01-01T00:00:00.000Z',
     });
@@ -398,6 +507,9 @@ describe('SessionsService', () => {
       id: 'provider-1',
       name: 'claude',
       binPath: '/usr/local/bin/claude',
+      mcpConfigured: true,
+      mcpEndpoint: null,
+      mcpRegisteredAt: null,
       createdAt: '2024-01-01T00:00:00.000Z',
       updatedAt: '2024-01-01T00:00:00.000Z',
     });
@@ -459,6 +571,9 @@ describe('SessionsService', () => {
       id: 'provider-1',
       name: 'claude',
       binPath: '/usr/local/bin/claude',
+      mcpConfigured: true,
+      mcpEndpoint: null,
+      mcpRegisteredAt: null,
       createdAt: '2024-01-01T00:00:00.000Z',
       updatedAt: '2024-01-01T00:00:00.000Z',
     });

@@ -12,8 +12,10 @@ import { TmuxService } from '../../terminal/services/tmux.service';
 import { EpicsService } from '../../epics/services/epics.service';
 import { SettingsService } from '../../settings/services/settings.service';
 import { GuestsService } from '../../guests/services/guests.service';
+import { ReviewsService } from '../../reviews/services/reviews.service';
 import { Document, Prompt, Status, Epic, EpicComment } from '../../storage/models/domain.models';
 import { createLogger } from '../../../common/logging/logger';
+import { ListSessionsParamsSchema } from '../dtos/schema-registry';
 import {
   McpResponse,
   CreateRecordResponse,
@@ -86,12 +88,35 @@ import {
   GuestSessionContext,
   RegisterGuestParamsSchema,
   RegisterGuestResponse,
+  // Review tools
+  ListReviewsParamsSchema,
+  ListReviewsResponse,
+  ReviewSummary,
+  GetReviewParamsSchema,
+  GetReviewResponse,
+  ReviewCommentSummary,
+  ChangedFileSummary,
+  GetReviewCommentsParamsSchema,
+  GetReviewCommentsResponse,
+  ReplyCommentParamsSchema,
+  ReplyCommentResponse,
+  ResolveCommentParamsSchema,
+  ResolveCommentResponse,
+  ApplySuggestionParamsSchema,
+  ApplySuggestionResponse,
 } from '../dtos/mcp.dto';
 import { InstructionsResolver } from './instructions-resolver';
 import type { FeatureFlagConfig } from '../../../common/config/feature-flags';
 import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
+import {
+  validatePathWithinRoot,
+  validateResolvedPathWithinRoot,
+  validateLineBounds,
+} from '../../../common/validation/path-validation';
 import { BadRequestException } from '@nestjs/common';
-import { ZodError } from 'zod';
+import { ZodError, ZodIssue } from 'zod';
+
+import { suggestNestedPath } from '../utils/param-suggestion';
 
 const logger = createLogger('McpService');
 
@@ -156,6 +181,7 @@ export class McpService {
     @Inject(forwardRef(() => EpicsService)) private readonly epicsService?: EpicsService,
     @Inject(forwardRef(() => SettingsService)) private readonly settingsService?: SettingsService,
     @Inject(forwardRef(() => GuestsService)) private readonly guestsService?: GuestsService,
+    @Inject(forwardRef(() => ReviewsService)) private readonly reviewsService?: ReviewsService,
   ) {
     logger.info('McpService initialized');
     this.featureFlags = this.storage.getFeatureFlags();
@@ -202,76 +228,94 @@ export class McpService {
    * Route tool call to appropriate handler
    */
   async handleToolCall(tool: string, params: unknown): Promise<McpResponse> {
+    // Normalize nullish params to {} for consistent behavior across all entrypoints
+    const normalizedParams = params ?? {};
+    // Normalize common separators used by various MCP clients
+    // Defined outside try block so it's accessible in catch for suggestion generation
+    const normalizedTool = tool.replace(/[.\-/]/g, '_');
+
     try {
-      // Normalize common separators used by various MCP clients
-      const normalizedTool = tool.replace(/[.\-/]/g, '_');
       logger.info(
-        { tool: normalizedTool, originalTool: tool, params: redactParams(params) },
+        { tool: normalizedTool, originalTool: tool, params: redactParams(normalizedParams) },
         'Handling MCP tool call',
       );
 
       switch (normalizedTool) {
         case 'devchain_create_record':
-          return await this.createRecord(params);
+          return await this.createRecord(normalizedParams);
         case 'devchain_update_record':
-          return await this.updateRecord(params);
+          return await this.updateRecord(normalizedParams);
         case 'devchain_get_record':
-          return await this.getRecord(params);
+          return await this.getRecord(normalizedParams);
         case 'devchain_list_records':
-          return await this.listRecords(params);
+          return await this.listRecords(normalizedParams);
         case 'devchain_add_tags':
-          return await this.addTags(params);
+          return await this.addTags(normalizedParams);
         case 'devchain_remove_tags':
-          return await this.removeTags(params);
+          return await this.removeTags(normalizedParams);
         case 'devchain_list_documents':
-          return await this.listDocuments(params);
+          return await this.listDocuments(normalizedParams);
         case 'devchain_get_document':
-          return await this.getDocument(params);
+          return await this.getDocument(normalizedParams);
         case 'devchain_create_document':
-          return await this.createDocument(params);
+          return await this.createDocument(normalizedParams);
         case 'devchain_update_document':
-          return await this.updateDocument(params);
+          return await this.updateDocument(normalizedParams);
         case 'devchain_list_prompts':
-          return await this.listPrompts(params);
+          return await this.listPrompts(normalizedParams);
         case 'devchain_get_prompt':
-          return await this.getPrompt(params);
+          return await this.getPrompt(normalizedParams);
         case 'devchain_list_agents':
-          return await this.listAgents(params);
+          return await this.listAgents(normalizedParams);
         case 'devchain_get_agent_by_name':
-          return await this.getAgentByName(params);
+          return await this.getAgentByName(normalizedParams);
         case 'devchain_list_statuses':
-          return await this.listStatuses(params);
+          return await this.listStatuses(normalizedParams);
         case 'devchain_list_epics':
-          return await this.listEpics(params);
+          return await this.listEpics(normalizedParams);
         case 'devchain_list_assigned_epics_tasks':
-          return await this.listAssignedEpicsTasks(params);
+          return await this.listAssignedEpicsTasks(normalizedParams);
         case 'devchain_create_epic':
-          return await this.createEpic(params);
+          return await this.createEpic(normalizedParams);
         case 'devchain_get_epic_by_id':
-          return await this.getEpicById(params);
+          return await this.getEpicById(normalizedParams);
         case 'devchain_add_epic_comment':
-          return await this.addEpicComment(params);
+          return await this.addEpicComment(normalizedParams);
         case 'devchain_update_epic':
-          return await this.updateEpic(params);
+          return await this.updateEpic(normalizedParams);
         case 'notifications_initialized':
           // Some MCP clients send a readiness notification; acknowledge without warning
           return { success: true, data: { acknowledged: true } };
         case 'devchain_send_message':
-          return await this.sendMessage(params);
+          return await this.sendMessage(normalizedParams);
         case 'devchain_chat_ack':
-          return await this.chatAck(params);
+          return await this.chatAck(normalizedParams);
         case 'devchain_chat_list_members':
-          return await this.chatListMembers(params);
+          return await this.chatListMembers(normalizedParams);
         case 'devchain_chat_read_history':
-          return await this.chatReadHistory(params);
+          return await this.chatReadHistory(normalizedParams);
         case 'devchain_activity_start':
-          return await this.activityStart(params);
+          return await this.activityStart(normalizedParams);
         case 'devchain_activity_finish':
-          return await this.activityFinish(params);
+          return await this.activityFinish(normalizedParams);
         case 'devchain_list_sessions':
+          ListSessionsParamsSchema.parse(normalizedParams);
           return await this.listSessions();
         case 'devchain_register_guest':
-          return await this.registerGuest(params);
+          return await this.registerGuest(normalizedParams);
+        // Review tools
+        case 'devchain_list_reviews':
+          return await this.listReviews(normalizedParams);
+        case 'devchain_get_review':
+          return await this.getReview(normalizedParams);
+        case 'devchain_get_review_comments':
+          return await this.getReviewComments(normalizedParams);
+        case 'devchain_reply_comment':
+          return await this.replyComment(normalizedParams);
+        case 'devchain_resolve_comment':
+          return await this.resolveComment(normalizedParams);
+        case 'devchain_apply_suggestion':
+          return await this.applySuggestion(normalizedParams);
         default:
           logger.warn({ tool: normalizedTool }, 'Unknown MCP tool');
           return {
@@ -285,12 +329,30 @@ export class McpService {
     } catch (error) {
       logger.error({ tool, error }, 'MCP tool call failed');
       if (error instanceof ZodError) {
+        // Generate helpful suggestions for unrecognized keys (from strict mode)
+        const suggestions: string[] = [];
+        for (const issue of error.issues) {
+          if (issue.code === 'unrecognized_keys') {
+            // ZodIssue for unrecognized_keys has a 'keys' property with the unknown key names
+            const unknownKeys = (issue as ZodIssue & { keys: string[] }).keys;
+            for (const key of unknownKeys) {
+              const suggestion = suggestNestedPath(key, normalizedTool);
+              if (suggestion) {
+                suggestions.push(suggestion);
+              }
+            }
+          }
+        }
+
         return {
           success: false,
           error: {
             code: 'VALIDATION_ERROR',
             message: 'Invalid parameters supplied to MCP tool.',
-            data: { issues: error.issues },
+            data: {
+              issues: error.issues,
+              ...(suggestions.length > 0 && { suggestions }),
+            },
           },
         };
       }
@@ -3405,5 +3467,722 @@ export class McpService {
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/(^-|-$)/g, '');
+  }
+
+  // ============================================
+  // Review Tools
+  // ============================================
+
+  /**
+   * devchain_list_reviews
+   * List reviews for the current project with optional filters.
+   */
+  private async listReviews(params: unknown): Promise<McpResponse> {
+    const validated = ListReviewsParamsSchema.parse(params);
+
+    const ctx = await this.resolveSessionContext(validated.sessionId);
+    if (!ctx.success) return ctx;
+    const { project } = ctx.data as SessionContext;
+
+    if (!project) {
+      return {
+        success: false,
+        error: {
+          code: 'PROJECT_NOT_FOUND',
+          message: 'No project associated with this session',
+        },
+      };
+    }
+
+    if (!this.reviewsService) {
+      return {
+        success: false,
+        error: {
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'ReviewsService is not available',
+        },
+      };
+    }
+
+    const result = await this.reviewsService.listReviews(project.id, {
+      status: validated.status,
+      epicId: validated.epicId,
+      limit: validated.limit ?? 100,
+      offset: validated.offset ?? 0,
+    });
+
+    const reviews: ReviewSummary[] = result.items.map((review) => ({
+      id: review.id,
+      title: review.title,
+      description: review.description,
+      status: review.status,
+      baseRef: review.baseRef,
+      headRef: review.headRef,
+      baseSha: review.baseSha,
+      headSha: review.headSha,
+      epicId: review.epicId,
+      createdBy: review.createdBy,
+      createdByAgentId: review.createdByAgentId,
+      version: review.version,
+      commentCount: review.commentCount,
+      createdAt: review.createdAt,
+      updatedAt: review.updatedAt,
+    }));
+
+    const response: ListReviewsResponse = {
+      reviews,
+      total: result.total,
+      limit: result.limit,
+      offset: result.offset,
+    };
+
+    return { success: true, data: response };
+  }
+
+  /**
+   * devchain_get_review
+   * Get a review with its changed files and comments.
+   */
+  private async getReview(params: unknown): Promise<McpResponse> {
+    const validated = GetReviewParamsSchema.parse(params);
+
+    const ctx = await this.resolveSessionContext(validated.sessionId);
+    if (!ctx.success) return ctx;
+    const { project } = ctx.data as SessionContext;
+
+    if (!project) {
+      return {
+        success: false,
+        error: {
+          code: 'PROJECT_NOT_FOUND',
+          message: 'No project associated with this session',
+        },
+      };
+    }
+
+    if (!this.reviewsService) {
+      return {
+        success: false,
+        error: {
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'ReviewsService is not available',
+        },
+      };
+    }
+
+    try {
+      const reviewWithFiles = await this.reviewsService.getReview(validated.reviewId);
+
+      if (reviewWithFiles.projectId !== project.id) {
+        return {
+          success: false,
+          error: {
+            code: 'REVIEW_NOT_FOUND',
+            message: `Review ${validated.reviewId} does not belong to this project`,
+          },
+        };
+      }
+
+      // Fetch comments
+      const commentsResult = await this.reviewsService.listComments(validated.reviewId, {
+        limit: 500,
+      });
+
+      // Resolve agent names for comments
+      const agentIds = new Set<string>();
+      for (const comment of commentsResult.items) {
+        if (comment.authorAgentId) agentIds.add(comment.authorAgentId);
+      }
+
+      const agentNameById = new Map<string, string>();
+      for (const agentId of agentIds) {
+        try {
+          const agent = await this.storage.getAgent(agentId);
+          agentNameById.set(agentId, agent.name);
+        } catch {
+          // Graceful degradation
+        }
+      }
+
+      const comments: ReviewCommentSummary[] = commentsResult.items.map((comment) => ({
+        id: comment.id,
+        filePath: comment.filePath,
+        lineStart: comment.lineStart,
+        lineEnd: comment.lineEnd,
+        side: comment.side,
+        content: comment.content,
+        commentType: comment.commentType,
+        status: comment.status,
+        authorType: comment.authorType,
+        authorAgentId: comment.authorAgentId,
+        authorAgentName: comment.authorAgentId
+          ? agentNameById.get(comment.authorAgentId)
+          : undefined,
+        parentId: comment.parentId,
+        version: comment.version,
+        createdAt: comment.createdAt,
+        updatedAt: comment.updatedAt,
+      }));
+
+      const changedFiles: ChangedFileSummary[] = (reviewWithFiles.changedFiles ?? []).map(
+        (file) => ({
+          path: file.path,
+          status: file.status,
+          additions: file.additions,
+          deletions: file.deletions,
+          oldPath: file.oldPath,
+        }),
+      );
+
+      const response: GetReviewResponse = {
+        review: {
+          id: reviewWithFiles.id,
+          title: reviewWithFiles.title,
+          description: reviewWithFiles.description,
+          status: reviewWithFiles.status,
+          baseRef: reviewWithFiles.baseRef,
+          headRef: reviewWithFiles.headRef,
+          baseSha: reviewWithFiles.baseSha,
+          headSha: reviewWithFiles.headSha,
+          epicId: reviewWithFiles.epicId,
+          createdBy: reviewWithFiles.createdBy,
+          createdByAgentId: reviewWithFiles.createdByAgentId,
+          version: reviewWithFiles.version,
+          createdAt: reviewWithFiles.createdAt,
+          updatedAt: reviewWithFiles.updatedAt,
+        },
+        changedFiles,
+        comments,
+      };
+
+      return { success: true, data: response };
+    } catch (error) {
+      if (error instanceof NotFoundError) {
+        return {
+          success: false,
+          error: {
+            code: 'REVIEW_NOT_FOUND',
+            message: `Review ${validated.reviewId} was not found`,
+          },
+        };
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * devchain_get_review_comments
+   * Get comments for a review with optional filters.
+   */
+  private async getReviewComments(params: unknown): Promise<McpResponse> {
+    const validated = GetReviewCommentsParamsSchema.parse(params);
+
+    const ctx = await this.resolveSessionContext(validated.sessionId);
+    if (!ctx.success) return ctx;
+    const { project } = ctx.data as SessionContext;
+
+    if (!project) {
+      return {
+        success: false,
+        error: {
+          code: 'PROJECT_NOT_FOUND',
+          message: 'No project associated with this session',
+        },
+      };
+    }
+
+    if (!this.reviewsService) {
+      return {
+        success: false,
+        error: {
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'ReviewsService is not available',
+        },
+      };
+    }
+
+    try {
+      // Verify review belongs to project
+      const review = await this.storage.getReview(validated.reviewId);
+      if (review.projectId !== project.id) {
+        return {
+          success: false,
+          error: {
+            code: 'REVIEW_NOT_FOUND',
+            message: `Review ${validated.reviewId} does not belong to this project`,
+          },
+        };
+      }
+
+      const result = await this.reviewsService.listComments(validated.reviewId, {
+        status: validated.status,
+        filePath: validated.filePath,
+        limit: validated.limit ?? 100,
+        offset: validated.offset ?? 0,
+      });
+
+      // Resolve agent names
+      const agentIds = new Set<string>();
+      for (const comment of result.items) {
+        if (comment.authorAgentId) agentIds.add(comment.authorAgentId);
+      }
+
+      const agentNameById = new Map<string, string>();
+      for (const agentId of agentIds) {
+        try {
+          const agent = await this.storage.getAgent(agentId);
+          agentNameById.set(agentId, agent.name);
+        } catch {
+          // Graceful degradation
+        }
+      }
+
+      const comments: ReviewCommentSummary[] = result.items.map((comment) => ({
+        id: comment.id,
+        filePath: comment.filePath,
+        lineStart: comment.lineStart,
+        lineEnd: comment.lineEnd,
+        side: comment.side,
+        content: comment.content,
+        commentType: comment.commentType,
+        status: comment.status,
+        authorType: comment.authorType,
+        authorAgentId: comment.authorAgentId,
+        authorAgentName: comment.authorAgentId
+          ? agentNameById.get(comment.authorAgentId)
+          : undefined,
+        parentId: comment.parentId,
+        version: comment.version,
+        createdAt: comment.createdAt,
+        updatedAt: comment.updatedAt,
+      }));
+
+      const response: GetReviewCommentsResponse = {
+        comments,
+        total: result.total,
+        limit: result.limit,
+        offset: result.offset,
+      };
+
+      return { success: true, data: response };
+    } catch (error) {
+      if (error instanceof NotFoundError) {
+        return {
+          success: false,
+          error: {
+            code: 'REVIEW_NOT_FOUND',
+            message: `Review ${validated.reviewId} was not found`,
+          },
+        };
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * devchain_reply_comment
+   * Reply to a comment or create a new comment on a review.
+   */
+  private async replyComment(params: unknown): Promise<McpResponse> {
+    const validated = ReplyCommentParamsSchema.parse(params);
+
+    const ctx = await this.resolveSessionContext(validated.sessionId);
+    if (!ctx.success) return ctx;
+    const { project } = ctx.data as SessionContext;
+    const actor = getActorFromContext(ctx.data as SessionContext);
+
+    if (!project) {
+      return {
+        success: false,
+        error: {
+          code: 'PROJECT_NOT_FOUND',
+          message: 'No project associated with this session',
+        },
+      };
+    }
+
+    if (!this.reviewsService) {
+      return {
+        success: false,
+        error: {
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'ReviewsService is not available',
+        },
+      };
+    }
+
+    try {
+      // Verify review belongs to project
+      const review = await this.storage.getReview(validated.reviewId);
+      if (review.projectId !== project.id) {
+        return {
+          success: false,
+          error: {
+            code: 'REVIEW_NOT_FOUND',
+            message: `Review ${validated.reviewId} does not belong to this project`,
+          },
+        };
+      }
+
+      const comment = await this.reviewsService.createComment(validated.reviewId, {
+        parentId: validated.parentCommentId,
+        content: validated.content,
+        filePath: validated.filePath,
+        lineStart: validated.lineStart,
+        lineEnd: validated.lineEnd,
+        commentType: validated.commentType ?? 'comment',
+        authorType: 'agent',
+        authorAgentId: actor?.id,
+        targetAgentIds: validated.targetAgentIds,
+      });
+
+      const response: ReplyCommentResponse = {
+        comment: {
+          id: comment.id,
+          filePath: comment.filePath,
+          lineStart: comment.lineStart,
+          lineEnd: comment.lineEnd,
+          side: comment.side,
+          content: comment.content,
+          commentType: comment.commentType,
+          status: comment.status,
+          authorType: comment.authorType,
+          authorAgentId: comment.authorAgentId,
+          authorAgentName: actor?.name,
+          parentId: comment.parentId,
+          version: comment.version,
+          createdAt: comment.createdAt,
+          updatedAt: comment.updatedAt,
+        },
+      };
+
+      return { success: true, data: response };
+    } catch (error) {
+      if (error instanceof NotFoundError) {
+        return {
+          success: false,
+          error: {
+            code: 'REVIEW_NOT_FOUND',
+            message: `Review ${validated.reviewId} was not found`,
+          },
+        };
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * devchain_resolve_comment
+   * Mark a comment as resolved or wont_fix.
+   */
+  private async resolveComment(params: unknown): Promise<McpResponse> {
+    const validated = ResolveCommentParamsSchema.parse(params);
+
+    const ctx = await this.resolveSessionContext(validated.sessionId);
+    if (!ctx.success) return ctx;
+    const { project } = ctx.data as SessionContext;
+
+    if (!project) {
+      return {
+        success: false,
+        error: {
+          code: 'PROJECT_NOT_FOUND',
+          message: 'No project associated with this session',
+        },
+      };
+    }
+
+    if (!this.reviewsService) {
+      return {
+        success: false,
+        error: {
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'ReviewsService is not available',
+        },
+      };
+    }
+
+    try {
+      // Verify comment belongs to a review in this project
+      const comment = await this.storage.getReviewComment(validated.commentId);
+      const review = await this.storage.getReview(comment.reviewId);
+      if (review.projectId !== project.id) {
+        return {
+          success: false,
+          error: {
+            code: 'COMMENT_NOT_FOUND',
+            message: `Comment ${validated.commentId} does not belong to this project`,
+          },
+        };
+      }
+
+      const updatedComment = await this.reviewsService.resolveComment(
+        comment.reviewId,
+        validated.commentId,
+        validated.resolution,
+        validated.version,
+      );
+
+      // Resolve author name if agent
+      let authorAgentName: string | undefined;
+      if (updatedComment.authorAgentId) {
+        try {
+          const agent = await this.storage.getAgent(updatedComment.authorAgentId);
+          authorAgentName = agent.name;
+        } catch {
+          // Graceful degradation
+        }
+      }
+
+      const response: ResolveCommentResponse = {
+        comment: {
+          id: updatedComment.id,
+          filePath: updatedComment.filePath,
+          lineStart: updatedComment.lineStart,
+          lineEnd: updatedComment.lineEnd,
+          side: updatedComment.side,
+          content: updatedComment.content,
+          commentType: updatedComment.commentType,
+          status: updatedComment.status,
+          authorType: updatedComment.authorType,
+          authorAgentId: updatedComment.authorAgentId,
+          authorAgentName,
+          parentId: updatedComment.parentId,
+          version: updatedComment.version,
+          createdAt: updatedComment.createdAt,
+          updatedAt: updatedComment.updatedAt,
+        },
+      };
+
+      return { success: true, data: response };
+    } catch (error) {
+      if (error instanceof NotFoundError) {
+        return {
+          success: false,
+          error: {
+            code: 'COMMENT_NOT_FOUND',
+            message: `Comment ${validated.commentId} was not found`,
+          },
+        };
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * devchain_apply_suggestion
+   * Apply a code suggestion from a comment to the file.
+   * Extracts the suggestion block, applies it to the specified lines, and resolves the comment.
+   */
+  private async applySuggestion(params: unknown): Promise<McpResponse> {
+    const validated = ApplySuggestionParamsSchema.parse(params);
+
+    const ctx = await this.resolveSessionContext(validated.sessionId);
+    if (!ctx.success) return ctx;
+    const { project } = ctx.data as SessionContext;
+
+    if (!project) {
+      return {
+        success: false,
+        error: {
+          code: 'PROJECT_NOT_FOUND',
+          message: 'No project associated with this session',
+        },
+      };
+    }
+
+    if (!this.reviewsService) {
+      return {
+        success: false,
+        error: {
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'ReviewsService is not available',
+        },
+      };
+    }
+
+    try {
+      // Get the comment
+      const comment = await this.storage.getReviewComment(validated.commentId);
+      const review = await this.storage.getReview(comment.reviewId);
+
+      if (review.projectId !== project.id) {
+        return {
+          success: false,
+          error: {
+            code: 'COMMENT_NOT_FOUND',
+            message: `Comment ${validated.commentId} does not belong to this project`,
+          },
+        };
+      }
+
+      // Verify comment has file path and line info
+      if (!comment.filePath || comment.lineStart === null) {
+        return {
+          success: false,
+          error: {
+            code: 'INVALID_SUGGESTION',
+            message: 'Comment does not have file path or line information',
+          },
+        };
+      }
+
+      // Extract suggestion from comment content
+      const suggestionMatch = comment.content.match(/```suggestion\s*\n([\s\S]*?)```/);
+      if (!suggestionMatch) {
+        return {
+          success: false,
+          error: {
+            code: 'NO_SUGGESTION',
+            message: 'Comment does not contain a suggestion block',
+          },
+        };
+      }
+
+      const suggestedCode = suggestionMatch[1].trimEnd();
+      const lineStart = comment.lineStart;
+      const lineEnd = comment.lineEnd ?? comment.lineStart;
+
+      // SECURITY: Validate file path to prevent path traversal attacks
+      // This rejects paths containing '..', absolute paths, and paths escaping project root
+      let validatedPath;
+      try {
+        validatedPath = validatePathWithinRoot(project.rootPath, comment.filePath, {
+          errorPrefix: 'Invalid file path in comment',
+        });
+      } catch (error) {
+        if (error instanceof ValidationError) {
+          return {
+            success: false,
+            error: {
+              code: 'PATH_TRAVERSAL_BLOCKED',
+              message: error.message,
+              data: error.details,
+            },
+          };
+        }
+        throw error;
+      }
+
+      // SECURITY: Validate symlinks don't escape the project root
+      // This resolves the actual path after following symlinks
+      let realFilePath: string;
+      try {
+        realFilePath = await validateResolvedPathWithinRoot(
+          validatedPath.absolutePath,
+          project.rootPath,
+          { errorPrefix: 'Symlink validation failed' },
+        );
+      } catch (error) {
+        if (error instanceof ValidationError) {
+          return {
+            success: false,
+            error: {
+              code: 'SYMLINK_ESCAPE_BLOCKED',
+              message: error.message,
+              data: error.details,
+            },
+          };
+        }
+        throw error;
+      }
+
+      // Read the file, apply the suggestion, and write it back
+      const fs = await import('fs/promises');
+      const filePath = realFilePath;
+
+      const fileContent = await fs.readFile(filePath, 'utf-8');
+      const lines = fileContent.split('\n');
+
+      // SECURITY: Validate line bounds to prevent out-of-bounds access
+      try {
+        validateLineBounds(lineStart, lineEnd, lines.length);
+      } catch (error) {
+        if (error instanceof ValidationError) {
+          return {
+            success: false,
+            error: {
+              code: 'INVALID_LINE_BOUNDS',
+              message: error.message,
+              data: error.details,
+            },
+          };
+        }
+        throw error;
+      }
+
+      // Replace the lines with the suggestion
+      const suggestedLines = suggestedCode.split('\n');
+      lines.splice(lineStart - 1, lineEnd - lineStart + 1, ...suggestedLines);
+
+      await fs.writeFile(filePath, lines.join('\n'), 'utf-8');
+
+      // Auto-resolve the comment
+      const updatedComment = await this.reviewsService.resolveComment(
+        comment.reviewId,
+        validated.commentId,
+        'resolved',
+        validated.version,
+      );
+
+      // Resolve author name if agent
+      let authorAgentName: string | undefined;
+      if (updatedComment.authorAgentId) {
+        try {
+          const agent = await this.storage.getAgent(updatedComment.authorAgentId);
+          authorAgentName = agent.name;
+        } catch {
+          // Graceful degradation
+        }
+      }
+
+      const response: ApplySuggestionResponse = {
+        comment: {
+          id: updatedComment.id,
+          filePath: updatedComment.filePath,
+          lineStart: updatedComment.lineStart,
+          lineEnd: updatedComment.lineEnd,
+          side: updatedComment.side,
+          content: updatedComment.content,
+          commentType: updatedComment.commentType,
+          status: updatedComment.status,
+          authorType: updatedComment.authorType,
+          authorAgentId: updatedComment.authorAgentId,
+          authorAgentName,
+          parentId: updatedComment.parentId,
+          version: updatedComment.version,
+          createdAt: updatedComment.createdAt,
+          updatedAt: updatedComment.updatedAt,
+        },
+        applied: {
+          filePath: comment.filePath,
+          lineStart,
+          lineEnd,
+          suggestedCode,
+        },
+      };
+
+      return { success: true, data: response };
+    } catch (error) {
+      if (error instanceof NotFoundError) {
+        return {
+          success: false,
+          error: {
+            code: 'COMMENT_NOT_FOUND',
+            message: `Comment ${validated.commentId} was not found`,
+          },
+        };
+      }
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return {
+          success: false,
+          error: {
+            code: 'FILE_NOT_FOUND',
+            message: `File not found at path`,
+          },
+        };
+      }
+      throw error;
+    }
   }
 }

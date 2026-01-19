@@ -1,3 +1,5 @@
+import type { PreflightResult, ProviderCheck } from './preflight';
+
 export interface ActiveSession {
   id: string;
   epicId: string | null;
@@ -11,16 +13,46 @@ export interface ActiveSession {
 }
 
 /**
- * Custom error class for session API errors that includes HTTP status code.
- * Allows callers to make decisions based on specific error types (404, 409, etc.).
+ * API error payload shape from backend AllExceptionsFilter.
+ * Matches the response format in http-exception.filter.ts
+ */
+export interface ApiErrorPayload {
+  statusCode: number;
+  code: string;
+  message: string;
+  details?: {
+    code?: string;
+    providerId?: string;
+    providerName?: string;
+    mcpStatus?: string;
+    mcpMessage?: string;
+    [key: string]: unknown;
+  };
+  timestamp: string;
+  path: string;
+}
+
+/**
+ * Custom error class for session API errors that includes HTTP status code and full payload.
+ * Allows callers to make decisions based on specific error types (404, 409, MCP_NOT_CONFIGURED, etc.).
  */
 export class SessionApiError extends Error {
-  constructor(
-    message: string,
-    public readonly status: number,
-  ) {
+  public readonly status: number;
+  public readonly payload?: ApiErrorPayload;
+
+  constructor(message: string, status: number, payload?: ApiErrorPayload) {
     super(message);
     this.name = 'SessionApiError';
+    this.status = status;
+    this.payload = payload;
+  }
+
+  /**
+   * Check if this error has a specific error code in the details.
+   * Useful for handling specific error types like MCP_NOT_CONFIGURED.
+   */
+  hasCode(code: string): boolean {
+    return this.payload?.details?.code === code;
   }
 }
 
@@ -37,13 +69,13 @@ function extractErrorMessage(payload: unknown, fallback: string): string {
 
 /**
  * Standardized fetch helper that parses JSON responses and throws SessionApiError on failure.
- * Preserves server-provided error messages where available.
+ * Preserves server-provided error messages and full payload for error handling.
  *
  * @param url - The URL to fetch
  * @param options - Fetch options (method, headers, body, etc.)
  * @param fallbackError - Error message to use if server doesn't provide one
  * @returns Parsed JSON response of type T
- * @throws SessionApiError with server message and HTTP status code
+ * @throws SessionApiError with server message, HTTP status code, and full payload
  */
 export async function fetchJsonOrThrow<T>(
   url: string,
@@ -55,7 +87,7 @@ export async function fetchJsonOrThrow<T>(
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
     const message = extractErrorMessage(payload, fallbackError);
-    throw new SessionApiError(message, response.status);
+    throw new SessionApiError(message, response.status, payload ?? undefined);
   }
 
   return response.json();
@@ -63,12 +95,12 @@ export async function fetchJsonOrThrow<T>(
 
 /**
  * Standardized fetch helper for requests that don't return a body (e.g., DELETE).
- * Throws SessionApiError on failure with server-provided message if available.
+ * Throws SessionApiError on failure with server-provided message and full payload.
  *
  * @param url - The URL to fetch
  * @param options - Fetch options (method, headers, body, etc.)
  * @param fallbackError - Error message to use if server doesn't provide one
- * @throws SessionApiError with server message and HTTP status code
+ * @throws SessionApiError with server message, HTTP status code, and full payload
  */
 export async function fetchOrThrow(
   url: string,
@@ -80,7 +112,7 @@ export async function fetchOrThrow(
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
     const message = extractErrorMessage(payload, fallbackError);
-    throw new SessionApiError(message, response.status);
+    throw new SessionApiError(message, response.status, payload ?? undefined);
   }
 }
 
@@ -286,4 +318,55 @@ export async function fetchAgentPresence(projectId: string): Promise<AgentPresen
     {},
     'Failed to fetch agent presence',
   );
+}
+
+// ============================================
+// MCP Configuration Check
+// ============================================
+
+/**
+ * Result of checking MCP configuration for an agent.
+ */
+export interface McpConfigCheckResult {
+  /** Whether MCP is configured (provider mcpStatus === 'pass') */
+  configured: boolean;
+  /** Provider check details (includes id, name, mcpStatus, mcpMessage) */
+  provider?: ProviderCheck;
+}
+
+/**
+ * Check if an agent's provider has MCP configured.
+ * Resolves agent → profile → provider chain and checks mcpStatus.
+ *
+ * @param agentId - The agent ID to check
+ * @param preflight - The preflight result containing provider checks
+ * @param agents - List of agents to search
+ * @param profiles - Map of profile ID to profile summary
+ * @returns Object with configured boolean and provider details
+ */
+export function checkMcpConfigured(
+  agentId: string,
+  preflight: PreflightResult,
+  agents: AgentSummary[],
+  profiles: Map<string, ProfileSummary>,
+): McpConfigCheckResult {
+  const agent = agents.find((a) => a.id === agentId);
+  if (!agent) {
+    return { configured: false };
+  }
+
+  const profile = profiles.get(agent.profileId);
+  if (!profile) {
+    return { configured: false };
+  }
+
+  const providerCheck = preflight.providers.find((p) => p.id === profile.providerId);
+  if (!providerCheck) {
+    return { configured: false };
+  }
+
+  return {
+    configured: providerCheck.mcpStatus === 'pass',
+    provider: providerCheck,
+  };
 }

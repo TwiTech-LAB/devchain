@@ -354,42 +354,6 @@ describe('PreflightService', () => {
       expect(result.providers[0].message).toContain('binary not configured');
     });
 
-    it('should cache results for 60 seconds', async () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      mockExec.mockImplementation(
-        (
-          cmd: string,
-          optionsOrCallback?: unknown,
-          maybeCallback?: unknown,
-        ): ReturnType<typeof mockExec> => {
-          const callback = (
-            typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback
-          ) as ExecCallback;
-          if (cmd === 'tmux -V' && callback) {
-            callback(null, 'tmux 3.2', '');
-          }
-          return {} as ReturnType<typeof mockExec>;
-        },
-      );
-
-      mockStorage.listProviders.mockResolvedValue({
-        items: [],
-        total: 0,
-        limit: 100,
-        offset: 0,
-      });
-
-      // First call
-      const result1 = await service.runChecks();
-      expect(mockStorage.listProviders).toHaveBeenCalledTimes(1);
-
-      // Second call within cache window
-      const result2 = await service.runChecks();
-      expect(mockStorage.listProviders).toHaveBeenCalledTimes(1); // Still 1, cached
-
-      expect(result1.timestamp).toBe(result2.timestamp); // Same cached result
-    });
-
     it('should handle storage service errors gracefully', async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockExec.mockImplementation(
@@ -619,13 +583,9 @@ describe('PreflightService', () => {
   });
 
   describe('clearCache', () => {
-    it('should clear cache for specific project path', () => {
+    it('should be a no-op (cache removed)', () => {
+      // clearCache is kept for backward compatibility but is now a no-op
       service.clearCache('/test/project');
-      // No errors should be thrown
-      expect(true).toBe(true);
-    });
-
-    it('should clear all cache when no project path specified', () => {
       service.clearCache();
       // No errors should be thrown
       expect(true).toBe(true);

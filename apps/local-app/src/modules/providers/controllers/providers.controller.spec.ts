@@ -3,6 +3,7 @@ import { ProvidersController } from './providers.controller';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { McpProviderRegistrationService } from '../../mcp/services/mcp-provider-registration.service';
 import { PreflightService } from '../../core/services/preflight.service';
+import { ProviderMcpEnsureService } from '../../core/services/provider-mcp-ensure.service';
 import { ProviderAdapterFactory } from '../adapters';
 import { BadRequestException } from '@nestjs/common';
 import * as fsPromises from 'fs/promises';
@@ -29,6 +30,9 @@ describe('ProvidersController', () => {
     removeRegistration: jest.Mock;
     runShellCommand: jest.Mock;
   };
+  let mcpEnsureService: {
+    ensureMcp: jest.Mock;
+  };
   let normalizeBinPathSpy: jest.SpyInstance;
 
   beforeEach(async () => {
@@ -46,6 +50,15 @@ describe('ProvidersController', () => {
       listRegistrations: jest.fn(),
       removeRegistration: jest.fn(),
       runShellCommand: jest.fn(),
+    };
+
+    mcpEnsureService = {
+      ensureMcp: jest.fn().mockResolvedValue({
+        success: true,
+        action: 'already_configured',
+        endpoint: 'http://127.0.0.1:3000/mcp',
+        alias: 'devchain',
+      }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -71,6 +84,10 @@ describe('ProvidersController', () => {
             isSupported: jest.fn().mockReturnValue(true),
             getAdapter: jest.fn(),
           },
+        },
+        {
+          provide: ProviderMcpEnsureService,
+          useValue: mcpEnsureService,
         },
       ],
     }).compile();
@@ -185,17 +202,20 @@ describe('ProvidersController', () => {
         createdAt: '',
         updatedAt: '',
       });
-      mcpRegistration.listRegistrations.mockResolvedValue({
+      mcpEnsureService.ensureMcp.mockResolvedValue({
         success: true,
-        message: 'OK',
-        entries: [{ alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp' }],
+        action: 'already_configured',
+        endpoint: 'http://127.0.0.1:3000/mcp',
+        alias: 'devchain',
       });
 
       const response = await controller.ensureMcp('p1', {});
 
       expect(response.action).toBe('already_configured');
-      expect(mcpRegistration.registerProvider).not.toHaveBeenCalled();
-      expect(storage.updateProviderMcpMetadata).not.toHaveBeenCalled();
+      expect(mcpEnsureService.ensureMcp).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'p1', name: 'claude' }),
+        undefined, // projectPath
+      );
     });
 
     it('returns added when devchain alias does not exist', async () => {
@@ -209,28 +229,20 @@ describe('ProvidersController', () => {
         createdAt: '',
         updatedAt: '',
       });
-      mcpRegistration.listRegistrations.mockResolvedValue({
+      mcpEnsureService.ensureMcp.mockResolvedValue({
         success: true,
-        message: 'OK',
-        entries: [],
-      });
-      mcpRegistration.registerProvider.mockResolvedValue({
-        success: true,
-        message: 'MCP command completed successfully.',
-        stdout: '',
-        stderr: '',
-        exitCode: 0,
+        action: 'added',
+        endpoint: 'http://127.0.0.1:3000/mcp',
+        alias: 'devchain',
       });
 
       const response = await controller.ensureMcp('p1', {});
 
       expect(response.action).toBe('added');
-      expect(mcpRegistration.registerProvider).toHaveBeenCalledWith(
+      expect(mcpEnsureService.ensureMcp).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'p1', name: 'claude' }),
-        expect.objectContaining({ endpoint: 'http://127.0.0.1:3000/mcp', alias: 'devchain' }),
-        expect.anything(), // execOptions
+        undefined,
       );
-      expect(storage.updateProviderMcpMetadata).toHaveBeenCalled();
     });
 
     it('returns fixed_mismatch when endpoint differs', async () => {
@@ -244,39 +256,20 @@ describe('ProvidersController', () => {
         createdAt: '',
         updatedAt: '',
       });
-      mcpRegistration.listRegistrations.mockResolvedValue({
+      mcpEnsureService.ensureMcp.mockResolvedValue({
         success: true,
-        message: 'OK',
-        entries: [{ alias: 'devchain', endpoint: 'http://127.0.0.1:4000/mcp' }],
-      });
-      mcpRegistration.removeRegistration.mockResolvedValue({
-        success: true,
-        message: 'Removed',
-        stdout: '',
-        stderr: '',
-        exitCode: 0,
-      });
-      mcpRegistration.registerProvider.mockResolvedValue({
-        success: true,
-        message: 'MCP command completed successfully.',
-        stdout: '',
-        stderr: '',
-        exitCode: 0,
+        action: 'fixed_mismatch',
+        endpoint: 'http://127.0.0.1:3000/mcp',
+        alias: 'devchain',
       });
 
       const response = await controller.ensureMcp('p1', {});
 
       expect(response.action).toBe('fixed_mismatch');
-      expect(mcpRegistration.removeRegistration).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 'p1' }),
-        'devchain',
-        expect.anything(), // execOptions
-      );
-      expect(mcpRegistration.registerProvider).toHaveBeenCalled();
-      expect(storage.updateProviderMcpMetadata).toHaveBeenCalled();
+      expect(mcpEnsureService.ensureMcp).toHaveBeenCalled();
     });
 
-    it('throws when provider is not supported', async () => {
+    it('throws when ensure service returns error', async () => {
       storage.getProvider.mockResolvedValue({
         id: 'p1',
         name: 'unsupported',
@@ -287,14 +280,39 @@ describe('ProvidersController', () => {
         createdAt: '',
         updatedAt: '',
       });
-      const adapterFactory = {
-        isSupported: jest.fn().mockReturnValue(false),
-        getAdapter: jest.fn(),
-      };
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (controller as any).adapterFactory = adapterFactory;
+      mcpEnsureService.ensureMcp.mockResolvedValue({
+        success: false,
+        action: 'error',
+        message: 'MCP ensure not supported for provider: unsupported',
+      });
 
       await expect(controller.ensureMcp('p1', {})).rejects.toThrow(BadRequestException);
+    });
+
+    it('passes projectPath to ensure service', async () => {
+      storage.getProvider.mockResolvedValue({
+        id: 'p1',
+        name: 'claude',
+        binPath: '/usr/local/bin/claude',
+        mcpConfigured: false,
+        mcpEndpoint: null,
+        mcpRegisteredAt: null,
+        createdAt: '',
+        updatedAt: '',
+      });
+      mcpEnsureService.ensureMcp.mockResolvedValue({
+        success: true,
+        action: 'added',
+        endpoint: 'http://127.0.0.1:3000/mcp',
+        alias: 'devchain',
+      });
+
+      await controller.ensureMcp('p1', { projectPath: '/home/user/project' });
+
+      expect(mcpEnsureService.ensureMcp).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'p1' }),
+        '/home/user/project',
+      );
     });
   });
 

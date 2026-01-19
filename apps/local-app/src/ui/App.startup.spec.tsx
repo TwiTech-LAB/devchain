@@ -1,6 +1,37 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+
+// Mock components that use ESM-only modules (must be before App import)
+jest.mock('./components/review/DiffViewer', () => ({
+  DiffViewer: () => null,
+}));
+
+jest.mock('./components/review/FileNavigator', () => ({
+  FileNavigator: () => null,
+}));
+
+jest.mock('./components/review/CommentPanel', () => ({
+  CommentPanel: () => null,
+}));
+
+jest.mock('./components/review/KeyboardShortcutsHelp', () => ({
+  KeyboardShortcutsHelp: () => null,
+}));
+
+jest.mock('./hooks/useReviewSubscription', () => ({
+  useReviewSubscription: jest.fn(),
+}));
+
+jest.mock('./hooks/useCommentMutations', () => ({
+  useCreateComment: () => ({ mutateAsync: jest.fn(), isPending: false }),
+  useReplyToComment: () => ({ mutateAsync: jest.fn(), isPending: false }),
+}));
+
+jest.mock('./hooks/useKeyboardShortcuts', () => ({
+  useKeyboardShortcuts: () => ({ isHelpOpen: false, closeHelp: jest.fn(), openHelp: jest.fn() }),
+}));
+
 import { App } from './App';
 
 // Mock all the hooks and components that App depends on

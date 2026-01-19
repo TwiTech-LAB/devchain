@@ -5,68 +5,82 @@ import { z } from 'zod';
  */
 
 // devchain.create_record
-export const CreateRecordParamsSchema = z.object({
-  epicId: z.string().uuid(),
-  type: z.string().min(1),
-  data: z.record(z.unknown()),
-  tags: z.array(z.string()).optional(),
-});
+export const CreateRecordParamsSchema = z
+  .object({
+    epicId: z.string().uuid(),
+    type: z.string().min(1),
+    data: z.record(z.unknown()),
+    tags: z.array(z.string()).optional(),
+  })
+  .strict();
 
 export type CreateRecordParams = z.infer<typeof CreateRecordParamsSchema>;
 
 // devchain.update_record
-export const UpdateRecordParamsSchema = z.object({
-  id: z.string().uuid(),
-  data: z.record(z.unknown()).optional(),
-  type: z.string().optional(),
-  tags: z.array(z.string()).optional(),
-  version: z.number().int().positive(),
-});
+export const UpdateRecordParamsSchema = z
+  .object({
+    id: z.string().uuid(),
+    data: z.record(z.unknown()).optional(),
+    type: z.string().optional(),
+    tags: z.array(z.string()).optional(),
+    version: z.number().int().positive(),
+  })
+  .strict();
 
 export type UpdateRecordParams = z.infer<typeof UpdateRecordParamsSchema>;
 
 // devchain.get_record
-export const GetRecordParamsSchema = z.object({
-  id: z.string().uuid(),
-});
+export const GetRecordParamsSchema = z
+  .object({
+    id: z.string().uuid(),
+  })
+  .strict();
 
 export type GetRecordParams = z.infer<typeof GetRecordParamsSchema>;
 
 // devchain.list_records
-export const ListRecordsParamsSchema = z.object({
-  epicId: z.string().uuid(),
-  type: z.string().optional(),
-  tags: z.array(z.string()).optional(),
-  limit: z.number().int().positive().optional(),
-  offset: z.number().int().nonnegative().optional(),
-});
+export const ListRecordsParamsSchema = z
+  .object({
+    epicId: z.string().uuid(),
+    type: z.string().optional(),
+    tags: z.array(z.string()).optional(),
+    limit: z.number().int().positive().optional(),
+    offset: z.number().int().nonnegative().optional(),
+  })
+  .strict();
 
 export type ListRecordsParams = z.infer<typeof ListRecordsParamsSchema>;
 
 // devchain.add_tags
-export const AddTagsParamsSchema = z.object({
-  id: z.string().uuid(),
-  tags: z.array(z.string()).min(1),
-});
+export const AddTagsParamsSchema = z
+  .object({
+    id: z.string().uuid(),
+    tags: z.array(z.string()).min(1),
+  })
+  .strict();
 
 export type AddTagsParams = z.infer<typeof AddTagsParamsSchema>;
 
 // devchain.remove_tags
-export const RemoveTagsParamsSchema = z.object({
-  id: z.string().uuid(),
-  tags: z.array(z.string()).min(1),
-});
+export const RemoveTagsParamsSchema = z
+  .object({
+    id: z.string().uuid(),
+    tags: z.array(z.string()).min(1),
+  })
+  .strict();
 
 export type RemoveTagsParams = z.infer<typeof RemoveTagsParamsSchema>;
 
 // devchain.list_documents
-export const ListDocumentsParamsSchema = z.object({
-  sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
-  tags: z.array(z.string()).optional(),
-  q: z.string().optional(),
-  limit: z.number().int().positive().optional(),
-  offset: z.number().int().nonnegative().optional(),
-});
+export const ListDocumentsParamsSchema = z
+  .object({
+    sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
+    tags: z.array(z.string()).optional(),
+    q: z.string().optional(),
+    limit: z.number().int().positive().optional(),
+    offset: z.number().int().nonnegative().optional(),
+  })
+  .strict();
 
 export type ListDocumentsParams = z.infer<typeof ListDocumentsParamsSchema>;
 
@@ -80,6 +94,7 @@ export const GetDocumentParamsSchema = z
     maxDepth: z.number().int().nonnegative().optional(),
     maxBytes: z.number().int().positive().optional(),
   })
+  .strict()
   .refine((data) => data.id || data.slug, {
     message: 'Either id or slug must be provided',
     path: ['id'],
@@ -92,111 +107,133 @@ export const GetDocumentParamsSchema = z
 export type GetDocumentParams = z.infer<typeof GetDocumentParamsSchema>;
 
 // devchain.create_document
-export const CreateDocumentParamsSchema = z.object({
-  sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
-  title: z.string().min(1),
-  contentMd: z.string(),
-  tags: z.array(z.string()).optional(),
-});
+export const CreateDocumentParamsSchema = z
+  .object({
+    sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
+    title: z.string().min(1),
+    contentMd: z.string(),
+    tags: z.array(z.string()).optional(),
+  })
+  .strict();
 
 export type CreateDocumentParams = z.infer<typeof CreateDocumentParamsSchema>;
 
 // devchain.update_document
-export const UpdateDocumentParamsSchema = z.object({
-  id: z.string().uuid(),
-  title: z.string().min(1).optional(),
-  slug: z.string().min(1).optional(),
-  contentMd: z.string().optional(),
-  tags: z.array(z.string()).optional(),
-  archived: z.boolean().optional(),
-  version: z.number().int().positive().optional(),
-});
+export const UpdateDocumentParamsSchema = z
+  .object({
+    id: z.string().uuid(),
+    title: z.string().min(1).optional(),
+    slug: z.string().min(1).optional(),
+    contentMd: z.string().optional(),
+    tags: z.array(z.string()).optional(),
+    archived: z.boolean().optional(),
+    version: z.number().int().positive().optional(),
+  })
+  .strict();
 
 export type UpdateDocumentParams = z.infer<typeof UpdateDocumentParamsSchema>;
 
 // devchain.list_prompts
-export const ListPromptsParamsSchema = z.object({
-  sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
-  tags: z.array(z.string()).optional(),
-  q: z.string().optional(),
-});
+export const ListPromptsParamsSchema = z
+  .object({
+    sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
+    tags: z.array(z.string()).optional(),
+    q: z.string().optional(),
+  })
+  .strict();
 
 export type ListPromptsParams = z.infer<typeof ListPromptsParamsSchema>;
 
 // devchain_list_agents
-export const ListAgentsParamsSchema = z.object({
-  sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
-  limit: z.number().int().positive().optional(),
-  offset: z.number().int().nonnegative().optional(),
-  q: z.string().optional(),
-});
+export const ListAgentsParamsSchema = z
+  .object({
+    sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
+    limit: z.number().int().positive().optional(),
+    offset: z.number().int().nonnegative().optional(),
+    q: z.string().optional(),
+  })
+  .strict();
 
 export type ListAgentsParams = z.infer<typeof ListAgentsParamsSchema>;
 
 // devchain_get_agent_by_name
-export const GetAgentByNameParamsSchema = z.object({
-  sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
-  name: z.string().min(1),
-});
+export const GetAgentByNameParamsSchema = z
+  .object({
+    sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
+    name: z.string().min(1),
+  })
+  .strict();
 
 export type GetAgentByNameParams = z.infer<typeof GetAgentByNameParamsSchema>;
 
 // devchain_list_statuses
-export const ListStatusesParamsSchema = z.object({
-  sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
-});
+export const ListStatusesParamsSchema = z
+  .object({
+    sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
+  })
+  .strict();
 
 export type ListStatusesParams = z.infer<typeof ListStatusesParamsSchema>;
 
 // devchain_list_epics
-export const ListEpicsParamsSchema = z.object({
-  sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
-  statusName: z.string().min(1).optional(),
-  limit: z.number().int().positive().optional(),
-  offset: z.number().int().nonnegative().optional(),
-  q: z.string().optional(),
-});
+export const ListEpicsParamsSchema = z
+  .object({
+    sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
+    statusName: z.string().min(1).optional(),
+    limit: z.number().int().positive().optional(),
+    offset: z.number().int().nonnegative().optional(),
+    q: z.string().optional(),
+  })
+  .strict();
 
 export type ListEpicsParams = z.infer<typeof ListEpicsParamsSchema>;
 
 // devchain_list_assigned_epics_tasks
-export const ListAssignedEpicsTasksParamsSchema = z.object({
-  sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
-  agentName: z.string().min(1), // Target agent name to filter assignments
-  limit: z.number().int().positive().optional(),
-  offset: z.number().int().nonnegative().optional(),
-});
+export const ListAssignedEpicsTasksParamsSchema = z
+  .object({
+    sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
+    agentName: z.string().min(1), // Target agent name to filter assignments
+    limit: z.number().int().positive().optional(),
+    offset: z.number().int().nonnegative().optional(),
+  })
+  .strict();
 
 export type ListAssignedEpicsTasksParams = z.infer<typeof ListAssignedEpicsTasksParamsSchema>;
 
 // devchain_create_epic
-export const CreateEpicParamsSchema = z.object({
-  sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
-  title: z.string().min(1),
-  description: z.string().optional(),
-  statusName: z.string().min(1).optional(),
-  tags: z.array(z.string()).optional(),
-  agentName: z.string().min(1).optional(), // Target agent to assign epic to
-  parentId: z.string().uuid().optional(),
-});
+export const CreateEpicParamsSchema = z
+  .object({
+    sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
+    title: z.string().min(1),
+    description: z.string().optional(),
+    statusName: z.string().min(1).optional(),
+    tags: z.array(z.string()).optional(),
+    agentName: z.string().min(1).optional(), // Target agent to assign epic to
+    parentId: z.string().uuid().optional(),
+  })
+  .strict();
 
 export type CreateEpicParams = z.infer<typeof CreateEpicParamsSchema>;
 
 // devchain_get_epic_by_id
-export const GetEpicByIdParamsSchema = z.object({
-  sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
-  id: z.string().uuid(),
-});
+export const GetEpicByIdParamsSchema = z
+  .object({
+    sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
+    id: z.string().uuid(),
+  })
+  .strict();
 
 export type GetEpicByIdParams = z.infer<typeof GetEpicByIdParamsSchema>;
 
 // devchain_add_epic_comment
 // Author identity is derived from sessionId (ctx.agent.name)
-export const AddEpicCommentParamsSchema = z.object({
-  sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
-  epicId: z.string().uuid(),
-  content: z.string().min(1),
-});
+export const AddEpicCommentParamsSchema = z
+  .object({
+    sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
+    epicId: z.string().uuid(),
+    content: z.string().min(1),
+  })
+  .strict();
 
 export type AddEpicCommentParams = z.infer<typeof AddEpicCommentParamsSchema>;
 
@@ -210,7 +247,10 @@ export const UpdateEpicParamsSchema = z
     description: z.string().optional(),
     statusName: z.string().min(1).optional(),
     assignment: z
-      .union([z.object({ agentName: z.string().min(1) }), z.object({ clear: z.literal(true) })])
+      .union([
+        z.object({ agentName: z.string().min(1) }).strict(),
+        z.object({ clear: z.literal(true) }).strict(),
+      ])
       .optional(),
     parentId: z.string().uuid().optional(),
     clearParent: z.boolean().optional(),
@@ -218,6 +258,7 @@ export const UpdateEpicParamsSchema = z
     addTags: z.array(z.string()).optional(),
     removeTags: z.array(z.string()).optional(),
   })
+  .strict()
   .refine((data) => !(data.parentId && data.clearParent), {
     message: 'Cannot specify both parentId and clearParent',
     path: ['parentId'],
@@ -238,6 +279,7 @@ export const GetPromptParamsSchema = z
     // Session ID required when querying by name to resolve project
     sessionId: z.string().min(8).optional(),
   })
+  .strict()
   .refine((data) => data.id || data.name, {
     message: 'Either id or name must be provided',
     path: ['id'],
@@ -558,6 +600,7 @@ export const SendMessageParamsSchema = z
     // Allow agent-initiated DM to user without threadId
     recipient: z.enum(['user', 'agents']).optional(),
   })
+  .strict()
   .refine(
     (v) =>
       Boolean(
@@ -599,11 +642,13 @@ export type SendMessageResponse =
     };
 
 // devchain_chat_ack
-export const ChatAckParamsSchema = z.object({
-  sessionId: z.string().min(8), // Session ID for agent identity
-  thread_id: z.string().uuid(),
-  message_id: z.string().uuid(),
-});
+export const ChatAckParamsSchema = z
+  .object({
+    sessionId: z.string().min(8), // Session ID for agent identity
+    thread_id: z.string().uuid(),
+    message_id: z.string().uuid(),
+  })
+  .strict();
 
 export type ChatAckParams = z.infer<typeof ChatAckParamsSchema>;
 
@@ -616,13 +661,15 @@ export interface ChatAckResponse {
 }
 
 // devchain_chat_read_history
-export const ChatReadHistoryParamsSchema = z.object({
-  thread_id: z.string().uuid(),
-  limit: z.number().int().positive().max(200).optional(),
-  since: z.string().datetime().optional(),
-  // When undefined, service defaults to true (exclude system messages)
-  exclude_system: z.boolean().optional(),
-});
+export const ChatReadHistoryParamsSchema = z
+  .object({
+    thread_id: z.string().uuid(),
+    limit: z.number().int().positive().max(200).optional(),
+    since: z.string().datetime().optional(),
+    // When undefined, service defaults to true (exclude system messages)
+    exclude_system: z.boolean().optional(),
+  })
+  .strict();
 
 export type ChatReadHistoryParams = z.infer<typeof ChatReadHistoryParamsSchema>;
 
@@ -651,9 +698,11 @@ export const ChatReadHistoryResponseSchema = z.object({
 export type ChatReadHistoryResponse = z.infer<typeof ChatReadHistoryResponseSchema>;
 
 // devchain_chat_list_members
-export const ChatListMembersParamsSchema = z.object({
-  thread_id: z.string().uuid(),
-});
+export const ChatListMembersParamsSchema = z
+  .object({
+    thread_id: z.string().uuid(),
+  })
+  .strict();
 
 export type ChatListMembersParams = z.infer<typeof ChatListMembersParamsSchema>;
 
@@ -672,12 +721,14 @@ export const ChatListMembersResponseSchema = z.object({
 export type ChatListMembersResponse = z.infer<typeof ChatListMembersResponseSchema>;
 
 // devchain_activity_start
-export const ActivityStartParamsSchema = z.object({
-  sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix) - agent resolved from session
-  title: z.string().min(1).max(256),
-  threadId: z.string().uuid().optional(),
-  announce: z.boolean().optional().default(true),
-});
+export const ActivityStartParamsSchema = z
+  .object({
+    sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix) - agent resolved from session
+    title: z.string().min(1).max(256),
+    threadId: z.string().uuid().optional(),
+    announce: z.boolean().optional().default(true),
+  })
+  .strict();
 
 export type ActivityStartParams = z.infer<typeof ActivityStartParamsSchema>;
 
@@ -691,12 +742,14 @@ export const ActivityStartResponseSchema = z.object({
 export type ActivityStartResponse = z.infer<typeof ActivityStartResponseSchema>;
 
 // devchain_activity_finish
-export const ActivityFinishParamsSchema = z.object({
-  sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix) - agent resolved from session
-  threadId: z.string().uuid().optional(),
-  message: z.string().max(1000).optional(),
-  status: z.enum(['success', 'failed', 'canceled']).optional(),
-});
+export const ActivityFinishParamsSchema = z
+  .object({
+    sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix) - agent resolved from session
+    threadId: z.string().uuid().optional(),
+    message: z.string().max(1000).optional(),
+    status: z.enum(['success', 'failed', 'canceled']).optional(),
+  })
+  .strict();
 
 export type ActivityFinishParams = z.infer<typeof ActivityFinishParamsSchema>;
 
@@ -741,11 +794,13 @@ export const TmuxSessionIdSchema = z
   );
 
 // devchain_register_guest (bootstrap tool - no sessionId required)
-export const RegisterGuestParamsSchema = z.object({
-  name: z.string().min(1),
-  tmuxSessionId: TmuxSessionIdSchema,
-  description: z.string().optional(),
-});
+export const RegisterGuestParamsSchema = z
+  .object({
+    name: z.string().min(1),
+    tmuxSessionId: TmuxSessionIdSchema,
+    description: z.string().optional(),
+  })
+  .strict();
 
 export type RegisterGuestParams = z.infer<typeof RegisterGuestParamsSchema>;
 
@@ -814,4 +869,167 @@ export interface LegacySessionContext {
     name: string;
     rootPath: string;
   } | null;
+}
+
+// ============================================
+// Review MCP Tools
+// ============================================
+
+// devchain_list_reviews
+export const ListReviewsParamsSchema = z
+  .object({
+    sessionId: z.string().min(8),
+    status: z.enum(['draft', 'pending', 'changes_requested', 'approved', 'closed']).optional(),
+    epicId: z.string().uuid().optional(),
+    limit: z.number().int().positive().optional(),
+    offset: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
+export type ListReviewsParams = z.infer<typeof ListReviewsParamsSchema>;
+
+export interface ReviewSummary {
+  id: string;
+  title: string;
+  description: string | null;
+  status: 'draft' | 'pending' | 'changes_requested' | 'approved' | 'closed';
+  baseRef: string;
+  headRef: string;
+  baseSha: string | null;
+  headSha: string | null;
+  epicId: string | null;
+  createdBy: 'user' | 'agent';
+  createdByAgentId: string | null;
+  version: number;
+  commentCount?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ListReviewsResponse {
+  reviews: ReviewSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+// devchain_get_review
+export const GetReviewParamsSchema = z
+  .object({
+    sessionId: z.string().min(8),
+    reviewId: z.string().uuid(),
+  })
+  .strict();
+
+export type GetReviewParams = z.infer<typeof GetReviewParamsSchema>;
+
+export interface ChangedFileSummary {
+  path: string;
+  status: 'added' | 'modified' | 'deleted' | 'renamed' | 'copied';
+  additions: number;
+  deletions: number;
+  oldPath?: string;
+}
+
+export interface ReviewCommentSummary {
+  id: string;
+  filePath: string | null;
+  lineStart: number | null;
+  lineEnd: number | null;
+  side: 'left' | 'right' | null;
+  content: string;
+  commentType: 'comment' | 'suggestion' | 'issue' | 'approval';
+  status: 'open' | 'resolved' | 'wont_fix';
+  authorType: 'user' | 'agent';
+  authorAgentId: string | null;
+  authorAgentName?: string;
+  parentId: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GetReviewResponse {
+  review: ReviewSummary;
+  changedFiles: ChangedFileSummary[];
+  comments: ReviewCommentSummary[];
+}
+
+// devchain_get_review_comments
+export const GetReviewCommentsParamsSchema = z
+  .object({
+    sessionId: z.string().min(8),
+    reviewId: z.string().uuid(),
+    status: z.enum(['open', 'resolved', 'wont_fix']).optional(),
+    filePath: z.string().optional(),
+    limit: z.number().int().positive().optional(),
+    offset: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
+export type GetReviewCommentsParams = z.infer<typeof GetReviewCommentsParamsSchema>;
+
+export interface GetReviewCommentsResponse {
+  comments: ReviewCommentSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+// devchain_reply_comment
+export const ReplyCommentParamsSchema = z
+  .object({
+    sessionId: z.string().min(8),
+    reviewId: z.string().uuid(),
+    parentCommentId: z.string().uuid().optional(),
+    content: z.string().min(1),
+    filePath: z.string().optional(),
+    lineStart: z.number().int().positive().optional(),
+    lineEnd: z.number().int().positive().optional(),
+    commentType: z.enum(['comment', 'suggestion', 'issue', 'approval']).optional(),
+    targetAgentIds: z.array(z.string().uuid()).optional(),
+  })
+  .strict();
+
+export type ReplyCommentParams = z.infer<typeof ReplyCommentParamsSchema>;
+
+export interface ReplyCommentResponse {
+  comment: ReviewCommentSummary;
+}
+
+// devchain_resolve_comment
+export const ResolveCommentParamsSchema = z
+  .object({
+    sessionId: z.string().min(8),
+    commentId: z.string().uuid(),
+    resolution: z.enum(['resolved', 'wont_fix']).optional().default('resolved'),
+    version: z.number().int().positive(),
+  })
+  .strict();
+
+export type ResolveCommentParams = z.infer<typeof ResolveCommentParamsSchema>;
+
+export interface ResolveCommentResponse {
+  comment: ReviewCommentSummary;
+}
+
+// devchain_apply_suggestion
+export const ApplySuggestionParamsSchema = z
+  .object({
+    sessionId: z.string().min(8),
+    commentId: z.string().uuid(),
+    version: z.number().int().positive(),
+  })
+  .strict();
+
+export type ApplySuggestionParams = z.infer<typeof ApplySuggestionParamsSchema>;
+
+export interface ApplySuggestionResponse {
+  comment: ReviewCommentSummary;
+  applied: {
+    filePath: string;
+    lineStart: number;
+    lineEnd: number;
+    suggestedCode: string;
+  };
 }

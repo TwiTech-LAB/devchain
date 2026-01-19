@@ -188,3 +188,101 @@
 .xterm-viewport {
   scrollbar-color: #5a5a5a #252525 !important;
 }
+
+/* ===== React Diff View Overrides ===== */
+
+/* Container - let ScrollArea handle scrolling */
+.diff-viewer {
+  width: 100%;
+  min-width: max-content;
+}
+
+/* Table layout */
+.diff-viewer .diff {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+}
+
+/* Compact line number gutters */
+.diff-viewer .diff-gutter,
+.diff-viewer .diff-gutter-col {
+  width: 32px !important;
+  min-width: 32px !important;
+  max-width: 32px !important;
+  padding: 0 4px !important;
+  text-align: right;
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+  user-select: none;
+  white-space: nowrap;
+  vertical-align: top;
+}
+
+/* Code content - no wrapping, allow scroll */
+.diff-viewer .diff-code,
+.diff-viewer .diff-code-cell {
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+  padding: 0 8px !important;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  line-height: 1.5;
+}
+
+/* Code content inner element */
+.diff-viewer .diff-code-content {
+  display: inline;
+}
+
+/* Ensure rows don't collapse */
+.diff-viewer .diff-line {
+  line-height: 1.4;
+}
+
+/* For split view */
+.diff-viewer.diff-split .diff-gutter-col {
+  width: 28px !important;
+  min-width: 28px !important;
+  max-width: 28px !important;
+}
+
+.diff-viewer.diff-split .diff-code-col {
+  width: auto;
+}
+
+/* ===== Diff Viewer Comment Widgets ===== */
+
+/* Widget row - special handling for comment widgets */
+.diff-viewer .diff-widget-content {
+  /* Override max-content width for widget cells */
+  width: 1px;  /* Collapse cell, let content define width */
+}
+
+/* Comment widget wrapper - constrain to reasonable width */
+.diff-viewer .inline-comment-wrapper {
+  /* Use vw-based width as fallback, will be constrained by scroll container */
+  width: clamp(350px, calc(100vw - 600px), 900px);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Comment and form widgets */
+.diff-viewer .new-comment-form,
+.diff-viewer [data-testid="comment-thread"] {
+  width: 100%;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Ensure comment content text wraps properly */
+.diff-viewer .inline-comment-wrapper p,
+.diff-viewer .inline-comment-wrapper .text-sm,
+.diff-viewer [data-testid="comment-thread"] p,
+.diff-viewer .pl-4 p {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: pre-wrap;
+}

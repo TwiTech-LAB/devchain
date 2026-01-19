@@ -23,10 +23,12 @@ export interface UseMentionAutocompleteResult {
  * - Detects @ character and shows agent suggestions
  * - Handles keyboard navigation (ArrowUp, ArrowDown, Enter, Escape)
  * - Inserts selected agent mention into text
+ * @param onSelect - Optional callback fired when agent is selected via Enter key
  */
 export function useMentionAutocomplete(
   textareaRef: RefObject<HTMLTextAreaElement>,
   agents: Agent[],
+  onSelect?: (agent: Agent) => void,
 ): UseMentionAutocompleteResult {
   const [showAutocomplete, setShowAutocomplete] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
@@ -99,11 +101,15 @@ export function useMentionAutocomplete(
 
       switch (e.key) {
         case 'ArrowDown':
+          // Guard against empty list to prevent NaN from modulo by zero
+          if (filteredAgents.length === 0) return false;
           e.preventDefault();
           setSelectedIndex((prev) => (prev + 1) % filteredAgents.length);
           return true;
 
         case 'ArrowUp':
+          // Guard against empty list to prevent NaN from modulo by zero
+          if (filteredAgents.length === 0) return false;
           e.preventDefault();
           setSelectedIndex((prev) => (prev - 1 + filteredAgents.length) % filteredAgents.length);
           return true;
@@ -114,6 +120,8 @@ export function useMentionAutocomplete(
             const selectedAgent = filteredAgents[selectedIndex];
             const newText = insertMention(selectedAgent, currentValue);
             setValue(newText);
+            // Fire onSelect callback so component can update selectedAgentIds
+            onSelect?.(selectedAgent);
             return true;
           }
           return false;
@@ -128,7 +136,7 @@ export function useMentionAutocomplete(
           return false;
       }
     },
-    [showAutocomplete, mentionQuery, selectedIndex, agents, insertMention],
+    [showAutocomplete, mentionQuery, selectedIndex, agents, insertMention, onSelect],
   );
 
   return {

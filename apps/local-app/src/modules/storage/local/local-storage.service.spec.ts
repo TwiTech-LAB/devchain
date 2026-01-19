@@ -111,7 +111,7 @@ describe('LocalStorageService', () => {
               where: jest.fn().mockReturnValue({
                 orderBy: jest.fn().mockReturnValue({
                   limit: jest.fn().mockReturnValue({
-                    offset: jest.fn().mockResolvedValue([{ id: mockEpic.id }]),
+                    offset: jest.fn().mockResolvedValue([{ epic: mockEpic }]),
                   }),
                 }),
               }),
@@ -120,7 +120,12 @@ describe('LocalStorageService', () => {
         };
 
         mockDb.select = jest.fn().mockReturnValueOnce(countChain).mockReturnValueOnce(rowsChain);
-        const getEpicSpy = jest.spyOn(service, 'getEpic').mockResolvedValue(mockEpic);
+        const batchFetchTagsSpy = jest
+          .spyOn(
+            service as unknown as { batchFetchTags: () => Promise<Map<string, string[]>> },
+            'batchFetchTags',
+          )
+          .mockResolvedValue(new Map([[mockEpic.id, []]]));
 
         const result = await service.listProjectEpics('project-1', {
           q: 'sample',
@@ -130,7 +135,7 @@ describe('LocalStorageService', () => {
 
         expect(result.items).toEqual([mockEpic]);
         expect(result.total).toBe(1);
-        expect(getEpicSpy).toHaveBeenCalledWith(mockEpic.id);
+        expect(batchFetchTagsSpy).toHaveBeenCalledWith([mockEpic.id]);
       });
     });
 
@@ -168,7 +173,7 @@ describe('LocalStorageService', () => {
             where: jest.fn().mockReturnValue({
               orderBy: jest.fn().mockReturnValue({
                 limit: jest.fn().mockReturnValue({
-                  offset: jest.fn().mockResolvedValue([{ id: mockEpic.id }]),
+                  offset: jest.fn().mockResolvedValue([mockEpic]),
                 }),
               }),
             }),
@@ -184,7 +189,12 @@ describe('LocalStorageService', () => {
           name: 'Case Agent',
         } as Agent & { profile?: AgentProfile });
 
-        const getEpicSpy = jest.spyOn(service, 'getEpic').mockResolvedValue(mockEpic);
+        const batchFetchTagsSpy = jest
+          .spyOn(
+            service as unknown as { batchFetchTags: () => Promise<Map<string, string[]>> },
+            'batchFetchTags',
+          )
+          .mockResolvedValue(new Map([[mockEpic.id, []]]));
 
         const result = await service.listAssignedEpics('project-1', {
           agentName: 'Case Agent',
@@ -195,7 +205,7 @@ describe('LocalStorageService', () => {
         expect(getAgentSpy).toHaveBeenCalledWith('project-1', 'Case Agent');
         expect(result.items).toEqual([mockEpic]);
         expect(result.total).toBe(1);
-        expect(getEpicSpy).toHaveBeenCalledWith(mockEpic.id);
+        expect(batchFetchTagsSpy).toHaveBeenCalledWith([mockEpic.id]);
       });
 
       it('should propagate not found when agent does not exist', async () => {

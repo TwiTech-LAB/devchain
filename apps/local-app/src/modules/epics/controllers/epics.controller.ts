@@ -63,15 +63,18 @@ export class EpicsController {
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
     @Query('type') type?: string,
+    @Query('q') q?: string,
   ): Promise<ListResult<Epic>> {
-    logger.info({ projectId, statusId, parentId, limit, offset, type }, 'GET /api/epics');
-    const options = this.parseListOptions(limit, offset);
+    logger.info({ projectId, statusId, parentId, limit, offset, type, q }, 'GET /api/epics');
 
+    // parentId and statusId queries use pagination only (no search)
     if (parentId) {
+      const options = this.parsePaginationOptions(limit, offset);
       return this.epicsService.listEpics({ parentId, options });
     }
 
     if (statusId) {
+      const options = this.parsePaginationOptions(limit, offset);
       return this.epicsService.listEpics({ statusId, options });
     }
 
@@ -79,7 +82,8 @@ export class EpicsController {
       throw new BadRequestException('Provide projectId, statusId, or parentId to list epics.');
     }
 
-    // Use listProjectEpics to ensure ordering/pagination and allow backend-side filtering
+    // Project-level listing supports search query
+    const options = this.parseEpicSearchOptions(limit, offset, q);
     const normalized = (type || 'active').toLowerCase();
     const allowed = new Set<string>(['active', 'archived', 'all']);
     const listType = (allowed.has(normalized) ? normalized : 'active') as
@@ -96,7 +100,7 @@ export class EpicsController {
     @Query('offset') offset?: string,
   ): Promise<ListResult<Epic>> {
     logger.info({ id, limit, offset }, 'GET /api/epics/:id/sub-epics');
-    const options = this.parseListOptions(limit, offset);
+    const options = this.parsePaginationOptions(limit, offset);
     return this.epicsService.listSubEpics(id, options);
   }
 
@@ -150,7 +154,11 @@ export class EpicsController {
     await this.epicsService.deleteEpic(id);
   }
 
-  private parseListOptions(limit?: string, offset?: string): ListOptions {
+  /**
+   * Parse pagination options (limit/offset) for basic list queries.
+   * Used for sub-epic listing and status-filtered queries.
+   */
+  private parsePaginationOptions(limit?: string, offset?: string): ListOptions {
     const options: ListOptions = {};
 
     if (limit !== undefined) {
@@ -165,6 +173,24 @@ export class EpicsController {
       if (!Number.isNaN(parsed)) {
         options.offset = parsed;
       }
+    }
+
+    return options;
+  }
+
+  /**
+   * Parse search options (limit/offset/q) for project-level epic listing.
+   * Includes optional search query parameter for filtering by title or UUID prefix.
+   */
+  private parseEpicSearchOptions(
+    limit?: string,
+    offset?: string,
+    q?: string,
+  ): ListOptions & { q?: string } {
+    const options: ListOptions & { q?: string } = this.parsePaginationOptions(limit, offset);
+
+    if (q !== undefined && q.trim().length > 0) {
+      options.q = q;
     }
 
     return options;

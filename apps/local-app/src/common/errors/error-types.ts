@@ -33,6 +33,12 @@ export class ConflictError extends AppError {
   }
 }
 
+export class ForbiddenError extends AppError {
+  constructor(message: string, details?: Record<string, unknown>) {
+    super(message, 'forbidden', 403, details);
+  }
+}
+
 export class OptimisticLockError extends AppError {
   constructor(resource: string, identifier: string, details?: Record<string, unknown>) {
     super(

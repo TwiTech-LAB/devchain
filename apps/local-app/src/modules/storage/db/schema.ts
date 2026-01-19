@@ -559,6 +559,98 @@ export const guests = sqliteTable(
 );
 
 // ============================================
+// CODE REVIEWS - Review metadata and comments
+// ============================================
+
+// Reviews (code review metadata with SHA-pinned refs)
+export const reviews = sqliteTable(
+  'reviews',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    epicId: text('epic_id').references(() => epics.id, { onDelete: 'set null' }),
+    title: text('title').notNull(),
+    description: text('description'),
+    status: text('status').notNull(), // 'draft' | 'pending' | 'changes_requested' | 'approved' | 'closed'
+    mode: text('mode').notNull().default('commit'), // 'working_tree' | 'commit'
+    baseRef: text('base_ref').notNull(), // e.g., 'main', 'develop', 'HEAD'
+    headRef: text('head_ref').notNull(), // e.g., 'feature/my-branch', 'HEAD'
+    baseSha: text('base_sha'), // SHA at time of review creation (null for working_tree mode)
+    headSha: text('head_sha'), // SHA at time of review creation (null for working_tree mode)
+    createdBy: text('created_by').notNull(), // 'user' | 'agent'
+    createdByAgentId: text('created_by_agent_id').references(() => agents.id, {
+      onDelete: 'set null',
+    }),
+    version: integer('version').notNull().default(1),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    projectIdIdx: index('reviews_project_id_idx').on(table.projectId),
+    epicIdIdx: index('reviews_epic_id_idx').on(table.epicId),
+    statusIdx: index('reviews_status_idx').on(table.status),
+  }),
+);
+
+// Review Comments (comments with threading, line references, and status)
+export const reviewComments = sqliteTable(
+  'review_comments',
+  {
+    id: text('id').primaryKey(),
+    reviewId: text('review_id')
+      .notNull()
+      .references(() => reviews.id, { onDelete: 'cascade' }),
+    filePath: text('file_path'), // null for general review comments
+    parentId: text('parent_id'), // null for top-level comments, references reviewComments.id for threads
+    lineStart: integer('line_start'), // starting line number (null for file-level or general comments)
+    lineEnd: integer('line_end'), // ending line number (null for single-line or general comments)
+    side: text('side'), // 'left' | 'right' | null (for diff context: left=base, right=head)
+    content: text('content').notNull(),
+    commentType: text('comment_type').notNull(), // 'comment' | 'suggestion' | 'issue' | 'approval'
+    status: text('status').notNull(), // 'open' | 'resolved' | 'wont_fix'
+    authorType: text('author_type').notNull(), // 'user' | 'agent'
+    authorAgentId: text('author_agent_id').references(() => agents.id, { onDelete: 'set null' }),
+    version: integer('version').notNull().default(1),
+    editedAt: text('edited_at'), // timestamp of last edit, null if never edited
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    reviewIdIdx: index('review_comments_review_id_idx').on(table.reviewId),
+    parentIdIdx: index('review_comments_parent_id_idx').on(table.parentId),
+    filePathIdx: index('review_comments_file_path_idx').on(table.filePath),
+    statusIdx: index('review_comments_status_idx').on(table.status),
+    parentFk: foreignKey(() => ({
+      columns: [table.parentId],
+      foreignColumns: [table.id],
+      onDelete: 'cascade',
+      name: 'review_comments_parent_id_fk',
+    })),
+  }),
+);
+
+// Review Comment Targets (agent assignment join table)
+export const reviewCommentTargets = sqliteTable(
+  'review_comment_targets',
+  {
+    id: text('id').primaryKey(),
+    commentId: text('comment_id')
+      .notNull()
+      .references(() => reviewComments.id, { onDelete: 'cascade' }),
+    agentId: text('agent_id')
+      .notNull()
+      .references(() => agents.id, { onDelete: 'cascade' }),
+    createdAt: text('created_at').notNull(),
+  },
+  (table) => ({
+    commentIdIdx: index('review_comment_targets_comment_id_idx').on(table.commentId),
+    agentIdIdx: index('review_comment_targets_agent_id_idx').on(table.agentId),
+  }),
+);
+
+// ============================================
 // TERMINAL WATCHERS - Monitor sessions for patterns
 // ============================================
 export const terminalWatchers = sqliteTable(

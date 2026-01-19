@@ -181,6 +181,37 @@ describe('ui/lib/sessions helpers', () => {
       expect(error.status).toBe(404);
       expect(error.name).toBe('SessionApiError');
     });
+
+    it('includes payload when provided', () => {
+      const payload = {
+        statusCode: 400,
+        code: 'validation_error',
+        message: 'Validation failed',
+        details: { code: 'MCP_NOT_CONFIGURED', providerId: 'p1', providerName: 'claude' },
+        timestamp: '2024-01-01T00:00:00Z',
+        path: '/api/sessions/launch',
+      };
+      const error = new SessionApiError('Validation failed', 400, payload);
+      expect(error.payload).toEqual(payload);
+    });
+
+    it('hasCode returns true when details.code matches', () => {
+      const error = new SessionApiError('Error', 400, {
+        statusCode: 400,
+        code: 'validation_error',
+        message: 'Error',
+        details: { code: 'MCP_NOT_CONFIGURED' },
+        timestamp: '2024-01-01T00:00:00Z',
+        path: '/api/test',
+      });
+      expect(error.hasCode('MCP_NOT_CONFIGURED')).toBe(true);
+      expect(error.hasCode('OTHER_CODE')).toBe(false);
+    });
+
+    it('hasCode returns false when no payload', () => {
+      const error = new SessionApiError('Error', 400);
+      expect(error.hasCode('MCP_NOT_CONFIGURED')).toBe(false);
+    });
   });
 
   describe('fetchJsonOrThrow', () => {
@@ -249,6 +280,39 @@ describe('ui/lib/sessions helpers', () => {
       } catch (error) {
         expect(error).toBeInstanceOf(SessionApiError);
         expect((error as SessionApiError).status).toBe(404);
+      }
+    });
+
+    it('preserves full error payload for MCP_NOT_CONFIGURED errors', async () => {
+      const errorPayload = {
+        statusCode: 400,
+        code: 'validation_error',
+        message: 'Provider MCP is not configured',
+        details: {
+          code: 'MCP_NOT_CONFIGURED',
+          providerId: 'provider-1',
+          providerName: 'claude',
+          mcpStatus: 'warn',
+          mcpMessage: "MCP alias 'devchain' not found.",
+        },
+        timestamp: '2024-01-01T00:00:00Z',
+        path: '/api/sessions/launch',
+      };
+      (global as unknown as { fetch: unknown }).fetch = jest.fn(async () => ({
+        ok: false,
+        status: 400,
+        json: async () => errorPayload,
+      }));
+
+      try {
+        await fetchJsonOrThrow('/api/sessions/launch');
+        fail('Expected error to be thrown');
+      } catch (error) {
+        expect(error).toBeInstanceOf(SessionApiError);
+        const apiError = error as SessionApiError;
+        expect(apiError.hasCode('MCP_NOT_CONFIGURED')).toBe(true);
+        expect(apiError.payload?.details?.providerId).toBe('provider-1');
+        expect(apiError.payload?.details?.providerName).toBe('claude');
       }
     });
   });

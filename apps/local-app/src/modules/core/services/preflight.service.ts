@@ -44,21 +44,12 @@ export interface PreflightResult {
   timestamp: string;
 }
 
-interface CachedResult {
-  result: PreflightResult;
-  expiresAt: number;
-}
-
 /**
  * PreflightService
  * Performs system checks before allowing session start
- * Results are cached for 60 seconds to reduce load
  */
 @Injectable()
 export class PreflightService {
-  private cache: Map<string, CachedResult> = new Map();
-  private readonly CACHE_TTL_MS = 60000; // 60 seconds
-
   constructor(
     @Inject('STORAGE_SERVICE') private readonly storage: StorageService,
     @Inject(forwardRef(() => McpProviderRegistrationService))
@@ -67,20 +58,11 @@ export class PreflightService {
   ) {}
 
   /**
-   * Run all preflight checks (with caching)
+   * Run all preflight checks
    */
   async runChecks(projectPath?: string): Promise<PreflightResult> {
-    const cacheKey = projectPath || '';
-
-    // Check cache first
-    const cached = this.cache.get(cacheKey);
-    if (cached && cached.expiresAt > Date.now()) {
-      logger.debug({ projectPath, cacheHit: true }, 'Returning cached preflight results');
-      return cached.result;
-    }
-
     if (process.env.SKIP_PREFLIGHT === '1') {
-      const result: PreflightResult = {
+      return {
         overall: 'pass',
         checks: [
           {
@@ -93,13 +75,6 @@ export class PreflightService {
         supportedMcpProviders: this.adapterFactory.getSupportedProviders(),
         timestamp: new Date().toISOString(),
       };
-
-      this.cache.set(cacheKey, {
-        result,
-        expiresAt: Date.now() + this.CACHE_TTL_MS,
-      });
-
-      return result;
     }
 
     logger.info({ projectPath }, 'Running preflight checks');
@@ -182,12 +157,6 @@ export class PreflightService {
       supportedMcpProviders: this.adapterFactory.getSupportedProviders(),
       timestamp: new Date().toISOString(),
     };
-
-    // Cache the result
-    this.cache.set(cacheKey, {
-      result,
-      expiresAt: Date.now() + this.CACHE_TTL_MS,
-    });
 
     logger.info(
       { overall, checkCount: checks.length, providerCount: providerChecks.length },
@@ -475,16 +444,11 @@ export class PreflightService {
   }
 
   /**
-   * Clear cache for a specific project path (or all if not specified)
+   * No-op - cache has been removed.
+   * Kept for backward compatibility with callers.
    */
-  clearCache(projectPath?: string): void {
-    if (projectPath !== undefined) {
-      const cacheKey = projectPath || '';
-      this.cache.delete(cacheKey);
-      logger.debug({ projectPath }, 'Cleared preflight cache');
-    } else {
-      this.cache.clear();
-      logger.debug('Cleared all preflight cache');
-    }
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  clearCache(_projectPath?: string): void {
+    // No-op - preflight no longer uses caching
   }
 }

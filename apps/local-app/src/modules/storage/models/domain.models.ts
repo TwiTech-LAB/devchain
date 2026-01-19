@@ -284,3 +284,88 @@ export type CreateSubscriber = Omit<Subscriber, 'id' | 'createdAt' | 'updatedAt'
 export type UpdateSubscriber = Partial<
   Omit<Subscriber, 'id' | 'projectId' | 'createdAt' | 'updatedAt'>
 >;
+
+// ============================================
+// CODE REVIEWS
+// ============================================
+
+export type ReviewStatus = 'draft' | 'pending' | 'changes_requested' | 'approved' | 'closed';
+export type ReviewMode = 'working_tree' | 'commit';
+export type ReviewCommentStatus = 'open' | 'resolved' | 'wont_fix';
+export type ReviewCommentType = 'comment' | 'suggestion' | 'issue' | 'approval';
+export type AuthorType = 'user' | 'agent';
+export type DiffSide = 'left' | 'right';
+
+export interface Review {
+  id: string;
+  projectId: string;
+  epicId: string | null;
+  title: string;
+  description: string | null;
+  status: ReviewStatus;
+  mode: ReviewMode;
+  baseRef: string; // e.g., 'main', 'develop', 'HEAD'
+  headRef: string; // e.g., 'feature/my-branch', 'HEAD'
+  baseSha: string | null; // SHA at time of review creation (null for working_tree mode)
+  headSha: string | null; // SHA at time of review creation (null for working_tree mode)
+  createdBy: AuthorType;
+  createdByAgentId: string | null;
+  version: number; // For optimistic locking
+  commentCount?: number; // Eager loaded count
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReviewComment {
+  id: string;
+  reviewId: string;
+  filePath: string | null; // null for general review comments
+  parentId: string | null; // null for top-level comments, references self for threads
+  lineStart: number | null; // starting line number
+  lineEnd: number | null; // ending line number
+  side: DiffSide | null; // 'left' | 'right' (left=base, right=head)
+  content: string;
+  commentType: ReviewCommentType;
+  status: ReviewCommentStatus;
+  authorType: AuthorType;
+  authorAgentId: string | null;
+  version: number; // For optimistic locking
+  editedAt: string | null; // timestamp of last edit, null if never edited
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReviewCommentTarget {
+  id: string;
+  commentId: string;
+  agentId: string;
+  createdAt: string;
+}
+
+/** Target agent with resolved name */
+export interface ReviewCommentTargetAgent {
+  agentId: string;
+  name: string;
+}
+
+/** ReviewComment enriched with resolved agent names and targets (for list queries) */
+export interface ReviewCommentEnriched extends ReviewComment {
+  /** Agent name for agent-authored comments (null if user-authored or agent deleted) */
+  authorAgentName: string | null;
+  /** Target agents with resolved names */
+  targetAgents: ReviewCommentTargetAgent[];
+}
+
+export type CreateReview = Omit<
+  Review,
+  'id' | 'version' | 'commentCount' | 'createdAt' | 'updatedAt'
+>;
+export type UpdateReview = Partial<Pick<Review, 'title' | 'description' | 'status' | 'headSha'>>;
+
+export type CreateReviewComment = Omit<
+  ReviewComment,
+  'id' | 'version' | 'editedAt' | 'createdAt' | 'updatedAt'
+>;
+export type UpdateReviewComment = Partial<Pick<ReviewComment, 'content' | 'status'>>;
+
+export type CreateReviewCommentTarget = Omit<ReviewCommentTarget, 'id' | 'createdAt'>;

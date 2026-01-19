@@ -12,6 +12,7 @@ import { TerminalModule } from '../terminal/terminal.module';
 import { EpicsModule } from '../epics/epics.module';
 import { SettingsModule } from '../settings/settings.module';
 import { GuestsModule } from '../guests/guests.module';
+import { ReviewsModule } from '../reviews/reviews.module';
 import { ProviderAdaptersModule } from '../providers/adapters';
 import { McpHttpController } from './controllers/mcp-http.controller';
 import { McpSdkController } from './controllers/mcp-sdk.controller';
@@ -27,6 +28,7 @@ import { McpTestController } from './controllers/mcp-test.controller';
     forwardRef(() => EpicsModule),
     forwardRef(() => SettingsModule),
     forwardRef(() => GuestsModule),
+    forwardRef(() => ReviewsModule),
     ProviderAdaptersModule,
   ],
   controllers: [McpHttpController, McpSdkController, McpTestController],
