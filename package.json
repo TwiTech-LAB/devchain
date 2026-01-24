@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.7.0",
+  "version": "0.7.2",
   "description": "AI driven development platform",
   "homepage": "https://devchain.twitechlab.com/",
   "repository": {
@@ -8,6 +8,12 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.7.2": [
+      "Fix Compact monitor regex in base templates"
+    ],
+    "0.7.1": [
+      "Template updates for Claude Code v2 compatibility"
+    ],
     "0.7.0": [
       "Code Review feature: live pre-commit diff viewer with agent integration, @ mentions, comment threading, resizable panels, and VS Code-style file navigation",
       "In-app documentation system with help integration",

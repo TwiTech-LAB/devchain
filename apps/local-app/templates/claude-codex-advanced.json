@@ -1,9 +1,7 @@
 {
   "_manifest": {
-    "slug": "claude-codex-advanced",
     "name": "Claude&Codex",
     "description": "A multi-agent development workflow that automates software delivery through three phases:\n\n1. Planning — A Brainstormer agent collaborates with a technical validator (SubBSM) to refine user requirements into an approved master plan, then breaks it down into epics and tasks.\n2. Execution — A Coder agent implements tasks while an Epic Manager reviews and controls the flow—approving, revising, or flagging issues until all work is complete.\n3. Code Review — A Code Reviewer audits the completed work against architectural standards, generating findings that feed back into new remediation tasks if needed.",
-    "version": "1.1.2",
     "category": "development",
     "tags": [
       "development",
@@ -11,12 +9,15 @@
       "codex"
     ],
     "authorName": "Devchain",
-    "changelog": "- NEW parent epic - never add to existing remediation epics",
     "minDevchainVersion": "0.5.0",
-    "publishedAt": "2026-01-19T23:04:14.001Z"
+    "isOfficial": true,
+    "version": "1.1.6",
+    "publishedAt": "2026-01-23T23:47:22.940Z",
+    "changelog": "- updated Claude events regex to support Claude code v2",
+    "gitCommit": "5f2877442aa8"
   },
   "version": 1,
-  "exportedAt": "2026-01-19T23:04:14.001Z",
+  "exportedAt": "2026-01-22T07:32:42.753Z",
   "prompts": [
     {
       "id": "0c7cf556-3036-43ed-9a93-2ce67e24081e",
@@ -360,8 +361,8 @@
       "pollIntervalMs": 60000,
       "viewportLines": 20,
       "condition": {
-        "type": "contains",
-        "pattern": "Context low · Run /compact to compact & continue"
+        "type": "regex",
+        "pattern": "Context (low|limit)[^(]*·.*/compac"
       },
       "cooldownMs": 160000,
       "cooldownMode": "time",
@@ -377,8 +378,8 @@
       "pollIntervalMs": 60000,
       "viewportLines": 50,
       "condition": {
-        "type": "contains",
-        "pattern": "Limit reached · resets"
+        "type": "regex",
+        "pattern": "limit.*?·.*?resets"
       },
       "cooldownMs": 1200000,
       "cooldownMode": "time",
