@@ -91,6 +91,14 @@ describe('PreflightService', () => {
       updateProvider: jest.fn(),
       deleteProvider: jest.fn(),
       listAgentProfiles: jest.fn().mockResolvedValue({ items: [], total: 0, limit: 0, offset: 0 }),
+      listAgents: jest.fn().mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 }),
+      getAgentProfile: jest.fn(),
+      getProfileProviderConfig: jest.fn(),
+      listAllProfileProviderConfigs: jest.fn().mockResolvedValue([]),
+      listProfileProviderConfigsByProfile: jest.fn().mockResolvedValue([]),
+      listProfileProviderConfigsByIds: jest.fn().mockResolvedValue([]),
+      listProvidersByIds: jest.fn().mockResolvedValue([]),
+      findProjectByPath: jest.fn(),
       getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
     } as unknown as jest.Mocked<StorageService>;
 
@@ -589,6 +597,199 @@ describe('PreflightService', () => {
       service.clearCache();
       // No errors should be thrown
       expect(true).toBe(true);
+    });
+  });
+
+  describe('config-based validation', () => {
+    const mockProvider = {
+      id: 'p1',
+      name: 'claude',
+      binPath: '/usr/local/bin/claude',
+      mcpConfigured: true,
+      mcpEndpoint: 'http://127.0.0.1:3000/mcp',
+      mcpRegisteredAt: '2024-01-01',
+      createdAt: '',
+      updatedAt: '',
+    };
+
+    // mockProfile commented out - currently unused in this test
+    // const mockProfile = {
+    //   id: 'profile-1',
+    //   projectId: 'project-1',
+    //   name: 'Test Profile',
+    //   // Note: providerId and options removed in Phase 4
+    //   familySlug: null,
+    //   systemPrompt: null,
+    //   instructions: null,
+    //   temperature: null,
+    //   maxTokens: null,
+    //   createdAt: '',
+    //   updatedAt: '',
+    // };
+
+    const mockAgent = {
+      id: 'agent-1',
+      projectId: 'project-1',
+      profileId: 'profile-1',
+      providerConfigId: 'config-1',
+      name: 'Test Agent',
+      description: null,
+      createdAt: '',
+      updatedAt: '',
+    };
+
+    const mockConfig = {
+      id: 'config-1',
+      profileId: 'profile-1',
+      providerId: 'p1',
+      options: '--model opus',
+      env: { API_KEY: 'test-key' },
+      createdAt: '',
+      updatedAt: '',
+    };
+
+    beforeEach(() => {
+      mockExec.mockImplementation(
+        (
+          cmd: string,
+          optionsOrCallback?: unknown,
+          maybeCallback?: unknown,
+        ): ReturnType<typeof mockExec> => {
+          const callback = (
+            typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback
+          ) as ExecCallback;
+          if (cmd === 'tmux -V' && callback) {
+            callback(null, 'tmux 3.2', '');
+          }
+          return {} as ReturnType<typeof mockExec>;
+        },
+      );
+    });
+
+    it('validates providers from agent configs when project path is provided', async () => {
+      mockStorage.findProjectByPath.mockResolvedValue({
+        id: 'project-1',
+        name: 'Test',
+        rootPath: '/test',
+        isTemplate: false,
+        description: null,
+        createdAt: '',
+        updatedAt: '',
+      });
+      mockStorage.listAgents.mockResolvedValue({
+        items: [mockAgent],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      // Use batch methods instead of single-item fetches
+      mockStorage.listProfileProviderConfigsByIds.mockResolvedValue([mockConfig]);
+      mockStorage.listProvidersByIds.mockResolvedValue([mockProvider]);
+      mockAccess.mockResolvedValue(undefined);
+      mockMcpRegistration.listRegistrations.mockResolvedValue({
+        success: true,
+        message: 'OK',
+        entries: [{ alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp' }],
+      });
+
+      const result = await service.runChecks('/test/project');
+
+      expect(mockStorage.listAgents).toHaveBeenCalledWith('project-1');
+      expect(mockStorage.listProfileProviderConfigsByIds).toHaveBeenCalledWith(['config-1']);
+      expect(mockStorage.listProvidersByIds).toHaveBeenCalledWith(['p1']);
+      expect(result.providers).toHaveLength(1);
+      expect(result.providers[0].usedByAgents).toContain('Test Agent');
+    });
+
+    it('skips agents without providerConfigId (Phase 4 behavior)', async () => {
+      // Agents without providerConfigId are now skipped (no profile.providerId fallback)
+      const agentWithoutConfig = { ...mockAgent, providerConfigId: null };
+      mockStorage.findProjectByPath.mockResolvedValue({
+        id: 'project-1',
+        name: 'Test',
+        rootPath: '/test',
+        isTemplate: false,
+        description: null,
+        createdAt: '',
+        updatedAt: '',
+      });
+      mockStorage.listAgents.mockResolvedValue({
+        items: [agentWithoutConfig],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      mockAccess.mockResolvedValue(undefined);
+      mockMcpRegistration.listRegistrations.mockResolvedValue({
+        success: true,
+        message: 'OK',
+        entries: [{ alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp' }],
+      });
+
+      const result = await service.runChecks('/test/project');
+
+      // Agent was skipped because no providerConfigId - no providers returned
+      expect(mockStorage.getAgentProfile).not.toHaveBeenCalled();
+      expect(result.providers).toHaveLength(0);
+    });
+
+    it('validates config env vars and reports errors', async () => {
+      const configWithInvalidEnv = {
+        ...mockConfig,
+        env: { 'INVALID-KEY': 'value' }, // Invalid key with hyphen
+      };
+      mockStorage.findProjectByPath.mockResolvedValue({
+        id: 'project-1',
+        name: 'Test',
+        rootPath: '/test',
+        isTemplate: false,
+        description: null,
+        createdAt: '',
+        updatedAt: '',
+      });
+      mockStorage.listAgents.mockResolvedValue({
+        items: [mockAgent],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      // Use batch methods instead of single-item fetches
+      mockStorage.listProfileProviderConfigsByIds.mockResolvedValue([configWithInvalidEnv]);
+      mockStorage.listProvidersByIds.mockResolvedValue([mockProvider]);
+      mockAccess.mockResolvedValue(undefined);
+      mockMcpRegistration.listRegistrations.mockResolvedValue({
+        success: true,
+        message: 'OK',
+        entries: [{ alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp' }],
+      });
+
+      const result = await service.runChecks('/test/project');
+
+      expect(result.providers[0].configEnvStatus).toBe('fail');
+      expect(result.providers[0].configEnvMessage).toContain('INVALID-KEY');
+    });
+
+    it('validates all providers when no project path', async () => {
+      mockStorage.listProviders.mockResolvedValue({
+        items: [mockProvider],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      // Provider-profile relationship now via configs (not profile.providerId)
+      mockStorage.listAllProfileProviderConfigs.mockResolvedValue([mockConfig]);
+      mockAccess.mockResolvedValue(undefined);
+      mockMcpRegistration.listRegistrations.mockResolvedValue({
+        success: true,
+        message: 'OK',
+        entries: [{ alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp' }],
+      });
+
+      const result = await service.runChecks();
+
+      expect(mockStorage.listProviders).toHaveBeenCalled();
+      expect(mockStorage.listAllProfileProviderConfigs).toHaveBeenCalled();
+      expect(result.providers).toHaveLength(1);
     });
   });
 });

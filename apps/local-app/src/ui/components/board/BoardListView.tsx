@@ -58,6 +58,8 @@ export interface BoardListViewProps {
   onStatusChange?: (epic: Epic, statusId: string) => Promise<void> | void;
   /** Handler when agent changes (inline editing) */
   onAgentChange?: (epic: Epic, agentId: string | null) => Promise<void> | void;
+  /** Map of epic ID to sub-epic count (for showing expand button only when has children) */
+  subEpicCounts?: Record<string, number>;
   /** Optional className for container */
   className?: string;
 }
@@ -94,6 +96,7 @@ export function BoardListView({
   onViewSubEpics: _onViewSubEpics,
   onStatusChange,
   onAgentChange,
+  subEpicCounts,
   className,
 }: BoardListViewProps) {
   // Track which epics are expanded (by epic ID)
@@ -107,20 +110,26 @@ export function BoardListView({
   const statusMap = useMemo(() => new Map(statuses.map((s) => [s.id, s])), [statuses]);
   const agentMap = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
 
-  // Sort epics by status position (matching Kanban column order), then by title
+  // Sort epics by updatedAt (most recent first), then status position, then title
   const sortedEpics = useMemo(() => {
     return [...epics].sort((a, b) => {
+      // Primary sort: by updatedAt (descending - most recently updated first)
+      const timeA = new Date(a.updatedAt).getTime();
+      const timeB = new Date(b.updatedAt).getTime();
+      if (timeA !== timeB) {
+        return timeB - timeA; // Descending
+      }
+
+      // Secondary sort: by status position (ascending - matches Kanban left-to-right)
       const statusA = statusMap.get(a.statusId);
       const statusB = statusMap.get(b.statusId);
       const posA = statusA?.position ?? Number.MAX_SAFE_INTEGER;
       const posB = statusB?.position ?? Number.MAX_SAFE_INTEGER;
-
-      // Primary sort: by status position (ascending - matches Kanban left-to-right)
       if (posA !== posB) {
         return posA - posB;
       }
 
-      // Secondary sort: by title (alphabetical) for stability
+      // Tertiary sort: by title (alphabetical) for stability
       return a.title.localeCompare(b.title, undefined, { sensitivity: 'base' });
     });
   }, [epics, statusMap]);
@@ -226,7 +235,7 @@ export function BoardListView({
     }
   }, [someVisibleSelected]);
 
-  const columnCount = 7; // Checkbox, Expand, Title, Status, Agent, Tags, Actions
+  const columnCount = 8; // Checkbox, Expand, Title, Status, Agent, Tags, Created, Actions
 
   // Handle page change
   const handlePageChange = useCallback(
@@ -312,6 +321,7 @@ export function BoardListView({
               <TableHead className="w-[120px]">Status</TableHead>
               <TableHead className="w-[150px]">Agent</TableHead>
               <TableHead className="w-[200px]">Tags</TableHead>
+              <TableHead className="w-[120px]">Created</TableHead>
               <TableHead className="w-[80px]">Actions</TableHead>
             </TableRow>
           </TableHeader>
@@ -340,6 +350,9 @@ export function BoardListView({
                       <Skeleton className="h-5 w-12 rounded-full" />
                       <Skeleton className="h-5 w-16 rounded-full" />
                     </div>
+                  </TableCell>
+                  <TableCell>
+                    <Skeleton className="h-4 w-20" />
                   </TableCell>
                   <TableCell>
                     <Skeleton className="h-8 w-8" />
@@ -380,6 +393,7 @@ export function BoardListView({
                   onToggleParentFilter={onToggleParentFilter}
                   onStatusChange={onStatusChange}
                   onAgentChange={onAgentChange}
+                  subEpicCount={subEpicCounts?.[epic.id] ?? 0}
                 />
               ))
             )}

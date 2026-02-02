@@ -15,7 +15,7 @@ interface BackupEntry {
   createdAt: string;
   templateSlug: string;
   fromVersion: string;
-  source: 'bundled' | 'registry';
+  source: 'bundled' | 'registry' | 'file';
 }
 
 export interface UpgradeProjectInput {
@@ -173,6 +173,14 @@ export class TemplateUpgradeService implements OnModuleInit, OnModuleDestroy {
       return {
         success: false,
         error: 'Project is already at this version',
+      };
+    }
+
+    // File-based templates cannot be upgraded (source file may have moved/changed)
+    if (metadata.source === 'file') {
+      return {
+        success: false,
+        error: 'File-based templates cannot be upgraded',
       };
     }
 

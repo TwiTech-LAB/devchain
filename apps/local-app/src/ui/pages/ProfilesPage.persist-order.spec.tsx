@@ -66,9 +66,10 @@ describe('ProfilesPage persist prompt ordering', () => {
       }
 
       if (url === '/api/profiles' && method === 'POST') {
+        // Note: providerId removed in Phase 4 - provider configs are now managed separately
         return {
           ok: true,
-          json: async () => ({ id: 'prof-1', name: 'X', providerId: 'prov-1' }),
+          json: async () => ({ id: 'prof-1', name: 'X' }),
         } as Response;
       }
 
@@ -107,10 +108,9 @@ describe('ProfilesPage persist prompt ordering', () => {
     });
 
     // Fill required fields
+    // Note: providerId removed in Phase 4 - provider configs are now managed separately
     const nameInput = screen.getByLabelText(/name \*/i) as HTMLInputElement;
     fireEvent.change(nameInput, { target: { value: 'Runner' } });
-    const providerSelect = screen.getByLabelText(/provider \*/i) as HTMLSelectElement;
-    fireEvent.change(providerSelect, { target: { value: 'prov-1' } });
 
     // Add two prompts
     await screen.findByText('Add Prompts');

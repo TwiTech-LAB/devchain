@@ -44,6 +44,18 @@ export class ReviewCommentNotifierSubscriber {
       return;
     }
 
+    // Defense-in-depth: de-duplicate and filter out author (prevents bad payloads from causing duplicates)
+    let targetAgentIds = [...new Set(payload.targetAgentIds)];
+    // Filter out author agent when author is an agent to prevent self-notifications
+    if (payload.authorType === 'agent' && payload.authorAgentId) {
+      targetAgentIds = targetAgentIds.filter((id) => id !== payload.authorAgentId);
+    }
+
+    // Early exit if no targets after filtering
+    if (targetAgentIds.length === 0) {
+      return;
+    }
+
     const metadata = getEventMetadata(payload);
     const eventId = metadata?.id;
     const handler = 'ReviewCommentNotifier';
@@ -52,7 +64,7 @@ export class ReviewCommentNotifierSubscriber {
     // Process each target agent
     const results: Array<{ agentId: string; success: boolean; error?: string }> = [];
 
-    for (const agentId of payload.targetAgentIds) {
+    for (const agentId of targetAgentIds) {
       try {
         await this.notifyAgent(agentId, payload);
         results.push({ agentId, success: true });
@@ -76,7 +88,7 @@ export class ReviewCommentNotifierSubscriber {
           eventId,
           handler,
           detail: {
-            targetAgentIds: payload.targetAgentIds,
+            targetAgentIds,
             results,
           },
           startedAt,
@@ -87,7 +99,7 @@ export class ReviewCommentNotifierSubscriber {
           eventId,
           handler,
           detail: {
-            targetAgentIds: payload.targetAgentIds,
+            targetAgentIds,
             results,
           },
           startedAt,
@@ -97,7 +109,7 @@ export class ReviewCommentNotifierSubscriber {
     }
 
     this.logger.log(
-      { eventId, targetCount: payload.targetAgentIds.length, results },
+      { eventId, targetCount: targetAgentIds.length, results },
       'Review comment notification processing complete',
     );
   }
@@ -151,9 +163,9 @@ export class ReviewCommentNotifierSubscriber {
     });
 
     // Ensure agent has an active session (launch if needed)
-    const { sessionId, launched } = await this.sessionCoordinator.withAgentLock(agentId, () =>
-      this.ensureAgentSession(agentId, payload.projectId),
-    );
+    // Note: ensureAgentSession calls launchSession() which has internal withAgentLock.
+    // No outer lock needed here - it would cause deadlock (nested non-reentrant locks).
+    const { sessionId, launched } = await this.ensureAgentSession(agentId, payload.projectId);
 
     // Enqueue message to pool for batched delivery
     const result = await this.messagePoolService.enqueue(agentId, message, {

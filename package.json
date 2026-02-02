@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "description": "AI driven development platform",
   "homepage": "https://devchain.twitechlab.com/",
   "repository": {
@@ -8,8 +8,13 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
-    "0.7.2": [
-      "Fix Compact monitor regex in base templates"
+    "0.8.0": [
+      "Preset system in templates: switch your favorite AI teams with presets with a single click",
+      "Multi-provider support: support GLM models through Claude",
+      "Tab-independent project selection with hybrid storage",
+      "Activity signal filtering to prevent spurious agent busy states",
+      "Session fixes: duplicate agent sessions race condition, nested lock deadlock, timing delays for slower CLI providers",
+      "Details: https://devchain.twitechlab.com/releases/0.8.0/"
     ],
     "0.7.1": [
       "Template updates for Claude Code v2 compatibility"
@@ -107,7 +112,7 @@
   "scripts": {
     "start": "node dist/cli.js start",
     "stop": "node scripts/cli.js stop",
-    "dev": "node scripts/cli.js start --dev",
+    "dev": "pnpm --filter shared build && node scripts/cli.js start --dev",
     "dev:pure": "pnpm --filter local-app dev",
     "dev:ui": "pnpm --filter local-app dev:ui",
     "build": "pnpm --filter shared build && pnpm --filter local-app build && node scripts/copy-local-app-dist.js && node scripts/copy-cli.js && node scripts/copy-prebuilds.js",

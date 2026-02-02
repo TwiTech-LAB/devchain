@@ -184,15 +184,14 @@ describe('RestartAgentAction', () => {
   });
 
   describe('execute - restart behavior', () => {
-    it('should use withAgentLock for serialization', async () => {
+    it('should not use outer withAgentLock (launchSession handles locking internally)', async () => {
       const inputs = {};
 
       await restartAgentAction.execute(mockContext, inputs);
 
-      expect(mockSessionCoordinator.withAgentLock).toHaveBeenCalledWith(
-        'agent-456',
-        expect.any(Function),
-      );
+      // Action no longer wraps with withAgentLock - launchSession() has internal locking
+      // This prevents deadlock from nested non-reentrant locks
+      expect(mockSessionCoordinator.withAgentLock).not.toHaveBeenCalled();
     });
 
     it('should terminate existing session if one exists', async () => {

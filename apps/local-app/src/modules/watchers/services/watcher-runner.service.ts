@@ -419,23 +419,55 @@ export class WatcherRunnerService implements OnModuleInit, OnModuleDestroy {
         // Get agents for project
         const agents = await this.storage.listAgents(watcher.projectId);
 
-        // Build a cache of profileId -> providerId for this poll cycle
-        const profileProviderCache = new Map<string, string>();
-
-        // Find agents whose profile's providerId matches scopeFilterId
+        // Find agents whose config's providerId matches scopeFilterId
+        // Falls back to profile.providerId for agents without providerConfigId
         const matchingAgentIds = new Set<string>();
 
-        for (const agent of agents.items) {
-          let providerId = profileProviderCache.get(agent.profileId);
+        // Cache for config lookups (configId -> providerId)
+        const configProviderCache = new Map<string, string>();
+        // Cache for profile lookups (profileId -> providerId) - fallback
+        // Undefined means profile has no legacy providerId
+        const profileProviderCache = new Map<string, string | undefined>();
 
+        for (const agent of agents.items) {
+          let providerId: string | undefined;
+
+          // Try to get providerId from config first (new path)
+          if (agent.providerConfigId) {
+            providerId = configProviderCache.get(agent.providerConfigId);
+
+            if (providerId === undefined) {
+              try {
+                const config = await this.storage.getProfileProviderConfig(agent.providerConfigId);
+                providerId = config.providerId;
+                configProviderCache.set(agent.providerConfigId, providerId);
+              } catch {
+                // Config not found, fall back to profile
+                this.logger.debug(
+                  { agentId: agent.id, providerConfigId: agent.providerConfigId },
+                  'Provider config not found, falling back to profile',
+                );
+              }
+            }
+          }
+
+          // Fallback: get providerId from first profile config if no providerConfigId
+          // Note: profile.providerId removed in Phase 4, configs are the only source
           if (providerId === undefined) {
-            try {
-              const profile = await this.storage.getAgentProfile(agent.profileId);
-              providerId = profile.providerId;
-              profileProviderCache.set(agent.profileId, providerId);
-            } catch {
-              // Profile not found, skip this agent
-              continue;
+            // Use has() to distinguish "not cached" from "cached as undefined"
+            if (profileProviderCache.has(agent.profileId)) {
+              providerId = profileProviderCache.get(agent.profileId);
+            } else {
+              try {
+                const configs = await this.storage.listProfileProviderConfigsByProfile(
+                  agent.profileId,
+                );
+                providerId = configs.length > 0 ? configs[0].providerId : undefined;
+                profileProviderCache.set(agent.profileId, providerId);
+              } catch {
+                // Profile configs not found, skip this agent
+                continue;
+              }
             }
           }
 

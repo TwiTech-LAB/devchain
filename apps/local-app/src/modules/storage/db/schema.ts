@@ -57,17 +57,15 @@ export const providers = sqliteTable('providers', {
 });
 
 // Agent Profiles
+// Note: providerId and options columns removed in migration 0031
+// Provider configuration now lives in profile_provider_configs table
 export const agentProfiles = sqliteTable(
   'agent_profiles',
   {
     id: text('id').primaryKey(),
     projectId: text('project_id').references(() => projects.id, { onDelete: 'cascade' }), // null = global (backfill)
     name: text('name').notNull(),
-    providerId: text('provider_id')
-      .notNull()
-      .references(() => providers.id),
     familySlug: text('family_slug'), // Groups equivalent profiles across providers
-    options: text('options'),
     systemPrompt: text('system_prompt'),
     instructions: text('instructions'),
     temperature: integer('temperature'), // stored as integer, divide by 100 when using
@@ -79,6 +77,42 @@ export const agentProfiles = sqliteTable(
     projectNameUnique: uniqueIndex('agent_profiles_project_name_unique').on(
       table.projectId,
       table.name,
+    ),
+    // Ensure unique family_slug per project (profiles are now provider-independent)
+    familyUnique: uniqueIndex('agent_profiles_family_unique')
+      .on(table.projectId, table.familySlug)
+      .where(sql`${table.familySlug} IS NOT NULL`),
+  }),
+);
+
+// Profile Provider Configs (multiple provider configurations per profile)
+export const profileProviderConfigs = sqliteTable(
+  'profile_provider_configs',
+  {
+    id: text('id').primaryKey(),
+    profileId: text('profile_id')
+      .notNull()
+      .references(() => agentProfiles.id, { onDelete: 'cascade' }),
+    providerId: text('provider_id')
+      .notNull()
+      .references(() => providers.id),
+    name: text('name').notNull(), // User-friendly name to distinguish configs
+    options: text('options'), // JSON string for provider-specific options
+    env: text('env'), // JSON string for environment variables
+    position: integer('position').notNull().default(0), // Order within profile
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    profileIdIdx: index('profile_provider_configs_profile_id_idx').on(table.profileId),
+    providerIdIdx: index('profile_provider_configs_provider_id_idx').on(table.providerId),
+    profileNameUnique: uniqueIndex('profile_provider_configs_profile_name_idx').on(
+      table.profileId,
+      table.name,
+    ),
+    profilePositionUnique: uniqueIndex('profile_provider_configs_profile_position_idx').on(
+      table.profileId,
+      table.position,
     ),
   }),
 );
@@ -92,6 +126,9 @@ export const agents = sqliteTable('agents', {
   profileId: text('profile_id')
     .notNull()
     .references(() => agentProfiles.id),
+  providerConfigId: text('provider_config_id')
+    .notNull()
+    .references(() => profileProviderConfigs.id, { onDelete: 'restrict' }),
   name: text('name').notNull(),
   description: text('description'),
   createdAt: text('created_at').notNull(),
@@ -261,20 +298,31 @@ export const epicComments = sqliteTable(
 );
 
 // Sessions (terminal/agent sessions)
-export const sessions = sqliteTable('sessions', {
-  id: text('id').primaryKey(),
-  epicId: text('epic_id').references(() => epics.id, { onDelete: 'set null' }),
-  agentId: text('agent_id').references(() => agents.id, { onDelete: 'restrict' }),
-  tmuxSessionId: text('tmux_session_id'),
-  status: text('status').notNull(), // 'running' | 'stopped' | 'failed'
-  startedAt: text('started_at').notNull(),
-  endedAt: text('ended_at'),
-  lastActivityAt: text('last_activity_at'),
-  activityState: text('activity_state'), // 'idle' | 'busy'
-  busySince: text('busy_since'),
-  createdAt: text('created_at').notNull(),
-  updatedAt: text('updated_at').notNull(),
-});
+export const sessions = sqliteTable(
+  'sessions',
+  {
+    id: text('id').primaryKey(),
+    epicId: text('epic_id').references(() => epics.id, { onDelete: 'set null' }),
+    agentId: text('agent_id').references(() => agents.id, { onDelete: 'restrict' }),
+    tmuxSessionId: text('tmux_session_id'),
+    status: text('status').notNull(), // 'running' | 'stopped' | 'failed'
+    startedAt: text('started_at').notNull(),
+    endedAt: text('ended_at'),
+    lastActivityAt: text('last_activity_at'),
+    activityState: text('activity_state'), // 'idle' | 'busy'
+    busySince: text('busy_since'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    // Partial unique index: ensures only one running session per agent
+    // This is a safety net for the application-level lock (withAgentLock)
+    // to catch any edge cases where concurrent requests might create duplicates
+    agentRunningUnique: uniqueIndex('idx_sessions_agent_running')
+      .on(table.agentId)
+      .where(sql`status = 'running' AND agent_id IS NOT NULL`),
+  }),
+);
 
 // Transcripts (session logs)
 export const transcripts = sqliteTable('transcripts', {

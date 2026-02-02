@@ -32,7 +32,7 @@ interface UpgradeDialogProps {
   currentVersion: string;
   targetVersion: string;
   /** Template source - used to differentiate copy between registry and bundled */
-  source: 'bundled' | 'registry';
+  source: 'bundled' | 'registry' | 'file';
   open: boolean;
   onClose: () => void;
 }

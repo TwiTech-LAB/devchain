@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQueryClient, useQuery, useMutation } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { Loader2, AlertCircle, MessageSquare } from 'lucide-react';
+import { validatePresetAvailability, type PresetAvailability } from '@/ui/lib/preset-validation';
 import { useTerminalWindowManager, useTerminalWindows } from '@/ui/terminal-windows';
 import { parseMentions } from '@/ui/lib/chat';
 import { useChatLauncher } from '@/ui/components/chat/ChatLauncher';
@@ -29,6 +30,52 @@ import { ChatModals } from '@/ui/components/chat/ChatModals';
 
 // Feature flags
 const CHAT_INLINE_TERMINAL_ENABLED = true;
+
+// ============================================
+// Preset Types & Helpers
+// ============================================
+
+interface Preset {
+  name: string;
+  description?: string | null;
+  agentConfigs: Array<{
+    agentName: string;
+    providerConfigName: string;
+  }>;
+}
+
+interface ProviderConfig {
+  id: string;
+  name: string;
+  profileId: string;
+  providerId: string;
+}
+
+interface ApplyPresetResult {
+  applied: number;
+  warnings: string[];
+  agents: Array<{
+    id: string;
+    name: string;
+    providerConfigId?: string | null;
+  }>;
+}
+
+async function fetchPresets(projectId: string): Promise<{ presets: Preset[]; activePreset: string | null }> {
+  const res = await fetch(`/api/projects/${projectId}/presets`);
+  if (!res.ok) throw new Error('Failed to fetch presets');
+  return res.json();
+}
+
+async function applyPreset(projectId: string, presetName: string): Promise<ApplyPresetResult> {
+  const res = await fetch(`/api/projects/${projectId}/presets/apply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ presetName }),
+  });
+  if (!res.ok) throw new Error('Failed to apply preset');
+  return res.json();
+}
 
 export function ChatPage() {
   const queryClient = useQueryClient();
@@ -100,6 +147,285 @@ export function ChatPage() {
     onInlineTerminalAttach: handleInlineTerminalAttach,
     onTerminalMenuClose: () => threadUiState.setTerminalMenuOpen(false),
   });
+
+  // ============================================
+  // Pending Restart State Management
+  // ============================================
+
+  const [pendingRestartAgentIds, setPendingRestartAgentIds] = useState<Set<string>>(new Set());
+
+  // Helper to add agents to pending restart set
+  const markAgentsForRestart = useCallback((agentIds: string[]) => {
+    setPendingRestartAgentIds((prev) => {
+      const next = new Set(prev);
+      agentIds.forEach((id) => next.add(id));
+      return next;
+    });
+  }, []);
+
+  // Helper to clear a single agent from pending restart set
+  const clearPendingRestart = useCallback((agentId: string) => {
+    setPendingRestartAgentIds((prev) => {
+      const next = new Set(prev);
+      next.delete(agentId);
+      return next;
+    });
+  }, []);
+
+  // Helper to clear all pending restart state
+  const clearAllPendingRestarts = useCallback(() => {
+    setPendingRestartAgentIds(new Set());
+  }, []);
+
+  // Wrapped session handlers that clear pending restart state
+  const handleRestartSessionWithClear = useCallback(
+    async (agentId: string) => {
+      await sessionControls.handleRestartSession(agentId);
+      clearPendingRestart(agentId);
+    },
+    [sessionControls.handleRestartSession, clearPendingRestart],
+  );
+
+  const handleTerminateSessionWithClear = useCallback(
+    async (agentId: string, sessionId: string) => {
+      await sessionControls.handleTerminateSession(agentId, sessionId);
+      clearPendingRestart(agentId);
+    },
+    [sessionControls.handleTerminateSession, clearPendingRestart],
+  );
+
+  const handleTerminateAllAgentsWithClear = useCallback(async () => {
+    await sessionControls.handleTerminateAllAgents();
+    clearAllPendingRestarts();
+  }, [sessionControls.handleTerminateAllAgents, clearAllPendingRestarts]);
+
+  // ============================================
+  // Preset Query & Mutation
+  // ============================================
+
+  // Fetch presets for this project
+  const { data: presetsData } = useQuery<{ presets: Preset[]; activePreset: string | null }>({
+    queryKey: ['project-presets', projectId],
+    queryFn: () => fetchPresets(projectId!),
+    enabled: hasSelectedProject,
+  });
+  const presets = presetsData?.presets ?? [];
+  const activePreset = presetsData?.activePreset ?? null;
+
+  // Filter agents with valid profileIds for preset validation
+  const agentsWithProfiles = useMemo(
+    () =>
+      queries.agents.filter(
+        (a): a is typeof a & { profileId: string } => typeof a.profileId === 'string',
+      ),
+    [queries.agents],
+  );
+
+  // Fetch provider configs for all agent profiles (for preset validation)
+  const { data: configsMap } = useQuery<Map<string, ProviderConfig[]>>({
+    queryKey: ['provider-configs-by-profile', projectId, agentsWithProfiles.map((a) => a.profileId)],
+    queryFn: async () => {
+      const profileIds = new Set(agentsWithProfiles.map((a) => a.profileId));
+      if (profileIds.size === 0) return new Map();
+
+      const results = await Promise.all(
+        Array.from(profileIds).map(async (profileId) => {
+          try {
+            const res = await fetch(`/api/profiles/${profileId}/provider-configs`);
+            if (!res.ok) return { profileId, configs: [] };
+            const configs = await res.json();
+            return { profileId, configs };
+          } catch {
+            return { profileId, configs: [] };
+          }
+        }),
+      );
+
+      const map = new Map<string, ProviderConfig[]>();
+      results.forEach(({ profileId, configs }) => {
+        map.set(profileId, configs);
+      });
+      return map;
+    },
+    enabled: hasSelectedProject && agentsWithProfiles.length > 0,
+  });
+
+  // Validate presets and sort (available first, then by update time within each group)
+  const validatedPresets = useMemo((): PresetAvailability[] => {
+    if (!configsMap || presets.length === 0) return [];
+    // Track original index to preserve storage order (which represents update time)
+    const validated = presets.map((p, index) => ({
+      ...validatePresetAvailability(p, agentsWithProfiles, configsMap),
+      originalIndex: index,
+    }));
+    return validated.sort((a, b) => {
+      if (a.available && !b.available) return -1;
+      if (!a.available && b.available) return 1;
+      // Within same availability, most recently updated first
+      return b.originalIndex - a.originalIndex;
+    });
+  }, [presets, agentsWithProfiles, configsMap]);
+
+  // Apply preset mutation with affected agent detection
+  const applyPresetMutation = useMutation({
+    mutationFn: ({ presetName }: { presetName: string }) => applyPreset(projectId!, presetName),
+    onSuccess: (result) => {
+      // Build map of agentId -> providerConfigId (using stable IDs, not names)
+      const currentConfigMap = new Map(queries.agents.map((a) => [a.id, a.providerConfigId]));
+
+      // Find agents whose providerConfigId changed (compare by agent.id)
+      const affectedAgentIds: string[] = [];
+      for (const updatedAgent of result.agents) {
+        const oldConfigId = currentConfigMap.get(updatedAgent.id);
+        if (oldConfigId !== updatedAgent.providerConfigId) {
+          affectedAgentIds.push(updatedAgent.id);
+        }
+      }
+
+      // Only mark online agents for restart (offline agents will use new config on next launch)
+      const onlineAgentIds = affectedAgentIds.filter(
+        (id) => queries.agentPresence[id]?.online === true,
+      );
+      if (onlineAgentIds.length > 0) {
+        markAgentsForRestart(onlineAgentIds);
+      }
+
+      queryClient.invalidateQueries({ queryKey: ['agents', projectId] });
+
+      toast({
+        title: 'Preset applied',
+        description: `${result.applied} agent(s) updated. Restart sessions to apply.`,
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: 'Failed to apply preset',
+        description: error instanceof Error ? error.message : 'Unknown error',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  // Handle preset apply with active sessions confirmation
+  const handleApplyPreset = useCallback(
+    async (presetName: string) => {
+      // Check if preset is available (all configs exist)
+      const validated = validatedPresets.find((v) => v.preset.name === presetName);
+      if (!validated?.available) {
+        toast({
+          title: 'Cannot apply preset',
+          description: 'Some required provider configurations are missing.',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      // Find agents that would be affected by this preset
+      const preset = presets.find((p) => p.name === presetName);
+      if (!preset) return;
+
+      // Build set of agent names in preset (lowercase for matching)
+      const agentNamesInPreset = new Set(
+        preset.agentConfigs.map((ac) => ac.agentName.trim().toLowerCase()),
+      );
+
+      // Check for active sessions among affected agents
+      const agentsWithActiveSessions = queries.agents.filter(
+        (a) =>
+          agentNamesInPreset.has(a.name.trim().toLowerCase()) &&
+          queries.agentPresence[a.id]?.online,
+      );
+
+      if (agentsWithActiveSessions.length > 0) {
+        const agentNames = agentsWithActiveSessions.map((a) => a.name).join(', ');
+        const confirmed = window.confirm(
+          `The following agents have active sessions: ${agentNames}. ` +
+            'Changing their provider configuration may affect running sessions. Continue?',
+        );
+        if (!confirmed) return;
+      }
+
+      applyPresetMutation.mutate({ presetName });
+    },
+    [presets, validatedPresets, queries.agents, queries.agentPresence, applyPresetMutation, toast],
+  );
+
+  // ============================================
+  // Provider Config Switching
+  // ============================================
+
+  // Track which agent is being updated
+  const [updatingConfigAgentId, setUpdatingConfigAgentId] = useState<string | null>(null);
+
+  // Update agent provider config mutation
+  const updateAgentConfigMutation = useMutation({
+    mutationFn: async ({
+      agentId,
+      providerConfigId,
+    }: {
+      agentId: string;
+      providerConfigId: string;
+    }) => {
+      const res = await fetch(`/api/agents/${agentId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ providerConfigId }),
+      });
+      if (!res.ok) throw new Error('Failed to update agent config');
+      return res.json();
+    },
+    onMutate: ({ agentId }) => {
+      setUpdatingConfigAgentId(agentId);
+    },
+    onSuccess: (_, { agentId }) => {
+      const isOnline = queries.agentPresence[agentId]?.online === true;
+
+      // Mark for restart if agent has active session
+      if (isOnline) {
+        markAgentsForRestart([agentId]);
+      }
+
+      queryClient.invalidateQueries({ queryKey: ['agents', projectId] });
+      toast({
+        title: 'Config updated',
+        description: isOnline ? 'Restart to apply changes.' : 'Will apply on next launch.',
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: 'Failed to update config',
+        description: error instanceof Error ? error.message : 'Unknown error',
+        variant: 'destructive',
+      });
+    },
+    onSettled: () => {
+      setUpdatingConfigAgentId(null);
+    },
+  });
+
+  // Handle switching provider config for an agent
+  const handleSwitchConfig = useCallback(
+    (agentId: string, providerConfigId: string) => {
+      updateAgentConfigMutation.mutate({ agentId, providerConfigId });
+    },
+    [updateAgentConfigMutation],
+  );
+
+  // Helper to fetch provider configs for a profile (used by ChatSidebar)
+  const fetchProviderConfigsForProfile = useCallback(
+    async (profileId: string): Promise<Array<{ id: string; name: string; providerId: string }>> => {
+      const res = await fetch(`/api/profiles/${profileId}/provider-configs`);
+      if (!res.ok) throw new Error('Failed to fetch provider configs');
+      return res.json();
+    },
+    [],
+  );
+
+  // Build updating config agent IDs record for ChatSidebar
+  const updatingConfigAgentIds: Record<string, boolean> = useMemo(
+    () => (updatingConfigAgentId ? { [updatingConfigAgentId]: true } : {}),
+    [updatingConfigAgentId],
+  );
 
   // Get latest selected thread ID for socket callbacks
   const getLatestSelectedThreadId = useCallback(
@@ -486,11 +812,20 @@ export function ChatPage() {
         onStartAllAgents={sessionControls.handleStartAllAgents}
         onTerminateAllConfirm={() => sessionControls.setTerminateAllConfirm(true)}
         onLaunchSession={sessionControls.handleLaunchSession}
-        onRestartSession={sessionControls.handleRestartSession}
+        onRestartSession={handleRestartSessionWithClear}
         onTerminateConfirm={(agentId, sessionId) =>
           sessionControls.setTerminateConfirm({ agentId, sessionId })
         }
         getProviderForAgent={queries.getProviderForAgent}
+        pendingRestartAgentIds={pendingRestartAgentIds}
+        onMarkForRestart={markAgentsForRestart}
+        validatedPresets={validatedPresets}
+        activePreset={activePreset}
+        onApplyPreset={handleApplyPreset}
+        applyingPreset={applyPresetMutation.isPending}
+        onSwitchConfig={handleSwitchConfig}
+        fetchProviderConfigsForProfile={fetchProviderConfigsForProfile}
+        updatingConfigAgentIds={updatingConfigAgentIds}
         createGroupPending={queries.createGroupMutation.isPending}
       />
 
@@ -621,8 +956,8 @@ export function ChatPage() {
         onInviteMembers={handleInviteMembers}
         onClearHistory={handleClearHistory}
         onPurgeHistory={handlePurgeHistory}
-        onTerminateSession={sessionControls.handleTerminateSession}
-        onTerminateAllAgents={sessionControls.handleTerminateAllAgents}
+        onTerminateSession={handleTerminateSessionWithClear}
+        onTerminateAllAgents={handleTerminateAllAgentsWithClear}
         onMcpConfigured={sessionControls.handleMcpConfigured}
         onVerifyMcp={handleVerifyMcp}
         launchingAgentIds={sessionControls.launchingAgentIds}

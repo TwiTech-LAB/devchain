@@ -29,6 +29,7 @@ import {
   DialogFooter,
   DialogDescription,
 } from '@/ui/components/ui/dialog';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/ui/components/ui/tabs';
 import { Alert, AlertDescription } from '@/ui/components/ui/alert';
 import { Card } from '@/ui/components/ui/card';
 import { useToast } from '@/ui/hooks/use-toast';
@@ -64,7 +65,7 @@ import { isLessThan, type ManifestData } from '@devchain/shared';
 interface TemplateMetadata {
   slug: string;
   version: string | null;
-  source: 'bundled' | 'registry';
+  source: 'bundled' | 'registry' | 'file';
 }
 
 interface Project {
@@ -100,7 +101,7 @@ interface ProjectsQueryData {
 interface ProjectTemplate {
   slug: string;
   name: string;
-  source: 'bundled' | 'registry';
+  source: 'bundled' | 'registry' | 'file';
   versions: string[] | null;
   latestVersion: string | null;
 }
@@ -154,7 +155,7 @@ async function fetchTemplates(): Promise<ProjectTemplate[]> {
     (t: {
       slug: string;
       name: string;
-      source: 'bundled' | 'registry';
+      source: 'bundled' | 'registry' | 'file';
       versions: string[] | null;
       latestVersion: string | null;
     }) => ({
@@ -193,9 +194,11 @@ async function createProjectFromTemplate(data: {
   name: string;
   description?: string;
   rootPath: string;
-  templateId: string;
+  templateId?: string;
+  templatePath?: string;
   version?: string;
   familyProviderMappings?: Record<string, string>;
+  presetName?: string;
 }): Promise<CreateFromTemplateResponse> {
   // Convert empty version string to null for bundled templates
   // The controller rejects empty strings but accepts null/undefined
@@ -266,18 +269,31 @@ export function ProjectsPage() {
 
   // Template creation state
   const [showTemplateDialog, setShowTemplateDialog] = useState(false);
+  const [templateSourceTab, setTemplateSourceTab] = useState<'template' | 'file'>('template');
   const [templateFormData, setTemplateFormData] = useState({
     name: '',
     description: '',
     rootPath: '',
     templateId: '',
     version: '', // Only used for registry templates
+    templatePath: '', // File-based template path
   });
   const [templatePathValidation, setTemplatePathValidation] = useState<{
     isAbsolute: boolean;
     exists: boolean;
     checked: boolean;
   }>({ isAbsolute: true, exists: false, checked: false });
+  const [templateFilePathValidation, setTemplateFilePathValidation] = useState<{
+    isAbsolute: boolean;
+    exists: boolean;
+    checked: boolean;
+    isFile: boolean;
+    error?: string;
+  }>({ isAbsolute: true, exists: false, checked: false, isFile: false });
+
+  // Presets state for template-based creation
+  const [availablePresets, setAvailablePresets] = useState<string[]>([]);
+  const [selectedPreset, setSelectedPreset] = useState<string>('');
 
   const { data, isLoading } = useQuery({ queryKey: ['projects'], queryFn: fetchProjects });
 
@@ -425,6 +441,8 @@ export function ProjectsPage() {
   }>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const openedFromQueryRef = useRef(false);
+  // Track latest template file path to ignore stale validation responses
+  const latestTemplatePathRef = useRef('');
 
   // Removed legacy create mutation; dialog is now Edit-only.
 
@@ -560,8 +578,25 @@ export function ProjectsPage() {
   };
 
   const resetTemplateForm = () => {
-    setTemplateFormData({ name: '', description: '', rootPath: '', templateId: '', version: '' });
+    setTemplateFormData({
+      name: '',
+      description: '',
+      rootPath: '',
+      templateId: '',
+      version: '',
+      templatePath: '',
+    });
     setTemplatePathValidation({ isAbsolute: true, exists: false, checked: false });
+    setTemplateFilePathValidation({
+      isAbsolute: true,
+      exists: false,
+      checked: false,
+      isFile: false,
+    });
+    setTemplateSourceTab('template');
+    latestTemplatePathRef.current = '';
+    setSelectedPreset('');
+    setAvailablePresets([]);
   };
 
   // Handler for provider mapping modal confirm
@@ -711,6 +746,70 @@ export function ProjectsPage() {
     }
   };
 
+  // Template file path validation (for file-based template)
+  const handleTemplateFilePathChange = async (path: string) => {
+    // Update form data with functional update to avoid stale state
+    setTemplateFormData((prev) => ({ ...prev, templatePath: path }));
+
+    // Always update ref first to invalidate any in-flight requests
+    latestTemplatePathRef.current = path;
+
+    // Expanded regex to support lowercase Windows drive letters
+    const isAbsolute = path.startsWith('/') || /^[A-Za-z]:\\/.test(path);
+
+    // Always set checked: true so UI shows validation feedback immediately
+    setTemplateFilePathValidation({
+      isAbsolute,
+      exists: false,
+      checked: true,
+      isFile: false,
+      error: isAbsolute ? undefined : 'Path must be absolute (start with / or drive letter)',
+    });
+
+    if (isAbsolute && path.length > 1) {
+      try {
+        const res = await fetch('/api/fs/stat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path }),
+        });
+        // Ignore stale responses if the path has changed
+        if (latestTemplatePathRef.current !== path) return;
+
+        if (res.ok) {
+          const stat = await res.json();
+          // Check if it's a file (not a directory)
+          const isFile = stat.type === 'file';
+          setTemplateFilePathValidation((prev) => ({
+            ...prev,
+            exists: true,
+            checked: true,
+            isFile,
+            error: isFile ? undefined : 'Path must be a file, not a directory',
+          }));
+        } else {
+          setTemplateFilePathValidation((prev) => ({
+            ...prev,
+            exists: false,
+            checked: true,
+            isFile: false,
+            error: 'File does not exist',
+          }));
+        }
+      } catch {
+        // Ignore stale responses on error as well
+        if (latestTemplatePathRef.current !== path) return;
+        setTemplateFilePathValidation((prev) => ({
+          ...prev,
+          exists: false,
+          checked: true,
+          isFile: false,
+          error: 'Failed to validate path',
+        }));
+      }
+    }
+  };
+
   // Handle template dialog open with preselection
   const handleOpenTemplateDialog = () => {
     resetTemplateForm();
@@ -720,8 +819,55 @@ export function ProjectsPage() {
   // Preselect first template when templates load
   const handleTemplateSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (templateFormData.templateId) {
-      createFromTemplateMutation.mutate(templateFormData);
+
+    // Validate based on selected tab
+    if (templateSourceTab === 'file') {
+      // File-based template
+      if (!templateFormData.templatePath) {
+        toast({
+          title: 'Validation Error',
+          description: 'Template file path is required',
+          variant: 'destructive',
+        });
+        return;
+      }
+      if (
+        !templateFilePathValidation.checked ||
+        !templateFilePathValidation.exists ||
+        !templateFilePathValidation.isFile
+      ) {
+        toast({
+          title: 'Validation Error',
+          description: templateFilePathValidation.error || 'Invalid template file path',
+          variant: 'destructive',
+        });
+        return;
+      }
+      // Use templatePath instead of templateId
+      createFromTemplateMutation.mutate({
+        name: templateFormData.name,
+        description: templateFormData.description,
+        rootPath: templateFormData.rootPath,
+        templatePath: templateFormData.templatePath,
+      });
+    } else {
+      // Template-based
+      if (!templateFormData.templateId) {
+        toast({
+          title: 'Validation Error',
+          description: 'Template selection is required',
+          variant: 'destructive',
+        });
+        return;
+      }
+      createFromTemplateMutation.mutate({
+        name: templateFormData.name,
+        description: templateFormData.description,
+        rootPath: templateFormData.rootPath,
+        templateId: templateFormData.templateId,
+        version: templateFormData.version,
+        ...(selectedPreset && { presetName: selectedPreset }),
+      });
     }
   };
 
@@ -756,14 +902,88 @@ export function ProjectsPage() {
   }, [templates, templateFormData.templateId]);
 
   // Handler: Update version when template changes
-  const handleTemplateChange = (slug: string) => {
+  const handleTemplateChange = async (slug: string) => {
     const template = templates?.find((t) => t.slug === slug);
+    const latestVersion = template?.latestVersion || '';
+
     setTemplateFormData((prev) => ({
       ...prev,
       templateId: slug,
-      version: template?.latestVersion || '',
+      version: latestVersion,
     }));
+
+    // Reset preset selection when template changes
+    setSelectedPreset('');
+    setAvailablePresets([]);
+
+    // Fetch template content to get presets
+    if (template) {
+      try {
+        // Use latestVersion directly to avoid race condition with state updates
+        const templateUrl =
+          template.source === 'registry' && latestVersion
+            ? `/api/templates/${slug}/versions/${latestVersion}`
+            : `/api/templates/${slug}`;
+        const res = await fetch(templateUrl);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.content?.presets && Array.isArray(data.content.presets)) {
+            // Reverse to show most recently updated first (template stores oldest first)
+            const presetNames = data.content.presets
+              .map((p: { name: string }) => p.name)
+              .reverse();
+            setAvailablePresets(presetNames);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch template presets:', err);
+      }
+    }
   };
+
+  // Effect: Fetch presets when template or version changes (covers both bundled and registry)
+  useEffect(() => {
+    const fetchPresetsForTemplate = async () => {
+      if (!templateFormData.templateId || templateSourceTab === 'file') {
+        return;
+      }
+
+      const template = templates?.find((t) => t.slug === templateFormData.templateId);
+      if (!template) return;
+
+      const templateUrl =
+        template.source === 'registry' && templateFormData.version
+          ? `/api/templates/${templateFormData.templateId}/versions/${templateFormData.version}`
+          : `/api/templates/${templateFormData.templateId}`;
+
+      try {
+        const res = await fetch(templateUrl);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.content?.presets && Array.isArray(data.content.presets)) {
+            // Reverse to show most recently updated first (template stores oldest first)
+            const presetNames = data.content.presets
+              .map((p: { name: string }) => p.name)
+              .reverse();
+            setAvailablePresets(presetNames);
+          } else {
+            setAvailablePresets([]);
+          }
+          // Clear selected preset if it's no longer available
+          if (
+            selectedPreset &&
+            !data.content?.presets?.some((p: { name: string }) => p.name === selectedPreset)
+          ) {
+            setSelectedPreset('');
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch template presets:', err);
+      }
+    };
+
+    fetchPresetsForTemplate();
+  }, [templateFormData.version, templateFormData.templateId, templates, selectedPreset, templateSourceTab]);
 
   // Helper: Get selected import template object
   const selectedImportTemplate = useMemo(() => {
@@ -1638,9 +1858,9 @@ export function ProjectsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Create Project Dialog (template-based) */}
+      {/* Create Project Dialog (template-based or file-based) */}
       <Dialog open={showTemplateDialog} onOpenChange={setShowTemplateDialog}>
-        <DialogContent>
+        <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>Create Project</DialogTitle>
             <DialogDescription>
@@ -1649,62 +1869,155 @@ export function ProjectsPage() {
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleTemplateSubmit} className="space-y-4">
-            <div>
-              <Label htmlFor="template">Template *</Label>
-              <Select
-                value={templateFormData.templateId}
-                onValueChange={handleTemplateChange}
-                required
-              >
-                <SelectTrigger id="template">
-                  <SelectValue placeholder="Select a template" />
-                </SelectTrigger>
-                <SelectContent>
-                  {templates?.map((template) => (
-                    <SelectItem key={template.slug} value={template.slug}>
-                      <span className="flex items-center gap-2">
-                        {template.name}
-                        <Badge
-                          variant="outline"
-                          className={`text-xs ${
-                            template.source === 'bundled'
-                              ? 'text-muted-foreground'
-                              : 'text-blue-600 border-blue-600/50'
-                          }`}
-                        >
-                          {template.source === 'bundled' ? 'Built-in' : 'Downloaded'}
-                        </Badge>
-                      </span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            <Tabs
+              value={templateSourceTab}
+              onValueChange={(v) => setTemplateSourceTab(v as 'template' | 'file')}
+            >
+              <TabsList className="grid w-full grid-cols-2">
+                <TabsTrigger value="template">From Template</TabsTrigger>
+                <TabsTrigger value="file">From File</TabsTrigger>
+              </TabsList>
 
-            {/* Version picker - only shown for registry (downloaded) templates */}
-            {selectedTemplate?.source === 'registry' && sortedVersions.length > 0 && (
-              <div>
-                <Label htmlFor="template-version">Version</Label>
-                <Select
-                  value={templateFormData.version}
-                  onValueChange={(value) =>
-                    setTemplateFormData({ ...templateFormData, version: value })
-                  }
-                >
-                  <SelectTrigger id="template-version">
-                    <SelectValue placeholder="Select a version" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {sortedVersions.map((version, index) => (
-                      <SelectItem key={version} value={version}>
-                        {version}
-                        {index === 0 && ' (latest)'}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
+              {/* Template-based creation */}
+              <TabsContent value="template" className="space-y-4 mt-4">
+                <div>
+                  <Label htmlFor="template">Template *</Label>
+                  <Select
+                    value={templateFormData.templateId}
+                    onValueChange={handleTemplateChange}
+                    required
+                  >
+                    <SelectTrigger id="template">
+                      <SelectValue placeholder="Select a template" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {templates?.map((template) => (
+                        <SelectItem key={template.slug} value={template.slug}>
+                          <span className="flex items-center gap-2">
+                            {template.name}
+                            <Badge
+                              variant="outline"
+                              className={`text-xs ${
+                                template.source === 'bundled'
+                                  ? 'text-muted-foreground'
+                                  : 'text-blue-600 border-blue-600/50'
+                              }`}
+                            >
+                              {template.source === 'bundled' ? 'Built-in' : 'Downloaded'}
+                            </Badge>
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* Version picker - only shown for registry (downloaded) templates */}
+                {selectedTemplate?.source === 'registry' && sortedVersions.length > 0 && (
+                  <div>
+                    <Label htmlFor="template-version">Version</Label>
+                    <Select
+                      value={templateFormData.version}
+                      onValueChange={(value) =>
+                        setTemplateFormData({ ...templateFormData, version: value })
+                      }
+                    >
+                      <SelectTrigger id="template-version">
+                        <SelectValue placeholder="Select a version" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {sortedVersions.map((version, index) => (
+                          <SelectItem key={version} value={version}>
+                            {version}
+                            {index === 0 && ' (latest)'}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+
+                {/* Preset dropdown - shown when template has presets */}
+                {availablePresets.length > 0 && (
+                  <div>
+                    <Label htmlFor="template-preset">Preset (Optional)</Label>
+                    <Select
+                      value={selectedPreset || '__none__'}
+                      onValueChange={(v) => setSelectedPreset(v === '__none__' ? '' : v)}
+                    >
+                      <SelectTrigger id="template-preset">
+                        <SelectValue placeholder="Use default configuration" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">Default configuration</SelectItem>
+                        {availablePresets.map((presetName) => (
+                          <SelectItem key={presetName} value={presetName}>
+                            {presetName}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Optionally select a preset to pre-configure agent providers
+                    </p>
+                  </div>
+                )}
+              </TabsContent>
+
+              {/* File-based creation */}
+              <TabsContent value="file" className="space-y-4 mt-4">
+                <div>
+                  <Label htmlFor="templateFilePath">Template File Path *</Label>
+                  <Input
+                    id="templateFilePath"
+                    type="text"
+                    value={templateFormData.templatePath}
+                    onChange={(e) => handleTemplateFilePathChange(e.target.value)}
+                    required={templateSourceTab === 'file'}
+                    placeholder="/absolute/path/to/template.json"
+                    className="font-mono text-sm"
+                  />
+                  {templateFilePathValidation.checked && (
+                    <div className="mt-2 space-y-2">
+                      {!templateFilePathValidation.isAbsolute && (
+                        <Alert variant="destructive">
+                          <XCircle className="h-4 w-4" />
+                          <AlertDescription>
+                            Path must be absolute (start with / or drive letter)
+                          </AlertDescription>
+                        </Alert>
+                      )}
+                      {templateFilePathValidation.isAbsolute &&
+                        !templateFilePathValidation.exists && (
+                          <Alert className="border-yellow-600">
+                            <AlertTriangle className="h-4 w-4 text-yellow-600" />
+                            <AlertDescription className="text-yellow-600">
+                              File does not exist
+                            </AlertDescription>
+                          </Alert>
+                        )}
+                      {templateFilePathValidation.exists && !templateFilePathValidation.isFile && (
+                        <Alert variant="destructive">
+                          <XCircle className="h-4 w-4" />
+                          <AlertDescription>Path must be a file, not a directory</AlertDescription>
+                        </Alert>
+                      )}
+                      {templateFilePathValidation.exists && templateFilePathValidation.isFile && (
+                        <Alert className="border-green-600">
+                          <CheckCircle2 className="h-4 w-4 text-green-600" />
+                          <AlertDescription className="text-green-600">
+                            Valid template file
+                          </AlertDescription>
+                        </Alert>
+                      )}
+                    </div>
+                  )}
+                  <p className="text-xs text-muted-foreground mt-2">
+                    Enter the absolute path to a JSON template file
+                  </p>
+                </div>
+              </TabsContent>
+            </Tabs>
 
             <div>
               <Label htmlFor="template-name">Name *</Label>

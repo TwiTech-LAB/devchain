@@ -30,6 +30,7 @@ import { UnifiedTemplateService } from './unified-template.service';
 import { TemplateCacheService } from './template-cache.service';
 import { NotFoundError, ValidationError, StorageError } from '../../../common/errors/error-types';
 import * as fs from 'fs';
+import * as devchainShared from '@devchain/shared';
 
 // Define CachedTemplate interface for test use
 interface CachedTemplate {
@@ -589,6 +590,234 @@ describe('UnifiedTemplateService', () => {
     it('should validate slug and version', () => {
       expect(() => service.hasVersion('../bad', '1.0.0')).toThrow(ValidationError);
       expect(() => service.hasVersion('good', 'bad-version')).toThrow(ValidationError);
+    });
+  });
+
+  describe('getTemplateFromFilePath', () => {
+    const validTemplateContent = {
+      version: 1,
+      prompts: [],
+      profiles: [],
+      agents: [],
+      statuses: [],
+    };
+
+    it('should return correct content and source: file for valid template', () => {
+      mockExistsSyncFn.mockReturnValue(true);
+      mockReadFileSyncFn.mockReturnValue(JSON.stringify(validTemplateContent));
+
+      const result = service.getTemplateFromFilePath('/absolute/path/to/my-template.json');
+
+      expect(result.source).toBe('file');
+      expect(result.content).toMatchObject(validTemplateContent);
+    });
+
+    it('should return version from _manifest.version when present', () => {
+      const templateWithVersion = {
+        ...validTemplateContent,
+        _manifest: { name: 'Test', version: '2.5.0' },
+      };
+
+      // Mock ExportSchema.parse to return valid parsed output
+      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
+        ...templateWithVersion,
+        watchers: [],
+        subscribers: [],
+      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+      mockExistsSyncFn.mockReturnValue(true);
+      mockReadFileSyncFn.mockReturnValue(JSON.stringify(templateWithVersion));
+
+      const result = service.getTemplateFromFilePath('/path/to/template.json');
+
+      expect(result.version).toBe('2.5.0');
+
+      jest.restoreAllMocks();
+    });
+
+    it('should return null version when _manifest.version is absent', () => {
+      mockExistsSyncFn.mockReturnValue(true);
+      mockReadFileSyncFn.mockReturnValue(JSON.stringify(validTemplateContent));
+
+      const result = service.getTemplateFromFilePath('/path/to/template.json');
+
+      expect(result.version).toBeNull();
+    });
+
+    it('should derive slug from filename when _manifest.slug is absent', () => {
+      mockExistsSyncFn.mockReturnValue(true);
+      mockReadFileSyncFn.mockReturnValue(JSON.stringify(validTemplateContent));
+
+      const result = service.getTemplateFromFilePath('/some/path/my-custom-template.json');
+
+      const manifest = result.content._manifest as Record<string, unknown>;
+      expect(manifest.slug).toBe('my-custom-template');
+    });
+
+    it('should use _manifest.slug when present', () => {
+      const templateWithSlug = {
+        ...validTemplateContent,
+        _manifest: { slug: 'manifest-defined-slug', name: 'Test' },
+      };
+
+      // Mock ExportSchema.parse to return valid parsed output
+      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
+        ...templateWithSlug,
+        watchers: [],
+        subscribers: [],
+      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+      mockExistsSyncFn.mockReturnValue(true);
+      mockReadFileSyncFn.mockReturnValue(JSON.stringify(templateWithSlug));
+
+      const result = service.getTemplateFromFilePath('/different/path/filename.json');
+
+      const manifest = result.content._manifest as Record<string, unknown>;
+      expect(manifest.slug).toBe('manifest-defined-slug');
+
+      jest.restoreAllMocks();
+    });
+
+    it('should inject slug into existing _manifest when _manifest.slug is absent', () => {
+      const templateWithPartialManifest = {
+        ...validTemplateContent,
+        _manifest: { name: 'Test Template', version: '1.0.0' },
+      };
+
+      // Mock ExportSchema.parse to return valid parsed output
+      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
+        ...templateWithPartialManifest,
+        watchers: [],
+        subscribers: [],
+      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+      mockExistsSyncFn.mockReturnValue(true);
+      mockReadFileSyncFn.mockReturnValue(JSON.stringify(templateWithPartialManifest));
+
+      const result = service.getTemplateFromFilePath('/path/to/derived-slug.json');
+
+      const manifest = result.content._manifest as Record<string, unknown>;
+      expect(manifest.slug).toBe('derived-slug');
+      expect(manifest.name).toBe('Test Template'); // Preserve existing fields
+      expect(manifest.version).toBe('1.0.0');
+
+      jest.restoreAllMocks();
+    });
+
+    it('should reject relative paths with ValidationError', () => {
+      expect(() => service.getTemplateFromFilePath('relative/path.json')).toThrow(ValidationError);
+      expect(() => service.getTemplateFromFilePath('relative/path.json')).toThrow(/absolute path/i);
+    });
+
+    it('should normalize paths before processing', () => {
+      // Verify that path normalization occurs by testing a valid absolute path
+      // Note: On Unix, normalize('/path/../etc/passwd') = '/etc/passwd' (no .. remains)
+      // The path traversal check catches edge cases where .. might persist after normalization
+      mockExistsSyncFn.mockReturnValue(true);
+      mockReadFileSyncFn.mockReturnValue(JSON.stringify(validTemplateContent));
+
+      // Path with redundant separators and dots should work after normalization
+      const result = service.getTemplateFromFilePath('/path/./to/./template.json');
+
+      expect(result.source).toBe('file');
+    });
+
+    it('should throw NotFoundError for non-existent file', () => {
+      mockExistsSyncFn.mockReturnValue(false);
+
+      expect(() => service.getTemplateFromFilePath('/path/to/nonexistent.json')).toThrow(
+        NotFoundError,
+      );
+    });
+
+    it('should throw ValidationError for invalid JSON', () => {
+      mockExistsSyncFn.mockReturnValue(true);
+      mockReadFileSyncFn.mockReturnValue('{ invalid json }');
+
+      expect(() => service.getTemplateFromFilePath('/path/to/invalid.json')).toThrow(
+        ValidationError,
+      );
+      expect(() => service.getTemplateFromFilePath('/path/to/invalid.json')).toThrow(
+        /invalid JSON/i,
+      );
+    });
+
+    it('should throw ValidationError for non-ExportSchema-compliant JSON', () => {
+      const invalidSchema = {
+        notAValidField: 'value',
+        // Missing required fields like prompts, profiles, etc.
+      };
+      mockExistsSyncFn.mockReturnValue(true);
+      mockReadFileSyncFn.mockReturnValue(JSON.stringify(invalidSchema));
+
+      expect(() => service.getTemplateFromFilePath('/path/to/bad-schema.json')).toThrow(
+        ValidationError,
+      );
+      expect(() => service.getTemplateFromFilePath('/path/to/bad-schema.json')).toThrow(/schema/i);
+    });
+
+    it('should throw StorageError for file read errors', () => {
+      mockExistsSyncFn.mockReturnValue(true);
+      const readError = new Error('EACCES: permission denied') as NodeJS.ErrnoException;
+      readError.code = 'EACCES';
+      mockReadFileSyncFn.mockImplementation(() => {
+        throw readError;
+      });
+
+      expect(() => service.getTemplateFromFilePath('/path/to/protected.json')).toThrow(
+        StorageError,
+      );
+    });
+
+    it('should not leak file paths in error messages for NotFoundError', () => {
+      mockExistsSyncFn.mockReturnValue(false);
+
+      try {
+        service.getTemplateFromFilePath('/secret/path/to/template.json');
+        fail('Expected NotFoundError');
+      } catch (error) {
+        expect(error).toBeInstanceOf(NotFoundError);
+        const errorMessage = (error as Error).message;
+        // Should not contain the actual path
+        expect(errorMessage).not.toContain('/secret/path');
+        expect(errorMessage).not.toContain('template.json');
+      }
+    });
+
+    it('should not leak file paths in error messages for ValidationError', () => {
+      mockExistsSyncFn.mockReturnValue(true);
+      mockReadFileSyncFn.mockReturnValue('{ invalid json }');
+
+      try {
+        service.getTemplateFromFilePath('/private/location/file.json');
+        fail('Expected ValidationError');
+      } catch (error) {
+        expect(error).toBeInstanceOf(ValidationError);
+        const errorMessage = (error as Error).message;
+        // Should not contain the actual path
+        expect(errorMessage).not.toContain('/private/location');
+        expect(errorMessage).not.toContain('file.json');
+      }
+    });
+
+    it('should not leak file paths in error messages for StorageError', () => {
+      mockExistsSyncFn.mockReturnValue(true);
+      const readError = new Error('EACCES: permission denied') as NodeJS.ErrnoException;
+      readError.code = 'EACCES';
+      mockReadFileSyncFn.mockImplementation(() => {
+        throw readError;
+      });
+
+      try {
+        service.getTemplateFromFilePath('/confidential/path/data.json');
+        fail('Expected StorageError');
+      } catch (error) {
+        expect(error).toBeInstanceOf(StorageError);
+        const errorMessage = (error as Error).message;
+        // Should not contain the actual path
+        expect(errorMessage).not.toContain('/confidential/path');
+        expect(errorMessage).not.toContain('data.json');
+      }
     });
   });
 });

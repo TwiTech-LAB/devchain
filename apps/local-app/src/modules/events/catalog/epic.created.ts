@@ -1,5 +1,14 @@
 import { z } from 'zod';
 
+// Actor schema: who triggered this event (null if unknown/system)
+const actorSchema = z
+  .object({
+    type: z.enum(['agent', 'guest']),
+    id: z.string().min(1),
+  })
+  .nullable()
+  .optional();
+
 export const epicCreatedEvent = {
   name: 'epic.created',
   schema: z.object({
@@ -9,6 +18,7 @@ export const epicCreatedEvent = {
     statusId: z.string().min(1).nullable(),
     agentId: z.string().min(1).nullable().optional(),
     parentId: z.string().min(1).nullable().optional(),
+    actor: actorSchema, // Who triggered this event (null if unknown/system)
     // Resolved names for readability
     projectName: z.string().min(1).optional(),
     statusName: z.string().min(1).optional(),

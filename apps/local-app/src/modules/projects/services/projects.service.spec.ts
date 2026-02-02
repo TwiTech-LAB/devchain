@@ -44,6 +44,7 @@ describe('ProjectsService', () => {
     createPrompt: jest.Mock;
     createAgentProfile: jest.Mock;
     createAgent: jest.Mock;
+    updateAgent: jest.Mock;
     deleteAgent: jest.Mock;
     deleteAgentProfile: jest.Mock;
     deletePrompt: jest.Mock;
@@ -59,6 +60,8 @@ describe('ProjectsService', () => {
     createWatcher: jest.Mock;
     createSubscriber: jest.Mock;
     deleteSubscriber: jest.Mock;
+    listProfileProviderConfigsByProfile: jest.Mock;
+    createProfileProviderConfig: jest.Mock;
   };
   let sessions: {
     listActiveSessions: jest.Mock;
@@ -84,6 +87,7 @@ describe('ProjectsService', () => {
     getBundledTemplate: jest.Mock;
     listTemplates: jest.Mock;
     hasTemplate: jest.Mock;
+    getTemplateFromFilePath: jest.Mock;
   };
 
   beforeEach(async () => {
@@ -96,6 +100,7 @@ describe('ProjectsService', () => {
         isTemplate: false,
       }),
       listProviders: jest.fn(),
+      listProvidersByIds: jest.fn().mockResolvedValue([]),
       listPrompts: jest.fn(),
       getPrompt: jest.fn(),
       listAgentProfiles: jest.fn(),
@@ -107,6 +112,7 @@ describe('ProjectsService', () => {
       createPrompt: jest.fn(),
       createAgentProfile: jest.fn(),
       createAgent: jest.fn(),
+      updateAgent: jest.fn(),
       deleteAgent: jest.fn(),
       deleteAgentProfile: jest.fn(),
       deletePrompt: jest.fn(),
@@ -122,6 +128,13 @@ describe('ProjectsService', () => {
       createWatcher: jest.fn(),
       createSubscriber: jest.fn(),
       deleteSubscriber: jest.fn(),
+      listProfileProviderConfigsByProfile: jest.fn().mockResolvedValue([]),
+      createProfileProviderConfig: jest.fn().mockImplementation(async (data) => ({
+        id: `config-${Date.now()}`,
+        ...data,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      })),
     };
 
     sessions = {
@@ -136,6 +149,8 @@ describe('ProjectsService', () => {
       getRegistryConfig: jest.fn().mockReturnValue({ url: 'https://registry.example.com' }),
       setProjectTemplateMetadata: jest.fn().mockResolvedValue(undefined),
       getProjectTemplateMetadata: jest.fn().mockReturnValue(null),
+      getProjectPresets: jest.fn().mockReturnValue([]),
+      setProjectPresets: jest.fn().mockResolvedValue(undefined),
     };
 
     watchersService = {
@@ -152,6 +167,7 @@ describe('ProjectsService', () => {
       getBundledTemplate: jest.fn(),
       listTemplates: jest.fn(),
       hasTemplate: jest.fn(),
+      getTemplateFromFilePath: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -798,6 +814,191 @@ describe('ProjectsService', () => {
         }),
       ).rejects.toThrow('Duplicate watcher eventName');
     });
+
+    // Tests for templatePath flow (file-based templates)
+    it('should call getTemplateFromFilePath when templatePath is provided', async () => {
+      const validTemplate = {
+        version: 1,
+        prompts: [],
+        profiles: [],
+        agents: [],
+        statuses: [],
+        _manifest: { slug: 'file-template', version: '1.0.0' },
+      };
+
+      // Mock ExportSchema.parse to return valid parsed output
+      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
+        ...validTemplate,
+        watchers: [],
+        subscribers: [],
+        exportedAt: undefined,
+        initialPrompt: undefined,
+        projectSettings: undefined,
+      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+      unifiedTemplateService.getTemplateFromFilePath.mockReturnValue({
+        content: validTemplate,
+        source: 'file',
+        version: '1.0.0',
+      });
+
+      storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      storage.createProjectWithTemplate.mockResolvedValue({
+        project: { id: 'p1', name: 'Test' },
+        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
+        mappings: { promptIdMap: {}, profileIdMap: {}, agentIdMap: {}, statusIdMap: {} },
+      });
+
+      await service.createFromTemplate({
+        name: 'Test Project',
+        rootPath: '/test',
+        templatePath: '/path/to/template.json',
+      });
+
+      expect(unifiedTemplateService.getTemplateFromFilePath).toHaveBeenCalledWith(
+        '/path/to/template.json',
+      );
+      expect(unifiedTemplateService.getTemplate).not.toHaveBeenCalled();
+
+      jest.restoreAllMocks();
+    });
+
+    it('should set source: file in metadata when templatePath is provided', async () => {
+      const validTemplate = {
+        version: 1,
+        prompts: [],
+        profiles: [],
+        agents: [],
+        statuses: [],
+        _manifest: { slug: 'file-template', version: '2.0.0' },
+      };
+
+      // Mock ExportSchema.parse to return valid parsed output
+      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
+        ...validTemplate,
+        watchers: [],
+        subscribers: [],
+        exportedAt: undefined,
+        initialPrompt: undefined,
+        projectSettings: undefined,
+      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+      unifiedTemplateService.getTemplateFromFilePath.mockReturnValue({
+        content: validTemplate,
+        source: 'file',
+        version: '2.0.0',
+      });
+
+      storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      storage.createProjectWithTemplate.mockResolvedValue({
+        project: { id: 'p1', name: 'Test' },
+        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
+        mappings: { promptIdMap: {}, profileIdMap: {}, agentIdMap: {}, statusIdMap: {} },
+      });
+
+      await service.createFromTemplate({
+        name: 'Test Project',
+        rootPath: '/test',
+        templatePath: '/path/to/template.json',
+      });
+
+      expect(settings.setProjectTemplateMetadata).toHaveBeenCalledWith('p1', {
+        templateSlug: 'file-template',
+        source: 'file',
+        installedVersion: '2.0.0',
+        registryUrl: null,
+        installedAt: expect.any(String),
+      });
+
+      jest.restoreAllMocks();
+    });
+
+    it('should derive slug from filename when _manifest.slug is absent', async () => {
+      const validTemplate = {
+        version: 1,
+        prompts: [],
+        profiles: [],
+        agents: [],
+        statuses: [],
+        // No _manifest or _manifest without slug
+      };
+      unifiedTemplateService.getTemplateFromFilePath.mockReturnValue({
+        content: validTemplate,
+        source: 'file',
+        version: null,
+      });
+
+      storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      storage.createProjectWithTemplate.mockResolvedValue({
+        project: { id: 'p1', name: 'Test' },
+        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
+        mappings: { promptIdMap: {}, profileIdMap: {}, agentIdMap: {}, statusIdMap: {} },
+      });
+
+      await service.createFromTemplate({
+        name: 'Test Project',
+        rootPath: '/test',
+        templatePath: '/path/to/my-custom-template.json',
+      });
+
+      expect(settings.setProjectTemplateMetadata).toHaveBeenCalledWith('p1', {
+        templateSlug: 'my-custom-template', // Derived from filename
+        source: 'file',
+        installedVersion: null,
+        registryUrl: null,
+        installedAt: expect.any(String),
+      });
+    });
+
+    it('should use _manifest.slug when present in file-based template', async () => {
+      const validTemplate = {
+        version: 1,
+        prompts: [],
+        profiles: [],
+        agents: [],
+        statuses: [],
+        _manifest: { slug: 'manifest-defined-slug', version: '1.5.0' },
+      };
+
+      // Mock ExportSchema.parse to return valid parsed output
+      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
+        ...validTemplate,
+        watchers: [],
+        subscribers: [],
+        exportedAt: undefined,
+        initialPrompt: undefined,
+        projectSettings: undefined,
+      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+      unifiedTemplateService.getTemplateFromFilePath.mockReturnValue({
+        content: validTemplate,
+        source: 'file',
+        version: '1.5.0',
+      });
+
+      storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      storage.createProjectWithTemplate.mockResolvedValue({
+        project: { id: 'p1', name: 'Test' },
+        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
+        mappings: { promptIdMap: {}, profileIdMap: {}, agentIdMap: {}, statusIdMap: {} },
+      });
+
+      await service.createFromTemplate({
+        name: 'Test Project',
+        rootPath: '/test',
+        templatePath: '/path/to/different-filename.json',
+      });
+
+      expect(settings.setProjectTemplateMetadata).toHaveBeenCalledWith('p1', {
+        templateSlug: 'manifest-defined-slug', // From _manifest, not filename
+        source: 'file',
+        installedVersion: '1.5.0',
+        registryUrl: null,
+        installedAt: expect.any(String),
+      });
+
+      jest.restoreAllMocks();
+    });
   });
 
   describe('importProject', () => {
@@ -1112,12 +1313,12 @@ describe('ProjectsService', () => {
 
       await service.importProject({ projectId, payload, dryRun: false });
 
+      // Phase 4: providerId and options are no longer on profile
       expect(storage.createAgentProfile).toHaveBeenCalledWith(
         expect.objectContaining({
           projectId,
           name: 'Test Profile',
-          providerId: provId,
-          options: JSON.stringify({ model: 'opus' }),
+          // Note: providerId and options now go to provider configs, not profile
           instructions: 'Custom instructions',
           temperature: 0.8,
           maxTokens: 2000,
@@ -1230,11 +1431,11 @@ describe('ProjectsService', () => {
         });
 
         // Verify createAgentProfile was called with the claude profile (not codex)
+        // Phase 4: providerId is no longer on profile, only on provider configs
         expect(storage.createAgentProfile).toHaveBeenCalledTimes(1);
         expect(storage.createAgentProfile).toHaveBeenCalledWith(
           expect.objectContaining({
             name: 'Coder Claude',
-            providerId,
             familySlug: 'coder',
           }),
         );
@@ -1832,6 +2033,182 @@ describe('ProjectsService', () => {
         jest.restoreAllMocks();
       });
     });
+
+    describe('providerConfigs import', () => {
+      const projectId = 'project-123';
+      const providerId = 'provider-claude-id';
+
+      it('should create provider configs and update agents with providerConfigId when importing new format', async () => {
+        const payload = {
+          prompts: [],
+          profiles: [
+            {
+              id: 'profile-1',
+              name: 'Test Profile',
+              provider: { name: 'claude' },
+              familySlug: 'coder',
+              providerConfigs: [
+                {
+                  name: 'claude',
+                  providerName: 'claude',
+                  options: '--model claude-3',
+                  env: { ANTHROPIC_API_KEY: 'sk-xxx' },
+                },
+              ],
+            },
+          ],
+          agents: [
+            {
+              id: 'agent-1',
+              name: 'Test Agent',
+              profileId: 'profile-1',
+              providerConfigName: 'claude',
+            },
+          ],
+          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+        };
+
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
+          ...payload,
+          version: 1,
+          exportedAt: undefined,
+          initialPrompt: undefined,
+          projectSettings: undefined,
+          watchers: [],
+          subscribers: [],
+        } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+        storage.listProviders.mockResolvedValue({
+          items: [{ id: providerId, name: 'claude' }],
+          total: 1,
+          limit: 100,
+          offset: 0,
+        });
+        storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        storage.listAgentProfiles.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 10000,
+          offset: 0,
+        });
+        storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        sessions.getActiveSessionsForProject.mockReturnValue([]);
+
+        storage.createStatus.mockResolvedValue({ id: 'new-status-1' });
+        storage.createAgentProfile.mockResolvedValue({ id: 'new-profile-1' });
+        storage.createProfileProviderConfig.mockResolvedValue({ id: 'new-config-1' });
+        storage.createAgent.mockResolvedValue({ id: 'new-agent-1' });
+
+        await service.importProject({
+          projectId,
+          payload,
+          dryRun: false,
+        });
+
+        // Verify provider config was created
+        expect(storage.createProfileProviderConfig).toHaveBeenCalledWith({
+          profileId: 'new-profile-1',
+          providerId,
+          name: 'claude',
+          options: '--model claude-3',
+          env: { ANTHROPIC_API_KEY: 'sk-xxx' },
+        });
+
+        // Verify agent was created with providerConfigId
+        expect(storage.createAgent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            name: 'Test Agent',
+            profileId: 'new-profile-1',
+            providerConfigId: 'new-config-1',
+          }),
+        );
+
+        jest.restoreAllMocks();
+      });
+
+      it('should handle backward compatibility with legacy format (no providerConfigs)', async () => {
+        // Phase 4: Legacy format now creates a default config since providerConfigId is required
+        const payload = {
+          prompts: [],
+          profiles: [
+            {
+              id: 'profile-1',
+              name: 'Legacy Profile',
+              provider: { name: 'claude' },
+              familySlug: 'coder',
+              // No providerConfigs field
+            },
+          ],
+          agents: [
+            {
+              id: 'agent-1',
+              name: 'Legacy Agent',
+              profileId: 'profile-1',
+              // No providerConfigName
+            },
+          ],
+          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+        };
+
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
+          ...payload,
+          version: 1,
+          exportedAt: undefined,
+          initialPrompt: undefined,
+          projectSettings: undefined,
+          watchers: [],
+          subscribers: [],
+        } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+        storage.listProviders.mockResolvedValue({
+          items: [{ id: providerId, name: 'claude' }],
+          total: 1,
+          limit: 100,
+          offset: 0,
+        });
+        storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        storage.listAgentProfiles.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 10000,
+          offset: 0,
+        });
+        storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        sessions.getActiveSessionsForProject.mockReturnValue([]);
+
+        storage.createStatus.mockResolvedValue({ id: 'new-status-1' });
+        storage.createAgentProfile.mockResolvedValue({ id: 'new-profile-1' });
+        storage.createProfileProviderConfig.mockResolvedValue({ id: 'default-config-1' });
+        storage.createAgent.mockResolvedValue({ id: 'new-agent-1' });
+
+        await service.importProject({
+          projectId,
+          payload,
+          dryRun: false,
+        });
+
+        // Verify a default provider config WAS created for legacy format (Phase 4: providerConfigId is NOT NULL)
+        expect(storage.createProfileProviderConfig).toHaveBeenCalledWith(
+          expect.objectContaining({
+            profileId: 'new-profile-1',
+            providerId: providerId,
+          }),
+        );
+
+        // Verify agent was created WITH providerConfigId (Phase 4: required)
+        expect(storage.createAgent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            name: 'Legacy Agent',
+            profileId: 'new-profile-1',
+            providerConfigId: 'default-config-1',
+          }),
+        );
+
+        jest.restoreAllMocks();
+      });
+    });
   });
 
   describe('exportProject', () => {
@@ -1871,6 +2248,7 @@ describe('ProjectsService', () => {
       storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
       storage.getInitialSessionPrompt.mockResolvedValue(null);
       storage.getProvider.mockResolvedValue({ id: 'prov-1', name: 'claude' });
+      storage.listProvidersByIds.mockResolvedValue([{ id: 'prov-1', name: 'claude' }]);
 
       const result = await service.exportProject(projectId);
 
@@ -1892,8 +2270,7 @@ describe('ProjectsService', () => {
           {
             id: 'prof-1',
             name: 'Advanced Profile',
-            providerId: 'prov-1',
-            options: '{"model":"sonnet","temperature":0.5}',
+            // Note: providerId/options removed in Phase 4
             instructions: 'Do complex tasks',
             temperature: 0.9,
             maxTokens: 4096,
@@ -1903,10 +2280,23 @@ describe('ProjectsService', () => {
         limit: 1000,
         offset: 0,
       });
+      // Provider info now comes from configs
+      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        {
+          id: 'config-1',
+          profileId: 'prof-1',
+          providerId: 'prov-1',
+          options: '{"model":"sonnet","temperature":0.5}',
+          env: null,
+          createdAt: '',
+          updatedAt: '',
+        },
+      ]);
       storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
       storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
       storage.getInitialSessionPrompt.mockResolvedValue(null);
       storage.getProvider.mockResolvedValue({ id: 'prov-1', name: 'claude' });
+      storage.listProvidersByIds.mockResolvedValue([{ id: 'prov-1', name: 'claude' }]);
 
       const result = await service.exportProject(projectId);
 
@@ -1915,7 +2305,7 @@ describe('ProjectsService', () => {
         id: 'prof-1',
         name: 'Advanced Profile',
         provider: { id: 'prov-1', name: 'claude' },
-        options: '{"model":"sonnet","temperature":0.5}',
+        // options is now on providerConfigs, not directly on profile
         instructions: 'Do complex tasks',
         temperature: 0.9,
         maxTokens: 4096,
@@ -2129,6 +2519,150 @@ describe('ProjectsService', () => {
       const result = await service.exportProject(projectId);
 
       expect(result._manifest.slug).toBe('my-special-project-v2');
+    });
+
+    it('should export profile providerConfigs when present', async () => {
+      const projectId = 'project-123';
+
+      storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.listAgentProfiles.mockResolvedValue({
+        items: [
+          {
+            id: 'prof-1',
+            name: 'Test Profile',
+            providerId: 'prov-1',
+            familySlug: 'coder',
+            options: null,
+            instructions: null,
+            temperature: null,
+            maxTokens: null,
+          },
+        ],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+      storage.listAgents.mockResolvedValue({
+        items: [
+          {
+            id: 'agent-1',
+            name: 'Test Agent',
+            profileId: 'prof-1',
+            providerConfigId: 'config-1',
+            description: null,
+          },
+        ],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+      storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.getInitialSessionPrompt.mockResolvedValue(null);
+      storage.getProvider.mockImplementation(async (id) => {
+        if (id === 'prov-1') return { id: 'prov-1', name: 'claude' };
+        if (id === 'prov-2') return { id: 'prov-2', name: 'gemini' };
+        throw new Error(`Provider not found: ${id}`);
+      });
+      // Bulk fetch providers (used by optimized export)
+      storage.listProvidersByIds.mockResolvedValue([
+        { id: 'prov-1', name: 'claude' },
+        { id: 'prov-2', name: 'gemini' },
+      ]);
+
+      // Mock provider configs for the profile (name column added in Phase 5)
+      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        {
+          id: 'config-1',
+          profileId: 'prof-1',
+          providerId: 'prov-1',
+          name: 'claude',
+          options: '--model claude-3',
+          env: { ANTHROPIC_API_KEY: 'sk-xxx' },
+        },
+        {
+          id: 'config-2',
+          profileId: 'prof-1',
+          providerId: 'prov-2',
+          name: 'gemini',
+          options: '--model gemini-pro',
+          env: { GOOGLE_API_KEY: 'xxx' },
+        },
+      ]);
+
+      const result = await service.exportProject(projectId);
+
+      // Profile should have providerConfigs
+      expect(result.profiles).toHaveLength(1);
+      expect(result.profiles[0].providerConfigs).toBeDefined();
+      expect(result.profiles[0].providerConfigs).toHaveLength(2);
+      expect(result.profiles[0].providerConfigs[0]).toEqual({
+        name: 'claude',
+        providerName: 'claude',
+        options: '--model claude-3',
+        env: { ANTHROPIC_API_KEY: 'sk-xxx' },
+      });
+      expect(result.profiles[0].providerConfigs[1]).toEqual({
+        name: 'gemini',
+        providerName: 'gemini',
+        options: '--model gemini-pro',
+        env: { GOOGLE_API_KEY: 'xxx' },
+      });
+
+      // Agent should have providerConfigName
+      expect(result.agents).toHaveLength(1);
+      expect(result.agents[0].providerConfigName).toBe('claude');
+    });
+
+    it('should not include providerConfigs in export when profile has none', async () => {
+      const projectId = 'project-123';
+
+      storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.listAgentProfiles.mockResolvedValue({
+        items: [
+          {
+            id: 'prof-1',
+            name: 'Test Profile',
+            providerId: 'prov-1',
+            options: null,
+            instructions: null,
+            temperature: null,
+            maxTokens: null,
+          },
+        ],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+      storage.listAgents.mockResolvedValue({
+        items: [
+          {
+            id: 'agent-1',
+            name: 'Test Agent',
+            profileId: 'prof-1',
+            providerConfigId: null, // No config
+            description: null,
+          },
+        ],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+      storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.getInitialSessionPrompt.mockResolvedValue(null);
+      storage.getProvider.mockResolvedValue({ id: 'prov-1', name: 'claude' });
+
+      // No provider configs
+      storage.listProfileProviderConfigsByProfile.mockResolvedValue([]);
+
+      const result = await service.exportProject(projectId);
+
+      // Profile should NOT have providerConfigs field
+      expect(result.profiles).toHaveLength(1);
+      expect(result.profiles[0].providerConfigs).toBeUndefined();
+
+      // Agent should NOT have providerConfigName
+      expect(result.agents).toHaveLength(1);
+      expect(result.agents[0].providerConfigName).toBeUndefined();
     });
   });
 
@@ -2818,6 +3352,22 @@ describe('ProjectsService', () => {
       expect(result).toBeNull();
       expect(unifiedTemplateService.getTemplate).toHaveBeenCalledWith('registry-template', '1.0.0');
     });
+
+    it('should return null for file-based templates (source: file)', async () => {
+      settings.getProjectTemplateMetadata.mockReturnValue({
+        templateSlug: 'file-based-template',
+        installedVersion: '1.0.0',
+        source: 'file',
+      });
+
+      const result = await service.getTemplateManifestForProject('project-123');
+
+      // File-based templates cannot provide manifest (source file may have moved/changed)
+      expect(result).toBeNull();
+      // Should not attempt to fetch template
+      expect(unifiedTemplateService.getBundledTemplate).not.toHaveBeenCalled();
+      expect(unifiedTemplateService.getTemplate).not.toHaveBeenCalled();
+    });
   });
 
   describe('getBundledUpgradeVersion', () => {
@@ -3075,6 +3625,571 @@ describe('ProjectsService', () => {
       const result = service.getBundledUpgradesForProjects(projects);
 
       expect(result.get('p1')).toBeNull();
+    });
+  });
+
+  describe('applyPreset', () => {
+    const projectId = 'project-123';
+
+    beforeEach(() => {
+      // Add preset methods to settings mock
+      (settings as { getProjectPresets: jest.Mock }).getProjectPresets = jest.fn();
+      (settings as { setProjectPresets: jest.Mock }).setProjectPresets = jest.fn();
+      (settings as { setProjectActivePreset: jest.Mock }).setProjectActivePreset = jest.fn();
+    });
+
+    it('should apply preset and update agent provider configs', async () => {
+      const preset = {
+        name: 'default',
+        description: 'Default preset',
+        agentConfigs: [
+          { agentName: 'Coder', providerConfigName: 'claude-config' },
+          { agentName: 'Reviewer', providerConfigName: 'gemini-config' },
+        ],
+      };
+
+      (settings as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue([preset]);
+
+      const profileId = 'profile-1';
+      const claudeConfigId = 'config-claude';
+      const geminiConfigId = 'config-gemini';
+
+      storage.listAgentProfiles.mockResolvedValue({
+        items: [
+          {
+            id: profileId,
+            projectId,
+            name: 'CodeOpus',
+            familySlug: 'coder',
+            providerId: 'claude',
+            instructions: null,
+            temperature: null,
+            maxTokens: null,
+            options: null,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+        ],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+
+      storage.listAgents.mockResolvedValue({
+        items: [
+          { id: 'agent-1', name: 'Coder', profileId, providerConfigId: null },
+          { id: 'agent-2', name: 'Reviewer', profileId, providerConfigId: null },
+        ],
+        total: 2,
+        limit: 1000,
+        offset: 0,
+      });
+
+      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        {
+          id: claudeConfigId,
+          profileId,
+          providerId: 'claude',
+          name: 'claude-config',
+          options: null,
+          env: null,
+          createdAt: '',
+          updatedAt: '',
+        },
+        {
+          id: geminiConfigId,
+          profileId,
+          providerId: 'gemini',
+          name: 'gemini-config',
+          options: null,
+          env: null,
+          createdAt: '',
+          updatedAt: '',
+        },
+      ]);
+
+      const updatedAgents: Array<{ id: string; providerConfigId: string | null }> = [];
+      storage.updateAgent.mockImplementation(async (id, data) => {
+        updatedAgents.push({ id, providerConfigId: data.providerConfigId ?? null });
+        return { id, ...data } as never;
+      });
+
+      const result = await service.applyPreset(projectId, 'default');
+
+      expect(result.applied).toBe(2);
+      expect(result.warnings).toHaveLength(0);
+      expect(updatedAgents).toHaveLength(2);
+      expect(updatedAgents[0].providerConfigId).toBe(claudeConfigId);
+      expect(updatedAgents[1].providerConfigId).toBe(geminiConfigId);
+    });
+
+    it('should throw NotFoundError when preset not found', async () => {
+      (settings as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue([
+        { name: 'other', agentConfigs: [] },
+      ]);
+
+      await expect(service.applyPreset(projectId, 'missing')).rejects.toThrow(NotFoundError);
+    });
+
+    it('should return warning for missing agent', async () => {
+      const preset = {
+        name: 'default',
+        agentConfigs: [{ agentName: 'MissingAgent', providerConfigName: 'config' }],
+      };
+
+      (settings as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue([preset]);
+
+      storage.listAgentProfiles.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+
+      const result = await service.applyPreset(projectId, 'default');
+
+      expect(result.applied).toBe(0);
+      expect(result.warnings).toContain('Agent "MissingAgent" not found in project');
+    });
+
+    it('should return warning for missing provider config', async () => {
+      const preset = {
+        name: 'default',
+        agentConfigs: [{ agentName: 'Coder', providerConfigName: 'missing-config' }],
+      };
+
+      (settings as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue([preset]);
+
+      const profileId = 'profile-1';
+      storage.listAgentProfiles.mockResolvedValue({
+        items: [
+          {
+            id: profileId,
+            projectId,
+            name: 'CodeOpus',
+            familySlug: 'coder',
+            providerId: 'claude',
+            instructions: null,
+            temperature: null,
+            maxTokens: null,
+            options: null,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+        ],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+
+      storage.listAgents.mockResolvedValue({
+        items: [{ id: 'agent-1', name: 'Coder', profileId, providerConfigId: null }],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+
+      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        {
+          id: 'config-1',
+          profileId,
+          providerId: 'claude',
+          name: 'other-config',
+          options: null,
+          env: null,
+          createdAt: '',
+          updatedAt: '',
+        },
+      ]);
+
+      const result = await service.applyPreset(projectId, 'default');
+
+      expect(result.applied).toBe(0);
+      expect(result.warnings).toContain(
+        'Provider config "missing-config" not found for agent "Coder"',
+      );
+    });
+
+    it('should match agent names case-insensitively', async () => {
+      const preset = {
+        name: 'default',
+        agentConfigs: [{ agentName: 'coder', providerConfigName: 'config' }],
+      };
+
+      (settings as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue([preset]);
+
+      const profileId = 'profile-1';
+      const configId = 'config-1';
+
+      storage.listAgentProfiles.mockResolvedValue({
+        items: [
+          {
+            id: profileId,
+            projectId,
+            name: 'CodeOpus',
+            familySlug: 'coder',
+            providerId: 'claude',
+            instructions: null,
+            temperature: null,
+            maxTokens: null,
+            options: null,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+        ],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+
+      storage.listAgents.mockResolvedValue({
+        items: [{ id: 'agent-1', name: 'Coder', profileId, providerConfigId: null }],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+
+      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        {
+          id: configId,
+          profileId,
+          providerId: 'claude',
+          name: 'config',
+          options: null,
+          env: null,
+          createdAt: '',
+          updatedAt: '',
+        },
+      ]);
+
+      const updatedAgents: Array<{ id: string }> = [];
+      storage.updateAgent.mockImplementation(async (id) => {
+        updatedAgents.push({ id });
+        return { id } as never;
+      });
+
+      const result = await service.applyPreset(projectId, 'default');
+
+      expect(result.applied).toBe(1);
+      expect(updatedAgents[0].id).toBe('agent-1');
+    });
+
+    it('should set activePreset when full match (no warnings, all applied)', async () => {
+      const preset = {
+        name: 'default',
+        description: 'Default preset',
+        agentConfigs: [
+          { agentName: 'Coder', providerConfigName: 'claude-config' },
+          { agentName: 'Reviewer', providerConfigName: 'gemini-config' },
+        ],
+      };
+
+      (settings as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue([preset]);
+      (settings as { setProjectActivePreset: jest.Mock }).setProjectActivePreset = jest.fn();
+
+      const profileId = 'profile-1';
+      const claudeConfigId = 'config-claude';
+      const geminiConfigId = 'config-gemini';
+
+      storage.listAgentProfiles.mockResolvedValue({
+        items: [
+          {
+            id: profileId,
+            projectId,
+            name: 'CodeOpus',
+            familySlug: 'coder',
+            providerId: 'claude',
+            instructions: null,
+            temperature: null,
+            maxTokens: null,
+            options: null,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+        ],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+
+      storage.listAgents.mockResolvedValue({
+        items: [
+          { id: 'agent-1', name: 'Coder', profileId, providerConfigId: null },
+          { id: 'agent-2', name: 'Reviewer', profileId, providerConfigId: null },
+        ],
+        total: 2,
+        limit: 1000,
+        offset: 0,
+      });
+
+      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        {
+          id: claudeConfigId,
+          profileId,
+          providerId: 'claude',
+          name: 'claude-config',
+          options: null,
+          env: null,
+          createdAt: '',
+          updatedAt: '',
+        },
+        {
+          id: geminiConfigId,
+          profileId,
+          providerId: 'gemini',
+          name: 'gemini-config',
+          options: null,
+          env: null,
+          createdAt: '',
+          updatedAt: '',
+        },
+      ]);
+
+      storage.updateAgent.mockResolvedValue({} as never);
+
+      await service.applyPreset(projectId, 'default');
+
+      expect(settings.setProjectActivePreset).toHaveBeenCalledWith(projectId, 'default');
+    });
+
+    it('should not set activePreset when warnings present', async () => {
+      const preset = {
+        name: 'default',
+        agentConfigs: [{ agentName: 'MissingAgent', providerConfigName: 'config' }],
+      };
+
+      (settings as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue([preset]);
+      (settings as { setProjectActivePreset: jest.Mock }).setProjectActivePreset = jest.fn();
+
+      storage.listAgentProfiles.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+
+      await service.applyPreset(projectId, 'default');
+
+      expect(settings.setProjectActivePreset).not.toHaveBeenCalled();
+    });
+
+    it('should not set activePreset when not all agents applied', async () => {
+      const preset = {
+        name: 'default',
+        agentConfigs: [
+          { agentName: 'Coder', providerConfigName: 'claude-config' },
+          { agentName: 'MissingAgent', providerConfigName: 'config' },
+        ],
+      };
+
+      (settings as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue([preset]);
+      (settings as { setProjectActivePreset: jest.Mock }).setProjectActivePreset = jest.fn();
+
+      const profileId = 'profile-1';
+      const claudeConfigId = 'config-claude';
+
+      storage.listAgentProfiles.mockResolvedValue({
+        items: [
+          {
+            id: profileId,
+            projectId,
+            name: 'CodeOpus',
+            familySlug: 'coder',
+            providerId: 'claude',
+            instructions: null,
+            temperature: null,
+            maxTokens: null,
+            options: null,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+        ],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+
+      storage.listAgents.mockResolvedValue({
+        items: [{ id: 'agent-1', name: 'Coder', profileId, providerConfigId: null }],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+
+      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        {
+          id: claudeConfigId,
+          profileId,
+          providerId: 'claude',
+          name: 'claude-config',
+          options: null,
+          env: null,
+          createdAt: '',
+          updatedAt: '',
+        },
+      ]);
+
+      storage.updateAgent.mockResolvedValue({} as never);
+
+      await service.applyPreset(projectId, 'default');
+
+      // 1 agent applied out of 2 in preset, so not a full match
+      expect(settings.setProjectActivePreset).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('exportProject with presets', () => {
+    it('should include presets from settings when available', async () => {
+      const projectId = 'project-123';
+      const presets = [
+        {
+          name: 'default',
+          description: 'Default configuration',
+          agentConfigs: [{ agentName: 'Coder', providerConfigName: 'claude-config' }],
+        },
+      ];
+
+      (settings as { getProjectPresets: jest.Mock }).getProjectPresets = jest
+        .fn()
+        .mockReturnValue(presets);
+
+      storage.getProject.mockResolvedValue({
+        id: projectId,
+        name: 'Test Project',
+        rootPath: '/test/path',
+        isTemplate: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+
+      storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      storage.listAgentProfiles.mockResolvedValue({
+        items: [],
+        total: 0,
+        limit: 100,
+        offset: 0,
+      });
+      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      storage.listWatchers.mockResolvedValue([]);
+      storage.listSubscribers.mockResolvedValue([]);
+
+      const result = await service.exportProject(projectId);
+
+      expect(result.presets).toEqual(presets);
+    });
+
+    it('should not include presets field when none exist', async () => {
+      const projectId = 'project-123';
+
+      (settings as { getProjectPresets: jest.Mock }).getProjectPresets = jest
+        .fn()
+        .mockReturnValue([]);
+
+      storage.getProject.mockResolvedValue({
+        id: projectId,
+        name: 'Test Project',
+        rootPath: '/test/path',
+        isTemplate: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+
+      storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      storage.listAgentProfiles.mockResolvedValue({
+        items: [],
+        total: 0,
+        limit: 100,
+        offset: 0,
+      });
+      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      storage.listWatchers.mockResolvedValue([]);
+      storage.listSubscribers.mockResolvedValue([]);
+
+      const result = await service.exportProject(projectId);
+
+      expect(result.presets).toBeUndefined();
+    });
+
+    it('should include empty presets array when override is empty (explicit no presets)', async () => {
+      const projectId = 'project-123';
+      const storedPresets = [
+        {
+          name: 'stored-preset',
+          agentConfigs: [{ agentName: 'Agent', providerConfigName: 'config' }],
+        },
+      ];
+
+      // Mock stored presets (should be ignored when override is provided)
+      (settings as { getProjectPresets: jest.Mock }).getProjectPresets = jest
+        .fn()
+        .mockReturnValue(storedPresets);
+
+      storage.getProject.mockResolvedValue({
+        id: projectId,
+        name: 'Test Project',
+        rootPath: '/test/path',
+        isTemplate: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+
+      storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      storage.listAgentProfiles.mockResolvedValue({
+        items: [],
+        total: 0,
+        limit: 100,
+        offset: 0,
+      });
+      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      storage.listWatchers.mockResolvedValue([]);
+      storage.listSubscribers.mockResolvedValue([]);
+
+      // Pass empty array as override - should explicitly export without presets
+      const result = await service.exportProject(projectId, { presets: [] });
+
+      expect(result.presets).toEqual([]);
+    });
+
+    it('should use override presets when provided', async () => {
+      const projectId = 'project-123';
+      const storedPresets = [
+        {
+          name: 'stored-preset',
+          agentConfigs: [{ agentName: 'Agent', providerConfigName: 'old-config' }],
+        },
+      ];
+      const overridePresets = [
+        {
+          name: 'override-preset',
+          description: 'Custom override',
+          agentConfigs: [{ agentName: 'NewAgent', providerConfigName: 'new-config' }],
+        },
+      ];
+
+      // Mock stored presets (should be ignored when override is provided)
+      (settings as { getProjectPresets: jest.Mock }).getProjectPresets = jest
+        .fn()
+        .mockReturnValue(storedPresets);
+
+      storage.getProject.mockResolvedValue({
+        id: projectId,
+        name: 'Test Project',
+        rootPath: '/test/path',
+        isTemplate: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+
+      storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      storage.listAgentProfiles.mockResolvedValue({
+        items: [],
+        total: 0,
+        limit: 100,
+        offset: 0,
+      });
+      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      storage.listWatchers.mockResolvedValue([]);
+      storage.listSubscribers.mockResolvedValue([]);
+
+      const result = await service.exportProject(projectId, { presets: overridePresets });
+
+      expect(result.presets).toEqual(overridePresets);
     });
   });
 });

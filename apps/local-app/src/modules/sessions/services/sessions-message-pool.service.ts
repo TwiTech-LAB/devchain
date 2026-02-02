@@ -824,7 +824,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
 
     try {
       // Ensure gap before sending
-      await this.sendCoordinator.ensureAgentGap(agentId, 500);
+      await this.sendCoordinator.ensureAgentGap(agentId, 1000);
 
       // Paste and submit
       await this.tmux.pasteAndSubmit(tmuxSessionId, combinedText, {
@@ -898,7 +898,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
 
     // Use agent lock for consistency
     await this.coordinator.withAgentLock(agentId, async () => {
-      await this.sendCoordinator.ensureAgentGap(agentId, 500);
+      await this.sendCoordinator.ensureAgentGap(agentId, 1000);
       await this.tmux.pasteAndSubmit(tmuxSessionId, text, {
         bracketed: true,
         submitKeys,

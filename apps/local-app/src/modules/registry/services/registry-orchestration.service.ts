@@ -181,6 +181,28 @@ export class RegistryOrchestrationService {
       installedAt: new Date().toISOString(),
     });
 
+    // 7. Persist presets from template (if present)
+    // Presets are stored at the root level of the template content
+    if (
+      templateContent.presets &&
+      Array.isArray(templateContent.presets) &&
+      templateContent.presets.length > 0
+    ) {
+      try {
+        await this.settingsService.setProjectPresets(project.id, templateContent.presets);
+        logger.info(
+          { projectId: project.id, presetCount: templateContent.presets.length },
+          'Presets persisted from template',
+        );
+      } catch (error) {
+        // Log error but don't fail - presets are nice-to-have, project is already created
+        logger.warn(
+          { projectId: project.id, error: error instanceof Error ? error.message : String(error) },
+          'Failed to persist presets from template',
+        );
+      }
+    }
+
     logger.info({ projectId: project.id, slug, version }, 'Project created from registry template');
 
     return {

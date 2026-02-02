@@ -14,6 +14,7 @@ describe('WatcherRunnerService', () => {
     getWatcher: jest.Mock;
     listAgents: jest.Mock;
     getAgentProfile: jest.Mock;
+    getProfileProviderConfig: jest.Mock;
     getAgent: jest.Mock;
   };
   let mockSessionsService: {
@@ -64,6 +65,8 @@ describe('WatcherRunnerService', () => {
       getWatcher: jest.fn(),
       listAgents: jest.fn().mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 }),
       getAgentProfile: jest.fn(),
+      getProfileProviderConfig: jest.fn(),
+      listProfileProviderConfigsByProfile: jest.fn().mockResolvedValue([]),
       getAgent: jest.fn().mockResolvedValue(null),
     };
 
@@ -265,10 +268,17 @@ describe('WatcherRunnerService', () => {
           offset: 0,
         });
 
-        mockStorage.getAgentProfile
-          .mockResolvedValueOnce({ id: 'profile-A', providerId: 'provider-X' })
-          .mockResolvedValueOnce({ id: 'profile-B', providerId: 'provider-Y' })
-          .mockResolvedValueOnce({ id: 'profile-C', providerId: 'provider-X' });
+        // Provider info now comes from configs (Phase 4)
+        mockStorage.listProfileProviderConfigsByProfile
+          .mockResolvedValueOnce([
+            { id: 'config-A', profileId: 'profile-A', providerId: 'provider-X' },
+          ])
+          .mockResolvedValueOnce([
+            { id: 'config-B', profileId: 'profile-B', providerId: 'provider-Y' },
+          ])
+          .mockResolvedValueOnce([
+            { id: 'config-C', profileId: 'profile-C', providerId: 'provider-X' },
+          ]);
 
         const watcher = createMockWatcher({ scope: 'provider', scopeFilterId: 'provider-X' });
         const result = await service.getMatchingSessions(watcher);
@@ -295,16 +305,16 @@ describe('WatcherRunnerService', () => {
           offset: 0,
         });
 
-        mockStorage.getAgentProfile.mockResolvedValue({
-          id: 'profile-A',
-          providerId: 'provider-X',
-        });
+        // Provider info now from configs
+        mockStorage.listProfileProviderConfigsByProfile.mockResolvedValue([
+          { id: 'config-A', profileId: 'profile-A', providerId: 'provider-X' },
+        ]);
 
         const watcher = createMockWatcher({ scope: 'provider', scopeFilterId: 'provider-X' });
         await service.getMatchingSessions(watcher);
 
-        // Profile should only be fetched once due to caching
-        expect(mockStorage.getAgentProfile).toHaveBeenCalledTimes(1);
+        // Configs should only be fetched once per profile due to caching
+        expect(mockStorage.listProfileProviderConfigsByProfile).toHaveBeenCalledTimes(1);
       });
 
       it('should exclude sessions without agentId', async () => {
@@ -323,10 +333,10 @@ describe('WatcherRunnerService', () => {
           offset: 0,
         });
 
-        mockStorage.getAgentProfile.mockResolvedValue({
-          id: 'profile-A',
-          providerId: 'provider-X',
-        });
+        // Provider info from configs
+        mockStorage.listProfileProviderConfigsByProfile.mockResolvedValue([
+          { id: 'config-A', profileId: 'profile-A', providerId: 'provider-X' },
+        ]);
 
         const watcher = createMockWatcher({ scope: 'provider', scopeFilterId: 'provider-X' });
         const result = await service.getMatchingSessions(watcher);
@@ -335,7 +345,7 @@ describe('WatcherRunnerService', () => {
         expect(result[0].id).toBe('session-1');
       });
 
-      it('should skip agents with missing profiles', async () => {
+      it('should skip agents with missing configs', async () => {
         const sessions = [
           createMockSession({ id: 'session-1', agentId: 'agent-1' }),
           createMockSession({ id: 'session-2', agentId: 'agent-2' }),
@@ -357,14 +367,17 @@ describe('WatcherRunnerService', () => {
           offset: 0,
         });
 
-        mockStorage.getAgentProfile
-          .mockResolvedValueOnce({ id: 'profile-A', providerId: 'provider-X' })
+        // Config lookup fails for profile-missing
+        mockStorage.listProfileProviderConfigsByProfile
+          .mockResolvedValueOnce([
+            { id: 'config-A', profileId: 'profile-A', providerId: 'provider-X' },
+          ])
           .mockRejectedValueOnce(new Error('Profile not found'));
 
         const watcher = createMockWatcher({ scope: 'provider', scopeFilterId: 'provider-X' });
         const result = await service.getMatchingSessions(watcher);
 
-        // Only agent-1 should be included (agent-2's profile lookup failed)
+        // Only agent-1 should be included (agent-2's config lookup failed)
         expect(result).toHaveLength(1);
         expect(result[0].id).toBe('session-1');
       });
@@ -391,6 +404,187 @@ describe('WatcherRunnerService', () => {
         const result = await service.getMatchingSessions(watcher);
 
         expect(result).toEqual([]);
+      });
+
+      it('should use providerConfigId when available', async () => {
+        const sessions = [
+          createMockSession({ id: 'session-1', agentId: 'agent-1' }),
+          createMockSession({ id: 'session-2', agentId: 'agent-2' }),
+        ];
+        mockSessionsService.listActiveSessions.mockResolvedValue(sessions);
+
+        mockStorage.listAgents.mockResolvedValue({
+          items: [
+            {
+              id: 'agent-1',
+              profileId: 'profile-A',
+              providerConfigId: 'config-1',
+              projectId: 'project-1',
+              name: 'Agent 1',
+            },
+            {
+              id: 'agent-2',
+              profileId: 'profile-A',
+              providerConfigId: 'config-2',
+              projectId: 'project-1',
+              name: 'Agent 2',
+            },
+          ],
+          total: 2,
+          limit: 100,
+          offset: 0,
+        });
+
+        mockStorage.getProfileProviderConfig
+          .mockResolvedValueOnce({
+            id: 'config-1',
+            profileId: 'profile-A',
+            providerId: 'provider-X',
+          })
+          .mockResolvedValueOnce({
+            id: 'config-2',
+            profileId: 'profile-A',
+            providerId: 'provider-Y',
+          });
+
+        const watcher = createMockWatcher({ scope: 'provider', scopeFilterId: 'provider-X' });
+        const result = await service.getMatchingSessions(watcher);
+
+        expect(mockStorage.getProfileProviderConfig).toHaveBeenCalledTimes(2);
+        expect(mockStorage.getAgentProfile).not.toHaveBeenCalled();
+        expect(result).toHaveLength(1);
+        expect(result[0].id).toBe('session-1');
+      });
+
+      it('should fall back to profile configs when providerConfigId lookup fails', async () => {
+        const sessions = [createMockSession({ id: 'session-1', agentId: 'agent-1' })];
+        mockSessionsService.listActiveSessions.mockResolvedValue(sessions);
+
+        mockStorage.listAgents.mockResolvedValue({
+          items: [
+            {
+              id: 'agent-1',
+              profileId: 'profile-A',
+              providerConfigId: 'config-missing',
+              projectId: 'project-1',
+              name: 'Agent 1',
+            },
+          ],
+          total: 1,
+          limit: 100,
+          offset: 0,
+        });
+
+        // Direct config lookup fails
+        mockStorage.getProfileProviderConfig.mockRejectedValue(new Error('Config not found'));
+        // Fallback to profile's configs (Phase 4 behavior)
+        mockStorage.listProfileProviderConfigsByProfile.mockResolvedValue([
+          { id: 'config-A', profileId: 'profile-A', providerId: 'provider-X' },
+        ]);
+
+        const watcher = createMockWatcher({ scope: 'provider', scopeFilterId: 'provider-X' });
+        const result = await service.getMatchingSessions(watcher);
+
+        expect(mockStorage.getProfileProviderConfig).toHaveBeenCalledWith('config-missing');
+        expect(mockStorage.listProfileProviderConfigsByProfile).toHaveBeenCalledWith('profile-A');
+        expect(result).toHaveLength(1);
+        expect(result[0].id).toBe('session-1');
+      });
+
+      it('should cache config lookups within a poll cycle', async () => {
+        const sessions = [
+          createMockSession({ id: 'session-1', agentId: 'agent-1' }),
+          createMockSession({ id: 'session-2', agentId: 'agent-2' }),
+        ];
+        mockSessionsService.listActiveSessions.mockResolvedValue(sessions);
+
+        // Both agents use the same config
+        mockStorage.listAgents.mockResolvedValue({
+          items: [
+            {
+              id: 'agent-1',
+              profileId: 'profile-A',
+              providerConfigId: 'config-1',
+              projectId: 'project-1',
+              name: 'Agent 1',
+            },
+            {
+              id: 'agent-2',
+              profileId: 'profile-A',
+              providerConfigId: 'config-1',
+              projectId: 'project-1',
+              name: 'Agent 2',
+            },
+          ],
+          total: 2,
+          limit: 100,
+          offset: 0,
+        });
+
+        mockStorage.getProfileProviderConfig.mockResolvedValue({
+          id: 'config-1',
+          profileId: 'profile-A',
+          providerId: 'provider-X',
+        });
+
+        const watcher = createMockWatcher({ scope: 'provider', scopeFilterId: 'provider-X' });
+        await service.getMatchingSessions(watcher);
+
+        // Config should only be fetched once due to caching
+        expect(mockStorage.getProfileProviderConfig).toHaveBeenCalledTimes(1);
+      });
+
+      it('should cache profile lookups for profiles without configs (undefined providerId)', async () => {
+        const sessions = [
+          createMockSession({ id: 'session-1', agentId: 'agent-1' }),
+          createMockSession({ id: 'session-2', agentId: 'agent-2' }),
+          createMockSession({ id: 'session-3', agentId: 'agent-3' }),
+        ];
+        mockSessionsService.listActiveSessions.mockResolvedValue(sessions);
+
+        // All agents use the same profile but have no providerConfigId
+        // This triggers the fallback path via listProfileProviderConfigsByProfile
+        mockStorage.listAgents.mockResolvedValue({
+          items: [
+            {
+              id: 'agent-1',
+              profileId: 'profile-no-configs',
+              providerConfigId: null,
+              projectId: 'project-1',
+              name: 'Agent 1',
+            },
+            {
+              id: 'agent-2',
+              profileId: 'profile-no-configs',
+              providerConfigId: null,
+              projectId: 'project-1',
+              name: 'Agent 2',
+            },
+            {
+              id: 'agent-3',
+              profileId: 'profile-no-configs',
+              providerConfigId: null,
+              projectId: 'project-1',
+              name: 'Agent 3',
+            },
+          ],
+          total: 3,
+          limit: 100,
+          offset: 0,
+        });
+
+        // Profile has no configs, so providerId will be undefined
+        mockStorage.listProfileProviderConfigsByProfile.mockResolvedValue([]);
+
+        const watcher = createMockWatcher({ scope: 'provider', scopeFilterId: 'provider-X' });
+        await service.getMatchingSessions(watcher);
+
+        // Profile configs should only be fetched ONCE despite 3 agents sharing the same profile
+        // This verifies the cache correctly handles undefined providerId values
+        expect(mockStorage.listProfileProviderConfigsByProfile).toHaveBeenCalledTimes(1);
+        expect(mockStorage.listProfileProviderConfigsByProfile).toHaveBeenCalledWith(
+          'profile-no-configs',
+        );
       });
     });
 

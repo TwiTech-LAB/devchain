@@ -2391,6 +2391,7 @@ describe('McpService', () => {
           agentName: 'Alpha',
           parentId: null,
         }),
+        expect.any(Object),
       );
 
       const payload = response.data as { epic: { id: string; title: string } };
@@ -2435,6 +2436,7 @@ describe('McpService', () => {
           title: 'Child Epic',
           parentId: '6e5ef0d0-0c4b-4d5d-bfce-5fdf52a5b890',
         }),
+        expect.any(Object),
       );
     });
 
@@ -2841,6 +2843,7 @@ describe('McpService', () => {
             description: 'New description',
           }),
           1,
+          expect.any(Object),
         );
 
         const payload = response.data as { epic: { id: string; title: string } };
@@ -2873,6 +2876,7 @@ describe('McpService', () => {
             statusId: status.id,
           }),
           1,
+          expect.any(Object),
         );
       });
 
@@ -2936,6 +2940,7 @@ describe('McpService', () => {
             agentId: agent.id,
           }),
           1,
+          expect.any(Object),
         );
       });
 
@@ -2962,6 +2967,7 @@ describe('McpService', () => {
             agentId: null,
           }),
           1,
+          expect.any(Object),
         );
       });
 
@@ -3022,6 +3028,7 @@ describe('McpService', () => {
             tags: ['new', 'fresh'],
           }),
           1,
+          expect.any(Object),
         );
       });
 
@@ -3049,6 +3056,7 @@ describe('McpService', () => {
             tags: expect.arrayContaining(['feature', 'reviewed', 'ready']),
           }),
           1,
+          expect.any(Object),
         );
       });
 
@@ -3087,6 +3095,7 @@ describe('McpService', () => {
             parentId: parentEpic.id,
           }),
           1,
+          expect.any(Object),
         );
       });
 
@@ -3116,6 +3125,7 @@ describe('McpService', () => {
             parentId: null,
           }),
           1,
+          expect.any(Object),
         );
       });
 

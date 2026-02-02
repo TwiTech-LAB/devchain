@@ -43,6 +43,7 @@ describe('ProfilesPage update flow persists order', () => {
                 id: 'prof-1',
                 name: 'Runner',
                 providerId: 'prov-1',
+                provider: { id: 'prov-1', name: 'codex', binPath: null },
                 options: null,
                 instructions: null,
                 prompts: [
@@ -85,6 +86,11 @@ describe('ProfilesPage update flow persists order', () => {
 
       if (url === '/api/profiles/prof-1/prompts' && method === 'PUT') {
         return { ok: true, json: async () => ({ profileId: 'prof-1', prompts: [] }) } as Response;
+      }
+
+      // Provider configs endpoint - return empty array
+      if (url.match(/\/api\/profiles\/[^/]+\/provider-configs/)) {
+        return { ok: true, json: async () => [] } as Response;
       }
 
       return { ok: true, json: async () => ({}) } as Response;

@@ -5,7 +5,7 @@ import { isLessThan } from '@devchain/shared';
  */
 export interface CachedTemplateInfo {
   slug: string;
-  source: 'bundled' | 'registry';
+  source: 'bundled' | 'registry' | 'file';
   latestVersion: string | null;
 }
 

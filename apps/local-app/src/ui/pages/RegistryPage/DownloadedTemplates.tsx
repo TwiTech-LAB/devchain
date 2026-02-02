@@ -90,7 +90,7 @@ function UpdateBadge({
   isDownloading,
 }: {
   status: TemplateUpdateStatus;
-  source: 'bundled' | 'registry';
+  source: 'bundled' | 'registry' | 'file';
   onDownload?: () => void;
   isDownloading?: boolean;
 }) {

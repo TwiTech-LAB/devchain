@@ -9,7 +9,7 @@ import { SessionsService } from '../../sessions/services/sessions.service';
 import { SessionsMessagePoolService } from '../../sessions/services/sessions-message-pool.service';
 import { TerminalGateway } from '../../terminal/gateways/terminal.gateway';
 import { TmuxService } from '../../terminal/services/tmux.service';
-import { EpicsService } from '../../epics/services/epics.service';
+import { EpicsService, EpicOperationContext } from '../../epics/services/epics.service';
 import { SettingsService } from '../../settings/services/settings.service';
 import { GuestsService } from '../../guests/services/guests.service';
 import { ReviewsService } from '../../reviews/services/reviews.service';
@@ -1311,14 +1311,29 @@ export class McpService {
     }
 
     try {
-      const epic = await this.epicsService.createEpicForProject(project.id, {
-        title: validated.title,
-        description: validated.description ?? null,
-        statusId,
-        tags: validated.tags ?? [],
-        agentName: validated.agentName,
-        parentId: validated.parentId ?? null,
-      });
+      // Build actor from session context
+      const sessionCtx = ctx.data as SessionContext;
+      const actor =
+        sessionCtx.type === 'agent'
+          ? { type: 'agent' as const, id: (sessionCtx as AgentSessionContext).agent!.id }
+          : sessionCtx.type === 'guest'
+            ? { type: 'guest' as const, id: (sessionCtx as GuestSessionContext).guest!.id }
+            : null;
+
+      const context: EpicOperationContext = { actor };
+
+      const epic = await this.epicsService.createEpicForProject(
+        project.id,
+        {
+          title: validated.title,
+          description: validated.description ?? null,
+          statusId,
+          tags: validated.tags ?? [],
+          agentName: validated.agentName,
+          parentId: validated.parentId ?? null,
+        },
+        context,
+      );
 
       // Resolve agent name if epic has an agent assigned
       let agentNameById: Map<string, string> | undefined;
@@ -1781,7 +1796,23 @@ export class McpService {
     // Update epic with optimistic locking
     let updatedEpic: Epic;
     try {
-      updatedEpic = await this.epicsService.updateEpic(validated.id, updateData, validated.version);
+      // Build actor from session context
+      const sessionCtx = ctx.data as SessionContext;
+      const actor =
+        sessionCtx.type === 'agent'
+          ? { type: 'agent' as const, id: (sessionCtx as AgentSessionContext).agent!.id }
+          : sessionCtx.type === 'guest'
+            ? { type: 'guest' as const, id: (sessionCtx as GuestSessionContext).guest!.id }
+            : null;
+
+      const context: EpicOperationContext = { actor };
+
+      updatedEpic = await this.epicsService.updateEpic(
+        validated.id,
+        updateData,
+        validated.version,
+        context,
+      );
     } catch (error) {
       if (error instanceof Error && error.message.includes('was modified by another operation')) {
         // Fetch current version

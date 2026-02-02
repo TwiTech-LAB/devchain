@@ -9,24 +9,33 @@ import {
   Inject,
   Query,
   BadRequestException,
+  ConflictException,
 } from '@nestjs/common';
 import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import {
   CreateAgentProfile,
   UpdateAgentProfile,
   AgentProfile,
+  ProfileProviderConfig,
 } from '../../storage/models/domain.models';
 import { z } from 'zod';
 import { createLogger } from '../../../common/logging/logger';
-import { AgentProfileWithPrompts, AgentProfileWithPromptsSchema } from '../dto';
+import {
+  AgentProfileWithPrompts,
+  AgentProfileWithPromptsSchema,
+  CreateProviderConfigSchema,
+  ProfileProviderConfigSchema,
+  ReorderProviderConfigsSchema,
+} from '../dto';
 import { ValidationError } from '../../../common/errors/error-types';
 
 const logger = createLogger('ProfilesController');
 
+// Note: providerId and options removed in Phase 4
+// Provider configuration now lives in ProfileProviderConfig (created separately)
 const CreateProfileSchema = z.object({
   projectId: z.string().min(1),
   name: z.string().min(1),
-  providerId: z.string().min(1),
   familySlug: z
     .union([z.string(), z.null()])
     .optional()
@@ -38,19 +47,6 @@ const CreateProfileSchema = z.object({
         return null;
       }
       const trimmed = value.trim().toLowerCase();
-      return trimmed.length > 0 ? trimmed : null;
-    }),
-  options: z
-    .union([z.string(), z.null()])
-    .optional()
-    .transform((value) => {
-      if (value === undefined) {
-        return undefined;
-      }
-      if (value === null) {
-        return null;
-      }
-      const trimmed = value.trim();
       return trimmed.length > 0 ? trimmed : null;
     }),
   systemPrompt: z.string().nullable().optional(),
@@ -181,6 +177,118 @@ export class ProfilesController {
   @Delete(':id')
   async deleteProfile(@Param('id') id: string): Promise<void> {
     logger.info({ id }, 'DELETE /api/profiles/:id');
+
+    // Check if any agents are using this profile
+    const profile = await this.storage.getAgentProfile(id);
+    if (profile.projectId) {
+      const agents = await this.storage.listAgents(profile.projectId, {
+        limit: 10000,
+        offset: 0,
+      });
+      const agentsUsingProfile = agents.items.filter((a) => a.profileId === id);
+
+      if (agentsUsingProfile.length > 0) {
+        const agentNames = agentsUsingProfile.map((a) => a.name).join(', ');
+        throw new ConflictException({
+          message: `Cannot delete profile: ${agentsUsingProfile.length} agent(s) are still using it`,
+          details: `The following agents use this profile: ${agentNames}`,
+          agentCount: agentsUsingProfile.length,
+          agents: agentNames,
+        });
+      }
+    }
+
     await this.storage.deleteAgentProfile(id);
+  }
+
+  // ============================================
+  // PROFILE PROVIDER CONFIGS
+  // ============================================
+
+  @Get(':id/provider-configs')
+  async listProviderConfigs(@Param('id') profileId: string): Promise<ProfileProviderConfig[]> {
+    logger.info({ profileId }, 'GET /api/profiles/:id/provider-configs');
+    // Verify profile exists first
+    await this.storage.getAgentProfile(profileId);
+    const configs = await this.storage.listProfileProviderConfigsByProfile(profileId);
+    return configs.map((c) => ProfileProviderConfigSchema.parse(c));
+  }
+
+  @Post(':id/provider-configs')
+  async createProviderConfig(
+    @Param('id') profileId: string,
+    @Body() body: unknown,
+  ): Promise<ProfileProviderConfig> {
+    logger.info({ profileId }, 'POST /api/profiles/:id/provider-configs');
+
+    // Verify profile exists first
+    await this.storage.getAgentProfile(profileId);
+
+    const data = CreateProviderConfigSchema.parse(body);
+
+    const config = await this.storage.createProfileProviderConfig({
+      profileId,
+      providerId: data.providerId,
+      name: data.name,
+      options: data.options ?? null,
+      env: data.env ?? null,
+    });
+
+    return ProfileProviderConfigSchema.parse(config);
+  }
+
+  @Put(':id/provider-configs/order')
+  async reorderProviderConfigs(
+    @Param('id') profileId: string,
+    @Body() body: unknown,
+  ): Promise<{ success: boolean }> {
+    logger.info({ profileId }, 'PUT /api/profiles/:id/provider-configs/order');
+
+    // Verify profile exists first
+    await this.storage.getAgentProfile(profileId);
+
+    // Validate request body
+    const data = ReorderProviderConfigsSchema.parse(body);
+    const { configIds } = data;
+
+    // Get all configs for this profile
+    const configs = await this.storage.listProfileProviderConfigsByProfile(profileId);
+    const configMap = new Map(configs.map((c) => [c.id, c]));
+
+    // Validate all configs exist and belong to this profile
+    for (const configId of configIds) {
+      const config = configMap.get(configId);
+      if (!config) {
+        throw new BadRequestException(
+          `Config ${configId} not found or does not belong to profile ${profileId}`,
+        );
+      }
+    }
+
+    // Check for duplicates (Zod schema doesn't check for duplicates in array)
+    if (new Set(configIds).size !== configIds.length) {
+      throw new BadRequestException('Duplicate configIds provided');
+    }
+
+    // Validate configIds includes all configs (must be a full permutation)
+    if (configIds.length !== configs.length) {
+      throw new BadRequestException(
+        `All configs must be included in reorder. Expected ${configs.length} configs, got ${configIds.length}.`,
+      );
+    }
+    const allConfigIds = new Set(configs.map((c) => c.id));
+    const requestConfigIds = new Set(configIds);
+    for (const configId of allConfigIds) {
+      if (!requestConfigIds.has(configId)) {
+        throw new BadRequestException(
+          `All configs must be included in reorder. Missing config: ${configId}`,
+        );
+      }
+    }
+
+    // Perform atomic reorder with transaction
+    await this.storage.reorderProfileProviderConfigs(profileId, configIds);
+
+    return { success: true };
   }
 }

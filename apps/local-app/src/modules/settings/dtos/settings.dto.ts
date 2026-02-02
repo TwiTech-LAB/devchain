@@ -44,8 +44,8 @@ const AutoCleanSettingsSchema = z.object({
 // Registry template metadata for tracking installed templates per project
 const RegistryTemplateMetadataSchema = z.object({
   templateSlug: z.string(),
-  /** Template source: 'bundled' (shipped with app) or 'registry' (downloaded) */
-  source: z.enum(['bundled', 'registry']).optional(), // Optional for backward compat, defaults to 'registry'
+  /** Template source: 'bundled' (shipped with app), 'registry' (downloaded), or 'file' (external file path) */
+  source: z.enum(['bundled', 'registry', 'file']).optional(), // Optional for backward compat, defaults to 'registry'
   /** Installed version - null for bundled templates */
   installedVersion: z.string().nullable(),
   /** Registry URL - null for bundled templates */
@@ -53,6 +53,24 @@ const RegistryTemplateMetadataSchema = z.object({
   installedAt: z.string(), // ISO timestamp
   lastUpdateCheckAt: z.string().optional(), // ISO timestamp
 });
+
+// Template preset configuration for agent provider mappings
+const TemplatePresetAgentConfigSchema = z.object({
+  agentName: z.string().min(1),
+  providerConfigName: z.string().min(1),
+});
+
+export const TemplatePresetSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().nullable().optional(),
+  agentConfigs: z.array(TemplatePresetAgentConfigSchema),
+});
+
+// Per-project preset storage: projectId -> array of presets
+const ProjectPresetsSchema = z.record(z.string(), z.array(TemplatePresetSchema));
+
+// Per-project active preset tracking: projectId -> preset name (nullable)
+const ProjectActivePresetsSchema = z.record(z.string(), z.string().nullable());
 
 // Registry configuration settings
 const RegistryConfigSchema = z.object({
@@ -117,6 +135,10 @@ export const SettingsSchema = z.object({
   registry: RegistryConfigSchema.optional(),
   // Per-project template tracking: projectId -> metadata
   registryTemplates: z.record(z.string(), RegistryTemplateMetadataSchema).optional(),
+  // Per-project template presets: projectId -> array of presets
+  projectPresets: ProjectPresetsSchema.optional(),
+  // Per-project active preset tracking: projectId -> preset name
+  projectActivePresets: ProjectActivePresetsSchema.optional(),
 });
 
 export type SettingsDto = z.infer<typeof SettingsSchema>;
@@ -125,3 +147,4 @@ export type TerminalSettingsDto = z.infer<typeof TerminalSettingsSchema>;
 export type TerminalInputMode = (typeof TERMINAL_INPUT_MODES)[number];
 export type RegistryTemplateMetadataDto = z.infer<typeof RegistryTemplateMetadataSchema>;
 export type RegistryConfigDto = z.infer<typeof RegistryConfigSchema>;
+export type TemplatePresetDto = z.infer<typeof TemplatePresetSchema>;

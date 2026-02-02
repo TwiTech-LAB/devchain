@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { isValidSemVer } from '@devchain/shared';
 import {
   Dialog,
@@ -14,8 +14,13 @@ import { Label } from '@/ui/components/ui/label';
 import { Textarea } from '@/ui/components/ui/textarea';
 import { Badge } from '@/ui/components/ui/badge';
 import { ScrollArea } from '@/ui/components/ui/scroll-area';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/ui/components/ui/collapsible';
 import { useToast } from '@/ui/hooks/use-toast';
-import { Loader2, Upload, X } from 'lucide-react';
+import { Loader2, Upload, X, ChevronDown, ChevronRight, ExternalLink } from 'lucide-react';
 
 interface ManifestData {
   slug?: string;
@@ -27,6 +32,15 @@ interface ManifestData {
   changelog?: string;
   authorName?: string;
   minDevchainVersion?: string;
+}
+
+interface PresetData {
+  name: string;
+  description?: string | null;
+  agentConfigs: Array<{
+    agentName: string;
+    providerConfigName: string;
+  }>;
 }
 
 interface ExportDialogProps {
@@ -113,6 +127,32 @@ export function ExportDialog({
     minDevchainVersion: existingManifest?.minDevchainVersion || '',
   }));
 
+  // Presets state - read-only display
+  const [presets, setPresets] = useState<PresetData[]>([]);
+  const [isPresetsOpen, setIsPresetsOpen] = useState(false);
+
+  // Fetch export data on mount to get existing presets
+  useEffect(() => {
+    const fetchExportData = async () => {
+      try {
+        const response = await fetch(`/api/projects/${projectId}/export`);
+        if (response.ok) {
+          const data = await response.json();
+          // Load existing presets from export data
+          if (data.presets && Array.isArray(data.presets)) {
+            setPresets(data.presets);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch export data:', err);
+      }
+    };
+
+    if (open) {
+      fetchExportData();
+    }
+  }, [open, projectId]);
+
   // Suggested versions based on current version
   const suggestedVersions = useMemo(() => {
     const base = existingManifest?.version || '0.0.0';
@@ -133,12 +173,16 @@ export function ExportDialog({
     try {
       setIsExporting(true);
 
+      // Prepare export payload - backend already includes presets from project settings
+      const exportPayload = {
+        manifest: { ...manifest, category: 'development' },
+      };
+
       // Call POST endpoint with manifest overrides
-      // Category is hardcoded to 'development' (UI field was removed)
       const response = await fetch(`/api/projects/${projectId}/export`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ manifest: { ...manifest, category: 'development' } }),
+        body: JSON.stringify(exportPayload),
       });
 
       if (!response.ok) {
@@ -391,6 +435,67 @@ export function ExportDialog({
                 </p>
               )}
             </div>
+
+            {/* Presets Section - Read Only */}
+            <Collapsible open={isPresetsOpen} onOpenChange={setIsPresetsOpen}>
+              <CollapsibleTrigger className="flex items-center gap-2 py-2 w-full hover:bg-muted/50 rounded-md px-2">
+                {isPresetsOpen ? (
+                  <ChevronDown className="h-4 w-4" />
+                ) : (
+                  <ChevronRight className="h-4 w-4" />
+                )}
+                <span className="font-medium">Presets</span>
+                {presets.length > 0 && (
+                  <Badge variant="secondary" className="ml-auto">
+                    {presets.length}
+                  </Badge>
+                )}
+              </CollapsibleTrigger>
+              <CollapsibleContent className="space-y-3 pt-2">
+                <div className="flex justify-between items-center">
+                  <p className="text-xs text-muted-foreground">
+                    Named configurations mapping agents to provider configs
+                  </p>
+                  <a
+                    href="/agents"
+                    className="text-xs text-primary hover:underline flex items-center gap-1"
+                  >
+                    Manage presets
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                </div>
+
+                {/* Presets List */}
+                {presets.length > 0 ? (
+                  <div className="space-y-2">
+                    {presets.map((preset) => (
+                      <div key={preset.name} className="border rounded-md p-3 space-y-2">
+                        <div>
+                          <h4 className="font-medium text-sm">{preset.name}</h4>
+                          {preset.description && (
+                            <p className="text-xs text-muted-foreground">{preset.description}</p>
+                          )}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {preset.agentConfigs.length} agent
+                          {preset.agentConfigs.length !== 1 ? 's' : ''} configured
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="border rounded-md p-4 bg-muted/30 text-center">
+                    <p className="text-xs text-muted-foreground">
+                      No presets configured.{' '}
+                      <a href="/agents" className="text-primary hover:underline">
+                        Create presets on the Agents page
+                      </a>{' '}
+                      to include them in exports.
+                    </p>
+                  </div>
+                )}
+              </CollapsibleContent>
+            </Collapsible>
           </div>
         </ScrollArea>
 

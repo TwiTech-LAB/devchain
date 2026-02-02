@@ -410,7 +410,7 @@ describe('SessionsMessagePoolService', () => {
       await service.enqueue('agent-1', 'Message', { source: 'test' });
       await jest.advanceTimersByTimeAsync(10001);
 
-      expect(mockSendCoordinator.ensureAgentGap).toHaveBeenCalledWith('agent-1', 500);
+      expect(mockSendCoordinator.ensureAgentGap).toHaveBeenCalledWith('agent-1', 1000);
     });
 
     it('should use agent lock for immediate delivery', async () => {

@@ -79,10 +79,20 @@ describe('LocalStorageService - mcpHidden Filtering Integration', () => {
       maxTokens: null,
     });
 
+    // Create provider config for the agent
+    const config = await service.createProfileProviderConfig({
+      profileId: profile.id,
+      providerId,
+      name: 'test-provider',
+      options: null,
+      env: null,
+    });
+
     const agent = await service.createAgent({
       projectId,
       profileId: profile.id,
       name: 'Test Agent',
+      providerConfigId: config.id,
     });
     agentId = agent.id;
 

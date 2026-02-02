@@ -352,4 +352,118 @@ describe('ReviewCommentNotifierSubscriber', () => {
     expect(eventLogService.recordHandledOk).not.toHaveBeenCalled();
     expect(eventLogService.recordHandledFail).not.toHaveBeenCalled();
   });
+
+  describe('de-duplication and author filtering', () => {
+    it('de-duplicates target agent IDs before notification', async () => {
+      const duplicatePayload = {
+        ...basePayload,
+        targetAgentIds: ['agent-1', 'agent-2', 'agent-1', 'agent-3'],
+      };
+
+      await subscriber.handleReviewCommentCreated(duplicatePayload);
+
+      // Should only notify 3 unique agents (de-duplicated)
+      expect(enqueueMock).toHaveBeenCalledTimes(3);
+      expect(enqueueMock).toHaveBeenCalledWith('agent-1', expect.any(String), expect.any(Object));
+      expect(enqueueMock).toHaveBeenCalledWith('agent-2', expect.any(String), expect.any(Object));
+      expect(enqueueMock).toHaveBeenCalledWith('agent-3', expect.any(String), expect.any(Object));
+    });
+
+    it('filters out author agent ID when authorType is agent', async () => {
+      const authorPayload = {
+        ...basePayload,
+        authorType: 'agent' as const,
+        authorAgentId: 'agent-1',
+        targetAgentIds: ['agent-1', 'agent-2'],
+      };
+
+      await subscriber.handleReviewCommentCreated(authorPayload);
+
+      // Should only notify agent-2 (agent-1 filtered out as author)
+      expect(enqueueMock).toHaveBeenCalledTimes(1);
+      expect(enqueueMock).toHaveBeenCalledWith('agent-2', expect.any(String), expect.any(Object));
+    });
+
+    it('does not filter when authorType is user', async () => {
+      const userPayload = {
+        ...basePayload,
+        authorType: 'user' as const,
+        authorAgentId: 'agent-1', // user has agentId but is not agent authorType
+        targetAgentIds: ['agent-1', 'agent-2'],
+      };
+
+      await subscriber.handleReviewCommentCreated(userPayload);
+
+      // Should notify both agents (no filtering for user)
+      expect(enqueueMock).toHaveBeenCalledTimes(2);
+      expect(enqueueMock).toHaveBeenCalledWith('agent-1', expect.any(String), expect.any(Object));
+      expect(enqueueMock).toHaveBeenCalledWith('agent-2', expect.any(String), expect.any(Object));
+    });
+
+    it('exits early without notifications when filtering leaves zero targets', async () => {
+      const onlyAuthorPayload = {
+        ...basePayload,
+        authorType: 'agent' as const,
+        authorAgentId: 'agent-1',
+        targetAgentIds: ['agent-1'], // Only target is the author themselves
+      };
+
+      await subscriber.handleReviewCommentCreated(onlyAuthorPayload);
+
+      // Should not notify anyone (author filtered out, leaving zero targets)
+      expect(enqueueMock).not.toHaveBeenCalled();
+      expect(launchSessionMock).not.toHaveBeenCalled();
+      // Should not record handler result (early exit before eventId processing)
+      expect(eventLogService.recordHandledOk).not.toHaveBeenCalled();
+      expect(eventLogService.recordHandledFail).not.toHaveBeenCalled();
+    });
+
+    it('handles both de-duplication and author filtering together', async () => {
+      const complexPayload = {
+        ...basePayload,
+        authorType: 'agent' as const,
+        authorAgentId: 'agent-2',
+        targetAgentIds: ['agent-1', 'agent-2', 'agent-2', 'agent-3', 'agent-1'],
+      };
+
+      await subscriber.handleReviewCommentCreated(complexPayload);
+
+      // De-duplicated: ['agent-1', 'agent-2', 'agent-3']
+      // After filtering author agent-2: ['agent-1', 'agent-3']
+      expect(enqueueMock).toHaveBeenCalledTimes(2);
+      expect(enqueueMock).toHaveBeenCalledWith('agent-1', expect.any(String), expect.any(Object));
+      expect(enqueueMock).toHaveBeenCalledWith('agent-3', expect.any(String), expect.any(Object));
+      // Logged results should reflect de-duplicated and filtered targets
+      expect(eventLogService.recordHandledOk).toHaveBeenCalledWith(
+        expect.objectContaining({
+          handler: 'ReviewCommentNotifier',
+          detail: expect.objectContaining({
+            targetAgentIds: ['agent-1', 'agent-3'],
+            results: expect.arrayContaining([
+              { agentId: 'agent-1', success: true },
+              { agentId: 'agent-3', success: true },
+            ]),
+          }),
+        }),
+      );
+    });
+
+    it('logs correct target count after filtering', async () => {
+      const duplicatePayload = {
+        ...basePayload,
+        targetAgentIds: ['agent-1', 'agent-1', 'agent-2'],
+      };
+
+      await subscriber.handleReviewCommentCreated(duplicatePayload);
+
+      // Log should show count of 2 (de-duplicated), not 3 (with duplicates)
+      expect(eventLogService.recordHandledOk).toHaveBeenCalledWith(
+        expect.objectContaining({
+          detail: expect.objectContaining({
+            targetAgentIds: ['agent-1', 'agent-2'],
+          }),
+        }),
+      );
+    });
+  });
 });

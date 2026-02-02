@@ -2127,6 +2127,7 @@ export function BoardPage() {
                 data: { agentId, version: epic.version },
               });
             }}
+            subEpicCounts={subEpicCountsMap}
             className="flex-1 min-h-0"
           />
         )}

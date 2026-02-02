@@ -10,6 +10,7 @@ import type { EventsService } from '../../events/services/events.service';
 import type { TerminalSendCoordinatorService } from '../../terminal/services/terminal-send-coordinator.service';
 import { TerminalGateway } from '../../terminal/gateways/terminal.gateway';
 import type { ModuleRef } from '@nestjs/core';
+import { SessionCoordinatorService } from './session-coordinator.service';
 import { DEFAULT_FEATURE_FLAGS } from '../../../common/config/feature-flags';
 
 describe('SessionsService', () => {
@@ -22,6 +23,8 @@ describe('SessionsService', () => {
     getPrompt: jest.Mock;
     getInitialSessionPrompt: jest.Mock;
     getFeatureFlags: jest.Mock;
+    listProfileProviderConfigsByProfile: jest.Mock;
+    getProfileProviderConfig: jest.Mock;
   };
   let tmuxService: {
     createSessionName: jest.Mock;
@@ -37,6 +40,7 @@ describe('SessionsService', () => {
   let mcpEnsureService: { ensureMcp: jest.Mock };
   let eventsService: { publish: jest.Mock };
   let sendCoordinator: TerminalSendCoordinatorService;
+  let sessionCoordinator: { withAgentLock: jest.Mock };
   let sqlitePrepare: jest.Mock;
   let insertRunMock: jest.Mock;
   let service: SessionsService;
@@ -51,6 +55,8 @@ describe('SessionsService', () => {
       getPrompt: jest.fn(),
       getInitialSessionPrompt: jest.fn().mockResolvedValue(null),
       getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
+      listProfileProviderConfigsByProfile: jest.fn().mockResolvedValue([]),
+      getProfileProviderConfig: jest.fn(),
     };
 
     tmuxService = {
@@ -61,6 +67,8 @@ describe('SessionsService', () => {
       sendCommandArgs: jest.fn().mockResolvedValue(undefined),
       pasteAndSubmit: jest.fn().mockResolvedValue(undefined),
       setAlternateScreenOff: jest.fn().mockResolvedValue(undefined),
+      destroySession: jest.fn().mockResolvedValue(undefined),
+      hasSession: jest.fn().mockResolvedValue(true),
     };
 
     ptyService = {
@@ -82,6 +90,10 @@ describe('SessionsService', () => {
     sendCoordinator = {
       ensureAgentGap: jest.fn().mockResolvedValue(undefined),
     } as unknown as TerminalSendCoordinatorService;
+
+    sessionCoordinator = {
+      withAgentLock: jest.fn().mockImplementation((agentId: string, fn: () => unknown) => fn()),
+    };
 
     insertRunMock = jest.fn();
     sqlitePrepare = jest
@@ -120,6 +132,7 @@ describe('SessionsService', () => {
       ptyService as unknown as PtyService,
       preflightService as unknown as PreflightService,
       mcpEnsureService as unknown as ProviderMcpEnsureService,
+      sessionCoordinator as unknown as SessionCoordinatorService,
       moduleRef as unknown as ModuleRef,
     );
   });
@@ -170,13 +183,25 @@ describe('SessionsService', () => {
       createdAt: '2024-01-01T00:00:00.000Z',
       updatedAt: '2024-01-01T00:00:00.000Z',
     });
+    // Mock a matching provider config for the fallback path
+    storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+      {
+        id: 'config-1',
+        profileId: 'profile-1',
+        providerId: 'provider-1',
+        options: '--model claude-3',
+        env: null,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      },
+    ]);
     const launchPromise = service.launchSession({
       projectId: 'project-1',
       agentId: 'agent-1',
       epicId: 'epic-1',
     });
 
-    await jest.advanceTimersByTimeAsync(5000);
+    await jest.runAllTimersAsync();
     const result = await launchPromise;
 
     expect(storage.getEpic).toHaveBeenCalledWith('epic-1');
@@ -252,12 +277,24 @@ describe('SessionsService', () => {
       createdAt: '2024-01-01T00:00:00.000Z',
       updatedAt: '2024-01-01T00:00:00.000Z',
     });
+    // Mock a matching provider config for the fallback path
+    storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+      {
+        id: 'config-1',
+        profileId: 'profile-1',
+        providerId: 'provider-1',
+        options: '--model claude-3',
+        env: null,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      },
+    ]);
     const launchPromise = service.launchSession({
       projectId: 'project-1',
       agentId: 'agent-2',
     });
 
-    await jest.advanceTimersByTimeAsync(5000);
+    await jest.runAllTimersAsync();
     const result = await launchPromise;
 
     expect(storage.getEpic).not.toHaveBeenCalled();
@@ -360,11 +397,22 @@ describe('SessionsService', () => {
     storage.getAgentProfile.mockResolvedValue({
       id: 'profile-1',
       name: 'Helper Profile',
-      options: '--model claude-3',
-      providerId: 'provider-1',
+      // Note: providerId/options removed in Phase 4
       createdAt: '2024-01-01T00:00:00.000Z',
       updatedAt: '2024-01-01T00:00:00.000Z',
     });
+    // Provider config now provides provider and options
+    storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+      {
+        id: 'config-1',
+        profileId: 'profile-1',
+        providerId: 'provider-1',
+        options: '--model claude-3',
+        env: null,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      },
+    ]);
     storage.getProvider.mockResolvedValue({
       id: 'provider-1',
       name: 'claude',
@@ -435,7 +483,7 @@ describe('SessionsService', () => {
     expect(mcpEnsureService.ensureMcp).toHaveBeenCalled();
   });
 
-  it('rejects invalid profile options with ValidationError', async () => {
+  it('rejects invalid config options with ValidationError', async () => {
     storage.getAgent.mockResolvedValue({
       id: 'agent-1',
       name: 'Helper Agent',
@@ -454,7 +502,7 @@ describe('SessionsService', () => {
     storage.getAgentProfile.mockResolvedValue({
       id: 'profile-1',
       name: 'Helper Profile',
-      options: 'bad\noption',
+      options: null,
       providerId: 'provider-1',
       createdAt: '2024-01-01T00:00:00.000Z',
       updatedAt: '2024-01-01T00:00:00.000Z',
@@ -469,6 +517,18 @@ describe('SessionsService', () => {
       createdAt: '2024-01-01T00:00:00.000Z',
       updatedAt: '2024-01-01T00:00:00.000Z',
     });
+    // Mock a config with invalid options (contains newline)
+    storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+      {
+        id: 'config-1',
+        profileId: 'profile-1',
+        providerId: 'provider-1',
+        options: 'bad\noption',
+        env: null,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      },
+    ]);
 
     await expect(
       service.launchSession({
@@ -498,11 +558,22 @@ describe('SessionsService', () => {
     storage.getAgentProfile.mockResolvedValue({
       id: 'profile-1',
       name: 'Helper Profile',
-      options: '--model claude-3',
-      providerId: 'provider-1',
+      // Note: providerId/options removed in Phase 4
       createdAt: '2024-01-01T00:00:00.000Z',
       updatedAt: '2024-01-01T00:00:00.000Z',
     });
+    // Provider config now provides provider and options
+    storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+      {
+        id: 'config-1',
+        profileId: 'profile-1',
+        providerId: 'provider-1',
+        options: '--model claude-3',
+        env: null,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      },
+    ]);
     storage.getProvider.mockResolvedValue({
       id: 'provider-1',
       name: 'claude',
@@ -529,7 +600,7 @@ describe('SessionsService', () => {
       agentId: 'agent-1',
     });
 
-    await jest.advanceTimersByTimeAsync(5000);
+    await jest.runAllTimersAsync();
     await launchPromise;
 
     expect(storage.getInitialSessionPrompt).toHaveBeenCalled();
@@ -539,7 +610,6 @@ describe('SessionsService', () => {
     expect(rendered).toContain('My Project');
     expect(rendered).not.toContain('{agent_name}');
     expect(rendered).not.toContain('{project_name}');
-    jest.useRealTimers();
   });
 
   it('falls back to default prompt when rendered content exceeds limits', async () => {
@@ -562,11 +632,22 @@ describe('SessionsService', () => {
     storage.getAgentProfile.mockResolvedValue({
       id: 'profile-1',
       name: 'Helper Profile',
-      options: '--model claude-3',
-      providerId: 'provider-1',
+      // Note: providerId/options removed in Phase 4
       createdAt: '2024-01-01T00:00:00.000Z',
       updatedAt: '2024-01-01T00:00:00.000Z',
     });
+    // Provider config now provides provider and options
+    storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+      {
+        id: 'config-1',
+        profileId: 'profile-1',
+        providerId: 'provider-1',
+        options: '--model claude-3',
+        env: null,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      },
+    ]);
     storage.getProvider.mockResolvedValue({
       id: 'provider-1',
       name: 'claude',
@@ -593,12 +674,341 @@ describe('SessionsService', () => {
       agentId: 'agent-1',
     });
 
-    await jest.advanceTimersByTimeAsync(5000);
+    await jest.runAllTimersAsync();
     await launchPromise;
 
     const rendered = (tmuxService.pasteAndSubmit as jest.Mock).mock.calls[0][1] as string;
     expect(rendered.startsWith('Session ')).toBe(true);
     expect(rendered.length).toBeLessThan(5000);
-    jest.useRealTimers();
+  });
+
+  it('returns existing session when agent already has active session (idempotent)', async () => {
+    jest.useFakeTimers();
+    storage.getAgent.mockResolvedValue({
+      id: 'agent-1',
+      name: 'Helper Agent',
+      projectId: 'project-1',
+      profileId: 'profile-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProject.mockResolvedValue({
+      id: 'project-1',
+      name: 'My Project',
+      rootPath: '/workspace/project-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getEpic.mockResolvedValue({
+      id: 'epic-1',
+      title: 'Test Epic',
+      projectId: 'project-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+
+    // Mock getActiveSessionForAgent to return an existing session
+    const existingSessionId = 'existing-session-123';
+    const existingTmuxId = 'tmux-existing';
+    // The service calls getSession which is a real method that queries sqlite
+    // We need to mock the sqlite prepare to return the existing session
+    sqlitePrepare.mockReturnValue({
+      run: insertRunMock,
+      get: jest.fn().mockReturnValue({
+        id: existingSessionId,
+        epic_id: 'epic-1',
+        agent_id: 'agent-1',
+        tmux_session_id: existingTmuxId,
+        status: 'running',
+        started_at: '2024-01-01T00:00:00.000Z',
+        ended_at: null,
+        last_activity_at: null,
+        activity_state: null,
+        busy_since: null,
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:00:00.000Z',
+      }),
+      all: jest.fn().mockReturnValue([]),
+    });
+
+    const result = await service.launchSession({
+      projectId: 'project-1',
+      agentId: 'agent-1',
+      epicId: 'epic-1',
+    });
+
+    // Should return the existing session, not create a new one
+    expect(result.id).toBe(existingSessionId);
+    expect(result.tmuxSessionId).toBe(existingTmuxId);
+    expect(result.status).toBe('running');
+    expect(result.agent).toEqual({
+      id: 'agent-1',
+      name: 'Helper Agent',
+      profileId: 'profile-1',
+    });
+    expect(result.epic).toEqual({
+      id: 'epic-1',
+      title: 'Test Epic',
+      projectId: 'project-1',
+    });
+
+    // Should not have called tmux createSession since we're returning existing
+    expect(tmuxService.createSession).not.toHaveBeenCalled();
+  });
+
+  it('cleans up orphaned tmux session and returns existing session on unique constraint violation', async () => {
+    // Note: Don't use fake timers - the 7s wait will cause issues with them
+    storage.getAgent.mockResolvedValue({
+      id: 'agent-1',
+      name: 'Helper Agent',
+      projectId: 'project-1',
+      profileId: 'profile-1',
+      providerConfigId: null,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getAgentProfile.mockResolvedValue({
+      id: 'profile-1',
+      name: 'Helper Profile',
+      options: null,
+      providerId: 'provider-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.listProfileProviderConfigsByProfile.mockResolvedValue([]);
+    storage.getProject.mockResolvedValue({
+      id: 'project-1',
+      name: 'My Project',
+      rootPath: '/workspace/project-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getEpic.mockResolvedValue({
+      id: 'epic-1',
+      title: 'Test Epic',
+      projectId: 'project-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProvider.mockResolvedValue({
+      id: 'provider-1',
+      name: 'claude',
+      binPath: '/usr/bin/claude',
+      mcpConfigured: true,
+      mcpEndpoint: null,
+      mcpRegisteredAt: null,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getPrompt.mockResolvedValue(null);
+    storage.getInitialSessionPrompt.mockResolvedValue(null);
+
+    // Add a provider config so the session can launch
+    const providerConfigId = 'config-1';
+    storage.getAgentProfile.mockResolvedValue({
+      id: 'profile-1',
+      name: 'Helper Profile',
+      options: null,
+      providerId: 'provider-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProfileProviderConfig.mockResolvedValue({
+      id: providerConfigId,
+      profileId: 'profile-1',
+      name: 'Config 1',
+      providerId: 'provider-1',
+      options: null,
+      env: null,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProvider.mockResolvedValue({
+      id: 'provider-1',
+      name: 'claude',
+      binPath: '/usr/bin/claude',
+      mcpConfigured: true,
+      mcpEndpoint: null,
+      mcpRegisteredAt: null,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+
+    // Update the agent mock to include providerConfigId
+    storage.getAgent.mockResolvedValue({
+      id: 'agent-1',
+      name: 'Helper Agent',
+      projectId: 'project-1',
+      profileId: 'profile-1',
+      providerConfigId: providerConfigId,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+
+    // Mock getActiveSessionForAgent:
+    // First call (idempotent check): returns null so we proceed with insert
+    // Second call (after constraint error): returns existing session
+    const existingSessionId = 'existing-session-456';
+    const existingTmuxId = 'tmux-existing-456';
+    const existingSessionRow = {
+      id: existingSessionId,
+      epic_id: 'epic-1',
+      agent_id: 'agent-1',
+      tmux_session_id: existingTmuxId,
+      status: 'running',
+      started_at: '2024-01-01T00:00:00.000Z',
+      ended_at: null,
+      last_activity_at: null,
+      activity_state: null,
+      busy_since: null,
+      created_at: '2024-01-01T00:00:00.000Z',
+      updated_at: '2024-01-01T00:00:00.000Z',
+    };
+
+    const runMock = jest.fn();
+    sqlitePrepare.mockReturnValue({
+      run: runMock,
+      get: jest
+        .fn()
+        .mockImplementationOnce(() => null)
+        .mockImplementationOnce(() => existingSessionRow),
+      all: jest.fn().mockReturnValue([]),
+    });
+
+    // First call to sqlite.prepare will throw constraint error
+    const constraintError = { code: 'SQLITE_CONSTRAINT', message: 'UNIQUE constraint failed' };
+    runMock.mockImplementationOnce(() => {
+      throw constraintError;
+    });
+
+    // Spy on destroySession to verify cleanup
+    const destroySpy = jest.spyOn(tmuxService, 'destroySession');
+
+    const result = await service.launchSession({
+      projectId: 'project-1',
+      agentId: 'agent-1',
+      epicId: 'epic-1',
+    });
+
+    // Should have cleaned up the orphaned tmux session
+    expect(destroySpy).toHaveBeenCalledWith('tmux-session');
+
+    // Should return the existing session
+    expect(result.id).toBe(existingSessionId);
+    expect(result.tmuxSessionId).toBe(existingTmuxId);
+    expect(result.status).toBe('running');
+  }, 15000); // 15 second timeout for the 7s wait
+});
+
+/**
+ * Regression tests for nested lock deadlock prevention.
+ *
+ * These tests use a REAL SessionCoordinatorService (not mocked) to verify
+ * that the lock behavior works correctly and doesn't cause deadlocks.
+ *
+ * Background: launchSession() wraps itself in withAgentLock(). Previously,
+ * some callers also wrapped launchSession() with withAgentLock(), causing
+ * nested non-reentrant locks → deadlock. The fix removed outer locks from callers.
+ */
+describe('SessionCoordinatorService - nested lock deadlock regression', () => {
+  it('single lock completes without deadlock', async () => {
+    const realCoordinator = new SessionCoordinatorService();
+    const agentId = 'agent-single-lock';
+
+    // This simulates what launchSession does - single lock around the operation
+    const result = await realCoordinator.withAgentLock(agentId, async () => {
+      // Simulate some async work
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return 'completed';
+    });
+
+    expect(result).toBe('completed');
+  });
+
+  it('demonstrates that nested locks on same agent cause deadlock (timeout test)', async () => {
+    const realCoordinator = new SessionCoordinatorService();
+    const agentId = 'agent-deadlock-test';
+
+    // Simulate what would happen if launchSession() has internal lock
+    // AND the caller also wraps with lock (the old buggy pattern)
+    const innerOperation = async () => {
+      // This simulates launchSession's internal withAgentLock
+      return realCoordinator.withAgentLock(agentId, async () => {
+        return 'inner-completed';
+      });
+    };
+
+    // This is the problematic pattern: outer lock wrapping inner lock on same agent
+    const nestedLockPromise = realCoordinator.withAgentLock(agentId, async () => {
+      // The inner lock will wait for outer lock to release (which never happens)
+      return innerOperation();
+    });
+
+    // Use Promise.race with a timeout to detect deadlock
+    const timeoutPromise = new Promise<'timeout'>((resolve) => {
+      setTimeout(() => resolve('timeout'), 500); // 500ms should be enough for non-deadlock
+    });
+
+    const result = await Promise.race([nestedLockPromise, timeoutPromise]);
+
+    // This SHOULD timeout because nested locks deadlock
+    expect(result).toBe('timeout');
+  }, 2000);
+
+  it('sequential locks on same agent work correctly (no deadlock)', async () => {
+    const realCoordinator = new SessionCoordinatorService();
+    const agentId = 'agent-sequential-test';
+    const results: string[] = [];
+
+    // First lock
+    await realCoordinator.withAgentLock(agentId, async () => {
+      results.push('first');
+    });
+
+    // Second lock (after first completes) - should work fine
+    await realCoordinator.withAgentLock(agentId, async () => {
+      results.push('second');
+    });
+
+    expect(results).toEqual(['first', 'second']);
+  });
+
+  it('concurrent locks on different agents work correctly (no blocking)', async () => {
+    const realCoordinator = new SessionCoordinatorService();
+    const results: string[] = [];
+
+    // Concurrent operations on different agents should not block each other
+    await Promise.all([
+      realCoordinator.withAgentLock('agent-a', async () => {
+        await new Promise((r) => setTimeout(r, 50));
+        results.push('agent-a');
+      }),
+      realCoordinator.withAgentLock('agent-b', async () => {
+        results.push('agent-b');
+      }),
+    ]);
+
+    // agent-b should complete before agent-a (no blocking between different agents)
+    expect(results).toEqual(['agent-b', 'agent-a']);
+  });
+
+  it('concurrent locks on same agent serialize correctly', async () => {
+    const realCoordinator = new SessionCoordinatorService();
+    const agentId = 'agent-concurrent-test';
+    const results: string[] = [];
+
+    // Two concurrent operations on same agent should serialize
+    await Promise.all([
+      realCoordinator.withAgentLock(agentId, async () => {
+        await new Promise((r) => setTimeout(r, 50));
+        results.push('first');
+      }),
+      realCoordinator.withAgentLock(agentId, async () => {
+        results.push('second');
+      }),
+    ]);
+
+    // Even though second was started later, first should complete first due to serialization
+    expect(results).toEqual(['first', 'second']);
   });
 });

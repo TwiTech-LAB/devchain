@@ -82,6 +82,26 @@ function buildFetchMock(overrides?: {
   let currentAgent = { ...baseAgent };
   return jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.toString();
+
+    // Provider configs endpoint (must be before general /api/profiles match)
+    if (url.match(/\/api\/profiles\/[^/]+\/provider-configs/)) {
+      return {
+        ok: true,
+        json: async () => [
+          {
+            id: 'config-1',
+            profileId: baseProfile.id,
+            providerId: baseProvider.id,
+            name: 'default',
+            options: null,
+            env: null,
+            createdAt: '2024-01-01T00:00:00.000Z',
+            updatedAt: '2024-01-01T00:00:00.000Z',
+          },
+        ],
+      } as Response;
+    }
+
     if (url.startsWith('/api/profiles')) {
       return {
         ok: true,
@@ -160,6 +180,13 @@ function buildFetchMock(overrides?: {
           currentAgent = { ...currentAgent, name: 'Agent One Updated' };
           return currentAgent;
         },
+      } as Response;
+    }
+
+    if (url.match(/\/api\/projects\/[^/]+\/presets/)) {
+      return {
+        ok: true,
+        json: async () => ({ presets: [] }),
       } as Response;
     }
 

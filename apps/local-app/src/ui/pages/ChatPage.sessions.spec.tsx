@@ -140,6 +140,10 @@ describe('ChatPage agent context menu', () => {
       if (url.startsWith('/api/threads?projectId=')) {
         return { ok: true, json: async () => ({ items: [] }) } as Response;
       }
+      if (url.includes('/api/profiles/') && url.endsWith('/provider-configs')) {
+        // API returns array directly, not { items: [] }
+        return { ok: true, json: async () => [] } as Response;
+      }
       if (url.startsWith('/api/sessions')) {
         return { ok: true, json: async () => ({ id: 'session-new' }) } as Response;
       }

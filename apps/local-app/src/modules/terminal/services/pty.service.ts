@@ -9,6 +9,9 @@ import { AltAwareAnsiSanitizer, stripAlternateScreenSequences } from '../utils/a
 
 const logger = createLogger('PtyService');
 
+/** Activity suppression window after startStreaming/resize to ignore spurious output (ms) */
+const ACTIVITY_SUPPRESSION_MS = 750;
+
 interface PtySession {
   sessionId: string;
   tmuxSessionName: string;
@@ -18,6 +21,7 @@ interface PtySession {
   sanitizer: AltAwareAnsiSanitizer;
   sanitizeMode: 'off' | 'strip_alt' | 'normalize';
   loggedPath?: boolean;
+  suppressActivityUntil: number;
 }
 
 /**
@@ -102,6 +106,7 @@ export class PtyService implements OnModuleDestroy {
         sanitizer: new AltAwareAnsiSanitizer(useMode === 'normalize' ? 'normalize' : 'strip_alt'),
         sanitizeMode: useMode,
         loggedPath: false,
+        suppressActivityUntil: Date.now() + ACTIVITY_SUPPRESSION_MS,
       });
 
       // NOTE: We DO NOT disable tmux alternate-screen anymore.
@@ -124,8 +129,10 @@ export class PtyService implements OnModuleDestroy {
           sess.loggedPath = true;
         }
         try {
-          // Observe activity based on non-empty output
-          this.terminalActivity.observeChunk(sessionId, data);
+          // Observe activity based on non-empty output, but suppress during suppression window
+          if (Date.now() >= sess.suppressActivityUntil) {
+            this.terminalActivity.observeChunk(sessionId, data);
+          }
         } catch (error) {
           logger.warn({ sessionId, error }, 'Activity observer failed');
         }
@@ -205,6 +212,8 @@ export class PtyService implements OnModuleDestroy {
         session.ptyProcess.resize(cols, rows);
         session.cols = cols;
         session.rows = rows;
+        // Suppress activity after resize to ignore tmux redraw burst
+        session.suppressActivityUntil = Date.now() + ACTIVITY_SUPPRESSION_MS;
         logger.info({ sessionId, cols, rows, isInitial: isInitialResize }, 'PTY resized');
       }
     } catch (error) {

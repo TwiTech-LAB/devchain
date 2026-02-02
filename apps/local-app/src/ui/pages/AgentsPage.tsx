@@ -15,7 +15,19 @@ import {
 } from '@/ui/components/ui/dialog';
 import { useToast } from '@/ui/hooks/use-toast';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
-import { Plus, Bot, AlertCircle, Loader2, Play, Pencil, RotateCcw, Power } from 'lucide-react';
+import {
+  Plus,
+  Bot,
+  AlertCircle,
+  Loader2,
+  Play,
+  Pencil,
+  RotateCcw,
+  Power,
+  Save,
+} from 'lucide-react';
+import { PresetSelector, PresetDialog, DeletePresetDialog } from '@/ui/components/agents';
+import type { Preset } from '@/ui/lib/preset-validation';
 import { McpConfigurationModal } from '@/ui/components/shared/McpConfigurationModal';
 import { fetchPreflightChecks } from '@/ui/lib/preflight';
 import { useTerminalWindowManager } from '@/ui/terminal-windows';
@@ -81,11 +93,22 @@ interface Agent {
   id: string;
   projectId: string;
   profileId: string;
+  providerConfigId?: string | null;
   name: string;
   description?: string | null;
   profile?: AgentProfile;
+  providerConfig?: ProviderConfig;
   createdAt: string;
   updatedAt: string;
+}
+
+interface ProviderConfig {
+  id: string;
+  profileId: string;
+  providerId: string;
+  name: string;
+  options: string | null;
+  env: Record<string, string> | null;
 }
 
 interface AgentProfile {
@@ -125,14 +148,21 @@ async function fetchProviders() {
 }
 
 async function fetchAgents(projectId: string) {
-  const res = await fetch(`/api/agents?projectId=${projectId}`);
+  const res = await fetch(`/api/agents?projectId=${projectId}&includeGuests=true`);
   if (!res.ok) throw new Error('Failed to fetch agents');
+  return res.json();
+}
+
+async function fetchProviderConfigs(profileId: string): Promise<ProviderConfig[]> {
+  const res = await fetch(`/api/profiles/${profileId}/provider-configs`);
+  if (!res.ok) throw new Error('Failed to fetch provider configs');
   return res.json();
 }
 
 async function createAgent(data: {
   projectId: string;
   profileId: string;
+  providerConfigId?: string | null;
   name: string;
   description?: string | null;
 }) {
@@ -158,7 +188,12 @@ async function deleteAgent(id: string) {
 
 async function updateAgentRequest(
   id: string,
-  data: { name?: string; profileId?: string; description?: string | null },
+  data: {
+    name?: string;
+    profileId?: string;
+    providerConfigId?: string | null;
+    description?: string | null;
+  },
 ): Promise<Agent> {
   const res = await fetch(`/api/agents/${id}`, {
     method: 'PATCH',
@@ -219,10 +254,24 @@ export function AgentsPage() {
     selectedProjectId ?? 'all',
   ] as const;
   const [showDialog, setShowDialog] = useState(false);
+  const [presetDialogOpen, setPresetDialogOpen] = useState(false);
+  const [presetToEdit, setPresetToEdit] = useState<Preset | null>(null);
+  const [deletePresetDialogOpen, setDeletePresetDialogOpen] = useState(false);
+  const [presetToDelete, setPresetToDelete] = useState<Preset | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<Agent | null>(null);
-  const [formData, setFormData] = useState({ name: '', profileId: '', description: '' });
+  const [formData, setFormData] = useState({
+    name: '',
+    profileId: '',
+    providerConfigId: '',
+    description: '',
+  });
   const [editAgent, setEditAgent] = useState<Agent | null>(null);
-  const [editFormData, setEditFormData] = useState({ name: '', profileId: '', description: '' });
+  const [editFormData, setEditFormData] = useState({
+    name: '',
+    profileId: '',
+    providerConfigId: '',
+    description: '',
+  });
   const [launchingAgentId, setLaunchingAgentId] = useState<string | null>(null);
   const [updatingAgentId, setUpdatingAgentId] = useState<string | null>(null);
   const [lastUsedAgentId, setLastUsedAgentId] = useState<string | null>(null);
@@ -252,11 +301,55 @@ export function AgentsPage() {
     enabled: !!selectedProjectId,
   });
 
+  // Fetch existing presets for duplicate name validation
+  const { data: presetsData } = useQuery<{ presets: { name: string }[] }>({
+    queryKey: ['project-presets', selectedProjectId],
+    queryFn: async () => {
+      const res = await fetch(`/api/projects/${selectedProjectId}/presets`);
+      if (!res.ok) throw new Error('Failed to fetch presets');
+      return res.json();
+    },
+    enabled: !!selectedProjectId,
+  });
+  const existingPresetNames = (presetsData?.presets ?? []).map((p) => p.name);
+
+  // Preset management handlers
+  const handleEditPreset = (preset: Preset) => {
+    setPresetToEdit(preset);
+    setPresetDialogOpen(true);
+  };
+
+  const handleDeletePreset = (preset: Preset) => {
+    setPresetToDelete(preset);
+    setDeletePresetDialogOpen(true);
+  };
+
+  const handlePresetDialogOpenChange = (open: boolean) => {
+    setPresetDialogOpen(open);
+    if (!open) {
+      setPresetToEdit(null);
+    }
+  };
+
   const { refetch: refetchPreflight } = useQuery({
     queryKey: ['preflight', 'agents-page', activeProject?.rootPath ?? 'global'],
     queryFn: () => fetchPreflightChecks(activeProject?.rootPath),
     staleTime: 30000,
     refetchInterval: 60000,
+  });
+
+  // Fetch provider configs for create form's selected profile
+  const { data: createFormConfigs } = useQuery({
+    queryKey: ['provider-configs', formData.profileId],
+    queryFn: () => fetchProviderConfigs(formData.profileId),
+    enabled: !!formData.profileId,
+  });
+
+  // Fetch provider configs for edit form's selected profile
+  const { data: editFormConfigs } = useQuery({
+    queryKey: ['provider-configs', editFormData.profileId],
+    queryFn: () => fetchProviderConfigs(editFormData.profileId),
+    enabled: !!editFormData.profileId,
   });
 
   const providersById = useMemo(() => {
@@ -273,19 +366,15 @@ export function AgentsPage() {
     const map = new Map<string, AgentProfile>();
     if (profilesData?.items) {
       profilesData.items.forEach((profile: AgentProfile) => {
-        const resolvedProvider = providersById.get(profile.providerId);
-        const providerInfo =
-          profile.provider ||
-          (resolvedProvider ? { id: resolvedProvider.id, name: resolvedProvider.name } : undefined);
-
+        // Use profile.provider from enriched API response
         map.set(profile.id, {
           ...profile,
-          provider: providerInfo,
+          provider: profile.provider,
         });
       });
     }
     return map;
-  }, [profilesData, providersById]);
+  }, [profilesData]);
 
   // Check for duplicate agent names (case-insensitive)
   const isDuplicateCreateName = useMemo(() => {
@@ -335,7 +424,7 @@ export function AgentsPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['agents', selectedProjectId] });
       setShowDialog(false);
-      setFormData({ name: '', profileId: '', description: '' });
+      setFormData({ name: '', profileId: '', providerConfigId: '', description: '' });
       toast({
         title: 'Success',
         description: 'Agent created successfully',
@@ -394,15 +483,61 @@ export function AgentsPage() {
     setLastUsedAgentId(readLastAgentId(selectedProjectId ?? null));
   }, [selectedProjectId]);
 
+  // Auto-select config when profile changes in create form
+  useEffect(() => {
+    // Skip while configs are loading
+    if (createFormConfigs === undefined) {
+      return;
+    }
+
+    if (createFormConfigs.length === 1) {
+      // Auto-select if only one config
+      setFormData((prev) => ({ ...prev, providerConfigId: createFormConfigs[0].id }));
+    } else if (createFormConfigs.length === 0) {
+      // Reset if no configs available (profile has no provider configs)
+      setFormData((prev) => ({ ...prev, providerConfigId: '' }));
+    } else if (formData.providerConfigId) {
+      // Multiple configs - check if current selection is still valid
+      const stillValid = createFormConfigs.some((c) => c.id === formData.providerConfigId);
+      if (!stillValid) {
+        setFormData((prev) => ({ ...prev, providerConfigId: '' }));
+      }
+    }
+  }, [createFormConfigs, formData.profileId]);
+
+  // Auto-select config when profile changes in edit form
+  useEffect(() => {
+    // Skip while configs are loading - don't reset the providerConfigId
+    // that was correctly set by the editAgent effect
+    if (editFormConfigs === undefined) {
+      return;
+    }
+
+    if (editFormConfigs.length === 1) {
+      // Auto-select if only one config
+      setEditFormData((prev) => ({ ...prev, providerConfigId: editFormConfigs[0].id }));
+    } else if (editFormConfigs.length === 0) {
+      // Reset if no configs available (profile has no provider configs)
+      setEditFormData((prev) => ({ ...prev, providerConfigId: '' }));
+    } else if (editFormData.providerConfigId) {
+      // Multiple configs - check if current selection is still valid
+      const stillValid = editFormConfigs.some((c) => c.id === editFormData.providerConfigId);
+      if (!stillValid) {
+        setEditFormData((prev) => ({ ...prev, providerConfigId: '' }));
+      }
+    }
+  }, [editFormConfigs, editFormData.profileId]);
+
   useEffect(() => {
     if (editAgent) {
       setEditFormData({
         name: editAgent.name,
         profileId: editAgent.profileId,
+        providerConfigId: editAgent.providerConfigId ?? '',
         description: editAgent.description ?? '',
       });
     } else {
-      setEditFormData({ name: '', profileId: '', description: '' });
+      setEditFormData({ name: '', profileId: '', providerConfigId: '', description: '' });
     }
   }, [editAgent]);
 
@@ -419,6 +554,7 @@ export function AgentsPage() {
     createMutation.mutate({
       projectId: selectedProjectId,
       profileId: formData.profileId,
+      providerConfigId: formData.providerConfigId || null,
       name: formData.name,
       description: formData.description.trim() || null,
     });
@@ -452,6 +588,7 @@ export function AgentsPage() {
       id: editAgent.id,
       name: trimmedName,
       profileId: editFormData.profileId,
+      providerConfigId: editFormData.providerConfigId || null,
       description: editFormData.description.trim() || null,
     });
   };
@@ -461,13 +598,15 @@ export function AgentsPage() {
       id,
       name,
       profileId,
+      providerConfigId,
       description,
     }: {
       id: string;
       name: string;
       profileId: string;
+      providerConfigId: string | null;
       description: string | null;
-    }) => updateAgentRequest(id, { name, profileId, description }),
+    }) => updateAgentRequest(id, { name, profileId, providerConfigId, description }),
     onMutate: async (variables) => {
       setUpdatingAgentId(variables.id);
       await queryClient.cancelQueries({ queryKey: ['agents', selectedProjectId] });
@@ -836,10 +975,26 @@ export function AgentsPage() {
           )}
         </div>
         {selectedProjectId && (
-          <Button onClick={() => setShowDialog(true)}>
-            <Plus className="h-4 w-4 mr-2" />
-            Create Agent
-          </Button>
+          <div className="flex items-center gap-3">
+            <PresetSelector
+              projectId={selectedProjectId}
+              agents={agentsData?.items ?? []}
+              agentPresence={agentPresence}
+              onAgentsRefresh={() =>
+                queryClient.invalidateQueries({ queryKey: ['agents', selectedProjectId] })
+              }
+              onEditPreset={handleEditPreset}
+              onDeletePreset={handleDeletePreset}
+            />
+            <Button variant="outline" onClick={() => setPresetDialogOpen(true)}>
+              <Save className="h-4 w-4 mr-2" />
+              Save as Preset
+            </Button>
+            <Button onClick={() => setShowDialog(true)}>
+              <Plus className="h-4 w-4 mr-2" />
+              Create Agent
+            </Button>
+          </div>
         )}
       </div>
 
@@ -875,9 +1030,11 @@ export function AgentsPage() {
 
               {agentsData.items.map((agent: Agent) => {
                 const profile = agent.profile || profilesById.get(agent.profileId);
+                // Use agent.providerConfig first, then fallback to profile.provider
                 const providerName =
-                  profile?.provider?.name ||
-                  (profile ? providersById.get(profile.providerId)?.name : undefined);
+                  (agent.providerConfig
+                    ? providersById.get(agent.providerConfig.providerId)?.name
+                    : null) || profile?.provider?.name;
                 const isLaunching = launchingAgentId === agent.id && launchMutation.isPending;
                 const isLastUsed = lastUsedAgentId === agent.id;
                 const isUpdating = updatingAgentId === agent.id && updateMutation.isPending;
@@ -914,13 +1071,33 @@ export function AgentsPage() {
                               </Badge>
                             )}
                           </div>
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 flex-wrap">
                             <span className="text-sm text-muted-foreground">Profile:</span>
                             <span className="text-sm font-medium">
                               {profile?.name || 'Unknown Profile'}
                             </span>
                             {providerName && (
                               <Badge variant="secondary">{providerName.toUpperCase()}</Badge>
+                            )}
+                            {agent.providerConfig && (
+                              <Badge
+                                variant="outline"
+                                title={[
+                                  agent.providerConfig.name,
+                                  providersById.get(agent.providerConfig.providerId)?.name !==
+                                  agent.providerConfig.name
+                                    ? `(${providersById.get(agent.providerConfig.providerId)?.name})`
+                                    : null,
+                                  agent.providerConfig.options,
+                                ]
+                                  .filter(Boolean)
+                                  .join(' ')}
+                              >
+                                {agent.providerConfig.name}
+                                {agent.providerConfig.env &&
+                                  Object.keys(agent.providerConfig.env).length > 0 &&
+                                  ' [env]'}
+                              </Badge>
                             )}
                             {profile?.promptCount !== undefined && (
                               <Badge variant="outline">
@@ -1124,14 +1301,16 @@ export function AgentsPage() {
               <select
                 id="agent-profile"
                 value={formData.profileId}
-                onChange={(e) => setFormData({ ...formData, profileId: e.target.value })}
+                onChange={(e) =>
+                  setFormData({ ...formData, profileId: e.target.value, providerConfigId: '' })
+                }
                 required
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <option value="">-- Select a profile --</option>
                 {availableProfiles.map((profile: AgentProfile) => {
-                  const providerName =
-                    profile.provider?.name || providersById.get(profile.providerId)?.name || '';
+                  // Use profile.provider.name from enriched response
+                  const providerName = profile.provider?.name || '';
 
                   return (
                     <option key={profile.id} value={profile.id}>
@@ -1147,6 +1326,52 @@ export function AgentsPage() {
                 </p>
               )}
             </div>
+
+            {/* Provider Config Selector - shows when profile is selected */}
+            {formData.profileId && (
+              <div>
+                <Label htmlFor="agent-config">
+                  Provider Configuration{' '}
+                  {createFormConfigs && createFormConfigs.length > 0 ? '*' : ''}
+                </Label>
+                <select
+                  id="agent-config"
+                  value={formData.providerConfigId}
+                  onChange={(e) => setFormData({ ...formData, providerConfigId: e.target.value })}
+                  required={createFormConfigs && createFormConfigs.length > 0}
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <option value="">-- Select a configuration --</option>
+                  {createFormConfigs?.map((config) => {
+                    const provider = providersById.get(config.providerId);
+                    const hasEnv = config.env && Object.keys(config.env).length > 0;
+                    // Show provider name in parentheses if different from config name
+                    const providerSuffix =
+                      provider?.name && provider.name !== config.name ? ` (${provider.name})` : '';
+                    return (
+                      <option key={config.id} value={config.id}>
+                        {config.name}
+                        {providerSuffix}
+                        {hasEnv ? ' [env]' : ''}
+                      </option>
+                    );
+                  })}
+                </select>
+                {createFormConfigs && createFormConfigs.length === 0 && (
+                  <div className="mt-2 flex items-start gap-2 p-3 rounded-md bg-destructive/10 border border-destructive/20">
+                    <AlertCircle className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
+                    <div className="text-sm">
+                      <p className="font-medium text-destructive">No provider configurations</p>
+                      <p className="text-muted-foreground">
+                        This profile has no provider configurations. Go to{' '}
+                        <span className="font-medium">Profiles → Edit</span> to add one before
+                        creating an agent.
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div>
               <Label htmlFor="agent-description">Description (optional)</Label>
@@ -1165,12 +1390,19 @@ export function AgentsPage() {
                 variant="outline"
                 onClick={() => {
                   setShowDialog(false);
-                  setFormData({ name: '', profileId: '', description: '' });
+                  setFormData({ name: '', profileId: '', providerConfigId: '', description: '' });
                 }}
               >
                 Cancel
               </Button>
-              <Button type="submit" disabled={createMutation.isPending || isDuplicateCreateName}>
+              <Button
+                type="submit"
+                disabled={
+                  createMutation.isPending ||
+                  isDuplicateCreateName ||
+                  (formData.profileId && createFormConfigs && createFormConfigs.length === 0)
+                }
+              >
                 Create
               </Button>
             </DialogFooter>
@@ -1244,7 +1476,13 @@ export function AgentsPage() {
               <select
                 id="edit-agent-profile"
                 value={editFormData.profileId}
-                onChange={(e) => setEditFormData({ ...editFormData, profileId: e.target.value })}
+                onChange={(e) =>
+                  setEditFormData({
+                    ...editFormData,
+                    profileId: e.target.value,
+                    providerConfigId: '',
+                  })
+                }
                 required
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
@@ -1258,8 +1496,8 @@ export function AgentsPage() {
                   </option>
                 )}
                 {availableProfiles.map((profile: AgentProfile) => {
-                  const providerName =
-                    profile.provider?.name || providersById.get(profile.providerId)?.name || '';
+                  // Use profile.provider.name from enriched response
+                  const providerName = profile.provider?.name || '';
 
                   return (
                     <option key={profile.id} value={profile.id}>
@@ -1275,6 +1513,53 @@ export function AgentsPage() {
                 </p>
               )}
             </div>
+
+            {/* Provider Config Selector - shows when profile is selected */}
+            {editFormData.profileId && (
+              <div>
+                <Label htmlFor="edit-agent-config">
+                  Provider Configuration {editFormConfigs && editFormConfigs.length > 0 ? '*' : ''}
+                </Label>
+                <select
+                  id="edit-agent-config"
+                  value={editFormData.providerConfigId}
+                  onChange={(e) =>
+                    setEditFormData({ ...editFormData, providerConfigId: e.target.value })
+                  }
+                  required={editFormConfigs && editFormConfigs.length > 0}
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <option value="">-- Select a configuration --</option>
+                  {editFormConfigs?.map((config) => {
+                    const provider = providersById.get(config.providerId);
+                    const hasEnv = config.env && Object.keys(config.env).length > 0;
+                    // Show provider name in parentheses if different from config name
+                    const providerSuffix =
+                      provider?.name && provider.name !== config.name ? ` (${provider.name})` : '';
+                    return (
+                      <option key={config.id} value={config.id}>
+                        {config.name}
+                        {providerSuffix}
+                        {hasEnv ? ' [env]' : ''}
+                      </option>
+                    );
+                  })}
+                </select>
+                {editFormConfigs && editFormConfigs.length === 0 && (
+                  <div className="mt-2 flex items-start gap-2 p-3 rounded-md bg-destructive/10 border border-destructive/20">
+                    <AlertCircle className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
+                    <div className="text-sm">
+                      <p className="font-medium text-destructive">No provider configurations</p>
+                      <p className="text-muted-foreground">
+                        This profile has no provider configurations. Go to{' '}
+                        <span className="font-medium">Profiles → Edit</span> to add one.
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div>
               <Label htmlFor="edit-agent-description">Description (optional)</Label>
               <Textarea
@@ -1296,7 +1581,12 @@ export function AgentsPage() {
               </Button>
               <Button
                 type="submit"
-                disabled={updateMutation.isPending || !editAgent || isDuplicateEditName}
+                disabled={
+                  updateMutation.isPending ||
+                  !editAgent ||
+                  isDuplicateEditName ||
+                  (editFormData.profileId && editFormConfigs && editFormConfigs.length === 0)
+                }
               >
                 {updateMutation.isPending ? (
                   <>
@@ -1354,6 +1644,22 @@ export function AgentsPage() {
           onVerify={handleVerifyMcp}
         />
       )}
+
+      <PresetDialog
+        open={presetDialogOpen}
+        onOpenChange={handlePresetDialogOpenChange}
+        projectId={selectedProjectId ?? ''}
+        agents={agentsData?.items ?? []}
+        existingPresetNames={existingPresetNames}
+        presetToEdit={presetToEdit}
+      />
+
+      <DeletePresetDialog
+        open={deletePresetDialogOpen}
+        onOpenChange={setDeletePresetDialogOpen}
+        projectId={selectedProjectId ?? ''}
+        presetToDelete={presetToDelete}
+      />
     </div>
   );
 }

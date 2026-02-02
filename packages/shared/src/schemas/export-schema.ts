@@ -79,6 +79,18 @@ export const ExportSchema = z
           instructions: z.string().nullable().optional(),
           temperature: z.number().nullable().optional(),
           maxTokens: z.number().int().nullable().optional(),
+          // Provider configs for this profile (new in v2)
+          // Each config specifies provider-specific settings and env vars
+          providerConfigs: z
+            .array(
+              z.object({
+                name: z.string().min(1), // Unique name within profile for stable references
+                providerName: z.string().min(1), // Provider name (resolved to ID on import)
+                options: z.string().nullable().optional(), // Provider-specific options (CLI flags)
+                env: z.record(z.string(), z.string()).nullable().optional(), // Environment variables
+              }),
+            )
+            .optional(),
         }),
       )
       .optional()
@@ -90,6 +102,9 @@ export const ExportSchema = z
           name: z.string().min(1),
           profileId: z.string().uuid().optional(),
           description: z.string().nullable().optional(),
+          // Provider config reference (new in v2)
+          // References a config by name within the agent's profile
+          providerConfigName: z.string().nullable().optional(),
         }),
       )
       .optional()
@@ -185,6 +200,23 @@ export const ExportSchema = z
           groupName: z.string().nullable().optional(),
           position: z.number().int().optional().default(0),
           priority: z.number().int().optional().default(0),
+        }),
+      )
+      .optional()
+      .default([]),
+    // Template presets - named configurations mapping agents to provider configs
+    // Used for quick setup when creating a project from template
+    presets: z
+      .array(
+        z.object({
+          name: z.string().min(1),
+          description: z.string().nullable().optional(),
+          agentConfigs: z.array(
+            z.object({
+              agentName: z.string().min(1),
+              providerConfigName: z.string().min(1),
+            }),
+          ),
         }),
       )
       .optional()

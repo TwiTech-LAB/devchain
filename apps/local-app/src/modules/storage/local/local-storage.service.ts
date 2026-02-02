@@ -42,6 +42,9 @@ import {
   AgentProfile,
   CreateAgentProfile,
   UpdateAgentProfile,
+  ProfileProviderConfig,
+  CreateProfileProviderConfig,
+  UpdateProfileProviderConfig,
   Agent,
   CreateAgent,
   UpdateAgent,
@@ -104,6 +107,46 @@ export class LocalStorageService implements StorageService {
 
   getFeatureFlags(): FeatureFlagConfig {
     return { ...DEFAULT_FEATURE_FLAGS };
+  }
+
+  /**
+   * Safely parse provider config env JSON.
+   * Returns null for null/undefined input.
+   * Throws ValidationError with context on parse failure.
+   */
+  private parseProviderConfigEnv(
+    envJson: string | null | undefined,
+    configId: string,
+    profileId: string,
+  ): Record<string, string> | null {
+    if (!envJson) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(envJson);
+      // Validate it's a Record<string, string>
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        throw new Error('env must be an object');
+      }
+      for (const [key, value] of Object.entries(parsed)) {
+        if (typeof value !== 'string') {
+          throw new Error(`env["${key}"] must be a string, got ${typeof value}`);
+        }
+      }
+      return parsed as Record<string, string>;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn(
+        { configId, profileId, error: message },
+        'Failed to parse provider config env JSON',
+      );
+      throw new ValidationError(`Invalid JSON in provider config env field: ${message}`, {
+        configId,
+        profileId,
+        rawValue: envJson.slice(0, 100) + (envJson.length > 100 ? '...' : ''),
+      });
+    }
   }
 
   private async ensureValidEpicParent(
@@ -262,13 +305,22 @@ export class LocalStorageService implements StorageService {
       updatedAt: now,
     };
 
-    const { projects, statuses, prompts, agentProfiles, agents, tags, promptTags } = await import(
-      '../db/schema'
-    );
+    const {
+      projects,
+      statuses,
+      prompts,
+      agentProfiles,
+      agents,
+      tags,
+      promptTags,
+      profileProviderConfigs,
+      providers,
+    } = await import('../db/schema');
 
     const statusIdMap: Record<string, string> = {};
     const promptIdMap: Record<string, string> = {};
     const profileIdMap: Record<string, string> = {};
+    const configIdMap: Record<string, string> = {}; // Maps newProfileId -> configId
     const agentIdMap: Record<string, string> = {};
     const createdPrompts: Array<{ id: string; title: string }> = [];
 
@@ -377,15 +429,14 @@ export class LocalStorageService implements StorageService {
       }
 
       // 4. Create profiles from template
+      // Note: providerId and options are now on profile_provider_configs, not on agent_profiles
       for (const prof of template.profiles) {
         const profileId = randomUUID();
         await this.db.insert(agentProfiles).values({
           id: profileId,
           projectId: project.id,
           name: prof.name,
-          providerId: prof.providerId,
           familySlug: prof.familySlug ?? null,
-          options: prof.options,
           systemPrompt: null,
           instructions: prof.instructions,
           // Temperature stored as integer (×100) to match createAgentProfile convention
@@ -395,6 +446,64 @@ export class LocalStorageService implements StorageService {
           updatedAt: now,
         });
         if (prof.id) profileIdMap[prof.id] = profileId;
+
+        // Handle provider configs for this profile
+        // New format: providerConfigs array with positions
+        // Fallback: Old format with single providerId/options
+        if (prof.providerConfigs && prof.providerConfigs.length > 0) {
+          // New format: multiple configs with positions
+          // Sort by position (fallback to array index if position missing)
+          const sortedConfigs = [...prof.providerConfigs].sort((a, b) => {
+            const posA = a.position ?? 0;
+            const posB = b.position ?? 0;
+            return posA - posB;
+          });
+
+          for (const config of sortedConfigs) {
+            // Resolve provider by name
+            const provider = await this.db
+              .select()
+              .from(providers)
+              .where(eq(providers.name, config.providerName))
+              .limit(1);
+
+            if (!provider[0]) {
+              throw new ValidationError(`Provider not found: ${config.providerName}`);
+            }
+
+            const configId = randomUUID();
+            await this.db.insert(profileProviderConfigs).values({
+              id: configId,
+              profileId: profileId,
+              providerId: provider[0].id,
+              name: config.name,
+              options: config.options ?? null,
+              env: config.env ? JSON.stringify(config.env) : null,
+              position: config.position ?? sortedConfigs.indexOf(config), // Fallback to array index
+              createdAt: now,
+              updatedAt: now,
+            });
+            // Store first config as default for agents
+            if (!configIdMap[profileId]) {
+              configIdMap[profileId] = configId;
+            }
+          }
+        } else {
+          // Fallback for old templates: create single config from providerId/options
+          const configId = randomUUID();
+          await this.db.insert(profileProviderConfigs).values({
+            id: configId,
+            profileId: profileId,
+            providerId: prof.providerId,
+            name: prof.name, // Use profile name as config name
+            options: prof.options ?? null,
+            env: null,
+            position: 0,
+            createdAt: now,
+            updatedAt: now,
+          });
+          configIdMap[profileId] = configId;
+        }
       }
 
       // 5. Create agents from template (remap profile ids)
@@ -407,12 +516,19 @@ export class LocalStorageService implements StorageService {
             profileId: oldProfileId || null,
           });
         }
+        const configId = configIdMap[newProfileId];
+        if (!configId) {
+          throw new ValidationError(`Config mapping missing for agent ${a.name}`, {
+            profileId: newProfileId,
+          });
+        }
         const agentId = randomUUID();
         await this.db.insert(agents).values({
           id: agentId,
           projectId: project.id,
           name: a.name,
           profileId: newProfileId,
+          providerConfigId: configId,
           description: a.description ?? null,
           createdAt: now,
           updatedAt: now,
@@ -2285,6 +2401,19 @@ export class LocalStorageService implements StorageService {
     };
   }
 
+  async listProvidersByIds(ids: string[]): Promise<Provider[]> {
+    if (ids.length === 0) {
+      return [];
+    }
+
+    const { providers } = await import('../db/schema');
+    const { inArray } = await import('drizzle-orm');
+
+    const results = await this.db.select().from(providers).where(inArray(providers.id, ids));
+
+    return results as Provider[];
+  }
+
   async updateProvider(id: string, data: UpdateProvider): Promise<Provider> {
     const { providers } = await import('../db/schema');
     const { eq } = await import('drizzle-orm');
@@ -2337,6 +2466,8 @@ export class LocalStorageService implements StorageService {
   }
 
   // Agent Profiles
+  // Note: providerId and options columns removed in Phase 4
+  // Provider configuration now lives in profile_provider_configs table
   async createAgentProfile(data: CreateAgentProfile): Promise<AgentProfile> {
     const { randomUUID } = await import('crypto');
     const now = new Date().toISOString();
@@ -2346,9 +2477,7 @@ export class LocalStorageService implements StorageService {
       id: randomUUID(),
       projectId: data.projectId ?? null,
       name: data.name,
-      providerId: data.providerId,
       familySlug: data.familySlug ?? null,
-      options: data.options ?? null,
       systemPrompt: data.systemPrompt ?? null,
       instructions: data.instructions ?? null,
       temperature: data.temperature ?? null,
@@ -2361,9 +2490,7 @@ export class LocalStorageService implements StorageService {
       id: profile.id,
       projectId: profile.projectId,
       name: profile.name,
-      providerId: profile.providerId,
       familySlug: profile.familySlug,
-      options: profile.options,
       systemPrompt: profile.systemPrompt,
       instructions: profile.instructions,
       temperature: profile.temperature != null ? Math.round(profile.temperature * 100) : null,
@@ -2390,7 +2517,6 @@ export class LocalStorageService implements StorageService {
     return {
       ...profile,
       temperature: profile.temperature != null ? profile.temperature / 100 : null,
-      options: profile.options ?? null,
     } as AgentProfile;
   }
 
@@ -2419,7 +2545,6 @@ export class LocalStorageService implements StorageService {
       items: items.map((p) => ({
         ...p,
         temperature: p.temperature != null ? p.temperature / 100 : null,
-        options: p.options ?? null,
       })) as AgentProfile[],
       total: items.length,
       limit,
@@ -2441,9 +2566,6 @@ export class LocalStorageService implements StorageService {
     }
     if (data.instructions !== undefined) {
       updateData.instructions = data.instructions ?? null;
-    }
-    if (data.options !== undefined) {
-      updateData.options = data.options ?? null;
     }
     if (data.familySlug !== undefined) {
       updateData.familySlug = data.familySlug ?? null;
@@ -2548,19 +2670,24 @@ export class LocalStorageService implements StorageService {
     return { ...profile, prompts: promptsDetailed };
   }
 
-  async listAgentProfilesWithPrompts(
-    options: ProfileListOptions = {},
-  ): Promise<
+  async listAgentProfilesWithPrompts(options: ProfileListOptions = {}): Promise<
     ListResult<
-      AgentProfile & { prompts: Array<{ promptId: string; title: string; order: number }> }
+      AgentProfile & {
+        prompts: Array<{ promptId: string; title: string; order: number }>;
+        provider?: { id: string; name: string };
+      }
     >
   > {
     const base = await this.listAgentProfiles(options);
     if (!base.items.length) return { ...base, items: [] };
     const ids = base.items.map((p) => p.id);
-    const { agentProfilePrompts, prompts } = await import('../db/schema');
+    const { agentProfilePrompts, prompts, profileProviderConfigs, providers } = await import(
+      '../db/schema'
+    );
     const { inArray, asc, eq } = await import('drizzle-orm');
-    const rows = await this.db
+
+    // Fetch prompts for all profiles
+    const promptRows = await this.db
       .select({
         profileId: agentProfilePrompts.profileId,
         promptId: agentProfilePrompts.promptId,
@@ -2572,32 +2699,326 @@ export class LocalStorageService implements StorageService {
       .where(inArray(agentProfilePrompts.profileId, ids))
       .orderBy(asc(agentProfilePrompts.profileId), asc(agentProfilePrompts.createdAt));
 
-    const grouped = new Map<
+    const groupedPrompts = new Map<
       string,
       Array<{ promptId: string; title: string; createdAt: string }>
     >();
-    for (const r of rows) {
+    for (const r of promptRows) {
       const pid = r.profileId as string;
-      const arr = grouped.get(pid) ?? [];
+      const arr = groupedPrompts.get(pid) ?? [];
       arr.push({
         promptId: r.promptId as string,
         title: r.title as string,
         createdAt: r.createdAt as string,
       });
-      grouped.set(pid, arr);
+      groupedPrompts.set(pid, arr);
+    }
+
+    // Fetch provider configs for all profiles (batch load to avoid N+1)
+    const configRows = await this.db
+      .select({
+        profileId: profileProviderConfigs.profileId,
+        providerId: profileProviderConfigs.providerId,
+        createdAt: profileProviderConfigs.createdAt,
+      })
+      .from(profileProviderConfigs)
+      .where(inArray(profileProviderConfigs.profileId, ids))
+      .orderBy(asc(profileProviderConfigs.profileId), asc(profileProviderConfigs.createdAt));
+
+    // Get unique provider IDs
+    const providerIds = [...new Set(configRows.map((r) => r.providerId as string))];
+
+    // Fetch provider details
+    const providerMap = new Map<string, { id: string; name: string }>();
+    if (providerIds.length > 0) {
+      const providerRows = await this.db
+        .select({ id: providers.id, name: providers.name })
+        .from(providers)
+        .where(inArray(providers.id, providerIds));
+      for (const p of providerRows) {
+        providerMap.set(p.id as string, { id: p.id as string, name: p.name as string });
+      }
+    }
+
+    // Group configs by profile (use first config's provider for badge)
+    const firstProviderByProfile = new Map<string, { id: string; name: string }>();
+    for (const r of configRows) {
+      const pid = r.profileId as string;
+      if (!firstProviderByProfile.has(pid)) {
+        const provider = providerMap.get(r.providerId as string);
+        if (provider) {
+          firstProviderByProfile.set(pid, provider);
+        }
+      }
     }
 
     const items = base.items.map((p) => {
-      const arr = grouped.get(p.id) ?? [];
+      const arr = groupedPrompts.get(p.id) ?? [];
       const promptsDetailed = arr.map((row, idx) => ({
         promptId: row.promptId,
         title: row.title,
         order: idx + 1,
       }));
-      return { ...p, prompts: promptsDetailed };
+      const provider = firstProviderByProfile.get(p.id);
+      return { ...p, prompts: promptsDetailed, ...(provider && { provider }) };
     });
 
     return { ...base, items };
+  }
+
+  // Profile Provider Configs
+  async createProfileProviderConfig(
+    data: CreateProfileProviderConfig,
+  ): Promise<ProfileProviderConfig> {
+    const { randomUUID } = await import('crypto');
+    const now = new Date().toISOString();
+    const { profileProviderConfigs } = await import('../db/schema');
+    const { eq, sql } = await import('drizzle-orm');
+
+    // Calculate next position if not provided
+    let position = data.position;
+    if (position === undefined) {
+      const maxResult = await this.db
+        .select({ maxPos: sql<number>`COALESCE(MAX(${profileProviderConfigs.position}), -1)` })
+        .from(profileProviderConfigs)
+        .where(eq(profileProviderConfigs.profileId, data.profileId));
+      position = (maxResult[0]?.maxPos ?? -1) + 1;
+    }
+
+    const config: ProfileProviderConfig = {
+      id: randomUUID(),
+      profileId: data.profileId,
+      providerId: data.providerId,
+      name: data.name,
+      options: data.options ?? null,
+      env: data.env ?? null,
+      position,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    await this.db.insert(profileProviderConfigs).values({
+      id: config.id,
+      profileId: config.profileId,
+      providerId: config.providerId,
+      name: config.name,
+      options: config.options,
+      env: config.env ? JSON.stringify(config.env) : null,
+      position: config.position,
+      createdAt: config.createdAt,
+      updatedAt: config.updatedAt,
+    });
+
+    logger.info(
+      { configId: config.id, profileId: config.profileId, position },
+      'Created profile provider config',
+    );
+    return config;
+  }
+
+  async getProfileProviderConfig(id: string): Promise<ProfileProviderConfig> {
+    const { profileProviderConfigs } = await import('../db/schema');
+    const { eq } = await import('drizzle-orm');
+    const result = await this.db
+      .select()
+      .from(profileProviderConfigs)
+      .where(eq(profileProviderConfigs.id, id))
+      .limit(1);
+
+    if (!result[0]) {
+      throw new NotFoundError('ProfileProviderConfig', id);
+    }
+
+    const row = result[0];
+    return {
+      id: row.id,
+      profileId: row.profileId,
+      providerId: row.providerId,
+      name: row.name,
+      options: row.options,
+      env: this.parseProviderConfigEnv(row.env, row.id, row.profileId),
+      position: row.position,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  async listProfileProviderConfigsByProfile(profileId: string): Promise<ProfileProviderConfig[]> {
+    const { profileProviderConfigs } = await import('../db/schema');
+    const { eq, asc } = await import('drizzle-orm');
+
+    const results = await this.db
+      .select()
+      .from(profileProviderConfigs)
+      .where(eq(profileProviderConfigs.profileId, profileId))
+      .orderBy(asc(profileProviderConfigs.position), asc(profileProviderConfigs.id));
+
+    return results.map((row) => ({
+      id: row.id,
+      profileId: row.profileId,
+      providerId: row.providerId,
+      name: row.name,
+      options: row.options,
+      env: this.parseProviderConfigEnv(row.env, row.id, row.profileId),
+      position: row.position,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }));
+  }
+
+  async listProfileProviderConfigsByIds(ids: string[]): Promise<ProfileProviderConfig[]> {
+    if (ids.length === 0) {
+      return [];
+    }
+
+    const { profileProviderConfigs } = await import('../db/schema');
+    const { inArray } = await import('drizzle-orm');
+
+    const results = await this.db
+      .select()
+      .from(profileProviderConfigs)
+      .where(inArray(profileProviderConfigs.id, ids));
+
+    return results.map((row) => ({
+      id: row.id,
+      profileId: row.profileId,
+      providerId: row.providerId,
+      name: row.name,
+      options: row.options,
+      env: this.parseProviderConfigEnv(row.env, row.id, row.profileId),
+      position: row.position,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }));
+  }
+
+  async listAllProfileProviderConfigs(): Promise<ProfileProviderConfig[]> {
+    const { profileProviderConfigs } = await import('../db/schema');
+
+    const results = await this.db.select().from(profileProviderConfigs);
+
+    return results.map((row) => ({
+      id: row.id,
+      profileId: row.profileId,
+      providerId: row.providerId,
+      name: row.name,
+      options: row.options,
+      env: this.parseProviderConfigEnv(row.env, row.id, row.profileId),
+      position: row.position,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }));
+  }
+
+  async updateProfileProviderConfig(
+    id: string,
+    data: UpdateProfileProviderConfig,
+  ): Promise<ProfileProviderConfig> {
+    const { profileProviderConfigs } = await import('../db/schema');
+    const { eq } = await import('drizzle-orm');
+    const now = new Date().toISOString();
+
+    // Prepare update data with JSON serialization for env
+    const updateData: Record<string, unknown> = { updatedAt: now };
+    if (data.providerId !== undefined) {
+      updateData.providerId = data.providerId;
+    }
+    if (data.name !== undefined) {
+      updateData.name = data.name;
+    }
+    if (data.options !== undefined) {
+      updateData.options = data.options;
+    }
+    if (data.env !== undefined) {
+      updateData.env = data.env ? JSON.stringify(data.env) : null;
+    }
+    if (data.position !== undefined) {
+      updateData.position = data.position;
+    }
+
+    await this.db
+      .update(profileProviderConfigs)
+      .set(updateData)
+      .where(eq(profileProviderConfigs.id, id));
+
+    logger.info({ configId: id }, 'Updated profile provider config');
+    return this.getProfileProviderConfig(id);
+  }
+
+  async deleteProfileProviderConfig(id: string): Promise<void> {
+    const { profileProviderConfigs } = await import('../db/schema');
+    const { eq } = await import('drizzle-orm');
+
+    // Check if any agents reference this config
+    const { agents } = await import('../db/schema');
+    const agentRefs = await this.db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(eq(agents.providerConfigId, id))
+      .limit(1);
+
+    if (agentRefs.length > 0) {
+      throw new ValidationError('Cannot delete provider config: still referenced by agents', {
+        configId: id,
+        referencingAgentId: agentRefs[0].id,
+      });
+    }
+
+    await this.db.delete(profileProviderConfigs).where(eq(profileProviderConfigs.id, id));
+    logger.info({ configId: id }, 'Deleted profile provider config');
+  }
+
+  async reorderProfileProviderConfigs(profileId: string, configIds: string[]): Promise<void> {
+    const { profileProviderConfigs } = await import('../db/schema');
+    const { eq } = await import('drizzle-orm');
+
+    // Use raw SQL transaction for guaranteed atomicity
+    const sqlite = getRawSqliteClient(this.db);
+    if (!sqlite || typeof sqlite.exec !== 'function') {
+      throw new StorageError('Unable to access underlying SQLite client for transaction control');
+    }
+
+    try {
+      // Start transaction
+      sqlite.exec('BEGIN IMMEDIATE TRANSACTION');
+
+      // Compute tempBase from max position to avoid conflicts
+      const configs = await this.db
+        .select({ position: profileProviderConfigs.position })
+        .from(profileProviderConfigs)
+        .where(eq(profileProviderConfigs.profileId, profileId));
+
+      const maxPosition = Math.max(0, ...configs.map((c) => c.position ?? 0));
+      const tempBase = maxPosition + 1000;
+
+      // First pass: set all to temporary high positions
+      for (let i = 0; i < configIds.length; i++) {
+        await this.db
+          .update(profileProviderConfigs)
+          .set({ position: tempBase + i })
+          .where(eq(profileProviderConfigs.id, configIds[i]));
+      }
+
+      // Second pass: set them to their final positions
+      for (let i = 0; i < configIds.length; i++) {
+        await this.db
+          .update(profileProviderConfigs)
+          .set({ position: i })
+          .where(eq(profileProviderConfigs.id, configIds[i]));
+      }
+
+      // Commit transaction
+      sqlite.exec('COMMIT');
+      logger.info({ profileId, configIds }, 'Reordered provider configs');
+    } catch (error) {
+      // Rollback transaction on any error
+      sqlite.exec('ROLLBACK');
+      logger.error(
+        { error, profileId, configIds },
+        'Failed to reorder provider configs, rolled back',
+      );
+      throw error;
+    }
   }
 
   // Agents
@@ -2610,6 +3031,7 @@ export class LocalStorageService implements StorageService {
       id: randomUUID(),
       ...data,
       description: data.description ?? null,
+      providerConfigId: data.providerConfigId,
       createdAt: now,
       updatedAt: now,
     };
@@ -2624,10 +3046,21 @@ export class LocalStorageService implements StorageService {
       });
     }
 
+    // Validate that providerConfigId exists and belongs to the specified profile
+    const config = await this.getProfileProviderConfig(agent.providerConfigId);
+    if (config.profileId !== agent.profileId) {
+      throw new ValidationError('Provider config does not belong to the specified profile.', {
+        providerConfigId: agent.providerConfigId,
+        configProfileId: config.profileId,
+        expectedProfileId: agent.profileId,
+      });
+    }
+
     await this.db.insert(agents).values({
       id: agent.id,
       projectId: agent.projectId,
       profileId: agent.profileId,
+      providerConfigId: agent.providerConfigId,
       name: agent.name,
       description: agent.description,
       createdAt: agent.createdAt,
@@ -2700,17 +3133,34 @@ export class LocalStorageService implements StorageService {
     const { eq } = await import('drizzle-orm');
     const now = new Date().toISOString();
 
-    // If projectId or profileId changes, validate they match
-    if (data.projectId !== undefined || data.profileId !== undefined) {
+    // If projectId, profileId, or providerConfigId changes, validate relationships
+    if (
+      data.projectId !== undefined ||
+      data.profileId !== undefined ||
+      data.providerConfigId !== undefined
+    ) {
       const current = await this.getAgent(id);
       const newProjectId = data.projectId ?? current.projectId;
       const newProfileId = data.profileId ?? current.profileId;
+      const newProviderConfigId = data.providerConfigId ?? current.providerConfigId;
+
+      // Validate profile belongs to project
       const profile = await this.getAgentProfile(newProfileId);
       if (profile.projectId !== newProjectId) {
         throw new ValidationError('Agent.profileId must belong to the same project as the agent.', {
           agentProjectId: newProjectId,
           profileProjectId: profile.projectId,
           profileId: newProfileId,
+        });
+      }
+
+      // Validate providerConfigId belongs to the profile
+      const config = await this.getProfileProviderConfig(newProviderConfigId);
+      if (config.profileId !== newProfileId) {
+        throw new ValidationError('Provider config does not belong to the specified profile.', {
+          providerConfigId: newProviderConfigId,
+          configProfileId: config.profileId,
+          expectedProfileId: newProfileId,
         });
       }
     }

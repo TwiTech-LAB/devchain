@@ -3,12 +3,26 @@ import { Badge } from '@/ui/components/ui/badge';
 import { ScrollArea } from '@/ui/components/ui/scroll-area';
 import { Separator } from '@/ui/components/ui/separator';
 import { Skeleton } from '@/ui/components/ui/skeleton';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/ui/components/ui/tooltip';
+import { useQuery } from '@tanstack/react-query';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/ui/components/ui/select';
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
   ContextMenuTrigger,
+  ContextMenuSub,
+  ContextMenuSubTrigger,
+  ContextMenuSubContent,
+  ContextMenuRadioGroup,
+  ContextMenuRadioItem,
 } from '@/ui/components/ui/context-menu';
 import { cn } from '@/ui/lib/utils';
 import {
@@ -22,10 +36,14 @@ import {
   Play,
   Square,
   Power,
+  AlertTriangle,
+  CheckCircle2,
+  AlertCircle,
 } from 'lucide-react';
 import type { AgentPresenceMap } from '@/ui/lib/sessions';
 import type { Thread } from '@/ui/lib/chat';
 import type { AgentOrGuest } from '@/ui/hooks/useChatQueries';
+import type { PresetAvailability } from '@/ui/lib/preset-validation';
 import { getProviderIconDataUri } from '@/ui/lib/providers';
 
 // ============================================
@@ -77,12 +95,119 @@ export interface ChatSidebarProps {
   // Provider lookup
   getProviderForAgent: (agentId: string | null | undefined) => string | null;
 
+  // Pending restart state
+  pendingRestartAgentIds: Set<string>;
+  onMarkForRestart: (agentIds: string[]) => void;
+
+  // Presets (validated with availability info)
+  validatedPresets: PresetAvailability[];
+  activePreset: string | null;
+  onApplyPreset: (presetName: string) => void;
+  applyingPreset: boolean;
+
+  // Provider config switching
+  onSwitchConfig: (agentId: string, providerConfigId: string) => void;
+  fetchProviderConfigsForProfile: (
+    profileId: string,
+  ) => Promise<Array<{ id: string; name: string; providerId: string }>>;
+  updatingConfigAgentIds: Record<string, boolean>;
+
   // Mutation states
   createGroupPending: boolean;
 }
 
 // ============================================
 // Component
+// ============================================
+
+// Provider config submenu component
+interface ProviderConfigSubmenuProps {
+  agent: AgentOrGuest;
+  hasSelectedProject: boolean;
+  isBusy: boolean;
+  onSwitchConfig: (agentId: string, providerConfigId: string) => void;
+  fetchProviderConfigsForProfile: (
+    profileId: string,
+  ) => Promise<Array<{ id: string; name: string; providerId: string }>>;
+  updatingConfigAgentIds: Record<string, boolean>;
+}
+
+function ProviderConfigSubmenu({
+  agent,
+  hasSelectedProject,
+  isBusy,
+  onSwitchConfig,
+  fetchProviderConfigsForProfile,
+  updatingConfigAgentIds,
+}: ProviderConfigSubmenuProps) {
+  // Skip guests - they don't have profiles
+  if (!agent.profileId || agent.type === 'guest') {
+    return null;
+  }
+
+  // Lazy fetch provider configs for this agent's profile
+  //
+  // PERF: No `enabled` gating needed here. Radix UI's ContextMenuSubContent uses
+  // lazy mounting via the Presence component - this component only mounts when the
+  // user opens the context menu (context.open === true), not during initial page render.
+  // Therefore the useQuery only executes when the menu is opened, avoiding N API calls
+  // on page load (one per agent row).
+  //
+  // Cached results are retained for 5 minutes via staleTime, so repeated menu opens
+  // will use cached data instead of fetching again.
+  const {
+    data: rawConfigs = [],
+    isLoading,
+    isError,
+  } = useQuery({
+    queryKey: ['profile-provider-configs', agent.profileId],
+    queryFn: () => fetchProviderConfigsForProfile(agent.profileId!),
+    staleTime: 5 * 60 * 1000, // Cache for 5 minutes
+  });
+
+  // Defensive guard: ensure configs is always an array (API returns array, but tests may mock incorrectly)
+  const configs = Array.isArray(rawConfigs) ? rawConfigs : [];
+
+  const currentConfigId = agent.providerConfigId ?? '';
+  const isUpdating = updatingConfigAgentIds[agent.id];
+
+  const handleValueChange = (configId: string) => {
+    if (configId !== currentConfigId) {
+      onSwitchConfig(agent.id, configId);
+    }
+  };
+
+  return (
+    <ContextMenuSub>
+      <ContextMenuSubTrigger disabled={!hasSelectedProject || isBusy}>
+        Provider Config
+      </ContextMenuSubTrigger>
+      <ContextMenuSubContent>
+        {isLoading ? (
+          <div className="flex items-center gap-2 px-2 py-1.5 text-sm text-muted-foreground">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            Loading configs...
+          </div>
+        ) : isError ? (
+          <div className="px-2 py-1.5 text-sm text-destructive">Failed to load configs</div>
+        ) : configs.length === 0 ? (
+          <div className="px-2 py-1.5 text-sm text-muted-foreground">No configs available</div>
+        ) : (
+          <ContextMenuRadioGroup value={currentConfigId} onValueChange={handleValueChange}>
+            {configs.map((config) => (
+              <ContextMenuRadioItem key={config.id} value={config.id} disabled={isUpdating}>
+                {config.name}
+              </ContextMenuRadioItem>
+            ))}
+          </ContextMenuRadioGroup>
+        )}
+      </ContextMenuSubContent>
+    </ContextMenuSub>
+  );
+}
+
+// ============================================
+// Main ChatSidebar Component
 // ============================================
 
 export function ChatSidebar({
@@ -114,6 +239,15 @@ export function ChatSidebar({
   onRestartSession,
   onTerminateConfirm,
   getProviderForAgent,
+  pendingRestartAgentIds,
+  onMarkForRestart: _onMarkForRestart,
+  validatedPresets,
+  activePreset,
+  onApplyPreset,
+  applyingPreset,
+  onSwitchConfig,
+  fetchProviderConfigsForProfile,
+  updatingConfigAgentIds,
   createGroupPending,
 }: ChatSidebarProps) {
   const groups = userThreads
@@ -139,7 +273,7 @@ export function ChatSidebar({
       const label = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
       const aria = `Busy for ${label}`;
       return (
-        <Badge className="ml-2" aria-label={aria}>
+        <Badge className="shrink-0" aria-label={aria}>
           Busy {label}
         </Badge>
       );
@@ -147,7 +281,7 @@ export function ChatSidebar({
 
     if (activityState === 'idle') {
       return (
-        <Badge variant="outline" className="ml-2" aria-label="Idle">
+        <Badge variant="outline" className="shrink-0" aria-label="Idle">
           Idle
         </Badge>
       );
@@ -158,7 +292,7 @@ export function ChatSidebar({
 
   return (
     <div className="flex w-80 flex-col border-r bg-card">
-      <div className="flex items-center justify-between p-4">
+      <div className="flex items-center justify-between gap-2 p-4 pb-2">
         <h2 className="text-xl font-bold">Chat</h2>
         <div className="inline-flex rounded-md border">
           <Button
@@ -193,6 +327,63 @@ export function ChatSidebar({
           </Button>
         </div>
       </div>
+
+      {/* Preset Selection */}
+      {validatedPresets.length > 0 && (
+        <div className="px-4 pb-2">
+          <Select
+            value={activePreset ?? undefined}
+            onValueChange={onApplyPreset}
+            disabled={applyingPreset || !hasSelectedProject}
+          >
+            <SelectTrigger className="w-full h-8 text-xs">
+              {applyingPreset ? (
+                <span className="flex items-center gap-2">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Applying...
+                </span>
+              ) : (
+                <SelectValue placeholder="Apply preset..." />
+              )}
+            </SelectTrigger>
+            <SelectContent>
+              {validatedPresets.map(({ preset, available, missingConfigs }) => (
+                <SelectItem
+                  key={preset.name}
+                  value={preset.name}
+                  disabled={!available}
+                  className="flex items-center"
+                >
+                  <div className="flex items-center gap-2 w-full">
+                    {available ? (
+                      <CheckCircle2 className="h-3.5 w-3.5 text-green-500 flex-shrink-0" />
+                    ) : (
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <AlertCircle className="h-3.5 w-3.5 text-yellow-500 flex-shrink-0" />
+                          </TooltipTrigger>
+                          <TooltipContent side="right" className="max-w-xs">
+                            <p className="font-medium mb-1">Missing configs:</p>
+                            <ul className="text-xs list-disc pl-4">
+                              {missingConfigs.map((m, i) => (
+                                <li key={i}>
+                                  {m.agentName} → {m.configName}
+                                </li>
+                              ))}
+                            </ul>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    )}
+                    <span className={!available ? 'text-muted-foreground' : ''}>{preset.name}</span>
+                  </div>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
 
       <ScrollArea className="flex-1">
         {/* Agents Section */}
@@ -259,10 +450,15 @@ export function ChatSidebar({
                             alt=""
                           />
                         )}
-                        <div className="flex-1 overflow-hidden text-left">
-                          <div className="flex items-center gap-2">
-                            <span className="truncate">{agent.name}</span>
-                            {renderActivityBadge(agent.id)}
+                        <div className="flex-1 min-w-0 overflow-hidden text-left">
+                          <div className="truncate">
+                            {agent.name}
+                            {agent.providerConfig?.name && (
+                              <span className="text-muted-foreground">
+                                {' '}
+                                ({agent.providerConfig.name})
+                              </span>
+                            )}
                           </div>
                           {isOnline &&
                             activityState === 'busy' &&
@@ -275,21 +471,29 @@ export function ChatSidebar({
                               </div>
                             )}
                         </div>
+                        {renderActivityBadge(agent.id)}
+                        {pendingRestartAgentIds.has(agent.id) && isOnline && (
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <AlertTriangle className="h-4 w-4 text-yellow-500 ml-1 flex-shrink-0" />
+                              </TooltipTrigger>
+                              <TooltipContent>Restart to apply config changes</TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        )}
                       </button>
                     </ContextMenuTrigger>
                     <ContextMenuContent className="w-56">
-                      {!hasSession && (
-                        <ContextMenuItem
-                          onSelect={async (e) => {
-                            e.preventDefault();
-                            await onLaunchSession(agent.id, { attach: false });
-                          }}
-                          disabled={isLaunching || !hasSelectedProject}
-                        >
-                          {isLaunching && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                          Launch session
-                        </ContextMenuItem>
-                      )}
+                      <ProviderConfigSubmenu
+                        agent={agent}
+                        hasSelectedProject={hasSelectedProject}
+                        isBusy={anyBusy}
+                        onSwitchConfig={onSwitchConfig}
+                        fetchProviderConfigsForProfile={fetchProviderConfigsForProfile}
+                        updatingConfigAgentIds={updatingConfigAgentIds}
+                      />
+                      <ContextMenuSeparator />
                       <ContextMenuItem
                         onSelect={async (e) => {
                           e.preventDefault();
@@ -304,6 +508,18 @@ export function ChatSidebar({
                         )}
                         Restart session
                       </ContextMenuItem>
+                      {!hasSession && (
+                        <ContextMenuItem
+                          onSelect={async (e) => {
+                            e.preventDefault();
+                            await onLaunchSession(agent.id, { attach: false });
+                          }}
+                          disabled={isLaunching || !hasSelectedProject}
+                        >
+                          {isLaunching && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                          Launch session
+                        </ContextMenuItem>
+                      )}
                       {hasSession && sessionId && (
                         <>
                           <ContextMenuSeparator />

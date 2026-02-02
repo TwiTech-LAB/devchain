@@ -73,6 +73,8 @@ describe('RegistryOrchestrationService', () => {
         url: 'https://test.registry.com',
       }),
       updateLastUpdateCheck: jest.fn(),
+      setProjectPresets: jest.fn(),
+      getProjectPresets: jest.fn().mockReturnValue([]),
     } as unknown as jest.Mocked<SettingsService>;
 
     mockStorage = {
@@ -471,6 +473,163 @@ describe('RegistryOrchestrationService', () => {
 
       expect(result).toEqual(cached);
       expect(mockCacheService.getTemplate).toHaveBeenCalledWith('test-template', '1.0.0');
+    });
+  });
+
+  describe('preset persistence on import', () => {
+    const mockPresets = [
+      {
+        name: 'default',
+        description: 'Default preset',
+        agentConfigs: [
+          { agentName: 'Coder', providerConfigName: 'claude-config' },
+          { agentName: 'Reviewer', providerConfigName: 'gemini-config' },
+        ],
+      },
+      {
+        name: 'minimal',
+        description: null,
+        agentConfigs: [{ agentName: 'Coder', providerConfigName: 'basic-config' }],
+      },
+    ];
+
+    it('should persist presets when present in template content', async () => {
+      mockCacheService.isCached.mockReturnValue(true);
+      mockCacheService.getTemplate.mockResolvedValue({
+        content: { prompts: [], presets: mockPresets },
+        metadata: {
+          slug: 'test-template',
+          version: '1.0.0',
+          checksum: 'abc',
+          cachedAt: '',
+          size: 0,
+        },
+      });
+      mockStorage.createProject.mockResolvedValue({
+        id: 'project-123',
+        name: 'Test Project',
+        rootPath: '/test/path',
+        description: null,
+        isTemplate: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      mockProjectsService.importProject.mockResolvedValue(createMockImportResult());
+
+      await service.createProjectFromRegistry({
+        slug: 'test-template',
+        version: '1.0.0',
+        projectName: 'Test Project',
+        rootPath: '/test/path',
+      });
+
+      expect(mockSettingsService.setProjectPresets).toHaveBeenCalledWith(
+        'project-123',
+        mockPresets,
+      );
+    });
+
+    it('should not call setProjectPresets when presets array is empty', async () => {
+      mockCacheService.isCached.mockReturnValue(true);
+      mockCacheService.getTemplate.mockResolvedValue({
+        content: { prompts: [], presets: [] },
+        metadata: {
+          slug: 'test-template',
+          version: '1.0.0',
+          checksum: 'abc',
+          cachedAt: '',
+          size: 0,
+        },
+      });
+      mockStorage.createProject.mockResolvedValue({
+        id: 'project-123',
+        name: 'Test Project',
+        rootPath: '/test/path',
+        description: null,
+        isTemplate: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      mockProjectsService.importProject.mockResolvedValue(createMockImportResult());
+
+      await service.createProjectFromRegistry({
+        slug: 'test-template',
+        version: '1.0.0',
+        projectName: 'Test Project',
+        rootPath: '/test/path',
+      });
+
+      expect(mockSettingsService.setProjectPresets).not.toHaveBeenCalled();
+    });
+
+    it('should not call setProjectPresets when presets field is undefined', async () => {
+      mockCacheService.isCached.mockReturnValue(true);
+      mockCacheService.getTemplate.mockResolvedValue({
+        content: { prompts: [] },
+        metadata: {
+          slug: 'test-template',
+          version: '1.0.0',
+          checksum: 'abc',
+          cachedAt: '',
+          size: 0,
+        },
+      });
+      mockStorage.createProject.mockResolvedValue({
+        id: 'project-123',
+        name: 'Test Project',
+        rootPath: '/test/path',
+        description: null,
+        isTemplate: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      mockProjectsService.importProject.mockResolvedValue(createMockImportResult());
+
+      await service.createProjectFromRegistry({
+        slug: 'test-template',
+        version: '1.0.0',
+        projectName: 'Test Project',
+        rootPath: '/test/path',
+      });
+
+      expect(mockSettingsService.setProjectPresets).not.toHaveBeenCalled();
+    });
+
+    it('should not fail project creation when setProjectPresets throws', async () => {
+      mockCacheService.isCached.mockReturnValue(true);
+      mockCacheService.getTemplate.mockResolvedValue({
+        content: { prompts: [], presets: mockPresets },
+        metadata: {
+          slug: 'test-template',
+          version: '1.0.0',
+          checksum: 'abc',
+          cachedAt: '',
+          size: 0,
+        },
+      });
+      mockStorage.createProject.mockResolvedValue({
+        id: 'project-123',
+        name: 'Test Project',
+        rootPath: '/test/path',
+        description: null,
+        isTemplate: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      mockProjectsService.importProject.mockResolvedValue(createMockImportResult());
+      mockSettingsService.setProjectPresets.mockRejectedValue(
+        new Error('Failed to persist presets'),
+      );
+
+      const result = await service.createProjectFromRegistry({
+        slug: 'test-template',
+        version: '1.0.0',
+        projectName: 'Test Project',
+        rootPath: '/test/path',
+      });
+
+      // Project should still be created even if preset persistence fails
+      expect(result.project.id).toBe('project-123');
     });
   });
 });

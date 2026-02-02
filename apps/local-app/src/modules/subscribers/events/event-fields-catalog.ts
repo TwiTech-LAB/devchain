@@ -104,6 +104,9 @@ export const EVENT_FIELDS_CATALOG: Record<string, SubscribableEventDefinition> =
       { field: 'version', label: 'Version', type: 'number' },
       { field: 'epicTitle', label: 'Epic Title', type: 'string' },
       { field: 'projectName', label: 'Project Name', type: 'string', nullable: true },
+      // Actor field (who triggered this event)
+      { field: 'actor.type', label: 'Actor Type', type: 'string', nullable: true },
+      { field: 'actor.id', label: 'Actor ID', type: 'string', nullable: true },
       // Agent change fields (for assignment tracking)
       {
         field: 'changes.agentId.previous',
@@ -197,6 +200,9 @@ export const EVENT_FIELDS_CATALOG: Record<string, SubscribableEventDefinition> =
       { field: 'statusId', label: 'Status ID', type: 'string', nullable: true },
       { field: 'agentId', label: 'Agent ID', type: 'string', nullable: true },
       { field: 'parentId', label: 'Parent Epic ID', type: 'string', nullable: true },
+      // Actor field (who triggered this event)
+      { field: 'actor.type', label: 'Actor Type', type: 'string', nullable: true },
+      { field: 'actor.id', label: 'Actor ID', type: 'string', nullable: true },
       { field: 'projectName', label: 'Project Name', type: 'string', nullable: true },
       { field: 'statusName', label: 'Status Name', type: 'string', nullable: true },
       { field: 'agentName', label: 'Agent Name', type: 'string', nullable: true },

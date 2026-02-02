@@ -5,7 +5,16 @@ import { access, mkdir, constants } from 'fs/promises';
 import { createLogger } from '../../../common/logging/logger';
 import * as path from 'path';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
-import type { AgentProfile, Provider } from '../../storage/models/domain.models';
+import type {
+  AgentProfile,
+  Provider,
+  ProfileProviderConfig,
+} from '../../storage/models/domain.models';
+import {
+  validateEnvKey,
+  validateEnvValue,
+  EnvBuilderError,
+} from '../../sessions/utils/env-builder';
 import { McpProviderRegistrationService } from '../../mcp/services/mcp-provider-registration.service';
 import { parseProfileOptions, ProfileOptionsError } from '../../sessions/utils/profile-options';
 import { ProviderAdapterFactory } from '../../providers/adapters';
@@ -34,6 +43,12 @@ export interface ProviderCheck {
   mcpMessage?: string;
   mcpDetails?: string;
   mcpEndpoint?: string | null;
+  /** Config details when validated via agent's providerConfigId */
+  configId?: string;
+  configEnvStatus?: 'pass' | 'fail' | 'warn';
+  configEnvMessage?: string;
+  /** Agent names using this provider */
+  usedByAgents?: string[];
 }
 
 export interface PreflightResult {
@@ -56,6 +71,120 @@ export class PreflightService {
     private readonly mcpRegistration: McpProviderRegistrationService,
     private readonly adapterFactory: ProviderAdapterFactory,
   ) {}
+
+  /**
+   * Collect provider info from project's agents.
+   * Returns a map of providerId → { provider, profiles, configs, agentNames }
+   *
+   * Uses batch loading to avoid N+1 query patterns:
+   * - Batch-loads all provider configs by IDs
+   * - Batch-loads all providers by IDs
+   */
+  private async collectProviderInfoFromAgents(projectId: string | null | undefined): Promise<
+    Map<
+      string,
+      {
+        provider: Provider;
+        profiles: AgentProfile[];
+        configs: ProfileProviderConfig[];
+        agentNames: string[];
+      }
+    >
+  > {
+    const providerMap = new Map<
+      string,
+      {
+        provider: Provider;
+        profiles: AgentProfile[];
+        configs: ProfileProviderConfig[];
+        agentNames: string[];
+      }
+    >();
+
+    // If no projectId, fall back to validating all providers
+    // Note: Profile-provider relationship now determined via profile_provider_configs
+    if (!projectId) {
+      const providersResult = await this.storage.listProviders();
+      const allConfigs = await this.storage.listAllProfileProviderConfigs();
+      for (const provider of providersResult.items) {
+        // Get profiles that have configs for this provider
+        const providerConfigs = allConfigs.filter((c) => c.providerId === provider.id);
+        providerMap.set(provider.id, {
+          provider,
+          profiles: [], // Profiles no longer directly linked to providers
+          configs: providerConfigs,
+          agentNames: [],
+        });
+      }
+      return providerMap;
+    }
+
+    // Get agents for the project
+    const agentsResult = await this.storage.listAgents(projectId);
+    const agents = agentsResult.items;
+
+    // Collect distinct config IDs from agents
+    const configIds = [
+      ...new Set(agents.filter((a) => a.providerConfigId).map((a) => a.providerConfigId)),
+    ];
+
+    if (configIds.length === 0) {
+      // No agents with configs
+      return providerMap;
+    }
+
+    // Batch-load all configs in a single query
+    const configs = await this.storage.listProfileProviderConfigsByIds(configIds);
+    const configMap = new Map(configs.map((c) => [c.id, c]));
+
+    // Collect distinct provider IDs from configs
+    const providerIds = [...new Set(configs.map((c) => c.providerId))];
+
+    // Batch-load all providers in a single query
+    const providers = await this.storage.listProvidersByIds(providerIds);
+    const providerLookup = new Map(providers.map((p) => [p.id, p]));
+
+    // Build the result map using in-memory lookups
+    for (const agent of agents) {
+      if (!agent.providerConfigId) {
+        logger.warn({ agentId: agent.id }, 'Agent has no providerConfigId');
+        continue;
+      }
+
+      const config = configMap.get(agent.providerConfigId);
+      if (!config) {
+        logger.warn({ agentId: agent.id, configId: agent.providerConfigId }, 'Config not found');
+        continue;
+      }
+
+      const providerId = config.providerId;
+      const provider = providerLookup.get(providerId);
+      if (!provider) {
+        logger.warn({ agentId: agent.id, providerId }, 'Provider not found');
+        continue;
+      }
+
+      // Add to map
+      if (!providerMap.has(providerId)) {
+        providerMap.set(providerId, {
+          provider,
+          profiles: [],
+          configs: [],
+          agentNames: [],
+        });
+      }
+
+      const info = providerMap.get(providerId)!;
+      info.agentNames.push(agent.name);
+
+      // Add config to the list if not already present
+      if (!info.configs.some((c) => c.id === config.id)) {
+        info.configs.push(config);
+      }
+    }
+
+    return providerMap;
+  }
 
   /**
    * Run all preflight checks
@@ -85,7 +214,6 @@ export class PreflightService {
     // Check tmux
     checks.push(await this.checkTmux());
 
-    let profiles: AgentProfile[] = [];
     let scopedProjectId: string | null | undefined = undefined;
     if (projectPath) {
       try {
@@ -100,36 +228,27 @@ export class PreflightService {
       }
     }
 
+    // Collect provider info from agents' configs (only validate what's actually used)
     try {
-      const profileResult = await this.storage.listAgentProfiles(
-        scopedProjectId ? { projectId: scopedProjectId } : {},
-      );
-      profiles = profileResult.items ?? [];
-    } catch (error) {
-      logger.error({ error }, 'Failed to fetch agent profiles for preflight checks');
-      checks.push({
-        name: 'profiles',
-        status: 'warn',
-        message: 'Failed to inspect agent profiles for options validation',
-        details: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
-
-    // Check all configured providers dynamically
-    try {
-      const providersResult = await this.storage.listProviders();
+      const providerInfoMap = await this.collectProviderInfoFromAgents(scopedProjectId);
       logger.debug(
-        { providerCount: providersResult.items.length },
-        'Fetched providers for preflight',
+        { providerCount: providerInfoMap.size },
+        'Collected providers from agent configs for preflight',
       );
 
-      for (const provider of providersResult.items) {
-        const relevantProfiles = profiles.filter((profile) => profile.providerId === provider.id);
-        providerChecks.push(await this.checkProvider(provider, relevantProfiles, projectPath));
+      for (const info of providerInfoMap.values()) {
+        providerChecks.push(
+          await this.checkProviderWithConfig(
+            info.provider,
+            info.profiles,
+            info.configs,
+            info.agentNames,
+            projectPath,
+          ),
+        );
       }
     } catch (error) {
-      logger.error({ error }, 'Failed to fetch providers for preflight checks');
-      // Add a warning check if we can't fetch providers
+      logger.error({ error }, 'Failed to collect provider info for preflight checks');
       checks.push({
         name: 'providers',
         status: 'warn',
@@ -317,44 +436,13 @@ export class PreflightService {
           : 'Binary is either missing or not executable. Check file permissions.';
     }
 
-    let optionsStatus: 'pass' | 'fail' | 'warn' = 'pass';
-    let optionsMessage: string | undefined;
-    let optionsDetails: string | undefined;
-
-    const optionErrors: string[] = [];
-
-    for (const profile of profiles) {
-      if (!profile.options) {
-        continue;
-      }
-
-      try {
-        parseProfileOptions(profile.options);
-      } catch (error) {
-        if (error instanceof ProfileOptionsError) {
-          optionsStatus = 'fail';
-          optionErrors.push(`${profile.name}: ${error.message}`);
-        } else {
-          optionsStatus = 'fail';
-          optionErrors.push(`${profile.name}: invalid options`);
-        }
-      }
-    }
-
-    if (optionErrors.length > 0) {
-      optionsMessage = `Invalid options in ${optionErrors.length} profile${optionErrors.length === 1 ? '' : 's'}.`;
-      optionsDetails = optionErrors.join(' | ');
-    }
+    // Options validation moved to checkProviderWithConfig (uses config.options, not profile.options)
 
     const { mcpStatus, mcpMessage, mcpDetails } = await this.evaluateMcpStatus(
       provider,
       projectPath,
     );
-    const statusCollection: Array<'pass' | 'fail' | 'warn'> = [
-      binaryStatus,
-      mcpStatus,
-      optionsStatus,
-    ];
+    const statusCollection: Array<'pass' | 'fail' | 'warn'> = [binaryStatus, mcpStatus];
     const overallStatus = statusCollection.includes('fail')
       ? 'fail'
       : statusCollection.includes('warn')
@@ -362,14 +450,9 @@ export class PreflightService {
         : 'pass';
 
     const summaryMessage =
-      optionsStatus === overallStatus && optionsMessage
-        ? optionsMessage
-        : binaryStatus === overallStatus
-          ? binaryMessage
-          : (mcpMessage ?? binaryMessage);
+      binaryStatus === overallStatus ? binaryMessage : (mcpMessage ?? binaryMessage);
 
-    const combinedDetails =
-      [binaryDetails, optionsDetails, mcpDetails].filter(Boolean).join(' | ') || undefined;
+    const combinedDetails = [binaryDetails, mcpDetails].filter(Boolean).join(' | ') || undefined;
 
     return {
       id: provider.id,
@@ -385,6 +468,99 @@ export class PreflightService {
       mcpMessage,
       mcpDetails,
       mcpEndpoint: provider.mcpEndpoint,
+    };
+  }
+
+  /**
+   * Check provider with config details (env validation)
+   */
+  private async checkProviderWithConfig(
+    provider: Provider,
+    profiles: AgentProfile[],
+    configs: ProfileProviderConfig[],
+    agentNames: string[],
+    projectPath?: string,
+  ): Promise<ProviderCheck> {
+    // Get base provider check
+    const baseCheck = await this.checkProvider(provider, profiles, projectPath);
+
+    // Validate configs' env vars
+    let configEnvStatus: 'pass' | 'fail' | 'warn' = 'pass';
+    let configEnvMessage: string | undefined;
+    const envErrors: string[] = [];
+
+    for (const config of configs) {
+      if (!config.env) {
+        continue;
+      }
+
+      for (const [key, value] of Object.entries(config.env)) {
+        try {
+          validateEnvKey(key);
+          validateEnvValue(key, value);
+        } catch (error) {
+          configEnvStatus = 'fail';
+          if (error instanceof EnvBuilderError) {
+            envErrors.push(`Config ${config.id.slice(0, 8)}: ${error.message}`);
+          } else {
+            envErrors.push(`Config ${config.id.slice(0, 8)}: invalid env var`);
+          }
+        }
+      }
+    }
+
+    if (envErrors.length > 0) {
+      configEnvMessage = `Invalid env vars: ${envErrors.join(' | ')}`;
+    }
+
+    // Validate config options
+    const configOptionErrors: string[] = [];
+    for (const config of configs) {
+      if (!config.options) {
+        continue;
+      }
+
+      try {
+        parseProfileOptions(config.options);
+      } catch (error) {
+        if (error instanceof ProfileOptionsError) {
+          configOptionErrors.push(`Config ${config.id.slice(0, 8)}: ${error.message}`);
+        } else {
+          configOptionErrors.push(`Config ${config.id.slice(0, 8)}: invalid options`);
+        }
+      }
+    }
+
+    // Combine status
+    const statusCollection: Array<'pass' | 'fail' | 'warn'> = [
+      baseCheck.status,
+      configEnvStatus,
+      configOptionErrors.length > 0 ? 'fail' : 'pass',
+    ];
+    const overallStatus = statusCollection.includes('fail')
+      ? 'fail'
+      : statusCollection.includes('warn')
+        ? 'warn'
+        : 'pass';
+
+    // Build combined details
+    const allDetails = [
+      baseCheck.details,
+      configEnvMessage,
+      configOptionErrors.length > 0
+        ? `Config options: ${configOptionErrors.join(' | ')}`
+        : undefined,
+    ]
+      .filter(Boolean)
+      .join(' | ');
+
+    return {
+      ...baseCheck,
+      status: overallStatus,
+      details: allDetails || undefined,
+      configEnvStatus,
+      configEnvMessage,
+      usedByAgents: agentNames.length > 0 ? agentNames : undefined,
     };
   }
 

@@ -38,25 +38,37 @@ export class EpicAssignmentNotifierSubscriber {
       return;
     }
 
+    // Skip self-assignment (agent created epic assigned to themselves)
+    if (payload.actor?.type === 'agent' && payload.actor.id === payload.agentId) {
+      this.logger.debug(
+        { actorId: payload.actor.id, epicId: payload.epicId },
+        'Skipping notification: agent created epic assigned to itself',
+      );
+      return;
+    }
+
     const metadata = getEventMetadata(payload);
     const eventId = metadata?.id;
     const handler = 'EpicAssignmentNotifier';
     const startedAt = new Date().toISOString();
 
     try {
+      // Resolve actor (assigner) name for template placeholder
+      const assignerName = await this.resolveActorName(payload.actor);
+
       const template = this.resolveTemplate();
       const message = this.renderTemplate(template, {
         epic_id: payload.epicId,
         agent_name: payload.agentName ?? payload.agentId,
         epic_title: payload.title,
         project_name: payload.projectName ?? payload.projectId,
+        assigner_name: assignerName ?? 'System',
       });
 
       // Ensure agent has an active session (launch if needed)
-      const { sessionId, launched } = await this.sessionCoordinator.withAgentLock(
-        payload.agentId,
-        () => this.ensureAgentSessionForCreated(payload),
-      );
+      // Note: ensureAgentSession calls launchSession() which has internal withAgentLock.
+      // No outer lock needed here - it would cause deadlock (nested non-reentrant locks).
+      const { sessionId, launched } = await this.ensureAgentSessionForCreated(payload);
 
       // Enqueue message to pool for batched delivery
       const result = await this.messagePoolService.enqueue(payload.agentId, message, {
@@ -123,6 +135,15 @@ export class EpicAssignmentNotifierSubscriber {
       return;
     }
 
+    // Skip self-assignment (agent assigned epic to themselves)
+    if (payload.actor?.type === 'agent' && payload.actor.id === newAgentId) {
+      this.logger.debug(
+        { actorId: payload.actor.id, epicId: payload.epicId },
+        'Skipping notification: agent assigned epic to itself',
+      );
+      return;
+    }
+
     const metadata = getEventMetadata(payload);
     const eventId = metadata?.id;
     const handler = 'EpicAssignmentNotifier';
@@ -130,6 +151,8 @@ export class EpicAssignmentNotifierSubscriber {
 
     try {
       const [agentName, projectName, epicTitle] = await this.resolveNames(payload, newAgentId);
+      // Resolve actor (assigner) name for template placeholder
+      const assignerName = await this.resolveActorName(payload.actor);
 
       const template = this.resolveTemplate();
       const message = this.renderTemplate(template, {
@@ -137,12 +160,13 @@ export class EpicAssignmentNotifierSubscriber {
         agent_name: agentName ?? newAgentId,
         epic_title: epicTitle ?? payload.epicId,
         project_name: projectName ?? payload.projectId,
+        assigner_name: assignerName ?? 'System',
       });
 
       // Ensure agent has an active session (launch if needed)
-      const { sessionId, launched } = await this.sessionCoordinator.withAgentLock(newAgentId, () =>
-        this.ensureAgentSession(payload, newAgentId),
-      );
+      // Note: ensureAgentSession calls launchSession() which has internal withAgentLock.
+      // No outer lock needed here - it would cause deadlock (nested non-reentrant locks).
+      const { sessionId, launched } = await this.ensureAgentSession(payload, newAgentId);
 
       // Enqueue message to pool for batched delivery
       const result = await this.messagePoolService.enqueue(newAgentId, message, {
@@ -219,7 +243,10 @@ export class EpicAssignmentNotifierSubscriber {
 
   private renderTemplate(
     template: string,
-    context: Record<'epic_id' | 'agent_name' | 'epic_title' | 'project_name', string>,
+    context: Record<
+      'epic_id' | 'agent_name' | 'epic_title' | 'project_name' | 'assigner_name',
+      string
+    >,
   ): string {
     return Object.entries(context).reduce((acc, [key, value]) => {
       const placeholder = `{${key}}`;
@@ -266,6 +293,34 @@ export class EpicAssignmentNotifierSubscriber {
       resolvedProject ?? project ?? undefined,
       resolvedEpic ?? epic ?? undefined,
     ];
+  }
+
+  /**
+   * Resolves the name of the actor who triggered the event.
+   * @param actor - Actor from event payload
+   * @returns Actor name, or null if not found/unavailable
+   */
+  private async resolveActorName(
+    actor: { type: 'agent' | 'guest'; id: string } | null | undefined,
+  ): Promise<string | null> {
+    if (!actor) {
+      return null;
+    }
+
+    try {
+      if (actor.type === 'agent') {
+        const agent = await this.storage.getAgent(actor.id);
+        return agent.name;
+      } else if (actor.type === 'guest') {
+        const guest = await this.storage.getGuest(actor.id);
+        return guest.name;
+      }
+    } catch {
+      // Actor lookup failed - return null
+      return null;
+    }
+
+    return null;
   }
 
   private async ensureAgentSession(

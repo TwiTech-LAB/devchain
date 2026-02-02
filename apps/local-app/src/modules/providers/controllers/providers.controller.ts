@@ -141,16 +141,22 @@ export class ProvidersController {
   async deleteProvider(@Param('id') id: string): Promise<void> {
     logger.info({ id }, 'DELETE /api/providers/:id');
 
-    // Check if any profiles are using this provider
-    const profiles = await this.storage.listAgentProfiles();
-    const profilesUsingProvider = profiles.items.filter((p) => p.providerId === id);
+    // Check if any profile configs are using this provider
+    const allConfigs = await this.storage.listAllProfileProviderConfigs();
+    const configsUsingProvider = allConfigs.filter((c) => c.providerId === id);
 
-    if (profilesUsingProvider.length > 0) {
-      const profileNames = profilesUsingProvider.map((p) => p.name).join(', ');
+    if (configsUsingProvider.length > 0) {
+      // Get profile names for the error message
+      const profileIds = [...new Set(configsUsingProvider.map((c) => c.profileId))];
+      const profiles = await this.storage.listAgentProfiles();
+      const profileNames = profiles.items
+        .filter((p) => profileIds.includes(p.id))
+        .map((p) => p.name)
+        .join(', ');
       throw new BadRequestException({
-        message: `Cannot delete provider: ${profilesUsingProvider.length} profile(s) are still using it`,
-        details: `The following profiles are using this provider: ${profileNames}`,
-        profileCount: profilesUsingProvider.length,
+        message: `Cannot delete provider: ${configsUsingProvider.length} config(s) are still using it`,
+        details: `The following profiles have configs using this provider: ${profileNames}`,
+        configCount: configsUsingProvider.length,
         profiles: profileNames,
       });
     }

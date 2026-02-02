@@ -238,4 +238,140 @@ describe('EpicAssignmentNotifierSubscriber', () => {
     expect(enqueueMock).not.toHaveBeenCalled();
     expect(launchSessionMock).not.toHaveBeenCalled();
   });
+
+  describe('self-assignment detection', () => {
+    describe('epic.updated', () => {
+      it('skips enqueue when agent assigns epic to themselves', async () => {
+        const payload = {
+          epicId: 'epic-1',
+          projectId: 'project-1',
+          version: 2,
+          epicTitle: 'Self Assignment',
+          projectName: 'Demo Project',
+          actor: { type: 'agent' as const, id: 'agent-1' },
+          changes: {
+            agentId: {
+              previous: null,
+              current: 'agent-1',
+              currentName: 'Helper Agent',
+            },
+          },
+        };
+
+        await subscriber.handleEpicUpdated(payload);
+
+        expect(enqueueMock).not.toHaveBeenCalled();
+        expect(launchSessionMock).not.toHaveBeenCalled();
+      });
+
+      it('proceeds with enqueue when different agent assigns epic', async () => {
+        const payload = {
+          epicId: 'epic-1',
+          projectId: 'project-1',
+          version: 2,
+          epicTitle: 'Cross Assignment',
+          projectName: 'Demo Project',
+          actor: { type: 'agent' as const, id: 'agent-2' },
+          changes: {
+            agentId: {
+              previous: null,
+              current: 'agent-1',
+              currentName: 'Helper Agent',
+            },
+          },
+        };
+
+        await subscriber.handleEpicUpdated(payload);
+
+        expect(enqueueMock).toHaveBeenCalledTimes(1);
+        expect(enqueueMock).toHaveBeenCalledWith(
+          'agent-1',
+          expect.any(String),
+          expect.objectContaining({
+            source: 'epic.assigned',
+            submitKeys: ['Enter'],
+            projectId: 'project-1',
+            agentName: 'Helper Agent',
+          }),
+        );
+      });
+
+      it('proceeds with enqueue when actor is null (HTTP/API path)', async () => {
+        const payload = {
+          epicId: 'epic-1',
+          projectId: 'project-1',
+          version: 2,
+          epicTitle: 'System Assignment',
+          projectName: 'Demo Project',
+          actor: null,
+          changes: {
+            agentId: {
+              previous: null,
+              current: 'agent-1',
+              currentName: 'Helper Agent',
+            },
+          },
+        };
+
+        await subscriber.handleEpicUpdated(payload);
+
+        expect(enqueueMock).toHaveBeenCalledTimes(1);
+        expect(enqueueMock).toHaveBeenCalledWith(
+          'agent-1',
+          expect.any(String),
+          expect.objectContaining({
+            source: 'epic.assigned',
+          }),
+        );
+      });
+    });
+
+    describe('epic.created', () => {
+      const createdPayload = {
+        epicId: 'epic-1',
+        projectId: 'project-1',
+        title: 'New Epic',
+        statusId: 'status-1',
+        agentId: 'agent-1',
+        parentId: null,
+        projectName: 'Demo Project',
+        statusName: 'New',
+        agentName: 'Helper Agent',
+        parentTitle: null,
+      };
+
+      it('skips enqueue when agent creates epic assigned to themselves', async () => {
+        const payload = {
+          ...createdPayload,
+          actor: { type: 'agent' as const, id: 'agent-1' },
+        };
+
+        await subscriber.handleEpicCreated(payload);
+
+        expect(enqueueMock).not.toHaveBeenCalled();
+        expect(launchSessionMock).not.toHaveBeenCalled();
+      });
+
+      it('proceeds with enqueue when different agent creates epic with assignment', async () => {
+        const payload = {
+          ...createdPayload,
+          actor: { type: 'agent' as const, id: 'agent-2' },
+        };
+
+        await subscriber.handleEpicCreated(payload);
+
+        expect(enqueueMock).toHaveBeenCalledTimes(1);
+        expect(enqueueMock).toHaveBeenCalledWith(
+          'agent-1',
+          expect.any(String),
+          expect.objectContaining({
+            source: 'epic.created',
+            submitKeys: ['Enter'],
+            projectId: 'project-1',
+            agentName: 'Helper Agent',
+          }),
+        );
+      });
+    });
+  });
 });

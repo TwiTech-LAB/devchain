@@ -676,6 +676,13 @@ export function NewCommentForm({
         </div>
       )}
 
+      {/* Warning when no agents selected */}
+      {agents.length > 0 && selectedAgentIds.size === 0 && !agentsLoading && (
+        <p className="text-xs text-muted-foreground">
+          No agents selected — no notifications will be sent
+        </p>
+      )}
+
       {/* Loading skeleton for agents */}
       {agentsLoading && (
         <div className="mb-2 flex items-center gap-1">

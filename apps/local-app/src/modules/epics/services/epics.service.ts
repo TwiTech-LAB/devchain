@@ -12,6 +12,14 @@ import { TerminalGateway } from '../../terminal/gateways/terminal.gateway';
 import { ValidationError } from '../../../common/errors/error-types';
 import { SettingsService } from '../../settings/services/settings.service';
 
+/**
+ * Context for epic operations, providing caller/actor information.
+ */
+export interface EpicOperationContext {
+  /** Actor who triggered this operation (agent or guest), null if unknown/system */
+  actor?: { type: 'agent' | 'guest'; id: string } | null;
+}
+
 @Injectable()
 export class EpicsService {
   private readonly logger = new Logger(EpicsService.name);
@@ -25,7 +33,7 @@ export class EpicsService {
     private readonly terminalGateway?: TerminalGateway,
   ) {}
 
-  async createEpic(data: CreateEpic): Promise<Epic> {
+  async createEpic(data: CreateEpic, context?: EpicOperationContext): Promise<Epic> {
     // Clear agentId if creating in an auto-clean status
     this.applyAutoCleanIfNeeded(data.projectId, data.statusId, data);
 
@@ -42,6 +50,7 @@ export class EpicsService {
         statusId: epic.statusId ?? null,
         agentId: epic.agentId ?? null,
         parentId: epic.parentId ?? null,
+        actor: context?.actor ?? null,
         ...resolvedNames,
       });
     } catch (error) {
@@ -95,7 +104,11 @@ export class EpicsService {
     return this.storage.countSubEpicsByStatus(parentId);
   }
 
-  async createEpicForProject(projectId: string, input: CreateEpicForProjectInput): Promise<Epic> {
+  async createEpicForProject(
+    projectId: string,
+    input: CreateEpicForProjectInput,
+    context?: EpicOperationContext,
+  ): Promise<Epic> {
     // Clear agentId if creating in an auto-clean status
     this.applyAutoCleanIfNeeded(projectId, input.statusId, input);
 
@@ -112,6 +125,7 @@ export class EpicsService {
         statusId: epic.statusId ?? null,
         agentId: epic.agentId ?? null,
         parentId: epic.parentId ?? null,
+        actor: context?.actor ?? null,
         ...resolvedNames,
       });
     } catch (error) {
@@ -129,7 +143,12 @@ export class EpicsService {
     return epic;
   }
 
-  async updateEpic(id: string, data: UpdateEpic, expectedVersion: number): Promise<Epic> {
+  async updateEpic(
+    id: string,
+    data: UpdateEpic,
+    expectedVersion: number,
+    context?: EpicOperationContext,
+  ): Promise<Epic> {
     const before = await this.storage.getEpic(id);
 
     // Clear agentId if moving to an auto-clean status
@@ -162,6 +181,7 @@ export class EpicsService {
           version: updated.version,
           epicTitle: updated.title,
           projectName,
+          actor: context?.actor ?? null,
           changes,
         });
       }
@@ -194,6 +214,7 @@ export class EpicsService {
   async bulkUpdateEpics(
     updates: Array<{ id: string; statusId?: string; agentId?: string | null; version: number }>,
     expectedParentId: string | null = null,
+    context?: EpicOperationContext,
   ): Promise<Epic[]> {
     if (!updates.length) {
       return [];
@@ -256,7 +277,7 @@ export class EpicsService {
         payload.agentId = update.agentId ?? null;
       }
 
-      results.push(await this.updateEpic(update.id, payload, update.version));
+      results.push(await this.updateEpic(update.id, payload, update.version, context));
     }
 
     return results;

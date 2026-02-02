@@ -65,6 +65,8 @@ export interface EpicTableRowProps {
   depth?: number;
   /** Whether this is a sub-epic row (for styling) */
   isSubEpic?: boolean;
+  /** Number of sub-epics (for showing expand button only when has children) */
+  subEpicCount?: number;
 }
 
 /**
@@ -95,6 +97,7 @@ export function EpicTableRow({
   onAgentChange,
   depth = 0,
   isSubEpic = false,
+  subEpicCount = 0,
 }: EpicTableRowProps) {
   // Check if this epic is selected
   const isSelected = selectedEpics?.has(epic.id) ?? false;
@@ -138,7 +141,7 @@ export function EpicTableRow({
   } = useQuery({
     queryKey: ['sub-epics', epic.id],
     queryFn: () => fetchSubEpics(epic.id),
-    enabled: isParentEpic && expanded,
+    enabled: isParentEpic && subEpicCount > 0 && expanded,
     staleTime: 30000,
   });
 
@@ -192,6 +195,29 @@ export function EpicTableRow({
 
   const agentName = getAgentName(epic.agentId);
 
+  // Format date as relative time (e.g., "2h ago", "3d ago")
+  const formatRelativeTime = (dateStr: string) => {
+    const date = new Date(dateStr);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffSec = Math.floor(diffMs / 1000);
+    const diffMin = Math.floor(diffSec / 60);
+    const diffHour = Math.floor(diffMin / 60);
+    const diffDay = Math.floor(diffHour / 24);
+
+    if (diffDay > 30) {
+      return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    } else if (diffDay > 0) {
+      return `${diffDay}d ago`;
+    } else if (diffHour > 0) {
+      return `${diffHour}h ago`;
+    } else if (diffMin > 0) {
+      return `${diffMin}m ago`;
+    } else {
+      return 'just now';
+    }
+  };
+
   return (
     <>
       {/* Main row */}
@@ -205,9 +231,9 @@ export function EpicTableRow({
           />
         </TableCell>
 
-        {/* Expand/collapse toggle */}
+        {/* Expand/collapse toggle - only show for parent epics with sub-epics */}
         <TableCell>
-          {isParentEpic && (
+          {isParentEpic && subEpicCount > 0 && (
             <Button
               variant="ghost"
               size="icon"
@@ -333,6 +359,16 @@ export function EpicTableRow({
           </div>
         </TableCell>
 
+        {/* Created */}
+        <TableCell>
+          <span
+            className="text-sm text-muted-foreground"
+            title={new Date(epic.createdAt).toLocaleString()}
+          >
+            {formatRelativeTime(epic.createdAt)}
+          </span>
+        </TableCell>
+
         {/* Actions */}
         <TableCell>
           <Button
@@ -352,7 +388,7 @@ export function EpicTableRow({
         <>
           {subEpicsLoading && (
             <TableRow className="bg-muted/20">
-              <TableCell colSpan={7} className="py-3">
+              <TableCell colSpan={8} className="py-3">
                 <div className="flex items-center gap-2 text-sm text-muted-foreground pl-8">
                   <Loader2 className="h-4 w-4 animate-spin" />
                   Loading sub-epics...
@@ -363,7 +399,7 @@ export function EpicTableRow({
 
           {subEpicsError && (
             <TableRow className="bg-muted/20">
-              <TableCell colSpan={7} className="py-3">
+              <TableCell colSpan={8} className="py-3">
                 <div className="text-sm text-destructive pl-8">Failed to load sub-epics</div>
               </TableCell>
             </TableRow>
@@ -371,7 +407,7 @@ export function EpicTableRow({
 
           {!subEpicsLoading && !subEpicsError && subEpics.length === 0 && (
             <TableRow className="bg-muted/20">
-              <TableCell colSpan={7} className="py-3">
+              <TableCell colSpan={8} className="py-3">
                 <div className="text-sm text-muted-foreground pl-8">No sub-epics</div>
               </TableCell>
             </TableRow>

@@ -70,21 +70,42 @@ async function fetchProjects(): Promise<ProjectsResponse> {
   return { ...data, items: projectsWithStats };
 }
 
+/**
+ * Read selected project ID from hybrid storage.
+ * SessionStorage (tab-local) takes precedence over localStorage (new tab default).
+ */
+function readSelectedProjectId(): string | null {
+  if (typeof window === 'undefined') return null;
+  return (
+    window.sessionStorage.getItem(PROJECT_STORAGE_KEY) ??
+    window.localStorage.getItem(PROJECT_STORAGE_KEY)
+  );
+}
+
+/**
+ * Persist selected project to both storages.
+ * - sessionStorage: tab-local selection
+ * - localStorage: default for new tabs
+ */
 function persistSelectedProject(projectId?: string) {
   if (typeof window === 'undefined') return;
   if (projectId) {
+    window.sessionStorage.setItem(PROJECT_STORAGE_KEY, projectId);
     window.localStorage.setItem(PROJECT_STORAGE_KEY, projectId);
   } else {
-    window.localStorage.removeItem(PROJECT_STORAGE_KEY);
+    // Clear sessionStorage but keep localStorage as fallback for new tabs
+    window.sessionStorage.removeItem(PROJECT_STORAGE_KEY);
+    // Don't clear localStorage - it serves as the default for new tabs
   }
 }
 
 export function ProjectSelectionProvider({ children }: { children: ReactNode }) {
   const [selectedProjectId, setSelectedProjectIdState] = useState<string | undefined>(() => {
     if (typeof window === 'undefined') return undefined;
-    return window.localStorage.getItem(PROJECT_STORAGE_KEY) ?? undefined;
+    return readSelectedProjectId() ?? undefined;
   });
   const appliedFromQueryRef = useRef(false);
+  const initializedRef = useRef(false);
 
   const {
     data: projectsData,
@@ -92,6 +113,21 @@ export function ProjectSelectionProvider({ children }: { children: ReactNode }) 
     isError: projectsError,
     refetch,
   } = useQuery({ queryKey: ['projects'], queryFn: fetchProjects });
+
+  // Initialize: if sessionStorage is empty but localStorage has a value, sync to sessionStorage
+  // This ensures new tabs get the localStorage default written to their tab-local storage
+  useEffect(() => {
+    if (typeof window === 'undefined' || initializedRef.current) return;
+
+    const sessionStorageValue = window.sessionStorage.getItem(PROJECT_STORAGE_KEY);
+    const localStorageValue = window.localStorage.getItem(PROJECT_STORAGE_KEY);
+
+    if (!sessionStorageValue && localStorageValue) {
+      window.sessionStorage.setItem(PROJECT_STORAGE_KEY, localStorageValue);
+    }
+
+    initializedRef.current = true;
+  }, []);
 
   // Apply URL-driven selection once per load
   useEffect(() => {
@@ -141,7 +177,26 @@ export function ProjectSelectionProvider({ children }: { children: ReactNode }) 
       return;
     }
 
+    // Invalid selection fallback:
+    // 1. Clear sessionStorage if it points to deleted project
+    // 2. Fall back to localStorage if it points to a valid project
+    // 3. Otherwise clear selection
     if (selectedProjectId && !projectItems.some((project) => project.id === selectedProjectId)) {
+      if (typeof window !== 'undefined') {
+        const localStorageValue = window.localStorage.getItem(PROJECT_STORAGE_KEY);
+
+        // Clear sessionStorage first (tab-local invalid selection)
+        window.sessionStorage.removeItem(PROJECT_STORAGE_KEY);
+
+        // Try falling back to localStorage value if it's valid
+        if (localStorageValue && projectItems.some((p) => p.id === localStorageValue)) {
+          setSelectedProjectIdState(localStorageValue);
+          persistSelectedProject(localStorageValue);
+          return;
+        }
+      }
+
+      // No valid fallback - clear selection
       setSelectedProjectIdState(undefined);
       persistSelectedProject(undefined);
     }

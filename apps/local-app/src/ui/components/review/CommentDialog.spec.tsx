@@ -296,6 +296,45 @@ describe('CommentDialog', () => {
     });
   });
 
+  describe('warning when no agents selected', () => {
+    it('shows warning when no agents are selected', async () => {
+      const { Wrapper } = createWrapper();
+      render(<CommentDialog {...defaultProps} />, { wrapper: Wrapper });
+
+      await waitFor(() => {
+        expect(screen.getByText('No agents selected — no notifications will be sent')).toBeInTheDocument();
+      });
+    });
+
+    it('warning disappears when at least one agent is selected', async () => {
+      const { Wrapper } = createWrapper();
+      render(<CommentDialog {...defaultProps} />, { wrapper: Wrapper });
+
+      const coderPill = await screen.findByRole('button', { name: 'Assign to Coder' });
+      await userEvent.click(coderPill);
+
+      await waitFor(() => {
+        expect(screen.queryByText('No agents selected — no notifications will be sent')).not.toBeInTheDocument();
+        expect(screen.getByText('1 agent selected')).toBeInTheDocument();
+      });
+    });
+
+    it('keeps Post Comment button enabled when no agents selected', async () => {
+      const { Wrapper } = createWrapper();
+      render(<CommentDialog {...defaultProps} />, { wrapper: Wrapper });
+
+      await waitFor(() => {
+        expect(screen.getByText('No agents selected — no notifications will be sent')).toBeInTheDocument();
+      });
+
+      const textarea = screen.getByPlaceholderText(/write your comment/i);
+      await userEvent.type(textarea, 'Test comment');
+
+      // Submit button should still be enabled (not blocked by empty agent selection)
+      expect(screen.getByRole('button', { name: /post comment/i })).not.toBeDisabled();
+    });
+  });
+
   describe('form submission', () => {
     it('disables Post Comment when content is empty', async () => {
       const { Wrapper } = createWrapper();

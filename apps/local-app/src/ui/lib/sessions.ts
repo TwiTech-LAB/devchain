@@ -336,7 +336,7 @@ export interface McpConfigCheckResult {
 
 /**
  * Check if an agent's provider has MCP configured.
- * Resolves agent → profile → provider chain and checks mcpStatus.
+ * Uses agent.providerId (enriched from providerConfig) first, falls back to profile.providerId.
  *
  * @param agentId - The agent ID to check
  * @param preflight - The preflight result containing provider checks
@@ -355,12 +355,19 @@ export function checkMcpConfigured(
     return { configured: false };
   }
 
-  const profile = profiles.get(agent.profileId);
-  if (!profile) {
+  // Use agent.providerId first (enriched from providerConfig by backend)
+  // Fall back to profile.providerId for backward compatibility
+  let providerId = agent.providerId;
+  if (!providerId) {
+    const profile = profiles.get(agent.profileId);
+    providerId = profile?.providerId;
+  }
+
+  if (!providerId) {
     return { configured: false };
   }
 
-  const providerCheck = preflight.providers.find((p) => p.id === profile.providerId);
+  const providerCheck = preflight.providers.find((p) => p.id === providerId);
   if (!providerCheck) {
     return { configured: false };
   }

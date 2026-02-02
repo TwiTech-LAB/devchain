@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Put,
+  Patch,
   Delete,
   Param,
   Body,
@@ -12,6 +13,7 @@ import {
   HttpStatus,
   BadRequestException,
   NotFoundException,
+  ConflictException,
 } from '@nestjs/common';
 import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { UpdateProject, Project } from '../../storage/models/domain.models';
@@ -24,7 +26,10 @@ import {
 } from '../../../common/validation/template-validation';
 import { ProjectsService } from '../services/projects.service';
 import { SettingsService } from '../../settings/services/settings.service';
-import { RegistryTemplateMetadataDto } from '../../settings/dtos/settings.dto';
+import {
+  RegistryTemplateMetadataDto,
+  TemplatePresetSchema,
+} from '../../settings/dtos/settings.dto';
 import { ExportWithOverridesSchema } from '../dtos/export.dto';
 
 const logger = createLogger('ProjectsController');
@@ -33,7 +38,7 @@ const logger = createLogger('ProjectsController');
 interface ProjectTemplateMetadata {
   slug: string;
   version: string | null;
-  source: 'bundled' | 'registry';
+  source: 'bundled' | 'registry' | 'file';
 }
 
 /** Project with template metadata */
@@ -138,9 +143,12 @@ export class ProjectsController {
     // Batch-load all template metadata in one query (avoids N+1)
     const metadataMap = this.settings.getAllProjectTemplateMetadataMap();
 
-    // Batch-load all profiles to compute isConfigurable (avoids N+1)
-    const allProfiles = await this.storage.listAgentProfiles({ limit: 10000 });
-    const configurableProjects = this.computeConfigurableProjects(allProfiles.items);
+    // Batch-load all profiles and configs to compute isConfigurable (avoids N+1)
+    const [allProfiles, allConfigs] = await Promise.all([
+      this.storage.listAgentProfiles({ limit: 10000 }),
+      this.storage.listAllProfileProviderConfigs(),
+    ]);
+    const configurableProjects = this.computeConfigurableProjects(allProfiles.items, allConfigs);
 
     // Batch-check bundled upgrades for all projects
     const projectsForUpgradeCheck = result.items.map((project) => {
@@ -167,17 +175,29 @@ export class ProjectsController {
 
   /**
    * Compute which projects are configurable (have switchable provider families)
-   * A project is configurable when it has at least one familySlug with 2+ profiles
+   * A project is configurable when it has at least one familySlug with 2+ provider configs
    * from different providers.
    */
   private computeConfigurableProjects(
     profiles: Array<{
+      id: string;
       projectId?: string | null;
       familySlug?: string | null;
+    }>,
+    configs: Array<{
+      profileId: string;
       providerId: string;
     }>,
   ): Set<string> {
     const configurable = new Set<string>();
+
+    // Build a map of profileId -> providerIds (from configs)
+    const configsByProfile = new Map<string, Set<string>>();
+    for (const config of configs) {
+      const existing = configsByProfile.get(config.profileId) || new Set();
+      existing.add(config.providerId);
+      configsByProfile.set(config.profileId, existing);
+    }
 
     // Group profiles by projectId
     const byProject = new Map<string, typeof profiles>();
@@ -188,15 +208,23 @@ export class ProjectsController {
       byProject.set(profile.projectId, existing);
     }
 
-    // For each project, check if any family has 2+ providers
+    // For each project, check if any family has 2+ providers via configs
     for (const [projectId, projectProfiles] of byProject) {
-      // Group by familySlug
+      // Group by familySlug, collecting providerIds from configs
       const byFamily = new Map<string, Set<string>>();
       for (const profile of projectProfiles) {
         if (!profile.familySlug) continue;
-        const providers = byFamily.get(profile.familySlug) || new Set();
-        providers.add(profile.providerId);
-        byFamily.set(profile.familySlug, providers);
+
+        // Get providerIds from this profile's configs
+        const configProviders = configsByProfile.get(profile.id);
+        if (configProviders && configProviders.size > 0) {
+          const familyProviders = byFamily.get(profile.familySlug) || new Set();
+          for (const providerId of configProviders) {
+            familyProviders.add(providerId);
+          }
+          byFamily.set(profile.familySlug, familyProviders);
+        }
+        // Note: Profiles no longer have providerId - provider info comes from configs only
       }
 
       // Check if any family has 2+ different providers
@@ -278,7 +306,7 @@ export class ProjectsController {
   async createProjectFromTemplate(@Body() body: unknown) {
     logger.info('POST /api/projects/from-template');
 
-    // Support both new (slug + version) and legacy (templateId) formats
+    // Support slug/templateId (registry/bundled) OR templatePath (file-based)
     const CreateFromTemplateSchema = z
       .object({
         name: z.string().min(1, 'Project name is required'),
@@ -295,21 +323,56 @@ export class ProjectsController {
           .min(1)
           .regex(SLUG_PATTERN, VALIDATION_MESSAGES.INVALID_SLUG)
           .optional(), // Legacy: alias for slug
+        templatePath: z.string().min(1).optional(), // File-based template path
         familyProviderMappings: FamilyProviderMappingsSchema,
+        presetName: z.string().min(1).optional(), // Optional preset to apply after creation
       })
-      .refine((data) => data.slug || data.templateId, {
-        message: 'Either slug or templateId is required',
-      });
+      .refine(
+        (data) => {
+          const hasSlugOrTemplateId = !!(data.slug || data.templateId);
+          const hasTemplatePath = !!data.templatePath;
+          // XOR: exactly one of (slug/templateId) or templatePath must be provided
+          return hasSlugOrTemplateId !== hasTemplatePath;
+        },
+        {
+          message: 'Provide either (slug or templateId) OR templatePath, but not both or neither',
+        },
+      )
+      .refine(
+        (data) => {
+          // Reject version when templatePath is provided
+          if (data.templatePath && data.version) {
+            return false;
+          }
+          return true;
+        },
+        {
+          message: 'version cannot be specified when using templatePath',
+          path: ['version'],
+        },
+      );
 
     const parsed = CreateFromTemplateSchema.parse(body);
-    const input = {
-      name: parsed.name,
-      description: parsed.description,
-      rootPath: parsed.rootPath,
-      slug: parsed.slug ?? parsed.templateId!, // Use slug if provided, else templateId
-      version: parsed.version ?? null,
-      familyProviderMappings: normalizeFamilyProviderMappings(parsed.familyProviderMappings),
-    };
+
+    // Build input based on whether using slug-based or file-based template
+    const input = parsed.templatePath
+      ? {
+          name: parsed.name,
+          description: parsed.description,
+          rootPath: parsed.rootPath,
+          templatePath: parsed.templatePath,
+          familyProviderMappings: normalizeFamilyProviderMappings(parsed.familyProviderMappings),
+          presetName: parsed.presetName,
+        }
+      : {
+          name: parsed.name,
+          description: parsed.description,
+          rootPath: parsed.rootPath,
+          slug: parsed.slug ?? parsed.templateId!, // Use slug if provided, else templateId
+          version: parsed.version ?? null,
+          familyProviderMappings: normalizeFamilyProviderMappings(parsed.familyProviderMappings),
+          presetName: parsed.presetName,
+        };
     return this.projects.createFromTemplate(input);
   }
 
@@ -324,8 +387,11 @@ export class ProjectsController {
   async deleteProject(@Param('id') id: string): Promise<void> {
     logger.info({ id }, 'DELETE /api/projects/:id');
     await this.storage.deleteProject(id);
-    // Clean up template metadata from settings to prevent stale entries
+    // Clean up template metadata and presets from settings to prevent stale entries
     await this.settings.clearProjectTemplateMetadata(id);
+    await this.settings.clearProjectPresets(id);
+    // Clean up active preset entry for this project
+    await this.settings.setProjectActivePreset(id, null);
   }
 
   @Get(':id/export')
@@ -342,11 +408,12 @@ export class ProjectsController {
     const parseResult = ExportWithOverridesSchema.safeParse(body ?? {});
     if (!parseResult.success) {
       const errors = parseResult.error.errors.map((e) => `${e.path.join('.')}: ${e.message}`);
-      throw new BadRequestException(`Invalid manifest overrides: ${errors.join('; ')}`);
+      throw new BadRequestException(`Invalid export overrides: ${errors.join('; ')}`);
     }
 
     return this.projects.exportProject(id, {
       manifestOverrides: parseResult.data.manifest,
+      presets: parseResult.data.presets,
     });
   }
 
@@ -385,5 +452,234 @@ export class ProjectsController {
       statusMappings,
       familyProviderMappings,
     });
+  }
+
+  /**
+   * Get available presets for a project
+   * Presets are stored in settings when a project is created from a template
+   * Returns activePreset with drift validation (null if drifted)
+   */
+  @Get(':id/presets')
+  async getProjectPresets(@Param('id') id: string) {
+    logger.info({ projectId: id }, 'GET /api/projects/:id/presets');
+
+    // Verify project exists - let NestJS error filter handle NotFoundException → 404
+    await this.storage.getProject(id);
+
+    // Get presets from settings
+    const presets = this.settings.getProjectPresets(id);
+
+    // Get stored activePreset with drift validation
+    let activePreset: string | null = this.settings.getProjectActivePreset(id);
+
+    // Validate on read: check if stored activePreset still matches current config (case-insensitive lookup)
+    if (activePreset) {
+      const activePresetLower = activePreset.toLowerCase();
+      const activePresetObj = presets.find((p) => p.name.toLowerCase() === activePresetLower);
+      if (activePresetObj) {
+        // Canonicalize: if stored name differs in case from current preset name, update storage
+        if (activePreset !== activePresetObj.name) {
+          await this.settings.setProjectActivePreset(id, activePresetObj.name);
+          activePreset = activePresetObj.name;
+        }
+        const stillMatches = await this.projects.doesProjectMatchPreset(id, activePresetObj);
+        if (!stillMatches) {
+          // Drift detected - clear the active preset
+          logger.info({ projectId: id, activePreset }, 'Active preset drifted, clearing');
+          await this.settings.setProjectActivePreset(id, null);
+          activePreset = null;
+        }
+      } else {
+        // Stored activePreset no longer exists in presets - clear it
+        logger.info({ projectId: id, activePreset }, 'Active preset not found in presets, clearing');
+        await this.settings.setProjectActivePreset(id, null);
+        activePreset = null;
+      }
+    }
+
+    return { presets, activePreset };
+  }
+
+  /**
+   * Apply a preset to a project
+   * Batch updates agent provider config assignments based on the preset definition
+   */
+  @Post(':id/presets/apply')
+  @HttpCode(HttpStatus.OK)
+  async applyPreset(@Param('id') id: string, @Body() body: unknown) {
+    logger.info({ projectId: id }, 'POST /api/projects/:id/presets/apply');
+
+    // Validate request body
+    const ApplyPresetSchema = z.object({
+      presetName: z.string().min(1, 'Preset name is required'),
+    });
+    const parsed = ApplyPresetSchema.parse(body);
+
+    // Verify project exists - let NestJS error filter handle NotFoundError → 404
+    await this.storage.getProject(id);
+
+    // Apply the preset
+    const result = await this.projects.applyPreset(id, parsed.presetName);
+
+    // Get updated agent list for response
+    const agentsRes = await this.storage.listAgents(id, { limit: 1000, offset: 0 });
+
+    return {
+      applied: result.applied,
+      warnings: result.warnings,
+      agents: agentsRes.items,
+    };
+  }
+
+  /**
+   * Create a new preset for a project
+   * Body: { name: string, description?: string, agentConfigs: Array<{agentName, providerConfigName}> }
+   */
+  @Post(':id/presets')
+  @HttpCode(HttpStatus.CREATED)
+  async createPreset(@Param('id') id: string, @Body() body: unknown) {
+    logger.info({ projectId: id }, 'POST /api/projects/:id/presets');
+
+    // Validate request body against TemplatePresetSchema
+    const result = TemplatePresetSchema.safeParse(body);
+    if (!result.success) {
+      const errors = result.error.errors.map((e) => `${e.path.join('.')}: ${e.message}`).join('; ');
+      throw new BadRequestException(`Invalid preset data: ${errors}`);
+    }
+
+    const preset = result.data;
+
+    // Verify project exists - let NestJS error filter handle NotFoundError → 404
+    await this.storage.getProject(id);
+
+    // Create the preset via SettingsService
+    try {
+      await this.settings.createProjectPreset(id, preset);
+    } catch (error) {
+      // Handle conflict (duplicate name)
+      if (error instanceof Error && error.message.includes('already exists')) {
+        throw new ConflictException(error.message);
+      }
+      throw error;
+    }
+
+    // Return the created preset
+    return preset;
+  }
+
+  /**
+   * Update an existing preset for a project
+   * Body: { presetName: string, updates: { name?, description?, agentConfigs? } }
+   */
+  @Patch(':id/presets')
+  @HttpCode(HttpStatus.OK)
+  async updatePreset(@Param('id') id: string, @Body() body: unknown) {
+    logger.info({ projectId: id }, 'PATCH /api/projects/:id/presets');
+
+    // Validate request body
+    const UpdatePresetSchema = z
+      .object({
+        presetName: z.string().min(1, 'Preset name is required'),
+        updates: z
+          .object({
+            name: z.string().min(1).optional(),
+            description: z.string().nullable().optional(),
+            agentConfigs: z
+              .array(
+                z.object({
+                  agentName: z.string().min(1),
+                  providerConfigName: z.string().min(1),
+                }),
+              )
+              .optional(),
+          })
+          .strict(),
+      })
+      .strict();
+
+    const parseResult = UpdatePresetSchema.safeParse(body);
+    if (!parseResult.success) {
+      const errors = parseResult.error.errors
+        .map((e) => `${e.path.join('.')}: ${e.message}`)
+        .join('; ');
+      throw new BadRequestException(`Invalid request: ${errors}`);
+    }
+
+    const { presetName, updates } = parseResult.data;
+
+    // Verify project exists - let NestJS error filter handle NotFoundError → 404
+    await this.storage.getProject(id);
+
+    // Update the preset via SettingsService
+    try {
+      await this.settings.updateProjectPreset(id, presetName, updates);
+    } catch (error) {
+      // Handle conflict (name already exists) or not found
+      if (error instanceof Error) {
+        if (error.message.includes('already exists')) {
+          throw new ConflictException(error.message);
+        }
+        if (error.message.includes('not found')) {
+          throw new NotFoundException(error.message);
+        }
+      }
+      throw error;
+    }
+
+    // Return the updated preset (fetch to get full state)
+    // Search by the new name if it was changed, otherwise by the original name
+    // Trim to match SettingsService behavior
+    const searchName = (updates.name ?? presetName).trim();
+    const presets = this.settings.getProjectPresets(id);
+    const updated = presets.find((p) => p.name.toLowerCase() === searchName.toLowerCase());
+
+    if (!updated) {
+      throw new NotFoundException(`Preset "${searchName}" not found after update`);
+    }
+
+    return updated;
+  }
+
+  /**
+   * Delete a preset from a project
+   * Body: { presetName: string }
+   */
+  @Delete(':id/presets')
+  @HttpCode(HttpStatus.OK)
+  async deletePreset(@Param('id') id: string, @Body() body: unknown) {
+    logger.info({ projectId: id }, 'DELETE /api/projects/:id/presets');
+
+    // Validate request body
+    const DeletePresetSchema = z
+      .object({
+        presetName: z.string().min(1, 'Preset name is required'),
+      })
+      .strict();
+
+    const parseResult = DeletePresetSchema.safeParse(body);
+    if (!parseResult.success) {
+      const errors = parseResult.error.errors
+        .map((e) => `${e.path.join('.')}: ${e.message}`)
+        .join('; ');
+      throw new BadRequestException(`Invalid request: ${errors}`);
+    }
+
+    const { presetName } = parseResult.data;
+
+    // Verify project exists - let NestJS error filter handle NotFoundError → 404
+    await this.storage.getProject(id);
+
+    // Delete the preset via SettingsService
+    try {
+      await this.settings.deleteProjectPreset(id, presetName);
+    } catch (error) {
+      // Handle not found
+      if (error instanceof Error && error.message.includes('not found')) {
+        throw new NotFoundException(error.message);
+      }
+      throw error;
+    }
+
+    return { deleted: true };
   }
 }

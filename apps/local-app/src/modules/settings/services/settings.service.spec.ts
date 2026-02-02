@@ -688,3 +688,428 @@ describe('SettingsService (message pool settings)', () => {
     expect(service.getProjectPoolSettings('proj-b')).toEqual({ delayMs: 3000 });
   });
 });
+
+describe('SettingsService (preset CRUD)', () => {
+  let sqlite: Database.Database;
+  let service: SettingsService;
+  let mockEventEmitter: EventEmitter2 & { emit: jest.Mock };
+
+  beforeEach(() => {
+    sqlite = new Database(':memory:');
+    sqlite.exec(`
+      CREATE TABLE settings (
+        id TEXT PRIMARY KEY,
+        key TEXT NOT NULL UNIQUE,
+        value TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+
+    mockEventEmitter = createMockEventEmitter();
+    service = new SettingsService(sqlite as unknown as BetterSQLite3Database, mockEventEmitter);
+  });
+
+  afterEach(() => {
+    sqlite.close();
+  });
+
+  const validPreset = {
+    name: 'My Preset',
+    description: 'A test preset',
+    agentConfigs: [
+      { agentName: 'Agent1', providerConfigName: 'Config1' },
+      { agentName: 'Agent2', providerConfigName: 'Config2' },
+    ],
+  };
+
+  describe('createProjectPreset', () => {
+    it('creates a new preset with valid data', async () => {
+      await service.createProjectPreset('proj-1', validPreset);
+
+      const presets = service.getProjectPresets('proj-1');
+      expect(presets).toHaveLength(1);
+      expect(presets[0]).toEqual(validPreset);
+    });
+
+    it('throws ValidationError for duplicate name (case-insensitive)', async () => {
+      await service.createProjectPreset('proj-1', validPreset);
+
+      await expect(
+        service.createProjectPreset('proj-1', { ...validPreset, name: 'my preset' }),
+      ).rejects.toThrow('already exists (case-insensitive)');
+
+      const presets = service.getProjectPresets('proj-1');
+      expect(presets).toHaveLength(1);
+    });
+
+    it('throws ValidationError for empty name after trimming', async () => {
+      await expect(
+        service.createProjectPreset('proj-1', { ...validPreset, name: '   ' }),
+      ).rejects.toThrow('cannot be empty or whitespace only');
+    });
+
+    it('throws ValidationError for invalid preset schema', async () => {
+      await expect(
+        service.createProjectPreset('proj-1', { name: '', agentConfigs: 'invalid' }),
+      ).rejects.toThrow('Invalid preset data');
+    });
+
+    it('trims whitespace from preset name', async () => {
+      await service.createProjectPreset('proj-1', { ...validPreset, name: '  My Preset  ' });
+
+      const presets = service.getProjectPresets('proj-1');
+      expect(presets[0].name).toBe('My Preset');
+    });
+
+    it('allows same name in different projects', async () => {
+      await service.createProjectPreset('proj-1', validPreset);
+      await service.createProjectPreset('proj-2', validPreset);
+
+      expect(service.getProjectPresets('proj-1')).toHaveLength(1);
+      expect(service.getProjectPresets('proj-2')).toHaveLength(1);
+    });
+
+    it('allows multiple presets with different names in same project', async () => {
+      await service.createProjectPreset('proj-1', validPreset);
+      await service.createProjectPreset('proj-1', {
+        ...validPreset,
+        name: 'Another Preset',
+      });
+
+      const presets = service.getProjectPresets('proj-1');
+      expect(presets).toHaveLength(2);
+    });
+  });
+
+  describe('updateProjectPreset', () => {
+    beforeEach(async () => {
+      await service.createProjectPreset('proj-1', validPreset);
+    });
+
+    it('updates preset name', async () => {
+      await service.updateProjectPreset('proj-1', 'My Preset', { name: 'Updated Preset' });
+
+      const presets = service.getProjectPresets('proj-1');
+      expect(presets).toHaveLength(1);
+      expect(presets[0].name).toBe('Updated Preset');
+    });
+
+    it('updates preset description', async () => {
+      await service.updateProjectPreset('proj-1', 'My Preset', {
+        description: 'New description',
+      });
+
+      const presets = service.getProjectPresets('proj-1');
+      expect(presets[0].description).toBe('New description');
+    });
+
+    it('updates agent configs', async () => {
+      const newConfigs = [{ agentName: 'Agent3', providerConfigName: 'Config3' }];
+      await service.updateProjectPreset('proj-1', 'My Preset', { agentConfigs: newConfigs });
+
+      const presets = service.getProjectPresets('proj-1');
+      expect(presets[0].agentConfigs).toEqual(newConfigs);
+    });
+
+    it('matches preset name case-insensitively', async () => {
+      await service.updateProjectPreset('proj-1', 'my preset', { name: 'Updated Name' });
+
+      const presets = service.getProjectPresets('proj-1');
+      expect(presets[0].name).toBe('Updated Name');
+    });
+
+    it('throws ValidationError if preset not found', async () => {
+      await expect(
+        service.updateProjectPreset('proj-1', 'Nonexistent', { name: 'New Name' }),
+      ).rejects.toThrow('Preset "Nonexistent" not found');
+    });
+
+    it('throws ValidationError for name conflict (case-insensitive)', async () => {
+      await service.createProjectPreset('proj-1', {
+        ...validPreset,
+        name: 'Another Preset',
+      });
+
+      await expect(
+        service.updateProjectPreset('proj-1', 'My Preset', { name: 'another preset' }),
+      ).rejects.toThrow('already exists (case-insensitive)');
+    });
+
+    it('throws ValidationError for invalid schema', async () => {
+      await expect(
+        service.updateProjectPreset('proj-1', 'My Preset', { agentConfigs: 'invalid' }),
+      ).rejects.toThrow('Invalid preset update');
+    });
+
+    it('trims whitespace from updated name', async () => {
+      await service.updateProjectPreset('proj-1', 'My Preset', { name: '  New Name  ' });
+
+      const presets = service.getProjectPresets('proj-1');
+      expect(presets[0].name).toBe('New Name');
+    });
+
+    it('migrates activePreset when preset name is changed', async () => {
+      await service.setProjectActivePreset('proj-1', 'My Preset');
+
+      expect(service.getProjectActivePreset('proj-1')).toBe('My Preset');
+
+      await service.updateProjectPreset('proj-1', 'My Preset', { name: 'Renamed Preset' });
+
+      expect(service.getProjectActivePreset('proj-1')).toBe('Renamed Preset');
+    });
+
+    it('does not affect activePreset when name is not changed', async () => {
+      await service.setProjectActivePreset('proj-1', 'My Preset');
+
+      await service.updateProjectPreset('proj-1', 'My Preset', { description: 'New description' });
+
+      expect(service.getProjectActivePreset('proj-1')).toBe('My Preset');
+    });
+
+    it('does not affect activePreset when renaming a different preset', async () => {
+      await service.createProjectPreset('proj-1', {
+        ...validPreset,
+        name: 'Another Preset',
+      });
+      await service.setProjectActivePreset('proj-1', 'My Preset');
+
+      await service.updateProjectPreset('proj-1', 'Another Preset', { name: 'Renamed Another' });
+
+      expect(service.getProjectActivePreset('proj-1')).toBe('My Preset');
+    });
+
+    it('does not set activePreset when renaming non-active preset', async () => {
+      await service.createProjectPreset('proj-1', {
+        ...validPreset,
+        name: 'Another Preset',
+      });
+      // No active preset is set
+
+      await service.updateProjectPreset('proj-1', 'Another Preset', { name: 'Renamed Another' });
+
+      expect(service.getProjectActivePreset('proj-1')).toBeNull();
+    });
+
+    it('migrates activePreset when preset name differs only in case (regression)', async () => {
+      // Set active preset with different casing than stored preset name
+      await service.setProjectActivePreset('proj-1', 'my preset'); // lowercase
+
+      // Verify active preset is set
+      expect(service.getProjectActivePreset('proj-1')).toBe('my preset');
+
+      // Rename preset to match the active preset's casing (case-insensitive migration)
+      await service.updateProjectPreset('proj-1', 'My Preset', { name: 'my preset' });
+
+      // Active preset should be updated to the new canonical name (lowercase)
+      expect(service.getProjectActivePreset('proj-1')).toBe('my preset');
+
+      // Verify the preset was renamed
+      const presets = service.getProjectPresets('proj-1');
+      expect(presets[0].name).toBe('my preset');
+    });
+
+    it('migrates activePreset when renaming to different case (regression)', async () => {
+      // Set active preset with original casing
+      await service.setProjectActivePreset('proj-1', 'My Preset');
+
+      // Rename preset to lowercase (active preset should be updated)
+      await service.updateProjectPreset('proj-1', 'My Preset', { name: 'mypreset' });
+
+      // Active preset should be updated to the new canonical name
+      expect(service.getProjectActivePreset('proj-1')).toBe('mypreset');
+    });
+  });
+
+  describe('deleteProjectPreset', () => {
+    beforeEach(async () => {
+      await service.createProjectPreset('proj-1', validPreset);
+      await service.createProjectPreset('proj-1', {
+        ...validPreset,
+        name: 'Another Preset',
+      });
+    });
+
+    it('deletes preset by name', async () => {
+      await service.deleteProjectPreset('proj-1', 'My Preset');
+
+      const presets = service.getProjectPresets('proj-1');
+      expect(presets).toHaveLength(1);
+      expect(presets[0].name).toBe('Another Preset');
+    });
+
+    it('matches preset name case-insensitively', async () => {
+      await service.deleteProjectPreset('proj-1', 'my preset');
+
+      const presets = service.getProjectPresets('proj-1');
+      expect(presets).toHaveLength(1);
+      expect(presets[0].name).toBe('Another Preset');
+    });
+
+    it('throws ValidationError if preset not found', async () => {
+      await expect(service.deleteProjectPreset('proj-1', 'Nonexistent')).rejects.toThrow(
+        'Preset "Nonexistent" not found',
+      );
+    });
+
+    it('trims whitespace from search name', async () => {
+      await service.deleteProjectPreset('proj-1', '  My Preset  ');
+
+      const presets = service.getProjectPresets('proj-1');
+      expect(presets).toHaveLength(1);
+    });
+
+    it('clears all presets when last one deleted', async () => {
+      await service.deleteProjectPreset('proj-1', 'My Preset');
+      await service.deleteProjectPreset('proj-1', 'Another Preset');
+
+      const presets = service.getProjectPresets('proj-1');
+      expect(presets).toHaveLength(0);
+    });
+
+    it('clears activePreset when the active preset is deleted', async () => {
+      await service.setProjectActivePreset('proj-1', 'My Preset');
+
+      expect(service.getProjectActivePreset('proj-1')).toBe('My Preset');
+
+      await service.deleteProjectPreset('proj-1', 'My Preset');
+
+      expect(service.getProjectActivePreset('proj-1')).toBeNull();
+    });
+
+    it('does not clear activePreset when a different preset is deleted', async () => {
+      await service.setProjectActivePreset('proj-1', 'My Preset');
+
+      await service.deleteProjectPreset('proj-1', 'Another Preset');
+
+      expect(service.getProjectActivePreset('proj-1')).toBe('My Preset');
+    });
+
+    it('does not error when deleting preset with no active preset set', async () => {
+      // No active preset set
+
+      await expect(service.deleteProjectPreset('proj-1', 'My Preset')).resolves.not.toThrow();
+    });
+
+    it('clears activePreset when deleted preset name differs only in case (regression)', async () => {
+      // Set active preset with different casing than stored preset name
+      await service.setProjectActivePreset('proj-1', 'my preset'); // lowercase
+
+      // Verify active preset is set
+      expect(service.getProjectActivePreset('proj-1')).toBe('my preset');
+
+      // Delete preset using original casing
+      await service.deleteProjectPreset('proj-1', 'My Preset'); // title case
+
+      // Active preset should be cleared (case-insensitive comparison)
+      expect(service.getProjectActivePreset('proj-1')).toBeNull();
+    });
+  });
+});
+
+describe('SettingsService (project active preset tracking)', () => {
+  let sqlite: Database.Database;
+  let service: SettingsService;
+  let mockEventEmitter: EventEmitter2 & { emit: jest.Mock };
+
+  beforeEach(() => {
+    sqlite = new Database(':memory:');
+    sqlite.exec(`
+      CREATE TABLE settings (
+        id TEXT PRIMARY KEY,
+        key TEXT NOT NULL UNIQUE,
+        value TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+
+    mockEventEmitter = createMockEventEmitter();
+    service = new SettingsService(sqlite as unknown as BetterSQLite3Database, mockEventEmitter);
+  });
+
+  afterEach(() => {
+    sqlite.close();
+  });
+
+  describe('getProjectActivePreset', () => {
+    it('returns null for project with no active preset', () => {
+      const activePreset = service.getProjectActivePreset('untracked-project');
+      expect(activePreset).toBeNull();
+    });
+
+    it('returns null when projectActivePresets is not set', () => {
+      const activePreset = service.getProjectActivePreset('any-project');
+      expect(activePreset).toBeNull();
+    });
+
+    it('returns the active preset name for a project', async () => {
+      await service.setProjectActivePreset('proj-1', 'My Preset');
+
+      const activePreset = service.getProjectActivePreset('proj-1');
+      expect(activePreset).toBe('My Preset');
+    });
+
+    it('returns null for a project that had its active preset cleared', async () => {
+      await service.setProjectActivePreset('proj-1', 'My Preset');
+      expect(service.getProjectActivePreset('proj-1')).toBe('My Preset');
+
+      await service.setProjectActivePreset('proj-1', null);
+      expect(service.getProjectActivePreset('proj-1')).toBeNull();
+    });
+  });
+
+  describe('setProjectActivePreset', () => {
+    it('sets the active preset for a project', async () => {
+      await service.setProjectActivePreset('proj-1', 'Preset A');
+
+      const settings = service.getSettings();
+      expect(settings.projectActivePresets?.['proj-1']).toBe('Preset A');
+    });
+
+    it('stores multiple project active presets independently', async () => {
+      await service.setProjectActivePreset('proj-1', 'Preset A');
+      await service.setProjectActivePreset('proj-2', 'Preset B');
+
+      expect(service.getProjectActivePreset('proj-1')).toBe('Preset A');
+      expect(service.getProjectActivePreset('proj-2')).toBe('Preset B');
+    });
+
+    it('clears the active preset when passed null', async () => {
+      await service.setProjectActivePreset('proj-1', 'Preset A');
+      expect(service.getProjectActivePreset('proj-1')).toBe('Preset A');
+
+      await service.setProjectActivePreset('proj-1', null);
+
+      const settings = service.getSettings();
+      expect(settings.projectActivePresets?.['proj-1']).toBeUndefined();
+      expect(service.getProjectActivePreset('proj-1')).toBeNull();
+    });
+
+    it('updates the active preset for an existing project', async () => {
+      await service.setProjectActivePreset('proj-1', 'Preset A');
+      expect(service.getProjectActivePreset('proj-1')).toBe('Preset A');
+
+      await service.setProjectActivePreset('proj-1', 'Preset B');
+
+      expect(service.getProjectActivePreset('proj-1')).toBe('Preset B');
+    });
+
+    it('does not affect other projects when clearing one', async () => {
+      await service.setProjectActivePreset('proj-1', 'Preset A');
+      await service.setProjectActivePreset('proj-2', 'Preset B');
+
+      await service.setProjectActivePreset('proj-1', null);
+
+      expect(service.getProjectActivePreset('proj-1')).toBeNull();
+      expect(service.getProjectActivePreset('proj-2')).toBe('Preset B');
+    });
+
+    it('persists and retrieves through getSettings cycle', async () => {
+      await service.setProjectActivePreset('proj-1', 'Test Preset');
+
+      const settings = service.getSettings();
+      expect(settings.projectActivePresets?.['proj-1']).toBe('Test Preset');
+    });
+  });
+});

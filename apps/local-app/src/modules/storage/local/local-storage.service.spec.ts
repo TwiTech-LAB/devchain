@@ -22,6 +22,7 @@ import {
   Agent,
   AgentProfile,
   EpicComment,
+  ProfileProviderConfig,
 } from '../models/domain.models';
 
 describe('LocalStorageService', () => {
@@ -1289,22 +1290,20 @@ describe('LocalStorageService', () => {
 
   describe('Agent Profiles', () => {
     describe('createAgentProfile', () => {
-      it('should create profile with providerId', async () => {
+      it('should create profile without providerId (Phase 4)', async () => {
         mockDb.insert = jest.fn().mockReturnValue({
           values: jest.fn().mockResolvedValue(undefined),
         });
 
         const result = await service.createAgentProfile({
           name: 'Claude Profile',
-          providerId: 'provider-1',
-          options: '--model claude-3-sonnet',
+          // Note: providerId and options removed in Phase 4
           systemPrompt: 'You are helpful',
           temperature: 0.7,
           maxTokens: 4000,
         });
 
         expect(result.name).toBe('Claude Profile');
-        expect(result.providerId).toBe('provider-1');
         expect(result.temperature).toBe(0.7);
         expect(mockDb.insert).toHaveBeenCalled();
       });
@@ -1316,8 +1315,7 @@ describe('LocalStorageService', () => {
 
         const result = await service.createAgentProfile({
           name: 'GPT-4 Profile',
-          providerId: 'provider-2',
-          options: '--model gpt-4',
+          // Note: providerId and options removed in Phase 4
           systemPrompt: 'You are helpful',
           temperature: 0.7,
           maxTokens: 4000,
@@ -1423,6 +1421,194 @@ describe('LocalStorageService', () => {
         ).rejects.toThrow(ValidationError);
 
         expect(getProfileSpy).toHaveBeenCalledWith('profile-1');
+      });
+
+      it('validates providerConfigId belongs to the specified profile on create', async () => {
+        const getProfileSpy = jest
+          .spyOn(
+            service as unknown as { getAgentProfile: (id: string) => Promise<AgentProfile> },
+            'getAgentProfile',
+          )
+          .mockResolvedValue({
+            id: 'profile-1',
+            projectId: 'project-1',
+            name: 'Profile',
+            providerId: 'provider-1',
+            options: null,
+            systemPrompt: null,
+            instructions: null,
+            temperature: null,
+            maxTokens: null,
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          });
+
+        const getConfigSpy = jest
+          .spyOn(
+            service as unknown as {
+              getProfileProviderConfig: (id: string) => Promise<ProfileProviderConfig>;
+            },
+            'getProfileProviderConfig',
+          )
+          .mockResolvedValue({
+            id: 'config-1',
+            profileId: 'profile-2', // Different profile!
+            providerId: 'provider-1',
+            options: null,
+            env: null,
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          });
+
+        await expect(
+          service.createAgent({
+            projectId: 'project-1',
+            profileId: 'profile-1',
+            name: 'Agent',
+            providerConfigId: 'config-1',
+          }),
+        ).rejects.toThrow(ValidationError);
+
+        await expect(
+          service.createAgent({
+            projectId: 'project-1',
+            profileId: 'profile-1',
+            name: 'Agent',
+            providerConfigId: 'config-1',
+          }),
+        ).rejects.toThrow('Provider config does not belong to the specified profile');
+
+        expect(getProfileSpy).toHaveBeenCalledWith('profile-1');
+        expect(getConfigSpy).toHaveBeenCalledWith('config-1');
+      });
+    });
+
+    describe('updateAgent', () => {
+      it('validates providerConfigId belongs to the profile when providerConfigId changes', async () => {
+        const getAgentSpy = jest
+          .spyOn(service as unknown as { getAgent: (id: string) => Promise<Agent> }, 'getAgent')
+          .mockResolvedValue({
+            id: 'agent-1',
+            projectId: 'project-1',
+            profileId: 'profile-1',
+            name: 'Agent',
+            description: null,
+            providerConfigId: 'config-1',
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          });
+
+        const getProfileSpy = jest
+          .spyOn(
+            service as unknown as { getAgentProfile: (id: string) => Promise<AgentProfile> },
+            'getAgentProfile',
+          )
+          .mockResolvedValue({
+            id: 'profile-1',
+            projectId: 'project-1',
+            name: 'Profile',
+            providerId: 'provider-1',
+            options: null,
+            systemPrompt: null,
+            instructions: null,
+            temperature: null,
+            maxTokens: null,
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          });
+
+        const getConfigSpy = jest
+          .spyOn(
+            service as unknown as {
+              getProfileProviderConfig: (id: string) => Promise<ProfileProviderConfig>;
+            },
+            'getProfileProviderConfig',
+          )
+          .mockResolvedValue({
+            id: 'config-2',
+            profileId: 'profile-2', // Different profile!
+            providerId: 'provider-1',
+            options: null,
+            env: null,
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          });
+
+        await expect(
+          service.updateAgent('agent-1', { providerConfigId: 'config-2' }),
+        ).rejects.toThrow(ValidationError);
+
+        await expect(
+          service.updateAgent('agent-1', { providerConfigId: 'config-2' }),
+        ).rejects.toThrow('Provider config does not belong to the specified profile');
+
+        expect(getAgentSpy).toHaveBeenCalledWith('agent-1');
+        expect(getProfileSpy).toHaveBeenCalledWith('profile-1');
+        expect(getConfigSpy).toHaveBeenCalledWith('config-2');
+      });
+
+      it('validates providerConfigId belongs to new profile when profileId changes', async () => {
+        const getAgentSpy = jest
+          .spyOn(service as unknown as { getAgent: (id: string) => Promise<Agent> }, 'getAgent')
+          .mockResolvedValue({
+            id: 'agent-1',
+            projectId: 'project-1',
+            profileId: 'profile-1',
+            name: 'Agent',
+            description: null,
+            providerConfigId: 'config-1',
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          });
+
+        const getProfileSpy = jest
+          .spyOn(
+            service as unknown as { getAgentProfile: (id: string) => Promise<AgentProfile> },
+            'getAgentProfile',
+          )
+          .mockResolvedValue({
+            id: 'profile-2',
+            projectId: 'project-1',
+            name: 'New Profile',
+            providerId: 'provider-1',
+            options: null,
+            systemPrompt: null,
+            instructions: null,
+            temperature: null,
+            maxTokens: null,
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          });
+
+        const getConfigSpy = jest
+          .spyOn(
+            service as unknown as {
+              getProfileProviderConfig: (id: string) => Promise<ProfileProviderConfig>;
+            },
+            'getProfileProviderConfig',
+          )
+          .mockResolvedValue({
+            id: 'config-1',
+            profileId: 'profile-1', // Original profile, not new one!
+            providerId: 'provider-1',
+            options: null,
+            env: null,
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          });
+
+        await expect(service.updateAgent('agent-1', { profileId: 'profile-2' })).rejects.toThrow(
+          ValidationError,
+        );
+
+        await expect(service.updateAgent('agent-1', { profileId: 'profile-2' })).rejects.toThrow(
+          'Provider config does not belong to the specified profile',
+        );
+
+        expect(getAgentSpy).toHaveBeenCalledWith('agent-1');
+        expect(getProfileSpy).toHaveBeenCalledWith('profile-2');
+        // Uses existing config-1 from current agent
+        expect(getConfigSpy).toHaveBeenCalledWith('config-1');
       });
     });
 
@@ -1661,6 +1847,51 @@ describe('LocalStorageService', () => {
 
         expect(result.items).toHaveLength(2);
         expect(result.total).toBe(2);
+      });
+    });
+
+    describe('listProvidersByIds', () => {
+      it('should return empty array when no ids provided', async () => {
+        const result = await service.listProvidersByIds([]);
+        expect(result).toEqual([]);
+        expect(mockDb.select).not.toHaveBeenCalled();
+      });
+
+      it('should return providers for specified ids', async () => {
+        const mockProviders = [
+          {
+            id: 'p1',
+            name: 'claude',
+            binPath: '/usr/local/bin/claude',
+            mcpConfigured: false,
+            mcpEndpoint: null,
+            mcpRegisteredAt: null,
+            createdAt: '2024-01-01',
+            updatedAt: '2024-01-01',
+          },
+          {
+            id: 'p2',
+            name: 'codex',
+            binPath: null,
+            mcpConfigured: false,
+            mcpEndpoint: null,
+            mcpRegisteredAt: null,
+            createdAt: '2024-01-02',
+            updatedAt: '2024-01-02',
+          },
+        ];
+
+        mockDb.select = jest.fn().mockReturnValue({
+          from: jest.fn().mockReturnValue({
+            where: jest.fn().mockResolvedValue(mockProviders),
+          }),
+        });
+
+        const result = await service.listProvidersByIds(['p1', 'p2']);
+
+        expect(result).toHaveLength(2);
+        expect(result[0].id).toBe('p1');
+        expect(result[1].id).toBe('p2');
       });
     });
 

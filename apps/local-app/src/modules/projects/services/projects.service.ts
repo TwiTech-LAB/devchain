@@ -11,7 +11,7 @@ import {
   StorageError,
   ConflictError,
 } from '../../../common/errors/error-types';
-import { join, resolve, sep } from 'path';
+import { join, resolve, sep, basename } from 'path';
 import { existsSync, readdirSync, readFileSync } from 'fs';
 import { getEnvConfig } from '../../../common/config/env.config';
 import { ExportSchema, type ManifestData, isLessThan, isValidSemVer } from '@devchain/shared';
@@ -28,12 +28,16 @@ export interface CreateFromTemplateInput {
   name: string;
   description?: string | null;
   rootPath: string;
-  /** Template slug (unique identifier) */
-  slug: string;
+  /** Template slug (unique identifier) - required for slug-based templates */
+  slug?: string;
   /** Optional version - if null, uses bundled or latest downloaded */
   version?: string | null;
+  /** Absolute path to template file - alternative to slug-based templates */
+  templatePath?: string;
   /** Optional family-to-provider mappings for remapping profiles when default providers are unavailable */
   familyProviderMappings?: Record<string, string>;
+  /** Optional preset name to apply after project creation */
+  presetName?: string;
 }
 
 /**
@@ -209,18 +213,37 @@ export class ProjectsService {
   async createFromTemplate(input: CreateFromTemplateInput) {
     logger.info({ input }, 'createFromTemplate');
 
-    // 1. Load template via UnifiedTemplateService
-    const templateResult = await this.unifiedTemplateService.getTemplate(
-      input.slug,
-      input.version ?? undefined,
-    );
+    // 1. Load template via UnifiedTemplateService (branch based on input type)
+    let templateResult;
+    let templateSlug: string;
+
+    if (input.templatePath) {
+      // File-based template: load from absolute path
+      templateResult = this.unifiedTemplateService.getTemplateFromFilePath(input.templatePath);
+      // Derive templateSlug from _manifest.slug (already injected by getTemplateFromFilePath)
+      const manifest = templateResult.content._manifest as { slug?: string } | undefined;
+      templateSlug = manifest?.slug ?? this.deriveSlugFromPath(input.templatePath);
+    } else if (input.slug) {
+      // Slug-based template: load from bundled or registry
+      templateResult = await this.unifiedTemplateService.getTemplate(
+        input.slug,
+        input.version ?? undefined,
+      );
+      templateSlug = input.slug;
+    } else {
+      throw new ValidationError('Either slug or templatePath is required', {});
+    }
 
     // 2. Parse and validate template content
+    // Note: For file-based templates, content is already validated by getTemplateFromFilePath
     let payload;
     try {
       payload = ExportSchema.parse(templateResult.content);
     } catch (error) {
-      logger.error({ error, slug: input.slug, version: input.version }, 'Invalid template format');
+      logger.error(
+        { error, slug: templateSlug, version: input.version },
+        'Invalid template format',
+      );
       throw new ValidationError('Invalid template format', {
         hint: 'Template file does not match expected export schema',
       });
@@ -334,6 +357,130 @@ export class ProjectsService {
     const { agentNameToId: agentNameToNewId, profileNameToId: profileNameToNewId } =
       this.buildNameToIdMaps(templatePayload, result.mappings);
 
+    // 5c. Create provider configs and update agents with providerConfigId
+    // Map: { newProfileId, configName } -> newConfigId
+    const configLookupMap = new Map<string, string>(); // key: `${newProfileId}:${configName}`
+
+    for (const prof of selectedProfilesByFamily.profilesToCreate) {
+      if (!prof.id) continue;
+      const newProfileId = result.mappings.profileIdMap[prof.id];
+      if (!newProfileId) continue;
+
+      // Check if profile has providerConfigs (new format)
+      const providerConfigs = (
+        prof as {
+          providerConfigs?: Array<{
+            name: string;
+            providerName: string;
+            options?: string | null;
+            env?: Record<string, string> | null;
+          }>;
+        }
+      ).providerConfigs;
+
+      if (providerConfigs && providerConfigs.length > 0) {
+        // New format: create configs from providerConfigs array
+        for (const config of providerConfigs) {
+          const configProviderId = available.get(config.providerName.trim().toLowerCase());
+          if (!configProviderId) {
+            logger.warn(
+              { profileName: prof.name, providerName: config.providerName },
+              'Provider not found for config in createFromTemplate, skipping',
+            );
+            continue;
+          }
+
+          const createdConfig = await this.storage.createProfileProviderConfig({
+            profileId: newProfileId,
+            providerId: configProviderId,
+            name: config.name,
+            options: config.options ?? null,
+            env: config.env ?? null,
+          });
+
+          const lookupKey = `${newProfileId}:${config.name.trim().toLowerCase()}`;
+          configLookupMap.set(lookupKey, createdConfig.id);
+        }
+      }
+    }
+
+    // Track profiles with providerConfigs for cleanup after agent updates
+    const profilesWithProviderConfigs = new Map<
+      string,
+      { profileName: string; configNames: Set<string> }
+    >();
+    for (const prof of selectedProfilesByFamily.profilesToCreate) {
+      if (!prof.id) continue;
+      const newProfileId = result.mappings.profileIdMap[prof.id];
+      if (!newProfileId) continue;
+
+      const providerConfigs = (
+        prof as {
+          providerConfigs?: Array<{ name: string }>;
+        }
+      ).providerConfigs;
+
+      if (providerConfigs && providerConfigs.length > 0) {
+        profilesWithProviderConfigs.set(newProfileId, {
+          profileName: prof.name,
+          configNames: new Set(providerConfigs.map((pc) => pc.name.trim().toLowerCase())),
+        });
+      }
+    }
+
+    // Update agents with providerConfigId if they have providerConfigName
+    for (const a of payload.agents) {
+      const agentWithConfig = a as { providerConfigName?: string | null };
+      if (!agentWithConfig.providerConfigName || !a.id) continue;
+
+      const newAgentId = result.mappings.agentIdMap[a.id];
+      if (!newAgentId) continue;
+
+      // Get the agent's profile (potentially remapped)
+      const remappedProfileId = selectedProfilesByFamily.agentProfileMap.get(a.id) ?? a.profileId;
+      const newProfileId = remappedProfileId
+        ? result.mappings.profileIdMap[remappedProfileId]
+        : null;
+      if (!newProfileId) continue;
+
+      // Look up config by name
+      const lookupKey = `${newProfileId}:${agentWithConfig.providerConfigName.trim().toLowerCase()}`;
+      const providerConfigId = configLookupMap.get(lookupKey);
+
+      if (providerConfigId) {
+        await this.storage.updateAgent(newAgentId, { providerConfigId });
+        logger.debug(
+          { agentName: a.name, providerConfigId },
+          'Updated agent with providerConfigId',
+        );
+      } else {
+        logger.warn(
+          { agentName: a.name, providerConfigName: agentWithConfig.providerConfigName },
+          'Provider config not found for agent in createFromTemplate',
+        );
+      }
+    }
+
+    // 5d. Delete duplicate configs created by storage layer
+    // Storage layer creates a default config for each profile (with name = profile name).
+    // If we created configs from providerConfigs, we need to delete the duplicates.
+    // This must happen AFTER agent updates to avoid foreign key violations.
+    for (const [newProfileId, { profileName, configNames }] of profilesWithProviderConfigs) {
+      const existingConfigs = await this.storage.listProfileProviderConfigsByProfile(newProfileId);
+      for (const existingConfig of existingConfigs) {
+        // Delete configs with name matching profile name (created by storage layer)
+        // Skip configs that were created from providerConfigs
+        const isFromProviderConfigs = configNames.has(existingConfig.name.trim().toLowerCase());
+        if (!isFromProviderConfigs && existingConfig.name === profileName) {
+          await this.storage.deleteProfileProviderConfig(existingConfig.id);
+          logger.debug(
+            { profileName, configId: existingConfig.id },
+            'Deleted duplicate config created by storage layer',
+          );
+        }
+      }
+    }
+
     // 6. Apply projectSettings from template using helper
     // Merge initial prompt: payload.initialPrompt takes precedence over projectSettings.initialPromptTitle
     // This consolidates the dual-mechanism into a single path through applyProjectSettings.
@@ -414,7 +561,7 @@ export class ProjectsService {
 
     const registryConfig = this.settings.getRegistryConfig();
     await this.settings.setProjectTemplateMetadata(result.project.id, {
-      templateSlug: input.slug,
+      templateSlug,
       source: templateResult.source,
       installedVersion,
       registryUrl: templateResult.source === 'registry' ? registryConfig.url : null,
@@ -424,12 +571,46 @@ export class ProjectsService {
     logger.info(
       {
         projectId: result.project.id,
-        slug: input.slug,
+        slug: templateSlug,
         source: templateResult.source,
         version: installedVersion,
       },
       'Template metadata set for project',
     );
+
+    // 10. Store presets from template in settings (if present)
+    const rawPresets = (payload as { presets?: unknown }).presets;
+    const templatePresets = Array.isArray(rawPresets) ? rawPresets : [];
+    if (templatePresets.length > 0) {
+      await this.settings.setProjectPresets(result.project.id, templatePresets);
+      logger.info(
+        { projectId: result.project.id, presetCount: templatePresets.length },
+        'Presets stored for project',
+      );
+    }
+
+    // 11. Apply selected preset if provided
+    if (input.presetName) {
+      const selectedPreset = templatePresets.find(
+        (p: unknown) =>
+          typeof p === 'object' && p !== null && 'name' in p && p.name === input.presetName,
+      );
+      if (!selectedPreset) {
+        logger.warn(
+          { projectId: result.project.id, presetName: input.presetName },
+          'Selected preset not found in template',
+        );
+      } else {
+        await this.applyPreset(result.project.id, input.presetName, {
+          agentNameToId: agentNameToNewId,
+          configLookupMap,
+        });
+        logger.info(
+          { projectId: result.project.id, presetName: input.presetName },
+          'Applied preset to project',
+        );
+      }
+    }
 
     return {
       success: true,
@@ -445,10 +626,20 @@ export class ProjectsService {
     };
   }
 
-  async exportProject(projectId: string, opts?: { manifestOverrides?: Partial<ManifestData> }) {
+  async exportProject(
+    projectId: string,
+    opts?: {
+      manifestOverrides?: Partial<ManifestData>;
+      presets?: Array<{
+        name: string;
+        description?: string | null;
+        agentConfigs: Array<{ agentName: string; providerConfigName: string }>;
+      }>;
+    },
+  ) {
     logger.info({ projectId }, 'exportProject');
 
-    const { manifestOverrides } = opts ?? {};
+    const { manifestOverrides, presets: presetsOverride } = opts ?? {};
 
     const [
       project,
@@ -516,13 +707,12 @@ export class ProjectsService {
       return value;
     };
 
-    const sanitizeOptionsString = (options: string | null): string | null => {
-      if (!options) return null;
-      // Options are stored as plain CLI flag strings, not JSON
-      return options;
-    };
+    // sanitizeOptionsString removed - options are stored as plain CLI flag strings, not JSON
+    // No sanitization needed
 
     // Fetch full prompts to get content (listPrompts returns summaries without content)
+    // Note: This is O(N) storage calls for N prompts. Acceptable for export (non-hot path).
+    // If export becomes a hot path, consider adding listPromptsByIds() bulk method.
     const fullPrompts = await Promise.all(
       promptsRes.items.map((p) => this.storage.getPrompt(p.id)),
     );
@@ -534,28 +724,98 @@ export class ProjectsService {
       tags: p.tags,
     }));
 
-    const profiles = await Promise.all(
-      profilesRes.items.map(async (prof) => {
-        const provider = await this.storage.getProvider(prof.providerId);
-        return {
-          id: prof.id,
-          name: prof.name,
-          provider: { id: provider.id, name: provider.name },
-          familySlug: prof.familySlug,
-          options: sanitizeOptionsString(prof.options),
-          instructions: prof.instructions,
-          temperature: prof.temperature,
-          maxTokens: prof.maxTokens,
-        };
+    // Build configId -> config info map for agent providerConfigName resolution
+    const configIdToInfo = new Map<string, { name: string; profileId: string }>();
+
+    // Fetch all configs for this project's profiles in bulk to avoid N+1
+    // Note: listProfileProviderConfigsByProfile is called per profile (O(N) for N profiles).
+    // This is acceptable for export (non-hot path). If performance becomes critical,
+    // consider adding listProfileProviderConfigsByProfileIds() bulk method.
+    const profileIds = profilesRes.items.map((p) => p.id);
+    const allConfigsByProfile = new Map<
+      string,
+      Awaited<ReturnType<typeof this.storage.listProfileProviderConfigsByProfile>>
+    >();
+    await Promise.all(
+      profileIds.map(async (profileId) => {
+        const configs = await this.storage.listProfileProviderConfigsByProfile(profileId);
+        allConfigsByProfile.set(profileId, configs);
       }),
     );
 
-    const agents = agentsRes.items.map((a) => ({
-      id: a.id,
-      name: a.name,
-      profileId: a.profileId,
-      description: a.description,
-    }));
+    // Collect all unique provider IDs and fetch in bulk (fixes N+1 for provider lookups)
+    const allProviderIds = new Set<string>();
+    for (const configs of allConfigsByProfile.values()) {
+      for (const config of configs) {
+        allProviderIds.add(config.providerId);
+      }
+    }
+    const providersArray = await this.storage.listProvidersByIds([...allProviderIds]);
+    const providersMap = new Map(providersArray.map((p) => [p.id, p]));
+
+    // Build profiles with pre-fetched data (no additional storage calls)
+    const profiles = profilesRes.items.map((prof) => {
+      const configs = allConfigsByProfile.get(prof.id) || [];
+
+      // Build providerConfigs array and populate configId map
+      // Provider is now derived from configs (profiles no longer have providerId)
+      let primaryProvider: { id: string; name: string } | null = null;
+      const providerConfigs = configs.map((config) => {
+        const configProvider = providersMap.get(config.providerId);
+
+        // First config's provider becomes the primary (for backward compat in export)
+        if (!primaryProvider && configProvider) {
+          primaryProvider = { id: configProvider.id, name: configProvider.name };
+        }
+
+        // Use stored config name directly (added in Phase 5)
+        const configName = config.name;
+
+        // Store in map for agent resolution
+        configIdToInfo.set(config.id, { name: configName, profileId: prof.id });
+
+        return {
+          name: configName,
+          providerName: configProvider?.name || 'unknown',
+          options: config.options,
+          env: config.env,
+          position: config.position,
+        };
+      });
+
+      return {
+        id: prof.id,
+        name: prof.name,
+        provider: primaryProvider,
+        familySlug: prof.familySlug,
+        // Note: options removed from profile in Phase 4, now only on configs
+        instructions: prof.instructions,
+        temperature: prof.temperature,
+        maxTokens: prof.maxTokens,
+        // Include providerConfigs if any exist
+        ...(providerConfigs.length > 0 && { providerConfigs }),
+      };
+    });
+
+    const agents = agentsRes.items.map((a) => {
+      // Resolve providerConfigId to config name for stable reference
+      let providerConfigName: string | null = null;
+      if (a.providerConfigId) {
+        const configInfo = configIdToInfo.get(a.providerConfigId);
+        if (configInfo) {
+          providerConfigName = configInfo.name;
+        }
+      }
+
+      return {
+        id: a.id,
+        name: a.name,
+        profileId: a.profileId,
+        description: a.description,
+        // Include providerConfigName if agent has a config reference
+        ...(providerConfigName && { providerConfigName }),
+      };
+    });
 
     const statuses = statusesRes.items.map((s) => ({
       id: s.id,
@@ -697,9 +957,194 @@ export class ProjectsService {
       // Include watchers and subscribers (empty arrays if none)
       watchers,
       subscribers,
+      // Include presets from override if provided; otherwise from settings.
+      // Contract:
+      //   - `presets: undefined` (not provided) → use stored presets if any
+      //   - `presets: []` (empty array) → explicitly export without presets
+      //   - `presets: [...]` → export with provided presets
+      ...(presetsOverride !== undefined
+        ? { presets: presetsOverride }
+        : this.settings.getProjectPresets(projectId).length > 0
+          ? { presets: this.settings.getProjectPresets(projectId) }
+          : {}),
     };
 
     return exportPayload;
+  }
+
+  /**
+   * Check if a project's current agent configurations match a preset
+   * Match logic: compares agent name + providerConfigName for each agent in the preset
+   * @param projectId The project ID
+   * @param preset The preset to compare against
+   * @returns true if all agents in the preset have matching provider configs, false otherwise
+   */
+  async doesProjectMatchPreset(
+    projectId: string,
+    preset: { name: string; agentConfigs: Array<{ agentName: string; providerConfigName: string }> },
+  ): Promise<boolean> {
+    // Get all agents in the project
+    const agentsRes = await this.storage.listAgents(projectId, { limit: 1000, offset: 0 });
+    const agentsByName = new Map(agentsRes.items.map((a) => [a.name.toLowerCase(), a]));
+
+    // Collect all unique provider config IDs used by agents (bulk query to avoid N+1)
+    const uniqueProviderConfigIds = new Set<string>();
+    for (const agent of agentsRes.items) {
+      if (agent.providerConfigId) {
+        uniqueProviderConfigIds.add(agent.providerConfigId);
+      }
+    }
+
+    // Single bulk query to get all provider configs
+    const allProviderConfigs =
+      uniqueProviderConfigIds.size > 0
+        ? await this.storage.listProfileProviderConfigsByIds(Array.from(uniqueProviderConfigIds))
+        : [];
+
+    // Map provider config ID to name for quick lookup
+    const providerConfigNames = new Map(allProviderConfigs.map((c) => [c.id, c.name]));
+
+    // Check each agent config in the preset
+    for (const agentConfig of preset.agentConfigs) {
+      const agentNameLower = agentConfig.agentName.trim().toLowerCase();
+      const providerConfigNameLower = agentConfig.providerConfigName.trim().toLowerCase();
+
+      const agent = agentsByName.get(agentNameLower);
+      if (!agent) {
+        return false; // Agent not found
+      }
+
+      const currentProviderConfigName = providerConfigNames.get(agent.providerConfigId ?? '');
+      if (currentProviderConfigName?.toLowerCase() !== providerConfigNameLower) {
+        return false; // Provider config doesn't match
+      }
+    }
+
+    // All agents in preset match current configuration
+    return true;
+  }
+
+  /**
+   * Apply a preset to a project by batch updating agent provider config assignments
+   * @param projectId The project ID
+   * @param presetName The name of the preset to apply
+   * @param nameMaps Optional name-to-ID maps for resolution (can be passed from createFromTemplate)
+   * @returns Object with applied count and any warnings
+   */
+  async applyPreset(
+    projectId: string,
+    presetName: string,
+    nameMaps?: {
+      agentNameToId: Map<string, string>;
+      configLookupMap: Map<string, string>;
+    },
+  ): Promise<{ applied: number; warnings: string[] }> {
+    logger.info({ projectId, presetName }, 'applyPreset');
+
+    const warnings: string[] = [];
+
+    // 1. Get presets for this project
+    const presets = this.settings.getProjectPresets(projectId);
+    const selectedPreset = presets.find((p) => p.name === presetName);
+
+    if (!selectedPreset) {
+      throw new NotFoundError('Preset', presetName);
+    }
+
+    // Defensive check: ensure agentConfigs exists and is an array
+    if (!selectedPreset.agentConfigs || !Array.isArray(selectedPreset.agentConfigs)) {
+      throw new ValidationError(`Preset "${presetName}" has invalid or missing agentConfigs`, {
+        presetName,
+      });
+    }
+
+    // 2. Get all agents in the project
+    const agentsRes = await this.storage.listAgents(projectId, { limit: 1000, offset: 0 });
+
+    // 3. Build name-to-ID map for agents (or use provided)
+    let agentNameToId: Map<string, string>;
+
+    if (nameMaps?.agentNameToId) {
+      agentNameToId = nameMaps.agentNameToId;
+    } else {
+      // Build map from current project state
+      agentNameToId = new Map();
+      for (const agent of agentsRes.items) {
+        agentNameToId.set(agent.name.toLowerCase(), agent.id);
+      }
+    }
+
+    // 4. Build config lookup map ONCE before the loop
+    // Maps: profileId:configName -> configId
+    let configLookupMap: Map<string, string>;
+
+    if (nameMaps?.configLookupMap) {
+      configLookupMap = nameMaps.configLookupMap;
+    } else {
+      // Build config lookup map for all profiles in the project
+      configLookupMap = new Map();
+      const profilesRes = await this.storage.listAgentProfiles({
+        projectId,
+        limit: 1000,
+        offset: 0,
+      });
+      for (const profile of profilesRes.items) {
+        const configs = await this.storage.listProfileProviderConfigsByProfile(profile.id);
+        for (const config of configs) {
+          const lookupKey = `${profile.id}:${config.name.trim().toLowerCase()}`;
+          configLookupMap.set(lookupKey, config.id);
+        }
+      }
+    }
+
+    // 5. Apply preset: batch update agents with provider config assignments
+    let applied = 0;
+    const agentsById = new Map(agentsRes.items.map((a) => [a.id, a]));
+
+    for (const agentConfig of selectedPreset.agentConfigs) {
+      const agentId = agentNameToId.get(agentConfig.agentName.trim().toLowerCase());
+
+      if (!agentId) {
+        warnings.push(`Agent "${agentConfig.agentName}" not found in project`);
+        continue;
+      }
+
+      // Get the agent to find its profile
+      const agent = agentsById.get(agentId);
+      if (!agent) continue;
+
+      // Look up provider config by name within the agent's profile
+      const profileId = agent.profileId;
+      const lookupKey = `${profileId}:${agentConfig.providerConfigName.trim().toLowerCase()}`;
+      const providerConfigId = configLookupMap.get(lookupKey);
+
+      if (!providerConfigId) {
+        warnings.push(
+          `Provider config "${agentConfig.providerConfigName}" not found for agent "${agentConfig.agentName}"`,
+        );
+        continue;
+      }
+
+      // Update agent with provider config
+      await this.storage.updateAgent(agentId, { providerConfigId });
+      applied++;
+      logger.debug(
+        { projectId, agentId, agentName: agentConfig.agentName, providerConfigId },
+        'Applied preset: updated agent provider config',
+      );
+    }
+
+    // Set activePreset only if full match (no warnings, all agents applied)
+    // This ensures activePreset is only set when the configuration truly matches the preset
+    const fullMatch = warnings.length === 0 && applied === selectedPreset.agentConfigs.length;
+    if (fullMatch) {
+      await this.settings.setProjectActivePreset(projectId, presetName);
+      logger.info({ projectId, presetName }, 'Active preset set (full match)');
+    }
+
+    logger.info({ projectId, presetName, applied, warnings: warnings.length }, 'Preset applied');
+
+    return { applied, warnings };
   }
 
   async importProject(input: ImportProjectInput) {
@@ -1019,17 +1464,11 @@ export class ProjectsService {
       // Profiles - build ID map (with synthetic keys for items without IDs)
       // Use selectedProfilesByFamily to only create profiles needed after family mapping
       for (const prof of selectedProfilesByFamily.profilesToCreate) {
-        const providerId = available.get(prof.provider.name.trim().toLowerCase());
-        if (!providerId) {
-          // Should not happen due to precheck
-          throw new NotFoundError('Provider', prof.provider.name);
-        }
+        // Create profile (providerId and options now live on profile_provider_configs)
         const created = await this.storage.createAgentProfile({
           projectId: input.projectId,
           name: prof.name,
-          providerId,
           familySlug: prof.familySlug ?? null,
-          options: this.normalizeProfileOptions(prof.options),
           systemPrompt: null,
           instructions: prof.instructions ?? null,
           temperature: prof.temperature ?? null,
@@ -1038,6 +1477,81 @@ export class ProjectsService {
         // Use synthetic key for items without ID (enables helper to build name maps)
         const profKey = prof.id || `name:${prof.name.trim().toLowerCase()}`;
         profileIdMap[profKey] = created.id;
+      }
+
+      // Provider Configs - create configs for each profile and build lookup map
+      // Map: { newProfileId, configName } -> newConfigId
+      const configLookupMap = new Map<string, string>(); // key: `${newProfileId}:${configName}`
+      const configIdMap: Record<string, string> = {};
+
+      for (const prof of selectedProfilesByFamily.profilesToCreate) {
+        const profKey = prof.id || `name:${prof.name.trim().toLowerCase()}`;
+        const newProfileId = profileIdMap[profKey];
+        if (!newProfileId) continue;
+
+        // Check if profile has providerConfigs (new format)
+        const providerConfigs = (
+          prof as {
+            providerConfigs?: Array<{
+              name: string;
+              providerName: string;
+              options?: string | null;
+              env?: Record<string, string> | null;
+            }>;
+          }
+        ).providerConfigs;
+
+        if (providerConfigs && providerConfigs.length > 0) {
+          // New format: create configs from providerConfigs array
+          for (const config of providerConfigs) {
+            const configProviderId = available.get(config.providerName.trim().toLowerCase());
+            if (!configProviderId) {
+              logger.warn(
+                { profileName: prof.name, providerName: config.providerName },
+                'Provider not found for config, skipping',
+              );
+              continue;
+            }
+
+            const createdConfig = await this.storage.createProfileProviderConfig({
+              profileId: newProfileId,
+              providerId: configProviderId,
+              name: config.name,
+              options: config.options ?? null,
+              env: config.env ?? null,
+            });
+
+            const lookupKey = `${newProfileId}:${config.name.trim().toLowerCase()}`;
+            configLookupMap.set(lookupKey, createdConfig.id);
+            configIdMap[`${profKey}:${config.name}`] = createdConfig.id;
+          }
+        } else {
+          // Legacy format: create default config from profile's provider
+          const providerName = prof.provider.name.trim().toLowerCase();
+          const configProviderId = available.get(providerName);
+          if (configProviderId) {
+            // Normalize options to string format
+            const options =
+              prof.options != null
+                ? typeof prof.options === 'string'
+                  ? prof.options
+                  : JSON.stringify(prof.options)
+                : null;
+
+            const createdConfig = await this.storage.createProfileProviderConfig({
+              profileId: newProfileId,
+              providerId: configProviderId,
+              name: 'default', // Legacy profiles get 'default' as config name
+              options,
+              env: null,
+            });
+
+            // Use 'default' as config name for legacy profiles
+            const lookupKey = `${newProfileId}:default`;
+            configLookupMap.set(lookupKey, createdConfig.id);
+            configIdMap[`${profKey}:default`] = createdConfig.id;
+          }
+        }
       }
 
       // Agents - build ID map (with synthetic keys for items without IDs)
@@ -1053,11 +1567,38 @@ export class ProjectsService {
             profileId: oldProfileId || null,
           });
         }
+
+        // Resolve providerConfigName to providerConfigId
+        let providerConfigId: string | undefined;
+        const agentWithConfig = a as { providerConfigName?: string | null };
+        if (agentWithConfig.providerConfigName && newProfileId) {
+          const lookupKey = `${newProfileId}:${agentWithConfig.providerConfigName.trim().toLowerCase()}`;
+          providerConfigId = configLookupMap.get(lookupKey);
+        }
+        // If no providerConfigName provided, try to use first config for the profile from the lookup map
+        if (!providerConfigId && newProfileId) {
+          // Find any config for this profile in the lookup map (prefix match on profileId:)
+          const profilePrefix = `${newProfileId}:`;
+          for (const [key, configId] of configLookupMap.entries()) {
+            if (key.startsWith(profilePrefix)) {
+              providerConfigId = configId;
+              break;
+            }
+          }
+        }
+        if (!providerConfigId) {
+          throw new ValidationError(`No provider config available for agent ${a.name}`, {
+            profileId: newProfileId,
+            providerConfigName: agentWithConfig.providerConfigName || null,
+          });
+        }
+
         const created = await this.storage.createAgent({
           projectId: input.projectId,
           name: a.name,
           profileId: newProfileId,
           description: a.description ?? null,
+          providerConfigId,
         });
         // Use synthetic key for items without ID (enables helper to build name maps)
         const agentKey = a.id || `name:${a.name.trim().toLowerCase()}`;
@@ -1209,6 +1750,21 @@ export class ProjectsService {
           { projectId: input.projectId, slug: payload._manifest.slug, source: templateSource },
           'Updated template metadata after import',
         );
+      }
+
+      // Replace presets from template (if present)
+      const rawPresets = (payload as { presets?: unknown }).presets;
+      const templatePresets = Array.isArray(rawPresets) ? rawPresets : [];
+      if (templatePresets.length > 0) {
+        await this.settings.setProjectPresets(input.projectId, templatePresets);
+        logger.info(
+          { projectId: input.projectId, presetCount: templatePresets.length },
+          'Presets replaced from template during import',
+        );
+      } else {
+        // Clear existing presets if template has none
+        await this.settings.clearProjectPresets(input.projectId);
+        logger.info({ projectId: input.projectId }, 'Presets cleared during import (template has none)');
       }
 
       return {
@@ -2016,6 +2572,20 @@ export class ProjectsService {
   }
 
   /**
+   * Derive a template slug from a file path.
+   * Extracts the filename without extension and converts to a valid slug.
+   *
+   * @param filePath - The absolute path to the template file
+   * @returns A slug derived from the filename
+   */
+  private deriveSlugFromPath(filePath: string): string {
+    const filename = basename(filePath);
+    // Remove .json extension (case-insensitive)
+    const nameWithoutExt = filename.replace(/\.json$/i, '');
+    return this.slugify(nameWithoutExt);
+  }
+
+  /**
    * Get the original template manifest for a project.
    * Uses stored metadata to fetch the correct template version from the appropriate source.
    *
@@ -2032,6 +2602,15 @@ export class ProjectsService {
 
     try {
       // 2. Fetch template based on source
+      // File-based templates are non-upgradable (file may have moved/changed)
+      if (metadata.source === 'file') {
+        logger.debug(
+          { projectId, templateSlug: metadata.templateSlug },
+          'File-based template - no manifest available',
+        );
+        return null;
+      }
+
       if (metadata.source === 'bundled') {
         // Use getBundledTemplate directly to avoid registry preference
         const template = this.unifiedTemplateService.getBundledTemplate(metadata.templateSlug);
@@ -2124,7 +2703,7 @@ export class ProjectsService {
       projectId: string;
       templateSlug: string | null;
       installedVersion: string | null;
-      source: 'bundled' | 'registry' | null;
+      source: 'bundled' | 'registry' | 'file' | null;
     }>,
   ): Map<string, string | null> {
     const result = new Map<string, string | null>();

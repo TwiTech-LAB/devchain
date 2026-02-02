@@ -9,6 +9,8 @@ import {
   TerminalInputMode,
   RegistryTemplateMetadataDto,
   RegistryConfigDto,
+  TemplatePresetDto,
+  TemplatePresetSchema,
 } from '../dtos/settings.dto';
 import { DB_CONNECTION } from '../../storage/db/db.provider';
 import { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
@@ -246,6 +248,24 @@ export class SettingsService {
         } catch (error) {
           logger.warn({ error }, 'Failed to parse registryTemplates');
         }
+      } else if (row.key === 'projectPresets') {
+        try {
+          const map = JSON.parse(row.value);
+          if (typeof map === 'object' && map !== null) {
+            settings.projectPresets = map;
+          }
+        } catch (error) {
+          logger.warn({ error }, 'Failed to parse projectPresets');
+        }
+      } else if (row.key === 'projectActivePresets') {
+        try {
+          const map = JSON.parse(row.value);
+          if (typeof map === 'object' && map !== null) {
+            settings.projectActivePresets = map;
+          }
+        } catch (error) {
+          logger.warn({ error }, 'Failed to parse projectActivePresets');
+        }
       }
     }
 
@@ -476,6 +496,18 @@ export class SettingsService {
       if (settings.registryTemplates !== undefined) {
         const encodedMap = JSON.stringify(settings.registryTemplates);
         stmt.run(randomUUID(), 'registryTemplates', encodedMap, now, now);
+      }
+
+      // Project presets (per-project template presets)
+      if (settings.projectPresets !== undefined) {
+        const encodedMap = JSON.stringify(settings.projectPresets);
+        stmt.run(randomUUID(), 'projectPresets', encodedMap, now, now);
+      }
+
+      // Project active presets (per-project active preset tracking)
+      if (settings.projectActivePresets !== undefined) {
+        const encodedMap = JSON.stringify(settings.projectActivePresets);
+        stmt.run(randomUUID(), 'projectActivePresets', encodedMap, now, now);
       }
     })();
 
@@ -980,5 +1012,407 @@ export class SettingsService {
       ...existing,
       lastUpdateCheckAt: new Date().toISOString(),
     });
+  }
+
+  // ============================================
+  // Template Presets Methods
+  // ============================================
+
+  /**
+   * Get presets for a specific project
+   * @param projectId The project ID
+   * @returns Array of validated template presets or empty array if none configured
+   */
+  getProjectPresets(projectId: string): TemplatePresetDto[] {
+    const settings = this.getSettings();
+    const rawPresets = settings.projectPresets?.[projectId] ?? [];
+
+    // Validate presets on read as a safety net for any invalid data
+    const validatedPresets: TemplatePresetDto[] = [];
+    for (const preset of rawPresets) {
+      const result = TemplatePresetSchema.safeParse(preset);
+      if (result.success) {
+        validatedPresets.push(result.data);
+      } else {
+        logger.warn(
+          { projectId, preset, issues: result.error.issues },
+          'Invalid preset found in storage, filtering out',
+        );
+      }
+    }
+
+    return validatedPresets;
+  }
+
+  /**
+   * Set presets for a specific project
+   * Stores a snapshot of presets from a template at project creation time
+   * @param projectId The project ID
+   * @param presets The array of presets to store
+   * @throws ValidationError if any preset fails schema validation
+   */
+  async setProjectPresets(projectId: string, presets: unknown[]): Promise<void> {
+    // Validate each preset against the schema before storage
+    const validatedPresets: TemplatePresetDto[] = [];
+    const errors: string[] = [];
+
+    for (let i = 0; i < presets.length; i++) {
+      const preset = presets[i];
+      const result = TemplatePresetSchema.safeParse(preset);
+
+      if (result.success) {
+        validatedPresets.push(result.data);
+      } else {
+        const errorIssues = result.error.issues
+          .map((issue) => `[${issue.path.join('.')}] ${issue.message}`)
+          .join('; ');
+        errors.push(`Preset at index ${i}: ${errorIssues}`);
+      }
+    }
+
+    if (errors.length > 0) {
+      throw new ValidationError('Invalid preset data', {
+        projectId,
+        errors,
+      });
+    }
+
+    const currentSettings = this.getSettings();
+    const existingPresets = currentSettings.projectPresets ?? {};
+
+    await this.updateSettings({
+      projectPresets: {
+        ...existingPresets,
+        [projectId]: validatedPresets,
+      },
+    });
+
+    logger.info({ projectId, presetCount: validatedPresets.length }, 'Project presets updated');
+  }
+
+  /**
+   * Clear presets for a specific project
+   * @param projectId The project ID
+   */
+  async clearProjectPresets(projectId: string): Promise<void> {
+    const currentSettings = this.getSettings();
+    const existingPresets = currentSettings.projectPresets ?? {};
+
+    // Remove the project from the map
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { [projectId]: _removed, ...remaining } = existingPresets;
+
+    await this.updateSettings({
+      projectPresets: remaining,
+    });
+
+    logger.info({ projectId }, 'Project presets cleared');
+  }
+
+  /**
+   * Get all projects with presets (for batch operations)
+   * @returns Array of projects with their presets
+   */
+  getAllProjectPresetsMap(): Map<string, TemplatePresetDto[]> {
+    const settings = this.getSettings();
+    const presets = settings.projectPresets ?? {};
+    return new Map(Object.entries(presets));
+  }
+
+  /**
+   * Create a new preset for a project with name uniqueness validation
+   * @param projectId The project ID
+   * @param preset The preset to create (will be validated against TemplatePresetSchema)
+   * @throws ValidationError if name already exists (case-insensitive) or schema validation fails
+   */
+  async createProjectPreset(projectId: string, preset: unknown): Promise<void> {
+    // Validate preset schema
+    const result = TemplatePresetSchema.safeParse(preset);
+    if (!result.success) {
+      const errorIssues = result.error.issues
+        .map((issue) => `[${issue.path.join('.')}] ${issue.message}`)
+        .join('; ');
+      throw new ValidationError(`Invalid preset data: ${errorIssues}`, {
+        projectId,
+        issues: result.error.issues,
+      });
+    }
+
+    const validatedPreset = result.data;
+    const trimmedName = validatedPreset.name.trim();
+
+    if (!trimmedName) {
+      throw new ValidationError('Preset name cannot be empty or whitespace only', {
+        projectId,
+      });
+    }
+
+    // Check for case-insensitive name uniqueness
+    const existingPresets = this.getProjectPresets(projectId);
+    const normalizedName = trimmedName.toLowerCase();
+    const nameExists = existingPresets.some((p) => p.name.toLowerCase() === normalizedName);
+
+    if (nameExists) {
+      throw new ValidationError(
+        `Preset with name "${trimmedName}" already exists (case-insensitive)`,
+        {
+          projectId,
+          presetName: trimmedName,
+          hint: 'Choose a different name or delete the existing preset first.',
+        },
+      );
+    }
+
+    // Add the new preset with trimmed name
+    const currentSettings = this.getSettings();
+    const existingPresetsMap = currentSettings.projectPresets ?? {};
+
+    await this.updateSettings({
+      projectPresets: {
+        ...existingPresetsMap,
+        [projectId]: [...existingPresets, { ...validatedPreset, name: trimmedName }],
+      },
+    });
+
+    logger.info({ projectId, presetName: trimmedName }, 'Preset created');
+  }
+
+  /**
+   * Update an existing preset by name with validation
+   * @param projectId The project ID
+   * @param presetName The name of the preset to update (case-insensitive match)
+   * @param updates The updates to apply (will be validated)
+   * @throws ValidationError if preset not found or new name conflicts (case-insensitive)
+   */
+  async updateProjectPreset(
+    projectId: string,
+    presetName: string,
+    updates: unknown,
+  ): Promise<void> {
+    const existingPresets = this.getProjectPresets(projectId);
+
+    // Normalize search name for case-insensitive matching
+    const normalizedName = presetName.trim().toLowerCase();
+    const presetIndex = existingPresets.findIndex((p) => p.name.toLowerCase() === normalizedName);
+
+    if (presetIndex === -1) {
+      throw new ValidationError(`Preset "${presetName.trim()}" not found`, {
+        projectId,
+        presetName: presetName.trim(),
+      });
+    }
+
+    // Validate updates against TemplatePresetSchema (partial validation)
+    // We need to merge with existing preset for full validation
+    const existingPreset = existingPresets[presetIndex];
+
+    // Build full preset for validation - include only fields present in updates
+    const mergedPreset = { ...existingPreset };
+    if (typeof updates === 'object' && updates !== null) {
+      const updateObj = updates as Record<string, unknown>;
+      if ('name' in updateObj) {
+        if (typeof updateObj.name !== 'string') {
+          throw new ValidationError(`Invalid preset update: name must be a string`, {
+            projectId,
+            presetName,
+          });
+        }
+        mergedPreset.name = updateObj.name;
+      }
+      if ('description' in updateObj) {
+        if (updateObj.description !== null && typeof updateObj.description !== 'string') {
+          throw new ValidationError(`Invalid preset update: description must be a string or null`, {
+            projectId,
+            presetName,
+          });
+        }
+        mergedPreset.description = updateObj.description;
+      }
+      if ('agentConfigs' in updateObj) {
+        if (!Array.isArray(updateObj.agentConfigs)) {
+          throw new ValidationError(`Invalid preset update: agentConfigs must be an array`, {
+            projectId,
+            presetName,
+          });
+        }
+        mergedPreset.agentConfigs = updateObj.agentConfigs;
+      }
+    }
+
+    const result = TemplatePresetSchema.safeParse(mergedPreset);
+    if (!result.success) {
+      const errorIssues = result.error.issues
+        .map((issue) => `[${issue.path.join('.')}] ${issue.message}`)
+        .join('; ');
+      throw new ValidationError(`Invalid preset update: ${errorIssues}`, {
+        projectId,
+        presetName,
+        issues: result.error.issues,
+      });
+    }
+
+    const validatedPreset = result.data;
+    const trimmedName = validatedPreset.name.trim();
+
+    // Apply trimmed name to validated preset
+    validatedPreset.name = trimmedName;
+
+    // Check for name conflict if name changed (case-insensitive)
+    if (trimmedName.toLowerCase() !== normalizedName) {
+      const nameExists = existingPresets.some(
+        (p, idx) => idx !== presetIndex && p.name.toLowerCase() === trimmedName.toLowerCase(),
+      );
+
+      if (nameExists) {
+        throw new ValidationError(
+          `Preset with name "${trimmedName}" already exists (case-insensitive)`,
+          {
+            projectId,
+            presetName: trimmedName,
+            hint: 'Choose a different name.',
+          },
+        );
+      }
+    }
+
+    // Update the preset - move to end of array (most recently updated last)
+    const updatedPresets = [...existingPresets];
+    updatedPresets.splice(presetIndex, 1);
+    updatedPresets.push(validatedPreset);
+
+    const currentSettings = this.getSettings();
+    const existingPresetsMap = currentSettings.projectPresets ?? {};
+    const existingActivePresets = currentSettings.projectActivePresets ?? {};
+
+    // Prepare update settings object
+    const updatePayload: {
+      projectPresets: Record<string, TemplatePresetDto[]>;
+      projectActivePresets?: Record<string, string | null>;
+    } = {
+      projectPresets: {
+        ...existingPresetsMap,
+        [projectId]: updatedPresets,
+      },
+    };
+
+    // If preset name changed, migrate activePreset to new name (case-insensitive)
+    if (trimmedName.toLowerCase() !== normalizedName) {
+      const originalName = existingPreset.name;
+      const currentActivePreset = existingActivePresets[projectId];
+
+      // Check if the renamed preset was the active one (case-insensitive comparison)
+      if (currentActivePreset && currentActivePreset.toLowerCase() === originalName.toLowerCase()) {
+        updatePayload.projectActivePresets = {
+          ...existingActivePresets,
+          [projectId]: trimmedName, // Store canonical name
+        };
+        logger.info(
+          { projectId, oldName: currentActivePreset, newName: trimmedName },
+          'Active preset migrated after rename (case-insensitive)',
+        );
+      }
+    }
+
+    await this.updateSettings(updatePayload);
+
+    logger.info({ projectId, presetName: trimmedName }, 'Preset updated');
+  }
+
+  /**
+   * Delete a preset by name (case-insensitive match)
+   * @param projectId The project ID
+   * @param presetName The name of the preset to delete (case-insensitive)
+   * @throws ValidationError if preset not found
+   */
+  async deleteProjectPreset(projectId: string, presetName: string): Promise<void> {
+    const existingPresets = this.getProjectPresets(projectId);
+
+    const normalizedName = presetName.trim().toLowerCase();
+    const presetIndex = existingPresets.findIndex((p) => p.name.toLowerCase() === normalizedName);
+
+    if (presetIndex === -1) {
+      throw new ValidationError(`Preset "${presetName.trim()}" not found`, {
+        projectId,
+        presetName: presetName.trim(),
+      });
+    }
+
+    const deletedPreset = existingPresets[presetIndex];
+
+    // Remove the preset by filtering it out
+    const updatedPresets = existingPresets.filter((_, idx) => idx !== presetIndex);
+
+    const currentSettings = this.getSettings();
+    const existingPresetsMap = currentSettings.projectPresets ?? {};
+    const existingActivePresets = currentSettings.projectActivePresets ?? {};
+
+    // Prepare update settings object
+    const updatePayload: {
+      projectPresets: Record<string, TemplatePresetDto[]>;
+      projectActivePresets?: Record<string, string | null>;
+    } = {
+      projectPresets: {
+        ...existingPresetsMap,
+        [projectId]: updatedPresets,
+      },
+    };
+
+    // Clear activePreset if it pointed to the deleted preset (case-insensitive comparison)
+    const currentActivePreset = existingActivePresets[projectId];
+    if (currentActivePreset && currentActivePreset.toLowerCase() === deletedPreset.name.toLowerCase()) {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { [projectId]: _removed, ...remainingActivePresets } = existingActivePresets;
+      updatePayload.projectActivePresets = remainingActivePresets;
+      logger.info(
+        { projectId, presetName: deletedPreset.name, activePreset: currentActivePreset },
+        'Active preset cleared after preset deletion (case-insensitive)',
+      );
+    }
+
+    await this.updateSettings(updatePayload);
+
+    logger.info({ projectId, presetName: deletedPreset.name }, 'Preset deleted');
+  }
+
+  /**
+   * Get the active preset name for a specific project
+   * @param projectId The project ID
+   * @returns The active preset name or null if no preset is active
+   */
+  getProjectActivePreset(projectId: string): string | null {
+    const settings = this.getSettings();
+    return settings.projectActivePresets?.[projectId] ?? null;
+  }
+
+  /**
+   * Set the active preset for a specific project
+   * @param projectId The project ID
+   * @param presetName The preset name to set as active, or null to clear
+   */
+  async setProjectActivePreset(
+    projectId: string,
+    presetName: string | null,
+  ): Promise<void> {
+    const currentSettings = this.getSettings();
+    const existingActivePresets = currentSettings.projectActivePresets ?? {};
+
+    if (presetName === null) {
+      // Remove the active preset for this project
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { [projectId]: _removed, ...remaining } = existingActivePresets;
+      await this.updateSettings({
+        projectActivePresets: remaining,
+      });
+      logger.info({ projectId }, 'Project active preset cleared');
+    } else {
+      // Set the active preset for this project
+      await this.updateSettings({
+        projectActivePresets: {
+          ...existingActivePresets,
+          [projectId]: presetName,
+        },
+      });
+      logger.info({ projectId, presetName }, 'Project active preset set');
+    }
   }
 }

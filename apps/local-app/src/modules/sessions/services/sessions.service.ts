@@ -14,11 +14,28 @@ import { DB_CONNECTION } from '../../storage/db/db.provider';
 import { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import Database from 'better-sqlite3';
 import { parseProfileOptions, ProfileOptionsError } from '../utils/profile-options';
+import { buildSessionCommand, EnvBuilderError } from '../utils/env-builder';
 import { buildInitialPromptContext, renderInitialPromptTemplate } from '../utils/template-renderer';
 import { EventsService } from '../../events/services/events.service';
 import { TerminalGateway } from '../../terminal/gateways/terminal.gateway';
+import { SessionCoordinatorService } from './session-coordinator.service';
 
 const logger = createLogger('SessionsService');
+
+/**
+ * Check if an error is a SQLite unique constraint violation.
+ * better-sqlite3 throws { code: 'SQLITE_CONSTRAINT' | number } for constraint errors.
+ */
+function isUniqueConstraintError(error: unknown): error is { code: string; message: string } {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error.code === 'SQLITE_CONSTRAINT' ||
+      error.code === 'SQLITE_CONSTRAINT_UNIQUE' ||
+      (typeof error.code === 'number' && error.code === 19))
+  );
+}
 
 const MAX_INITIAL_PROMPT_LENGTH = 4000;
 const MAX_INITIAL_PROMPT_LINES = 80;
@@ -60,6 +77,7 @@ export class SessionsService {
     @Inject(forwardRef(() => PreflightService)) private readonly preflightService: PreflightService,
     @Inject(forwardRef(() => ProviderMcpEnsureService))
     private readonly mcpEnsureService: ProviderMcpEnsureService,
+    private readonly sessionCoordinator: SessionCoordinatorService,
     private readonly moduleRef: ModuleRef,
   ) {
     // Extract raw sqlite instance
@@ -70,238 +88,420 @@ export class SessionsService {
 
   /**
    * Launch a new session for an epic
+   *
+   * This method is idempotent: if the agent already has an active session, it returns
+   * that session instead of throwing an error. This enables safe retries and prevents
+   * message loss when concurrent requests race to launch sessions.
+   *
+   * The entire operation is wrapped in withAgentLock() to serialize concurrent
+   * session launches for the same agent, preventing TOCTOU race conditions where
+   * multiple requests could pass the "no existing session" check and create duplicates.
+   *
+   * To force a new session (terminate existing first), use the agent restart endpoint
+   * (POST /api/agents/:id/restart) or the restart_agent subscriber action instead.
    */
   async launchSession(data: LaunchSessionDto): Promise<SessionDetailDto> {
     const { epicId, agentId, projectId } = data;
 
-    logger.info({ epicId, agentId, projectId }, 'Launching session');
+    return this.sessionCoordinator.withAgentLock(agentId, async () => {
+      logger.info({ epicId, agentId, projectId }, 'Launching session');
 
-    // Enforce single active session per agent
-    const activeSessions = await this.listActiveSessions();
-    const existingSession = activeSessions.find((s) => s.agentId === agentId);
-    if (existingSession) {
-      throw new ValidationError(
-        `Agent already has an active session (${existingSession.id}). To run concurrent work, create an additional agent instance.`,
-        {
-          code: 'AGENT_SESSION_ACTIVE',
-          sessionId: existingSession.id,
-          agentId,
-        },
-      );
-    }
+      // Fast pre-check: if agent already has an active session, return it (idempotent)
+      const existingSession = this.getActiveSessionForAgent(agentId);
+      if (existingSession) {
+        // Validate tmux existence before returning the session
+        // The DB-only check can return orphaned sessions where tmux is already gone
+        const tmuxAlive = existingSession.tmuxSessionId
+          ? await this.tmuxService.hasSession(existingSession.tmuxSessionId)
+          : false;
 
-    // Fetch required entities
-    const agent = await this.storage.getAgent(agentId);
-    const project = await this.storage.getProject(projectId);
-    if (agent.projectId !== projectId) {
-      throw new ValidationError(`Agent ${agentId} does not belong to project ${projectId}.`, {
-        agentId,
-        agentProjectId: agent.projectId,
-        requestedProjectId: projectId,
-      });
-    }
+        if (tmuxAlive) {
+          // Tmux session is alive - return existing session
+          logger.info(
+            { agentId, existingSessionId: existingSession.id },
+            'Agent already has active session with live tmux, returning existing session (idempotent)',
+          );
 
-    const epic = epicId ? await this.storage.getEpic(epicId) : null;
+          // Enrich SessionDto to SessionDetailDto by fetching related entities
+          // Use agent.projectId (not input.projectId) to ensure consistency
+          const agent = await this.storage.getAgent(agentId);
+          const project = await this.storage.getProject(agent.projectId);
+          const epic = existingSession.epicId
+            ? await this.storage.getEpic(existingSession.epicId).catch(() => null)
+            : null;
 
-    // Fetch agent profile and its provider
-    const profile = await this.storage.getAgentProfile(agent.profileId);
-    const provider = await this.storage.getProvider(profile.providerId);
+          return {
+            ...existingSession,
+            epic: epic
+              ? {
+                  id: epic.id,
+                  title: epic.title,
+                  projectId: epic.projectId,
+                }
+              : null,
+            agent: {
+              id: agent.id,
+              name: agent.name,
+              profileId: agent.profileId,
+            },
+            project: {
+              id: project.id,
+              name: project.name,
+              rootPath: project.rootPath,
+            },
+          };
+        }
 
-    // Run preflight checks
-    let preflightResult = await this.preflightService.runChecks(project.rootPath);
-
-    // Auto-configure MCP if not configured
-    let providerCheck = preflightResult.providers?.find((p) => p.id === provider.id);
-    if (providerCheck?.mcpStatus && providerCheck.mcpStatus !== 'pass') {
-      logger.info(
-        {
-          providerId: provider.id,
-          providerName: provider.name,
-          mcpStatus: providerCheck.mcpStatus,
-        },
-        'MCP not configured, attempting auto-ensure',
-      );
-
-      // Attempt to auto-configure MCP
-      const ensureResult = await this.mcpEnsureService.ensureMcp(provider, project.rootPath);
-
-      if (ensureResult.success) {
-        logger.info(
-          { providerId: provider.id, action: ensureResult.action },
-          'MCP auto-configured successfully',
-        );
-
-        // Re-run preflight to verify
-        preflightResult = await this.preflightService.runChecks(project.rootPath);
-        providerCheck = preflightResult.providers?.find((p) => p.id === provider.id);
-      } else {
+        // Tmux session is gone - this is an orphaned DB session
+        // Run targeted orphan cleanup: mark the orphaned session as stopped
         logger.warn(
-          { providerId: provider.id, message: ensureResult.message },
-          'MCP auto-ensure failed',
+          {
+            agentId,
+            orphanedSessionId: existingSession.id,
+            tmuxSessionId: existingSession.tmuxSessionId,
+          },
+          'Found orphaned session (tmux gone), marking as stopped before continuing',
+        );
+
+        // Mark orphaned session as stopped
+        this.sqlite
+          .prepare(
+            `
+            UPDATE sessions
+            SET status = 'stopped', ended_at = ?, updated_at = ?
+            WHERE id = ?
+          `,
+          )
+          .run(new Date().toISOString(), new Date().toISOString(), existingSession.id);
+
+        // Fall through to create a new session
+        logger.info({ agentId }, 'Orphaned session cleaned up, proceeding to create new session');
+      }
+
+      // Fetch required entities
+      const agent = await this.storage.getAgent(agentId);
+      const project = await this.storage.getProject(projectId);
+      if (agent.projectId !== projectId) {
+        throw new ValidationError(`Agent ${agentId} does not belong to project ${projectId}.`, {
+          agentId,
+          agentProjectId: agent.projectId,
+          requestedProjectId: projectId,
+        });
+      }
+
+      const epic = epicId ? await this.storage.getEpic(epicId) : null;
+
+      // Fetch agent profile
+      const profile = await this.storage.getAgentProfile(agent.profileId);
+
+      // Resolve provider and options via provider config (if available) or fallback to profile
+      let provider;
+      let options: string | null;
+      let envVars: Record<string, string> | null = null;
+
+      if (agent.providerConfigId) {
+        // Use provider config for provider resolution and env vars
+        const config = await this.storage.getProfileProviderConfig(agent.providerConfigId);
+        provider = await this.storage.getProvider(config.providerId);
+        options = config.options;
+        envVars = config.env;
+        logger.info(
+          { agentId, configId: config.id, providerId: provider.id },
+          'Resolved provider via config',
+        );
+      } else {
+        // Fallback: use first provider config for this profile
+        // Note: profile.providerId removed in Phase 4, configs are the only source
+        const configs = await this.storage.listProfileProviderConfigsByProfile(profile.id);
+
+        if (configs.length > 0) {
+          // Use the first config's options and env
+          const firstConfig = configs[0];
+          provider = await this.storage.getProvider(firstConfig.providerId);
+          options = firstConfig.options;
+          envVars = firstConfig.env;
+          logger.info(
+            { agentId, profileId: profile.id, configId: firstConfig.id, providerId: provider.id },
+            'Resolved provider via first profile config (no providerConfigId set on agent)',
+          );
+        } else {
+          // No configs - cannot launch
+          throw new ValidationError(
+            `Profile ${profile.id} has no provider configs - cannot launch session`,
+          );
+        }
+      }
+
+      // Run preflight checks
+      let preflightResult = await this.preflightService.runChecks(project.rootPath);
+
+      // Auto-configure MCP if not configured
+      let providerCheck = preflightResult.providers?.find((p) => p.id === provider.id);
+      if (providerCheck?.mcpStatus && providerCheck.mcpStatus !== 'pass') {
+        logger.info(
+          {
+            providerId: provider.id,
+            providerName: provider.name,
+            mcpStatus: providerCheck.mcpStatus,
+          },
+          'MCP not configured, attempting auto-ensure',
+        );
+
+        // Attempt to auto-configure MCP
+        const ensureResult = await this.mcpEnsureService.ensureMcp(provider, project.rootPath);
+
+        if (ensureResult.success) {
+          logger.info(
+            { providerId: provider.id, action: ensureResult.action },
+            'MCP auto-configured successfully',
+          );
+
+          // Re-run preflight to verify
+          preflightResult = await this.preflightService.runChecks(project.rootPath);
+          providerCheck = preflightResult.providers?.find((p) => p.id === provider.id);
+        } else {
+          logger.warn(
+            { providerId: provider.id, message: ensureResult.message },
+            'MCP auto-ensure failed',
+          );
+        }
+
+        // If still not configured after auto-ensure attempt, throw error
+        if (providerCheck?.mcpStatus && providerCheck.mcpStatus !== 'pass') {
+          throw new ValidationError('Provider MCP is not configured', {
+            code: 'MCP_NOT_CONFIGURED',
+            providerId: provider.id,
+            providerName: provider.name,
+            mcpStatus: providerCheck.mcpStatus,
+            mcpMessage: providerCheck.mcpMessage,
+          });
+        }
+      }
+
+      if (preflightResult.overall === 'fail') {
+        const failedChecks = preflightResult.checks
+          .filter((c) => c.status === 'fail')
+          .map((c) => `${c.name}: ${c.message}`)
+          .join('; ');
+
+        throw new ValidationError('Preflight checks failed', {
+          failedChecks,
+          projectId,
+        });
+      }
+
+      // Create session ID
+      const sessionId = randomUUID();
+      const now = new Date().toISOString();
+
+      // Create project slug for tmux naming
+      const projectSlug = project.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/(^-|-$)/g, '');
+
+      // Create tmux session
+      const epicSegment = epicId ?? 'independent';
+      const tmuxSessionName = this.tmuxService.createSessionName(
+        projectSlug,
+        epicSegment,
+        agentId,
+        sessionId,
+      );
+
+      await this.tmuxService.createSession(tmuxSessionName, project.rootPath);
+
+      // Disable tmux alternate-screen so TUI apps (e.g., Claude) write into
+      // the primary buffer and scrollback, which improves history seeding.
+      await this.tmuxService.setAlternateScreenOff(tmuxSessionName);
+
+      // Start health check for tmux session
+      this.tmuxService.startHealthCheck(tmuxSessionName, sessionId);
+
+      // Launch agent command based on provider
+      if (!provider.binPath) {
+        throw new ValidationError(
+          `Provider ${provider.name} is missing a binary path. Set the path before launching sessions.`,
+          {
+            providerId: provider.id,
+            providerName: provider.name,
+          },
         );
       }
 
-      // If still not configured after auto-ensure attempt, throw error
-      if (providerCheck?.mcpStatus && providerCheck.mcpStatus !== 'pass') {
-        throw new ValidationError('Provider MCP is not configured', {
-          code: 'MCP_NOT_CONFIGURED',
-          providerId: provider.id,
-          providerName: provider.name,
-          mcpStatus: providerCheck.mcpStatus,
-          mcpMessage: providerCheck.mcpMessage,
-        });
+      let optionArgs: string[] = [];
+      try {
+        optionArgs = parseProfileOptions(options);
+      } catch (error) {
+        if (error instanceof ProfileOptionsError) {
+          throw new ValidationError(error.message, {
+            profileId: profile.id,
+            profileName: profile.name,
+          });
+        }
+        throw error;
       }
-    }
 
-    if (preflightResult.overall === 'fail') {
-      const failedChecks = preflightResult.checks
-        .filter((c) => c.status === 'fail')
-        .map((c) => `${c.name}: ${c.message}`)
-        .join('; ');
+      // Build command with env vars (if any) using env command prefix
+      let commandArgs: string[];
+      try {
+        commandArgs = buildSessionCommand(envVars, provider.binPath, optionArgs);
+      } catch (error) {
+        if (error instanceof EnvBuilderError) {
+          throw new ValidationError(error.message, {
+            agentId,
+            providerConfigId: agent.providerConfigId,
+          });
+        }
+        throw error;
+      }
 
-      throw new ValidationError('Preflight checks failed', {
-        failedChecks,
-        projectId,
-      });
-    }
-
-    // Create session ID
-    const sessionId = randomUUID();
-    const now = new Date().toISOString();
-
-    // Create project slug for tmux naming
-    const projectSlug = project.name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/(^-|-$)/g, '');
-
-    // Create tmux session
-    const epicSegment = epicId ?? 'independent';
-    const tmuxSessionName = this.tmuxService.createSessionName(
-      projectSlug,
-      epicSegment,
-      agentId,
-      sessionId,
-    );
-
-    await this.tmuxService.createSession(tmuxSessionName, project.rootPath);
-
-    // Disable tmux alternate-screen so TUI apps (e.g., Claude) write into
-    // the primary buffer and scrollback, which improves history seeding.
-    await this.tmuxService.setAlternateScreenOff(tmuxSessionName);
-
-    // Start health check for tmux session
-    this.tmuxService.startHealthCheck(tmuxSessionName, sessionId);
-
-    // Launch agent command based on provider
-    if (!provider.binPath) {
-      throw new ValidationError(
-        `Provider ${provider.name} is missing a binary path. Set the path before launching sessions.`,
-        {
-          providerId: provider.id,
-          providerName: provider.name,
-        },
+      logger.info(
+        { sessionId, provider: provider.name, commandArgs, hasEnvVars: !!envVars },
+        'Launching agent with provider binary',
       );
-    }
+      await this.tmuxService.sendCommandArgs(tmuxSessionName, commandArgs);
 
-    let optionArgs: string[] = [];
-    try {
-      optionArgs = parseProfileOptions(profile.options);
-    } catch (error) {
-      if (error instanceof ProfileOptionsError) {
-        throw new ValidationError(error.message, {
-          profileId: profile.id,
-          profileName: profile.name,
-        });
-      }
-      throw error;
-    }
-    const commandArgs = [provider.binPath, ...optionArgs];
+      // Wait for agent to initialize (7s to allow slower CLIs like Gemini to start)
+      await new Promise((resolve) => setTimeout(resolve, 7000));
 
-    logger.info(
-      { sessionId, provider: provider.name, commandArgs },
-      'Launching agent with provider binary',
-    );
-    await this.tmuxService.sendCommandArgs(tmuxSessionName, commandArgs);
+      // Insert session into database
+      // If unique constraint is hit, cleanup tmux and return existing session
+      try {
+        this.sqlite
+          .prepare(
+            `
+          INSERT INTO sessions (id, epic_id, agent_id, tmux_session_id, status, started_at, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+          )
+          .run(sessionId, epicId ?? null, agentId, tmuxSessionName, 'running', now, now, now);
 
-    // Wait for agent to initialize
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+        logger.info({ sessionId, tmuxSessionName }, 'Session created in database');
+      } catch (error: unknown) {
+        if (isUniqueConstraintError(error)) {
+          // Unique constraint violation: another session was inserted concurrently
+          // Cleanup the orphaned tmux session and return the existing session
+          logger.warn(
+            { agentId, tmuxSessionName, error },
+            'Unique constraint violation - cleaning up orphaned tmux session and returning existing session',
+          );
 
-    // Insert session into database
-    this.sqlite
-      .prepare(
-        `
-      INSERT INTO sessions (id, epic_id, agent_id, tmux_session_id, status, started_at, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `,
-      )
-      .run(sessionId, epicId ?? null, agentId, tmuxSessionName, 'running', now, now, now);
-
-    logger.info({ sessionId, tmuxSessionName }, 'Session created in database');
-
-    // Render and inject initial.md
-    await this.renderAndPasteInitialPrompt({
-      sessionId,
-      tmuxSessionName,
-      agentId,
-      project: { id: project.id, name: project.name },
-      agent,
-      epic,
-      profile,
-      provider,
-    });
-
-    // Start PTY streaming for terminal output
-    await this.ptyService.startStreaming(sessionId, tmuxSessionName);
-
-    // Broadcast session.started event
-    await this.getEventsService().publish('session.started', {
-      sessionId,
-      epicId: epicId ?? null,
-      agentId,
-      tmuxSessionName,
-    });
-
-    // Broadcast presence update via WebSocket
-    try {
-      this.getTerminalGateway().broadcastEvent(`agent/${agentId}`, 'presence', {
-        online: true,
-        sessionId,
-        agentId,
-      });
-    } catch (error) {
-      logger.warn({ error, agentId, sessionId }, 'Failed to broadcast presence update');
-    }
-
-    // Return session detail
-    return {
-      id: sessionId,
-      epicId: epicId ?? null,
-      agentId,
-      tmuxSessionId: tmuxSessionName,
-      status: 'running',
-      startedAt: now,
-      endedAt: null,
-      createdAt: now,
-      updatedAt: now,
-      epic: epic
-        ? {
-            id: epic.id,
-            title: epic.title,
-            projectId: epic.projectId,
+          // Destroy the orphaned tmux session
+          try {
+            await this.tmuxService.destroySession(tmuxSessionName);
+            logger.info({ tmuxSessionName }, 'Cleaned up orphaned tmux session');
+          } catch (tmuxError) {
+            logger.warn({ tmuxError, tmuxSessionName }, 'Failed to cleanup orphaned tmux session');
           }
-        : null,
-      agent: {
-        id: agent.id,
-        name: agent.name,
-        profileId: agent.profileId,
-      },
-      project: {
-        id: project.id,
-        name: project.name,
-        rootPath: project.rootPath,
-      },
-    };
+
+          // Fetch and return the existing running session
+          const existingSession = this.getActiveSessionForAgent(agentId);
+          if (existingSession) {
+            logger.info(
+              { agentId, existingSessionId: existingSession.id },
+              'Returning existing running session after constraint violation',
+            );
+
+            // Enrich SessionDto to SessionDetailDto
+            const existingAgent = await this.storage.getAgent(agentId);
+            const existingProject = await this.storage.getProject(projectId);
+            const existingEpic = existingSession.epicId
+              ? await this.storage.getEpic(existingSession.epicId).catch(() => null)
+              : null;
+
+            return {
+              ...existingSession,
+              epic: existingEpic
+                ? {
+                    id: existingEpic.id,
+                    title: existingEpic.title,
+                    projectId: existingEpic.projectId,
+                  }
+                : null,
+              agent: {
+                id: existingAgent.id,
+                name: existingAgent.name,
+                profileId: existingAgent.profileId,
+              },
+              project: {
+                id: existingProject.id,
+                name: existingProject.name,
+                rootPath: existingProject.rootPath,
+              },
+            };
+          }
+
+          // If no existing session found (shouldn't happen), re-throw
+          throw error;
+        }
+        throw error;
+      }
+
+      // Render and inject initial.md
+      await this.renderAndPasteInitialPrompt({
+        sessionId,
+        tmuxSessionName,
+        agentId,
+        project: { id: project.id, name: project.name },
+        agent,
+        epic,
+        profile,
+        provider,
+      });
+
+      // Start PTY streaming for terminal output
+      await this.ptyService.startStreaming(sessionId, tmuxSessionName);
+
+      // Broadcast session.started event
+      await this.getEventsService().publish('session.started', {
+        sessionId,
+        epicId: epicId ?? null,
+        agentId,
+        tmuxSessionName,
+      });
+
+      // Broadcast presence update via WebSocket
+      try {
+        this.getTerminalGateway().broadcastEvent(`agent/${agentId}`, 'presence', {
+          online: true,
+          sessionId,
+          agentId,
+        });
+      } catch (error) {
+        logger.warn({ error, agentId, sessionId }, 'Failed to broadcast presence update');
+      }
+
+      // Return session detail
+      return {
+        id: sessionId,
+        epicId: epicId ?? null,
+        agentId,
+        tmuxSessionId: tmuxSessionName,
+        status: 'running',
+        startedAt: now,
+        endedAt: null,
+        createdAt: now,
+        updatedAt: now,
+        epic: epic
+          ? {
+              id: epic.id,
+              title: epic.title,
+              projectId: epic.projectId,
+            }
+          : null,
+        agent: {
+          id: agent.id,
+          name: agent.name,
+          profileId: agent.profileId,
+        },
+        project: {
+          id: project.id,
+          name: project.name,
+          rootPath: project.rootPath,
+        },
+      };
+    });
   }
 
   /**
@@ -670,7 +870,7 @@ export class SessionsService {
 
     // Throttle consecutive sends per agent to avoid race conditions
     if (session.agentId) {
-      await this.sendCoordinator.ensureAgentGap(session.agentId, 500);
+      await this.sendCoordinator.ensureAgentGap(session.agentId, 1000);
     }
 
     // Use unified helper to paste and submit
@@ -779,7 +979,7 @@ export class SessionsService {
 
     // Unify injection approach for all providers: bracketed paste + brief delay + Enter
     // Throttle consecutive sends per agent to avoid race conditions in provider TUIs
-    await this.sendCoordinator.ensureAgentGap(agentId, 500);
+    await this.sendCoordinator.ensureAgentGap(agentId, 1000);
     await this.tmuxService.pasteAndSubmit(tmuxSessionName, rendered, {
       bracketed: true,
       submitKeys: ['Enter'],

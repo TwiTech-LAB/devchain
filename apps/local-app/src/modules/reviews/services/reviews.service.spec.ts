@@ -592,6 +592,138 @@ describe('ReviewsService', () => {
         expect(storage.createReviewComment).toHaveBeenCalledWith(expect.anything(), ['agent-1']);
       });
     });
+
+    describe('target agent ID de-duplication and author filtering', () => {
+      it('de-duplicates target agent IDs', async () => {
+        const review = makeReview();
+        storage.getReview.mockResolvedValue(review);
+        storage.createReviewComment.mockResolvedValue(makeComment());
+        storage.getProject.mockResolvedValue({ id: projectId, name: 'Test Project' } as never);
+
+        const targetAgentIds = ['agent-1', 'agent-2', 'agent-1', 'agent-3'];
+        await service.createComment(reviewId, {
+          content: 'Test comment with duplicates',
+          targetAgentIds,
+        });
+
+        // Should be de-duplicated to ['agent-1', 'agent-2', 'agent-3']
+        expect(storage.createReviewComment).toHaveBeenCalledWith(expect.anything(), [
+          'agent-1',
+          'agent-2',
+          'agent-3',
+        ]);
+      });
+
+      it('filters out author agent ID when authorType is agent', async () => {
+        const review = makeReview();
+        storage.getReview.mockResolvedValue(review);
+        storage.createReviewComment.mockResolvedValue(makeComment());
+        storage.getProject.mockResolvedValue({ id: projectId, name: 'Test Project' } as never);
+
+        const authorAgentId = 'agent-1';
+        const targetAgentIds = ['agent-1', 'agent-2', 'agent-3'];
+        await service.createComment(reviewId, {
+          content: 'Test comment',
+          targetAgentIds,
+          authorType: 'agent',
+          authorAgentId,
+        });
+
+        // agent-1 should be filtered out (author)
+        expect(storage.createReviewComment).toHaveBeenCalledWith(expect.anything(), [
+          'agent-2',
+          'agent-3',
+        ]);
+      });
+
+      it('does not filter when authorType is user', async () => {
+        const review = makeReview();
+        storage.getReview.mockResolvedValue(review);
+        storage.createReviewComment.mockResolvedValue(makeComment());
+        storage.getProject.mockResolvedValue({ id: projectId, name: 'Test Project' } as never);
+
+        const authorAgentId = 'agent-1';
+        const targetAgentIds = ['agent-1', 'agent-2'];
+        await service.createComment(reviewId, {
+          content: 'Test comment',
+          targetAgentIds,
+          authorType: 'user',
+          authorAgentId,
+        });
+
+        // agent-1 should NOT be filtered out (author is user)
+        expect(storage.createReviewComment).toHaveBeenCalledWith(expect.anything(), ['agent-1', 'agent-2']);
+      });
+
+      it('allows comment creation when filtering leaves zero targets', async () => {
+        const review = makeReview();
+        storage.getReview.mockResolvedValue(review);
+        storage.createReviewComment.mockResolvedValue(makeComment());
+        storage.getProject.mockResolvedValue({ id: projectId, name: 'Test Project' } as never);
+
+        // Only target is the author itself
+        const authorAgentId = 'agent-1';
+        const targetAgentIds = ['agent-1'];
+        await service.createComment(reviewId, {
+          content: 'Test comment',
+          targetAgentIds,
+          authorType: 'agent',
+          authorAgentId,
+        });
+
+        // Should create comment with empty targets array
+        expect(storage.createReviewComment).toHaveBeenCalledWith(expect.anything(), []);
+      });
+
+      it('handles both de-duplication and author filtering together', async () => {
+        const review = makeReview();
+        storage.getReview.mockResolvedValue(review);
+        storage.createReviewComment.mockResolvedValue(makeComment());
+        storage.getProject.mockResolvedValue({ id: projectId, name: 'Test Project' } as never);
+
+        const authorAgentId = 'agent-2';
+        const targetAgentIds = ['agent-1', 'agent-2', 'agent-2', 'agent-3', 'agent-1'];
+        await service.createComment(reviewId, {
+          content: 'Test comment',
+          targetAgentIds,
+          authorType: 'agent',
+          authorAgentId,
+        });
+
+        // De-duplicated: ['agent-1', 'agent-2', 'agent-3']
+        // After filtering author: ['agent-1', 'agent-3']
+        expect(storage.createReviewComment).toHaveBeenCalledWith(expect.anything(), ['agent-1', 'agent-3']);
+      });
+
+      it('preserves default reply inheritance behavior with filtering', async () => {
+        const parentCommentId = '660e8400-e29b-41d4-a716-446655440099';
+        const parentComment = makeComment({
+          id: parentCommentId,
+          authorType: 'agent',
+          authorAgentId: 'agent-1',
+        });
+        const reply = makeComment({ parentId: parentCommentId });
+        const parentTargets = [{ agentId: 'agent-1' }, { agentId: 'agent-2' }];
+
+        storage.getReview.mockResolvedValue(makeReview());
+        storage.getReviewComment.mockResolvedValue(parentComment);
+        storage.createReviewComment.mockResolvedValue(reply);
+        storage.getProject.mockResolvedValue({ id: projectId, name: 'Test Project' } as never);
+        storage.getReviewCommentTargets.mockResolvedValue(parentTargets);
+
+        // Reply from agent-1, inheriting parent targets which include agent-1
+        await service.createComment(reviewId, {
+          content: 'Reply',
+          parentId: parentCommentId,
+          authorType: 'agent',
+          authorAgentId: 'agent-1',
+        });
+
+        // Parent targets: ['agent-1', 'agent-2']
+        // After filtering author agent-1: ['agent-2']
+        expect(storage.createReviewComment).toHaveBeenCalledWith(expect.anything(), ['agent-2']);
+      });
+    });
   });
 
   describe('updateComment', () => {

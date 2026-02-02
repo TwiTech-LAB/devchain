@@ -471,6 +471,19 @@ export class ReviewsService {
       }
     }
 
+    // De-duplicate and filter out author (agent self-notification prevention)
+    if (resolvedTargetAgentIds && resolvedTargetAgentIds.length > 0) {
+      // Remove duplicates
+      resolvedTargetAgentIds = [...new Set(resolvedTargetAgentIds)];
+
+      // Filter out comment author when author is an agent to prevent self-notifications
+      const authorAgentId = input.authorAgentId;
+      const authorType = input.authorType ?? 'user';
+      if (authorType === 'agent' && authorAgentId) {
+        resolvedTargetAgentIds = resolvedTargetAgentIds.filter((id) => id !== authorAgentId);
+      }
+    }
+
     const comment = await this.storage.createReviewComment(
       {
         reviewId,

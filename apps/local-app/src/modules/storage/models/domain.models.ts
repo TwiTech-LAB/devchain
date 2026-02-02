@@ -77,13 +77,25 @@ export interface AgentProfile {
   id: string;
   projectId?: string | null;
   name: string;
+  familySlug?: string | null; // Groups equivalent profiles across providers
+  systemPrompt?: string | null;
+  instructions?: string | null;
+  temperature?: number | null;
+  maxTokens?: number | null;
+  createdAt: string;
+  updatedAt: string;
+  // Note: providerId and options removed in Phase 4
+  // Provider configuration now lives in ProfileProviderConfig
+}
+
+export interface ProfileProviderConfig {
+  id: string;
+  profileId: string; // FK to agent_profiles.id
   providerId: string; // FK to providers.id
-  familySlug: string | null; // Groups equivalent profiles across providers
-  options: string | null;
-  systemPrompt: string | null;
-  instructions: string | null;
-  temperature: number | null;
-  maxTokens: number | null;
+  name: string; // User-friendly name to distinguish configs (unique per profile)
+  options: string | null; // JSON string for provider-specific options
+  env: Record<string, string> | null; // Environment variables (stored as JSON)
+  position: number; // Order within profile (0, 1, 2, ...)
   createdAt: string;
   updatedAt: string;
 }
@@ -105,6 +117,7 @@ export interface Agent {
   id: string;
   projectId: string;
   profileId: string;
+  providerConfigId: string; // FK to profile_provider_configs.id
   name: string;
   description: string | null;
   createdAt: string;
@@ -167,10 +180,21 @@ export type CreateAgentProfile = Omit<
   'id' | 'createdAt' | 'updatedAt' | 'instructions' | 'familySlug'
 > & {
   instructions?: string | null;
-  options?: string | null;
   familySlug?: string | null;
 };
 export type UpdateAgentProfile = Partial<Omit<AgentProfile, 'id' | 'createdAt' | 'updatedAt'>>;
+
+export type CreateProfileProviderConfig = {
+  profileId: string;
+  providerId: string;
+  name: string;
+  options: string | null;
+  env: Record<string, string> | null;
+  position?: number; // Optional - defaults to max(position)+1 in storage service
+};
+export type UpdateProfileProviderConfig = Partial<
+  Omit<ProfileProviderConfig, 'id' | 'profileId' | 'createdAt' | 'updatedAt'>
+>;
 
 export type CreateDocument = Omit<
   Document,
@@ -183,8 +207,12 @@ export type UpdateDocument = Partial<Omit<Document, 'id' | 'createdAt' | 'update
   tags?: string[];
 };
 
-export type CreateAgent = Omit<Agent, 'id' | 'createdAt' | 'updatedAt' | 'description'> & {
+export type CreateAgent = Omit<
+  Agent,
+  'id' | 'createdAt' | 'updatedAt' | 'description' | 'providerConfigId'
+> & {
   description?: string | null;
+  providerConfigId: string;
 };
 export type UpdateAgent = Partial<Omit<Agent, 'id' | 'createdAt' | 'updatedAt'>>;
 

@@ -429,9 +429,13 @@ export function CommentDialog({
                 )}
 
                 {/* Selected count indicator */}
-                {selectedAgentIds.size > 0 && (
+                {selectedAgentIds.size > 0 ? (
                   <p className="text-xs text-muted-foreground">
                     {selectedAgentIds.size} agent{selectedAgentIds.size > 1 ? 's' : ''} selected
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    No agents selected — no notifications will be sent
                   </p>
                 )}
               </div>

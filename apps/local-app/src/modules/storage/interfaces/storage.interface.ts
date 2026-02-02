@@ -23,6 +23,9 @@ import {
   AgentProfile,
   CreateAgentProfile,
   UpdateAgentProfile,
+  ProfileProviderConfig,
+  CreateProfileProviderConfig,
+  UpdateProfileProviderConfig,
   Agent,
   CreateAgent,
   UpdateAgent,
@@ -210,6 +213,13 @@ export interface TemplateImportPayload {
     instructions?: string | null;
     temperature?: number | null;
     maxTokens?: number | null;
+    providerConfigs?: Array<{
+      name: string;
+      providerName: string;
+      options?: string | null;
+      env?: Record<string, string> | null;
+      position?: number;
+    }>;
   }>;
   agents: Array<{
     id?: string;
@@ -314,6 +324,7 @@ export interface StorageService {
   createProvider(data: CreateProvider): Promise<Provider>;
   getProvider(id: string): Promise<Provider>;
   listProviders(options?: ListOptions): Promise<ListResult<Provider>>;
+  listProvidersByIds(ids: string[]): Promise<Provider[]>;
   updateProvider(id: string, data: UpdateProvider): Promise<Provider>;
   deleteProvider(id: string): Promise<void>;
   getProviderMcpMetadata(id: string): Promise<ProviderMcpMetadata>;
@@ -341,6 +352,19 @@ export interface StorageService {
       AgentProfile & { prompts: Array<{ promptId: string; title: string; order: number }> }
     >
   >;
+
+  // Profile Provider Configs
+  createProfileProviderConfig(data: CreateProfileProviderConfig): Promise<ProfileProviderConfig>;
+  getProfileProviderConfig(id: string): Promise<ProfileProviderConfig>;
+  listProfileProviderConfigsByProfile(profileId: string): Promise<ProfileProviderConfig[]>;
+  listProfileProviderConfigsByIds(ids: string[]): Promise<ProfileProviderConfig[]>;
+  listAllProfileProviderConfigs(): Promise<ProfileProviderConfig[]>;
+  updateProfileProviderConfig(
+    id: string,
+    data: UpdateProfileProviderConfig,
+  ): Promise<ProfileProviderConfig>;
+  deleteProfileProviderConfig(id: string): Promise<void>;
+  reorderProfileProviderConfigs(profileId: string, configIds: string[]): Promise<void>;
 
   // Agents
   createAgent(data: CreateAgent): Promise<Agent>;

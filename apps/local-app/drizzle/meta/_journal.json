@@ -190,6 +190,69 @@
       "when": 1769880000002,
       "tag": "0026_review_comments_edited_at",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "6",
+      "when": 1769880010000,
+      "tag": "0027_legal_malice",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "6",
+      "when": 1769880020000,
+      "tag": "0028_populate_provider_configs",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "6",
+      "when": 1769880030000,
+      "tag": "0029_merge_profiles_by_family_slug",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "6",
+      "when": 1769880040000,
+      "tag": "0030_set_agents_provider_config_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "6",
+      "when": 1769880100000,
+      "tag": "0031_remove_legacy_profile_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "6",
+      "when": 1769880200000,
+      "tag": "0032_agents_provider_config_not_null",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "6",
+      "when": 1769880300000,
+      "tag": "0033_profile_provider_configs_name",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "6",
+      "when": 1769880400000,
+      "tag": "0034_sessions_agent_running_unique",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "6",
+      "when": 1769880500000,
+      "tag": "0035_provider_config_position",
+      "breakpoints": true
     }
   ]
 }

@@ -53,14 +53,7 @@ export const restartAgentAction: ActionDefinition = {
     context: ActionContext,
     inputs: Record<string, unknown>,
   ): Promise<ActionResult> => {
-    const {
-      sessionsService,
-      sessionCoordinator,
-      storage,
-      projectId,
-      agentId: contextAgentId,
-      logger,
-    } = context;
+    const { sessionsService, storage, projectId, agentId: contextAgentId, logger } = context;
 
     // Extract inputs
     const inputAgentName = inputs.agentName as string | undefined;
@@ -121,38 +114,39 @@ export const restartAgentAction: ActionDefinition = {
         };
       }
 
-      // 4. Perform restart with agent lock to prevent concurrent restarts
-      const result = await sessionCoordinator.withAgentLock(resolvedAgentId, async () => {
-        let previousSessionId: string | undefined;
+      // 4. Perform restart
+      // Note: launchSession() has internal withAgentLock for serialization.
+      // No outer lock needed here - it would cause deadlock (nested non-reentrant locks).
+      let previousSessionId: string | undefined;
 
-        // Find active session for this agent
-        // Pass projectId so listActiveSessions can filter to this project (extra safety)
-        const activeSessions = await sessionsService.listActiveSessions(projectId);
-        const existingSession = activeSessions.find((s) => s.agentId === resolvedAgentId);
+      // Find active session for this agent
+      // Pass projectId so listActiveSessions can filter to this project (extra safety)
+      const activeSessions = await sessionsService.listActiveSessions(projectId);
+      const existingSession = activeSessions.find((s) => s.agentId === resolvedAgentId);
 
-        // Terminate existing session if found
-        if (existingSession) {
-          previousSessionId = existingSession.id;
-          logger.info(
-            { sessionId: existingSession.id, agentId: resolvedAgentId },
-            'Terminating existing session before restart',
-          );
-          await sessionsService.terminateSession(existingSession.id);
-        }
+      // Terminate existing session if found
+      if (existingSession) {
+        previousSessionId = existingSession.id;
+        logger.info(
+          { sessionId: existingSession.id, agentId: resolvedAgentId },
+          'Terminating existing session before restart',
+        );
+        await sessionsService.terminateSession(existingSession.id);
+      }
 
-        // Launch new independent session (no epicId)
-        logger.info({ agentId: resolvedAgentId }, 'Launching new independent session');
-        const newSession = await sessionsService.launchSession({
-          agentId: resolvedAgentId!,
-          projectId,
-          // epicId intentionally omitted for independent session
-        });
-
-        return {
-          previousSessionId,
-          newSessionId: newSession.id,
-        };
+      // Launch new independent session (no epicId)
+      // launchSession() is idempotent and handles its own locking internally
+      logger.info({ agentId: resolvedAgentId }, 'Launching new independent session');
+      const newSession = await sessionsService.launchSession({
+        agentId: resolvedAgentId!,
+        projectId,
+        // epicId intentionally omitted for independent session
       });
+
+      const result = {
+        previousSessionId,
+        newSessionId: newSession.id,
+      };
 
       const resultData: RestartAgentResultData = {
         resolvedAgentId,

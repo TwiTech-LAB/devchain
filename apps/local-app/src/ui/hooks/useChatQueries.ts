@@ -35,6 +35,15 @@ export type AgentOrGuest = {
   description?: string | null;
   type?: 'agent' | 'guest';
   tmuxSessionId?: string;
+  // Provider info enriched from providerConfig by backend
+  providerConfigId?: string | null;
+  providerConfig?: {
+    id: string;
+    name: string;
+    providerId: string;
+    providerName?: string;
+    options?: string | null;
+  } | null;
 };
 
 export interface PendingLaunchAgent {
@@ -394,20 +403,30 @@ export function useChatQueries({
   })();
 
   // Build agent → provider lookup maps
+  // Uses agent.providerConfig.providerId first (from providerConfigId), falls back to profile.providerId
   const agentToProviderMap = new Map<string, string>();
   const agentToProviderIdMap = new Map<string, string>();
   const profileMap = new Map(profiles.map((p) => [p.id, p.providerId]));
   const providerMap = new Map(providers.map((p) => [p.id, p.name]));
 
-  for (const agent of agents as Array<{ id: string; profileId?: string }>) {
-    if (agent.profileId) {
-      const providerId = profileMap.get(agent.profileId);
-      if (providerId) {
-        agentToProviderIdMap.set(agent.id, providerId);
-        const providerName = providerMap.get(providerId);
-        if (providerName) {
-          agentToProviderMap.set(agent.id, providerName);
-        }
+  for (const agent of agents as Array<{
+    id: string;
+    profileId?: string;
+    providerConfig?: { providerId: string } | null;
+  }>) {
+    // Try providerConfig.providerId first (new model)
+    let providerId = agent.providerConfig?.providerId;
+
+    // Fall back to profile.providerId (legacy)
+    if (!providerId && agent.profileId) {
+      providerId = profileMap.get(agent.profileId);
+    }
+
+    if (providerId) {
+      agentToProviderIdMap.set(agent.id, providerId);
+      const providerName = providerMap.get(providerId);
+      if (providerName) {
+        agentToProviderMap.set(agent.id, providerName);
       }
     }
   }

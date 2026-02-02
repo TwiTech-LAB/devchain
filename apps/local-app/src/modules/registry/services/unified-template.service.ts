@@ -1,9 +1,10 @@
 import { Injectable } from '@nestjs/common';
-import { join, resolve, sep } from 'path';
+import { join, resolve, sep, isAbsolute, normalize, basename } from 'path';
 import { existsSync, readdirSync, readFileSync } from 'fs';
 import { TemplateCacheService } from './template-cache.service';
 import { createLogger } from '../../../common/logging/logger';
 import { NotFoundError, ValidationError, StorageError } from '../../../common/errors/error-types';
+import { ExportSchema } from '@devchain/shared';
 import {
   isValidSlug,
   isValidVersion,
@@ -16,7 +17,7 @@ const logger = createLogger('UnifiedTemplateService');
 /**
  * Template source type
  */
-export type TemplateSource = 'bundled' | 'registry';
+export type TemplateSource = 'bundled' | 'registry' | 'file';
 
 /**
  * Unified template info for listing
@@ -463,5 +464,115 @@ export class UnifiedTemplateService {
     this.validateVersion(version);
 
     return this.cacheService.isCached(slug, version);
+  }
+
+  /**
+   * Load and validate a template from an arbitrary file path.
+   * Used for external/file-based templates that are not bundled or from registry.
+   *
+   * @param templatePath Absolute path to template JSON file
+   * @returns Template content with source: 'file'
+   * @throws ValidationError if path is invalid or content fails schema validation
+   * @throws NotFoundError if file does not exist
+   * @throws StorageError if file cannot be read
+   */
+  getTemplateFromFilePath(templatePath: string): UnifiedTemplateContent {
+    // Validate: must be absolute path
+    if (!isAbsolute(templatePath)) {
+      throw new ValidationError('Template path must be an absolute path', {});
+    }
+
+    // Normalize path and check for path traversal sequences
+    const normalizedPath = normalize(templatePath);
+    const segments = normalizedPath.split(sep);
+    if (segments.some((segment) => segment === '..')) {
+      logger.warn(
+        { templatePath, normalizedPath },
+        'Rejected path traversal attempt in template path',
+      );
+      throw new ValidationError('Template path cannot contain path traversal sequences', {});
+    }
+
+    // Check file exists
+    if (!existsSync(normalizedPath)) {
+      throw new NotFoundError('Template file', 'specified path');
+    }
+
+    try {
+      const fileContent = readFileSync(normalizedPath, 'utf-8');
+      const parsed = JSON.parse(fileContent) as Record<string, unknown>;
+
+      // Validate against ExportSchema
+      const validated = ExportSchema.parse(parsed);
+
+      // Cast back to Record<string, unknown> for content field
+      const content = validated as unknown as Record<string, unknown>;
+
+      // Inject/derive _manifest.slug (from manifest or filename)
+      const manifest = content._manifest as Record<string, unknown> | undefined;
+      let slug: string;
+
+      if (manifest?.slug && typeof manifest.slug === 'string') {
+        // Use slug from manifest
+        slug = manifest.slug;
+      } else {
+        // Derive slug from filename (remove .json extension)
+        const filename = basename(normalizedPath);
+        slug = filename.replace(/\.json$/i, '');
+      }
+
+      // Ensure _manifest exists with slug
+      if (manifest && typeof manifest === 'object') {
+        manifest.slug = slug;
+      } else {
+        content._manifest = { slug };
+      }
+
+      // Extract version from manifest if present
+      const version = (manifest?.version as string) || null;
+
+      logger.info(
+        { templatePath: '[redacted]', slug, hasVersion: !!version },
+        'Loaded template from file path',
+      );
+
+      return {
+        content,
+        source: 'file',
+        version,
+      };
+    } catch (error) {
+      // Classify errors - follow getBundledTemplate() pattern
+      if (error instanceof SyntaxError) {
+        // JSON parse error
+        logger.error({ error, templatePath: '[redacted]' }, 'Malformed JSON in template file');
+        throw new ValidationError('Template file contains invalid JSON', {});
+      }
+
+      if (error instanceof ValidationError || error instanceof NotFoundError) {
+        // Re-throw our own errors
+        throw error;
+      }
+
+      // Check for Zod validation errors
+      if (error && typeof error === 'object' && 'issues' in error) {
+        logger.error(
+          { error, templatePath: '[redacted]' },
+          'Template file failed schema validation',
+        );
+        throw new ValidationError('Template file does not match expected schema', {});
+      }
+
+      // File system error (EACCES, EIO, etc.)
+      const nodeError = error as NodeJS.ErrnoException;
+      logger.error(
+        { error, templatePath: '[redacted]', code: nodeError.code },
+        'Failed to read template file',
+      );
+      // Redact path from client-facing error; include only error code for debugging
+      throw new StorageError('Failed to read template file', {
+        code: nodeError.code,
+      });
+    }
   }
 }

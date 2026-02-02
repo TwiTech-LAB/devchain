@@ -60,7 +60,11 @@ export const dbProvider: Provider = {
 
       if (migrationsFolder) {
         logger.info({ migrationsFolder }, 'Running database migrations');
+        // Disable foreign keys before migrations so that PRAGMA foreign_keys=OFF
+        // in migration files actually takes effect (PRAGMA is ignored inside transactions)
+        sqlite.pragma('foreign_keys = OFF');
         migrate(db, { migrationsFolder });
+        sqlite.pragma('foreign_keys = ON');
         logger.info('Database migrations completed successfully');
       } else {
         logger.warn('Migrations folder not found, skipping auto-migration');

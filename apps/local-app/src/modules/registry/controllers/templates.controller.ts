@@ -31,7 +31,7 @@ interface TemplateDetailResponse {
   slug: string;
   name: string;
   description: string | null;
-  source: 'bundled' | 'registry';
+  source: 'bundled' | 'registry' | 'file';
   versions: string[] | null;
   latestVersion: string | null;
   content: Record<string, unknown>;
@@ -43,7 +43,7 @@ interface TemplateDetailResponse {
 interface TemplateVersionResponse {
   slug: string;
   version: string;
-  source: 'bundled' | 'registry';
+  source: 'bundled' | 'registry' | 'file';
   content: Record<string, unknown>;
 }
 

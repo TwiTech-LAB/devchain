@@ -45,6 +45,20 @@ export const ManifestOverrideSchema = z
  */
 export const ExportWithOverridesSchema = z.object({
   manifest: ManifestOverrideSchema.optional(),
+  presets: z
+    .array(
+      z.object({
+        name: z.string().min(1),
+        description: z.string().nullable().optional(),
+        agentConfigs: z.array(
+          z.object({
+            agentName: z.string().min(1),
+            providerConfigName: z.string().min(1),
+          }),
+        ),
+      }),
+    )
+    .optional(),
 });
 
 /** TypeScript types inferred from schemas */

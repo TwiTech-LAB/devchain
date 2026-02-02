@@ -116,6 +116,7 @@ const EPIC_ASSIGNED_PLACEHOLDERS = [
   { token: '{agent_name}', description: 'Agent display name' },
   { token: '{epic_title}', description: 'Epic title' },
   { token: '{project_name}', description: 'Project name' },
+  { token: '{assigner_name}', description: 'Who assigned the epic (or "System" if unknown)' },
 ];
 
 function getStatusIcon(status: 'pass' | 'fail' | 'warn') {

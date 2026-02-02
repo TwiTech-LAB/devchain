@@ -26,6 +26,14 @@ const logger = createLogger('AgentsController');
 export interface AgentWithProvider extends Agent {
   providerName?: string;
   providerId?: string;
+  /** Resolved config details when providerConfigId is set */
+  providerConfig?: {
+    id: string;
+    providerId: string;
+    providerName: string;
+    options: string | null;
+    hasEnv: boolean;
+  };
 }
 
 /** Agent or guest item with type marker */
@@ -37,6 +45,15 @@ export interface AgentOrGuestItem {
   type: 'agent' | 'guest';
   /** For guests, their tmux session ID */
   tmuxSessionId?: string;
+  /** Provider config ID for agents (Phase 4+) */
+  providerConfigId?: string | null;
+  /** Resolved provider config details for agents */
+  providerConfig?: {
+    id: string;
+    name: string;
+    providerId: string;
+    providerName: string;
+  } | null;
 }
 
 /** Response shape for the atomic restart endpoint */
@@ -51,16 +68,19 @@ const RestartAgentSchema = z.object({
 });
 
 const CreateAgentSchema = z.object({
-  projectId: z.string(),
-  profileId: z.string(),
-  name: z.string().min(1),
+  projectId: z.string().min(1, 'projectId is required'),
+  profileId: z.string().min(1, 'profileId is required'),
+  name: z.string().min(1, 'name is required'),
   description: z.string().nullable().optional(),
+  providerConfigId: z.string().min(1, 'providerConfigId is required'),
 });
 
 const UpdateAgentSchema = z.object({
   name: z.string().min(1).optional(),
-  profileId: z.string().optional(),
+  profileId: z.string().min(1).optional(),
   description: z.string().nullable().optional(),
+  // providerConfigId can be updated but NOT set to null (DB column is NOT NULL)
+  providerConfigId: z.string().min(1).optional(),
 });
 
 @Controller('api/agents')
@@ -71,6 +91,35 @@ export class AgentsController {
     @Inject(forwardRef(() => SessionCoordinatorService))
     private readonly sessionCoordinator: SessionCoordinatorService,
   ) {}
+
+  /**
+   * Validate that a provider config belongs to the specified profile.
+   * @throws BadRequestException if config doesn't exist or belongs to a different profile
+   */
+  private async validateConfigOwnership(configId: string, profileId: string): Promise<void> {
+    try {
+      const config = await this.storage.getProfileProviderConfig(configId);
+      if (config.profileId !== profileId) {
+        throw new BadRequestException({
+          message: 'Provider config does not belong to the selected profile',
+          code: 'CONFIG_PROFILE_MISMATCH',
+          configId,
+          configProfileId: config.profileId,
+          expectedProfileId: profileId,
+        });
+      }
+    } catch (error) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+      // Config not found
+      throw new BadRequestException({
+        message: 'Provider config not found',
+        code: 'CONFIG_NOT_FOUND',
+        configId,
+      });
+    }
+  }
 
   @Get()
   async listAgents(
@@ -92,13 +141,45 @@ export class AgentsController {
     // Fetch guests and combine with agents
     const guests = await this.storage.listGuests(projectId);
 
-    const agentItems: AgentOrGuestItem[] = agentsResult.items.map((agent) => ({
-      id: agent.id,
-      name: agent.name,
-      profileId: agent.profileId,
-      description: agent.description,
-      type: 'agent' as const,
-    }));
+    // Batch-load provider configs for all agents to avoid N+1 queries
+    const configIds = agentsResult.items
+      .map((a) => a.providerConfigId)
+      .filter((id): id is string => id !== null && id !== undefined);
+
+    const configs =
+      configIds.length > 0 ? await this.storage.listProfileProviderConfigsByIds(configIds) : [];
+
+    // Batch-load providers referenced by configs
+    const providerIds = [...new Set(configs.map((c) => c.providerId))];
+    const providers =
+      providerIds.length > 0 ? await this.storage.listProvidersByIds(providerIds) : [];
+
+    // Build lookup maps
+    const configMap = new Map(configs.map((c) => [c.id, c]));
+    const providerMap = new Map(providers.map((p) => [p.id, p]));
+
+    const agentItems: AgentOrGuestItem[] = agentsResult.items.map((agent) => {
+      const config = agent.providerConfigId ? configMap.get(agent.providerConfigId) : null;
+      const provider = config ? providerMap.get(config.providerId) : null;
+
+      return {
+        id: agent.id,
+        name: agent.name,
+        profileId: agent.profileId,
+        description: agent.description,
+        type: 'agent' as const,
+        providerConfigId: agent.providerConfigId,
+        providerConfig:
+          config && provider
+            ? {
+                id: config.id,
+                name: config.name,
+                providerId: config.providerId,
+                providerName: provider.name,
+              }
+            : null,
+      };
+    });
 
     const guestItems: AgentOrGuestItem[] = guests.map((guest) => ({
       id: guest.id,
@@ -107,6 +188,8 @@ export class AgentsController {
       description: null,
       type: 'guest' as const,
       tmuxSessionId: guest.tmuxSessionId,
+      providerConfigId: null,
+      providerConfig: null,
     }));
 
     return {
@@ -122,42 +205,75 @@ export class AgentsController {
     logger.info({ id }, 'GET /api/agents/:id');
     const agent = await this.storage.getAgent(id);
 
-    // Enrich with provider information to eliminate agent → profile → provider fetch chain
-    try {
-      const profile = await this.storage.getAgentProfile(agent.profileId);
-      const provider = await this.storage.getProvider(profile.providerId);
-      return {
-        ...agent,
-        providerId: provider.id,
-        providerName: provider.name,
-      };
-    } catch (error) {
-      // If profile or provider lookup fails, return agent without provider info
-      // This maintains backward compatibility
-      logger.warn({ id, error }, 'Failed to enrich agent with provider info');
-      return agent;
+    // Build enriched response
+    const result: AgentWithProvider = { ...agent };
+
+    // If agent has providerConfigId, resolve config details
+    if (agent.providerConfigId) {
+      try {
+        const config = await this.storage.getProfileProviderConfig(agent.providerConfigId);
+        const provider = await this.storage.getProvider(config.providerId);
+        result.providerId = provider.id;
+        result.providerName = provider.name;
+        result.providerConfig = {
+          id: config.id,
+          providerId: config.providerId,
+          providerName: provider.name,
+          options: config.options,
+          hasEnv: config.env !== null && Object.keys(config.env).length > 0,
+        };
+      } catch (error) {
+        logger.warn(
+          { id, providerConfigId: agent.providerConfigId, error },
+          'Failed to resolve provider config',
+        );
+      }
     }
+
+    // Note: Legacy fallback to profile.providerId removed in Phase 4
+    // Provider info is now always resolved via providerConfig
+
+    return result;
   }
 
   @Post()
   async createAgent(@Body() body: unknown): Promise<Agent> {
     logger.info('POST /api/agents');
-    const data = CreateAgentSchema.parse(body) as CreateAgent;
-    return this.storage.createAgent(data);
+    const data = CreateAgentSchema.parse(body);
+
+    // Validate providerConfigId belongs to the selected profile
+    await this.validateConfigOwnership(data.providerConfigId, data.profileId);
+
+    return this.storage.createAgent(data as CreateAgent);
   }
 
   @Put(':id')
   async updateAgent(@Param('id') id: string, @Body() body: unknown): Promise<Agent> {
     logger.info({ id }, 'PUT /api/agents/:id');
-    const data = UpdateAgentSchema.parse(body) as UpdateAgent;
-    return this.storage.updateAgent(id, data);
+    const data = UpdateAgentSchema.parse(body);
+
+    // Validate providerConfigId belongs to the correct profile (if being updated)
+    if (data.providerConfigId !== undefined) {
+      // Determine which profile to validate against
+      const profileId = data.profileId ?? (await this.storage.getAgent(id)).profileId;
+      await this.validateConfigOwnership(data.providerConfigId, profileId);
+    }
+
+    return this.storage.updateAgent(id, data as UpdateAgent);
   }
 
   @Patch(':id')
   async patchAgent(@Param('id') id: string, @Body() body: unknown): Promise<Agent> {
     logger.info({ id }, 'PATCH /api/agents/:id');
-    const data = UpdateAgentSchema.parse(body) as UpdateAgent;
-    return this.storage.updateAgent(id, data);
+    const data = UpdateAgentSchema.parse(body);
+
+    // Validate providerConfigId belongs to the correct profile (if being updated)
+    if (data.providerConfigId !== undefined) {
+      const profileId = data.profileId ?? (await this.storage.getAgent(id)).profileId;
+      await this.validateConfigOwnership(data.providerConfigId, profileId);
+    }
+
+    return this.storage.updateAgent(id, data as UpdateAgent);
   }
 
   @Delete(':id')
@@ -191,56 +307,56 @@ export class AgentsController {
       throw new BadRequestException(`Agent ${agentId} does not belong to project ${projectId}`);
     }
 
-    // Use agent lock to ensure atomicity (concurrent restarts for same agent are serialized)
-    const result = await this.sessionCoordinator.withAgentLock(agentId, async () => {
-      let terminateStatus: 'success' | 'not_found' | 'error' = 'not_found';
-      let terminateWarning: string | undefined;
+    // Note: launchSession() has internal withAgentLock for serialization.
+    // No outer lock needed here - it would cause deadlock (nested non-reentrant locks).
+    let terminateStatus: 'success' | 'not_found' | 'error' = 'not_found';
+    let terminateWarning: string | undefined;
 
-      // Find and terminate existing session for this agent
-      const activeSessions = await this.sessionsService.listActiveSessions(projectId);
-      const existingSession = activeSessions.find((s) => s.agentId === agentId);
+    // Find and terminate existing session for this agent
+    const activeSessions = await this.sessionsService.listActiveSessions(projectId);
+    const existingSession = activeSessions.find((s) => s.agentId === agentId);
 
-      if (existingSession) {
-        try {
-          logger.info(
-            { sessionId: existingSession.id, agentId },
-            'Terminating existing session before restart',
-          );
-          await this.sessionsService.terminateSession(existingSession.id);
-          terminateStatus = 'success';
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          logger.warn(
-            { sessionId: existingSession.id, error: message },
-            'Failed to terminate session',
-          );
-          terminateStatus = 'error';
-          terminateWarning = `Previous session may still be running: ${message}`;
-        }
+    if (existingSession) {
+      try {
+        logger.info(
+          { sessionId: existingSession.id, agentId },
+          'Terminating existing session before restart',
+        );
+        await this.sessionsService.terminateSession(existingSession.id);
+        terminateStatus = 'success';
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn(
+          { sessionId: existingSession.id, error: message },
+          'Failed to terminate session',
+        );
+        terminateStatus = 'error';
+        terminateWarning = `Previous session may still be running: ${message}`;
       }
+    }
 
-      // Launch new independent session (no epicId)
-      logger.info({ agentId, projectId }, 'Launching new session');
-      const newSession = await this.sessionsService.launchSession({
-        agentId,
-        projectId,
-      });
-
-      // Convert SessionDetailDto to SessionDto (strip nested objects)
-      const sessionDto: SessionDto = {
-        id: newSession.id,
-        epicId: newSession.epicId,
-        agentId: newSession.agentId,
-        tmuxSessionId: newSession.tmuxSessionId,
-        status: newSession.status,
-        startedAt: newSession.startedAt,
-        endedAt: newSession.endedAt,
-        createdAt: newSession.createdAt,
-        updatedAt: newSession.updatedAt,
-      };
-
-      return { session: sessionDto, terminateStatus, terminateWarning };
+    // Launch new independent session (no epicId)
+    // launchSession() is idempotent and handles its own locking internally
+    logger.info({ agentId, projectId }, 'Launching new session');
+    const newSession = await this.sessionsService.launchSession({
+      agentId,
+      projectId,
     });
+
+    // Convert SessionDetailDto to SessionDto (strip nested objects)
+    const sessionDto: SessionDto = {
+      id: newSession.id,
+      epicId: newSession.epicId,
+      agentId: newSession.agentId,
+      tmuxSessionId: newSession.tmuxSessionId,
+      status: newSession.status,
+      startedAt: newSession.startedAt,
+      endedAt: newSession.endedAt,
+      createdAt: newSession.createdAt,
+      updatedAt: newSession.updatedAt,
+    };
+
+    const result = { session: sessionDto, terminateStatus, terminateWarning };
 
     logger.info(
       { agentId, sessionId: result.session.id, terminateStatus: result.terminateStatus },

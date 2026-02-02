@@ -25,9 +25,26 @@ export class ActivityTrackerService {
     this.IDLE_AFTER_MS = Number.isFinite(configured) && configured > 0 ? configured : 30000;
   }
   /**
-   * Signal terminal activity for a session. Busy/Idle persistence will be added later.
+   * Check if a session exists and is in 'running' status.
+   * Guards against updating or broadcasting for stopped sessions.
+   */
+  private isSessionRunning(sessionId: string): boolean {
+    const row = this.sqlite
+      .prepare(`SELECT status FROM sessions WHERE id = ?`)
+      .get(sessionId) as { status: string } | undefined;
+    return row?.status === 'running';
+  }
+
+  /**
+   * Signal terminal activity for a session.
+   * Only updates and broadcasts if the session exists and is running.
    */
   signal(sessionId: string): void {
+    // Guard: only process running sessions
+    if (!this.isSessionRunning(sessionId)) {
+      return;
+    }
+
     const now = new Date().toISOString();
 
     // Update last_activity_at immediately
@@ -70,6 +87,11 @@ export class ActivityTrackerService {
   }
 
   private transitionToIdle(sessionId: string): void {
+    // Guard: only process running sessions
+    if (!this.isSessionRunning(sessionId)) {
+      return;
+    }
+
     const now = new Date().toISOString();
     this.sqlite
       .prepare(`UPDATE sessions SET activity_state = 'idle', updated_at = ? WHERE id = ?`)
@@ -82,6 +104,20 @@ export class ActivityTrackerService {
       });
     } catch (error) {
       logger.warn({ sessionId, error }, 'Failed to broadcast idle activity event');
+    }
+  }
+
+  /**
+   * Clean up session resources when a session ends.
+   * Clears the idle timer to prevent memory leaks and stale updates.
+   * Called from PtyService when PTY exits or from TerminalActivityService.
+   */
+  clearSession(sessionId: string): void {
+    const timer = this.idleTimers.get(sessionId);
+    if (timer) {
+      clearTimeout(timer);
+      this.idleTimers.delete(sessionId);
+      logger.debug({ sessionId }, 'Cleared idle timer for session');
     }
   }
 
