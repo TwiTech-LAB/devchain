@@ -1,9 +1,15 @@
+import { HelpButton } from '@/ui/components/shared';
 import { Button } from '@/ui/components/ui/button';
 import { Badge } from '@/ui/components/ui/badge';
 import { ScrollArea } from '@/ui/components/ui/scroll-area';
 import { Separator } from '@/ui/components/ui/separator';
 import { Skeleton } from '@/ui/components/ui/skeleton';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/ui/components/ui/tooltip';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/ui/components/ui/tooltip';
 import { useQuery } from '@tanstack/react-query';
 import {
   Select,
@@ -293,7 +299,10 @@ export function ChatSidebar({
   return (
     <div className="flex w-80 flex-col border-r bg-card">
       <div className="flex items-center justify-between gap-2 p-4 pb-2">
-        <h2 className="text-xl font-bold">Chat</h2>
+        <div className="flex items-center gap-1">
+          <h2 className="text-xl font-bold">Chat</h2>
+          <HelpButton featureId="chat" />
+        </div>
         <div className="inline-flex rounded-md border">
           <Button
             variant="ghost"

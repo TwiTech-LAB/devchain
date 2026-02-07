@@ -8,7 +8,12 @@ import {
   SelectValue,
 } from '@/ui/components/ui/select';
 import { Button } from '@/ui/components/ui/button';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/ui/components/ui/tooltip';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/ui/components/ui/tooltip';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -282,7 +287,12 @@ export function PresetSelector({
       </Select>
 
       {/* Apply button - always visible, enabled only when selection differs from activePreset */}
-      <Button onClick={handleApplyPreset} disabled={!canApply || isApplying} size="sm" variant="default">
+      <Button
+        onClick={handleApplyPreset}
+        disabled={!canApply || isApplying}
+        size="sm"
+        variant="default"
+      >
         {isApplying && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
         Apply
       </Button>

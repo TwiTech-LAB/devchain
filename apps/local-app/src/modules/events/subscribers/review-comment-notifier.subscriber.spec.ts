@@ -143,6 +143,7 @@ describe('ReviewCommentNotifierSubscriber', () => {
     expect(launchSessionMock).toHaveBeenCalledWith({
       projectId: basePayload.projectId,
       agentId: 'agent-1',
+      options: { silent: true },
     });
     expect(enqueueMock).toHaveBeenCalledTimes(1);
     expect(enqueueMock).toHaveBeenCalledWith(

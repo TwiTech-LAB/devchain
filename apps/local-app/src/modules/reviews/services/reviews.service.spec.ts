@@ -652,7 +652,10 @@ describe('ReviewsService', () => {
         });
 
         // agent-1 should NOT be filtered out (author is user)
-        expect(storage.createReviewComment).toHaveBeenCalledWith(expect.anything(), ['agent-1', 'agent-2']);
+        expect(storage.createReviewComment).toHaveBeenCalledWith(expect.anything(), [
+          'agent-1',
+          'agent-2',
+        ]);
       });
 
       it('allows comment creation when filtering leaves zero targets', async () => {
@@ -692,7 +695,10 @@ describe('ReviewsService', () => {
 
         // De-duplicated: ['agent-1', 'agent-2', 'agent-3']
         // After filtering author: ['agent-1', 'agent-3']
-        expect(storage.createReviewComment).toHaveBeenCalledWith(expect.anything(), ['agent-1', 'agent-3']);
+        expect(storage.createReviewComment).toHaveBeenCalledWith(expect.anything(), [
+          'agent-1',
+          'agent-3',
+        ]);
       });
 
       it('preserves default reply inheritance behavior with filtering', async () => {

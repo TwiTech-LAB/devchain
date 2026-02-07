@@ -777,6 +777,14 @@ export function AgentsPage() {
       }
     },
     onError: (error: unknown, variables) => {
+      if (error instanceof SessionApiError && error.hasCode('CLAUDE_AUTO_COMPACT_ENABLED')) {
+        toast({
+          title: 'Session launch blocked',
+          description: 'Claude auto-compact is enabled - see the notification to resolve.',
+        });
+        return;
+      }
+
       // Check if this is an MCP_NOT_CONFIGURED error from the backend
       if (error instanceof SessionApiError && error.hasCode('MCP_NOT_CONFIGURED')) {
         const details = error.payload?.details;
@@ -873,6 +881,14 @@ export function AgentsPage() {
         });
       }
     } catch (e) {
+      if (e instanceof SessionApiError && e.hasCode('CLAUDE_AUTO_COMPACT_ENABLED')) {
+        toast({
+          title: 'Session launch blocked',
+          description: 'Claude auto-compact is enabled - see the notification to resolve.',
+        });
+        return;
+      }
+
       // Check if this is an MCP_NOT_CONFIGURED error from the backend
       if (e instanceof SessionApiError && e.hasCode('MCP_NOT_CONFIGURED')) {
         const details = e.payload?.details;

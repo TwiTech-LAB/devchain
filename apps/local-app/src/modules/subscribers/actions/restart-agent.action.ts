@@ -141,6 +141,7 @@ export const restartAgentAction: ActionDefinition = {
         agentId: resolvedAgentId!,
         projectId,
         // epicId intentionally omitted for independent session
+        options: { silent: true },
       });
 
       const result = {

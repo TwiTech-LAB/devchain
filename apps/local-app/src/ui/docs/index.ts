@@ -8,6 +8,7 @@
  */
 
 import codeReviewRaw from './guides/code-review.md?raw';
+import chatRaw from './guides/chat.md?raw';
 import { parseFrontmatter, type DocEntry, type DocCategory } from '@/ui/lib/docs';
 
 /**
@@ -28,6 +29,7 @@ function safeParseFrontmatter(raw: string, docName: string): DocEntry | null {
  */
 const RAW_DOCS: Array<{ raw: string; name: string }> = [
   { raw: codeReviewRaw, name: 'guides/code-review.md' },
+  { raw: chatRaw, name: 'guides/chat.md' },
 ];
 
 /**

@@ -29,9 +29,9 @@ export class ActivityTrackerService {
    * Guards against updating or broadcasting for stopped sessions.
    */
   private isSessionRunning(sessionId: string): boolean {
-    const row = this.sqlite
-      .prepare(`SELECT status FROM sessions WHERE id = ?`)
-      .get(sessionId) as { status: string } | undefined;
+    const row = this.sqlite.prepare(`SELECT status FROM sessions WHERE id = ?`).get(sessionId) as
+      | { status: string }
+      | undefined;
     return row?.status === 'running';
   }
 

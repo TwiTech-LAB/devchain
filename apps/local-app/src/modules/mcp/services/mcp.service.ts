@@ -2057,6 +2057,7 @@ export class McpService {
                 const launched = await this.sessionsService.launchSession({
                   projectId: project.id,
                   agentId: recipient.id,
+                  options: { silent: true },
                 });
                 session = launched;
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2214,6 +2215,7 @@ export class McpService {
             const launched = await this.sessionsService.launchSession({
               projectId: project.id,
               agentId,
+              options: { silent: true },
             });
             session = launched;
             // eslint-disable-next-line @typescript-eslint/no-explicit-any

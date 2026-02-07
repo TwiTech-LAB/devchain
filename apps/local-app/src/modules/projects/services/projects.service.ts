@@ -981,7 +981,10 @@ export class ProjectsService {
    */
   async doesProjectMatchPreset(
     projectId: string,
-    preset: { name: string; agentConfigs: Array<{ agentName: string; providerConfigName: string }> },
+    preset: {
+      name: string;
+      agentConfigs: Array<{ agentName: string; providerConfigName: string }>;
+    },
   ): Promise<boolean> {
     // Get all agents in the project
     const agentsRes = await this.storage.listAgents(projectId, { limit: 1000, offset: 0 });
@@ -1764,7 +1767,10 @@ export class ProjectsService {
       } else {
         // Clear existing presets if template has none
         await this.settings.clearProjectPresets(input.projectId);
-        logger.info({ projectId: input.projectId }, 'Presets cleared during import (template has none)');
+        logger.info(
+          { projectId: input.projectId },
+          'Presets cleared during import (template has none)',
+        );
       }
 
       return {

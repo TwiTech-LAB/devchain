@@ -181,13 +181,25 @@ export async function terminateSession(sessionId: string): Promise<void> {
  * Launch a new session for an agent within a project.
  * Centralized helper to avoid duplicating fetch logic across pages.
  */
-export async function launchSession(agentId: string, projectId: string): Promise<ActiveSession> {
+export async function launchSession(
+  agentId: string,
+  projectId: string,
+  options?: { silent?: boolean },
+): Promise<ActiveSession> {
+  const payload: { agentId: string; projectId: string; options?: { silent?: boolean } } = {
+    agentId,
+    projectId,
+  };
+  if (typeof options?.silent === 'boolean') {
+    payload.options = { silent: options.silent };
+  }
+
   return fetchJsonOrThrow<ActiveSession>(
     '/api/sessions/launch',
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agentId, projectId }),
+      body: JSON.stringify(payload),
     },
     'Failed to launch session',
   );

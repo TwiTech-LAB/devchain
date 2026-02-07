@@ -302,7 +302,9 @@ describe('CommentDialog', () => {
       render(<CommentDialog {...defaultProps} />, { wrapper: Wrapper });
 
       await waitFor(() => {
-        expect(screen.getByText('No agents selected — no notifications will be sent')).toBeInTheDocument();
+        expect(
+          screen.getByText('No agents selected — no notifications will be sent'),
+        ).toBeInTheDocument();
       });
     });
 
@@ -314,7 +316,9 @@ describe('CommentDialog', () => {
       await userEvent.click(coderPill);
 
       await waitFor(() => {
-        expect(screen.queryByText('No agents selected — no notifications will be sent')).not.toBeInTheDocument();
+        expect(
+          screen.queryByText('No agents selected — no notifications will be sent'),
+        ).not.toBeInTheDocument();
         expect(screen.getByText('1 agent selected')).toBeInTheDocument();
       });
     });
@@ -324,7 +328,9 @@ describe('CommentDialog', () => {
       render(<CommentDialog {...defaultProps} />, { wrapper: Wrapper });
 
       await waitFor(() => {
-        expect(screen.getByText('No agents selected — no notifications will be sent')).toBeInTheDocument();
+        expect(
+          screen.getByText('No agents selected — no notifications will be sent'),
+        ).toBeInTheDocument();
       });
 
       const textarea = screen.getByPlaceholderText(/write your comment/i);

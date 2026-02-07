@@ -1,6 +1,7 @@
 /** @jest-environment jsdom */
 
 import { act, useEffect } from 'react';
+import { waitFor } from '@testing-library/react';
 import { createRoot, Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
@@ -251,8 +252,10 @@ describe('ProjectSelectionProvider', () => {
     await act(async () => await flushPromises());
 
     // Both values are invalid - should clear selection
-    expect(state.currentSelection).toBeUndefined();
-    expect(sessionStorage.getItem(PROJECT_STORAGE_KEY)).toBeNull();
+    await waitFor(() => {
+      expect(state.currentSelection).toBeUndefined();
+      expect(sessionStorage.getItem(PROJECT_STORAGE_KEY)).toBeNull();
+    });
     // localStorage is kept even when invalid (serves as new tab default that gets validated)
     expect(localStorage.getItem(PROJECT_STORAGE_KEY)).toBe('non-existent-project-alpha');
   });

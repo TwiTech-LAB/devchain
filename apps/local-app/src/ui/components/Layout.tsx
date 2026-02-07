@@ -6,7 +6,13 @@ import { fetchCachedTemplates, hasAnyTemplateUpdates } from '../lib/registry-upd
 import { preloadReviewsPage } from '../pages/ReviewsPage.lazy';
 import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import { Breadcrumbs, ToastHost, EpicSearchInput, type BreadcrumbItem } from './shared';
+import {
+  Breadcrumbs,
+  ToastHost,
+  EpicSearchInput,
+  AutoCompactWarningModal,
+  type BreadcrumbItem,
+} from './shared';
 import { TerminalDock, OPEN_TERMINAL_DOCK_EVENT } from './terminal-dock';
 import {
   TerminalWindowsProvider,
@@ -14,12 +20,14 @@ import {
   useTerminalWindowManager,
   useTerminalWindows,
 } from '../terminal-windows';
+import { useAppSocket } from '../hooks/useAppSocket';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from './ui/dialog';
 import { useToast } from '../hooks/use-toast';
 import { BreadcrumbsProvider, useBreadcrumbs } from '../hooks/useBreadcrumbs';
 import { cn } from '../lib/utils';
 import { fetchPreflightChecks } from '../lib/preflight';
 import type { ActiveSession } from '../lib/sessions';
+import type { WsEnvelope } from '../lib/socket';
 import {
   Menu,
   X,
@@ -67,6 +75,12 @@ interface NavSection {
   title?: string;
   collapsible: boolean;
   items: NavItem[];
+}
+
+interface AutoCompactBlock {
+  agentName: string;
+  providerId: string;
+  providerName: string;
 }
 
 // Grouped navigation sections for collapsible sidebar
@@ -197,6 +211,7 @@ function LayoutShell({ children }: LayoutProps) {
     return stored === 'true';
   });
   const [dockSessions, setDockSessions] = useState<ActiveSession[]>([]);
+  const [autoCompactBlock, setAutoCompactBlock] = useState<AutoCompactBlock | null>(null);
 
   // Section collapse state - collapsible sections start collapsed
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({
@@ -206,6 +221,42 @@ function LayoutShell({ children }: LayoutProps) {
 
   // Registry update indicator state
   const [hasRegistryUpdates, setHasRegistryUpdates] = useState(false);
+
+  useAppSocket({
+    message: (envelope: WsEnvelope) => {
+      if (envelope.topic !== 'system' || envelope.type !== 'session_blocked') {
+        return;
+      }
+
+      const payload =
+        envelope.payload && typeof envelope.payload === 'object'
+          ? (envelope.payload as Record<string, unknown>)
+          : null;
+      if (!payload || payload.reason !== 'claude_auto_compact') {
+        return;
+      }
+      if (payload.silent === true) {
+        return;
+      }
+
+      setAutoCompactBlock((current) => {
+        if (current) {
+          return current;
+        }
+        return {
+          agentName:
+            typeof payload.agentName === 'string' && payload.agentName.trim().length > 0
+              ? payload.agentName
+              : 'Unknown',
+          providerId: typeof payload.providerId === 'string' ? payload.providerId : '',
+          providerName:
+            typeof payload.providerName === 'string' && payload.providerName.trim().length > 0
+              ? payload.providerName
+              : 'claude',
+        };
+      });
+    },
+  });
 
   // Check if we should run update check (throttled to every 30 min)
   const shouldCheckUpdates = useMemo(() => {
@@ -977,6 +1028,25 @@ function LayoutShell({ children }: LayoutProps) {
           </div>
         </DialogContent>
       </Dialog>
+
+      <AutoCompactWarningModal
+        open={autoCompactBlock !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setAutoCompactBlock(null);
+          }
+        }}
+        providerId={autoCompactBlock?.providerId ?? ''}
+        providerName={autoCompactBlock?.providerName ?? 'claude'}
+        agentName={autoCompactBlock?.agentName}
+        onDisabled={() => {
+          setAutoCompactBlock(null);
+          toast({
+            title: 'Auto-compact disabled',
+            description: 'Sessions can now launch normally.',
+          });
+        }}
+      />
     </ToastHost>
   );
 }

@@ -22,7 +22,9 @@ const mockFetch = jest.fn() as jest.Mock;
 global.fetch = mockFetch;
 
 // Helper to mock profile configs response
-const mockProfileConfigs = (profileConfigs: Record<string, Array<{ id: string; name: string }>>) => {
+const mockProfileConfigs = (
+  profileConfigs: Record<string, Array<{ id: string; name: string }>>,
+) => {
   mockFetch.mockImplementation((url: string) => {
     if (url.includes('/provider-configs')) {
       // Extract profileId from URL like /api/profiles/{profileId}/provider-configs
@@ -106,9 +108,7 @@ describe('PresetDialog', () => {
           { id: 'config-1', name: 'claude-config' },
           { id: 'config-2', name: 'gemini-config' },
         ],
-        'profile-2': [
-          { id: 'config-3', name: 'gpt-config' },
-        ],
+        'profile-2': [{ id: 'config-3', name: 'gpt-config' }],
       });
     });
 
@@ -146,9 +146,7 @@ describe('PresetDialog', () => {
           { id: 'config-1', name: 'claude-config' },
           { id: 'config-2', name: 'gemini-config' },
         ],
-        'profile-2': [
-          { id: 'config-3', name: 'gpt-config' },
-        ],
+        'profile-2': [{ id: 'config-3', name: 'gpt-config' }],
       });
       renderWithQueryClient(<PresetDialog {...defaultProps} />);
 
@@ -175,9 +173,7 @@ describe('PresetDialog', () => {
           { id: 'config-1', name: 'claude-config' },
           { id: 'config-2', name: 'gemini-config' },
         ],
-        'profile-2': [
-          { id: 'config-3', name: 'gpt-config' },
-        ],
+        'profile-2': [{ id: 'config-3', name: 'gpt-config' }],
       });
     });
 
@@ -223,9 +219,7 @@ describe('PresetDialog', () => {
           { id: 'config-1', name: 'claude-config' },
           { id: 'config-2', name: 'gemini-config' },
         ],
-        'profile-2': [
-          { id: 'config-3', name: 'gpt-config' },
-        ],
+        'profile-2': [{ id: 'config-3', name: 'gpt-config' }],
       });
     });
 
@@ -279,9 +273,7 @@ describe('PresetDialog', () => {
           { id: 'config-1', name: 'claude-config' },
           { id: 'config-2', name: 'gemini-config' },
         ],
-        'profile-2': [
-          { id: 'config-3', name: 'gpt-config' },
-        ],
+        'profile-2': [{ id: 'config-3', name: 'gpt-config' }],
       });
     });
 
@@ -322,9 +314,7 @@ describe('PresetDialog', () => {
           { id: 'config-1', name: 'claude-config' },
           { id: 'config-2', name: 'gemini-config' },
         ],
-        'profile-2': [
-          { id: 'config-3', name: 'gpt-config' },
-        ],
+        'profile-2': [{ id: 'config-3', name: 'gpt-config' }],
       });
     });
 
@@ -353,9 +343,7 @@ describe('PresetDialog', () => {
           { id: 'config-2', name: 'gemini-config' },
           { id: 'config-3', name: 'gpt-config' },
         ],
-        'profile-2': [
-          { id: 'config-4', name: 'test-config' },
-        ],
+        'profile-2': [{ id: 'config-4', name: 'test-config' }],
       });
     });
 
@@ -429,7 +417,9 @@ describe('PresetDialog', () => {
     });
 
     it('agent stays selected when config is missing so user can fix', async () => {
-      renderWithQueryClient(<PresetDialog {...defaultProps} presetToEdit={mockPresetWithMissingConfig} />);
+      renderWithQueryClient(
+        <PresetDialog {...defaultProps} presetToEdit={mockPresetWithMissingConfig} />,
+      );
 
       await waitFor(() => {
         expect(screen.getByText('Coder')).toBeInTheDocument();

@@ -1037,8 +1037,9 @@ describe('ProjectsController', () => {
       storage.deleteProject.mockResolvedValue(undefined);
       settingsService.clearProjectTemplateMetadata.mockResolvedValue(undefined);
       settingsService.clearProjectPresets.mockResolvedValue(undefined);
-      (settingsService as { setProjectActivePreset: jest.Mock }).setProjectActivePreset =
-        jest.fn().mockResolvedValue(undefined);
+      (settingsService as { setProjectActivePreset: jest.Mock }).setProjectActivePreset = jest
+        .fn()
+        .mockResolvedValue(undefined);
 
       await controller.deleteProject('p1');
 
@@ -1054,8 +1055,9 @@ describe('ProjectsController', () => {
       storage.deleteProject.mockResolvedValue(undefined);
       settingsService.clearProjectTemplateMetadata.mockResolvedValue(undefined);
       settingsService.clearProjectPresets.mockResolvedValue(undefined);
-      (settingsService as { setProjectActivePreset: jest.Mock }).setProjectActivePreset =
-        jest.fn().mockResolvedValue(undefined);
+      (settingsService as { setProjectActivePreset: jest.Mock }).setProjectActivePreset = jest
+        .fn()
+        .mockResolvedValue(undefined);
 
       await controller.deleteProject('project-without-metadata');
 
@@ -1099,12 +1101,9 @@ describe('ProjectsController', () => {
     beforeEach(() => {
       // Add preset method to settings service mock
       (settingsService as { getProjectPresets: jest.Mock }).getProjectPresets = jest.fn();
-      (settingsService as { getProjectActivePreset: jest.Mock }).getProjectActivePreset =
-        jest.fn();
-      (settingsService as { setProjectActivePreset: jest.Mock }).setProjectActivePreset =
-        jest.fn();
-      (projectsService as { doesProjectMatchPreset: jest.Mock }).doesProjectMatchPreset =
-        jest.fn();
+      (settingsService as { getProjectActivePreset: jest.Mock }).getProjectActivePreset = jest.fn();
+      (settingsService as { setProjectActivePreset: jest.Mock }).setProjectActivePreset = jest.fn();
+      (projectsService as { doesProjectMatchPreset: jest.Mock }).doesProjectMatchPreset = jest.fn();
     });
 
     it('returns stored presets for project', async () => {
@@ -1128,9 +1127,9 @@ describe('ProjectsController', () => {
       (settingsService as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue(
         presets,
       );
-      (settingsService as { getProjectActivePreset: jest.Mock }).getProjectActivePreset.mockReturnValue(
-        null,
-      );
+      (
+        settingsService as { getProjectActivePreset: jest.Mock }
+      ).getProjectActivePreset.mockReturnValue(null);
 
       const result = await controller.getProjectPresets('p1');
 
@@ -1143,9 +1142,9 @@ describe('ProjectsController', () => {
     it('returns empty array when no presets stored', async () => {
       storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
       (settingsService as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue([]);
-      (settingsService as { getProjectActivePreset: jest.Mock }).getProjectActivePreset.mockReturnValue(
-        null,
-      );
+      (
+        settingsService as { getProjectActivePreset: jest.Mock }
+      ).getProjectActivePreset.mockReturnValue(null);
 
       const result = await controller.getProjectPresets('p1');
 
@@ -1165,12 +1164,12 @@ describe('ProjectsController', () => {
       (settingsService as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue(
         presets,
       );
-      (settingsService as { getProjectActivePreset: jest.Mock }).getProjectActivePreset.mockReturnValue(
-        'default',
-      );
-      (projectsService as { doesProjectMatchPreset: jest.Mock }).doesProjectMatchPreset.mockResolvedValue(
-        true,
-      );
+      (
+        settingsService as { getProjectActivePreset: jest.Mock }
+      ).getProjectActivePreset.mockReturnValue('default');
+      (
+        projectsService as { doesProjectMatchPreset: jest.Mock }
+      ).doesProjectMatchPreset.mockResolvedValue(true);
 
       const result = await controller.getProjectPresets('p1');
 
@@ -1194,10 +1193,12 @@ describe('ProjectsController', () => {
       (settingsService as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue(
         presets,
       );
-      (settingsService as { getProjectActivePreset: jest.Mock }).getProjectActivePreset.mockReturnValue(
-        'default',
-      );
-      (projectsService as { doesProjectMatchPreset: jest.Mock }).doesProjectMatchPreset.mockResolvedValue(
+      (
+        settingsService as { getProjectActivePreset: jest.Mock }
+      ).getProjectActivePreset.mockReturnValue('default');
+      (
+        projectsService as { doesProjectMatchPreset: jest.Mock }
+      ).doesProjectMatchPreset.mockResolvedValue(
         false, // Drifted
       );
 
@@ -1222,7 +1223,9 @@ describe('ProjectsController', () => {
       (settingsService as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue(
         presets,
       );
-      (settingsService as { getProjectActivePreset: jest.Mock }).getProjectActivePreset.mockReturnValue(
+      (
+        settingsService as { getProjectActivePreset: jest.Mock }
+      ).getProjectActivePreset.mockReturnValue(
         'default', // This preset no longer exists in the presets array
       );
 
@@ -1254,12 +1257,14 @@ describe('ProjectsController', () => {
       (settingsService as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue(
         presets,
       );
-      (settingsService as { getProjectActivePreset: jest.Mock }).getProjectActivePreset.mockReturnValue(
+      (
+        settingsService as { getProjectActivePreset: jest.Mock }
+      ).getProjectActivePreset.mockReturnValue(
         'mypreset', // Stored as lowercase
       );
-      (projectsService as { doesProjectMatchPreset: jest.Mock }).doesProjectMatchPreset.mockResolvedValue(
-        true,
-      );
+      (
+        projectsService as { doesProjectMatchPreset: jest.Mock }
+      ).doesProjectMatchPreset.mockResolvedValue(true);
 
       const result = await controller.getProjectPresets('p1');
 

@@ -1,3 +1,7 @@
+jest.mock('../utils/claude-config', () => ({
+  checkClaudeAutoCompact: jest.fn(),
+}));
+
 import { SessionsService } from './sessions.service';
 import { ValidationError } from '../../../common/errors/error-types';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
@@ -12,6 +16,11 @@ import { TerminalGateway } from '../../terminal/gateways/terminal.gateway';
 import type { ModuleRef } from '@nestjs/core';
 import { SessionCoordinatorService } from './session-coordinator.service';
 import { DEFAULT_FEATURE_FLAGS } from '../../../common/config/feature-flags';
+import { checkClaudeAutoCompact } from '../utils/claude-config';
+
+const mockCheckClaudeAutoCompact = checkClaudeAutoCompact as jest.MockedFunction<
+  typeof checkClaudeAutoCompact
+>;
 
 describe('SessionsService', () => {
   let storage: {
@@ -43,9 +52,12 @@ describe('SessionsService', () => {
   let sessionCoordinator: { withAgentLock: jest.Mock };
   let sqlitePrepare: jest.Mock;
   let insertRunMock: jest.Mock;
+  let terminalGateway: { broadcastEvent: jest.Mock };
   let service: SessionsService;
 
   beforeEach(() => {
+    jest.clearAllMocks();
+
     storage = {
       getAgent: jest.fn(),
       getProject: jest.fn(),
@@ -78,6 +90,7 @@ describe('SessionsService', () => {
     preflightService = {
       runChecks: jest.fn().mockResolvedValue({ overall: 'pass', checks: [] }),
     };
+    mockCheckClaudeAutoCompact.mockResolvedValue({ autoCompactEnabled: false });
 
     mcpEnsureService = {
       ensureMcp: jest.fn().mockResolvedValue({ success: true, action: 'already_configured' }),
@@ -108,7 +121,7 @@ describe('SessionsService', () => {
       },
     } as unknown as BetterSQLite3Database;
 
-    const terminalGateway = {
+    terminalGateway = {
       broadcastEvent: jest.fn(),
     };
     const moduleRef = {
@@ -481,6 +494,258 @@ describe('SessionsService', () => {
 
     // Verify auto-ensure was attempted
     expect(mcpEnsureService.ensureMcp).toHaveBeenCalled();
+  });
+
+  it('blocks Claude launch when auto-compact is enabled and broadcasts session_blocked first', async () => {
+    storage.getAgent.mockResolvedValue({
+      id: 'agent-1',
+      name: 'Helper Agent',
+      projectId: 'project-1',
+      profileId: 'profile-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProject.mockResolvedValue({
+      id: 'project-1',
+      name: 'My Project',
+      rootPath: '/workspace/project-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getAgentProfile.mockResolvedValue({
+      id: 'profile-1',
+      name: 'Helper Profile',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+      {
+        id: 'config-1',
+        profileId: 'profile-1',
+        providerId: 'provider-1',
+        options: '--model claude-3',
+        env: null,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      },
+    ]);
+    storage.getProvider.mockResolvedValue({
+      id: 'provider-1',
+      name: 'claude',
+      binPath: '/usr/local/bin/claude',
+      mcpConfigured: true,
+      mcpEndpoint: null,
+      mcpRegisteredAt: null,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    mockCheckClaudeAutoCompact.mockResolvedValue({ autoCompactEnabled: true });
+
+    await expect(
+      service.launchSession({
+        projectId: 'project-1',
+        agentId: 'agent-1',
+      }),
+    ).rejects.toMatchObject({
+      message: 'Claude auto-compact is enabled',
+      details: {
+        code: 'CLAUDE_AUTO_COMPACT_ENABLED',
+        providerId: 'provider-1',
+        providerName: 'claude',
+      },
+    });
+
+    expect(terminalGateway.broadcastEvent).toHaveBeenCalledWith('system', 'session_blocked', {
+      reason: 'claude_auto_compact',
+      agentId: 'agent-1',
+      agentName: 'Helper Agent',
+      providerId: 'provider-1',
+      providerName: 'claude',
+      silent: false,
+    });
+    expect(preflightService.runChecks).not.toHaveBeenCalled();
+  });
+
+  it('broadcasts session_blocked with silent=true when launch options request silent mode', async () => {
+    storage.getAgent.mockResolvedValue({
+      id: 'agent-1',
+      name: 'Helper Agent',
+      projectId: 'project-1',
+      profileId: 'profile-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProject.mockResolvedValue({
+      id: 'project-1',
+      name: 'My Project',
+      rootPath: '/workspace/project-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getAgentProfile.mockResolvedValue({
+      id: 'profile-1',
+      name: 'Helper Profile',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+      {
+        id: 'config-1',
+        profileId: 'profile-1',
+        providerId: 'provider-1',
+        options: '--model claude-3',
+        env: null,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      },
+    ]);
+    storage.getProvider.mockResolvedValue({
+      id: 'provider-1',
+      name: 'claude',
+      binPath: '/usr/local/bin/claude',
+      mcpConfigured: true,
+      mcpEndpoint: null,
+      mcpRegisteredAt: null,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    mockCheckClaudeAutoCompact.mockResolvedValue({ autoCompactEnabled: true });
+
+    await expect(
+      service.launchSession({
+        projectId: 'project-1',
+        agentId: 'agent-1',
+        options: { silent: true },
+      }),
+    ).rejects.toMatchObject({
+      message: 'Claude auto-compact is enabled',
+      details: {
+        code: 'CLAUDE_AUTO_COMPACT_ENABLED',
+        providerId: 'provider-1',
+        providerName: 'claude',
+      },
+    });
+
+    expect(terminalGateway.broadcastEvent).toHaveBeenCalledWith('system', 'session_blocked', {
+      reason: 'claude_auto_compact',
+      agentId: 'agent-1',
+      agentName: 'Helper Agent',
+      providerId: 'provider-1',
+      providerName: 'claude',
+      silent: true,
+    });
+  });
+
+  it('allows Claude launch when auto-compact is disabled', async () => {
+    jest.useFakeTimers();
+    storage.getAgent.mockResolvedValue({
+      id: 'agent-1',
+      name: 'Helper Agent',
+      projectId: 'project-1',
+      profileId: 'profile-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProject.mockResolvedValue({
+      id: 'project-1',
+      name: 'My Project',
+      rootPath: '/workspace/project-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getAgentProfile.mockResolvedValue({
+      id: 'profile-1',
+      name: 'Helper Profile',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+      {
+        id: 'config-1',
+        profileId: 'profile-1',
+        providerId: 'provider-1',
+        options: '--model claude-3',
+        env: null,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      },
+    ]);
+    storage.getProvider.mockResolvedValue({
+      id: 'provider-1',
+      name: 'claude',
+      binPath: '/usr/local/bin/claude',
+      mcpConfigured: true,
+      mcpEndpoint: null,
+      mcpRegisteredAt: null,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+
+    const launchPromise = service.launchSession({
+      projectId: 'project-1',
+      agentId: 'agent-1',
+    });
+    await jest.runAllTimersAsync();
+    await expect(launchPromise).resolves.toBeDefined();
+
+    expect(mockCheckClaudeAutoCompact).toHaveBeenCalledTimes(1);
+    expect(preflightService.runChecks).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips auto-compact check for non-Claude providers', async () => {
+    jest.useFakeTimers();
+    storage.getAgent.mockResolvedValue({
+      id: 'agent-1',
+      name: 'Helper Agent',
+      projectId: 'project-1',
+      profileId: 'profile-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProject.mockResolvedValue({
+      id: 'project-1',
+      name: 'My Project',
+      rootPath: '/workspace/project-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getAgentProfile.mockResolvedValue({
+      id: 'profile-1',
+      name: 'Helper Profile',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+      {
+        id: 'config-1',
+        profileId: 'profile-1',
+        providerId: 'provider-1',
+        options: '--model gpt-5',
+        env: null,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      },
+    ]);
+    storage.getProvider.mockResolvedValue({
+      id: 'provider-1',
+      name: 'codex',
+      binPath: '/usr/local/bin/codex',
+      mcpConfigured: true,
+      mcpEndpoint: null,
+      mcpRegisteredAt: null,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+
+    const launchPromise = service.launchSession({
+      projectId: 'project-1',
+      agentId: 'agent-1',
+    });
+    await jest.runAllTimersAsync();
+    await expect(launchPromise).resolves.toBeDefined();
+
+    expect(mockCheckClaudeAutoCompact).not.toHaveBeenCalled();
+    expect(preflightService.runChecks).toHaveBeenCalledTimes(1);
   });
 
   it('rejects invalid config options with ValidationError', async () => {

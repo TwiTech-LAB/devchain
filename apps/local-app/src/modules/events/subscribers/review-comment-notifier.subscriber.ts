@@ -217,6 +217,7 @@ export class ReviewCommentNotifierSubscriber {
     const session = await this.getSessionsService().launchSession({
       projectId,
       agentId,
+      options: { silent: true },
     });
 
     if (!session.tmuxSessionId) {

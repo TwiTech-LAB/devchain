@@ -42,9 +42,14 @@ if (!(global as GlobalWithDOMRect).DOMRect) {
   };
 }
 
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = jest.fn();
+}
+
 // Import as any to avoid TSX type friction in isolated test env
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const ChatPage = require('./ChatPage').ChatPage as React.ComponentType;
+const toastSpy = jest.fn();
 
 // Stub xterm CSS import pulled by ChatPage dependencies
 jest.mock('@xterm/xterm/css/xterm.css', () => ({}), { virtual: true });
@@ -76,6 +81,9 @@ jest.mock('@/ui/terminal-windows', () => ({
   useTerminalWindows: () => ({ windows: [], closeWindow: jest.fn(), focusedWindowId: null }),
   TerminalWindowsProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
+jest.mock('@/ui/hooks/use-toast', () => ({
+  useToast: () => ({ toast: toastSpy }),
+}));
 // Mock project selection
 jest.mock('@/ui/hooks/useProjectSelection', () => ({
   useSelectedProject: () => ({
@@ -100,10 +108,10 @@ jest.mock('@/ui/lib/socket', () => ({
   releaseAppSocket: jest.fn(),
 }));
 
-function renderWithClient(ui: React.ReactNode) {
+function renderWithClient(ui: React.ReactNode, initialEntries: string[] = ['/chat']) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter initialEntries={['/chat']}>
+    <MemoryRouter initialEntries={initialEntries}>
       <QueryClientProvider client={queryClient}>
         <TerminalWindowsProvider>{ui}</TerminalWindowsProvider>
       </QueryClientProvider>
@@ -115,6 +123,7 @@ describe('ChatPage agent context menu', () => {
   const originalFetch = global.fetch;
 
   beforeEach(() => {
+    toastSpy.mockReset();
     global.fetch = jest.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
       const url = String(input);
       if (url.startsWith('/api/agents?projectId=')) {
@@ -146,6 +155,18 @@ describe('ChatPage agent context menu', () => {
       }
       if (url.startsWith('/api/sessions')) {
         return { ok: true, json: async () => ({ id: 'session-new' }) } as Response;
+      }
+      if (url.startsWith('/api/preflight')) {
+        return {
+          ok: true,
+          json: async () => ({
+            overall: 'pass',
+            checks: [],
+            providers: [],
+            supportedMcpProviders: [],
+            timestamp: new Date().toISOString(),
+          }),
+        } as Response;
       }
       return { ok: true, json: async () => ({ items: [] }) } as Response;
     }) as unknown as typeof fetch;
@@ -190,10 +211,90 @@ describe('ChatPage agent context menu', () => {
       expect(calls.some((u) => u === '/api/sessions/launch')).toBe(true);
     });
   });
+
+  it('shows standardized toast for non-silent auto-compact launch errors', async () => {
+    global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('/api/agents?projectId=')) {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [{ id: 'agent-1', name: 'Alpha', projectId: 'project-1', profileId: 'p1' }],
+          }),
+        } as Response;
+      }
+      if (url.startsWith('/api/sessions/agents/presence')) {
+        return {
+          ok: true,
+          json: async () => ({ 'agent-1': { online: false, sessionId: null } }),
+        } as Response;
+      }
+      if (url.startsWith('/api/threads?projectId=')) {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [
+              { id: 'thread-1', projectId: 'project-1', isGroup: false, members: ['agent-1'] },
+            ],
+          }),
+        } as Response;
+      }
+      if (url.startsWith('/api/preflight')) {
+        return {
+          ok: true,
+          json: async () => ({
+            overall: 'pass',
+            checks: [],
+            providers: [],
+            supportedMcpProviders: [],
+            timestamp: new Date().toISOString(),
+          }),
+        } as Response;
+      }
+      if (url === '/api/sessions/launch' && init?.method === 'POST') {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({
+            statusCode: 409,
+            code: 'SESSION_LAUNCH_FAILED',
+            message: 'Claude auto-compact is enabled.',
+            details: {
+              code: 'CLAUDE_AUTO_COMPACT_ENABLED',
+              providerId: 'provider-1',
+              providerName: 'claude',
+            },
+            timestamp: new Date().toISOString(),
+            path: '/api/sessions/launch',
+          }),
+        } as Response;
+      }
+      return { ok: true, json: async () => ({ items: [] }) } as Response;
+    }) as unknown as typeof fetch;
+
+    renderWithClient(<ChatPage />);
+    const alphaButton = await screen.findByLabelText(/Chat with Alpha \(offline\)/i);
+    fireEvent.contextMenu(alphaButton);
+    fireEvent.click(await screen.findByText(/Launch session/i));
+
+    await waitFor(() => {
+      expect(toastSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Session launch blocked',
+          description: 'Claude auto-compact is enabled - see the notification to resolve.',
+        }),
+      );
+    });
+    expect(screen.queryByText('Claude Auto-Compact Detected')).not.toBeInTheDocument();
+  });
 });
 
 describe('Mass agent controls', () => {
   const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    toastSpy.mockReset();
+  });
 
   afterEach(() => {
     if (originalFetch) {
@@ -356,5 +457,75 @@ describe('Mass agent controls', () => {
     // Stop button should be disabled when no agents have sessions
     const stopButton = screen.getByRole('button', { name: /^stop/i });
     expect(stopButton).toBeDisabled();
+  });
+
+  it('shows standardized toast for silent auto-compact launch failures', async () => {
+    global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('/api/agents?projectId=')) {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [{ id: 'agent-1', name: 'Alpha', projectId: 'project-1', profileId: 'p1' }],
+          }),
+        } as Response;
+      }
+      if (url.startsWith('/api/sessions/agents/presence')) {
+        return {
+          ok: true,
+          json: async () => ({ 'agent-1': { online: false, sessionId: null } }),
+        } as Response;
+      }
+      if (url.startsWith('/api/threads?projectId=')) {
+        return { ok: true, json: async () => ({ items: [] }) } as Response;
+      }
+      if (url.startsWith('/api/preflight')) {
+        return {
+          ok: true,
+          json: async () => ({
+            overall: 'pass',
+            checks: [],
+            providers: [],
+            supportedMcpProviders: [],
+            timestamp: new Date().toISOString(),
+          }),
+        } as Response;
+      }
+      if (url === '/api/sessions/launch' && init?.method === 'POST') {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({
+            statusCode: 409,
+            code: 'SESSION_LAUNCH_FAILED',
+            message: 'Claude auto-compact is enabled.',
+            details: {
+              code: 'CLAUDE_AUTO_COMPACT_ENABLED',
+              providerId: 'provider-1',
+              providerName: 'claude',
+            },
+            timestamp: new Date().toISOString(),
+            path: '/api/sessions/launch',
+          }),
+        } as Response;
+      }
+      return { ok: true, json: async () => ({ items: [] }) } as Response;
+    }) as unknown as typeof fetch;
+
+    renderWithClient(<ChatPage />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/Chat with Alpha \(offline\)/i)).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /^start/i }));
+
+    await waitFor(() => {
+      expect(toastSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          description: 'Claude auto-compact is enabled - see the notification to resolve.',
+        }),
+      );
+    });
   });
 });

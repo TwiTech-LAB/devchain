@@ -148,6 +148,7 @@ describe('EpicAssignmentNotifierSubscriber', () => {
       projectId: basePayload.projectId,
       agentId: 'agent-1',
       epicId: basePayload.epicId,
+      options: { silent: true },
     });
     expect(enqueueMock).toHaveBeenCalledTimes(1);
     expect(enqueueMock).toHaveBeenCalledWith(

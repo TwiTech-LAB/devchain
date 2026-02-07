@@ -61,7 +61,9 @@ interface ApplyPresetResult {
   }>;
 }
 
-async function fetchPresets(projectId: string): Promise<{ presets: Preset[]; activePreset: string | null }> {
+async function fetchPresets(
+  projectId: string,
+): Promise<{ presets: Preset[]; activePreset: string | null }> {
   const res = await fetch(`/api/projects/${projectId}/presets`);
   if (!res.ok) throw new Error('Failed to fetch presets');
   return res.json();
@@ -223,7 +225,11 @@ export function ChatPage() {
 
   // Fetch provider configs for all agent profiles (for preset validation)
   const { data: configsMap } = useQuery<Map<string, ProviderConfig[]>>({
-    queryKey: ['provider-configs-by-profile', projectId, agentsWithProfiles.map((a) => a.profileId)],
+    queryKey: [
+      'provider-configs-by-profile',
+      projectId,
+      agentsWithProfiles.map((a) => a.profileId),
+    ],
     queryFn: async () => {
       const profileIds = new Set(agentsWithProfiles.map((a) => a.profileId));
       if (profileIds.size === 0) return new Map();

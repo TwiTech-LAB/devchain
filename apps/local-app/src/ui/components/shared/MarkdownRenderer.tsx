@@ -85,7 +85,7 @@ function parseList(lines: string[], startIndex: number, isOrdered: boolean): [st
 
   const tag = isOrdered ? 'ol' : 'ul';
   const className = isOrdered ? 'list-decimal' : 'list-disc';
-  return [`<${tag} class="${className} pl-6 my-2 space-y-1">${items.join('')}</${tag}>`, i];
+  return [`<${tag} class="${className} pl-6 my-2 space-y-1 text-muted-foreground">${items.join('')}</${tag}>`, i];
 }
 
 /**
@@ -145,13 +145,20 @@ export function renderMarkdown(content: string): string {
       continue;
     }
 
+    // Horizontal rule
+    if (/^---+$/.test(line.trim())) {
+      output.push('<hr class="my-6 border-border" />');
+      i++;
+      continue;
+    }
+
     // Headings
     const h3Match = line.match(/^###\s+(.+)$/);
     if (h3Match) {
       const text = h3Match[1];
       const id = slugify(text);
       output.push(
-        `<h3 id="${id}" class="text-lg font-semibold mt-6 mb-2">${parseInline(escapeHtml(text))}</h3>`,
+        `<h3 id="${id}" class="text-base font-semibold mt-8 mb-2 border-l-2 border-primary/40 pl-2">${parseInline(escapeHtml(text))}</h3>`,
       );
       i++;
       continue;
@@ -162,7 +169,7 @@ export function renderMarkdown(content: string): string {
       const text = h2Match[1];
       const id = slugify(text);
       output.push(
-        `<h2 id="${id}" class="text-xl font-semibold mt-8 mb-3">${parseInline(escapeHtml(text))}</h2>`,
+        `<h2 id="${id}" class="text-xl font-semibold mt-8 mb-3 pb-2 border-b border-border">${parseInline(escapeHtml(text))}</h2>`,
       );
       i++;
       continue;
@@ -176,6 +183,20 @@ export function renderMarkdown(content: string): string {
         `<h1 id="${id}" class="text-2xl font-bold mt-8 mb-4">${parseInline(escapeHtml(text))}</h1>`,
       );
       i++;
+      continue;
+    }
+
+    // Blockquote
+    if (/^>\s/.test(line)) {
+      const quoteLines: string[] = [];
+      while (i < lines.length && /^>\s?/.test(lines[i])) {
+        quoteLines.push(lines[i].replace(/^>\s?/, ''));
+        i++;
+      }
+      const quoteText = quoteLines.join(' ');
+      output.push(
+        `<blockquote class="my-4 border-l-4 border-primary/40 bg-muted/50 rounded-r-md py-3 px-4 text-sm leading-relaxed">${parseInline(escapeHtml(quoteText))}</blockquote>`,
+      );
       continue;
     }
 
@@ -227,7 +248,7 @@ export function renderMarkdown(content: string): string {
 
     if (paragraphLines.length > 0) {
       const text = paragraphLines.join(' ');
-      output.push(`<p class="my-3 leading-relaxed">${parseInline(escapeHtml(text))}</p>`);
+      output.push(`<p class="my-3 leading-relaxed text-muted-foreground">${parseInline(escapeHtml(text))}</p>`);
     }
   }
 
@@ -247,6 +268,8 @@ export function renderMarkdown(content: string): string {
       'ol',
       'li',
       'br',
+      'hr',
+      'blockquote',
     ],
     ALLOWED_ATTR: ['href', 'class', 'target', 'rel', 'id', 'data-language'],
     ALLOW_DATA_ATTR: true,

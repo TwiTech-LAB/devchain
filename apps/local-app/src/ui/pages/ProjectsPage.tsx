@@ -929,9 +929,7 @@ export function ProjectsPage() {
           const data = await res.json();
           if (data.content?.presets && Array.isArray(data.content.presets)) {
             // Reverse to show most recently updated first (template stores oldest first)
-            const presetNames = data.content.presets
-              .map((p: { name: string }) => p.name)
-              .reverse();
+            const presetNames = data.content.presets.map((p: { name: string }) => p.name).reverse();
             setAvailablePresets(presetNames);
           }
         }
@@ -962,9 +960,7 @@ export function ProjectsPage() {
           const data = await res.json();
           if (data.content?.presets && Array.isArray(data.content.presets)) {
             // Reverse to show most recently updated first (template stores oldest first)
-            const presetNames = data.content.presets
-              .map((p: { name: string }) => p.name)
-              .reverse();
+            const presetNames = data.content.presets.map((p: { name: string }) => p.name).reverse();
             setAvailablePresets(presetNames);
           } else {
             setAvailablePresets([]);
@@ -983,7 +979,13 @@ export function ProjectsPage() {
     };
 
     fetchPresetsForTemplate();
-  }, [templateFormData.version, templateFormData.templateId, templates, selectedPreset, templateSourceTab]);
+  }, [
+    templateFormData.version,
+    templateFormData.templateId,
+    templates,
+    selectedPreset,
+    templateSourceTab,
+  ]);
 
   // Helper: Get selected import template object
   const selectedImportTemplate = useMemo(() => {

@@ -228,6 +228,7 @@ describe('RestartAgentAction', () => {
         agentId: 'agent-456',
         projectId: 'project-789',
         // epicId intentionally omitted
+        options: { silent: true },
       });
     });
 

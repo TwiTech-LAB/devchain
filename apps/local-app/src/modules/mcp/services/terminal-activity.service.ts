@@ -20,10 +20,7 @@ function stripAnsiSequences(data: string): string {
   // Remove simple escape sequences like ESC M (reverse line feed)
   const simpleEscRegex = /\x1B[\x40-\x5F]/g;
 
-  return data
-    .replace(csiRegex, '')
-    .replace(oscRegex, '')
-    .replace(simpleEscRegex, '');
+  return data.replace(csiRegex, '').replace(oscRegex, '').replace(simpleEscRegex, '');
 }
 
 /**

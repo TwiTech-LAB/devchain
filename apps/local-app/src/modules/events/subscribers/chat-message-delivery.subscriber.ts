@@ -109,6 +109,7 @@ export class ChatMessageDeliverySubscriber {
               await this.sessionsService.launchSession({
                 agentId,
                 projectId: thread.projectId,
+                options: { silent: true },
               });
 
               this.logger.log(`Auto-launched session successfully for agent ${agentId}`);

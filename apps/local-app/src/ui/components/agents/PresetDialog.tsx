@@ -12,7 +12,6 @@ import { Button } from '@/ui/components/ui/button';
 import { Input } from '@/ui/components/ui/input';
 import { Label } from '@/ui/components/ui/label';
 import { Textarea } from '@/ui/components/ui/textarea';
-import { Badge } from '@/ui/components/ui/badge';
 import { Checkbox } from '@/ui/components/ui/checkbox';
 import { ScrollArea } from '@/ui/components/ui/scroll-area';
 import {
@@ -156,15 +155,17 @@ export function PresetDialog({
   // Filter agents with valid profileIds for config fetching
   const agentsWithProfiles = useMemo(
     () =>
-      agents.filter(
-        (a): a is typeof a & { profileId: string } => typeof a.profileId === 'string',
-      ),
+      agents.filter((a): a is typeof a & { profileId: string } => typeof a.profileId === 'string'),
     [agents],
   );
 
   // Fetch provider configs for all agent profiles
-  const { data: configsMap, isLoading: isLoadingConfigs } = useQuery<Map<string, ProviderConfig[]>>({
-    queryKey: ['provider-configs-by-profile', projectId, agentsWithProfiles.map((a) => a.profileId).sort()],
+  const { data: configsMap } = useQuery<Map<string, ProviderConfig[]>>({
+    queryKey: [
+      'provider-configs-by-profile',
+      projectId,
+      agentsWithProfiles.map((a) => a.profileId).sort(),
+    ],
     queryFn: async () => {
       const profileIds = new Set(agentsWithProfiles.map((a) => a.profileId));
       if (profileIds.size === 0) return new Map();
@@ -265,23 +266,6 @@ export function PresetDialog({
     }
   };
 
-  const toggleAgentConfig = (agentName: string, providerConfigName: string) => {
-    const existingIndex = selectedAgentConfigs.findIndex((ac) => ac.agentName === agentName);
-    if (existingIndex >= 0) {
-      // Remove if exists, or update if different config
-      if (selectedAgentConfigs[existingIndex].providerConfigName === providerConfigName) {
-        setSelectedAgentConfigs((prev) => prev.filter((_, i) => i !== existingIndex));
-      } else {
-        setSelectedAgentConfigs((prev) =>
-          prev.map((ac, i) => (i === existingIndex ? { agentName, providerConfigName } : ac)),
-        );
-      }
-    } else {
-      // Add new agent config
-      setSelectedAgentConfigs((prev) => [...prev, { agentName, providerConfigName }]);
-    }
-  };
-
   const isAgentSelected = (agentName: string): boolean => {
     return selectedAgentConfigs.some((ac) => ac.agentName === agentName);
   };
@@ -297,10 +281,15 @@ export function PresetDialog({
       // Adding: use agent's current config or first available from profile
       const agent = agents.find((a) => a.name === agentName);
       const agentConfigName = agent?.providerConfig?.name;
-      const profileConfigs = (agent?.profileId ? configsMap?.get(agent.profileId) ?? [] : []) as ProviderConfig[];
+      const profileConfigs = (
+        agent?.profileId ? (configsMap?.get(agent.profileId) ?? []) : []
+      ) as ProviderConfig[];
       const configToUse = agentConfigName || profileConfigs[0]?.name;
       if (configToUse) {
-        setSelectedAgentConfigs((prev) => [...prev, { agentName, providerConfigName: configToUse }]);
+        setSelectedAgentConfigs((prev) => [
+          ...prev,
+          { agentName, providerConfigName: configToUse },
+        ]);
       }
     } else if (!checked && existingIndex >= 0) {
       // Removing: take agent out of preset
@@ -314,7 +303,9 @@ export function PresetDialog({
     if (existingIndex >= 0) {
       // Update existing agent's config
       setSelectedAgentConfigs((prev) =>
-        prev.map((ac, i) => (i === existingIndex ? { agentName, providerConfigName: configName } : ac)),
+        prev.map((ac, i) =>
+          i === existingIndex ? { agentName, providerConfigName: configName } : ac,
+        ),
       );
     } else {
       // Add agent with selected config
@@ -387,7 +378,10 @@ export function PresetDialog({
                     const hasConfigs = configsArray.length > 0;
                     // Check if selected config is missing (not in available configs)
                     const isMissingConfig =
-                      isSelected && selectedConfig && hasConfigs && !configsArray.some((c: ProviderConfig) => c.name === selectedConfig);
+                      isSelected &&
+                      selectedConfig &&
+                      hasConfigs &&
+                      !configsArray.some((c: ProviderConfig) => c.name === selectedConfig);
                     // Determine the display value for the Select
                     const displayValue =
                       isSelected && selectedConfig

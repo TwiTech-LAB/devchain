@@ -137,7 +137,7 @@ export function useChatSessionControls({
 
       setLaunchingAgentIds((prev) => ({ ...prev, [agentId]: true }));
       try {
-        const raw = await launchSession(agentId, projectId);
+        const raw = await launchSession(agentId, projectId, { silent });
         if (!raw || typeof raw !== 'object' || !('id' in raw)) {
           throw new Error('Unexpected response when launching session');
         }
@@ -173,6 +173,15 @@ export function useChatSessionControls({
 
         return session;
       } catch (error) {
+        if (error instanceof SessionApiError && error.hasCode('CLAUDE_AUTO_COMPACT_ENABLED')) {
+          queryClient.invalidateQueries({ queryKey: ['preflight'] });
+          toast({
+            title: 'Session launch blocked',
+            description: 'Claude auto-compact is enabled - see the notification to resolve.',
+          });
+          return null;
+        }
+
         // Check if this is an MCP_NOT_CONFIGURED error from the backend
         if (error instanceof SessionApiError && error.hasCode('MCP_NOT_CONFIGURED')) {
           const details = error.payload?.details;
@@ -262,6 +271,15 @@ export function useChatSessionControls({
           onInlineTerminalAttach?.(agentId, session?.id ?? null);
         }
       } catch (error) {
+        if (error instanceof SessionApiError && error.hasCode('CLAUDE_AUTO_COMPACT_ENABLED')) {
+          queryClient.invalidateQueries({ queryKey: ['preflight'] });
+          toast({
+            title: 'Session launch blocked',
+            description: 'Claude auto-compact is enabled - see the notification to resolve.',
+          });
+          return;
+        }
+
         toast({
           title: sessionId ? 'Restart failed' : 'Launch failed',
           description: error instanceof Error ? error.message : 'Unable to start session',

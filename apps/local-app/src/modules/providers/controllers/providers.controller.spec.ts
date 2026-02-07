@@ -5,14 +5,27 @@ import { McpProviderRegistrationService } from '../../mcp/services/mcp-provider-
 import { PreflightService } from '../../core/services/preflight.service';
 import { ProviderMcpEnsureService } from '../../core/services/provider-mcp-ensure.service';
 import { ProviderAdapterFactory } from '../adapters';
-import { BadRequestException } from '@nestjs/common';
+import {
+  BadRequestException,
+  InternalServerErrorException,
+  NotFoundException,
+} from '@nestjs/common';
 import * as fsPromises from 'fs/promises';
 import { Stats, constants } from 'fs';
+import { disableClaudeAutoCompact } from '../../sessions/utils/claude-config';
 
 jest.mock('fs/promises', () => ({
   stat: jest.fn(),
   access: jest.fn(),
 }));
+
+jest.mock('../../sessions/utils/claude-config', () => ({
+  disableClaudeAutoCompact: jest.fn(),
+}));
+
+const mockDisableClaudeAutoCompact = disableClaudeAutoCompact as jest.MockedFunction<
+  typeof disableClaudeAutoCompact
+>;
 
 describe('ProvidersController', () => {
   let controller: ProvidersController;
@@ -36,6 +49,7 @@ describe('ProvidersController', () => {
   let normalizeBinPathSpy: jest.SpyInstance;
 
   beforeEach(async () => {
+    jest.clearAllMocks();
     storage = {
       createProvider: jest.fn(),
       updateProvider: jest.fn(),
@@ -60,6 +74,7 @@ describe('ProvidersController', () => {
         alias: 'devchain',
       }),
     };
+    mockDisableClaudeAutoCompact.mockResolvedValue({ success: true });
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [ProvidersController],
@@ -369,6 +384,124 @@ describe('ProvidersController', () => {
         }),
       );
       expect(response?.success).toBe(true);
+    });
+  });
+
+  describe('disableAutoCompact', () => {
+    it('returns success when Claude auto-compact is disabled', async () => {
+      storage.getProvider.mockResolvedValue({
+        id: 'p1',
+        name: 'claude',
+        binPath: '/usr/local/bin/claude',
+        mcpConfigured: true,
+        mcpEndpoint: null,
+        mcpRegisteredAt: null,
+        createdAt: '',
+        updatedAt: '',
+      });
+      mockDisableClaudeAutoCompact.mockResolvedValue({ success: true });
+
+      const response = await controller.disableAutoCompact('p1');
+
+      expect(response).toEqual({ success: true });
+      expect(mockDisableClaudeAutoCompact).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns 404 when provider id is unknown', async () => {
+      storage.getProvider.mockRejectedValue(new NotFoundException('Provider not found'));
+
+      await expect(controller.disableAutoCompact('missing')).rejects.toThrow(NotFoundException);
+      expect(mockDisableClaudeAutoCompact).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 for non-Claude providers', async () => {
+      storage.getProvider.mockResolvedValue({
+        id: 'p1',
+        name: 'codex',
+        binPath: '/usr/local/bin/codex',
+        mcpConfigured: true,
+        mcpEndpoint: null,
+        mcpRegisteredAt: null,
+        createdAt: '',
+        updatedAt: '',
+      });
+
+      await expect(controller.disableAutoCompact('p1')).rejects.toThrow(BadRequestException);
+      expect(mockDisableClaudeAutoCompact).not.toHaveBeenCalled();
+
+      try {
+        await controller.disableAutoCompact('p1');
+      } catch (error) {
+        expect((error as BadRequestException).getResponse()).toEqual(
+          expect.objectContaining({
+            message: 'Auto-compact configuration is only applicable to Claude provider',
+          }),
+        );
+      }
+    });
+
+    it('returns 400 when Claude config is malformed', async () => {
+      storage.getProvider.mockResolvedValue({
+        id: 'p1',
+        name: 'claude',
+        binPath: '/usr/local/bin/claude',
+        mcpConfigured: true,
+        mcpEndpoint: null,
+        mcpRegisteredAt: null,
+        createdAt: '',
+        updatedAt: '',
+      });
+      mockDisableClaudeAutoCompact.mockResolvedValue({
+        success: false,
+        error: 'Unexpected token } in JSON',
+        errorType: 'invalid_config',
+      });
+
+      await expect(controller.disableAutoCompact('p1')).rejects.toThrow(BadRequestException);
+      expect(mockDisableClaudeAutoCompact).toHaveBeenCalledTimes(1);
+
+      try {
+        await controller.disableAutoCompact('p1');
+      } catch (error) {
+        expect((error as BadRequestException).getResponse()).toEqual(
+          expect.objectContaining({
+            message: '~/.claude.json contains invalid JSON. Please fix the file manually.',
+          }),
+        );
+      }
+    });
+
+    it('returns 500 when disable operation fails due to IO error', async () => {
+      storage.getProvider.mockResolvedValue({
+        id: 'p1',
+        name: 'claude',
+        binPath: '/usr/local/bin/claude',
+        mcpConfigured: true,
+        mcpEndpoint: null,
+        mcpRegisteredAt: null,
+        createdAt: '',
+        updatedAt: '',
+      });
+      mockDisableClaudeAutoCompact.mockResolvedValue({
+        success: false,
+        error: 'EACCES: permission denied',
+        errorType: 'io_error',
+      });
+
+      await expect(controller.disableAutoCompact('p1')).rejects.toThrow(
+        InternalServerErrorException,
+      );
+      expect(mockDisableClaudeAutoCompact).toHaveBeenCalledTimes(1);
+
+      try {
+        await controller.disableAutoCompact('p1');
+      } catch (error) {
+        expect((error as InternalServerErrorException).getResponse()).toEqual(
+          expect.objectContaining({
+            message: 'Failed to write ~/.claude.json',
+          }),
+        );
+      }
     });
   });
 });

@@ -16,6 +16,7 @@ import Database from 'better-sqlite3';
 import { parseProfileOptions, ProfileOptionsError } from '../utils/profile-options';
 import { buildSessionCommand, EnvBuilderError } from '../utils/env-builder';
 import { buildInitialPromptContext, renderInitialPromptTemplate } from '../utils/template-renderer';
+import { checkClaudeAutoCompact } from '../utils/claude-config';
 import { EventsService } from '../../events/services/events.service';
 import { TerminalGateway } from '../../terminal/gateways/terminal.gateway';
 import { SessionCoordinatorService } from './session-coordinator.service';
@@ -101,7 +102,8 @@ export class SessionsService {
    * (POST /api/agents/:id/restart) or the restart_agent subscriber action instead.
    */
   async launchSession(data: LaunchSessionDto): Promise<SessionDetailDto> {
-    const { epicId, agentId, projectId } = data;
+    const { epicId, agentId, projectId, options: launchOptions } = data;
+    const silent = launchOptions?.silent === true;
 
     return this.sessionCoordinator.withAgentLock(agentId, async () => {
       logger.info({ epicId, agentId, projectId }, 'Launching session');
@@ -229,6 +231,27 @@ export class SessionsService {
           throw new ValidationError(
             `Profile ${profile.id} has no provider configs - cannot launch session`,
           );
+        }
+      }
+
+      // Block launch for Claude when auto-compact is enabled in local Claude config.
+      if (provider.name.toLowerCase() === 'claude') {
+        const { autoCompactEnabled } = await checkClaudeAutoCompact();
+        if (autoCompactEnabled) {
+          this.getTerminalGateway().broadcastEvent('system', 'session_blocked', {
+            reason: 'claude_auto_compact',
+            agentId,
+            agentName: agent.name,
+            providerId: provider.id,
+            providerName: provider.name,
+            silent,
+          });
+
+          throw new ValidationError('Claude auto-compact is enabled', {
+            code: 'CLAUDE_AUTO_COMPACT_ENABLED',
+            providerId: provider.id,
+            providerName: provider.name,
+          });
         }
       }
 

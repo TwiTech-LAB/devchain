@@ -8,6 +8,7 @@ import {
   Body,
   Inject,
   BadRequestException,
+  InternalServerErrorException,
 } from '@nestjs/common';
 import { access, stat } from 'fs/promises';
 import { constants } from 'fs';
@@ -27,6 +28,7 @@ import { McpProviderRegistrationService } from '../../mcp/services/mcp-provider-
 import { PreflightService } from '../../core/services/preflight.service';
 import { ProviderMcpEnsureService } from '../../core/services/provider-mcp-ensure.service';
 import { ProviderAdapterFactory } from '../adapters';
+import { disableClaudeAutoCompact } from '../../sessions/utils/claude-config';
 
 const logger = createLogger('ProvidersController');
 const execFileAsync = promisify(execFile);
@@ -190,6 +192,31 @@ export class ProvidersController {
       endpoint: result.endpoint,
       alias: result.alias,
     };
+  }
+
+  @Post(':id/auto-compact/disable')
+  async disableAutoCompact(@Param('id') id: string) {
+    logger.info({ id }, 'POST /api/providers/:id/auto-compact/disable');
+    const provider = await this.storage.getProvider(id);
+
+    if (provider.name.toLowerCase() !== 'claude') {
+      throw new BadRequestException(
+        'Auto-compact configuration is only applicable to Claude provider',
+      );
+    }
+
+    const result = await disableClaudeAutoCompact();
+    if (!result.success) {
+      if (result.errorType === 'invalid_config') {
+        throw new BadRequestException(
+          '~/.claude.json contains invalid JSON. Please fix the file manually.',
+        );
+      }
+
+      throw new InternalServerErrorException('Failed to write ~/.claude.json');
+    }
+
+    return { success: true };
   }
 
   @Post(':id/mcp')

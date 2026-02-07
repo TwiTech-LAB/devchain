@@ -491,7 +491,10 @@ export class ProjectsController {
         }
       } else {
         // Stored activePreset no longer exists in presets - clear it
-        logger.info({ projectId: id, activePreset }, 'Active preset not found in presets, clearing');
+        logger.info(
+          { projectId: id, activePreset },
+          'Active preset not found in presets, clearing',
+        );
         await this.settings.setProjectActivePreset(id, null);
         activePreset = null;
       }

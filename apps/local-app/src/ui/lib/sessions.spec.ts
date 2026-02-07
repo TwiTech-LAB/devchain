@@ -1,5 +1,6 @@
 import {
   launchAgentSession,
+  launchSession,
   restartAgentSession,
   SessionApiError,
   fetchJsonOrThrow,
@@ -50,6 +51,24 @@ describe('ui/lib/sessions helpers', () => {
       '/api/sessions/launch',
       expect.objectContaining({ method: 'POST' }),
     );
+  });
+
+  it('launchSession forwards silent option when provided', async () => {
+    let capturedBody: string | undefined;
+    (global as unknown as { fetch: unknown }).fetch = jest.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        capturedBody = init?.body as string;
+        return { ok: true, json: async () => makeSessionPayload() } as Response;
+      },
+    );
+
+    await launchSession('agent-1', 'project-1', { silent: true });
+
+    expect(JSON.parse(capturedBody!)).toEqual({
+      agentId: 'agent-1',
+      projectId: 'project-1',
+      options: { silent: true },
+    });
   });
 
   it('launchAgentSession propagates error message on failure', async () => {

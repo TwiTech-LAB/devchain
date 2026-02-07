@@ -346,6 +346,7 @@ export class EpicAssignmentNotifierSubscriber {
       projectId: payload.projectId,
       agentId: agentId,
       epicId: payload.epicId,
+      options: { silent: true },
     });
 
     if (!session.tmuxSessionId) {
@@ -383,6 +384,7 @@ export class EpicAssignmentNotifierSubscriber {
       projectId: payload.projectId,
       agentId: payload.agentId,
       epicId: payload.epicId,
+      options: { silent: true },
     });
 
     if (!session.tmuxSessionId) {

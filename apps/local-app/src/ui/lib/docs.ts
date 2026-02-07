@@ -33,6 +33,7 @@ export interface DocEntry {
  */
 export const FEATURE_DOC_MAP: Record<string, string> = {
   reviews: 'code-review',
+  chat: 'chat',
 };
 
 /**

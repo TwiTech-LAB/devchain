@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.8.0",
+  "version": "0.8.3",
   "description": "AI driven development platform",
   "homepage": "https://devchain.twitechlab.com/",
   "repository": {
@@ -8,6 +8,16 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.8.3": [
+      "Claude auto-compact guard: blocks sessions when Claude's auto-compact conflicts with Devchain context management",
+      "Chat page help guide with improved markdown rendering"
+    ],
+    "0.8.2": [
+      "Updated Dev Loop template"
+    ],
+    "0.8.1": [
+      "Updated Dev Loop template (v1.0.2)"
+    ],
     "0.8.0": [
       "Preset system in templates: switch your favorite AI teams with presets with a single click",
       "Multi-provider support: support GLM models through Claude",

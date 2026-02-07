@@ -13,6 +13,11 @@ export const LaunchSessionSchema = z.object({
     .optional()
     .nullable()
     .transform((value) => (value === null ? undefined : value)),
+  options: z
+    .object({
+      silent: z.boolean().optional(),
+    })
+    .optional(),
 });
 
 export type LaunchSessionDto = z.infer<typeof LaunchSessionSchema>;

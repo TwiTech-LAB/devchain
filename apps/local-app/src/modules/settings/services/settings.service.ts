@@ -1359,7 +1359,10 @@ export class SettingsService {
 
     // Clear activePreset if it pointed to the deleted preset (case-insensitive comparison)
     const currentActivePreset = existingActivePresets[projectId];
-    if (currentActivePreset && currentActivePreset.toLowerCase() === deletedPreset.name.toLowerCase()) {
+    if (
+      currentActivePreset &&
+      currentActivePreset.toLowerCase() === deletedPreset.name.toLowerCase()
+    ) {
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { [projectId]: _removed, ...remainingActivePresets } = existingActivePresets;
       updatePayload.projectActivePresets = remainingActivePresets;
@@ -1389,10 +1392,7 @@ export class SettingsService {
    * @param projectId The project ID
    * @param presetName The preset name to set as active, or null to clear
    */
-  async setProjectActivePreset(
-    projectId: string,
-    presetName: string | null,
-  ): Promise<void> {
+  async setProjectActivePreset(projectId: string, presetName: string | null): Promise<void> {
     const currentSettings = this.getSettings();
     const existingActivePresets = currentSettings.projectActivePresets ?? {};
 

@@ -237,6 +237,7 @@ describe('ChatMessageDeliverySubscriber', () => {
       expect(sessionsService.launchSession).toHaveBeenCalledWith({
         agentId: 'agent-1',
         projectId: 'project-1',
+        options: { silent: true },
       });
       expect(messagePoolService.enqueue).toHaveBeenCalledTimes(1);
     });
@@ -399,6 +400,7 @@ describe('ChatMessageDeliverySubscriber', () => {
       expect(sessionsService.launchSession).toHaveBeenCalledWith({
         agentId: 'agent-1',
         projectId: 'project-1',
+        options: { silent: true },
       });
       // Should enqueue message
       expect(messagePoolService.enqueue).toHaveBeenCalledTimes(1);
@@ -430,6 +432,7 @@ describe('ChatMessageDeliverySubscriber', () => {
       expect(sessionsService.launchSession).toHaveBeenCalledWith({
         agentId: 'agent-1',
         projectId: 'project-1',
+        options: { silent: true },
       });
       // Should enqueue message
       expect(messagePoolService.enqueue).toHaveBeenCalledTimes(1);
