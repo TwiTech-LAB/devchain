@@ -22,6 +22,7 @@ import { WatchersModule } from './modules/watchers/watchers.module';
 import { SubscribersModule } from './modules/subscribers/subscribers.module';
 import { RegistryModule } from './modules/registry/registry.module';
 import { GuestsModule } from './modules/guests/guests.module';
+import { DataSeederModule } from './modules/seeders/seeders.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { EventsModule } from './modules/events/events.module';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
@@ -49,6 +50,7 @@ import { AllWsExceptionsFilter } from './common/filters/ws-exception.filter';
     FsModule,
     ChatModule,
     WatchersModule,
+    DataSeederModule,
     SubscribersModule,
     RegistryModule,
     GuestsModule,

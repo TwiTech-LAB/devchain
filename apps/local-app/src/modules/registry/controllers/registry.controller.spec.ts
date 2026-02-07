@@ -29,6 +29,7 @@ describe('RegistryController', () => {
 
     mockSettingsService = {
       getAllTrackedProjects: jest.fn(),
+      getProjectTemplateMetadata: jest.fn(),
     };
 
     mockStorageService = {
@@ -172,6 +173,89 @@ describe('RegistryController', () => {
 
       expect(result.projects).toHaveLength(1);
       expect(result.projects[0].projectName).toBeNull();
+    });
+  });
+
+  describe('getUpdateStatus', () => {
+    it('should return pending state while startup check is running', () => {
+      mockOrchestrationService.getUpdateStatus = jest.fn().mockReturnValue({
+        state: 'pending',
+        results: [],
+      });
+
+      const result = controller.getUpdateStatus();
+
+      expect(result).toEqual({
+        state: 'pending',
+        results: [],
+      });
+      expect(mockOrchestrationService.getUpdateStatus).toHaveBeenCalledTimes(1);
+    });
+
+    it('should return complete state with mapped results and templateSlug', () => {
+      mockOrchestrationService.getUpdateStatus = jest.fn().mockReturnValue({
+        state: 'complete',
+        results: [
+          {
+            projectId: 'project-1',
+            hasUpdate: true,
+            currentVersion: '0.7.0',
+            latestVersion: '0.8.0',
+            changelog: 'Improvements',
+          },
+          {
+            projectId: 'project-2',
+            hasUpdate: false,
+            currentVersion: '0.8.0',
+          },
+        ],
+      });
+      mockSettingsService.getProjectTemplateMetadata = jest
+        .fn()
+        .mockImplementation((projectId: string) => {
+          if (projectId === 'project-1') {
+            return { templateSlug: 'dev-loop' };
+          }
+          return null;
+        });
+
+      const result = controller.getUpdateStatus();
+
+      expect(result).toEqual({
+        state: 'complete',
+        results: [
+          {
+            projectId: 'project-1',
+            templateSlug: 'dev-loop',
+            hasUpdate: true,
+            currentVersion: '0.7.0',
+            latestVersion: '0.8.0',
+            changelog: 'Improvements',
+          },
+          {
+            projectId: 'project-2',
+            templateSlug: null,
+            hasUpdate: false,
+            currentVersion: '0.8.0',
+            latestVersion: undefined,
+            changelog: undefined,
+          },
+        ],
+      });
+    });
+
+    it('should return skipped state when startup check is skipped', () => {
+      mockOrchestrationService.getUpdateStatus = jest.fn().mockReturnValue({
+        state: 'skipped',
+        results: [],
+      });
+
+      const result = controller.getUpdateStatus();
+
+      expect(result).toEqual({
+        state: 'skipped',
+        results: [],
+      });
     });
   });
 });

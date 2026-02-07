@@ -3531,6 +3531,59 @@ export class LocalStorageService implements StorageService {
   // TERMINAL WATCHERS
   // ============================================
 
+  private async convertLegacyIdleWatcher(watcher: Watcher): Promise<Watcher> {
+    const rawCondition = watcher.condition as unknown as {
+      type?: string;
+      pattern?: string;
+      flags?: string;
+    };
+    if (rawCondition?.type !== 'idle') {
+      return watcher;
+    }
+
+    const parsedIdleAfterSeconds = Number.parseInt(rawCondition.pattern ?? '', 10);
+    const idleAfterSeconds =
+      Number.isFinite(parsedIdleAfterSeconds) && parsedIdleAfterSeconds > 0
+        ? parsedIdleAfterSeconds
+        : 0;
+    const convertedCondition: Watcher['condition'] = { type: 'regex', pattern: '.*' };
+    const convertedWatcher: Watcher = {
+      ...watcher,
+      idleAfterSeconds,
+      condition: convertedCondition,
+    };
+
+    logger.warn(
+      {
+        watcherId: watcher.id,
+        projectId: watcher.projectId,
+        legacyCondition: rawCondition,
+        idleAfterSeconds,
+      },
+      'Converted legacy idle watcher condition to idleAfterSeconds',
+    );
+
+    try {
+      const { terminalWatchers } = await import('../db/schema');
+      const { eq } = await import('drizzle-orm');
+      await this.db
+        .update(terminalWatchers)
+        .set({
+          idleAfterSeconds,
+          condition: convertedCondition,
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(terminalWatchers.id, watcher.id));
+    } catch (error) {
+      logger.warn(
+        { watcherId: watcher.id, error: String(error) },
+        'Failed to persist converted legacy idle watcher',
+      );
+    }
+
+    return convertedWatcher;
+  }
+
   async listWatchers(projectId: string): Promise<Watcher[]> {
     const { terminalWatchers } = await import('../db/schema');
     const { eq, desc } = await import('drizzle-orm');
@@ -3541,10 +3594,14 @@ export class LocalStorageService implements StorageService {
       .where(eq(terminalWatchers.projectId, projectId))
       .orderBy(desc(terminalWatchers.createdAt));
 
-    return rows.map((row) => ({
-      ...row,
-      condition: row.condition as Watcher['condition'],
-    })) as Watcher[];
+    const mappedWatchers = rows.map(
+      (row) =>
+        ({
+          ...row,
+          condition: row.condition as Watcher['condition'],
+        }) as Watcher,
+    );
+    return Promise.all(mappedWatchers.map((watcher) => this.convertLegacyIdleWatcher(watcher)));
   }
 
   async getWatcher(id: string): Promise<Watcher | null> {
@@ -3561,10 +3618,11 @@ export class LocalStorageService implements StorageService {
       return null;
     }
 
-    return {
+    const watcher = {
       ...result[0],
       condition: result[0].condition as Watcher['condition'],
     } as Watcher;
+    return this.convertLegacyIdleWatcher(watcher);
   }
 
   async createWatcher(data: CreateWatcher): Promise<Watcher> {
@@ -3589,6 +3647,7 @@ export class LocalStorageService implements StorageService {
       scopeFilterId: watcher.scopeFilterId,
       pollIntervalMs: watcher.pollIntervalMs,
       viewportLines: watcher.viewportLines,
+      idleAfterSeconds: watcher.idleAfterSeconds,
       condition: watcher.condition,
       cooldownMs: watcher.cooldownMs,
       cooldownMode: watcher.cooldownMode,
@@ -3638,10 +3697,14 @@ export class LocalStorageService implements StorageService {
       .where(eq(terminalWatchers.enabled, true))
       .orderBy(desc(terminalWatchers.createdAt));
 
-    return rows.map((row) => ({
-      ...row,
-      condition: row.condition as Watcher['condition'],
-    })) as Watcher[];
+    const mappedWatchers = rows.map(
+      (row) =>
+        ({
+          ...row,
+          condition: row.condition as Watcher['condition'],
+        }) as Watcher,
+    );
+    return Promise.all(mappedWatchers.map((watcher) => this.convertLegacyIdleWatcher(watcher)));
   }
 
   // ============================================

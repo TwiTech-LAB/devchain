@@ -240,6 +240,25 @@ export class RegistryController {
     };
   }
 
+  @Get('update-status')
+  @ApiOperation({ summary: 'Get startup registry update check status' })
+  @ApiResponse({ status: 200, description: 'Startup registry update check status' })
+  getUpdateStatus() {
+    const status = this.orchestrationService.getUpdateStatus();
+    return {
+      state: status.state,
+      results: status.results.map((result) => ({
+        projectId: result.projectId,
+        templateSlug:
+          this.settingsService.getProjectTemplateMetadata(result.projectId)?.templateSlug ?? null,
+        hasUpdate: result.hasUpdate,
+        currentVersion: result.currentVersion,
+        latestVersion: result.latestVersion,
+        changelog: result.changelog,
+      })),
+    };
+  }
+
   @Post('upgrade-project')
   @ApiOperation({ summary: 'Upgrade a project to a newer template version' })
   @ApiResponse({

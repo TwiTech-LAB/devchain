@@ -32,6 +32,7 @@ export const CreateWatcherSchema = z
     scopeFilterId: z.string().min(1).max(200).optional().nullable(),
     pollIntervalMs: z.number().int().min(1000).max(60000).optional().default(5000),
     viewportLines: z.number().int().min(10).max(200).optional().default(50),
+    idleAfterSeconds: z.number().int().min(0).max(3600).optional().default(0),
     condition: TriggerConditionSchema,
     cooldownMs: z.number().int().min(0).max(3600000).optional().default(60000),
     cooldownMode: z.enum(['time', 'until_clear']).optional().default('time'),
@@ -64,6 +65,7 @@ export const UpdateWatcherSchema = z.object({
   scopeFilterId: z.string().min(1).max(200).optional().nullable(),
   pollIntervalMs: z.number().int().min(1000).max(60000).optional(),
   viewportLines: z.number().int().min(10).max(200).optional(),
+  idleAfterSeconds: z.number().int().min(0).max(3600).optional(),
   condition: TriggerConditionSchema.optional(),
   cooldownMs: z.number().int().min(0).max(3600000).optional(),
   cooldownMode: z.enum(['time', 'until_clear']).optional(),
@@ -104,6 +106,7 @@ export interface WatcherDto {
   scopeFilterId: string | null;
   pollIntervalMs: number;
   viewportLines: number;
+  idleAfterSeconds: number;
   condition: TriggerCondition;
   cooldownMs: number;
   cooldownMode: 'time' | 'until_clear';

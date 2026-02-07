@@ -8,9 +8,31 @@
 // ============================================
 
 export interface TriggerCondition {
-  type: 'contains' | 'regex' | 'not_contains';
+  type: ConditionType;
   pattern: string;
   flags?: string;
+}
+
+export type ConditionType = 'contains' | 'regex' | 'not_contains';
+
+export const CONDITION_TYPE_LABELS: Record<ConditionType, string> = {
+  contains: 'Contains',
+  regex: 'Regex',
+  not_contains: 'Not Contains',
+};
+
+export const CONDITION_TYPE_DESCRIPTIONS: Record<ConditionType, string> = {
+  contains: 'Triggers when terminal output contains the pattern',
+  regex: 'Triggers when terminal output matches a regular expression',
+  not_contains: 'Triggers when terminal output does not contain the pattern',
+};
+
+export function getConditionTypeLabel(type: ConditionType): string {
+  return CONDITION_TYPE_LABELS[type];
+}
+
+export function getConditionTypeDescription(type: ConditionType): string {
+  return CONDITION_TYPE_DESCRIPTIONS[type];
 }
 
 export interface Watcher {
@@ -24,6 +46,7 @@ export interface Watcher {
   pollIntervalMs: number;
   viewportLines: number;
   condition: TriggerCondition;
+  idleAfterSeconds: number;
   cooldownMs: number;
   cooldownMode: 'time' | 'until_clear';
   eventName: string;
@@ -41,6 +64,7 @@ export interface CreateWatcherData {
   pollIntervalMs?: number;
   viewportLines?: number;
   condition: TriggerCondition;
+  idleAfterSeconds?: number;
   cooldownMs?: number;
   cooldownMode?: 'time' | 'until_clear';
   eventName: string;
@@ -55,6 +79,7 @@ export interface UpdateWatcherData {
   pollIntervalMs?: number;
   viewportLines?: number;
   condition?: TriggerCondition;
+  idleAfterSeconds?: number;
   cooldownMs?: number;
   cooldownMode?: 'time' | 'until_clear';
   eventName?: string;

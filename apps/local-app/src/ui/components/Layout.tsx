@@ -2,7 +2,6 @@ import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 're
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useSelectedProject } from '../hooks/useProjectSelection';
-import { fetchCachedTemplates, hasAnyTemplateUpdates } from '../lib/registry-updates';
 import { preloadReviewsPage } from '../pages/ReviewsPage.lazy';
 import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -81,6 +80,15 @@ interface AutoCompactBlock {
   agentName: string;
   providerId: string;
   providerName: string;
+}
+
+interface RegistryUpdateStatusResult {
+  hasUpdate: boolean;
+}
+
+interface RegistryUpdateStatusResponse {
+  state: 'pending' | 'complete' | 'skipped';
+  results?: RegistryUpdateStatusResult[];
 }
 
 // Grouped navigation sections for collapsible sidebar
@@ -169,10 +177,6 @@ const preflightIcons = {
   fail: XCircle,
 } as const;
 
-// Update check constants
-const REGISTRY_UPDATES_CHECK_KEY = 'devchain:registryUpdatesLastCheck';
-const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
-
 export function Layout(props: LayoutProps) {
   return (
     <BreadcrumbsProvider>
@@ -258,47 +262,46 @@ function LayoutShell({ children }: LayoutProps) {
     },
   });
 
-  // Check if we should run update check (throttled to every 30 min)
-  const shouldCheckUpdates = useMemo(() => {
-    if (typeof window === 'undefined') return false;
-    const lastCheck = window.localStorage.getItem(REGISTRY_UPDATES_CHECK_KEY);
-    if (!lastCheck) return true;
-    const lastCheckTime = parseInt(lastCheck, 10);
-    return Date.now() - lastCheckTime > UPDATE_CHECK_INTERVAL_MS;
-  }, []);
+  // Fetch backend-computed registry update status.
+  const { data: registryUpdateStatus } = useQuery({
+    queryKey: ['registry-update-status'],
+    queryFn: async (): Promise<RegistryUpdateStatusResponse> => {
+      const response = await fetch('/api/registry/update-status');
+      if (!response.ok) {
+        return { state: 'skipped', results: [] };
+      }
 
-  // Fetch cached templates for update check
-  const { data: updateCheckTemplates } = useQuery({
-    queryKey: ['templates-for-update-check'],
-    queryFn: fetchCachedTemplates,
-    enabled: shouldCheckUpdates,
-    staleTime: UPDATE_CHECK_INTERVAL_MS,
+      const data = (await response.json()) as Partial<RegistryUpdateStatusResponse>;
+      if (data.state !== 'pending' && data.state !== 'complete' && data.state !== 'skipped') {
+        return { state: 'skipped', results: [] };
+      }
+
+      return {
+        state: data.state,
+        results: Array.isArray(data.results)
+          ? data.results.filter(
+              (result): result is RegistryUpdateStatusResult =>
+                !!result && typeof result === 'object' && typeof result.hasUpdate === 'boolean',
+            )
+          : [],
+      };
+    },
+    refetchInterval: (query) => {
+      const data = query.state.data as RegistryUpdateStatusResponse | undefined;
+      return data?.state === 'pending' ? 5000 : false;
+    },
   });
 
-  // Run update check when templates data is available - compares cached vs remote versions
+  // Apply backend result to nav badge state.
   useEffect(() => {
-    if (!updateCheckTemplates) return;
+    if (!registryUpdateStatus || registryUpdateStatus.state !== 'complete') {
+      return;
+    }
 
-    let cancelled = false;
-
-    const runCheck = async () => {
-      const hasUpdates = await hasAnyTemplateUpdates(updateCheckTemplates);
-      if (cancelled) return;
-
-      setHasRegistryUpdates(hasUpdates);
-
-      // Record check timestamp
-      if (typeof window !== 'undefined') {
-        window.localStorage.setItem(REGISTRY_UPDATES_CHECK_KEY, String(Date.now()));
-      }
-    };
-
-    runCheck();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [updateCheckTemplates]);
+    setHasRegistryUpdates(
+      registryUpdateStatus.results?.some((result) => result.hasUpdate) ?? false,
+    );
+  }, [registryUpdateStatus]);
 
   // Clear update indicator when navigating to Registry page
   useEffect(() => {

@@ -1,10 +1,17 @@
-import { Injectable, BadRequestException, Inject, forwardRef } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  Inject,
+  forwardRef,
+  OnApplicationBootstrap,
+} from '@nestjs/common';
 import { createLogger } from '../../../common/logging/logger';
 import { RegistryClientService } from './registry-client.service';
 import { TemplateCacheService } from './template-cache.service';
 import { SettingsService } from '../../settings/services/settings.service';
 import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { ProjectsService } from '../../projects/services/projects.service';
+import { InstalledTemplate, UpdateInfo } from '../interfaces/registry.interface';
 
 const logger = createLogger('RegistryOrchestrationService');
 
@@ -33,12 +40,33 @@ export interface CreateFromRegistryResult {
   };
 }
 
+export type RegistryUpdateCheckState = 'pending' | 'complete' | 'skipped';
+
+export interface RegistryProjectUpdateStatus {
+  projectId: string;
+  hasUpdate: boolean;
+  currentVersion: string;
+  latestVersion?: string;
+  changelog?: string;
+}
+
+export interface RegistryUpdateStatus {
+  state: RegistryUpdateCheckState;
+  results: RegistryProjectUpdateStatus[];
+}
+
 /**
  * Orchestration service for registry operations
  * Coordinates between registry client, cache, and project creation
  */
 @Injectable()
-export class RegistryOrchestrationService {
+export class RegistryOrchestrationService implements OnApplicationBootstrap {
+  private updateCheckState: RegistryUpdateCheckState = 'pending';
+  private readonly updateResults = new Map<
+    string,
+    Omit<RegistryProjectUpdateStatus, 'projectId'>
+  >();
+
   constructor(
     private readonly registryClient: RegistryClientService,
     private readonly cacheService: TemplateCacheService,
@@ -47,6 +75,16 @@ export class RegistryOrchestrationService {
     @Inject(forwardRef(() => ProjectsService))
     private readonly projectsService: ProjectsService,
   ) {}
+
+  onApplicationBootstrap(): void {
+    void this.runStartupUpdateCheck().catch((error) => {
+      this.updateCheckState = 'skipped';
+      logger.error(
+        { error: error instanceof Error ? error.message : String(error) },
+        'Startup registry update check failed',
+      );
+    });
+  }
 
   /**
    * Download template to local cache if not already cached
@@ -274,5 +312,115 @@ export class RegistryOrchestrationService {
       );
       return null;
     }
+  }
+
+  getUpdateStatus(): RegistryUpdateStatus {
+    return {
+      state: this.updateCheckState,
+      results: Array.from(this.updateResults.entries()).map(([projectId, result]) => ({
+        projectId,
+        ...result,
+      })),
+    };
+  }
+
+  private async runStartupUpdateCheck(): Promise<void> {
+    this.updateCheckState = 'pending';
+    this.updateResults.clear();
+
+    const { checkUpdatesOnStartup } = this.settingsService.getRegistryConfig();
+    if (!checkUpdatesOnStartup) {
+      this.updateCheckState = 'skipped';
+      logger.debug('Startup registry update check skipped by settings');
+      return;
+    }
+
+    const registryAvailable = await this.registryClient.isAvailable();
+    if (!registryAvailable) {
+      this.updateCheckState = 'skipped';
+      logger.warn('Startup registry update check skipped: registry unavailable');
+      return;
+    }
+
+    const trackedProjects = this.settingsService.getAllTrackedProjects();
+    if (trackedProjects.length === 0) {
+      this.updateCheckState = 'complete';
+      logger.info('Startup registry update check completed: no tracked projects');
+      return;
+    }
+
+    const projectsToCheck = trackedProjects.filter(({ metadata }) => {
+      const hasInstalledVersion = metadata.installedVersion !== null;
+      const isRegistrySource = metadata.source === 'registry' || metadata.source === undefined;
+      return hasInstalledVersion && isRegistrySource;
+    });
+
+    if (projectsToCheck.length === 0) {
+      this.updateCheckState = 'complete';
+      logger.info(
+        { trackedProjects: trackedProjects.length },
+        'Startup registry update check completed: no eligible registry projects',
+      );
+      return;
+    }
+
+    const dedupedInstalled = new Map<string, InstalledTemplate>();
+    for (const { metadata } of projectsToCheck) {
+      if (!metadata.installedVersion) {
+        continue;
+      }
+      const dedupeKey = `${metadata.templateSlug}::${metadata.installedVersion}`;
+      if (!dedupedInstalled.has(dedupeKey)) {
+        dedupedInstalled.set(dedupeKey, {
+          slug: metadata.templateSlug,
+          version: metadata.installedVersion,
+        });
+      }
+    }
+
+    const updates = await this.registryClient.checkForUpdates(
+      Array.from(dedupedInstalled.values()),
+    );
+    const updatesBySlugAndVersion = new Map<string, UpdateInfo>();
+    for (const update of updates) {
+      updatesBySlugAndVersion.set(`${update.slug}::${update.currentVersion}`, update);
+    }
+
+    for (const { projectId, metadata } of projectsToCheck) {
+      if (!metadata.installedVersion) {
+        continue;
+      }
+
+      const key = `${metadata.templateSlug}::${metadata.installedVersion}`;
+      const update = updatesBySlugAndVersion.get(key);
+      if (update) {
+        this.updateResults.set(projectId, {
+          hasUpdate: true,
+          currentVersion: metadata.installedVersion,
+          latestVersion: update.latestVersion,
+          changelog: update.changelog ?? undefined,
+        });
+      } else {
+        this.updateResults.set(projectId, {
+          hasUpdate: false,
+          currentVersion: metadata.installedVersion,
+        });
+      }
+    }
+
+    await Promise.allSettled(
+      projectsToCheck.map(({ projectId }) => this.settingsService.updateLastUpdateCheck(projectId)),
+    );
+
+    this.updateCheckState = 'complete';
+    logger.info(
+      {
+        trackedProjects: trackedProjects.length,
+        checkedProjects: projectsToCheck.length,
+        dedupedTemplates: dedupedInstalled.size,
+        updatesAvailable: updates.length,
+      },
+      'Startup registry update check completed',
+    );
   }
 }

@@ -260,6 +260,7 @@ export interface Watcher {
   scopeFilterId: string | null;
   pollIntervalMs: number;
   viewportLines: number;
+  idleAfterSeconds: number;
   condition: TriggerCondition;
   cooldownMs: number;
   cooldownMode: 'time' | 'until_clear';

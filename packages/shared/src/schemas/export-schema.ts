@@ -155,6 +155,7 @@ export const ExportSchema = z
           scopeFilterName: z.string().nullable().optional(), // agent/profile/provider name
           pollIntervalMs: z.number().int(),
           viewportLines: z.number().int(),
+          idleAfterSeconds: z.number().int().min(0).max(3600).optional().default(0),
           condition: z.object({
             type: z.enum(['contains', 'regex', 'not_contains']),
             pattern: z.string(),

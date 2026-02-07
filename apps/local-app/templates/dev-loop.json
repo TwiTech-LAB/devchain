@@ -3,7 +3,7 @@
     "slug": "dev-loop",
     "name": "DevLoop",
     "description": "A multi-agent development workflow that automates software delivery through three phases:\n\n1. Planning — A Brainstormer agent collaborates with a technical validator (SubBSM) to refine user requirements into an approved master plan, then breaks it down into epics and tasks.\n2. Execution — A Coder agent implements tasks while an Epic Manager reviews and controls the flow—approving, revising, or flagging issues until all work is complete.\n3. Code Review — A Code Reviewer audits the completed work against architectural standards, generating findings that feed back into new remediation tasks if needed.\n\nSupported agents: claude, codex, gemini, glm",
-    "version": "1.0.3",
+    "version": "1.0.4",
     "category": "development",
     "tags": [
       "development",
@@ -13,12 +13,12 @@
       "glm"
     ],
     "authorName": "Devchain",
-    "changelog": "- automation updates for ChatGPT\n- new template preset added ",
+    "changelog": "",
     "minDevchainVersion": "0.8.0",
-    "publishedAt": "2026-02-03T16:56:31.822Z"
+    "publishedAt": "2026-02-07T19:28:10.288Z"
   },
   "version": 1,
-  "exportedAt": "2026-02-03T16:56:31.822Z",
+  "exportedAt": "2026-02-07T19:28:10.288Z",
   "prompts": [
     {
       "id": "c12028e0-780b-462c-8065-e0b4f7f66be8",
@@ -105,7 +105,7 @@
         {
           "name": "opus",
           "providerName": "claude",
-          "options": "--model claude-opus-4-5 --dangerously-skip-permissions --permission-mode plan",
+          "options": "--model claude-opus-4-6 --dangerously-skip-permissions --permission-mode plan",
           "env": null,
           "position": 0
         },
@@ -154,7 +154,7 @@
         {
           "name": "opus",
           "providerName": "claude",
-          "options": "--model claude-opus-4-5 --dangerously-skip-permissions --permission-mode plan",
+          "options": "--model claude-opus-4-6 --dangerously-skip-permissions --permission-mode plan",
           "env": null,
           "position": 2
         }
@@ -175,7 +175,7 @@
         {
           "name": "opus",
           "providerName": "claude",
-          "options": "--model claude-opus-4-5 --dangerously-skip-permissions",
+          "options": "--model claude-opus-4-6 --dangerously-skip-permissions",
           "env": null,
           "position": 0
         },
@@ -187,18 +187,25 @@
           "position": 1
         },
         {
+          "name": "gpt-codex-high",
+          "providerName": "codex",
+          "options": "--model=gpt-5.3-codex --config model_reasoning_effort=\"high\" --dangerously-bypass-approvals-and-sandbox",
+          "env": null,
+          "position": 2
+        },
+        {
           "name": "gpt-high",
           "providerName": "codex",
           "options": "--model=gpt-5.2 --config model_reasoning_effort=\"high\" --dangerously-bypass-approvals-and-sandbox",
           "env": null,
-          "position": 2
+          "position": 3
         },
         {
           "name": "gpt-medium",
           "providerName": "codex",
           "options": "--model=gpt-5.2 --config model_reasoning_effort=\"medium\" --dangerously-bypass-approvals-and-sandbox",
           "env": null,
-          "position": 3
+          "position": 4
         },
         {
           "name": "glm",
@@ -208,7 +215,7 @@
             "ANTHROPIC_AUTH_TOKEN": "{GLM_TOKEN}",
             "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic"
           },
-          "position": 4
+          "position": 5
         }
       ]
     },
@@ -227,7 +234,7 @@
         {
           "name": "opus",
           "providerName": "claude",
-          "options": "--model claude-opus-4-5 --dangerously-skip-permissions",
+          "options": "--model claude-opus-4-6 --dangerously-skip-permissions",
           "env": null,
           "position": 0
         },
@@ -269,7 +276,7 @@
         {
           "name": "opus",
           "providerName": "claude",
-          "options": "--model claude-opus-4-5 --dangerously-skip-permissions",
+          "options": "--model claude-opus-4-6 --dangerously-skip-permissions",
           "env": null,
           "position": 0
         },
@@ -303,14 +310,14 @@
       "name": "Coder",
       "profileId": "61f6ebb6-69c4-487a-b646-aecfb9f90dc2",
       "description": "This agent is responsible for sub epic execution; Sub Epics must be assigned onto this agent for implementation",
-      "providerConfigName": "sonnet"
+      "providerConfigName": "opus"
     },
     {
       "id": "86d56130-dbad-4f64-936b-7a262302992c",
       "name": "Epic Manager",
       "profileId": "869fb910-4cbe-451d-8e8d-3cf6ae5ec948",
       "description": null,
-      "providerConfigName": "sonnet"
+      "providerConfigName": "opus"
     },
     {
       "id": "4e91e216-d6ea-48e9-98c2-a73771a1c36c",
@@ -401,6 +408,24 @@
   },
   "watchers": [
     {
+      "id": "98ac66a9-abeb-447f-96e2-3e03bb753ab3",
+      "name": "Compact on idle",
+      "description": null,
+      "enabled": true,
+      "scope": "provider",
+      "scopeFilterName": "claude",
+      "pollIntervalMs": 60000,
+      "viewportLines": 20,
+      "idleAfterSeconds": 20,
+      "condition": {
+        "type": "regex",
+        "pattern": "Context low \\(0% remaining\\)"
+      },
+      "cooldownMs": 180000,
+      "cooldownMode": "until_clear",
+      "eventName": "watcher.conversation.compact_request"
+    },
+    {
       "id": "5c76a56a-43d0-494c-b731-ad196562980d",
       "name": "Compact monitor",
       "description": null,
@@ -409,6 +434,7 @@
       "scopeFilterName": "claude",
       "pollIntervalMs": 60000,
       "viewportLines": 20,
+      "idleAfterSeconds": 0,
       "condition": {
         "type": "regex",
         "pattern": "(?:Context (low|limit)[^(]*·.*\\/compact|input tokens exceeds the model)"
@@ -426,6 +452,7 @@
       "scopeFilterName": null,
       "pollIntervalMs": 60000,
       "viewportLines": 50,
+      "idleAfterSeconds": 0,
       "condition": {
         "type": "regex",
         "pattern": "limit.*?·.*?resets|hit your usage limit",
@@ -623,28 +650,28 @@
       ]
     },
     {
-      "name": "Tier-S[gpt5h:opus:gpt5h]",
-      "description": "Best Results , High token consumption. \nMost of the of the load is handled by ChatGPT\nRecommended for ChatGPT Pro subscriptions",
+      "name": "Tier-S[opus:gpt53:gpt52]",
+      "description": "Best Results , High token consumption. \nMost of the of the load is handled by GPT5 model\nRecommended for Claude + Codex subscriptions",
       "agentConfigs": [
         {
           "agentName": "Brainstormer",
-          "providerConfigName": "gpt-high"
+          "providerConfigName": "opus"
         },
         {
           "agentName": "Coder",
-          "providerConfigName": "gpt-high"
+          "providerConfigName": "gpt-codex-high"
         },
         {
           "agentName": "Epic Manager",
-          "providerConfigName": "gpt-high"
+          "providerConfigName": "opus"
         },
         {
           "agentName": "SubBSM",
-          "providerConfigName": "opus"
+          "providerConfigName": "gpt-high"
         },
         {
           "agentName": "Code Reviewer",
-          "providerConfigName": "opus"
+          "providerConfigName": "gpt-high"
         }
       ]
     },
@@ -671,6 +698,32 @@
         {
           "agentName": "Code Reviewer",
           "providerConfigName": "gpt-high"
+        }
+      ]
+    },
+    {
+      "name": "Tier-S[gpt5h:opus:gpt5h]",
+      "description": "Best Results , High token consumption. \nMost of the of the load is handled by ChatGPT\nRecommended for ChatGPT Pro subscriptions",
+      "agentConfigs": [
+        {
+          "agentName": "Brainstormer",
+          "providerConfigName": "gpt-high"
+        },
+        {
+          "agentName": "Coder",
+          "providerConfigName": "gpt-high"
+        },
+        {
+          "agentName": "Epic Manager",
+          "providerConfigName": "gpt-high"
+        },
+        {
+          "agentName": "SubBSM",
+          "providerConfigName": "opus"
+        },
+        {
+          "agentName": "Code Reviewer",
+          "providerConfigName": "opus"
         }
       ]
     }

@@ -69,6 +69,15 @@ describe('Watcher DTO schemas', () => {
         }),
       ).toThrow(ZodError);
     });
+
+    it('rejects idle condition type', () => {
+      expect(() =>
+        TriggerConditionSchema.parse({
+          type: 'idle',
+          pattern: '5',
+        }),
+      ).toThrow(ZodError);
+    });
   });
 
   describe('CreateWatcherSchema', () => {
@@ -87,6 +96,7 @@ describe('Watcher DTO schemas', () => {
       expect(result.scope).toBe('all');
       expect(result.pollIntervalMs).toBe(5000);
       expect(result.viewportLines).toBe(50);
+      expect(result.idleAfterSeconds).toBe(0);
       expect(result.cooldownMs).toBe(60000);
       expect(result.cooldownMode).toBe('time');
     });
@@ -101,6 +111,7 @@ describe('Watcher DTO schemas', () => {
         scopeFilterId: validUuid,
         pollIntervalMs: 10000,
         viewportLines: 100,
+        idleAfterSeconds: 120,
         condition: { type: 'regex' as const, pattern: 'error.*', flags: 'i' },
         cooldownMs: 120000,
         cooldownMode: 'until_clear' as const,
@@ -215,6 +226,22 @@ describe('Watcher DTO schemas', () => {
       ).toThrow(ZodError);
     });
 
+    it('rejects idleAfterSeconds outside range', () => {
+      expect(() =>
+        CreateWatcherSchema.parse({
+          ...minValidData,
+          idleAfterSeconds: -1,
+        }),
+      ).toThrow(ZodError);
+
+      expect(() =>
+        CreateWatcherSchema.parse({
+          ...minValidData,
+          idleAfterSeconds: 3601,
+        }),
+      ).toThrow(ZodError);
+    });
+
     it('requires scopeFilterId when scope is not "all"', () => {
       expect(() =>
         CreateWatcherSchema.parse({
@@ -269,6 +296,7 @@ describe('Watcher DTO schemas', () => {
         UpdateWatcherSchema.parse({
           enabled: false,
           cooldownMs: 30000,
+          idleAfterSeconds: 60,
         }),
       ).not.toThrow();
     });
@@ -300,6 +328,7 @@ describe('Watcher DTO schemas', () => {
       expect(result.enabled).toBeUndefined();
       expect(result.scope).toBeUndefined();
       expect(result.pollIntervalMs).toBeUndefined();
+      expect(result.idleAfterSeconds).toBeUndefined();
     });
 
     it('still validates field constraints', () => {
@@ -318,6 +347,18 @@ describe('Watcher DTO schemas', () => {
       expect(() =>
         UpdateWatcherSchema.parse({
           eventName: '123invalid',
+        }),
+      ).toThrow(ZodError);
+
+      expect(() =>
+        UpdateWatcherSchema.parse({
+          idleAfterSeconds: -1,
+        }),
+      ).toThrow(ZodError);
+
+      expect(() =>
+        UpdateWatcherSchema.parse({
+          idleAfterSeconds: 3601,
         }),
       ).toThrow(ZodError);
     });

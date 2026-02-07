@@ -65,11 +65,6 @@ jest.mock('../pages/ReviewsPage.lazy', () => ({
   preloadReviewsPage: jest.fn(),
 }));
 
-jest.mock('../lib/registry-updates', () => ({
-  fetchCachedTemplates: jest.fn().mockResolvedValue([]),
-  hasAnyTemplateUpdates: jest.fn().mockResolvedValue(false),
-}));
-
 (global as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
   observe() {}
   unobserve() {}

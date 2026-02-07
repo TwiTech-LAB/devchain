@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "description": "AI driven development platform",
   "homepage": "https://devchain.twitechlab.com/",
   "repository": {
@@ -8,6 +8,10 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.8.4": [
+      "Workaround for claude-cli auto-compact issue https://github.com/anthropics/claude-code/issues/7530",
+      "Check templates on start"
+    ],
     "0.8.3": [
       "Claude auto-compact guard: blocks sessions when Claude's auto-compact conflicts with Devchain context management",
       "Chat page help guide with improved markdown rendering"

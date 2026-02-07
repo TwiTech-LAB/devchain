@@ -6,12 +6,7 @@ import { SettingsService } from '../../settings/services/settings.service';
 import { WatchersService } from '../../watchers/services/watchers.service';
 import { WatcherRunnerService } from '../../watchers/services/watcher-runner.service';
 import { UnifiedTemplateService } from '../../registry/services/unified-template.service';
-import {
-  ValidationError,
-  NotFoundError,
-  StorageError,
-  ConflictError,
-} from '../../../common/errors/error-types';
+import { ValidationError, NotFoundError, StorageError } from '../../../common/errors/error-types';
 import * as fs from 'fs';
 import * as envConfig from '../../../common/config/env.config';
 import * as devchainShared from '@devchain/shared';
@@ -74,6 +69,9 @@ describe('ProjectsService', () => {
     getRegistryConfig: jest.Mock;
     setProjectTemplateMetadata: jest.Mock;
     getProjectTemplateMetadata: jest.Mock;
+    getProjectPresets: jest.Mock;
+    setProjectPresets: jest.Mock;
+    clearProjectPresets: jest.Mock;
   };
   let watchersService: {
     deleteWatcher: jest.Mock;
@@ -151,6 +149,7 @@ describe('ProjectsService', () => {
       getProjectTemplateMetadata: jest.fn().mockReturnValue(null),
       getProjectPresets: jest.fn().mockReturnValue([]),
       setProjectPresets: jest.fn().mockResolvedValue(undefined),
+      clearProjectPresets: jest.fn().mockResolvedValue(undefined),
     };
 
     watchersService = {
@@ -750,7 +749,7 @@ describe('ProjectsService', () => {
       });
     });
 
-    it('should throw BadRequestException for duplicate watcher eventName', async () => {
+    it('should allow duplicate watcher eventName values when importing template watchers', async () => {
       const templateWithWatcher = {
         version: 1,
         prompts: [],
@@ -759,7 +758,7 @@ describe('ProjectsService', () => {
         statuses: [],
         watchers: [
           {
-            name: 'Duplicate Event Watcher',
+            name: 'Watcher A',
             description: null,
             enabled: false,
             scope: 'all',
@@ -767,6 +766,19 @@ describe('ProjectsService', () => {
             pollIntervalMs: 5000,
             viewportLines: 100,
             condition: { type: 'contains', pattern: 'test' },
+            cooldownMs: 10000,
+            cooldownMode: 'time',
+            eventName: 'duplicate-event',
+          },
+          {
+            name: 'Watcher B',
+            description: null,
+            enabled: false,
+            scope: 'all',
+            scopeFilterName: null,
+            pollIntervalMs: 5000,
+            viewportLines: 100,
+            condition: { type: 'contains', pattern: 'another' },
             cooldownMs: 10000,
             cooldownMode: 'time',
             eventName: 'duplicate-event',
@@ -793,26 +805,27 @@ describe('ProjectsService', () => {
         },
       });
 
-      // Simulate UNIQUE constraint violation for eventName
-      watchersService.createWatcher.mockRejectedValue(
-        new Error('UNIQUE constraint failed: watchers.event_name'),
+      watchersService.createWatcher
+        .mockResolvedValueOnce({ id: 'watcher-1', enabled: false })
+        .mockResolvedValueOnce({ id: 'watcher-2', enabled: false });
+
+      const result = await service.createFromTemplate({
+        name: 'Test Project',
+        rootPath: '/test',
+        slug: 'duplicate-event-test',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.imported.watchers).toBe(2);
+      expect(watchersService.createWatcher).toHaveBeenCalledTimes(2);
+      expect(watchersService.createWatcher).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ eventName: 'duplicate-event' }),
       );
-
-      await expect(
-        service.createFromTemplate({
-          name: 'Test Project',
-          rootPath: '/test',
-          slug: 'duplicate-event-test',
-        }),
-      ).rejects.toThrow(ConflictError);
-
-      await expect(
-        service.createFromTemplate({
-          name: 'Test Project',
-          rootPath: '/test',
-          slug: 'duplicate-event-test',
-        }),
-      ).rejects.toThrow('Duplicate watcher eventName');
+      expect(watchersService.createWatcher).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ eventName: 'duplicate-event' }),
+      );
     });
 
     // Tests for templatePath flow (file-based templates)
@@ -2663,6 +2676,110 @@ describe('ProjectsService', () => {
       // Agent should NOT have providerConfigName
       expect(result.agents).toHaveLength(1);
       expect(result.agents[0].providerConfigName).toBeUndefined();
+    });
+
+    it('should export watcher idleAfterSeconds', async () => {
+      const projectId = 'project-123';
+      const watcherId = '11111111-1111-1111-1111-111111111111';
+
+      storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.listAgentProfiles.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.getInitialSessionPrompt.mockResolvedValue(null);
+      storage.listWatchers.mockResolvedValue([
+        {
+          id: watcherId,
+          projectId,
+          name: 'Idle gated watcher',
+          description: null,
+          enabled: true,
+          scope: 'all',
+          scopeFilterId: null,
+          pollIntervalMs: 60000,
+          viewportLines: 20,
+          idleAfterSeconds: 25,
+          condition: { type: 'regex', pattern: 'Context low \\(0% remaining\\)' },
+          cooldownMs: 180000,
+          cooldownMode: 'until_clear',
+          eventName: 'watcher.conversation.compact_request',
+          createdAt: '2024-01-01T00:00:00.000Z',
+          updatedAt: '2024-01-01T00:00:00.000Z',
+        },
+      ]);
+
+      const result = await service.exportProject(projectId);
+
+      expect(result.watchers).toHaveLength(1);
+      expect(result.watchers[0]).toEqual(
+        expect.objectContaining({
+          id: watcherId,
+          idleAfterSeconds: 25,
+        }),
+      );
+    });
+
+    it('should preserve watcher idleAfterSeconds on export/import round trip', async () => {
+      const projectId = 'project-123';
+      const watcherId = '22222222-2222-2222-2222-222222222222';
+
+      storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.listAgentProfiles.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.getInitialSessionPrompt.mockResolvedValue(null);
+      storage.listSubscribers.mockResolvedValue([]);
+      storage.listWatchers.mockResolvedValue([
+        {
+          id: watcherId,
+          projectId,
+          name: 'Roundtrip watcher',
+          description: null,
+          enabled: true,
+          scope: 'all',
+          scopeFilterId: null,
+          pollIntervalMs: 30000,
+          viewportLines: 50,
+          idleAfterSeconds: 20,
+          condition: { type: 'contains', pattern: 'Context low' },
+          cooldownMs: 60000,
+          cooldownMode: 'time',
+          eventName: 'watcher.roundtrip',
+          createdAt: '2024-01-01T00:00:00.000Z',
+          updatedAt: '2024-01-01T00:00:00.000Z',
+        },
+      ]);
+
+      const exported = await service.exportProject(projectId);
+      expect(exported.watchers[0].idleAfterSeconds).toBe(20);
+
+      storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+      storage.listAgentProfiles.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+      storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+      storage.listWatchers.mockResolvedValue([]);
+      storage.listSubscribers.mockResolvedValue([]);
+      storage.listEpics.mockResolvedValue({ items: [], total: 0, limit: 100000, offset: 0 });
+
+      const { _manifest: _omittedManifest, ...importPayload } = exported;
+      void _omittedManifest;
+      jest
+        .spyOn(devchainShared.ExportSchema, 'parse')
+        .mockReturnValue(importPayload as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+      await service.importProject({
+        projectId,
+        payload: importPayload,
+        dryRun: false,
+      });
+
+      expect(watchersService.createWatcher).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'Roundtrip watcher',
+          idleAfterSeconds: 20,
+        }),
+      );
     });
   });
 

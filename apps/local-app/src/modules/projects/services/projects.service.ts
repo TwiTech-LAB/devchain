@@ -904,6 +904,7 @@ export class ProjectsService {
           scopeFilterName,
           pollIntervalMs: w.pollIntervalMs,
           viewportLines: w.viewportLines,
+          idleAfterSeconds: w.idleAfterSeconds,
           condition: w.condition,
           cooldownMs: w.cooldownMs,
           cooldownMode: w.cooldownMode,
@@ -2220,7 +2221,12 @@ export class ProjectsService {
       scopeFilterName?: string | null;
       pollIntervalMs: number;
       viewportLines: number;
-      condition: { type: 'contains' | 'regex' | 'not_contains'; pattern: string; flags?: string };
+      idleAfterSeconds?: number;
+      condition: {
+        type: 'contains' | 'regex' | 'not_contains';
+        pattern: string;
+        flags?: string;
+      };
       cooldownMs: number;
       cooldownMode: 'time' | 'until_clear';
       eventName: string;
@@ -2287,38 +2293,25 @@ export class ProjectsService {
         }
       }
 
-      try {
-        // Use WatchersService.createWatcher() which handles start automatically
-        const createdWatcher = await this.watchersService.createWatcher({
-          projectId,
-          name: w.name,
-          description: w.description ?? null,
-          enabled: w.enabled,
-          scope: scopeFilterId ? w.scope : 'all', // Fallback to 'all' if not resolved
-          scopeFilterId,
-          pollIntervalMs: w.pollIntervalMs,
-          viewportLines: w.viewportLines,
-          condition: w.condition,
-          cooldownMs: w.cooldownMs,
-          cooldownMode: w.cooldownMode,
-          eventName: w.eventName,
-        });
+      // Use WatchersService.createWatcher() which handles start automatically
+      const createdWatcher = await this.watchersService.createWatcher({
+        projectId,
+        name: w.name,
+        description: w.description ?? null,
+        enabled: w.enabled,
+        scope: scopeFilterId ? w.scope : 'all', // Fallback to 'all' if not resolved
+        scopeFilterId,
+        pollIntervalMs: w.pollIntervalMs,
+        viewportLines: w.viewportLines,
+        idleAfterSeconds: w.idleAfterSeconds ?? 0,
+        condition: w.condition,
+        cooldownMs: w.cooldownMs,
+        cooldownMode: w.cooldownMode,
+        eventName: w.eventName,
+      });
 
-        if (w.id) watcherIdMap[w.id] = createdWatcher.id;
-        created++;
-      } catch (error) {
-        // Handle duplicate eventName constraint violation
-        if (
-          error instanceof Error &&
-          error.message.includes('UNIQUE constraint failed') &&
-          error.message.includes('event_name')
-        ) {
-          throw new ConflictError(`Duplicate watcher eventName: "${w.eventName}"`, {
-            hint: 'Each watcher must have a unique eventName within the project.',
-          });
-        }
-        throw error;
-      }
+      if (w.id) watcherIdMap[w.id] = createdWatcher.id;
+      created++;
     }
 
     return { created, watcherIdMap };

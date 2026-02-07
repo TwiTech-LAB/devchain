@@ -50,6 +50,7 @@ describe('WatcherRunnerService', () => {
     scopeFilterId: null,
     pollIntervalMs: 1000,
     viewportLines: 50,
+    idleAfterSeconds: 0,
     condition: { type: 'contains', pattern: 'error' },
     cooldownMs: 5000,
     cooldownMode: 'time',
@@ -915,6 +916,7 @@ describe('WatcherRunnerService', () => {
       scopeFilterId: null,
       pollIntervalMs: 1000,
       viewportLines: 50,
+      idleAfterSeconds: 0,
       condition: { type: 'contains', pattern: 'error' },
       cooldownMs: 5000,
       cooldownMode: 'time',
@@ -1079,6 +1081,7 @@ describe('WatcherRunnerService', () => {
       scopeFilterId: null,
       pollIntervalMs: 1000,
       viewportLines: 50,
+      idleAfterSeconds: 0,
       condition: { type: 'contains', pattern: 'error' },
       cooldownMs: 5000,
       cooldownMode: 'time',
@@ -1134,6 +1137,180 @@ describe('WatcherRunnerService', () => {
         expect(result.skipped).toBe(false);
         expect(result.matched).toBe(false);
         expect(result.triggered).toBe(false);
+      });
+    });
+
+    describe('idle gate', () => {
+      beforeEach(() => {
+        jest.useFakeTimers();
+        jest.setSystemTime(new Date('2024-01-01T00:10:00.000Z'));
+      });
+
+      afterEach(() => {
+        jest.useRealTimers();
+      });
+
+      it('should pass idle gate and continue to viewport capture + pattern match', async () => {
+        mockTmuxService.capturePane.mockResolvedValue('An error occurred');
+        const watcher = createTestWatcher({
+          idleAfterSeconds: 60,
+          condition: { type: 'contains', pattern: 'error' },
+          cooldownMs: 0,
+        });
+        const session = createMockSession({
+          id: 'session-idle-gate-1',
+          tmuxSessionId: 'tmux-1',
+          activityState: 'idle',
+          lastActivityAt: '2024-01-01T00:08:30.000Z',
+        });
+
+        const result = await service.checkSession(watcher, session);
+
+        expect(result.skipped).toBe(false);
+        expect(result.matched).toBe(true);
+        expect(result.triggered).toBe(true);
+        expect(mockTmuxService.capturePane).toHaveBeenCalledWith('tmux-1', 50, false);
+        expect(mockEventsService.publish).toHaveBeenCalledTimes(1);
+      });
+
+      it('should fail idle gate when session is busy', async () => {
+        const watcher = createTestWatcher({
+          idleAfterSeconds: 60,
+          condition: { type: 'contains', pattern: 'error' },
+        });
+        const session = createMockSession({
+          id: 'session-idle-gate-2',
+          tmuxSessionId: 'tmux-1',
+          activityState: 'busy',
+          lastActivityAt: '2024-01-01T00:08:30.000Z',
+        });
+
+        const result = await service.checkSession(watcher, session);
+
+        expect(result.skipped).toBe(false);
+        expect(result.matched).toBe(false);
+        expect(result.triggered).toBe(false);
+        expect(mockTmuxService.capturePane).not.toHaveBeenCalled();
+      });
+
+      it('should fail idle gate when lastActivityAt is missing', async () => {
+        const watcher = createTestWatcher({
+          idleAfterSeconds: 60,
+          condition: { type: 'contains', pattern: 'error' },
+        });
+        const session = createMockSession({
+          id: 'session-idle-gate-3',
+          tmuxSessionId: 'tmux-1',
+          activityState: 'idle',
+          lastActivityAt: null,
+        });
+
+        const result = await service.checkSession(watcher, session);
+
+        expect(result.skipped).toBe(false);
+        expect(result.matched).toBe(false);
+        expect(result.triggered).toBe(false);
+        expect(mockTmuxService.capturePane).not.toHaveBeenCalled();
+      });
+
+      it('should fail idle gate when lastActivityAt is invalid', async () => {
+        const watcher = createTestWatcher({
+          idleAfterSeconds: 60,
+          condition: { type: 'contains', pattern: 'error' },
+        });
+        const session = createMockSession({
+          id: 'session-idle-gate-invalid-ts',
+          tmuxSessionId: 'tmux-1',
+          activityState: 'idle',
+          lastActivityAt: 'not-a-date',
+        });
+
+        const result = await service.checkSession(watcher, session);
+
+        expect(result.skipped).toBe(false);
+        expect(result.matched).toBe(false);
+        expect(result.triggered).toBe(false);
+        expect(mockTmuxService.capturePane).not.toHaveBeenCalled();
+      });
+
+      it('should fail idle gate when idle duration is below threshold', async () => {
+        const watcher = createTestWatcher({
+          idleAfterSeconds: 60,
+          condition: { type: 'contains', pattern: 'error' },
+        });
+        const session = createMockSession({
+          id: 'session-idle-gate-not-enough',
+          tmuxSessionId: 'tmux-1',
+          activityState: 'idle',
+          lastActivityAt: '2024-01-01T00:09:40.000Z',
+        });
+
+        const result = await service.checkSession(watcher, session);
+
+        expect(result.skipped).toBe(false);
+        expect(result.matched).toBe(false);
+        expect(result.triggered).toBe(false);
+        expect(mockTmuxService.capturePane).not.toHaveBeenCalled();
+      });
+
+      it('should clear until_clear cooldown when idle gate fails and trigger again after recovery', async () => {
+        mockTmuxService.capturePane.mockResolvedValue('error');
+        const watcher = createTestWatcher({
+          idleAfterSeconds: 60,
+          condition: { type: 'contains', pattern: 'error' },
+          cooldownMode: 'until_clear',
+        });
+        const matchingSession = createMockSession({
+          id: 'session-idle-gate-5',
+          tmuxSessionId: 'tmux-1',
+          activityState: 'idle',
+          lastActivityAt: '2024-01-01T00:08:30.000Z',
+        });
+        const busySession = createMockSession({
+          id: 'session-idle-gate-5',
+          tmuxSessionId: 'tmux-1',
+          activityState: 'busy',
+          lastActivityAt: '2024-01-01T00:08:30.000Z',
+        });
+
+        const first = await service.checkSession(watcher, matchingSession);
+        expect(first.triggered).toBe(true);
+        expect(service.isOnCooldown('watcher-1', 'session-idle-gate-5')).toBe(true);
+        expect(mockTmuxService.capturePane).toHaveBeenCalledTimes(1);
+
+        const second = await service.checkSession(watcher, busySession);
+        expect(second.skipped).toBe(false);
+        expect(second.matched).toBe(false);
+        expect(second.triggered).toBe(false);
+        expect(service.isOnCooldown('watcher-1', 'session-idle-gate-5')).toBe(false);
+        expect(mockTmuxService.capturePane).toHaveBeenCalledTimes(1);
+
+        const third = await service.checkSession(watcher, matchingSession);
+        expect(third.triggered).toBe(true);
+        expect(mockTmuxService.capturePane).toHaveBeenCalledTimes(1);
+        expect(mockEventsService.publish).toHaveBeenCalledTimes(2);
+      });
+
+      it('should not apply idle gate when idleAfterSeconds is zero', async () => {
+        mockTmuxService.capturePane.mockResolvedValue('An error occurred');
+        const watcher = createTestWatcher({
+          idleAfterSeconds: 0,
+          condition: { type: 'contains', pattern: 'error' },
+          cooldownMs: 0,
+        });
+        const session = createMockSession({
+          id: 'session-idle-gate-6',
+          tmuxSessionId: 'tmux-1',
+          activityState: 'busy',
+          lastActivityAt: null,
+        });
+
+        const result = await service.checkSession(watcher, session);
+        expect(result.skipped).toBe(false);
+        expect(result.matched).toBe(true);
+        expect(result.triggered).toBe(true);
+        expect(mockTmuxService.capturePane).toHaveBeenCalledWith('tmux-1', 50, false);
+        expect(mockEventsService.publish).toHaveBeenCalledTimes(1);
       });
     });
 
@@ -1234,6 +1411,7 @@ describe('WatcherRunnerService', () => {
       scopeFilterId: null,
       pollIntervalMs: 1000,
       viewportLines: 50,
+      idleAfterSeconds: 0,
       condition: { type: 'contains', pattern: 'error' },
       cooldownMs: 5000,
       cooldownMode: 'time',
@@ -1401,6 +1579,7 @@ describe('WatcherRunnerService', () => {
       scopeFilterId: null,
       pollIntervalMs: 1000,
       viewportLines: 50,
+      idleAfterSeconds: 0,
       condition: { type: 'contains', pattern: 'error' },
       cooldownMs: 5000,
       cooldownMode: 'time',
@@ -1492,6 +1671,69 @@ describe('WatcherRunnerService', () => {
       expect(results).toHaveLength(2);
       expect(results[0].conditionMatched).toBe(true);
       expect(results[1].conditionMatched).toBe(false);
+    });
+
+    it('should short-circuit with idle gate info when session is busy', async () => {
+      jest.useFakeTimers();
+      jest.setSystemTime(new Date('2024-01-01T00:10:00.000Z'));
+
+      try {
+        const watcher = createTestWatcher({
+          idleAfterSeconds: 60,
+          condition: { type: 'contains', pattern: 'error' },
+        });
+        const sessions = [
+          createMockSession({
+            id: 'session-1',
+            tmuxSessionId: 'tmux-1',
+            activityState: 'busy',
+            lastActivityAt: '2024-01-01T00:09:55.000Z',
+          }),
+        ];
+        mockSessionsService.listActiveSessions.mockResolvedValue(sessions);
+
+        const results = await service.testWatcher(watcher);
+
+        expect(results).toHaveLength(1);
+        expect(results[0].viewport).toBe('[idle gate: session busy]');
+        expect(results[0].viewportHash).toHaveLength(16);
+        expect(results[0].conditionMatched).toBe(false);
+        expect(mockTmuxService.capturePane).not.toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('should continue with viewport capture when idle gate passes', async () => {
+      jest.useFakeTimers();
+      jest.setSystemTime(new Date('2024-01-01T00:10:00.000Z'));
+
+      try {
+        const watcher = createTestWatcher({
+          idleAfterSeconds: 60,
+          condition: { type: 'contains', pattern: 'error' },
+        });
+        const sessions = [
+          createMockSession({
+            id: 'session-1',
+            tmuxSessionId: 'tmux-1',
+            activityState: 'idle',
+            lastActivityAt: '2024-01-01T00:08:50.000Z',
+          }),
+        ];
+        mockSessionsService.listActiveSessions.mockResolvedValue(sessions);
+        mockTmuxService.capturePane.mockResolvedValue('An error occurred');
+
+        const results = await service.testWatcher(watcher);
+
+        expect(results).toHaveLength(1);
+        expect(results[0].viewport).toBe('An error occurred');
+        expect(results[0].conditionMatched).toBe(true);
+        expect(results[0].viewportHash).toHaveLength(16);
+        expect(mockTmuxService.capturePane).toHaveBeenCalledWith('tmux-1', 50, false);
+      } finally {
+        jest.useRealTimers();
+      }
     });
   });
 

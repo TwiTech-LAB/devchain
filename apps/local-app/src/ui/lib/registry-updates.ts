@@ -29,16 +29,6 @@ export type TemplateUpdateStatus =
   | { status: 'not-in-registry' };
 
 /**
- * Fetch cached templates from unified API
- */
-export async function fetchCachedTemplates(): Promise<CachedTemplateInfo[]> {
-  const res = await fetch('/api/templates');
-  if (!res.ok) return [];
-  const data = await res.json();
-  return data.templates || [];
-}
-
-/**
  * Fetch remote registry template info to get actual latest version.
  * Returns null if template not found in registry (API returns null/empty).
  * Throws on network errors to distinguish from "not found".
@@ -129,44 +119,6 @@ export async function checkTemplateUpdateStatus(
     // Version comparison error - treat as up-to-date rather than offline
     return { status: 'up-to-date' };
   }
-}
-
-/**
- * Check if any cached registry template has an update available remotely.
- * Returns true on first update found (short-circuits).
- */
-export async function hasAnyTemplateUpdates(templates: CachedTemplateInfo[]): Promise<boolean> {
-  // Filter to only registry templates with a cached version
-  const registryTemplates = templates.filter((t) => t.source === 'registry' && t.latestVersion);
-
-  if (registryTemplates.length === 0) {
-    return false;
-  }
-
-  // Fetch remote versions in parallel
-  const results = await Promise.allSettled(
-    registryTemplates.map(async (template) => {
-      const remote = await fetchRemoteTemplateInfo(template.slug);
-      return { template, remote };
-    }),
-  );
-
-  // Check if any template has an update available
-  for (const result of results) {
-    if (result.status !== 'fulfilled') continue;
-    const { template, remote } = result.value;
-    if (!remote || !remote.latestVersion || !template.latestVersion) continue;
-
-    try {
-      if (isLessThan(template.latestVersion, remote.latestVersion)) {
-        return true;
-      }
-    } catch {
-      // Ignore version comparison errors
-    }
-  }
-
-  return false;
 }
 
 /**

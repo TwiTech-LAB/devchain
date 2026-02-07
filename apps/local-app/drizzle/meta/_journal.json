@@ -253,6 +253,20 @@
       "when": 1769880500000,
       "tag": "0035_provider_config_position",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "6",
+      "when": 1769880600000,
+      "tag": "0036_shared_watcher_event_names",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "6",
+      "when": 1769880700000,
+      "tag": "0037_idle_after_seconds",
+      "breakpoints": true
     }
   ]
 }

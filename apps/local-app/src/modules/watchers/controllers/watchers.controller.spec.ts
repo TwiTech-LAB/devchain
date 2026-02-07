@@ -151,6 +151,40 @@ describe('WatchersController', () => {
 
       await expect(controller.createWatcher(invalidData)).rejects.toThrow(BadRequestException);
     });
+
+    it('allows creating multiple watchers with the same eventName', async () => {
+      const createData = {
+        projectId: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+        name: 'Shared Event Watcher',
+        condition: { type: 'contains' as const, pattern: 'error' },
+        eventName: 'shared.event',
+      };
+      mockWatchersService.createWatcher
+        .mockResolvedValueOnce({
+          ...mockWatcher,
+          id: 'watcher-1',
+          projectId: createData.projectId,
+          name: createData.name,
+          eventName: createData.eventName,
+        })
+        .mockResolvedValueOnce({
+          ...mockWatcher,
+          id: 'watcher-2',
+          projectId: createData.projectId,
+          name: `${createData.name} 2`,
+          eventName: createData.eventName,
+        });
+
+      const first = await controller.createWatcher(createData);
+      const second = await controller.createWatcher({
+        ...createData,
+        name: 'Shared Event Watcher 2',
+      });
+
+      expect(first.eventName).toBe('shared.event');
+      expect(second.eventName).toBe('shared.event');
+      expect(mockWatchersService.createWatcher).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe('PUT /api/watchers/:id', () => {

@@ -2050,6 +2050,7 @@ describe('LocalStorageService', () => {
       scopeFilterId: null,
       pollIntervalMs: 5000,
       viewportLines: 50,
+      idleAfterSeconds: 0,
       condition: { type: 'contains' as const, pattern: 'error' },
       cooldownMs: 60000,
       cooldownMode: 'time' as const,
@@ -2087,6 +2088,38 @@ describe('LocalStorageService', () => {
 
         expect(result).toEqual([]);
       });
+
+      it('should convert legacy idle watchers on read and persist conversion', async () => {
+        const legacyWatcher = {
+          ...mockWatcher,
+          condition: { type: 'idle', pattern: '5' },
+        };
+        const setMock = jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue(undefined),
+        });
+        mockDb.select = jest.fn().mockReturnValue({
+          from: jest.fn().mockReturnValue({
+            where: jest.fn().mockReturnValue({
+              orderBy: jest.fn().mockResolvedValue([legacyWatcher]),
+            }),
+          }),
+        });
+        mockDb.update = jest.fn().mockReturnValue({ set: setMock });
+
+        const result = await service.listWatchers('project-1');
+
+        expect(result).toHaveLength(1);
+        expect(result[0].idleAfterSeconds).toBe(5);
+        expect(result[0].condition).toEqual({ type: 'regex', pattern: '.*' });
+        expect(mockDb.update).toHaveBeenCalled();
+        expect(setMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            idleAfterSeconds: 5,
+            condition: { type: 'regex', pattern: '.*' },
+            updatedAt: expect.any(String),
+          }),
+        );
+      });
     });
 
     describe('getWatcher', () => {
@@ -2117,12 +2150,38 @@ describe('LocalStorageService', () => {
 
         expect(result).toBeNull();
       });
+
+      it('should convert legacy idle watcher in getWatcher and persist conversion', async () => {
+        const legacyWatcher = {
+          ...mockWatcher,
+          condition: { type: 'idle', pattern: '15' },
+        };
+        const setMock = jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue(undefined),
+        });
+        mockDb.select = jest.fn().mockReturnValue({
+          from: jest.fn().mockReturnValue({
+            where: jest.fn().mockReturnValue({
+              limit: jest.fn().mockResolvedValue([legacyWatcher]),
+            }),
+          }),
+        });
+        mockDb.update = jest.fn().mockReturnValue({ set: setMock });
+
+        const result = await service.getWatcher('watcher-1');
+
+        expect(result).not.toBeNull();
+        expect(result?.idleAfterSeconds).toBe(15);
+        expect(result?.condition).toEqual({ type: 'regex', pattern: '.*' });
+        expect(mockDb.update).toHaveBeenCalled();
+      });
     });
 
     describe('createWatcher', () => {
       it('should create a watcher with UUID and timestamps', async () => {
+        const valuesMock = jest.fn().mockResolvedValue(undefined);
         mockDb.insert = jest.fn().mockReturnValue({
-          values: jest.fn().mockResolvedValue(undefined),
+          values: valuesMock,
         });
 
         const createData = {
@@ -2134,6 +2193,7 @@ describe('LocalStorageService', () => {
           scopeFilterId: null,
           pollIntervalMs: 5000,
           viewportLines: 50,
+          idleAfterSeconds: 120,
           condition: { type: 'contains' as const, pattern: 'test' },
           cooldownMs: 60000,
           cooldownMode: 'time' as const,
@@ -2148,10 +2208,16 @@ describe('LocalStorageService', () => {
         );
         expect(result.name).toBe('New Watcher');
         expect(result.projectId).toBe('project-1');
+        expect(result.idleAfterSeconds).toBe(120);
         expect(result.condition).toEqual({ type: 'contains', pattern: 'test' });
         expect(result.createdAt).toBeDefined();
         expect(result.updatedAt).toBeDefined();
         expect(mockDb.insert).toHaveBeenCalled();
+        expect(valuesMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            idleAfterSeconds: 120,
+          }),
+        );
       });
     });
 
@@ -2188,6 +2254,41 @@ describe('LocalStorageService', () => {
 
         expect(result.name).toBe('Updated Watcher');
         expect(mockDb.update).toHaveBeenCalled();
+      });
+
+      it('should update idleAfterSeconds', async () => {
+        const updatedWatcher = { ...mockWatcher, idleAfterSeconds: 300 };
+        const setMock = jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue(undefined),
+        });
+
+        mockDb.select = jest
+          .fn()
+          .mockReturnValueOnce({
+            from: jest.fn().mockReturnValue({
+              where: jest.fn().mockReturnValue({
+                limit: jest.fn().mockResolvedValue([mockWatcher]),
+              }),
+            }),
+          })
+          .mockReturnValueOnce({
+            from: jest.fn().mockReturnValue({
+              where: jest.fn().mockReturnValue({
+                limit: jest.fn().mockResolvedValue([updatedWatcher]),
+              }),
+            }),
+          });
+        mockDb.update = jest.fn().mockReturnValue({ set: setMock });
+
+        const result = await service.updateWatcher('watcher-1', { idleAfterSeconds: 300 });
+
+        expect(result.idleAfterSeconds).toBe(300);
+        expect(setMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            idleAfterSeconds: 300,
+            updatedAt: expect.any(String),
+          }),
+        );
       });
 
       it('should throw NotFoundError when watcher does not exist', async () => {
@@ -2254,6 +2355,31 @@ describe('LocalStorageService', () => {
         const result = await service.listEnabledWatchers();
 
         expect(result).toEqual([]);
+      });
+
+      it('should convert legacy idle watcher in listEnabledWatchers', async () => {
+        const legacyWatcher = {
+          ...mockWatcher,
+          condition: { type: 'idle', pattern: '9' },
+        };
+        const setMock = jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue(undefined),
+        });
+        mockDb.select = jest.fn().mockReturnValue({
+          from: jest.fn().mockReturnValue({
+            where: jest.fn().mockReturnValue({
+              orderBy: jest.fn().mockResolvedValue([legacyWatcher]),
+            }),
+          }),
+        });
+        mockDb.update = jest.fn().mockReturnValue({ set: setMock });
+
+        const result = await service.listEnabledWatchers();
+
+        expect(result).toHaveLength(1);
+        expect(result[0].idleAfterSeconds).toBe(9);
+        expect(result[0].condition).toEqual({ type: 'regex', pattern: '.*' });
+        expect(mockDb.update).toHaveBeenCalled();
       });
     });
   });

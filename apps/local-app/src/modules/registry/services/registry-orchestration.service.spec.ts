@@ -57,6 +57,8 @@ describe('RegistryOrchestrationService', () => {
     mockRegistryClient = {
       downloadTemplate: jest.fn(),
       getTemplate: jest.fn(),
+      isAvailable: jest.fn().mockResolvedValue(true),
+      checkForUpdates: jest.fn().mockResolvedValue([]),
     } as unknown as jest.Mocked<RegistryClientService>;
 
     mockCacheService = {
@@ -71,10 +73,13 @@ describe('RegistryOrchestrationService', () => {
       clearProjectTemplateMetadata: jest.fn(),
       getRegistryConfig: jest.fn().mockReturnValue({
         url: 'https://test.registry.com',
+        cacheDir: '',
+        checkUpdatesOnStartup: true,
       }),
       updateLastUpdateCheck: jest.fn(),
       setProjectPresets: jest.fn(),
       getProjectPresets: jest.fn().mockReturnValue([]),
+      getAllTrackedProjects: jest.fn().mockReturnValue([]),
     } as unknown as jest.Mocked<SettingsService>;
 
     mockStorage = {
@@ -94,6 +99,10 @@ describe('RegistryOrchestrationService', () => {
       mockProjectsService,
     );
   });
+
+  const flushBackgroundTasks = async () => {
+    await new Promise((resolve) => setImmediate(resolve));
+  };
 
   describe('downloadToCache', () => {
     it('should skip download if already cached', async () => {
@@ -473,6 +482,199 @@ describe('RegistryOrchestrationService', () => {
 
       expect(result).toEqual(cached);
       expect(mockCacheService.getTemplate).toHaveBeenCalledWith('test-template', '1.0.0');
+    });
+  });
+
+  describe('startup update check', () => {
+    it('runs non-blocking on application bootstrap', async () => {
+      let resolveAvailability: ((value: boolean) => void) | undefined;
+      mockRegistryClient.isAvailable.mockReturnValue(
+        new Promise<boolean>((resolve) => {
+          resolveAvailability = resolve;
+        }),
+      );
+
+      service.onApplicationBootstrap();
+
+      expect(service.getUpdateStatus().state).toBe('pending');
+      expect(mockRegistryClient.isAvailable).toHaveBeenCalledTimes(1);
+
+      resolveAvailability?.(true);
+      await flushBackgroundTasks();
+    });
+
+    it('sets state to skipped and avoids registry calls when startup checks are disabled', async () => {
+      mockSettingsService.getRegistryConfig.mockReturnValue({
+        url: 'https://test.registry.com',
+        cacheDir: '',
+        checkUpdatesOnStartup: false,
+      });
+
+      service.onApplicationBootstrap();
+      await flushBackgroundTasks();
+
+      expect(mockRegistryClient.isAvailable).not.toHaveBeenCalled();
+      expect(mockRegistryClient.checkForUpdates).not.toHaveBeenCalled();
+      expect(service.getUpdateStatus()).toEqual({
+        state: 'skipped',
+        results: [],
+      });
+    });
+
+    it('sets state to skipped when registry is unavailable', async () => {
+      mockRegistryClient.isAvailable.mockResolvedValue(false);
+
+      service.onApplicationBootstrap();
+      await flushBackgroundTasks();
+
+      expect(mockSettingsService.getAllTrackedProjects).not.toHaveBeenCalled();
+      expect(mockRegistryClient.checkForUpdates).not.toHaveBeenCalled();
+      expect(service.getUpdateStatus()).toEqual({
+        state: 'skipped',
+        results: [],
+      });
+    });
+
+    it('sets state to complete with no results when no tracked projects exist', async () => {
+      mockSettingsService.getAllTrackedProjects.mockReturnValue([]);
+
+      service.onApplicationBootstrap();
+      await flushBackgroundTasks();
+
+      expect(mockRegistryClient.checkForUpdates).not.toHaveBeenCalled();
+      expect(service.getUpdateStatus()).toEqual({
+        state: 'complete',
+        results: [],
+      });
+    });
+
+    it('deduplicates by slug+version and maps update results per checked project', async () => {
+      mockSettingsService.getAllTrackedProjects.mockReturnValue([
+        {
+          projectId: 'project-1',
+          metadata: {
+            templateSlug: 'template-a',
+            installedVersion: '1.0.0',
+            registryUrl: 'https://test.registry.com',
+            installedAt: new Date().toISOString(),
+            source: 'registry',
+          },
+        },
+        {
+          projectId: 'project-2',
+          metadata: {
+            templateSlug: 'template-a',
+            installedVersion: '1.0.0',
+            registryUrl: 'https://test.registry.com',
+            installedAt: new Date().toISOString(),
+            source: undefined, // backward compatibility
+          },
+        },
+        {
+          projectId: 'project-3',
+          metadata: {
+            templateSlug: 'template-a',
+            installedVersion: '2.0.0',
+            registryUrl: 'https://test.registry.com',
+            installedAt: new Date().toISOString(),
+            source: 'registry',
+          },
+        },
+        {
+          projectId: 'project-4',
+          metadata: {
+            templateSlug: 'template-b',
+            installedVersion: null, // skipped (no version)
+            registryUrl: 'https://test.registry.com',
+            installedAt: new Date().toISOString(),
+            source: 'registry',
+          },
+        },
+        {
+          projectId: 'project-5',
+          metadata: {
+            templateSlug: 'template-c',
+            installedVersion: '1.0.0',
+            registryUrl: null,
+            installedAt: new Date().toISOString(),
+            source: 'bundled', // skipped (non-registry source)
+          },
+        },
+      ]);
+      mockRegistryClient.checkForUpdates.mockResolvedValue([
+        {
+          slug: 'template-a',
+          currentVersion: '1.0.0',
+          latestVersion: '1.1.0',
+          changelog: 'Bug fixes',
+        },
+      ]);
+
+      service.onApplicationBootstrap();
+      await flushBackgroundTasks();
+
+      expect(mockRegistryClient.checkForUpdates).toHaveBeenCalledWith([
+        { slug: 'template-a', version: '1.0.0' },
+        { slug: 'template-a', version: '2.0.0' },
+      ]);
+      expect(mockSettingsService.updateLastUpdateCheck).toHaveBeenCalledTimes(3);
+      expect(mockSettingsService.updateLastUpdateCheck).toHaveBeenNthCalledWith(1, 'project-1');
+      expect(mockSettingsService.updateLastUpdateCheck).toHaveBeenNthCalledWith(2, 'project-2');
+      expect(mockSettingsService.updateLastUpdateCheck).toHaveBeenNthCalledWith(3, 'project-3');
+      expect(service.getUpdateStatus()).toEqual({
+        state: 'complete',
+        results: expect.arrayContaining([
+          {
+            projectId: 'project-1',
+            hasUpdate: true,
+            currentVersion: '1.0.0',
+            latestVersion: '1.1.0',
+            changelog: 'Bug fixes',
+          },
+          {
+            projectId: 'project-2',
+            hasUpdate: true,
+            currentVersion: '1.0.0',
+            latestVersion: '1.1.0',
+            changelog: 'Bug fixes',
+          },
+          {
+            projectId: 'project-3',
+            hasUpdate: false,
+            currentVersion: '2.0.0',
+          },
+        ]),
+      });
+    });
+
+    it('stores hasUpdate false when no updates are returned', async () => {
+      mockSettingsService.getAllTrackedProjects.mockReturnValue([
+        {
+          projectId: 'project-123',
+          metadata: {
+            templateSlug: 'template-a',
+            installedVersion: '1.0.0',
+            registryUrl: 'https://test.registry.com',
+            installedAt: new Date().toISOString(),
+            source: 'registry',
+          },
+        },
+      ]);
+      mockRegistryClient.checkForUpdates.mockResolvedValue([]);
+
+      service.onApplicationBootstrap();
+      await flushBackgroundTasks();
+
+      expect(service.getUpdateStatus()).toEqual({
+        state: 'complete',
+        results: [
+          {
+            projectId: 'project-123',
+            hasUpdate: false,
+            currentVersion: '1.0.0',
+          },
+        ],
+      });
     });
   });
 

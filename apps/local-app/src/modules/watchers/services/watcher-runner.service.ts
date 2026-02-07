@@ -247,11 +247,10 @@ export class WatcherRunnerService implements OnModuleInit, OnModuleDestroy {
    * Check a single session against a watcher's conditions.
    *
    * Orchestrates the full check flow:
-   * 1. Validate session has tmuxSessionId
-   * 2. Capture viewport (with caching)
-   * 3. Match condition against viewport
-   * 4. Check trigger eligibility (cooldown + dedup)
-   * 5. Trigger event if eligible
+   * 1. Apply optional idle gate (activity state + idle duration).
+   * 2. Validate tmuxSessionId and capture viewport.
+   * 3. Match condition and check trigger eligibility (cooldown + dedup).
+   * 4. Trigger event if eligible.
    *
    * @returns Object with check results for testing/logging
    */
@@ -267,6 +266,59 @@ export class WatcherRunnerService implements OnModuleInit, OnModuleDestroy {
   }> {
     const watcherId = watcher.id;
     const sessionId = session.id;
+
+    // Idle gate: if configured, session must be idle long enough before viewport capture.
+    if (watcher.idleAfterSeconds > 0) {
+      if (session.activityState !== 'idle') {
+        const { viewportHash } = this.checkTriggerEligibility(
+          watcher,
+          sessionId,
+          'idle-gate:not-idle',
+          false,
+        );
+        return { skipped: false, matched: false, triggered: false, viewportHash };
+      }
+
+      if (!session.lastActivityAt) {
+        this.logger.debug(
+          { watcherId, sessionId },
+          'Session idle gate failed: no lastActivityAt; treating as not matched',
+        );
+        const { viewportHash } = this.checkTriggerEligibility(
+          watcher,
+          sessionId,
+          'idle-gate:no-timestamp',
+          false,
+        );
+        return { skipped: false, matched: false, triggered: false, viewportHash };
+      }
+
+      const lastActivityTs = Date.parse(session.lastActivityAt);
+      if (Number.isNaN(lastActivityTs)) {
+        this.logger.debug(
+          { watcherId, sessionId, lastActivityAt: session.lastActivityAt },
+          'Session idle gate failed: invalid lastActivityAt; treating as not matched',
+        );
+        const { viewportHash } = this.checkTriggerEligibility(
+          watcher,
+          sessionId,
+          'idle-gate:no-timestamp',
+          false,
+        );
+        return { skipped: false, matched: false, triggered: false, viewportHash };
+      }
+
+      const idleDurationMs = Date.now() - lastActivityTs;
+      if (idleDurationMs < watcher.idleAfterSeconds * 1000) {
+        const { viewportHash } = this.checkTriggerEligibility(
+          watcher,
+          sessionId,
+          'idle-gate:not-enough',
+          false,
+        );
+        return { skipped: false, matched: false, triggered: false, viewportHash };
+      }
+    }
 
     // Skip sessions without tmux session
     if (!session.tmuxSessionId) {
@@ -824,7 +876,8 @@ export class WatcherRunnerService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Test a watcher against current terminal viewports.
-   * Captures viewport and checks condition without triggering events.
+   * Applies optional idle gate first, then captures viewport and checks condition without
+   * triggering events.
    * Used for testing/previewing watcher configuration.
    *
    * @param watcher - The watcher configuration to test
@@ -853,6 +906,62 @@ export class WatcherRunnerService implements OnModuleInit, OnModuleDestroy {
     }> = [];
 
     for (const session of sessions) {
+      if (watcher.idleAfterSeconds > 0) {
+        if (session.activityState !== 'idle') {
+          const idleGateViewport = '[idle gate: session busy]';
+          results.push({
+            sessionId: session.id,
+            agentId: session.agentId ?? null,
+            tmuxSessionId: session.tmuxSessionId,
+            viewport: idleGateViewport,
+            viewportHash: this.computeViewportHash(idleGateViewport),
+            conditionMatched: false,
+          });
+          continue;
+        }
+
+        if (!session.lastActivityAt) {
+          const idleGateViewport = '[idle gate: no activity timestamp]';
+          results.push({
+            sessionId: session.id,
+            agentId: session.agentId ?? null,
+            tmuxSessionId: session.tmuxSessionId,
+            viewport: idleGateViewport,
+            viewportHash: this.computeViewportHash(idleGateViewport),
+            conditionMatched: false,
+          });
+          continue;
+        }
+
+        const lastActivityTs = Date.parse(session.lastActivityAt);
+        if (Number.isNaN(lastActivityTs)) {
+          const idleGateViewport = '[idle gate: invalid activity timestamp]';
+          results.push({
+            sessionId: session.id,
+            agentId: session.agentId ?? null,
+            tmuxSessionId: session.tmuxSessionId,
+            viewport: idleGateViewport,
+            viewportHash: this.computeViewportHash(idleGateViewport),
+            conditionMatched: false,
+          });
+          continue;
+        }
+
+        const idleDurationMs = Date.now() - lastActivityTs;
+        if (idleDurationMs < watcher.idleAfterSeconds * 1000) {
+          const idleGateViewport = '[idle gate: not enough idle time]';
+          results.push({
+            sessionId: session.id,
+            agentId: session.agentId ?? null,
+            tmuxSessionId: session.tmuxSessionId,
+            viewport: idleGateViewport,
+            viewportHash: this.computeViewportHash(idleGateViewport),
+            conditionMatched: false,
+          });
+          continue;
+        }
+      }
+
       if (!session.tmuxSessionId) {
         results.push({
           sessionId: session.id,

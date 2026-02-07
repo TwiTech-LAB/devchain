@@ -723,6 +723,8 @@ export const terminalWatchers = sqliteTable(
     // Trigger condition (JSON)
     // Schema: { type: 'contains' | 'regex' | 'not_contains', pattern: string, flags?: string }
     condition: text('condition', { mode: 'json' }).notNull(),
+    // Optional idle gate (seconds). 0 disables idle gating.
+    idleAfterSeconds: integer('idle_after_seconds').notNull().default(0),
 
     // Cooldown configuration
     cooldownMs: integer('cooldown_ms').notNull().default(60000), // Min time between triggers
@@ -740,11 +742,6 @@ export const terminalWatchers = sqliteTable(
     projectIdIdx: index('terminal_watchers_project_id_idx').on(table.projectId),
     // Index for enabled watchers (runtime queries)
     enabledIdx: index('terminal_watchers_enabled_idx').on(table.enabled),
-    // Prevent eventName collisions within a project
-    eventNameUnique: uniqueIndex('terminal_watchers_event_name_unique').on(
-      table.projectId,
-      table.eventName,
-    ),
   }),
 );
 

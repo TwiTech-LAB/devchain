@@ -36,6 +36,7 @@ import {
   toggleWatcher,
   deleteWatcher,
   testWatcher,
+  getConditionTypeLabel,
   type Watcher,
   type WatcherTestResult,
 } from '@/ui/lib/watchers';
@@ -175,10 +176,17 @@ export function WatchersTab() {
     return `${ms / 1000}s`;
   };
 
-  const formatCondition = (condition: Watcher['condition']) => {
+  const formatCondition = (watcher: Watcher) => {
+    const { condition, idleAfterSeconds } = watcher;
     const truncatedPattern =
       condition.pattern.length > 30 ? condition.pattern.slice(0, 30) + '...' : condition.pattern;
-    return `${condition.type}: ${truncatedPattern}`;
+    const conditionDisplay = `${getConditionTypeLabel(condition.type)}: ${truncatedPattern}`;
+
+    if (idleAfterSeconds > 0) {
+      return `Idle >= ${idleAfterSeconds}s + ${conditionDisplay}`;
+    }
+
+    return conditionDisplay;
   };
 
   const getScopeLabel = (watcher: Watcher) => {
@@ -320,7 +328,7 @@ export function WatchersTab() {
                       Poll: {formatPollInterval(watcher.pollIntervalMs)}
                     </Badge>
                     <Badge variant="outline" className="max-w-[200px] truncate">
-                      {formatCondition(watcher.condition)}
+                      {formatCondition(watcher)}
                     </Badge>
                     <Badge variant="secondary">{watcher.eventName}</Badge>
                   </div>

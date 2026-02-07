@@ -29,6 +29,7 @@ import {
   type Watcher,
   type CreateWatcherData,
   type UpdateWatcherData,
+  type ConditionType,
   type TriggerCondition,
 } from '@/ui/lib/watchers';
 
@@ -48,7 +49,6 @@ interface Provider {
 }
 
 type ScopeType = 'all' | 'agent' | 'profile' | 'provider';
-type ConditionType = 'contains' | 'regex' | 'not_contains';
 type CooldownMode = 'time' | 'until_clear';
 
 interface WatcherFormData {
@@ -62,6 +62,7 @@ interface WatcherFormData {
   conditionType: ConditionType;
   conditionPattern: string;
   conditionFlags: string;
+  idleAfterSeconds: number;
   cooldownMode: CooldownMode;
   cooldownMs: number;
   eventName: string;
@@ -78,6 +79,7 @@ const defaultFormData: WatcherFormData = {
   conditionType: 'contains',
   conditionPattern: '',
   conditionFlags: '',
+  idleAfterSeconds: 0,
   cooldownMode: 'time',
   cooldownMs: 30000,
   eventName: '',
@@ -152,6 +154,7 @@ export function WatcherDialog({ open, onOpenChange, watcher }: WatcherDialogProp
           conditionType: watcher.condition.type,
           conditionPattern: watcher.condition.pattern,
           conditionFlags: watcher.condition.flags || '',
+          idleAfterSeconds: watcher.idleAfterSeconds ?? 0,
           cooldownMode: watcher.cooldownMode,
           cooldownMs: watcher.cooldownMs,
           eventName: watcher.eventName,
@@ -238,6 +241,10 @@ export function WatcherDialog({ open, onOpenChange, watcher }: WatcherDialogProp
       }
     }
 
+    if (formData.idleAfterSeconds < 0 || formData.idleAfterSeconds > 3600) {
+      newErrors.idleAfterSeconds = 'Idle gate must be between 0 and 3600 seconds';
+    }
+
     if (formData.cooldownMs < 0) {
       newErrors.cooldownMs = 'Cooldown must be 0 or greater';
     }
@@ -284,6 +291,7 @@ export function WatcherDialog({ open, onOpenChange, watcher }: WatcherDialogProp
         pollIntervalMs: formData.pollIntervalMs,
         viewportLines: formData.viewportLines,
         condition,
+        idleAfterSeconds: formData.idleAfterSeconds,
         cooldownMode: formData.cooldownMode,
         cooldownMs: formData.cooldownMs,
         eventName: formData.eventName,
@@ -300,6 +308,7 @@ export function WatcherDialog({ open, onOpenChange, watcher }: WatcherDialogProp
         pollIntervalMs: formData.pollIntervalMs,
         viewportLines: formData.viewportLines,
         condition,
+        idleAfterSeconds: formData.idleAfterSeconds,
         cooldownMode: formData.cooldownMode,
         cooldownMs: formData.cooldownMs,
         eventName: formData.eventName,
@@ -428,7 +437,7 @@ export function WatcherDialog({ open, onOpenChange, watcher }: WatcherDialogProp
             <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
               Polling
             </h3>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid gap-4 grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="pollInterval">Poll Interval (ms) *</Label>
                 <Input
@@ -474,7 +483,12 @@ export function WatcherDialog({ open, onOpenChange, watcher }: WatcherDialogProp
                 <Label>Condition Type</Label>
                 <Select
                   value={formData.conditionType}
-                  onValueChange={(value: ConditionType) => updateField('conditionType', value)}
+                  onValueChange={(value: ConditionType) => {
+                    updateField('conditionType', value);
+                    if (value !== 'regex') {
+                      updateField('conditionFlags', '');
+                    }
+                  }}
                 >
                   <SelectTrigger>
                     <SelectValue />
@@ -503,7 +517,9 @@ export function WatcherDialog({ open, onOpenChange, watcher }: WatcherDialogProp
               <Input
                 id="conditionPattern"
                 value={formData.conditionPattern}
-                onChange={(e) => updateField('conditionPattern', e.target.value)}
+                onChange={(e) => {
+                  updateField('conditionPattern', e.target.value);
+                }}
                 placeholder={
                   formData.conditionType === 'regex' ? 'error|exception|failed' : 'Error:'
                 }
@@ -520,7 +536,7 @@ export function WatcherDialog({ open, onOpenChange, watcher }: WatcherDialogProp
             <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
               Cooldown
             </h3>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
               <div className="space-y-2">
                 <Label>Cooldown Mode</Label>
                 <Select
@@ -551,7 +567,32 @@ export function WatcherDialog({ open, onOpenChange, watcher }: WatcherDialogProp
                   <p className="text-sm text-destructive">{errors.cooldownMs}</p>
                 )}
               </div>
+              <div className="space-y-2">
+                <Label htmlFor="idleAfterSeconds">Only when idle for (seconds)</Label>
+                <Input
+                  id="idleAfterSeconds"
+                  type="number"
+                  min={0}
+                  max={3600}
+                  step={1}
+                  value={formData.idleAfterSeconds}
+                  onChange={(e) =>
+                    updateField('idleAfterSeconds', parseInt(e.target.value, 10) || 0)
+                  }
+                  placeholder="0 = disabled"
+                  className={errors.idleAfterSeconds ? 'border-destructive' : ''}
+                />
+                {errors.idleAfterSeconds && (
+                  <p className="text-sm text-destructive">{errors.idleAfterSeconds}</p>
+                )}
+              </div>
             </div>
+            {formData.idleAfterSeconds > 0 && (
+              <p className="text-xs text-muted-foreground">
+                Recommended: use &quot;Until Condition Clears&quot; cooldown mode for idle-gated
+                watchers.
+              </p>
+            )}
           </div>
 
           {/* Event Output */}
