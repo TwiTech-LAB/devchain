@@ -54,6 +54,7 @@ import {
   Waves,
   Zap,
   Package,
+  Sparkles,
   GitCompareArrows,
 } from 'lucide-react';
 import { ThemeSelect, type ThemeValue, getStoredTheme } from '@/ui/components/ThemeSelect';
@@ -102,6 +103,7 @@ const navSections: NavSection[] = [
       { label: 'Board', path: '/board', icon: LayoutGrid },
       { label: 'Reviews', path: '/reviews', icon: GitCompareArrows },
       { label: 'Registry', path: '/registry', icon: Package },
+      { label: 'Skills', path: '/skills', icon: Sparkles },
     ],
   },
   {

@@ -1,0 +1,1 @@
+ALTER TABLE `epics` ADD `skills_required` text;

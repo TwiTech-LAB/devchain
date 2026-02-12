@@ -20,6 +20,7 @@ import { DocumentsDisabledPage } from './pages/DocumentsDisabledPage';
 import { ProjectSelectionProvider } from './hooks/useProjectSelection';
 import { RecordsDisabledPage } from './pages/RecordsDisabledPage';
 import { RegistryPage } from './pages/RegistryPage';
+import { SkillsPage } from './pages/SkillsPage';
 
 export function App() {
   return (
@@ -34,6 +35,7 @@ export function App() {
                 <Route path="/" element={<Navigate to="/projects" replace />} />
                 <Route path="/projects" element={<ProjectsPage />} />
                 <Route path="/registry" element={<RegistryPage />} />
+                <Route path="/skills" element={<SkillsPage />} />
                 <Route path="/documents" element={<DocumentsDisabledPage />} />
                 <Route path="/prompts" element={<PromptsPage />} />
                 <Route path="/profiles" element={<ProfilesPage />} />

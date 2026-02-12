@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.8.4",
+  "version": "0.9.0",
   "description": "AI driven development platform",
   "homepage": "https://devchain.twitechlab.com/",
   "repository": {
@@ -8,6 +8,19 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.9.0": [
+      "Details: https://devchain.twitechlab.com/releases/0.9.0/",
+      "",
+      "Skills management module with sync engine and per-project controls",
+      "Five skill source adapters: Anthropic, OpenAI, Vercel, Trail of Bits, Microsoft",
+      "Source-level enable/disable with per-skill overrides",
+      "Skills UI: browsing, search, detail drawer, usage stats",
+      "MCP tools: devchain_list_skills and devchain_get_skill for agent access",
+      "DevLoop template v1.0.6: skills integration in SubBSM, Epic Manager, and Coder SOPs"
+    ],
+    "0.8.5": [
+      "Fix epic re-assignment notification when assigning to same agent"
+    ],
     "0.8.4": [
       "Workaround for claude-cli auto-compact issue https://github.com/anthropics/claude-code/issues/7530",
       "Check templates on start"
@@ -196,6 +209,7 @@
     "drizzle-orm": "0.44.6",
     "fastify": "^4.26.2",
     "get-port": "^5.1.1",
+    "gray-matter": "4.0.3",
     "hterm": "2.0.2",
     "hterm-umd": "1.0.1",
     "lucide-react": "0.545.0",
@@ -211,9 +225,11 @@
     "react-router-dom": "7.9.4",
     "reflect-metadata": "^0.2.1",
     "rxjs": "^7.8.1",
+    "semver": "^7.6.0",
     "socket.io": "4.8.1",
     "socket.io-client": "4.8.1",
     "tailwind-merge": "3.3.1",
+    "tar": "7.5.7",
     "zod": "^3.22.4"
   }
 }

@@ -14,6 +14,7 @@ import { CreateEpic, UpdateEpic, Epic } from '../../storage/models/domain.models
 import { z } from 'zod';
 import { createLogger } from '../../../common/logging/logger';
 import { EpicsService } from '../services/epics.service';
+import { SkillsRequiredInputSchema } from '../../skills/dtos/skill.dto';
 
 const logger = createLogger('EpicsController');
 
@@ -23,6 +24,7 @@ const CreateEpicSchema = z.object({
   description: z.string().nullable().optional(),
   statusId: z.string(),
   data: z.record(z.unknown()).nullable().optional(),
+  skillsRequired: SkillsRequiredInputSchema.nullable().optional(),
   tags: z.array(z.string()).optional(),
   parentId: z.string().nullable().optional(),
   agentId: z.string().nullable().optional(),
@@ -33,6 +35,7 @@ const UpdateEpicSchema = z.object({
   description: z.string().nullable().optional(),
   statusId: z.string().optional(),
   data: z.record(z.unknown()).nullable().optional(),
+  skillsRequired: SkillsRequiredInputSchema.nullable().optional(),
   tags: z.array(z.string()).optional(),
   parentId: z.string().nullable().optional(),
   agentId: z.string().nullable().optional(),
@@ -126,6 +129,7 @@ export class EpicsController {
       description: parsed.description ?? null,
       statusId: parsed.statusId,
       data: parsed.data ?? null,
+      skillsRequired: parsed.skillsRequired ?? null,
       tags: parsed.tags ?? [],
       parentId: parsed.parentId ?? null,
       agentId: parsed.agentId ?? null,

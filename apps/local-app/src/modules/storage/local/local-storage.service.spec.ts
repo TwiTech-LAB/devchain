@@ -93,6 +93,7 @@ describe('LocalStorageService', () => {
           agentId: null,
           version: 1,
           data: null,
+          skillsRequired: null,
           tags: [],
           createdAt: '2024-01-01T00:00:00Z',
           updatedAt: '2024-01-02T00:00:00Z',
@@ -158,6 +159,7 @@ describe('LocalStorageService', () => {
           agentId: 'agent-1',
           version: 1,
           data: null,
+          skillsRequired: null,
           tags: [],
           createdAt: '2024-01-05T00:00:00Z',
           updatedAt: '2024-01-06T00:00:00Z',
@@ -265,6 +267,7 @@ describe('LocalStorageService', () => {
           agentId: 'agent-1',
           version: 1,
           data: null,
+          skillsRequired: null,
           tags: ['tag'],
           createdAt: '2024-01-10T00:00:00Z',
           updatedAt: '2024-01-10T00:00:00Z',
@@ -287,6 +290,7 @@ describe('LocalStorageService', () => {
           parentId: null,
           agentId: 'agent-1',
           data: null,
+          skillsRequired: null,
           tags: ['tag'],
         });
 

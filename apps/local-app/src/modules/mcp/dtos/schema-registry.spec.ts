@@ -32,9 +32,9 @@ describe('schema-registry', () => {
       expect(extraSchemas).toEqual([]);
     });
 
-    it('matches the expected tool count (34 tools)', () => {
-      expect(toolSchemaRegistry.size).toBe(34);
-      expect(REGISTERED_TOOL_COUNT).toBe(34);
+    it('matches the expected tool count (36 tools)', () => {
+      expect(toolSchemaRegistry.size).toBe(36);
+      expect(REGISTERED_TOOL_COUNT).toBe(36);
     });
 
     it('has exactly the same count as tool-definitions', () => {
@@ -68,10 +68,12 @@ describe('schema-registry', () => {
   describe('getRegisteredToolNames', () => {
     it('returns all registered tool names', () => {
       const names = getRegisteredToolNames();
-      expect(names.length).toBe(34);
+      expect(names.length).toBe(36);
       expect(names).toContain('devchain_list_sessions');
       expect(names).toContain('devchain_update_epic');
       expect(names).toContain('devchain_resolve_comment');
+      expect(names).toContain('devchain_list_skills');
+      expect(names).toContain('devchain_get_skill');
     });
   });
 
@@ -113,6 +115,7 @@ describe('schema-registry', () => {
         'devchain_update_document',
       ],
       prompt: ['devchain_list_prompts', 'devchain_get_prompt'],
+      skill: ['devchain_list_skills', 'devchain_get_skill'],
       agent: ['devchain_list_agents', 'devchain_get_agent_by_name'],
       status: ['devchain_list_statuses'],
       epic: [

@@ -6,6 +6,7 @@ import { MoreVertical } from 'lucide-react';
 import { cn } from '@/ui/lib/utils';
 import { useTerminalWindows, type TerminalWindowState } from './TerminalWindowsContext';
 import { SessionSwitcher } from './SessionSwitcher';
+import { TerminalSessionWindowContent } from './TerminalSessionWindow';
 import { type ActiveSession } from '@/ui/lib/sessions';
 
 const SAFE_MARGIN = 16;
@@ -252,38 +253,30 @@ export function TerminalWindowsLayer() {
   const { width: viewportWidth, height: viewportHeight } = useViewportSize();
   const [portalNode, setPortalNode] = useState<HTMLElement | null>(null);
 
-  // Session switching handler - imports TerminalSessionWindowContent dynamically to avoid circular imports
-  const handleSessionSwitch = async (windowId: string, newSession: ActiveSession) => {
+  const handleSessionSwitch = (windowId: string, newSession: ActiveSession) => {
     console.log('TerminalWindowsLayer: handleSessionSwitch called', {
       windowId,
       newSessionId: newSession.id,
       newSessionAgent: newSession.agentId,
     });
 
-    try {
-      // Dynamic import to avoid circular dependency
-      const { TerminalSessionWindowContent } = await import('./TerminalSessionWindow');
+    console.log('TerminalWindowsLayer: Creating new content for session', newSession.id);
 
-      console.log('TerminalWindowsLayer: Creating new content for session', newSession.id);
+    // Update window content with new session
+    const newContent = (
+      <TerminalSessionWindowContent
+        key={newSession.id}
+        session={newSession}
+        onRequestClose={() => closeWindow(windowId)}
+      />
+    );
 
-      // Update window content with new session
-      const newContent = (
-        <TerminalSessionWindowContent
-          key={newSession.id}
-          session={newSession}
-          onRequestClose={() => closeWindow(windowId)}
-        />
-      );
+    console.log('TerminalWindowsLayer: Updating window content');
+    updateWindowContent(windowId, newContent);
 
-      console.log('TerminalWindowsLayer: Updating window content');
-      updateWindowContent(windowId, newContent);
-
-      // Update window sessionId using proper React state management
-      console.log('TerminalWindowsLayer: Updating window sessionId to', newSession.id);
-      updateWindowMeta(windowId, { sessionId: newSession.id });
-    } catch (error) {
-      console.error('Failed to switch session:', error);
-    }
+    // Update window sessionId using proper React state management
+    console.log('TerminalWindowsLayer: Updating window sessionId to', newSession.id);
+    updateWindowMeta(windowId, { sessionId: newSession.id });
   };
 
   useEffect(() => {

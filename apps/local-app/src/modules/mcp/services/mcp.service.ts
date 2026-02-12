@@ -13,7 +13,15 @@ import { EpicsService, EpicOperationContext } from '../../epics/services/epics.s
 import { SettingsService } from '../../settings/services/settings.service';
 import { GuestsService } from '../../guests/services/guests.service';
 import { ReviewsService } from '../../reviews/services/reviews.service';
-import { Document, Prompt, Status, Epic, EpicComment } from '../../storage/models/domain.models';
+import { SkillsService } from '../../skills/services/skills.service';
+import {
+  Document,
+  Prompt,
+  Status,
+  Epic,
+  EpicComment,
+  Skill,
+} from '../../storage/models/domain.models';
 import { createLogger } from '../../../common/logging/logger';
 import { ListSessionsParamsSchema } from '../dtos/schema-registry';
 import {
@@ -36,6 +44,8 @@ import {
   UpdateDocumentParamsSchema,
   ListPromptsParamsSchema,
   GetPromptParamsSchema,
+  ListSkillsParamsSchema,
+  GetSkillParamsSchema,
   ListDocumentsResponse,
   GetDocumentResponse,
   CreateDocumentResponse,
@@ -48,6 +58,9 @@ import {
   GetPromptResponse,
   PromptSummary,
   PromptDetail,
+  ListSkillsResponse,
+  GetSkillResponse,
+  SkillListItem,
   ListAgentsParamsSchema,
   GetAgentByNameParamsSchema,
   ListAgentsResponse,
@@ -181,6 +194,7 @@ export class McpService {
     @Inject(forwardRef(() => EpicsService)) private readonly epicsService?: EpicsService,
     @Inject(forwardRef(() => SettingsService)) private readonly settingsService?: SettingsService,
     @Inject(forwardRef(() => GuestsService)) private readonly guestsService?: GuestsService,
+    @Inject(forwardRef(() => SkillsService)) private readonly skillsService?: SkillsService,
     @Inject(forwardRef(() => ReviewsService)) private readonly reviewsService?: ReviewsService,
   ) {
     logger.info('McpService initialized');
@@ -265,6 +279,10 @@ export class McpService {
           return await this.listPrompts(normalizedParams);
         case 'devchain_get_prompt':
           return await this.getPrompt(normalizedParams);
+        case 'devchain_list_skills':
+          return await this.listSkills(normalizedParams);
+        case 'devchain_get_skill':
+          return await this.getSkill(normalizedParams);
         case 'devchain_list_agents':
           return await this.listAgents(normalizedParams);
         case 'devchain_get_agent_by_name':
@@ -836,6 +854,119 @@ export class McpService {
   }
 
   /**
+   * devchain_list_skills
+   */
+  private async listSkills(params: unknown): Promise<McpResponse> {
+    if (!this.skillsService) {
+      return {
+        success: false,
+        error: {
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'Skill listing requires SkillsService to be available',
+        },
+      };
+    }
+
+    const validated = ListSkillsParamsSchema.parse(params);
+
+    // Resolve session to get project context
+    const ctx = await this.resolveSessionContext(validated.sessionId);
+    if (!ctx.success) return ctx;
+    const { project } = ctx.data as SessionContext;
+
+    if (!project) {
+      return {
+        success: false,
+        error: {
+          code: 'PROJECT_NOT_FOUND',
+          message: 'No project associated with this session',
+        },
+      };
+    }
+
+    const projectSkills = await this.skillsService.listDiscoverable(project.id, { q: validated.q });
+    const response: ListSkillsResponse = {
+      skills: projectSkills.map((skill) => this.mapSkillListItem(skill)),
+      total: projectSkills.length,
+    };
+
+    return { success: true, data: response };
+  }
+
+  /**
+   * devchain_get_skill
+   */
+  private async getSkill(params: unknown): Promise<McpResponse> {
+    if (!this.skillsService) {
+      return {
+        success: false,
+        error: {
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'Skill retrieval requires SkillsService to be available',
+        },
+      };
+    }
+
+    const validated = GetSkillParamsSchema.parse(params);
+
+    // Resolve session to get project and actor context
+    const ctx = await this.resolveSessionContext(validated.sessionId);
+    if (!ctx.success) return ctx;
+    const sessionCtx = ctx.data as SessionContext;
+    const { project } = sessionCtx;
+
+    if (!project) {
+      return {
+        success: false,
+        error: {
+          code: 'PROJECT_NOT_FOUND',
+          message: 'No project associated with this session',
+        },
+      };
+    }
+
+    const normalizedSlug = validated.slug.trim().toLowerCase();
+    let skill: Skill;
+    try {
+      // get_skill intentionally bypasses project-level disable state (discovery-only filter)
+      skill = await this.skillsService.getSkillBySlug(normalizedSlug);
+    } catch (error) {
+      if (error instanceof NotFoundError) {
+        return {
+          success: false,
+          error: {
+            code: 'SKILL_NOT_FOUND',
+            message: `Skill "${validated.slug}" was not found.`,
+          },
+        };
+      }
+      if (error instanceof ValidationError) {
+        return {
+          success: false,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: error.message,
+            data: error.details,
+          },
+        };
+      }
+      throw error;
+    }
+
+    const actor = getActorFromContext(sessionCtx);
+    await this.skillsService.logUsage(
+      skill.id,
+      skill.slug,
+      project.id,
+      actor?.id ?? null,
+      actor?.name ?? null,
+    );
+
+    const response: GetSkillResponse = this.mapSkillDetail(skill);
+    return { success: true, data: response };
+  }
+
+  /**
    * devchain_list_agents
    * Returns both agents and guests for the project with type markers and online status.
    * Pagination is applied to the combined list with stable ordering (name ASC, then type).
@@ -1331,6 +1462,7 @@ export class McpService {
           tags: validated.tags ?? [],
           agentName: validated.agentName,
           parentId: validated.parentId ?? null,
+          skillsRequired: validated.skillsRequired ?? null,
         },
         context,
       );
@@ -1655,6 +1787,7 @@ export class McpService {
       agentId?: string | null;
       parentId?: string | null;
       tags?: string[];
+      skillsRequired?: string[] | null;
     } = {};
 
     if (validated.title !== undefined) {
@@ -1663,6 +1796,10 @@ export class McpService {
 
     if (validated.description !== undefined) {
       updateData.description = validated.description;
+    }
+
+    if (validated.skillsRequired !== undefined) {
+      updateData.skillsRequired = validated.skillsRequired;
     }
 
     // Resolve statusName to statusId
@@ -3120,6 +3257,8 @@ export class McpService {
 
     // Always include tags (empty array if none)
     summary.tags = epic.tags ?? [];
+    // Always include skillsRequired (empty array if none)
+    summary.skillsRequired = epic.skillsRequired ?? [];
 
     return summary;
   }
@@ -3202,6 +3341,33 @@ export class McpService {
       version: prompt.version,
       createdAt: prompt.createdAt,
       updatedAt: prompt.updatedAt,
+    };
+  }
+
+  private mapSkillListItem(skill: Skill): SkillListItem {
+    const description =
+      skill.shortDescription ||
+      (skill.description ? skill.description.slice(0, 120) : 'No description available');
+
+    return {
+      slug: skill.slug,
+      description,
+    };
+  }
+
+  private mapSkillDetail(skill: Skill): GetSkillResponse {
+    return {
+      slug: skill.slug,
+      name: skill.name,
+      description: skill.description,
+      instructionContent: skill.instructionContent,
+      contentPath: skill.contentPath,
+      resources: skill.resources,
+      sourceUrl: skill.sourceUrl,
+      license: skill.license,
+      compatibility: skill.compatibility,
+      status: skill.status,
+      frontmatter: skill.frontmatter,
     };
   }
 

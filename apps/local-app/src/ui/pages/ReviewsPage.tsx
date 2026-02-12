@@ -41,7 +41,7 @@ import {
   type ActiveSession,
   type AgentPresenceMap,
 } from '@/ui/lib/sessions';
-import { useTerminalWindowManager } from '@/ui/terminal-windows';
+import { useTerminalWindowManager } from '@/ui/terminal-windows/TerminalSessionWindow';
 import { FileNavigator } from '@/ui/components/review/FileNavigator';
 import { DiffViewer, type ViewType } from '@/ui/components/review/DiffViewer';
 import { CommentPanel, type CommentNavigationTarget } from '@/ui/components/review/CommentPanel';

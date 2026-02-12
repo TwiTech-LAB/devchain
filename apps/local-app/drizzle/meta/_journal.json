@@ -267,6 +267,27 @@
       "when": 1769880700000,
       "tag": "0037_idle_after_seconds",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "6",
+      "when": 1770812237956,
+      "tag": "0038_soft_texas_twister",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "6",
+      "when": 1770812410997,
+      "tag": "0039_early_the_spike",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "6",
+      "when": 1770843124203,
+      "tag": "0040_typical_mole_man",
+      "breakpoints": true
     }
   ]
 }

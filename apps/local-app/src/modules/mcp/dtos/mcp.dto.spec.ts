@@ -2,8 +2,10 @@ import { ZodError } from 'zod';
 import {
   ChatAckParamsSchema,
   ChatListMembersParamsSchema,
+  CreateEpicParamsSchema,
   TmuxSessionIdSchema,
   RegisterGuestParamsSchema,
+  UpdateEpicParamsSchema,
 } from './mcp.dto';
 
 describe('TmuxSessionIdSchema - command injection prevention', () => {
@@ -162,5 +164,38 @@ describe('MCP chat DTO schemas', () => {
       expect(unrecognizedIssue).toBeDefined();
       expect((unrecognizedIssue as { keys: string[] }).keys).toContain('unknown_param');
     }
+  });
+});
+
+describe('MCP epic DTO schemas - skillsRequired validation', () => {
+  it('normalizes and deduplicates skillsRequired for create epic params', () => {
+    const parsed = CreateEpicParamsSchema.parse({
+      sessionId: 'abcd1234',
+      title: 'Epic',
+      skillsRequired: [' OpenAI/Review ', 'openai/review', 'anthropic/pdf'],
+    });
+
+    expect(parsed.skillsRequired).toEqual(['openai/review', 'anthropic/pdf']);
+  });
+
+  it('rejects malformed skillsRequired values for create epic params', () => {
+    expect(() =>
+      CreateEpicParamsSchema.parse({
+        sessionId: 'abcd1234',
+        title: 'Epic',
+        skillsRequired: ['openai'],
+      }),
+    ).toThrow(ZodError);
+  });
+
+  it('rejects malformed skillsRequired values for update epic params', () => {
+    expect(() =>
+      UpdateEpicParamsSchema.parse({
+        sessionId: 'abcd1234',
+        id: '00000000-0000-0000-0000-000000000001',
+        version: 1,
+        skillsRequired: ['../traversal'],
+      }),
+    ).toThrow(ZodError);
   });
 });

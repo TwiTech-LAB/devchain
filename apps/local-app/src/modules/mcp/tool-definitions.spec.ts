@@ -17,8 +17,8 @@ function unwrapZodSchema(schema: ZodSchema): ZodSchema {
 describe('tool-definitions', () => {
   const tools = getToolDefinitions();
 
-  it('exports exactly 34 tool definitions', () => {
-    expect(tools.length).toBe(34);
+  it('exports exactly 36 tool definitions', () => {
+    expect(tools.length).toBe(36);
   });
 
   it('all tools have required shape (name, description, inputSchema)', () => {

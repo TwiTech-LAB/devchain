@@ -79,6 +79,7 @@
     "dotenv": "^16.4.5",
     "drizzle-orm": "0.44.6",
     "fastify": "^4.26.2",
+    "gray-matter": "4.0.3",
     "lucide-react": "0.545.0",
     "node-pty": "1.2.0-beta.2",
     "pino": "^8.19.0",
@@ -97,6 +98,7 @@
     "socket.io": "4.8.1",
     "socket.io-client": "4.8.1",
     "tailwind-merge": "3.3.1",
+    "tar": "7.5.7",
     "zod": "^3.22.4"
   },
   "devDependencies": {

@@ -32,9 +32,52 @@ export interface Epic {
   agentId: string | null;
   version: number; // For optimistic locking
   data: Record<string, unknown> | null;
+  skillsRequired: string[] | null;
   tags: string[];
   createdAt: string;
   updatedAt: string;
+}
+
+export type SkillStatus = 'available' | 'outdated' | 'sync_error';
+
+export interface Skill {
+  id: string;
+  slug: string;
+  name: string;
+  displayName: string;
+  description: string | null;
+  shortDescription: string | null;
+  source: string;
+  sourceUrl: string | null;
+  sourceCommit: string | null;
+  category: string | null;
+  license: string | null;
+  compatibility: string | null;
+  frontmatter: Record<string, unknown> | null;
+  instructionContent: string | null;
+  contentPath: string | null;
+  resources: string[];
+  status: SkillStatus;
+  lastSyncedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SkillProjectDisabled {
+  id: string;
+  projectId: string;
+  skillId: string;
+  createdAt: string;
+}
+
+export interface SkillUsageLog {
+  id: string;
+  skillId: string;
+  skillSlug: string;
+  projectId: string | null;
+  agentId: string | null;
+  agentNameSnapshot: string | null;
+  accessedAt: string;
 }
 
 export interface Prompt {
@@ -155,12 +198,22 @@ export type UpdateStatus = Partial<Omit<Status, 'id' | 'createdAt' | 'updatedAt'
 
 export type CreateEpic = Omit<
   Epic,
-  'id' | 'version' | 'createdAt' | 'updatedAt' | 'parentId' | 'agentId'
+  'id' | 'version' | 'createdAt' | 'updatedAt' | 'parentId' | 'agentId' | 'skillsRequired'
 > & {
   parentId?: string | null;
   agentId?: string | null;
+  skillsRequired?: string[] | null;
 };
 export type UpdateEpic = Partial<Omit<Epic, 'id' | 'createdAt' | 'updatedAt'>>;
+
+export type CreateSkill = Omit<Skill, 'id' | 'createdAt' | 'updatedAt'>;
+export type UpdateSkill = Partial<Omit<Skill, 'id' | 'createdAt' | 'updatedAt'>>;
+
+export type CreateSkillProjectDisabled = Omit<SkillProjectDisabled, 'id' | 'createdAt'>;
+export type UpdateSkillProjectDisabled = Partial<Omit<SkillProjectDisabled, 'id' | 'createdAt'>>;
+
+export type CreateSkillUsageLog = Omit<SkillUsageLog, 'id'>;
+export type UpdateSkillUsageLog = Partial<Omit<SkillUsageLog, 'id'>>;
 
 export type CreatePrompt = Omit<Prompt, 'id' | 'version' | 'createdAt' | 'updatedAt'>;
 export type UpdatePrompt = Partial<Omit<Prompt, 'id' | 'createdAt' | 'updatedAt'>>;

@@ -162,6 +162,46 @@ export function getToolDefinitions() {
       },
     },
     {
+      name: 'devchain_list_skills',
+      description:
+        "List skills available to the session's project, excluding disabled skills. Use q for optional keyword filtering.",
+      inputSchema: {
+        type: 'object',
+        required: ['sessionId'],
+        properties: {
+          sessionId: {
+            type: 'string',
+            description: 'Session ID (full UUID or 8+ char prefix)',
+          },
+          q: {
+            type: 'string',
+            description: 'Optional search query matched against skill fields',
+          },
+        },
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'devchain_get_skill',
+      description:
+        'Get a skill by slug with full content/details and record usage from session context. Works even when the skill is disabled (disable only affects discovery).',
+      inputSchema: {
+        type: 'object',
+        required: ['sessionId', 'slug'],
+        properties: {
+          sessionId: {
+            type: 'string',
+            description: 'Session ID (full UUID or 8+ char prefix)',
+          },
+          slug: {
+            type: 'string',
+            description: 'Skill slug in source/name form (for example: anthropic/code-review)',
+          },
+        },
+        additionalProperties: false,
+      },
+    },
+    {
       name: 'devchain_list_agents',
       description: 'List agents for the project resolved from the session',
       inputSchema: {
@@ -290,6 +330,11 @@ export function getToolDefinitions() {
             type: 'string',
             description: 'Optional parent epic UUID to nest this epic under',
           },
+          skillsRequired: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Optional list of required skill slugs for this epic',
+          },
         },
         additionalProperties: false,
       },
@@ -393,6 +438,11 @@ export function getToolDefinitions() {
           },
           addTags: { type: 'array', items: { type: 'string' }, description: 'Tags to add' },
           removeTags: { type: 'array', items: { type: 'string' }, description: 'Tags to remove' },
+          skillsRequired: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Replace required skill slugs for this epic',
+          },
         },
         additionalProperties: false,
       },

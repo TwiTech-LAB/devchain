@@ -240,6 +240,62 @@ describe('EpicAssignmentNotifierSubscriber', () => {
     expect(launchSessionMock).not.toHaveBeenCalled();
   });
 
+  describe('re-assignment (same agent)', () => {
+    it('notifies agent on re-assignment by different actor', async () => {
+      const payload = {
+        epicId: 'epic-1',
+        projectId: 'project-1',
+        version: 2,
+        epicTitle: 'Re-assigned Epic',
+        projectName: 'Demo Project',
+        actor: { type: 'agent' as const, id: 'agent-2' },
+        changes: {
+          agentId: {
+            previous: 'agent-1',
+            current: 'agent-1',
+            currentName: 'Coder',
+          },
+        },
+      };
+
+      await subscriber.handleEpicUpdated(payload);
+
+      expect(enqueueMock).toHaveBeenCalledTimes(1);
+      expect(enqueueMock).toHaveBeenCalledWith(
+        'agent-1',
+        expect.any(String),
+        expect.objectContaining({
+          source: 'epic.assigned',
+          projectId: 'project-1',
+          agentName: 'Coder',
+        }),
+      );
+    });
+
+    it('skips notification on re-assignment when actor is same agent', async () => {
+      const payload = {
+        epicId: 'epic-1',
+        projectId: 'project-1',
+        version: 2,
+        epicTitle: 'Self Re-assigned Epic',
+        projectName: 'Demo Project',
+        actor: { type: 'agent' as const, id: 'agent-1' },
+        changes: {
+          agentId: {
+            previous: 'agent-1',
+            current: 'agent-1',
+            currentName: 'Coder',
+          },
+        },
+      };
+
+      await subscriber.handleEpicUpdated(payload);
+
+      expect(enqueueMock).not.toHaveBeenCalled();
+      expect(launchSessionMock).not.toHaveBeenCalled();
+    });
+  });
+
   describe('self-assignment detection', () => {
     describe('epic.updated', () => {
       it('skips enqueue when agent assigns epic to themselves', async () => {

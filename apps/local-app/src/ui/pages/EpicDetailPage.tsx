@@ -3,6 +3,7 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '../hooks/use-toast';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
+import { resolveSkillSlugs, type SkillSummary } from '@/ui/lib/skills';
 import { useTerminalWindowManager } from '@/ui/terminal-windows';
 import { Button } from '@/ui/components/ui/button';
 import { Badge } from '@/ui/components/ui/badge';
@@ -28,6 +29,8 @@ import { Alert, AlertDescription, AlertTitle } from '@/ui/components/ui/alert';
 import { Popover, PopoverContent, PopoverTrigger } from '@/ui/components/ui/popover';
 import { SubEpicsBoard } from '@/ui/components/shared/SubEpicsBoard';
 import { Breadcrumbs } from '@/ui/components/shared/Breadcrumbs';
+import { CategoryBadge } from '@/ui/components/skills/CategoryBadge';
+import { SkillDetailDrawer } from '@/ui/components/skills/SkillDetailDrawer';
 import {
   Play,
   Square,
@@ -41,6 +44,7 @@ import {
   FileText,
   Layers,
   Plus,
+  Sparkles,
   User,
 } from 'lucide-react';
 
@@ -67,6 +71,7 @@ interface Epic {
   parentId: string | null;
   agentId: string | null;
   tags: string[];
+  skillsRequired: string[] | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -354,6 +359,7 @@ export function EpicDetailPage() {
   const [titleDraft, setTitleDraft] = useState('');
   const [titleEditing, setTitleEditing] = useState(false);
   const [descriptionDraft, setDescriptionDraft] = useState('');
+  const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
   const [addSubEpicOpen, setAddSubEpicOpen] = useState(false);
   const [addSubEpicForm, setAddSubEpicForm] = useState({ title: '', statusId: '' });
   const [searchParams] = useSearchParams();
@@ -414,6 +420,46 @@ export function EpicDetailPage() {
     enabled: !!epic?.id,
   });
   const subEpicsRaw = subEpicsData?.items || [];
+
+  const requiredSkillSlugs = useMemo(() => {
+    const input = epic?.skillsRequired ?? [];
+    const seen = new Set<string>();
+    const ordered: string[] = [];
+    for (const slug of input) {
+      const normalized = slug.trim().toLowerCase();
+      if (!normalized || seen.has(normalized)) {
+        continue;
+      }
+      seen.add(normalized);
+      ordered.push(normalized);
+    }
+    return ordered;
+  }, [epic?.skillsRequired]);
+
+  const skillResolveKeySlugs = useMemo(
+    () => [...requiredSkillSlugs].sort((left, right) => left.localeCompare(right)),
+    [requiredSkillSlugs],
+  );
+
+  const {
+    data: resolvedSkillsData,
+    isLoading: skillsResolveLoading,
+    isError: skillsResolveError,
+  } = useQuery({
+    queryKey: ['skills-resolve', skillResolveKeySlugs],
+    queryFn: () => resolveSkillSlugs(skillResolveKeySlugs),
+    enabled: skillResolveKeySlugs.length > 0,
+  });
+  const resolvedSkills: Record<string, SkillSummary> = resolvedSkillsData ?? {};
+
+  const requiredSkills = useMemo(
+    () =>
+      requiredSkillSlugs.map((slug) => ({
+        slug,
+        skill: resolvedSkills[slug] ?? null,
+      })),
+    [requiredSkillSlugs, resolvedSkills],
+  );
 
   const { data: commentsData, isLoading: commentsLoading } = useQuery({
     queryKey: ['epic-comments', epic?.id],
@@ -1368,6 +1414,81 @@ export function EpicDetailPage() {
             </Card>
           )}
 
+          {requiredSkillSlugs.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Sparkles className="h-5 w-5" />
+                  Required Skills ({requiredSkillSlugs.length})
+                </CardTitle>
+                <CardDescription>Skills attached to this epic.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {skillsResolveLoading ? (
+                  <div className="flex items-center justify-center py-4">
+                    <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                  </div>
+                ) : skillsResolveError ? (
+                  <p className="text-sm text-destructive">
+                    Failed to resolve skills. Showing slug references only.
+                  </p>
+                ) : null}
+
+                <div className="space-y-2">
+                  {requiredSkills.map(({ slug, skill }) => {
+                    const resolvedSkill = skill;
+                    const skillFound = Boolean(resolvedSkill && resolvedSkill.id);
+                    const displayName =
+                      resolvedSkill?.displayName?.trim() || resolvedSkill?.name?.trim() || slug;
+
+                    return (
+                      <button
+                        key={slug}
+                        type="button"
+                        disabled={!skillFound}
+                        onClick={() => {
+                          if (resolvedSkill?.id) {
+                            setSelectedSkillId(resolvedSkill.id);
+                          }
+                        }}
+                        className={`w-full rounded-lg border p-3 text-left transition-colors ${
+                          skillFound
+                            ? 'hover:bg-muted/40 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2'
+                            : 'cursor-not-allowed opacity-80'
+                        }`}
+                      >
+                        <div className="space-y-2">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium">{displayName}</p>
+                              <p className="truncate text-xs text-muted-foreground">{slug}</p>
+                            </div>
+                            <Badge variant="outline">
+                              {resolvedSkill?.source ?? 'Unknown source'}
+                            </Badge>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2">
+                            {skillFound ? (
+                              <CategoryBadge category={resolvedSkill?.category ?? null} />
+                            ) : (
+                              <Badge variant="outline" className="text-muted-foreground">
+                                Skill not found
+                              </Badge>
+                            )}
+                            {skillFound ? null : (
+                              <span className="text-xs text-muted-foreground">Skill not found</span>
+                            )}
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           <Card>
             <CardHeader>
               <CardTitle>Metadata</CardTitle>
@@ -1410,6 +1531,7 @@ export function EpicDetailPage() {
           </Card>
         </aside>
       </div>
+      <SkillDetailDrawer skillId={selectedSkillId} onClose={() => setSelectedSkillId(null)} />
     </div>
   );
 }

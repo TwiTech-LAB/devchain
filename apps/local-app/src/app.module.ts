@@ -7,6 +7,7 @@ import { SessionsModule } from './modules/sessions/sessions.module';
 import { McpModule } from './modules/mcp/mcp.module';
 import { UiModule } from './modules/ui/ui.module';
 import { SettingsModule } from './modules/settings/settings.module';
+import { SkillsModule } from './modules/skills/skills.module';
 import { ProjectsModule } from './modules/projects/projects.module';
 import { PromptsModule } from './modules/prompts/prompts.module';
 import { ProfilesModule } from './modules/profiles/profiles.module';
@@ -38,6 +39,7 @@ import { AllWsExceptionsFilter } from './common/filters/ws-exception.filter';
     McpModule,
     UiModule,
     SettingsModule,
+    SkillsModule,
     ProjectsModule,
     PromptsModule,
     ProfilesModule,

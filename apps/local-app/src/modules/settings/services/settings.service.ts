@@ -47,6 +47,7 @@ export const DEFAULT_MESSAGE_POOL_MAX_MESSAGES = 10;
 export const MIN_MESSAGE_POOL_MAX_MESSAGES = 1;
 export const MAX_MESSAGE_POOL_MAX_MESSAGES = 100;
 export const DEFAULT_MESSAGE_POOL_SEPARATOR = '\n---\n';
+export const DEFAULT_SKILLS_SYNC_ON_STARTUP = true;
 
 /**
  * Per-project message pool settings
@@ -111,6 +112,22 @@ export class SettingsService {
         const valueStr = this.decodeStringSetting(row.value);
         settings.registry = settings.registry ?? {};
         settings.registry.checkUpdatesOnStartup = valueStr === 'true';
+      } else if (row.key === 'skills.syncOnStartup') {
+        const valueStr = this.decodeStringSetting(row.value);
+        settings.skills = settings.skills ?? {};
+        settings.skills.syncOnStartup = valueStr === 'true';
+      } else if (row.key === 'skills.sources') {
+        try {
+          const parsed = JSON.parse(row.value);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            settings.skills = settings.skills ?? {};
+            settings.skills.sources = this.normalizeSkillSourcesMap(
+              parsed as Record<string, unknown>,
+            );
+          }
+        } catch (error) {
+          logger.warn({ error }, 'Failed to parse skills.sources');
+        }
       } else if (row.key === 'claudeBinaryPath') {
         settings.claudeBinaryPath = row.value;
       } else if (row.key === 'codexBinaryPath') {
@@ -492,6 +509,23 @@ export class SettingsService {
         }
       }
 
+      // Skills settings
+      if (settings.skills !== undefined) {
+        if (settings.skills.syncOnStartup !== undefined) {
+          stmt.run(
+            randomUUID(),
+            'skills.syncOnStartup',
+            String(settings.skills.syncOnStartup),
+            now,
+            now,
+          );
+        }
+        if (settings.skills.sources !== undefined) {
+          const encodedMap = JSON.stringify(this.normalizeSkillSourcesMap(settings.skills.sources));
+          stmt.run(randomUUID(), 'skills.sources', encodedMap, now, now);
+        }
+      }
+
       // Registry templates (per-project template tracking)
       if (settings.registryTemplates !== undefined) {
         const encodedMap = JSON.stringify(settings.registryTemplates);
@@ -564,6 +598,61 @@ export class SettingsService {
       return DEFAULT_TERMINAL_SCROLLBACK;
     }
     return Math.max(MIN_TERMINAL_SCROLLBACK, Math.min(MAX_TERMINAL_SCROLLBACK, parsed));
+  }
+
+  /**
+   * Get whether skills sync should run on startup.
+   * Defaults to true when unset.
+   */
+  getSkillsSyncOnStartup(): boolean {
+    const value = this.getSetting('skills.syncOnStartup');
+    if (value === undefined || value.trim().length === 0) {
+      return DEFAULT_SKILLS_SYNC_ON_STARTUP;
+    }
+    return value === 'true';
+  }
+
+  /**
+   * Get source-level skills enablement map.
+   * Missing keys imply enabled by default at call sites.
+   */
+  getSkillSourcesEnabled(): Record<string, boolean> {
+    const raw = this.getSetting('skills.sources');
+    if (!raw || raw.trim().length === 0) {
+      return {};
+    }
+
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return {};
+      }
+      return this.normalizeSkillSourcesMap(parsed as Record<string, unknown>);
+    } catch (error) {
+      logger.warn({ error }, 'Failed to parse skills.sources setting');
+      return {};
+    }
+  }
+
+  /**
+   * Enable or disable a specific skill source globally.
+   */
+  async setSkillSourceEnabled(sourceName: string, enabled: boolean): Promise<void> {
+    const normalizedSourceName = sourceName.trim().toLowerCase();
+    if (!normalizedSourceName) {
+      throw new ValidationError('sourceName is required.', { fieldName: 'sourceName' });
+    }
+
+    const current = this.getSkillSourcesEnabled();
+    current[normalizedSourceName] = enabled;
+
+    await this.updateSettings({
+      skills: {
+        sources: current,
+      },
+    });
+
+    logger.info({ sourceName: normalizedSourceName, enabled }, 'Skill source enablement updated');
   }
 
   /**
@@ -829,6 +918,21 @@ export class SettingsService {
     }
 
     return trimmed;
+  }
+
+  private normalizeSkillSourcesMap(rawMap: Record<string, unknown>): Record<string, boolean> {
+    const normalized: Record<string, boolean> = {};
+    for (const [rawKey, rawValue] of Object.entries(rawMap)) {
+      if (typeof rawValue !== 'boolean') {
+        continue;
+      }
+      const normalizedKey = rawKey.trim().toLowerCase();
+      if (!normalizedKey) {
+        continue;
+      }
+      normalized[normalizedKey] = rawValue;
+    }
+    return normalized;
   }
 
   private extractPromptId(value: unknown): string | null {

@@ -79,6 +79,11 @@ const RegistryConfigSchema = z.object({
   checkUpdatesOnStartup: z.boolean().optional(),
 });
 
+const SkillsSettingsSchema = z.object({
+  syncOnStartup: z.boolean().optional(),
+  sources: z.record(z.string().min(1), z.boolean()).optional(),
+});
+
 // Message pool settings for batching messages to agent sessions
 const MessagePoolSettingsSchema = z.object({
   // Whether message pooling is enabled (default: true)
@@ -133,6 +138,8 @@ export const SettingsSchema = z.object({
   messagePool: MessagePoolSettingsSchema.optional(),
   // Registry configuration
   registry: RegistryConfigSchema.optional(),
+  // Skills configuration
+  skills: SkillsSettingsSchema.optional(),
   // Per-project template tracking: projectId -> metadata
   registryTemplates: z.record(z.string(), RegistryTemplateMetadataSchema).optional(),
   // Per-project template presets: projectId -> array of presets

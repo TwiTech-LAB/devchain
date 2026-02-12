@@ -178,6 +178,7 @@ export interface CreateEpicForProjectInput {
   agentId?: string | null;
   agentName?: string;
   parentId?: string | null;
+  skillsRequired?: string[] | null;
 }
 
 export interface ListReviewsOptions extends ListOptions {

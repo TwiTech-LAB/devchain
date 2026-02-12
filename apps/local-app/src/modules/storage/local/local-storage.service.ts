@@ -149,6 +149,44 @@ export class LocalStorageService implements StorageService {
     }
   }
 
+  private parseSkillsRequired(raw: unknown): string[] | null {
+    if (raw === null || raw === undefined) {
+      return null;
+    }
+
+    if (Array.isArray(raw)) {
+      if (raw.every((value) => typeof value === 'string')) {
+        return raw;
+      }
+      return null;
+    }
+
+    if (typeof raw !== 'string') {
+      return null;
+    }
+
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(trimmed);
+      return Array.isArray(parsed) && parsed.every((value) => typeof value === 'string')
+        ? parsed
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private serializeSkillsRequired(skillsRequired: string[] | null | undefined): string | null {
+    if (skillsRequired === null || skillsRequired === undefined) {
+      return null;
+    }
+    return JSON.stringify(skillsRequired);
+  }
+
   private async ensureValidEpicParent(
     projectId: string,
     parentId?: string | null,
@@ -980,6 +1018,7 @@ export class LocalStorageService implements StorageService {
       agentId: data.agentId ?? null,
       version: 1,
       data: data.data ?? null,
+      skillsRequired: data.skillsRequired ?? null,
       tags: data.tags ?? [],
       createdAt: now,
       updatedAt: now,
@@ -995,6 +1034,7 @@ export class LocalStorageService implements StorageService {
       agentId: epic.agentId,
       version: epic.version,
       data: epic.data ? JSON.stringify(epic.data) : null,
+      skillsRequired: this.serializeSkillsRequired(epic.skillsRequired),
       createdAt: epic.createdAt,
       updatedAt: epic.updatedAt,
     });
@@ -1047,8 +1087,10 @@ export class LocalStorageService implements StorageService {
 
     return {
       ...result[0],
+      data: result[0].data as Record<string, unknown> | null,
+      skillsRequired: this.parseSkillsRequired(result[0].skillsRequired),
       tags: epicTagsResult.map((et) => et.tag.name),
-    } as Epic;
+    };
   }
 
   async listEpics(projectId: string, options: ListOptions = {}): Promise<ListResult<Epic>> {
@@ -1072,6 +1114,7 @@ export class LocalStorageService implements StorageService {
     const itemsWithTags: Epic[] = items.map((item) => ({
       ...item,
       data: item.data as Record<string, unknown> | null,
+      skillsRequired: this.parseSkillsRequired(item.skillsRequired),
       tags: tagsMap.get(item.id) ?? [],
     }));
 
@@ -1104,6 +1147,7 @@ export class LocalStorageService implements StorageService {
     const itemsWithTags: Epic[] = items.map((item) => ({
       ...item,
       data: item.data as Record<string, unknown> | null,
+      skillsRequired: this.parseSkillsRequired(item.skillsRequired),
       tags: tagsMap.get(item.id) ?? [],
     }));
 
@@ -1204,6 +1248,7 @@ export class LocalStorageService implements StorageService {
     const items: Epic[] = rows.map((row) => ({
       ...row.epic,
       data: row.epic.data as Record<string, unknown> | null,
+      skillsRequired: this.parseSkillsRequired(row.epic.skillsRequired),
       tags: tagsMap.get(row.epic.id) ?? [],
     }));
 
@@ -1268,6 +1313,7 @@ export class LocalStorageService implements StorageService {
     const items: Epic[] = rows.map((row) => ({
       ...row,
       data: row.data as Record<string, unknown> | null,
+      skillsRequired: this.parseSkillsRequired(row.skillsRequired),
       tags: tagsMap.get(row.id) ?? [],
     }));
 
@@ -1325,6 +1371,7 @@ export class LocalStorageService implements StorageService {
       statusId,
       parentId: input.parentId ?? null,
       agentId,
+      skillsRequired: input.skillsRequired ?? null,
       tags: input.tags ?? [],
       data: null,
     });
@@ -1354,6 +1401,9 @@ export class LocalStorageService implements StorageService {
     const updateData: Record<string, unknown> = { ...data };
     if (data.data !== undefined) {
       updateData.data = JSON.stringify(data.data);
+    }
+    if (data.skillsRequired !== undefined) {
+      updateData.skillsRequired = this.serializeSkillsRequired(data.skillsRequired);
     }
     for (const key of Object.keys(updateData)) {
       if (updateData[key] === undefined) {
@@ -1460,6 +1510,7 @@ export class LocalStorageService implements StorageService {
           e.agent_id,
           e.version,
           e.data,
+          e.skills_required,
           e.created_at,
           e.updated_at,
           ROW_NUMBER() OVER (
@@ -1493,6 +1544,7 @@ export class LocalStorageService implements StorageService {
       agent_id: string | null;
       version: number;
       data: string | null;
+      skills_required: string | null;
       created_at: string;
       updated_at: string;
       row_num: number;
@@ -1514,6 +1566,7 @@ export class LocalStorageService implements StorageService {
         agentId: row.agent_id,
         version: row.version,
         data: row.data ? JSON.parse(row.data) : null,
+        skillsRequired: this.parseSkillsRequired(row.skills_required),
         tags: [], // Will be hydrated below
         createdAt: row.created_at,
         updatedAt: row.updated_at,
@@ -1764,7 +1817,7 @@ export class LocalStorageService implements StorageService {
 
   async listPrompts(filters: PromptListFilters = {}): Promise<ListResult<PromptSummary>> {
     const { prompts, promptTags, tags } = await import('../db/schema');
-    const { and, eq, isNull, desc, sql } = await import('drizzle-orm');
+    const { and, eq, isNull, asc, sql } = await import('drizzle-orm');
     type SQL = ReturnType<typeof sql>;
 
     const whereClauses: SQL[] = [];
@@ -1804,12 +1857,8 @@ export class LocalStorageService implements StorageService {
     };
 
     const rows = await (whereCondition
-      ? this.db
-          .select(selectFields)
-          .from(prompts)
-          .where(whereCondition)
-          .orderBy(desc(prompts.updatedAt))
-      : this.db.select(selectFields).from(prompts).orderBy(desc(prompts.updatedAt)));
+      ? this.db.select(selectFields).from(prompts).where(whereCondition).orderBy(asc(prompts.title))
+      : this.db.select(selectFields).from(prompts).orderBy(asc(prompts.title)));
 
     if (!rows.length) {
       return {

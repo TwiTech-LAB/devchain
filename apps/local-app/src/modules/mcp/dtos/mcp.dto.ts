@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SkillsRequiredInputSchema } from '../../skills/dtos/skill.dto';
 
 /**
  * MCP Tool Request schemas
@@ -210,6 +211,7 @@ export const CreateEpicParamsSchema = z
     tags: z.array(z.string()).optional(),
     agentName: z.string().min(1).optional(), // Target agent to assign epic to
     parentId: z.string().uuid().optional(),
+    skillsRequired: SkillsRequiredInputSchema.optional(),
   })
   .strict();
 
@@ -257,6 +259,7 @@ export const UpdateEpicParamsSchema = z
     setTags: z.array(z.string()).optional(),
     addTags: z.array(z.string()).optional(),
     removeTags: z.array(z.string()).optional(),
+    skillsRequired: SkillsRequiredInputSchema.optional(),
   })
   .strict()
   .refine((data) => !(data.parentId && data.clearParent), {
@@ -290,6 +293,28 @@ export const GetPromptParamsSchema = z
   });
 
 export type GetPromptParams = z.infer<typeof GetPromptParamsSchema>;
+
+// devchain_list_skills
+export const listSkillsSchema = z
+  .object({
+    sessionId: z.string(),
+    q: z.string().optional(),
+  })
+  .strict();
+
+export const ListSkillsParamsSchema = listSkillsSchema;
+export type ListSkillsParams = z.infer<typeof listSkillsSchema>;
+
+// devchain_get_skill
+export const getSkillSchema = z
+  .object({
+    sessionId: z.string(),
+    slug: z.string(),
+  })
+  .strict();
+
+export const GetSkillParamsSchema = getSkillSchema;
+export type GetSkillParams = z.infer<typeof getSkillSchema>;
 
 /**
  * MCP Tool Call envelope (terminal marker format)
@@ -459,6 +484,30 @@ export interface GetPromptResponse {
   prompt: PromptDetail;
 }
 
+export interface SkillListItem {
+  slug: string;
+  description: string;
+}
+
+export interface ListSkillsResponse {
+  skills: SkillListItem[];
+  total: number;
+}
+
+export interface GetSkillResponse {
+  slug: string;
+  name: string;
+  description: string | null;
+  instructionContent: string | null;
+  contentPath: string | null;
+  resources: string[];
+  sourceUrl: string | null;
+  license: string | null;
+  compatibility: string | null;
+  status: 'available' | 'outdated' | 'sync_error';
+  frontmatter: Record<string, unknown> | null;
+}
+
 export interface AgentSummary {
   id: string;
   name: string;
@@ -528,6 +577,8 @@ export interface EpicSummary {
   parentId?: string | null;
   // Optional tags for filtering/categorization
   tags?: string[];
+  // Optional required skill slugs attached to this epic
+  skillsRequired?: string[];
   // Optional nested sub-epics for hierarchical list response
   subEpics?: EpicChildSummary[];
 }

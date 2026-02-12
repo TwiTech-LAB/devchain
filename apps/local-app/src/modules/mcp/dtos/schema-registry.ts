@@ -16,6 +16,9 @@ import {
   // Prompt tools
   ListPromptsParamsSchema,
   GetPromptParamsSchema,
+  // Skill tools
+  ListSkillsParamsSchema,
+  GetSkillParamsSchema,
   // Agent tools
   ListAgentsParamsSchema,
   GetAgentByNameParamsSchema,
@@ -76,6 +79,10 @@ export const toolSchemaRegistry: ReadonlyMap<string, ZodSchema> = new Map<string
   // Prompt tools
   ['devchain_list_prompts', ListPromptsParamsSchema],
   ['devchain_get_prompt', GetPromptParamsSchema],
+
+  // Skill tools
+  ['devchain_list_skills', ListSkillsParamsSchema],
+  ['devchain_get_skill', GetSkillParamsSchema],
 
   // Agent tools
   ['devchain_list_agents', ListAgentsParamsSchema],

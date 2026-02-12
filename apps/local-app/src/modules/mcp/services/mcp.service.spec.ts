@@ -12,6 +12,7 @@ import type {
   Epic,
   EpicComment,
   Status,
+  Skill,
 } from '../../storage/models/domain.models';
 import type { ThreadDto } from '../../chat/dtos/chat.dto';
 import type { ChatListMembersResponse } from '../dtos/mcp.dto';
@@ -50,6 +51,7 @@ describe('McpService', () => {
   let epicsService: jest.Mocked<{ updateEpic: jest.Mock; createEpicForProject: jest.Mock }>;
   let settingsService: jest.Mocked<unknown>;
   let guestsService: jest.Mocked<unknown>;
+  let skillsService: jest.Mocked<unknown>;
 
   beforeEach(() => {
     storage = {
@@ -155,6 +157,12 @@ describe('McpService', () => {
       register: jest.fn(),
     };
 
+    skillsService = {
+      listDiscoverable: jest.fn(),
+      getSkillBySlug: jest.fn(),
+      logUsage: jest.fn(),
+    };
+
     service = new McpService(
       storage,
       chatService as never,
@@ -165,6 +173,7 @@ describe('McpService', () => {
       epicsService as never,
       settingsService as never,
       guestsService as never,
+      skillsService as never,
     );
   });
 
@@ -588,6 +597,7 @@ describe('McpService', () => {
         ).toHaveBeenCalledWith({
           projectId: project.id,
           agentId: 'agent-2',
+          options: { silent: true },
         });
 
         // Message should still be enqueued
@@ -1483,6 +1493,134 @@ describe('McpService', () => {
     expect(missing.error?.code).toBe('VALIDATION_ERROR');
   });
 
+  describe('skill tools', () => {
+    const makeSkill = (overrides: Partial<Skill> = {}): Skill => ({
+      id: 'skill-1',
+      slug: 'openai/code-review',
+      name: 'code-review',
+      displayName: 'Code Review',
+      description: 'Review code changes',
+      shortDescription: 'Review PRs',
+      source: 'openai',
+      sourceUrl: 'https://github.com/openai/skills',
+      sourceCommit: 'abc123',
+      category: 'engineering',
+      license: 'MIT',
+      compatibility: 'general',
+      frontmatter: { tags: ['review'] },
+      instructionContent: '# Do code review',
+      contentPath: '/tmp/skills/openai/code-review/SKILL.md',
+      resources: ['docs/checklist.md'],
+      status: 'available',
+      lastSyncedAt: '2024-01-01T00:00:00Z',
+      createdAt: '2024-01-01T00:00:00Z',
+      updatedAt: '2024-01-01T00:00:00Z',
+      ...overrides,
+    });
+
+    it('lists project skills for a resolved session', async () => {
+      const skill = makeSkill();
+      (skillsService as { listDiscoverable: jest.Mock }).listDiscoverable.mockResolvedValue([
+        skill,
+      ]);
+
+      const response = await service.handleToolCall('devchain_list_skills', {
+        sessionId: TEST_SESSION_ID,
+        q: 'review',
+      });
+
+      expect(response.success).toBe(true);
+      expect(
+        (skillsService as { listDiscoverable: jest.Mock }).listDiscoverable,
+      ).toHaveBeenCalledWith(TEST_PROJECT.id, { q: 'review' });
+      const payload = response.data as {
+        skills: Array<{
+          slug: string;
+          description: string;
+        }>;
+        total: number;
+      };
+      expect(payload.total).toBe(1);
+      expect(payload.skills[0]).toEqual({
+        slug: expect.any(String),
+        description: expect.any(String),
+      });
+      expect(payload.skills[0].description).toBe(skill.shortDescription);
+      expect(payload.skills[0]).not.toHaveProperty('name');
+      expect(payload.skills[0]).not.toHaveProperty('displayName');
+      expect(payload.skills[0]).not.toHaveProperty('source');
+      expect(payload.skills[0]).not.toHaveProperty('category');
+      expect(payload.skills[0]).not.toHaveProperty('shortDescription');
+      expect(payload.skills[0]).not.toHaveProperty('lastSyncedAt');
+    });
+
+    it('gets a skill by slug and records usage with session actor context', async () => {
+      const skill = makeSkill();
+      (skillsService as { getSkillBySlug: jest.Mock }).getSkillBySlug.mockResolvedValue(skill);
+      (skillsService as { logUsage: jest.Mock }).logUsage.mockResolvedValue({
+        id: 'usage-1',
+      });
+
+      const response = await service.handleToolCall('devchain_get_skill', {
+        sessionId: TEST_SESSION_ID,
+        slug: 'OpenAI/Code-Review',
+      });
+
+      expect(response.success).toBe(true);
+      expect((skillsService as { getSkillBySlug: jest.Mock }).getSkillBySlug).toHaveBeenCalledWith(
+        'openai/code-review',
+      );
+      expect((skillsService as { logUsage: jest.Mock }).logUsage).toHaveBeenCalledWith(
+        skill.id,
+        skill.slug,
+        TEST_PROJECT.id,
+        TEST_AGENT.id,
+        TEST_AGENT.name,
+      );
+      const payload = response.data as {
+        slug: string;
+        name: string;
+        description: string | null;
+        instructionContent: string | null;
+        contentPath: string | null;
+        resources: string[];
+        sourceUrl: string | null;
+        license: string | null;
+        compatibility: string | null;
+        status: string;
+        frontmatter: Record<string, unknown> | null;
+      };
+      expect(payload).toMatchObject({
+        slug: skill.slug,
+        name: skill.name,
+        description: skill.description,
+        instructionContent: skill.instructionContent,
+        contentPath: skill.contentPath,
+        resources: skill.resources,
+        sourceUrl: skill.sourceUrl,
+        license: skill.license,
+        compatibility: skill.compatibility,
+        status: skill.status,
+        frontmatter: skill.frontmatter,
+      });
+    });
+
+    it('returns SKILL_NOT_FOUND for unknown skill slug', async () => {
+      (skillsService as { getSkillBySlug: jest.Mock }).getSkillBySlug.mockRejectedValue(
+        new NotFoundError('Skill', 'missing/skill'),
+      );
+
+      const response = await service.handleToolCall('devchain_get_skill', {
+        sessionId: TEST_SESSION_ID,
+        slug: 'missing/skill',
+      });
+
+      expect(response.success).toBe(false);
+      expect(response.error?.code).toBe('SKILL_NOT_FOUND');
+      expect((skillsService as { logUsage: jest.Mock }).logUsage).not.toHaveBeenCalled();
+    });
+  });
+
   it('returns project-not-found error when project slug is unknown', async () => {
     storage.listProjects.mockResolvedValue({
       items: [] as Project[],
@@ -2112,6 +2250,7 @@ describe('McpService', () => {
       agentId: null,
       version: 1,
       data: null,
+      skillsRequired: null,
       tags: [],
       createdAt: '2024-01-01T00:00:00Z',
       updatedAt: '2024-01-01T00:00:00Z',
@@ -2440,6 +2579,30 @@ describe('McpService', () => {
       );
     });
 
+    it('passes skillsRequired through when provided', async () => {
+      const project = makeProject();
+      const epic = makeEpic({ skillsRequired: ['openai/review'] });
+
+      storage.findProjectByPath.mockResolvedValue(project);
+      epicsService.createEpicForProject.mockResolvedValue(epic);
+
+      const response = await service.handleToolCall('devchain_create_epic', {
+        sessionId: TEST_SESSION_ID,
+        title: 'Skill-gated Epic',
+        skillsRequired: ['openai/review'],
+      });
+
+      expect(response.success).toBe(true);
+      expect(epicsService.createEpicForProject).toHaveBeenCalledWith(
+        project.id,
+        expect.objectContaining({
+          title: 'Skill-gated Epic',
+          skillsRequired: ['openai/review'],
+        }),
+        expect.any(Object),
+      );
+    });
+
     it('returns validation error when create epic fails validation', async () => {
       const project = makeProject();
       storage.findProjectByPath.mockResolvedValue(project);
@@ -2521,7 +2684,7 @@ describe('McpService', () => {
 
       expect(response.success).toBe(true);
       const payload = response.data as {
-        epic: { id: string; tags: string[] };
+        epic: { id: string; tags: string[]; skillsRequired: string[] };
         comments: Array<{ id: string }>;
         subEpics: Array<{ id: string }>;
         parent?: { id: string };
@@ -2532,6 +2695,8 @@ describe('McpService', () => {
       expect(payload.parent?.id).toBe(parentEpic.id);
       // tags should always be present
       expect(payload.epic.tags).toEqual([]);
+      // skillsRequired should always be present
+      expect(payload.epic.skillsRequired).toEqual([]);
     });
 
     it('returns epic-not-found when epic lookup fails', async () => {
@@ -3054,6 +3219,36 @@ describe('McpService', () => {
           epic.id,
           expect.objectContaining({
             tags: expect.arrayContaining(['feature', 'reviewed', 'ready']),
+          }),
+          1,
+          expect.any(Object),
+        );
+      });
+
+      it('replaces skillsRequired when provided', async () => {
+        const project = makeProject();
+        const epic = makeEpic({ skillsRequired: ['openai/review'], version: 1 });
+        const updatedEpic = makeEpic({
+          skillsRequired: ['openai/review', 'anthropic/pdf'],
+          version: 2,
+        });
+
+        storage.findProjectByPath.mockResolvedValue(project);
+        storage.getEpic.mockResolvedValue(epic);
+        epicsService.updateEpic.mockResolvedValue(updatedEpic);
+
+        const response = await service.handleToolCall('devchain_update_epic', {
+          sessionId: TEST_SESSION_ID,
+          id: epic.id,
+          version: 1,
+          skillsRequired: ['openai/review', 'anthropic/pdf'],
+        });
+
+        expect(response.success).toBe(true);
+        expect(epicsService.updateEpic).toHaveBeenCalledWith(
+          epic.id,
+          expect.objectContaining({
+            skillsRequired: ['openai/review', 'anthropic/pdf'],
           }),
           1,
           expect.any(Object),

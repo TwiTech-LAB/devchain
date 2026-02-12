@@ -8,6 +8,7 @@ import { getRawSqliteClient } from '../../storage/db/sqlite-raw';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
 import { WatchersService } from '../../watchers/services/watchers.service';
 import { seedCompactOnIdleWatcherSeeder } from '../seeders/0001_seed_compact_on_idle_watcher';
+import { seedReplacePermissionModePlanSeeder } from '../seeders/0002_seed_replace_permission_mode_plan';
 
 export const DATA_SEEDERS = 'DATA_SEEDERS';
 const JOURNAL_KEY = 'seeders.journal';
@@ -25,7 +26,10 @@ export interface DataSeeder {
   run: (ctx: SeederContext) => Promise<void>;
 }
 
-export const REGISTERED_DATA_SEEDERS: DataSeeder[] = [seedCompactOnIdleWatcherSeeder];
+export const REGISTERED_DATA_SEEDERS: DataSeeder[] = [
+  seedCompactOnIdleWatcherSeeder,
+  seedReplacePermissionModePlanSeeder,
+];
 
 interface SeederJournalEntry {
   version: number;

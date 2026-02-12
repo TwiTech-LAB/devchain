@@ -9,6 +9,7 @@ import {
   DEFAULT_TERMINAL_INPUT_MODE,
   MIN_TERMINAL_SCROLLBACK,
   MAX_TERMINAL_SCROLLBACK,
+  DEFAULT_SKILLS_SYNC_ON_STARTUP,
 } from './settings.service';
 import { settingsTerminalChangedEvent } from '../../events/catalog';
 
@@ -295,6 +296,98 @@ describe('SettingsService (registry config)', () => {
     expect(config.url).toBe('https://my-registry.example.com');
     expect(config.cacheDir).toBe('/custom/cache');
     expect(config.checkUpdatesOnStartup).toBe(true);
+  });
+});
+
+describe('SettingsService (skills sync on startup)', () => {
+  let sqlite: Database.Database;
+  let service: SettingsService;
+  let mockEventEmitter: EventEmitter2 & { emit: jest.Mock };
+
+  beforeEach(() => {
+    sqlite = new Database(':memory:');
+    sqlite.exec(`
+      CREATE TABLE settings (
+        id TEXT PRIMARY KEY,
+        key TEXT NOT NULL UNIQUE,
+        value TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+
+    mockEventEmitter = createMockEventEmitter();
+    service = new SettingsService(sqlite as unknown as BetterSQLite3Database, mockEventEmitter);
+  });
+
+  afterEach(() => {
+    sqlite.close();
+  });
+
+  it('defaults to true when unset', () => {
+    expect(service.getSkillsSyncOnStartup()).toBe(DEFAULT_SKILLS_SYNC_ON_STARTUP);
+  });
+
+  it('persists and reads false', async () => {
+    await service.updateSettings({
+      skills: {
+        syncOnStartup: false,
+      },
+    });
+
+    expect(service.getSkillsSyncOnStartup()).toBe(false);
+    expect(service.getSetting('skills.syncOnStartup')).toBe('false');
+  });
+
+  it('persists and reads true', async () => {
+    await service.updateSettings({
+      skills: {
+        syncOnStartup: true,
+      },
+    });
+
+    expect(service.getSkillsSyncOnStartup()).toBe(true);
+    expect(service.getSetting('skills.syncOnStartup')).toBe('true');
+  });
+});
+
+describe('SettingsService (skills source enablement)', () => {
+  let sqlite: Database.Database;
+  let service: SettingsService;
+  let mockEventEmitter: EventEmitter2 & { emit: jest.Mock };
+
+  beforeEach(() => {
+    sqlite = new Database(':memory:');
+    sqlite.exec(`
+      CREATE TABLE settings (
+        id TEXT PRIMARY KEY,
+        key TEXT NOT NULL UNIQUE,
+        value TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+
+    mockEventEmitter = createMockEventEmitter();
+    service = new SettingsService(sqlite as unknown as BetterSQLite3Database, mockEventEmitter);
+  });
+
+  afterEach(() => {
+    sqlite.close();
+  });
+
+  it('returns empty source map when unset', () => {
+    expect(service.getSkillSourcesEnabled()).toEqual({});
+  });
+
+  it('persists and retrieves source enablement map', async () => {
+    await service.setSkillSourceEnabled('OpenAI', false);
+    await service.setSkillSourceEnabled('anthropic', true);
+
+    expect(service.getSkillSourcesEnabled()).toEqual({
+      openai: false,
+      anthropic: true,
+    });
   });
 });
 

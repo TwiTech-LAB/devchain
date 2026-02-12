@@ -152,6 +152,7 @@ export const epics = sqliteTable(
     agentId: text('agent_id'),
     version: integer('version').notNull().default(1),
     data: text('data', { mode: 'json' }), // JSON object
+    skillsRequired: text('skills_required'),
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
   },
@@ -170,6 +171,81 @@ export const epics = sqliteTable(
       onDelete: 'set null',
       name: 'epics_agent_id_fk',
     })),
+  }),
+);
+
+// Skills (catalog of installed/available skills)
+export const skills = sqliteTable(
+  'skills',
+  {
+    id: text('id').primaryKey(),
+    slug: text('slug').notNull(),
+    name: text('name').notNull(),
+    displayName: text('display_name').notNull(),
+    description: text('description'),
+    shortDescription: text('short_description'),
+    source: text('source').notNull(),
+    sourceUrl: text('source_url'),
+    sourceCommit: text('source_commit'),
+    category: text('category'),
+    license: text('license'),
+    compatibility: text('compatibility'),
+    frontmatter: text('frontmatter'), // JSON string
+    instructionContent: text('instruction_content'),
+    contentPath: text('content_path'),
+    resources: text('resources'), // JSON string
+    status: text('status').notNull().default('available'), // available | outdated | sync_error
+    lastSyncedAt: text('last_synced_at'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    slugUnique: uniqueIndex('skills_slug_unique').on(table.slug),
+    sourceIdx: index('skills_source_idx').on(table.source),
+    categoryIdx: index('skills_category_idx').on(table.category),
+    statusIdx: index('skills_status_idx').on(table.status),
+  }),
+);
+
+// Skill-Project disabled mapping (exclude specific skills per project)
+export const skillProjectDisabled = sqliteTable(
+  'skill_project_disabled',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    skillId: text('skill_id')
+      .notNull()
+      .references(() => skills.id, { onDelete: 'cascade' }),
+    createdAt: text('created_at').notNull(),
+  },
+  (table) => ({
+    projectSkillUnique: uniqueIndex('skill_project_disabled_project_skill_unique').on(
+      table.projectId,
+      table.skillId,
+    ),
+  }),
+);
+
+// Skill usage logs (tracking by project/agent and time)
+export const skillUsageLog = sqliteTable(
+  'skill_usage_log',
+  {
+    id: text('id').primaryKey(),
+    skillId: text('skill_id')
+      .notNull()
+      .references(() => skills.id, { onDelete: 'cascade' }),
+    skillSlug: text('skill_slug').notNull(),
+    projectId: text('project_id'),
+    agentId: text('agent_id'),
+    agentNameSnapshot: text('agent_name_snapshot'),
+    accessedAt: text('accessed_at').notNull(),
+  },
+  (table) => ({
+    skillIdIdx: index('skill_usage_log_skill_id_idx').on(table.skillId),
+    projectIdIdx: index('skill_usage_log_project_id_idx').on(table.projectId),
+    accessedAtIdx: index('skill_usage_log_accessed_at_idx').on(table.accessedAt),
   }),
 );
 

@@ -57,6 +57,9 @@ interface SettingsResponse {
     maxMessages?: number;
     separator?: string;
   };
+  skills?: {
+    syncOnStartup?: boolean;
+  };
 }
 
 interface PromptSummary {
@@ -80,6 +83,7 @@ const DEFAULT_POOL_MAX_MESSAGES = 10;
 const MIN_POOL_MAX_MESSAGES = 1;
 const MAX_POOL_MAX_MESSAGES = 50;
 const DEFAULT_POOL_SEPARATOR = '\n---\n';
+const DEFAULT_SKILLS_SYNC_ON_STARTUP = true;
 
 async function fetchSettings(): Promise<SettingsResponse> {
   const res = await fetch('/api/settings');
@@ -209,6 +213,7 @@ export function SettingsPage() {
   const [poolMaxWaitMs, setPoolMaxWaitMs] = useState(DEFAULT_POOL_MAX_WAIT_MS);
   const [poolMaxMessages, setPoolMaxMessages] = useState<number | ''>(DEFAULT_POOL_MAX_MESSAGES);
   const [poolSeparator, setPoolSeparator] = useState(DEFAULT_POOL_SEPARATOR);
+  const [skillsSyncOnStartup, setSkillsSyncOnStartup] = useState(DEFAULT_SKILLS_SYNC_ON_STARTUP);
 
   useEffect(() => {
     setEpicTemplateDraft(serverEpicTemplate);
@@ -239,6 +244,11 @@ export function SettingsPage() {
     setPoolMaxWaitMs(settings.messagePool?.maxWaitMs ?? DEFAULT_POOL_MAX_WAIT_MS);
     setPoolMaxMessages(settings.messagePool?.maxMessages ?? DEFAULT_POOL_MAX_MESSAGES);
     setPoolSeparator(settings.messagePool?.separator ?? DEFAULT_POOL_SEPARATOR);
+  }, [settings]);
+
+  useEffect(() => {
+    if (!settings) return;
+    setSkillsSyncOnStartup(settings.skills?.syncOnStartup ?? DEFAULT_SKILLS_SYNC_ON_STARTUP);
   }, [settings]);
 
   const handleInitialPromptChange = (value: string) => {
@@ -351,6 +361,36 @@ export function SettingsPage() {
       toast({ title: 'Update failed', description: message, variant: 'destructive' });
     },
   });
+
+  const updateSkillsSettingsMutation = useMutation({
+    mutationFn: ({ syncOnStartup }: { syncOnStartup: boolean }) =>
+      updateSettingsRequest({
+        skills: {
+          syncOnStartup,
+        },
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      toast({ title: 'Skills settings updated' });
+    },
+    onError: (error: unknown) => {
+      const message = error instanceof Error ? error.message : 'Failed to update skills settings';
+      toast({ title: 'Update failed', description: message, variant: 'destructive' });
+    },
+  });
+
+  const handleSkillsSyncOnStartupChange = (checked: boolean) => {
+    const previous = skillsSyncOnStartup;
+    setSkillsSyncOnStartup(checked);
+    updateSkillsSettingsMutation.mutate(
+      { syncOnStartup: checked },
+      {
+        onError: () => {
+          setSkillsSyncOnStartup(previous);
+        },
+      },
+    );
+  };
 
   return (
     <div>
@@ -822,6 +862,39 @@ export function SettingsPage() {
                 )}
               </Button>
             </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Skills Settings */}
+      <Card className="mb-6">
+        <CardHeader>
+          <CardTitle>Skills</CardTitle>
+          <CardDescription>Configure startup behavior for skills synchronization.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3 max-w-lg">
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label htmlFor="skills-sync-on-startup">Sync skills on startup</Label>
+                <p className="text-xs text-muted-foreground">
+                  Automatically refresh skills when the app starts.
+                </p>
+              </div>
+              <Switch
+                id="skills-sync-on-startup"
+                checked={skillsSyncOnStartup}
+                onCheckedChange={handleSkillsSyncOnStartupChange}
+                disabled={updateSkillsSettingsMutation.isPending}
+              />
+            </div>
+
+            {updateSkillsSettingsMutation.isPending && (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Saving settings…
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>

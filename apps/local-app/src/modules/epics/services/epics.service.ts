@@ -160,7 +160,7 @@ export class EpicsService {
 
     // Publish epic.updated event (best-effort persisted event - failures logged but don't block update)
     try {
-      const changes = await this.buildEpicChangesWithNames(before, updated);
+      const changes = await this.buildEpicChangesWithNames(before, updated, data);
       // Only publish if there are actual changes
       if (Object.keys(changes).length > 0) {
         // Resolve project name for context
@@ -195,7 +195,7 @@ export class EpicsService {
 
     this.broadcastEpicEvent(updated.projectId, 'updated', {
       epic: this.buildEpicSnapshot(updated),
-      changes: this.buildEpicChanges(before, updated),
+      changes: this.buildEpicChanges(before, updated, data),
     });
 
     // CASCADE: Clear all sub-epics' agents when parent moves to auto-clean status
@@ -452,7 +452,7 @@ export class EpicsService {
     };
   }
 
-  private buildEpicChanges(before: Epic, after: Epic) {
+  private buildEpicChanges(before: Epic, after: Epic, data?: UpdateEpic) {
     const changes: {
       title?: { previous: string; current: string };
       statusId?: { previous: string | null; current: string | null };
@@ -465,7 +465,7 @@ export class EpicsService {
     if (before.statusId !== after.statusId) {
       changes.statusId = { previous: before.statusId ?? null, current: after.statusId ?? null };
     }
-    if (before.agentId !== after.agentId) {
+    if (before.agentId !== after.agentId || (data !== undefined && 'agentId' in data)) {
       changes.agentId = { previous: before.agentId ?? null, current: after.agentId ?? null };
     }
 
@@ -482,6 +482,7 @@ export class EpicsService {
   private async buildEpicChangesWithNames(
     before: Epic,
     after: Epic,
+    data?: UpdateEpic,
   ): Promise<{
     title?: { previous: string; current: string };
     statusId?: {
@@ -532,7 +533,8 @@ export class EpicsService {
 
     // Determine which lookups are needed
     const statusChanged = before.statusId !== after.statusId;
-    const agentChanged = before.agentId !== after.agentId;
+    const agentChanged =
+      before.agentId !== after.agentId || (data !== undefined && 'agentId' in data);
     const parentChanged = before.parentId !== after.parentId;
 
     // Build lookup tasks for parallel execution
