@@ -38,6 +38,10 @@ const makeAdapter = (
 });
 
 describe('SkillSyncService', () => {
+  let skillSourceRegistry: {
+    getAdapters: jest.Mock;
+    getAdapterBySourceName: jest.Mock;
+  };
   let skillsService: {
     getSkillBySlug: jest.Mock;
     upsertSkill: jest.Mock;
@@ -51,6 +55,10 @@ describe('SkillSyncService', () => {
   };
 
   beforeEach(() => {
+    skillSourceRegistry = {
+      getAdapters: jest.fn().mockResolvedValue([]),
+      getAdapterBySourceName: jest.fn().mockResolvedValue(null),
+    };
     skillsService = {
       getSkillBySlug: jest.fn().mockRejectedValue(new NotFoundError('Skill', 'missing')),
       upsertSkill: jest.fn().mockResolvedValue(undefined),
@@ -71,8 +79,9 @@ describe('SkillSyncService', () => {
   it('calls commit lookup and sync context creation once for a source sync run', async () => {
     const context = makeContext(['skill-a', 'skill-b']);
     const adapter = makeAdapter('anthropic', context);
+    skillSourceRegistry.getAdapterBySourceName.mockResolvedValue(adapter);
     const service = new SkillSyncService(
-      [adapter],
+      skillSourceRegistry as never,
       skillsService as never,
       skillCategoryService as never,
       settingsService as never,
@@ -104,8 +113,9 @@ describe('SkillSyncService', () => {
       return `/tmp/skills/${skillName}`;
     });
     const adapter = makeAdapter('openai', context);
+    skillSourceRegistry.getAdapterBySourceName.mockResolvedValue(adapter);
     const service = new SkillSyncService(
-      [adapter],
+      skillSourceRegistry as never,
       skillsService as never,
       skillCategoryService as never,
       settingsService as never,
@@ -134,8 +144,9 @@ describe('SkillSyncService', () => {
     const openaiContext = makeContext(['skill-b']);
     const anthropicAdapter = makeAdapter('anthropic', anthropicContext);
     const openaiAdapter = makeAdapter('openai', openaiContext);
+    skillSourceRegistry.getAdapters.mockResolvedValue([anthropicAdapter, openaiAdapter]);
     const service = new SkillSyncService(
-      [anthropicAdapter, openaiAdapter],
+      skillSourceRegistry as never,
       skillsService as never,
       skillCategoryService as never,
       settingsService as never,
@@ -160,9 +171,10 @@ describe('SkillSyncService', () => {
     const anthropicAdapter = makeAdapter('anthropic', anthropicContext);
     const openaiAdapter = makeAdapter('openai', openaiContext);
     settingsService.getSkillSourcesEnabled.mockReturnValue({ openai: false });
+    skillSourceRegistry.getAdapters.mockResolvedValue([anthropicAdapter, openaiAdapter]);
 
     const service = new SkillSyncService(
-      [anthropicAdapter, openaiAdapter],
+      skillSourceRegistry as never,
       skillsService as never,
       skillCategoryService as never,
       settingsService as never,
@@ -180,9 +192,10 @@ describe('SkillSyncService', () => {
     const context = makeContext(['skill-a']);
     const adapter = makeAdapter('openai', context);
     settingsService.getSkillSourcesEnabled.mockReturnValue({ openai: false });
+    skillSourceRegistry.getAdapterBySourceName.mockResolvedValue(adapter);
 
     const service = new SkillSyncService(
-      [adapter],
+      skillSourceRegistry as never,
       skillsService as never,
       skillCategoryService as never,
       settingsService as never,
@@ -211,9 +224,10 @@ describe('SkillSyncService', () => {
           releaseCommit = resolve;
         }),
     );
+    skillSourceRegistry.getAdapters.mockResolvedValue([adapter]);
 
     const service = new SkillSyncService(
-      [adapter],
+      skillSourceRegistry as never,
       skillsService as never,
       skillCategoryService as never,
       settingsService as never,

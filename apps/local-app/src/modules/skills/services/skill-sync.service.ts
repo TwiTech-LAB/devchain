@@ -1,15 +1,15 @@
-import { Inject, Injectable, OnApplicationBootstrap } from '@nestjs/common';
+import { Injectable, OnApplicationBootstrap } from '@nestjs/common';
 import { NotFoundError, TimeoutError, ValidationError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
 import { SettingsService } from '../../settings/services/settings.service';
 import {
-  SKILL_SOURCE_ADAPTERS,
   SkillManifest,
   SkillSourceAdapter,
   SkillSourceSyncContext,
 } from '../adapters/skill-source.adapter';
 import { Skill } from '../../storage/models/domain.models';
 import { SkillCategoryService } from './skill-category.service';
+import { SkillSourceRegistryService } from './skill-source-registry.service';
 import { SkillsService } from './skills.service';
 
 const logger = createLogger('SkillSyncService');
@@ -34,7 +34,7 @@ export class SkillSyncService implements OnApplicationBootstrap {
   private syncInProgress = false;
 
   constructor(
-    @Inject(SKILL_SOURCE_ADAPTERS) private readonly adapters: SkillSourceAdapter[],
+    private readonly skillSourceRegistry: SkillSourceRegistryService,
     private readonly skillsService: SkillsService,
     private readonly skillCategoryService: SkillCategoryService,
     private readonly settingsService: SettingsService,
@@ -56,12 +56,13 @@ export class SkillSyncService implements OnApplicationBootstrap {
 
   async syncAll(): Promise<SyncResult> {
     return this.withMutex(async () => {
+      const adapters = await this.skillSourceRegistry.getAdapters();
       const sourceSettings = this.settingsService.getSkillSourcesEnabled();
-      const enabledAdapters = this.adapters.filter((adapter) =>
+      const enabledAdapters = adapters.filter((adapter) =>
         this.isSourceEnabled(adapter.sourceName, sourceSettings),
       );
 
-      for (const adapter of this.adapters) {
+      for (const adapter of adapters) {
         if (!this.isSourceEnabled(adapter.sourceName, sourceSettings)) {
           logger.info(
             { sourceName: adapter.sourceName },
@@ -96,7 +97,7 @@ export class SkillSyncService implements OnApplicationBootstrap {
 
   async syncSource(sourceName: string): Promise<SyncResult> {
     const normalizedSourceName = sourceName.trim().toLowerCase();
-    const adapter = this.adapters.find((item) => item.sourceName === normalizedSourceName);
+    const adapter = await this.skillSourceRegistry.getAdapterBySourceName(normalizedSourceName);
     if (!adapter) {
       throw new ValidationError(`Unknown skill source: ${normalizedSourceName}`, {
         sourceName: normalizedSourceName,

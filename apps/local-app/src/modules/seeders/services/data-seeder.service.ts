@@ -9,6 +9,8 @@ import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/s
 import { WatchersService } from '../../watchers/services/watchers.service';
 import { seedCompactOnIdleWatcherSeeder } from '../seeders/0001_seed_compact_on_idle_watcher';
 import { seedReplacePermissionModePlanSeeder } from '../seeders/0002_seed_replace_permission_mode_plan';
+import { seedPreseedJeffallanClaudeSkillsSeeder } from '../seeders/0003_seed_preseed_jeffallan_claude_skills';
+import { seedDisableMicrosoftSourceDefaultSeeder } from '../seeders/0004_seed_disable_microsoft_source_default';
 
 export const DATA_SEEDERS = 'DATA_SEEDERS';
 const JOURNAL_KEY = 'seeders.journal';
@@ -29,6 +31,8 @@ export interface DataSeeder {
 export const REGISTERED_DATA_SEEDERS: DataSeeder[] = [
   seedCompactOnIdleWatcherSeeder,
   seedReplacePermissionModePlanSeeder,
+  seedPreseedJeffallanClaudeSkillsSeeder,
+  seedDisableMicrosoftSourceDefaultSeeder,
 ];
 
 interface SeederJournalEntry {

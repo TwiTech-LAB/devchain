@@ -13,7 +13,7 @@ import type {
   SkillStatus,
   SkillUsageLog as SkillUsageLogModel,
 } from '../../storage/models/domain.models';
-import { SKILL_SOURCE_ADAPTERS, SkillSourceAdapter } from '../adapters/skill-source.adapter';
+import { SkillSourceRegistryService } from './skill-source-registry.service';
 
 const logger = createLogger('SkillsService');
 
@@ -102,11 +102,11 @@ export class SkillsService {
   constructor(
     @Inject(DB_CONNECTION) private readonly db: BetterSQLite3Database,
     private readonly settingsService: SettingsService,
-    @Inject(SKILL_SOURCE_ADAPTERS) private readonly adapters: SkillSourceAdapter[],
+    private readonly skillSourceRegistry: SkillSourceRegistryService,
   ) {}
 
   async listSkills(options: ListSkillsOptions = {}): Promise<Skill[]> {
-    const enabledSources = this.getEnabledSources();
+    const enabledSources = await this.getEnabledSources();
     if (enabledSources.length === 0) {
       return [];
     }
@@ -152,7 +152,7 @@ export class SkillsService {
     projectId: string,
     options: ListProjectSkillsOptions = {},
   ): Promise<ProjectSkill[]> {
-    const enabledSources = this.getEnabledSources();
+    const enabledSources = await this.getEnabledSources();
     if (enabledSources.length === 0) {
       return [];
     }
@@ -191,7 +191,7 @@ export class SkillsService {
     projectId: string,
     options: ListProjectSkillsOptions = {},
   ): Promise<Skill[]> {
-    const enabledSources = this.getEnabledSources();
+    const enabledSources = await this.getEnabledSources();
     if (enabledSources.length === 0) {
       return [];
     }
@@ -442,7 +442,7 @@ export class SkillsService {
   }
 
   async disableAll(projectId: string): Promise<number> {
-    const enabledSources = this.getEnabledSources();
+    const enabledSources = await this.getEnabledSources();
     if (enabledSources.length === 0) {
       return 0;
     }
@@ -486,7 +486,7 @@ export class SkillsService {
   }
 
   async enableAll(projectId: string): Promise<number> {
-    const enabledSources = this.getEnabledSources();
+    const enabledSources = await this.getEnabledSources();
     if (enabledSources.length === 0) {
       return 0;
     }
@@ -531,7 +531,8 @@ export class SkillsService {
     );
 
     const sourceSettings = this.settingsService.getSkillSourcesEnabled();
-    return this.getRegisteredSources().map((source) => ({
+    const registeredSources = await this.getRegisteredSources();
+    return registeredSources.map((source) => ({
       name: source.name,
       enabled: this.isSourceEnabled(source.name, sourceSettings),
       repoUrl: source.repoUrl,
@@ -546,7 +547,7 @@ export class SkillsService {
     name: string;
     enabled: boolean;
   }> {
-    const normalizedSourceName = this.requireKnownSourceName(sourceName);
+    const normalizedSourceName = await this.requireKnownSourceName(sourceName);
     await this.settingsService.setSkillSourceEnabled(normalizedSourceName, enabled);
     return { name: normalizedSourceName, enabled };
   }
@@ -895,9 +896,10 @@ export class SkillsService {
     return and(...conditions);
   }
 
-  private getRegisteredSources(): Array<{ name: string; repoUrl: string }> {
+  private async getRegisteredSources(): Promise<Array<{ name: string; repoUrl: string }>> {
+    const adapters = await this.skillSourceRegistry.getAdapters();
     const sourceMap = new Map<string, string>();
-    for (const adapter of this.adapters) {
+    for (const adapter of adapters) {
       const normalizedName = adapter.sourceName.trim().toLowerCase();
       if (!normalizedName || sourceMap.has(normalizedName)) {
         continue;
@@ -909,9 +911,10 @@ export class SkillsService {
       .sort((left, right) => left.name.localeCompare(right.name));
   }
 
-  private getEnabledSources(): string[] {
+  private async getEnabledSources(): Promise<string[]> {
     const sourceSettings = this.settingsService.getSkillSourcesEnabled();
-    return this.getRegisteredSources()
+    const registeredSources = await this.getRegisteredSources();
+    return registeredSources
       .map((source) => source.name)
       .filter((sourceName) => this.isSourceEnabled(sourceName, sourceSettings));
   }
@@ -920,9 +923,9 @@ export class SkillsService {
     return sourceSettings[sourceName] !== false;
   }
 
-  private requireKnownSourceName(sourceName: string): string {
+  private async requireKnownSourceName(sourceName: string): Promise<string> {
     const normalized = this.requireNonEmpty(sourceName, 'sourceName').toLowerCase();
-    const knownSources = new Set(this.getRegisteredSources().map((source) => source.name));
+    const knownSources = new Set((await this.getRegisteredSources()).map((source) => source.name));
     if (!knownSources.has(normalized)) {
       throw new ValidationError(`Unknown skill source: ${normalized}`, { sourceName: normalized });
     }

@@ -3,6 +3,7 @@ import {
   sqliteTable,
   text,
   integer,
+  unique,
   uniqueIndex,
   index,
   foreignKey,
@@ -204,6 +205,23 @@ export const skills = sqliteTable(
     sourceIdx: index('skills_source_idx').on(table.source),
     categoryIdx: index('skills_category_idx').on(table.category),
     statusIdx: index('skills_status_idx').on(table.status),
+  }),
+);
+
+// Community skill sources (user-defined GitHub repositories)
+export const communitySkillSources = sqliteTable(
+  'community_skill_sources',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull().unique(),
+    repoOwner: text('repo_owner').notNull(),
+    repoName: text('repo_name').notNull(),
+    branch: text('branch').notNull().default('main'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    uniqueRepo: unique().on(table.repoOwner, table.repoName),
   }),
 );
 

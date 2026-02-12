@@ -72,6 +72,24 @@ export interface SkillSource {
   skillCount: number;
 }
 
+export interface CommunitySource {
+  id: string;
+  name: string;
+  repoOwner: string;
+  repoName: string;
+  branch: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AddCommunitySourceInput {
+  name: string;
+  url?: string;
+  repoOwner?: string;
+  repoName?: string;
+  branch?: string;
+}
+
 export interface SkillUsageStat {
   skillId: string;
   skillSlug: string;
@@ -322,6 +340,45 @@ export async function fetchSources(): Promise<SkillSource[]> {
     '/api/skills/sources',
     {},
     'Failed to fetch skill sources',
+  );
+}
+
+/**
+ * Fetch all community skill sources.
+ */
+export async function fetchCommunitySources(): Promise<CommunitySource[]> {
+  return fetchJsonOrThrow<CommunitySource[]>(
+    '/api/skills/community-sources',
+    {},
+    'Failed to fetch community skill sources',
+  );
+}
+
+/**
+ * Add a community skill source.
+ */
+export async function addCommunitySource(
+  payload: AddCommunitySourceInput,
+): Promise<CommunitySource> {
+  return fetchJsonOrThrow<CommunitySource>(
+    '/api/skills/community-sources',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+    'Failed to add community source',
+  );
+}
+
+/**
+ * Remove a community skill source.
+ */
+export async function removeCommunitySource(id: string): Promise<void> {
+  await fetchJsonOrThrow<{ success: boolean }>(
+    `/api/skills/community-sources/${encodeURIComponent(id)}`,
+    { method: 'DELETE' },
+    'Failed to remove community source',
   );
 }
 

@@ -55,6 +55,8 @@ import {
   ReviewCommentTarget,
   ReviewStatus,
   ReviewCommentStatus,
+  CommunitySkillSource,
+  CreateCommunitySkillSource,
 } from '../models/domain.models';
 
 export interface ListOptions {
@@ -330,6 +332,13 @@ export interface StorageService {
   deleteProvider(id: string): Promise<void>;
   getProviderMcpMetadata(id: string): Promise<ProviderMcpMetadata>;
   updateProviderMcpMetadata(id: string, metadata: UpdateProviderMcpMetadata): Promise<Provider>;
+
+  // Community Skill Sources
+  listCommunitySkillSources(): Promise<CommunitySkillSource[]>;
+  getCommunitySkillSource(id: string): Promise<CommunitySkillSource>;
+  getCommunitySkillSourceByName(name: string): Promise<CommunitySkillSource | null>;
+  createCommunitySkillSource(data: CreateCommunitySkillSource): Promise<CommunitySkillSource>;
+  deleteCommunitySkillSource(id: string): Promise<void>;
 
   // Agent Profiles
   createAgentProfile(data: CreateAgentProfile): Promise<AgentProfile>;

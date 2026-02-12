@@ -80,6 +80,16 @@ export interface SkillUsageLog {
   accessedAt: string;
 }
 
+export interface CommunitySkillSource {
+  id: string;
+  name: string;
+  repoOwner: string;
+  repoName: string;
+  branch: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Prompt {
   id: string;
   projectId: string | null;
@@ -214,6 +224,13 @@ export type UpdateSkillProjectDisabled = Partial<Omit<SkillProjectDisabled, 'id'
 
 export type CreateSkillUsageLog = Omit<SkillUsageLog, 'id'>;
 export type UpdateSkillUsageLog = Partial<Omit<SkillUsageLog, 'id'>>;
+
+export type CreateCommunitySkillSource = Omit<
+  CommunitySkillSource,
+  'id' | 'createdAt' | 'updatedAt' | 'branch'
+> & {
+  branch?: string;
+};
 
 export type CreatePrompt = Omit<Prompt, 'id' | 'version' | 'createdAt' | 'updatedAt'>;
 export type UpdatePrompt = Partial<Omit<Prompt, 'id' | 'createdAt' | 'updatedAt'>>;

@@ -7,14 +7,17 @@ import { OpenAISkillSource } from './adapters/openai-skill-source.adapter';
 import { SKILL_SOURCE_ADAPTERS } from './adapters/skill-source.adapter';
 import { TrailOfBitsSkillSource } from './adapters/trailofbits-skill-source.adapter';
 import { VercelSkillSource } from './adapters/vercel-skill-source.adapter';
+import { CommunitySourcesController } from './controllers/community-sources.controller';
 import { SkillsController } from './controllers/skills.controller';
+import { CommunitySourcesService } from './services/community-sources.service';
 import { SkillCategoryService } from './services/skill-category.service';
+import { SkillSourceRegistryService } from './services/skill-source-registry.service';
 import { SkillsService } from './services/skills.service';
 import { SkillSyncService } from './services/skill-sync.service';
 
 @Module({
   imports: [StorageModule, SettingsModule],
-  controllers: [SkillsController],
+  controllers: [SkillsController, CommunitySourcesController],
   providers: [
     AnthropicSkillSource,
     MicrosoftSkillSource,
@@ -22,6 +25,8 @@ import { SkillSyncService } from './services/skill-sync.service';
     TrailOfBitsSkillSource,
     VercelSkillSource,
     SkillCategoryService,
+    CommunitySourcesService,
+    SkillSourceRegistryService,
     SkillsService,
     SkillSyncService,
     {
@@ -55,6 +60,7 @@ import { SkillSyncService } from './services/skill-sync.service';
     TrailOfBitsSkillSource,
     VercelSkillSource,
     SkillCategoryService,
+    SkillSourceRegistryService,
     SkillsService,
     SkillSyncService,
     SKILL_SOURCE_ADAPTERS,

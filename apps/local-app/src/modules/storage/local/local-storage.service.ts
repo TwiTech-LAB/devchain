@@ -73,6 +73,8 @@ import {
   CreateReviewComment,
   UpdateReviewComment,
   ReviewCommentTarget,
+  CommunitySkillSource,
+  CreateCommunitySkillSource,
 } from '../models/domain.models';
 import {
   NotFoundError,
@@ -90,6 +92,14 @@ import {
 } from '../../../common/config/feature-flags';
 
 const logger = createLogger('LocalStorageService');
+const COMMUNITY_SOURCE_NAME_PATTERN = /^[a-z0-9-]+$/;
+const RESERVED_COMMUNITY_SOURCE_NAMES = new Set([
+  'anthropic',
+  'openai',
+  'microsoft',
+  'trailofbits',
+  'vercel',
+]);
 
 /**
  * LocalStorage implementation of StorageService
@@ -185,6 +195,70 @@ export class LocalStorageService implements StorageService {
       return null;
     }
     return JSON.stringify(skillsRequired);
+  }
+
+  private normalizeCommunitySourceName(name: string): string {
+    const normalized = name.trim().toLowerCase();
+    if (!normalized) {
+      throw new ValidationError('name is required.', { fieldName: 'name' });
+    }
+    if (!COMMUNITY_SOURCE_NAME_PATTERN.test(normalized)) {
+      throw new ValidationError(
+        'Invalid community source name. Use lowercase letters, numbers, and hyphens only.',
+        { name: normalized },
+      );
+    }
+    if (RESERVED_COMMUNITY_SOURCE_NAMES.has(normalized)) {
+      throw new ValidationError('Community source name conflicts with a built-in source.', {
+        name: normalized,
+      });
+    }
+    return normalized;
+  }
+
+  private normalizeCommunitySourceNameForLookup(name: string): string {
+    const normalized = name.trim().toLowerCase();
+    if (!normalized) {
+      throw new ValidationError('name is required.', { fieldName: 'name' });
+    }
+    if (!COMMUNITY_SOURCE_NAME_PATTERN.test(normalized)) {
+      throw new ValidationError(
+        'Invalid community source name. Use lowercase letters, numbers, and hyphens only.',
+        { name: normalized },
+      );
+    }
+    return normalized;
+  }
+
+  private normalizeCommunityRepoPart(value: string, fieldName: 'repoOwner' | 'repoName'): string {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) {
+      throw new ValidationError(`${fieldName} is required.`, { fieldName });
+    }
+    return normalized;
+  }
+
+  private normalizeCommunityBranch(branch: string | undefined): string {
+    const normalized = (branch ?? 'main').trim();
+    if (!normalized) {
+      throw new ValidationError('branch is required.', { fieldName: 'branch' });
+    }
+    return normalized;
+  }
+
+  private isSqliteUniqueConstraint(error: unknown): boolean {
+    if (typeof error !== 'object' || error === null) {
+      return false;
+    }
+    const code = 'code' in error ? (error as { code?: unknown }).code : undefined;
+    const message = 'message' in error ? (error as { message?: unknown }).message : undefined;
+    const normalizedMessage = typeof message === 'string' ? message : '';
+    return (
+      code === 'SQLITE_CONSTRAINT' ||
+      code === 'SQLITE_CONSTRAINT_UNIQUE' ||
+      code === 19 ||
+      normalizedMessage.includes('UNIQUE constraint failed')
+    );
   }
 
   private async ensureValidEpicParent(
@@ -2512,6 +2586,129 @@ export class LocalStorageService implements StorageService {
       update.mcpRegisteredAt = metadata.mcpRegisteredAt ?? null;
     }
     return this.updateProvider(id, update);
+  }
+
+  // Community Skill Sources
+  async listCommunitySkillSources(): Promise<CommunitySkillSource[]> {
+    const { communitySkillSources } = await import('../db/schema');
+    const { asc } = await import('drizzle-orm');
+    const rows = await this.db
+      .select()
+      .from(communitySkillSources)
+      .orderBy(asc(communitySkillSources.name));
+    return rows as CommunitySkillSource[];
+  }
+
+  async getCommunitySkillSource(id: string): Promise<CommunitySkillSource> {
+    const normalizedId = id.trim();
+    if (!normalizedId) {
+      throw new ValidationError('id is required.', { fieldName: 'id' });
+    }
+
+    const { communitySkillSources } = await import('../db/schema');
+    const { eq } = await import('drizzle-orm');
+    const rows = await this.db
+      .select()
+      .from(communitySkillSources)
+      .where(eq(communitySkillSources.id, normalizedId))
+      .limit(1);
+
+    if (!rows[0]) {
+      throw new NotFoundError('Community skill source', normalizedId);
+    }
+
+    return rows[0] as CommunitySkillSource;
+  }
+
+  async getCommunitySkillSourceByName(name: string): Promise<CommunitySkillSource | null> {
+    const normalizedName = this.normalizeCommunitySourceNameForLookup(name);
+    const { communitySkillSources } = await import('../db/schema');
+    const { eq } = await import('drizzle-orm');
+    const rows = await this.db
+      .select()
+      .from(communitySkillSources)
+      .where(eq(communitySkillSources.name, normalizedName))
+      .limit(1);
+
+    return (rows[0] as CommunitySkillSource | undefined) ?? null;
+  }
+
+  async createCommunitySkillSource(
+    data: CreateCommunitySkillSource,
+  ): Promise<CommunitySkillSource> {
+    const normalizedName = this.normalizeCommunitySourceName(data.name);
+    const normalizedRepoOwner = this.normalizeCommunityRepoPart(data.repoOwner, 'repoOwner');
+    const normalizedRepoName = this.normalizeCommunityRepoPart(data.repoName, 'repoName');
+    const normalizedBranch = this.normalizeCommunityBranch(data.branch);
+
+    const { randomUUID } = await import('crypto');
+    const now = new Date().toISOString();
+    const record: CommunitySkillSource = {
+      id: randomUUID(),
+      name: normalizedName,
+      repoOwner: normalizedRepoOwner,
+      repoName: normalizedRepoName,
+      branch: normalizedBranch,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const { communitySkillSources } = await import('../db/schema');
+    try {
+      await this.db.insert(communitySkillSources).values({
+        id: record.id,
+        name: record.name,
+        repoOwner: record.repoOwner,
+        repoName: record.repoName,
+        branch: record.branch,
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt,
+      });
+    } catch (error) {
+      if (this.isSqliteUniqueConstraint(error)) {
+        const rawMessage =
+          typeof error === 'object' && error !== null && 'message' in error
+            ? String((error as { message?: unknown }).message ?? '')
+            : '';
+        if (rawMessage.includes('community_skill_sources.name')) {
+          throw new ConflictError('Community skill source name already exists.', {
+            name: normalizedName,
+          });
+        }
+        throw new ConflictError('Community skill source repository already exists.', {
+          repoOwner: normalizedRepoOwner,
+          repoName: normalizedRepoName,
+        });
+      }
+      throw new StorageError('Failed to create community skill source.', {
+        name: normalizedName,
+        repoOwner: normalizedRepoOwner,
+        repoName: normalizedRepoName,
+        cause: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    logger.info(
+      { communitySkillSourceId: record.id, name: record.name },
+      'Created community skill source',
+    );
+    return record;
+  }
+
+  async deleteCommunitySkillSource(id: string): Promise<void> {
+    const source = await this.getCommunitySkillSource(id);
+    const { communitySkillSources, skills } = await import('../db/schema');
+    const { eq } = await import('drizzle-orm');
+
+    await this.db.transaction(async (tx) => {
+      await tx.delete(skills).where(eq(skills.source, source.name));
+      await tx.delete(communitySkillSources).where(eq(communitySkillSources.id, source.id));
+    });
+
+    logger.info(
+      { communitySkillSourceId: source.id, sourceName: source.name },
+      'Deleted community skill source and related skills',
+    );
   }
 
   // Agent Profiles
