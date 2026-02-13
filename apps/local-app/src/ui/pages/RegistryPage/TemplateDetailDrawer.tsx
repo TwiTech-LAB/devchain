@@ -169,6 +169,9 @@ export function TemplateDetailDrawer({ slug, onClose }: TemplateDetailDrawerProp
           <div className="p-6">
             <VisuallyHidden>
               <DialogTitle>Loading Template Details</DialogTitle>
+              <DialogDescription>
+                Loading template metadata and version information.
+              </DialogDescription>
             </VisuallyHidden>
             <Skeleton className="mb-2 h-8 w-48" />
             <Skeleton className="mb-4 h-4 w-full" />
@@ -178,6 +181,9 @@ export function TemplateDetailDrawer({ slug, onClose }: TemplateDetailDrawerProp
           <div className="p-6">
             <VisuallyHidden>
               <DialogTitle>Error Loading Template</DialogTitle>
+              <DialogDescription>
+                An error occurred while loading template details.
+              </DialogDescription>
             </VisuallyHidden>
             <p className="text-destructive">Failed to load template details</p>
           </div>
@@ -185,6 +191,9 @@ export function TemplateDetailDrawer({ slug, onClose }: TemplateDetailDrawerProp
           <div className="p-6">
             <VisuallyHidden>
               <DialogTitle>Template Not Found</DialogTitle>
+              <DialogDescription>
+                The requested template could not be found in the registry.
+              </DialogDescription>
             </VisuallyHidden>
             <p className="text-muted-foreground">Template not found</p>
           </div>
@@ -200,16 +209,19 @@ export function TemplateDetailDrawer({ slug, onClose }: TemplateDetailDrawerProp
                   </Badge>
                 )}
               </div>
+              <DialogDescription className="sr-only">
+                Template metadata, versions, and project usage details.
+              </DialogDescription>
               {/* Collapsible Description */}
               {template.description && (
                 <div className="mt-2">
                   {template.description.length > DESCRIPTION_COLLAPSE_THRESHOLD ? (
                     <div>
-                      <DialogDescription className="whitespace-pre-line text-sm">
+                      <p className="whitespace-pre-line text-sm text-muted-foreground">
                         {showFullDescription
                           ? template.description
                           : `${template.description.slice(0, DESCRIPTION_COLLAPSE_THRESHOLD)}...`}
-                      </DialogDescription>
+                      </p>
                       <Button
                         variant="link"
                         size="sm"
@@ -220,9 +232,9 @@ export function TemplateDetailDrawer({ slug, onClose }: TemplateDetailDrawerProp
                       </Button>
                     </div>
                   ) : (
-                    <DialogDescription className="whitespace-pre-line text-sm">
+                    <p className="whitespace-pre-line text-sm text-muted-foreground">
                       {template.description}
-                    </DialogDescription>
+                    </p>
                   )}
                 </div>
               )}

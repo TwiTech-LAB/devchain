@@ -12,6 +12,8 @@ import {
   SkillEnableParamsSchema,
   SkillResolveSlugsBodySchema,
   SkillSourceParamsSchema,
+  SkillSourceProjectBodySchema,
+  SkillSourcesQuerySchema,
   SkillSyncRequestSchema,
   SkillUsageLogQuerySchema,
   SkillUsageStatsQuerySchema,
@@ -48,9 +50,10 @@ export class SkillsController {
   }
 
   @Get('sources')
-  async listSources(): Promise<SkillSourceMetadata[]> {
+  async listSources(@Query() query: unknown): Promise<SkillSourceMetadata[]> {
     logger.info('GET /api/skills/sources');
-    return this.skillsService.listSources();
+    const parsed = SkillSourcesQuerySchema.parse(query ?? {});
+    return this.skillsService.listSources(parsed.projectId);
   }
 
   @Post('sources/:name/enable')
@@ -67,6 +70,38 @@ export class SkillsController {
     logger.info('POST /api/skills/sources/:name/disable');
     const parsed = SkillSourceParamsSchema.parse(params);
     return this.skillsService.setSourceEnabled(parsed.name, false);
+  }
+
+  @Post('sources/:name/enable-project')
+  @HttpCode(200)
+  async enableSourceForProject(
+    @Param() params: unknown,
+    @Body() body: unknown,
+  ): Promise<{ name: string; projectId: string; projectEnabled: boolean }> {
+    logger.info('POST /api/skills/sources/:name/enable-project');
+    const parsedParams = SkillSourceParamsSchema.parse(params);
+    const parsedBody = SkillSourceProjectBodySchema.parse(body);
+    return this.skillsService.setSourceProjectEnabled(
+      parsedParams.name,
+      parsedBody.projectId,
+      true,
+    );
+  }
+
+  @Post('sources/:name/disable-project')
+  @HttpCode(200)
+  async disableSourceForProject(
+    @Param() params: unknown,
+    @Body() body: unknown,
+  ): Promise<{ name: string; projectId: string; projectEnabled: boolean }> {
+    logger.info('POST /api/skills/sources/:name/disable-project');
+    const parsedParams = SkillSourceParamsSchema.parse(params);
+    const parsedBody = SkillSourceProjectBodySchema.parse(body);
+    return this.skillsService.setSourceProjectEnabled(
+      parsedParams.name,
+      parsedBody.projectId,
+      false,
+    );
   }
 
   @Get('disabled')

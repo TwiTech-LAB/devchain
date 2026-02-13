@@ -57,6 +57,8 @@ import {
   ReviewCommentStatus,
   CommunitySkillSource,
   CreateCommunitySkillSource,
+  LocalSkillSource,
+  CreateLocalSkillSource,
 } from '../models/domain.models';
 
 export interface ListOptions {
@@ -339,6 +341,21 @@ export interface StorageService {
   getCommunitySkillSourceByName(name: string): Promise<CommunitySkillSource | null>;
   createCommunitySkillSource(data: CreateCommunitySkillSource): Promise<CommunitySkillSource>;
   deleteCommunitySkillSource(id: string): Promise<void>;
+
+  // Local Skill Sources
+  listLocalSkillSources(): Promise<LocalSkillSource[]>;
+  getLocalSkillSource(id: string): Promise<LocalSkillSource | null>;
+  createLocalSkillSource(data: CreateLocalSkillSource): Promise<LocalSkillSource>;
+  deleteLocalSkillSource(id: string): Promise<void>;
+
+  // Source-Project enablement mapping
+  getSourceProjectEnabled(projectId: string, sourceName: string): Promise<boolean | null>;
+  setSourceProjectEnabled(projectId: string, sourceName: string, enabled: boolean): Promise<void>;
+  listSourceProjectEnabled(
+    projectId: string,
+  ): Promise<Array<{ sourceName: string; enabled: boolean }>>;
+  seedSourceProjectDisabled(projectId: string, sourceNames: string[]): Promise<void>;
+  deleteSourceProjectEnabledBySource(sourceName: string): Promise<void>;
 
   // Agent Profiles
   createAgentProfile(data: CreateAgentProfile): Promise<AgentProfile>;

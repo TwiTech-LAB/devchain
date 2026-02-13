@@ -388,7 +388,7 @@ export function PresetDialog({
                         ? selectedConfig
                         : isSelected && agentConfigName
                           ? agentConfigName
-                          : undefined;
+                          : '';
 
                     return (
                       <div

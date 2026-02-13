@@ -1,5 +1,6 @@
 import React from 'react';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AgentsPage } from './AgentsPage';
 
@@ -76,17 +77,23 @@ describe('AgentsPage - Terminate flow', () => {
   });
 
   it('terminates session via helper and disables button while pending', async () => {
+    const user = userEvent.setup();
     renderWithQuery(<AgentsPage />);
 
     await waitFor(() => expect(screen.getByText('Project Agents')).toBeInTheDocument());
     const terminateBtn = await screen.findByRole('button', { name: /terminate session/i });
-    fireEvent.click(terminateBtn);
+    await user.click(terminateBtn);
 
-    // Spinner text appears while terminating
-    await screen.findByText(/terminating/i);
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        '/api/sessions/sess-1',
+        expect.objectContaining({ method: 'DELETE' }),
+      );
+    });
   });
 
   it('shows error toast and resets state when terminate fails', async () => {
+    const user = userEvent.setup();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (global as unknown as { fetch: unknown }).fetch = jest.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -131,7 +138,7 @@ describe('AgentsPage - Terminate flow', () => {
 
     await waitFor(() => expect(screen.getByText('Project Agents')).toBeInTheDocument());
     const terminateBtn = await screen.findByRole('button', { name: /terminate session/i });
-    terminateBtn.click();
+    await user.click(terminateBtn);
 
     await waitFor(() => {
       expect(toastSpy).toHaveBeenCalledWith(

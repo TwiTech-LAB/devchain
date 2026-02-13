@@ -1,4 +1,7 @@
 import { Injectable, OnApplicationBootstrap } from '@nestjs/common';
+import * as fs from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { NotFoundError, TimeoutError, ValidationError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
 import { SettingsService } from '../../settings/services/settings.service';
@@ -24,6 +27,7 @@ export interface SyncResult {
   status: 'completed' | 'already_running';
   added: number;
   updated: number;
+  removed: number;
   failed: number;
   unchanged: number;
   errors: SyncError[];
@@ -234,6 +238,8 @@ export class SkillSyncService implements OnApplicationBootstrap {
           }
         }
       }
+
+      await this.cleanupStaleSkills(adapter.sourceName, syncContext, result);
     } finally {
       try {
         await syncContext.dispose();
@@ -249,6 +255,48 @@ export class SkillSyncService implements OnApplicationBootstrap {
     }
 
     return result;
+  }
+
+  private async cleanupStaleSkills(
+    sourceName: string,
+    syncContext: SkillSourceSyncContext,
+    result: SyncResult,
+  ): Promise<void> {
+    const expectedSlugs = new Set(
+      Array.from(syncContext.manifests.keys()).map((skillName) =>
+        this.buildSkillSlug(sourceName, skillName),
+      ),
+    );
+    const existingSkills = await this.skillsService.listSkillsBySource(sourceName);
+
+    for (const existingSkill of existingSkills) {
+      if (expectedSlugs.has(existingSkill.slug)) {
+        continue;
+      }
+
+      try {
+        const wasDeleted = await this.skillsService.deleteSkillBySlug(existingSkill.slug);
+        if (!wasDeleted) {
+          continue;
+        }
+        result.removed += 1;
+      } catch (error) {
+        result.failed += 1;
+        result.errors.push({
+          sourceName,
+          skillSlug: existingSkill.slug,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        continue;
+      }
+
+      const skillNameFromSlug = this.extractSkillNameFromSlug(existingSkill.slug, sourceName);
+      if (!skillNameFromSlug) {
+        continue;
+      }
+
+      await this.deleteSyncedSkillDirectory(sourceName, skillNameFromSlug);
+    }
   }
 
   private async markSkillSyncError(params: {
@@ -297,6 +345,41 @@ export class SkillSyncService implements OnApplicationBootstrap {
     return `${normalizedSource}/${normalizedSkill}`;
   }
 
+  private extractSkillNameFromSlug(slug: string, sourceName: string): string | null {
+    const normalizedSlug = slug.trim().toLowerCase();
+    const sourcePrefix = `${sourceName.trim().toLowerCase()}/`;
+    if (!normalizedSlug.startsWith(sourcePrefix)) {
+      return null;
+    }
+
+    const skillName = normalizedSlug.slice(sourcePrefix.length).trim();
+    return skillName.length > 0 ? skillName : null;
+  }
+
+  private async deleteSyncedSkillDirectory(sourceName: string, skillName: string): Promise<void> {
+    const sourcePath = join(
+      homedir(),
+      '.devchain',
+      'skills',
+      sourceName.trim().toLowerCase(),
+      skillName,
+    );
+
+    try {
+      await fs.rm(sourcePath, { recursive: true, force: true });
+    } catch (error) {
+      logger.warn(
+        {
+          sourceName,
+          skillName,
+          sourcePath,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to cleanup stale synced skill files',
+      );
+    }
+  }
+
   private async getExistingSkill(slug: string): Promise<Skill | null> {
     try {
       return await this.skillsService.getSkillBySlug(slug);
@@ -313,6 +396,7 @@ export class SkillSyncService implements OnApplicationBootstrap {
       status: 'completed',
       added: 0,
       updated: 0,
+      removed: 0,
       failed: 0,
       unchanged: 0,
       errors: [],
@@ -324,6 +408,7 @@ export class SkillSyncService implements OnApplicationBootstrap {
       status: 'already_running',
       added: 0,
       updated: 0,
+      removed: 0,
       failed: 0,
       unchanged: 0,
       errors: [],
@@ -335,6 +420,7 @@ export class SkillSyncService implements OnApplicationBootstrap {
       status: 'completed',
       added: left.added + right.added,
       updated: left.updated + right.updated,
+      removed: left.removed + right.removed,
       failed: left.failed + right.failed,
       unchanged: left.unchanged + right.unchanged,
       errors: [...left.errors, ...right.errors],

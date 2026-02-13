@@ -75,6 +75,8 @@ import {
   ReviewCommentTarget,
   CommunitySkillSource,
   CreateCommunitySkillSource,
+  LocalSkillSource,
+  CreateLocalSkillSource,
 } from '../models/domain.models';
 import {
   NotFoundError,
@@ -246,6 +248,52 @@ export class LocalStorageService implements StorageService {
     return normalized;
   }
 
+  private normalizeLocalSkillSourceFolderPath(folderPath: string): string {
+    const normalized = folderPath.trim();
+    if (!normalized) {
+      throw new ValidationError('folderPath is required.', { fieldName: 'folderPath' });
+    }
+    return normalized;
+  }
+
+  private async assertLocalSourceNameAvailableAcrossTypes(sourceName: string): Promise<void> {
+    if (RESERVED_COMMUNITY_SOURCE_NAMES.has(sourceName)) {
+      throw new ValidationError('Local source name conflicts with a built-in source.', {
+        name: sourceName,
+      });
+    }
+
+    const { communitySkillSources } = await import('../db/schema');
+    const { eq } = await import('drizzle-orm');
+    const existingCommunitySource = await this.db
+      .select({ id: communitySkillSources.id })
+      .from(communitySkillSources)
+      .where(eq(communitySkillSources.name, sourceName))
+      .limit(1);
+
+    if (existingCommunitySource.length > 0) {
+      throw new ConflictError('Local source name conflicts with an existing community source.', {
+        name: sourceName,
+      });
+    }
+  }
+
+  private normalizeProjectIdForSourceEnablement(projectId: string): string {
+    const normalized = projectId.trim();
+    if (!normalized) {
+      throw new ValidationError('projectId is required.', { fieldName: 'projectId' });
+    }
+    return normalized;
+  }
+
+  private normalizeSourceNameForSourceEnablement(sourceName: string): string {
+    const normalized = sourceName.trim().toLowerCase();
+    if (!normalized) {
+      throw new ValidationError('sourceName is required.', { fieldName: 'sourceName' });
+    }
+    return normalized;
+  }
+
   private isSqliteUniqueConstraint(error: unknown): boolean {
     if (typeof error !== 'object' || error === null) {
       return false;
@@ -352,6 +400,44 @@ export class LocalStorageService implements StorageService {
     }
   }
 
+  private async listSeedableSourceNamesForNewProject(): Promise<string[]> {
+    const { communitySkillSources } = await import('../db/schema');
+    const communitySourceRows = await this.db
+      .select({ name: communitySkillSources.name })
+      .from(communitySkillSources);
+
+    const sourceNames = communitySourceRows
+      .map((row) => row.name.trim().toLowerCase())
+      .filter((name) => name.length > 0);
+
+    const sqlite = getRawSqliteClient(this.db);
+    if (sqlite && typeof sqlite.prepare === 'function') {
+      try {
+        const localRows = sqlite.prepare('SELECT name FROM local_skill_sources').all() as Array<{
+          name: unknown;
+        }>;
+        for (const row of localRows) {
+          if (typeof row.name !== 'string') {
+            continue;
+          }
+          const normalized = row.name.trim().toLowerCase();
+          if (normalized.length > 0) {
+            sourceNames.push(normalized);
+          }
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!message.includes('no such table: local_skill_sources')) {
+          throw new StorageError('Failed to list local skill sources for project source seeding.', {
+            cause: message,
+          });
+        }
+      }
+    }
+
+    return [...new Set(sourceNames)];
+  }
+
   // Projects
   async createProject(data: CreateProject): Promise<Project> {
     const { randomUUID } = await import('crypto');
@@ -364,7 +450,8 @@ export class LocalStorageService implements StorageService {
       updatedAt: now,
     };
 
-    const { projects, statuses } = await import('../db/schema');
+    const seedableSourceNames = await this.listSeedableSourceNamesForNewProject();
+    const { projects, statuses, sourceProjectEnabled } = await import('../db/schema');
 
     await this.db.transaction(async (tx) => {
       await tx.insert(projects).values({
@@ -397,6 +484,18 @@ export class LocalStorageService implements StorageService {
           updatedAt: now,
         });
       }
+
+      if (seedableSourceNames.length > 0) {
+        await tx.insert(sourceProjectEnabled).values(
+          seedableSourceNames.map((sourceName) => ({
+            id: randomUUID(),
+            projectId: project.id,
+            sourceName,
+            enabled: false,
+            createdAt: now,
+          })),
+        );
+      }
     });
 
     logger.info({ projectId: project.id }, 'Created project with default statuses (transactional)');
@@ -417,6 +516,7 @@ export class LocalStorageService implements StorageService {
       updatedAt: now,
     };
 
+    const seedableSourceNames = await this.listSeedableSourceNamesForNewProject();
     const {
       projects,
       statuses,
@@ -427,6 +527,7 @@ export class LocalStorageService implements StorageService {
       promptTags,
       profileProviderConfigs,
       providers,
+      sourceProjectEnabled,
     } = await import('../db/schema');
 
     const statusIdMap: Record<string, string> = {};
@@ -483,6 +584,18 @@ export class LocalStorageService implements StorageService {
           updatedAt: now,
         });
         if (s.id) statusIdMap[s.id] = statusId;
+      }
+
+      if (seedableSourceNames.length > 0) {
+        await this.db.insert(sourceProjectEnabled).values(
+          seedableSourceNames.map((sourceName) => ({
+            id: randomUUID(),
+            projectId: project.id,
+            sourceName,
+            enabled: false,
+            createdAt: now,
+          })),
+        );
       }
 
       // 3. Create prompts from template with tags
@@ -2588,6 +2701,156 @@ export class LocalStorageService implements StorageService {
     return this.updateProvider(id, update);
   }
 
+  // Source-Project enablement mapping
+  async getSourceProjectEnabled(projectId: string, sourceName: string): Promise<boolean | null> {
+    const normalizedProjectId = this.normalizeProjectIdForSourceEnablement(projectId);
+    const normalizedSourceName = this.normalizeSourceNameForSourceEnablement(sourceName);
+
+    const { sourceProjectEnabled } = await import('../db/schema');
+    const { and, eq } = await import('drizzle-orm');
+    const rows = await this.db
+      .select({ enabled: sourceProjectEnabled.enabled })
+      .from(sourceProjectEnabled)
+      .where(
+        and(
+          eq(sourceProjectEnabled.projectId, normalizedProjectId),
+          eq(sourceProjectEnabled.sourceName, normalizedSourceName),
+        ),
+      )
+      .limit(1);
+
+    return rows[0] ? Boolean(rows[0].enabled) : null;
+  }
+
+  async setSourceProjectEnabled(
+    projectId: string,
+    sourceName: string,
+    enabled: boolean,
+  ): Promise<void> {
+    const normalizedProjectId = this.normalizeProjectIdForSourceEnablement(projectId);
+    const normalizedSourceName = this.normalizeSourceNameForSourceEnablement(sourceName);
+
+    const { sourceProjectEnabled } = await import('../db/schema');
+    const { and, eq } = await import('drizzle-orm');
+    const existing = await this.db
+      .select({ id: sourceProjectEnabled.id })
+      .from(sourceProjectEnabled)
+      .where(
+        and(
+          eq(sourceProjectEnabled.projectId, normalizedProjectId),
+          eq(sourceProjectEnabled.sourceName, normalizedSourceName),
+        ),
+      )
+      .limit(1);
+
+    if (existing[0]) {
+      await this.db
+        .update(sourceProjectEnabled)
+        .set({ enabled })
+        .where(eq(sourceProjectEnabled.id, existing[0].id));
+      return;
+    }
+
+    const { randomUUID } = await import('crypto');
+    await this.db.insert(sourceProjectEnabled).values({
+      id: randomUUID(),
+      projectId: normalizedProjectId,
+      sourceName: normalizedSourceName,
+      enabled,
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  async listSourceProjectEnabled(
+    projectId: string,
+  ): Promise<Array<{ sourceName: string; enabled: boolean }>> {
+    const normalizedProjectId = this.normalizeProjectIdForSourceEnablement(projectId);
+
+    const { sourceProjectEnabled } = await import('../db/schema');
+    const { asc, eq } = await import('drizzle-orm');
+    const rows = await this.db
+      .select({
+        sourceName: sourceProjectEnabled.sourceName,
+        enabled: sourceProjectEnabled.enabled,
+      })
+      .from(sourceProjectEnabled)
+      .where(eq(sourceProjectEnabled.projectId, normalizedProjectId))
+      .orderBy(asc(sourceProjectEnabled.sourceName));
+
+    return rows.map((row) => ({
+      sourceName: row.sourceName,
+      enabled: Boolean(row.enabled),
+    }));
+  }
+
+  async seedSourceProjectDisabled(projectId: string, sourceNames: string[]): Promise<void> {
+    const normalizedProjectId = this.normalizeProjectIdForSourceEnablement(projectId);
+    const normalizedSourceNames = [
+      ...new Set(sourceNames.map((name) => name.trim().toLowerCase())),
+    ].filter((name) => name.length > 0);
+
+    if (normalizedSourceNames.length === 0) {
+      return;
+    }
+
+    const sqlite = getRawSqliteClient(this.db);
+    if (!sqlite || typeof sqlite.exec !== 'function') {
+      throw new StorageError('Unable to access underlying SQLite client');
+    }
+
+    sqlite.exec('BEGIN IMMEDIATE TRANSACTION');
+    try {
+      const { sourceProjectEnabled } = await import('../db/schema');
+      const { and, eq, inArray } = await import('drizzle-orm');
+      const existingRows = await this.db
+        .select({ sourceName: sourceProjectEnabled.sourceName })
+        .from(sourceProjectEnabled)
+        .where(
+          and(
+            eq(sourceProjectEnabled.projectId, normalizedProjectId),
+            inArray(sourceProjectEnabled.sourceName, normalizedSourceNames),
+          ),
+        );
+
+      const existingSourceNames = new Set(existingRows.map((row) => row.sourceName));
+      const sourceNamesToInsert = normalizedSourceNames.filter(
+        (sourceName) => !existingSourceNames.has(sourceName),
+      );
+
+      if (sourceNamesToInsert.length > 0) {
+        const { randomUUID } = await import('crypto');
+        const now = new Date().toISOString();
+        await this.db.insert(sourceProjectEnabled).values(
+          sourceNamesToInsert.map((sourceName) => ({
+            id: randomUUID(),
+            projectId: normalizedProjectId,
+            sourceName,
+            enabled: false,
+            createdAt: now,
+          })),
+        );
+      }
+
+      sqlite.exec('COMMIT');
+    } catch (error) {
+      try {
+        sqlite.exec('ROLLBACK');
+      } catch (rollbackError) {
+        logger.error({ rollbackError }, 'Failed to rollback seedSourceProjectDisabled transaction');
+      }
+      throw error;
+    }
+  }
+
+  async deleteSourceProjectEnabledBySource(sourceName: string): Promise<void> {
+    const normalizedSourceName = this.normalizeSourceNameForSourceEnablement(sourceName);
+    const { sourceProjectEnabled } = await import('../db/schema');
+    const { eq } = await import('drizzle-orm');
+    await this.db
+      .delete(sourceProjectEnabled)
+      .where(eq(sourceProjectEnabled.sourceName, normalizedSourceName));
+  }
+
   // Community Skill Sources
   async listCommunitySkillSources(): Promise<CommunitySkillSource[]> {
     const { communitySkillSources } = await import('../db/schema');
@@ -2697,17 +2960,123 @@ export class LocalStorageService implements StorageService {
 
   async deleteCommunitySkillSource(id: string): Promise<void> {
     const source = await this.getCommunitySkillSource(id);
-    const { communitySkillSources, skills } = await import('../db/schema');
+    const { communitySkillSources, skills, sourceProjectEnabled } = await import('../db/schema');
     const { eq } = await import('drizzle-orm');
 
     await this.db.transaction(async (tx) => {
       await tx.delete(skills).where(eq(skills.source, source.name));
+      await tx.delete(sourceProjectEnabled).where(eq(sourceProjectEnabled.sourceName, source.name));
       await tx.delete(communitySkillSources).where(eq(communitySkillSources.id, source.id));
     });
 
     logger.info(
       { communitySkillSourceId: source.id, sourceName: source.name },
       'Deleted community skill source and related skills',
+    );
+  }
+
+  // Local Skill Sources
+  async listLocalSkillSources(): Promise<LocalSkillSource[]> {
+    const { localSkillSources } = await import('../db/schema');
+    const { asc } = await import('drizzle-orm');
+    const rows = await this.db
+      .select()
+      .from(localSkillSources)
+      .orderBy(asc(localSkillSources.name));
+    return rows as LocalSkillSource[];
+  }
+
+  async getLocalSkillSource(id: string): Promise<LocalSkillSource | null> {
+    const normalizedId = id.trim();
+    if (!normalizedId) {
+      throw new ValidationError('id is required.', { fieldName: 'id' });
+    }
+
+    const { localSkillSources } = await import('../db/schema');
+    const { eq } = await import('drizzle-orm');
+    const rows = await this.db
+      .select()
+      .from(localSkillSources)
+      .where(eq(localSkillSources.id, normalizedId))
+      .limit(1);
+
+    return (rows[0] as LocalSkillSource | undefined) ?? null;
+  }
+
+  async createLocalSkillSource(data: CreateLocalSkillSource): Promise<LocalSkillSource> {
+    const normalizedName = this.normalizeCommunitySourceNameForLookup(data.name);
+    const normalizedFolderPath = this.normalizeLocalSkillSourceFolderPath(data.folderPath);
+    await this.assertLocalSourceNameAvailableAcrossTypes(normalizedName);
+
+    const { randomUUID } = await import('crypto');
+    const now = new Date().toISOString();
+    const record: LocalSkillSource = {
+      id: randomUUID(),
+      name: normalizedName,
+      folderPath: normalizedFolderPath,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const { localSkillSources } = await import('../db/schema');
+    try {
+      await this.db.insert(localSkillSources).values({
+        id: record.id,
+        name: record.name,
+        folderPath: record.folderPath,
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt,
+      });
+    } catch (error) {
+      if (this.isSqliteUniqueConstraint(error)) {
+        const rawMessage =
+          typeof error === 'object' && error !== null && 'message' in error
+            ? String((error as { message?: unknown }).message ?? '')
+            : '';
+        if (rawMessage.includes('local_skill_sources.name')) {
+          throw new ConflictError('Local skill source name already exists.', {
+            name: normalizedName,
+          });
+        }
+        if (rawMessage.includes('local_skill_sources.folder_path')) {
+          throw new ConflictError('Local skill source folder path already exists.', {
+            folderPath: normalizedFolderPath,
+          });
+        }
+        throw new ConflictError('Local skill source already exists.', {
+          name: normalizedName,
+          folderPath: normalizedFolderPath,
+        });
+      }
+      throw new StorageError('Failed to create local skill source.', {
+        name: normalizedName,
+        folderPath: normalizedFolderPath,
+        cause: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    logger.info({ localSkillSourceId: record.id, name: record.name }, 'Created local skill source');
+    return record;
+  }
+
+  async deleteLocalSkillSource(id: string): Promise<void> {
+    const source = await this.getLocalSkillSource(id);
+    if (!source) {
+      throw new NotFoundError('Local skill source', id.trim());
+    }
+
+    const { localSkillSources, skills, sourceProjectEnabled } = await import('../db/schema');
+    const { eq } = await import('drizzle-orm');
+
+    await this.db.transaction(async (tx) => {
+      await tx.delete(skills).where(eq(skills.source, source.name));
+      await tx.delete(sourceProjectEnabled).where(eq(sourceProjectEnabled.sourceName, source.name));
+      await tx.delete(localSkillSources).where(eq(localSkillSources.id, source.id));
+    });
+
+    logger.info(
+      { localSkillSourceId: source.id, sourceName: source.name },
+      'Deleted local skill source and related skills',
     );
   }
 

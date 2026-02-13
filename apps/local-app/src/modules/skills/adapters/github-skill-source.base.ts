@@ -5,10 +5,18 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { ReadableStream as WebReadableStream } from 'node:stream/web';
-import matter from 'gray-matter';
 import * as tar from 'tar';
 import { StorageError, TimeoutError, ValidationError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
+import {
+  parseSkillMarkdown as parseSkillMarkdownFromDirectory,
+  pickString as pickStringFromFrontmatter,
+  pickStringArray as pickStringArrayFromFrontmatter,
+  resolveSkillDirectory as resolveSkillDirectoryInExtractedRepo,
+  SkillDirectoryNotFoundError,
+  validatePathSegment as validatePathSegmentFromValue,
+} from './skill-parsing.utils';
+import type { ParsedSkillMarkdown } from './skill-parsing.utils';
 
 const logger = createLogger('GitHubSkillSourceBase');
 
@@ -16,8 +24,6 @@ const DEFAULT_BRANCH = 'main';
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_USER_AGENT = 'devchain-skills-sync';
 const DEFAULT_SKILLS_ROOT = join(homedir(), '.devchain', 'skills');
-const CONTROL_CHAR_REGEX = /[\u0000-\u001f\u007f]/;
-const SAFE_SKILL_SEGMENT_REGEX = /^[A-Za-z0-9_-]+$/;
 
 export interface GitHubSkillSourceBaseConfig {
   sourceName?: string;
@@ -30,10 +36,7 @@ export interface GitHubSkillSourceBaseConfig {
   githubToken?: string;
 }
 
-export interface ParsedSkillMarkdown {
-  frontmatter: Record<string, unknown>;
-  instructionContent: string;
-}
+export type { ParsedSkillMarkdown } from './skill-parsing.utils';
 
 export interface ExtractedRepositoryContext {
   extractedRepoRoot: string;
@@ -110,40 +113,30 @@ export abstract class GitHubSkillSourceBase {
     const safeSkillDirectory = resolve(skillDirectory);
     const skillMdPath = join(safeSkillDirectory, 'SKILL.md');
 
-    let markdown: string;
     try {
-      markdown = await fs.readFile(skillMdPath, 'utf-8');
+      return await parseSkillMarkdownFromDirectory(safeSkillDirectory, {
+        onMissingFile: ({ skillMdPath: missingSkillMdPath }) => {
+          logger.warn(
+            { sourceName: this.sourceName, skillMdPath: missingSkillMdPath },
+            'SKILL.md not found for skill',
+          );
+        },
+        onParseError: ({ skillMdPath: malformedSkillMdPath, error }) => {
+          logger.warn(
+            {
+              sourceName: this.sourceName,
+              skillMdPath: malformedSkillMdPath,
+              error: error instanceof Error ? error.message : String(error),
+            },
+            'Failed to parse SKILL.md frontmatter for skill. Skipping malformed file.',
+          );
+        },
+      });
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        logger.warn({ sourceName: this.sourceName, skillMdPath }, 'SKILL.md not found for skill');
-        return null;
-      }
       throw this.wrapStorageError('Failed reading SKILL.md for skill.', error, {
         sourceName: this.sourceName,
         skillMdPath,
       });
-    }
-
-    try {
-      const parsed = matter(markdown);
-      const frontmatter =
-        parsed.data && typeof parsed.data === 'object'
-          ? (parsed.data as Record<string, unknown>)
-          : {};
-      return {
-        frontmatter,
-        instructionContent: parsed.content,
-      };
-    } catch (error) {
-      logger.warn(
-        {
-          sourceName: this.sourceName,
-          skillMdPath,
-          error: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to parse SKILL.md frontmatter for skill. Skipping malformed file.',
-      );
-      return null;
     }
   }
 
@@ -152,115 +145,49 @@ export abstract class GitHubSkillSourceBase {
   }
 
   protected validatePathSegment(segment: string, fieldName: string): string {
-    const trimmed = segment.trim();
-    if (!trimmed) {
-      throw new ValidationError(`Invalid ${fieldName}: value cannot be empty.`, { fieldName });
-    }
-    if (
-      trimmed.includes('..') ||
-      trimmed.includes('/') ||
-      trimmed.includes('\\') ||
-      CONTROL_CHAR_REGEX.test(trimmed)
-    ) {
-      throw new ValidationError(
-        `Invalid ${fieldName}: path traversal or control characters are not allowed.`,
-        { fieldName, segment: trimmed },
-      );
-    }
-    if (!SAFE_SKILL_SEGMENT_REGEX.test(trimmed)) {
-      throw new ValidationError(
-        `Invalid ${fieldName}: only alphanumeric characters, underscores, and hyphens are allowed.`,
-        { fieldName, segment: trimmed },
-      );
-    }
-    return trimmed;
+    return validatePathSegmentFromValue(segment, fieldName);
   }
 
   protected pickString(
     frontmatter: Record<string, unknown>,
     keys: readonly string[],
   ): string | undefined {
-    for (const key of keys) {
-      const value = this.toStringValue(frontmatter[key]);
-      if (value) {
-        return value;
-      }
-    }
-    return undefined;
+    return pickStringFromFrontmatter(frontmatter, keys);
   }
 
   protected pickStringArray(
     frontmatter: Record<string, unknown>,
     keys: readonly string[],
   ): string[] {
-    for (const key of keys) {
-      const value = frontmatter[key];
-      if (!Array.isArray(value)) {
-        continue;
-      }
-
-      const items = value
-        .filter((item): item is string => typeof item === 'string')
-        .map((item) => item.trim())
-        .filter((item) => item.length > 0);
-      if (items.length > 0) {
-        return items;
-      }
-    }
-
-    return [];
-  }
-
-  protected toStringValue(value: unknown): string | undefined {
-    if (typeof value === 'string' && value.trim().length > 0) {
-      return value.trim();
-    }
-
-    if (Array.isArray(value)) {
-      const items = value
-        .filter((item): item is string => typeof item === 'string')
-        .map((item) => item.trim())
-        .filter((item) => item.length > 0);
-      if (items.length > 0) {
-        return items.join(', ');
-      }
-    }
-
-    return undefined;
+    return pickStringArrayFromFrontmatter(frontmatter, keys);
   }
 
   protected async resolveSkillDirectory(
     extractedRepoRoot: string,
     skillName: string,
   ): Promise<string> {
-    const candidates = [
-      join(extractedRepoRoot, skillName),
-      join(extractedRepoRoot, 'skills', skillName),
-      join(extractedRepoRoot, 'library', skillName),
-    ];
+    const safeExtractedRepoRoot = resolve(extractedRepoRoot);
 
-    for (const candidate of candidates) {
-      try {
-        const stats = await fs.stat(candidate);
-        if (stats.isDirectory()) {
-          return candidate;
-        }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+    try {
+      return await resolveSkillDirectoryInExtractedRepo(safeExtractedRepoRoot, skillName, {
+        onCandidateError: ({ candidate, error }) => {
           throw this.wrapStorageError('Failed checking extracted skill directory.', error, {
             candidate,
             sourceName: this.sourceName,
             skillName,
           });
-        }
+        },
+      });
+    } catch (error) {
+      if (error instanceof SkillDirectoryNotFoundError) {
+        throw new StorageError('Skill directory was not found in extracted repository tarball.', {
+          sourceName: this.sourceName,
+          skillName,
+          extractedRepoRoot: safeExtractedRepoRoot,
+        });
       }
+      throw error;
     }
-
-    throw new StorageError('Skill directory was not found in extracted repository tarball.', {
-      sourceName: this.sourceName,
-      skillName,
-      extractedRepoRoot,
-    });
   }
 
   protected async prepareExtractedRepository(): Promise<ExtractedRepositoryContext> {

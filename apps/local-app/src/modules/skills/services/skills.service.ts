@@ -6,14 +6,19 @@ import { NotFoundError, StorageError, ValidationError } from '../../../common/er
 import { createLogger } from '../../../common/logging/logger';
 import { SettingsService } from '../../settings/services/settings.service';
 import { DB_CONNECTION } from '../../storage/db/db.provider';
-import { skillProjectDisabled, skills, skillUsageLog } from '../../storage/db/schema';
+import {
+  skillProjectDisabled,
+  skills,
+  skillUsageLog,
+  sourceProjectEnabled,
+} from '../../storage/db/schema';
 import type { ResolvedSkillSummary } from '../dtos/skill.dto';
 import type {
   Skill,
   SkillStatus,
   SkillUsageLog as SkillUsageLogModel,
 } from '../../storage/models/domain.models';
-import { SkillSourceRegistryService } from './skill-source-registry.service';
+import { SkillSourceRegistryService, type SkillSourceKind } from './skill-source-registry.service';
 
 const logger = createLogger('SkillsService');
 
@@ -92,7 +97,9 @@ export interface SkillUsageLogListResult {
 
 export interface SkillSourceMetadata {
   name: string;
+  kind: SkillSourceKind;
   enabled: boolean;
+  projectEnabled?: boolean;
   repoUrl: string;
   skillCount: number;
 }
@@ -152,12 +159,12 @@ export class SkillsService {
     projectId: string,
     options: ListProjectSkillsOptions = {},
   ): Promise<ProjectSkill[]> {
-    const enabledSources = await this.getEnabledSources();
+    const normalizedProjectId = this.requireNonEmpty(projectId, 'projectId');
+    const enabledSources = await this.getEnabledSourcesForProject(normalizedProjectId);
     if (enabledSources.length === 0) {
       return [];
     }
 
-    const normalizedProjectId = this.requireNonEmpty(projectId, 'projectId');
     const query = this.db
       .select({
         skill: skills,
@@ -191,12 +198,12 @@ export class SkillsService {
     projectId: string,
     options: ListProjectSkillsOptions = {},
   ): Promise<Skill[]> {
-    const enabledSources = await this.getEnabledSources();
+    const normalizedProjectId = this.requireNonEmpty(projectId, 'projectId');
+    const enabledSources = await this.getEnabledSourcesForProject(normalizedProjectId);
     if (enabledSources.length === 0) {
       return [];
     }
 
-    const normalizedProjectId = this.requireNonEmpty(projectId, 'projectId');
     const query = this.db
       .select({ skill: skills })
       .from(skills)
@@ -241,6 +248,32 @@ export class SkillsService {
     }
 
     return this.mapSkillRow(row[0]);
+  }
+
+  async listSkillsBySource(sourceName: string): Promise<Skill[]> {
+    const normalizedSourceName = this.requireNonEmpty(sourceName, 'sourceName').toLowerCase();
+    const rows = await this.db
+      .select()
+      .from(skills)
+      .where(eq(skills.source, normalizedSourceName))
+      .orderBy(asc(skills.name), asc(skills.slug));
+
+    return rows.map((row) => this.mapSkillRow(row));
+  }
+
+  async deleteSkillBySlug(slug: string): Promise<boolean> {
+    const normalizedSlug = this.requireNonEmpty(slug, 'slug').toLowerCase();
+    const existing = await this.db
+      .select({ id: skills.id })
+      .from(skills)
+      .where(eq(skills.slug, normalizedSlug))
+      .limit(1);
+    if (!existing[0]) {
+      return false;
+    }
+
+    await this.db.delete(skills).where(eq(skills.slug, normalizedSlug));
+    return true;
   }
 
   async resolveSkillSummariesBySlugs(
@@ -520,7 +553,7 @@ export class SkillsService {
     return disabledRows.length;
   }
 
-  async listSources(): Promise<SkillSourceMetadata[]> {
+  async listSources(projectId?: string): Promise<SkillSourceMetadata[]> {
     const sourceRows = await this.db
       .select({ source: skills.source, skillCount: count() })
       .from(skills)
@@ -532,12 +565,36 @@ export class SkillsService {
 
     const sourceSettings = this.settingsService.getSkillSourcesEnabled();
     const registeredSources = await this.getRegisteredSources();
-    return registeredSources.map((source) => ({
-      name: source.name,
-      enabled: this.isSourceEnabled(source.name, sourceSettings),
-      repoUrl: source.repoUrl,
-      skillCount: sourceCountMap.get(source.name) ?? 0,
-    }));
+    const normalizedProjectId =
+      projectId !== undefined ? this.requireNonEmpty(projectId, 'projectId') : undefined;
+    const projectSourceEnabledMap = normalizedProjectId
+      ? await this.getProjectSourceEnabledMap(normalizedProjectId)
+      : null;
+
+    return registeredSources.map((source) => {
+      const globallyEnabled = this.isSourceEnabled(source.name, sourceSettings);
+      const base: SkillSourceMetadata = {
+        name: source.name,
+        kind: source.kind,
+        enabled: globallyEnabled,
+        repoUrl: source.repoUrl,
+        skillCount: sourceCountMap.get(source.name) ?? 0,
+      };
+
+      if (!projectSourceEnabledMap) {
+        return base;
+      }
+
+      const projectSetting = projectSourceEnabledMap.get(source.name);
+      return {
+        ...base,
+        projectEnabled: globallyEnabled && (projectSetting ?? true),
+      };
+    });
+  }
+
+  getReservedSourceNames(): string[] {
+    return this.skillSourceRegistry.getBuiltInSourceNames();
   }
 
   async setSourceEnabled(
@@ -550,6 +607,77 @@ export class SkillsService {
     const normalizedSourceName = await this.requireKnownSourceName(sourceName);
     await this.settingsService.setSkillSourceEnabled(normalizedSourceName, enabled);
     return { name: normalizedSourceName, enabled };
+  }
+
+  async setSourceProjectEnabled(
+    sourceName: string,
+    projectId: string,
+    enabled: boolean,
+  ): Promise<{
+    name: string;
+    projectId: string;
+    projectEnabled: boolean;
+  }> {
+    const normalizedSourceName = await this.requireKnownSourceName(sourceName);
+    const normalizedProjectId = this.requireNonEmpty(projectId, 'projectId');
+    const now = new Date().toISOString();
+
+    try {
+      const existing = await this.db
+        .select({ id: sourceProjectEnabled.id })
+        .from(sourceProjectEnabled)
+        .where(
+          and(
+            eq(sourceProjectEnabled.projectId, normalizedProjectId),
+            eq(sourceProjectEnabled.sourceName, normalizedSourceName),
+          ),
+        )
+        .limit(1);
+
+      if (existing[0]) {
+        await this.db
+          .update(sourceProjectEnabled)
+          .set({ enabled })
+          .where(eq(sourceProjectEnabled.id, existing[0].id));
+      } else {
+        await this.db.insert(sourceProjectEnabled).values({
+          id: randomUUID(),
+          projectId: normalizedProjectId,
+          sourceName: normalizedSourceName,
+          enabled,
+          createdAt: now,
+        });
+      }
+    } catch (error) {
+      if (this.isUniqueConstraintError(error)) {
+        await this.db
+          .update(sourceProjectEnabled)
+          .set({ enabled })
+          .where(
+            and(
+              eq(sourceProjectEnabled.projectId, normalizedProjectId),
+              eq(sourceProjectEnabled.sourceName, normalizedSourceName),
+            ),
+          );
+      } else if (this.isForeignKeyConstraintError(error)) {
+        throw new ValidationError('Cannot update source for unknown project.', {
+          projectId: normalizedProjectId,
+        });
+      } else {
+        throw new StorageError('Failed to update source enablement for project.', {
+          projectId: normalizedProjectId,
+          sourceName: normalizedSourceName,
+          enabled,
+          cause: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return {
+      name: normalizedSourceName,
+      projectId: normalizedProjectId,
+      projectEnabled: enabled,
+    };
   }
 
   async logUsage(
@@ -896,19 +1024,10 @@ export class SkillsService {
     return and(...conditions);
   }
 
-  private async getRegisteredSources(): Promise<Array<{ name: string; repoUrl: string }>> {
-    const adapters = await this.skillSourceRegistry.getAdapters();
-    const sourceMap = new Map<string, string>();
-    for (const adapter of adapters) {
-      const normalizedName = adapter.sourceName.trim().toLowerCase();
-      if (!normalizedName || sourceMap.has(normalizedName)) {
-        continue;
-      }
-      sourceMap.set(normalizedName, adapter.repoUrl);
-    }
-    return Array.from(sourceMap.entries())
-      .map(([name, repoUrl]) => ({ name, repoUrl }))
-      .sort((left, right) => left.name.localeCompare(right.name));
+  private async getRegisteredSources(): Promise<
+    Array<{ name: string; repoUrl: string; kind: SkillSourceKind }>
+  > {
+    return this.skillSourceRegistry.listRegisteredSources();
   }
 
   private async getEnabledSources(): Promise<string[]> {
@@ -917,6 +1036,31 @@ export class SkillsService {
     return registeredSources
       .map((source) => source.name)
       .filter((sourceName) => this.isSourceEnabled(sourceName, sourceSettings));
+  }
+
+  private async getEnabledSourcesForProject(projectId: string): Promise<string[]> {
+    const enabledSources = await this.getEnabledSources();
+    if (enabledSources.length === 0) {
+      return [];
+    }
+
+    const projectSourceEnabledMap = await this.getProjectSourceEnabledMap(projectId);
+    return enabledSources.filter((sourceName) => projectSourceEnabledMap.get(sourceName) ?? true);
+  }
+
+  private async getProjectSourceEnabledMap(projectId: string): Promise<Map<string, boolean>> {
+    const normalizedProjectId = this.requireNonEmpty(projectId, 'projectId');
+    const rows = await this.db
+      .select({
+        sourceName: sourceProjectEnabled.sourceName,
+        enabled: sourceProjectEnabled.enabled,
+      })
+      .from(sourceProjectEnabled)
+      .where(eq(sourceProjectEnabled.projectId, normalizedProjectId));
+
+    return new Map(
+      rows.map((row) => [row.sourceName.trim().toLowerCase(), Boolean(row.enabled)] as const),
+    );
   }
 
   private isSourceEnabled(sourceName: string, sourceSettings: Record<string, boolean>): boolean {

@@ -28,7 +28,7 @@ export function SyncButton({ sourceName, className, onSynced }: SyncButtonProps)
 
         toast({
           title: 'Skills sync complete',
-          description: `Added: ${result.added}, Updated: ${result.updated}, Failed: ${result.failed}`,
+          description: `Added: ${result.added}, Updated: ${result.updated}, Removed: ${result.removed}, Failed: ${result.failed}`,
         });
       }
 

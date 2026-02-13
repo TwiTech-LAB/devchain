@@ -391,6 +391,10 @@ describe('LocalStorageService', () => {
           isTemplate: false,
         };
 
+        mockDb.select = jest.fn().mockReturnValue({
+          from: jest.fn().mockResolvedValue([]),
+        });
+
         // Track insert calls inside transaction
         const txInsertMock = jest.fn().mockReturnValue({
           values: jest.fn().mockResolvedValue(undefined),
@@ -420,7 +424,11 @@ describe('LocalStorageService', () => {
     describe('createProjectWithTemplate', () => {
       it('should throw StorageError when raw SQLite client is not accessible', async () => {
         // Mock db without $client or client property
-        const badDb = {} as unknown as BetterSQLite3Database;
+        const badDb = {
+          select: jest.fn().mockReturnValue({
+            from: jest.fn().mockResolvedValue([]),
+          }),
+        } as unknown as BetterSQLite3Database;
         const serviceWithBadDb = new LocalStorageService(badDb);
 
         const templatePayload = {

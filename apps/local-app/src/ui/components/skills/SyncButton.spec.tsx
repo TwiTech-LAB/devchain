@@ -40,6 +40,7 @@ describe('SyncButton', () => {
       status: 'already_running',
       added: 0,
       updated: 0,
+      removed: 0,
       failed: 0,
       unchanged: 0,
       errors: [],
@@ -63,6 +64,7 @@ describe('SyncButton', () => {
       status: 'completed',
       added: 2,
       updated: 1,
+      removed: 4,
       failed: 0,
       unchanged: 3,
       errors: [],
@@ -76,7 +78,7 @@ describe('SyncButton', () => {
       expect(toastSpy).toHaveBeenCalledWith(
         expect.objectContaining({
           title: 'Skills sync complete',
-          description: 'Added: 2, Updated: 1, Failed: 0',
+          description: 'Added: 2, Updated: 1, Removed: 4, Failed: 0',
         }),
       );
     });

@@ -1,6 +1,9 @@
 import {
+  addLocalSource,
   addCommunitySource,
+  fetchLocalSources,
   fetchCommunitySources,
+  removeLocalSource,
   removeCommunitySource,
   resolveSkillSlugs,
 } from './skills';
@@ -149,6 +152,94 @@ describe('ui/lib/skills community source api', () => {
     );
 
     await expect(removeCommunitySource('source-3')).resolves.toBeUndefined();
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ui/lib/skills local source api', () => {
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    if (originalFetch) {
+      global.fetch = originalFetch;
+    } else {
+      delete (global as unknown as { fetch?: unknown }).fetch;
+    }
+    jest.clearAllMocks();
+  });
+
+  it('fetchLocalSources requests local source list', async () => {
+    const payload = [
+      {
+        id: 'source-1',
+        name: 'local-source',
+        folderPath: '/tmp/local-source',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      },
+    ];
+
+    (global as unknown as { fetch: unknown }).fetch = jest.fn(async (input: RequestInfo | URL) => {
+      expect(input).toBe('/api/skills/local-sources');
+      return {
+        ok: true,
+        json: async () => payload,
+      } as Response;
+    });
+
+    await expect(fetchLocalSources()).resolves.toEqual(payload);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('addLocalSource posts payload to local source endpoint', async () => {
+    const payload = {
+      id: 'source-2',
+      name: 'local-source',
+      folderPath: '/tmp/local-source',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+
+    (global as unknown as { fetch: unknown }).fetch = jest.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        expect(input).toBe('/api/skills/local-sources');
+        expect(init?.method).toBe('POST');
+        expect(init?.headers).toEqual({ 'Content-Type': 'application/json' });
+        expect(init?.body).toBe(
+          JSON.stringify({
+            name: 'local-source',
+            folderPath: '/tmp/local-source',
+          }),
+        );
+        return {
+          ok: true,
+          json: async () => payload,
+        } as Response;
+      },
+    );
+
+    await expect(
+      addLocalSource({
+        name: 'local-source',
+        folderPath: '/tmp/local-source',
+      }),
+    ).resolves.toEqual(payload);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('removeLocalSource sends delete request by id', async () => {
+    (global as unknown as { fetch: unknown }).fetch = jest.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        expect(input).toBe('/api/skills/local-sources/source-3');
+        expect(init?.method).toBe('DELETE');
+        return {
+          ok: true,
+          json: async () => ({ success: true }),
+        } as Response;
+      },
+    );
+
+    await expect(removeLocalSource('source-3')).resolves.toBeUndefined();
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 });

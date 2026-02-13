@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertCircle, Loader2, Search } from 'lucide-react';
+import { AlertCircle, ArrowUpDown, Loader2, Search } from 'lucide-react';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -43,6 +43,9 @@ export interface SkillsListTabProps {
   onSelectSkill?: (skillId: string) => void;
 }
 
+type SkillSortField = 'name' | 'category' | 'source' | 'enabled';
+type SortDirection = 'asc' | 'desc';
+
 const SKILL_STATUS_BADGES: Record<SkillStatus, { label: string; className: string }> = {
   available: {
     label: 'Available',
@@ -70,6 +73,8 @@ export function SkillsListTab({ onSelectSkill }: SkillsListTabProps) {
   const { toast } = useToast();
   const { selectedProjectId } = useSelectedProject();
   const [search, setSearch] = useState('');
+  const [sortField, setSortField] = useState<SkillSortField>('name');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [isDisableAllDialogOpen, setIsDisableAllDialogOpen] = useState(false);
   const [isEnableAllDialogOpen, setIsEnableAllDialogOpen] = useState(false);
 
@@ -83,14 +88,83 @@ export function SkillsListTab({ onSelectSkill }: SkillsListTabProps) {
     enabled: Boolean(selectedProjectId),
   });
 
-  const filteredSkills = useMemo(() => {
+  const filteredAndSortedSkills = useMemo(() => {
     const trimmedSearch = search.trim().toLowerCase();
-    if (!trimmedSearch) {
-      return skills ?? [];
+    const filtered =
+      trimmedSearch.length === 0
+        ? (skills ?? [])
+        : (skills ?? []).filter((skill) => getSearchValue(skill).includes(trimmedSearch));
+
+    const sorted = [...filtered];
+    sorted.sort((left, right) => {
+      let result = 0;
+      switch (sortField) {
+        case 'name': {
+          const leftName = left.displayName || left.name;
+          const rightName = right.displayName || right.name;
+          result = leftName.localeCompare(rightName, undefined, { sensitivity: 'base' });
+          break;
+        }
+        case 'category': {
+          const leftCategory = left.category ?? '';
+          const rightCategory = right.category ?? '';
+          result = leftCategory.localeCompare(rightCategory, undefined, {
+            sensitivity: 'base',
+          });
+          break;
+        }
+        case 'source': {
+          const leftSource = getSourceDisplay(left.source).label;
+          const rightSource = getSourceDisplay(right.source).label;
+          result = leftSource.localeCompare(rightSource, undefined, { sensitivity: 'base' });
+          break;
+        }
+        case 'enabled': {
+          const leftDisabled = Number(left.disabled);
+          const rightDisabled = Number(right.disabled);
+          result = leftDisabled - rightDisabled;
+          break;
+        }
+        default:
+          result = 0;
+      }
+
+      return sortDirection === 'asc' ? result : -result;
+    });
+
+    return sorted;
+  }, [search, skills, sortField, sortDirection]);
+
+  const toggleSort = (field: SkillSortField) => {
+    if (sortField === field) {
+      setSortDirection((current) => (current === 'asc' ? 'desc' : 'asc'));
+      return;
     }
 
-    return (skills ?? []).filter((skill) => getSearchValue(skill).includes(trimmedSearch));
-  }, [search, skills]);
+    setSortField(field);
+    setSortDirection('asc');
+  };
+
+  const renderSortHeader = (
+    field: SkillSortField,
+    label: string,
+    className?: string,
+    iconClassName?: string,
+  ) => (
+    <TableHead className={className}>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="h-7 gap-1 px-1 text-xs font-semibold text-muted-foreground hover:text-foreground"
+        onClick={() => toggleSort(field)}
+      >
+        {label}
+        <ArrowUpDown className={cn('h-3.5 w-3.5', iconClassName)} aria-hidden="true" />
+        {sortField === field ? <span>{sortDirection === 'asc' ? '↑' : '↓'}</span> : null}
+      </Button>
+    </TableHead>
+  );
 
   const toggleDisableMutation = useMutation({
     mutationFn: async ({ skillId, nextEnabled }: { skillId: string; nextEnabled: boolean }) => {
@@ -243,11 +317,11 @@ export function SkillsListTab({ onSelectSkill }: SkillsListTabProps) {
             <Table className="table-fixed">
               <TableHeader>
                 <TableRow>
-                  <TableHead>Name</TableHead>
+                  {renderSortHeader('name', 'Name')}
                   <TableHead>Description</TableHead>
-                  <TableHead className="w-[120px]">Category</TableHead>
-                  <TableHead className="w-[120px]">Source</TableHead>
-                  <TableHead className="w-[80px] text-right">Enabled</TableHead>
+                  {renderSortHeader('category', 'Category', 'w-[120px]')}
+                  {renderSortHeader('source', 'Source', 'w-[120px]')}
+                  {renderSortHeader('enabled', 'Enabled', 'w-[80px] text-right', 'shrink-0')}
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -260,17 +334,19 @@ export function SkillsListTab({ onSelectSkill }: SkillsListTabProps) {
                       </div>
                     </TableCell>
                   </TableRow>
-                ) : filteredSkills.length === 0 ? (
+                ) : filteredAndSortedSkills.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
                       {search.trim() ? 'No skills match your search.' : 'No skills available.'}
                     </TableCell>
                   </TableRow>
                 ) : (
-                  filteredSkills.map((skill) => {
+                  filteredAndSortedSkills.map((skill) => {
                     const sourceDisplay = getSourceDisplay(skill.source);
                     const SourceIcon = sourceDisplay.icon;
                     const isDisabled = skill.disabled;
+                    const descriptionText =
+                      skill.shortDescription || skill.description || 'No description';
                     const isMutatingThisSkill =
                       toggleDisableMutation.isPending &&
                       toggleDisableMutation.variables?.skillId === skill.id;
@@ -318,8 +394,8 @@ export function SkillsListTab({ onSelectSkill }: SkillsListTabProps) {
                           </div>
                         </TableCell>
                         <TableCell className={cn(!isDisabled && 'text-muted-foreground')}>
-                          <span className="line-clamp-1 max-w-[300px]">
-                            {skill.shortDescription || skill.description || 'No description'}
+                          <span className="line-clamp-1 max-w-[300px]" title={descriptionText}>
+                            {descriptionText}
                           </span>
                         </TableCell>
                         <TableCell>

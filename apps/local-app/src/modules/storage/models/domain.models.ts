@@ -90,6 +90,14 @@ export interface CommunitySkillSource {
   updatedAt: string;
 }
 
+export interface LocalSkillSource {
+  id: string;
+  name: string;
+  folderPath: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Prompt {
   id: string;
   projectId: string | null;
@@ -231,6 +239,8 @@ export type CreateCommunitySkillSource = Omit<
 > & {
   branch?: string;
 };
+
+export type CreateLocalSkillSource = Omit<LocalSkillSource, 'id' | 'createdAt' | 'updatedAt'>;
 
 export type CreatePrompt = Omit<Prompt, 'id' | 'version' | 'createdAt' | 'updatedAt'>;
 export type UpdatePrompt = Partial<Omit<Prompt, 'id' | 'createdAt' | 'updatedAt'>>;

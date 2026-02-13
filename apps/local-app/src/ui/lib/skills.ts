@@ -58,6 +58,7 @@ export interface SkillSyncResult {
   status: 'completed' | 'already_running';
   added: number;
   updated: number;
+  removed: number;
   failed: number;
   unchanged: number;
   errors: SkillSyncError[];
@@ -65,10 +66,15 @@ export interface SkillSyncResult {
 
 export type SkillListItem = SkillSummary & { disabled: boolean };
 
+export type SkillSourceKind = 'builtin' | 'community' | 'local';
+
 export interface SkillSource {
   name: string;
+  kind: SkillSourceKind;
   enabled: boolean;
+  projectEnabled?: boolean;
   repoUrl: string;
+  folderPath?: string;
   skillCount: number;
 }
 
@@ -82,12 +88,25 @@ export interface CommunitySource {
   updatedAt: string;
 }
 
+export interface LocalSource {
+  id: string;
+  name: string;
+  folderPath: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AddCommunitySourceInput {
   name: string;
   url?: string;
   repoOwner?: string;
   repoName?: string;
   branch?: string;
+}
+
+export interface AddLocalSourceInput {
+  name: string;
+  folderPath: string;
 }
 
 export interface SkillUsageStat {
@@ -333,14 +352,15 @@ export async function triggerSync(sourceName?: string): Promise<SkillSyncResult>
 }
 
 /**
- * Fetch source metadata and global enablement state.
+ * Fetch source metadata with optional project-scoped enablement state.
  */
-export async function fetchSources(): Promise<SkillSource[]> {
-  return fetchJsonOrThrow<SkillSource[]>(
-    '/api/skills/sources',
-    {},
-    'Failed to fetch skill sources',
-  );
+export async function fetchSources(projectId?: string): Promise<SkillSource[]> {
+  const params = new URLSearchParams();
+  appendQueryParam(params, 'projectId', projectId);
+  const query = params.toString();
+  const url = query ? `/api/skills/sources?${query}` : '/api/skills/sources';
+
+  return fetchJsonOrThrow<SkillSource[]>(url, {}, 'Failed to fetch skill sources');
 }
 
 /**
@@ -383,6 +403,43 @@ export async function removeCommunitySource(id: string): Promise<void> {
 }
 
 /**
+ * Fetch all local skill sources.
+ */
+export async function fetchLocalSources(): Promise<LocalSource[]> {
+  return fetchJsonOrThrow<LocalSource[]>(
+    '/api/skills/local-sources',
+    {},
+    'Failed to fetch local skill sources',
+  );
+}
+
+/**
+ * Add a local skill source.
+ */
+export async function addLocalSource(payload: AddLocalSourceInput): Promise<LocalSource> {
+  return fetchJsonOrThrow<LocalSource>(
+    '/api/skills/local-sources',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+    'Failed to add local source',
+  );
+}
+
+/**
+ * Remove a local skill source.
+ */
+export async function removeLocalSource(id: string): Promise<void> {
+  await fetchJsonOrThrow<{ success: boolean }>(
+    `/api/skills/local-sources/${encodeURIComponent(id)}`,
+    { method: 'DELETE' },
+    'Failed to remove local source',
+  );
+}
+
+/**
  * Enable a skill source globally.
  */
 export async function enableSource(
@@ -405,6 +462,42 @@ export async function disableSource(
     `/api/skills/sources/${encodeURIComponent(sourceName)}/disable`,
     { method: 'POST' },
     'Failed to disable skill source',
+  );
+}
+
+/**
+ * Enable a skill source for a project.
+ */
+export async function enableSourceForProject(
+  sourceName: string,
+  projectId: string,
+): Promise<{ name: string; projectId: string; projectEnabled: boolean }> {
+  return fetchJsonOrThrow<{ name: string; projectId: string; projectEnabled: boolean }>(
+    `/api/skills/sources/${encodeURIComponent(sourceName)}/enable-project`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId }),
+    },
+    'Failed to enable skill source for project',
+  );
+}
+
+/**
+ * Disable a skill source for a project.
+ */
+export async function disableSourceForProject(
+  sourceName: string,
+  projectId: string,
+): Promise<{ name: string; projectId: string; projectEnabled: boolean }> {
+  return fetchJsonOrThrow<{ name: string; projectId: string; projectEnabled: boolean }>(
+    `/api/skills/sources/${encodeURIComponent(sourceName)}/disable-project`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId }),
+    },
+    'Failed to disable skill source for project',
   );
 }
 

@@ -1,5 +1,6 @@
 import React from 'react';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AgentsPage } from './AgentsPage';
 
@@ -97,16 +98,18 @@ describe('AgentsPage - Restart flow', () => {
   });
 
   it('executes terminate→launch and opens terminal on Restart', async () => {
+    const user = userEvent.setup();
     renderWithQuery(<AgentsPage />);
 
     await waitFor(() => expect(screen.getByText('Project Agents')).toBeInTheDocument());
     const restartBtn = await screen.findByRole('button', { name: /restart session/i });
-    fireEvent.click(restartBtn);
+    await user.click(restartBtn);
 
     await waitFor(() => expect(openTerminalWindowSpy).toHaveBeenCalled());
   });
 
   it('shows error toast and resets state when launch fails', async () => {
+    const user = userEvent.setup();
     // Override fetch to fail on launch
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (global as unknown as { fetch: unknown }).fetch = jest.fn(
@@ -153,7 +156,7 @@ describe('AgentsPage - Restart flow', () => {
 
     await waitFor(() => expect(screen.getByText('Project Agents')).toBeInTheDocument());
     const restartBtn = await screen.findByRole('button', { name: /restart session/i });
-    restartBtn.click();
+    await user.click(restartBtn);
 
     await waitFor(() => {
       expect(toastSpy).toHaveBeenCalledWith(

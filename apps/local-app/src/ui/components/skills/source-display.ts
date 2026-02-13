@@ -1,4 +1,5 @@
-import { Bot, Brain, Github } from 'lucide-react';
+import { Bot, Brain, FolderOpen, Github } from 'lucide-react';
+import type { SkillSourceKind } from '@/ui/lib/skills';
 
 export interface SourceDisplay {
   icon: typeof Bot;
@@ -19,10 +20,26 @@ export const SOURCE_DISPLAY_BY_NAME: Record<string, SourceDisplay> = {
   },
 };
 
-export function getSourceDisplay(source: string): SourceDisplay {
+export function getSourceDisplay(source: string, kind?: SkillSourceKind): SourceDisplay {
+  if (kind === 'local') {
+    return {
+      icon: FolderOpen,
+      label: source,
+      className: 'text-indigo-700',
+    };
+  }
+
   const normalized = source.trim().toLowerCase();
   if (normalized in SOURCE_DISPLAY_BY_NAME) {
     return SOURCE_DISPLAY_BY_NAME[normalized];
+  }
+
+  if (kind === 'builtin') {
+    return {
+      icon: Bot,
+      label: source,
+      className: 'text-sky-700',
+    };
   }
 
   return {

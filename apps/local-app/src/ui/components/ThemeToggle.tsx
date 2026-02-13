@@ -18,8 +18,10 @@ export interface ThemeToggleProps extends ThemeSelectProps {}
 
 export function ThemeToggle(props: ThemeToggleProps) {
   useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.warn('[Deprecation] ThemeToggle is deprecated; use ThemeSelect instead.');
+    if (process.env.NODE_ENV === 'development') {
+      // eslint-disable-next-line no-console
+      console.warn('[Deprecation] ThemeToggle is deprecated; use ThemeSelect instead.');
+    }
   }, []);
   return <ThemeSelect {...props} />;
 }

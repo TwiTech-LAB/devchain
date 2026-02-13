@@ -19,6 +19,7 @@
     "noFallthroughCasesInSwitch": true,
     "strict": true,
     "esModuleInterop": true,
+    "isolatedModules": true,
     "resolveJsonModule": true,
     "jsx": "react-jsx",
     "paths": {

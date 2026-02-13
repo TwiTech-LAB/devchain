@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 
 // Mock refractor (ESM module that Jest can't transform) - must be before imports that use it
 jest.mock('refractor', () => ({
@@ -130,17 +130,21 @@ describe('ReviewDetailPage realtime subscription', () => {
     });
 
     // Wait a tick for useAppSocket to rebind with the new projectId
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
 
     // Trigger comment.created envelope
-    handlers['message']?.forEach((fn) =>
-      fn({
-        topic: 'review/review-1',
-        type: 'comment.created',
-        payload: { commentId: 'comment-1', reviewId: 'review-1' },
-        ts: new Date().toISOString(),
-      }),
-    );
+    await act(async () => {
+      handlers['message']?.forEach((fn) =>
+        fn({
+          topic: 'review/review-1',
+          type: 'comment.created',
+          payload: { commentId: 'comment-1', reviewId: 'review-1' },
+          ts: new Date().toISOString(),
+        }),
+      );
+    });
 
     await waitFor(() => {
       expect(spy).toHaveBeenCalledWith({ queryKey: ['review-comments', 'review-1'] });
@@ -158,17 +162,21 @@ describe('ReviewDetailPage realtime subscription', () => {
       expect(screen.getByText('Test Review')).toBeInTheDocument();
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
 
     // Trigger comment.resolved envelope
-    handlers['message']?.forEach((fn) =>
-      fn({
-        topic: 'review/review-1',
-        type: 'comment.resolved',
-        payload: { commentId: 'comment-1', reviewId: 'review-1', status: 'resolved', version: 2 },
-        ts: new Date().toISOString(),
-      }),
-    );
+    await act(async () => {
+      handlers['message']?.forEach((fn) =>
+        fn({
+          topic: 'review/review-1',
+          type: 'comment.resolved',
+          payload: { commentId: 'comment-1', reviewId: 'review-1', status: 'resolved', version: 2 },
+          ts: new Date().toISOString(),
+        }),
+      );
+    });
 
     await waitFor(() => {
       expect(spy).toHaveBeenCalledWith({ queryKey: ['review-comments', 'review-1'] });
@@ -186,22 +194,26 @@ describe('ReviewDetailPage realtime subscription', () => {
       expect(screen.getByText('Test Review')).toBeInTheDocument();
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
 
     // Trigger review.updated envelope
-    handlers['message']?.forEach((fn) =>
-      fn({
-        topic: 'review/review-1',
-        type: 'review.updated',
-        payload: {
-          reviewId: 'review-1',
-          version: 2,
-          title: 'Updated Title',
-          changes: { status: { previous: 'pending', current: 'approved' } },
-        },
-        ts: new Date().toISOString(),
-      }),
-    );
+    await act(async () => {
+      handlers['message']?.forEach((fn) =>
+        fn({
+          topic: 'review/review-1',
+          type: 'review.updated',
+          payload: {
+            reviewId: 'review-1',
+            version: 2,
+            title: 'Updated Title',
+            changes: { status: { previous: 'pending', current: 'approved' } },
+          },
+          ts: new Date().toISOString(),
+        }),
+      );
+    });
 
     await waitFor(() => {
       expect(spy).toHaveBeenCalledWith({ queryKey: ['review', 'review-1'] });
@@ -219,17 +231,21 @@ describe('ReviewDetailPage realtime subscription', () => {
       expect(screen.getByText('Test Review')).toBeInTheDocument();
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
 
     // Trigger project-level comment.created envelope
-    handlers['message']?.forEach((fn) =>
-      fn({
-        topic: 'project/project-1/reviews',
-        type: 'comment.created',
-        payload: { reviewId: 'review-1', commentId: 'comment-1' },
-        ts: new Date().toISOString(),
-      }),
-    );
+    await act(async () => {
+      handlers['message']?.forEach((fn) =>
+        fn({
+          topic: 'project/project-1/reviews',
+          type: 'comment.created',
+          payload: { reviewId: 'review-1', commentId: 'comment-1' },
+          ts: new Date().toISOString(),
+        }),
+      );
+    });
 
     await waitFor(() => {
       expect(spy).toHaveBeenCalledWith({ queryKey: ['reviews', 'project-1'] });
@@ -264,17 +280,21 @@ describe('ReviewDetailPage realtime subscription', () => {
     });
 
     // Trigger event for a different review
-    handlers['message']?.forEach((fn) =>
-      fn({
-        topic: 'review/review-other',
-        type: 'comment.created',
-        payload: { commentId: 'comment-1', reviewId: 'review-other' },
-        ts: new Date().toISOString(),
-      }),
-    );
+    await act(async () => {
+      handlers['message']?.forEach((fn) =>
+        fn({
+          topic: 'review/review-other',
+          type: 'comment.created',
+          payload: { commentId: 'comment-1', reviewId: 'review-other' },
+          ts: new Date().toISOString(),
+        }),
+      );
+    });
 
     // Should not invalidate for review-1
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
     expect(spy).not.toHaveBeenCalledWith({ queryKey: ['review-comments', 'review-1'] });
   });
 });

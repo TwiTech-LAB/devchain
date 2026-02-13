@@ -1,6 +1,7 @@
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { Layout } from './Layout';
 import type { WsEnvelope } from '../lib/socket';
@@ -91,14 +92,13 @@ function renderLayout() {
 
 async function emitSystemSessionBlocked(payload: Record<string, unknown>) {
   expect(wsMessageHandler).toBeTruthy();
-  wsMessageHandler?.({
-    topic: 'system',
-    type: 'session_blocked',
-    payload,
-    ts: new Date().toISOString(),
-  });
-
   await act(async () => {
+    wsMessageHandler?.({
+      topic: 'system',
+      type: 'session_blocked',
+      payload,
+      ts: new Date().toISOString(),
+    });
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 }
@@ -216,6 +216,7 @@ describe('Layout auto-compact global modal', () => {
   });
 
   it('disables auto-compact and shows success toast', async () => {
+    const user = userEvent.setup();
     const fetchMock = global.fetch as jest.Mock;
     renderLayout();
 
@@ -227,7 +228,7 @@ describe('Layout auto-compact global modal', () => {
       silent: false,
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Disable & Continue' }));
+    await user.click(screen.getByRole('button', { name: 'Disable & Continue' }));
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith('/api/providers/provider-1/auto-compact/disable', {

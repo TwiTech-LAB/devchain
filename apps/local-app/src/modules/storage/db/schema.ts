@@ -225,6 +225,15 @@ export const communitySkillSources = sqliteTable(
   }),
 );
 
+// Local skill sources (user-defined local folder paths)
+export const localSkillSources = sqliteTable('local_skill_sources', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull().unique(),
+  folderPath: text('folder_path').notNull().unique(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
 // Skill-Project disabled mapping (exclude specific skills per project)
 export const skillProjectDisabled = sqliteTable(
   'skill_project_disabled',
@@ -242,6 +251,26 @@ export const skillProjectDisabled = sqliteTable(
     projectSkillUnique: uniqueIndex('skill_project_disabled_project_skill_unique').on(
       table.projectId,
       table.skillId,
+    ),
+  }),
+);
+
+// Source-Project enablement mapping (per-project source visibility overrides)
+export const sourceProjectEnabled = sqliteTable(
+  'source_project_enabled',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    sourceName: text('source_name').notNull(),
+    enabled: integer('enabled', { mode: 'boolean' }).notNull().default(false),
+    createdAt: text('created_at').notNull(),
+  },
+  (table) => ({
+    projectSourceUnique: uniqueIndex('source_project_enabled_project_source_unique').on(
+      table.projectId,
+      table.sourceName,
     ),
   }),
 );

@@ -81,6 +81,10 @@ export const SkillBulkActionSchema = z.object({
   projectId: z.string().uuid(),
 });
 
+export const SkillSourceProjectBodySchema = z.object({
+  projectId: z.string().uuid(),
+});
+
 export const SkillSourceParamsSchema = z.object({
   name: z
     .string()
@@ -91,6 +95,10 @@ export const SkillSourceParamsSchema = z.object({
     .refine((value) => SOURCE_NAME_REGEX.test(value), {
       message: 'Source name may only contain alphanumeric characters, hyphens, and underscores.',
     }),
+});
+
+export const SkillSourcesQuerySchema = z.object({
+  projectId: z.string().uuid().optional(),
 });
 
 export const SkillsListQuerySchema = z.object({
@@ -148,7 +156,9 @@ export type SkillEnableParamsDto = z.infer<typeof SkillEnableParamsSchema>;
 export type SkillEnableBodyDto = z.infer<typeof SkillEnableBodySchema>;
 export type SkillDisabledQueryDto = z.infer<typeof SkillDisabledQuerySchema>;
 export type SkillBulkActionDto = z.infer<typeof SkillBulkActionSchema>;
+export type SkillSourceProjectBodyDto = z.infer<typeof SkillSourceProjectBodySchema>;
 export type SkillSourceParamsDto = z.infer<typeof SkillSourceParamsSchema>;
+export type SkillSourcesQueryDto = z.infer<typeof SkillSourcesQuerySchema>;
 export type SkillsListQueryDto = z.infer<typeof SkillsListQuerySchema>;
 export type SkillUsageStatsQueryDto = z.infer<typeof SkillUsageStatsQuerySchema>;
 export type SkillUsageLogQueryDto = z.infer<typeof SkillUsageLogQuerySchema>;

@@ -19,7 +19,9 @@ function safeParseFrontmatter(raw: string, docName: string): DocEntry | null {
   try {
     return parseFrontmatter(raw);
   } catch (err) {
-    console.warn(`[docs] Failed to parse frontmatter for "${docName}":`, err);
+    if (process.env.NODE_ENV !== 'test') {
+      console.warn(`[docs] Failed to parse frontmatter for "${docName}":`, err);
+    }
     return null;
   }
 }

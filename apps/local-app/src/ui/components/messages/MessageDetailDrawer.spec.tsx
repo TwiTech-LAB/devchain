@@ -39,6 +39,27 @@ const mockFailedMessage: MessageLogPreview = {
 };
 
 describe('MessageDetailDrawer', () => {
+  const originalFetch = global.fetch;
+  let consoleErrorSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    global.fetch = jest.fn(
+      () =>
+        new Promise<Response>(() => {
+          // Keep fetch pending by default so tests that don't care about async content
+          // don't trigger late state updates.
+        }),
+    ) as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    consoleErrorSpy.mockRestore();
+    if (originalFetch) {
+      global.fetch = originalFetch;
+    }
+  });
+
   it('renders nothing when message is null', () => {
     render(<MessageDetailDrawer message={null} onClose={jest.fn()} />);
 

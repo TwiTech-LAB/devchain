@@ -10,6 +10,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogFooter,
 } from '@/ui/components/ui/dialog';
 import { useToast } from '@/ui/hooks/use-toast';
@@ -1342,6 +1343,11 @@ export function ProfilesPage() {
         <DialogContent className="max-w-5xl w-full max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editingProfile ? 'Edit Profile' : 'Create Profile'}</DialogTitle>
+            <DialogDescription>
+              {editingProfile
+                ? 'Update profile settings, prompt ordering, and instructions.'
+                : 'Create a profile with prompts and instructions for agents.'}
+            </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="grid gap-6 lg:grid-cols-[1fr_1.5fr]">

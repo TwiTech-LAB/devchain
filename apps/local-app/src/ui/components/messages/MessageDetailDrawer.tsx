@@ -145,12 +145,10 @@ export function MessageDetailDrawer({ message, onClose }: MessageDetailDrawerPro
 
   return (
     <Drawer open={!!message} onOpenChange={(open) => !open && onClose()}>
-      <DrawerContent aria-describedby="message-detail-description">
+      <DrawerContent>
         <DrawerHeader className="pb-2">
           <DrawerTitle>Message Details</DrawerTitle>
-          <DrawerDescription id="message-detail-description">
-            {message && formatDateTime(message.timestamp)}
-          </DrawerDescription>
+          <DrawerDescription>{message && formatDateTime(message.timestamp)}</DrawerDescription>
         </DrawerHeader>
 
         {message && (

@@ -10,6 +10,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogFooter,
 } from '@/ui/components/ui/dialog';
 import { useToast } from '@/ui/hooks/use-toast';
@@ -542,6 +543,11 @@ export function PromptsPage() {
         <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editingPrompt ? 'Edit Prompt' : 'Create Prompt'}</DialogTitle>
+            <DialogDescription>
+              {editingPrompt
+                ? 'Update prompt details, content, and tags.'
+                : 'Create a reusable prompt for this project.'}
+            </DialogDescription>
           </DialogHeader>
           <div className="grid gap-6 md:grid-cols-[minmax(0,1fr)_280px]">
             <form onSubmit={handleSubmit} className="space-y-4">

@@ -155,12 +155,7 @@
     ],
     "rootDir": "src",
     "transform": {
-      "^.+\\.(t|j)sx?$": [
-        "ts-jest",
-        {
-          "isolatedModules": true
-        }
-      ]
+      "^.+\\.(t|j)sx?$": "ts-jest"
     },
     "collectCoverageFrom": [
       "**/*.(t|j)s"
@@ -169,6 +164,10 @@
     "moduleNameMapper": {
       "^@/(.*)$": "<rootDir>/$1",
       "^@devchain/shared$": "<rootDir>/test/mocks/devchain-shared.ts",
+      "^react$": "<rootDir>/../node_modules/react",
+      "^react-dom$": "<rootDir>/../node_modules/react-dom",
+      "^react/jsx-runtime$": "<rootDir>/../node_modules/react/jsx-runtime.js",
+      "^react/jsx-dev-runtime$": "<rootDir>/../node_modules/react/jsx-dev-runtime.js",
       "\\.(css|less|scss|sass)$": "identity-obj-proxy"
     },
     "projects": [
@@ -184,16 +183,15 @@
           "<rootDir>/test-setup-node.ts"
         ],
         "transform": {
-          "^.+\\.(t|j)sx?$": [
-            "ts-jest",
-            {
-              "isolatedModules": true
-            }
-          ]
+          "^.+\\.(t|j)sx?$": "ts-jest"
         },
         "moduleNameMapper": {
           "^@/(.*)$": "<rootDir>/$1",
-          "^@devchain/shared$": "<rootDir>/../test/mocks/devchain-shared.ts"
+          "^@devchain/shared$": "<rootDir>/../test/mocks/devchain-shared.ts",
+          "^react$": "<rootDir>/../node_modules/react",
+          "^react-dom$": "<rootDir>/../node_modules/react-dom",
+          "^react/jsx-runtime$": "<rootDir>/../node_modules/react/jsx-runtime.js",
+          "^react/jsx-dev-runtime$": "<rootDir>/../node_modules/react/jsx-dev-runtime.js"
         }
       },
       {
@@ -207,16 +205,15 @@
           "<rootDir>/test-setup.ts"
         ],
         "transform": {
-          "^.+\\.(t|j)sx?$": [
-            "ts-jest",
-            {
-              "isolatedModules": true
-            }
-          ]
+          "^.+\\.(t|j)sx?$": "ts-jest"
         },
         "moduleNameMapper": {
           "^@/(.*)$": "<rootDir>/$1",
           "^@devchain/shared$": "<rootDir>/../test/mocks/devchain-shared.ts",
+          "^react$": "<rootDir>/../node_modules/react",
+          "^react-dom$": "<rootDir>/../node_modules/react-dom",
+          "^react/jsx-runtime$": "<rootDir>/../node_modules/react/jsx-runtime.js",
+          "^react/jsx-dev-runtime$": "<rootDir>/../node_modules/react/jsx-dev-runtime.js",
           "\\.(css|less|scss|sass)$": "identity-obj-proxy",
           "\\?raw$": "<rootDir>/../test/mocks/raw-file.ts"
         }
