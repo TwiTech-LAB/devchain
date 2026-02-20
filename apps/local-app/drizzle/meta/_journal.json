@@ -330,6 +330,13 @@
       "when": 1771400000000,
       "tag": "0046_worktrees_owner_project_id",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "6",
+      "when": 1771500000000,
+      "tag": "0047_fix_claude_auto_compact_default",
+      "breakpoints": true
     }
   ]
 }

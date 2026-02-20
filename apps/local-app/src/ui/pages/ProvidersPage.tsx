@@ -642,7 +642,7 @@ export function ProvidersPage() {
                     formErrorField === 'autoCompactThreshold' &&
                       'border-destructive focus-visible:ring-destructive',
                   )}
-                  placeholder="Default: 10"
+                  placeholder="Default: 85"
                 />
                 <p className="text-xs text-muted-foreground mt-1">
                   Context usage percentage (1-100) that triggers auto-compact. Leave empty to use

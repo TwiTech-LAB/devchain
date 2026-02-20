@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.10.0",
+  "version": "0.10.3",
   "description": "AI driven development platform",
   "homepage": "https://devchain.twitechlab.com/",
   "repository": {
@@ -8,6 +8,15 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.10.3": [
+      "Templates improvements"
+    ],
+    "0.10.2": [
+      "Fix Claude auto-compact threshold incorrectly set to 10% (corrected to 85%)"
+    ],
+    "0.10.1": [
+      "Update README with worktrees, container isolation, and skills documentation"
+    ],
     "0.10.0": [
       "Details: https://devchain.twitechlab.com/releases/0.10.0/",
       "",

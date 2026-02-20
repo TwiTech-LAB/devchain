@@ -2601,12 +2601,12 @@ export class LocalStorageService implements StorageService {
     const now = new Date().toISOString();
     const { providers } = await import('../db/schema');
 
-    // Default autoCompactThreshold to 10 for Claude providers if not explicitly provided
+    // Default autoCompactThreshold to 85 for Claude providers if not explicitly provided
     const autoCompactThreshold =
       data.autoCompactThreshold !== undefined
         ? data.autoCompactThreshold
         : data.name.toLowerCase() === 'claude'
-          ? 10
+          ? 85
           : null;
 
     const provider: Provider = {

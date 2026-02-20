@@ -5,7 +5,7 @@
 [![npm version](https://img.shields.io/npm/v/devchain-cli)](https://www.npmjs.com/package/devchain-cli)
 [![License: Elastic-2.0](https://img.shields.io/badge/license-Elastic--2.0-blue)](LICENSE)
 
-**[Homepage](https://devchain.twitechlab.com/)** · **[What's New in v0.10.0](https://devchain.twitechlab.com/releases/0.10.0/)**
+**[Homepage](https://devchain.twitechlab.com/)** · **[Quick Start Guide (PDF)](https://devchain.twitechlab.com/docs/devchain-quick-start-guide.pdf)** · **[What's New in v0.10.0](https://devchain.twitechlab.com/releases/0.10.0/)**
 
 Devchain runs your AI coding agents as a coordinated team — each with their own terminal session, task queue, and chat. Assign epics, track progress on a visual board, and let agents collaborate through a structured workflow. Supports Claude Code, Codex, and Gemini CLI out of the box.
 
