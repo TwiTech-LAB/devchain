@@ -1,9 +1,16 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import type { Socket } from 'socket.io-client';
-import { getAppSocket, releaseAppSocket } from '@/ui/lib/socket';
+import {
+  getAppSocket,
+  getWorktreeSocket,
+  releaseAppSocket,
+  releaseWorktreeSocket,
+} from '@/ui/lib/socket';
+import { useOptionalWorktreeTab } from '@/ui/hooks/useWorktreeTab';
 
 /**
  * Subscribe to Socket.IO events with automatic cleanup. Returns the shared socket instance.
+ * Automatically selects the worktree socket when a worktree tab is active.
  * Pass a map of event handlers and a deps array for effect re-binding.
  */
 export function useAppSocket(
@@ -13,33 +20,46 @@ export function useAppSocket(
   deps: any[] = [],
   socketOverride?: Socket | null,
 ): Socket {
-  const socket = socketOverride ?? getAppSocket();
+  const { activeWorktree } = useOptionalWorktreeTab();
+  const worktreeName = useMemo(() => {
+    const normalized = activeWorktree?.name?.trim() ?? '';
+    return normalized.length > 0 ? normalized : null;
+  }, [activeWorktree?.name]);
+
+  const selectedSocket = useMemo<Socket>(() => {
+    if (socketOverride) return socketOverride;
+    if (worktreeName) return getWorktreeSocket(worktreeName);
+    return getAppSocket();
+  }, [socketOverride, worktreeName]);
+
+  // Release ref-counted socket on change or unmount.
+  useEffect(() => {
+    if (socketOverride) return;
+    return () => {
+      if (worktreeName) {
+        releaseWorktreeSocket(worktreeName);
+      } else {
+        releaseAppSocket();
+      }
+    };
+  }, [socketOverride, worktreeName]);
 
   useEffect(() => {
     const entries = Object.entries(handlers || {});
     entries.forEach(([event, handler]) => {
       if (typeof handler === 'function') {
-        socket.on(event, handler);
+        selectedSocket.on(event, handler);
       }
     });
 
     return () => {
       entries.forEach(([event, handler]) => {
         if (typeof handler === 'function') {
-          socket.off(event, handler);
+          selectedSocket.off(event, handler);
         }
       });
-
-      // Release socket reference when component unmounts
-      // Only disconnects when all components have unmounted (handles React Strict Mode)
-      if (!socketOverride) {
-        releaseAppSocket();
-      }
     };
-    // Note: socket is intentionally NOT in deps - we don't want to re-register
-    // handlers when socket reference changes. The socket is stable and handlers
-    // should only re-bind when deps change.
-  }, deps);
+  }, [selectedSocket, ...deps]);
 
-  return socket;
+  return selectedSocket;
 }

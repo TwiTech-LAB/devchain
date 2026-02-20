@@ -1,6 +1,9 @@
 export { TerminalWindowsProvider, useTerminalWindows } from './TerminalWindowsContext';
 export { TerminalWindowsLayer } from './TerminalWindowsLayer';
-export { useTerminalWindowManager } from './TerminalSessionWindow';
+export {
+  useTerminalWindowManager,
+  useWorktreeTerminalWindowManager,
+} from './TerminalSessionWindow';
 
 export type {
   TerminalWindowConfig,

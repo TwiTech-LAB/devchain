@@ -5,7 +5,7 @@ import { McpProviderRegistrationService } from './services/mcp-provider-registra
 import { TerminalActivityService } from './services/terminal-activity.service';
 import { McpGateway } from './gateways/mcp.gateway';
 import { StorageModule } from '../storage/storage.module';
-import { EventsModule } from '../events/events.module';
+import { EventsDomainModule } from '../events/events-domain.module';
 import { ChatModule } from '../chat/chat.module';
 import { SessionsModule } from '../sessions/sessions.module';
 import { TerminalModule } from '../terminal/terminal.module';
@@ -22,7 +22,7 @@ import { McpTestController } from './controllers/mcp-test.controller';
 @Module({
   imports: [
     StorageModule,
-    forwardRef(() => EventsModule),
+    forwardRef(() => EventsDomainModule),
     forwardRef(() => ChatModule),
     forwardRef(() => SessionsModule),
     forwardRef(() => TerminalModule),

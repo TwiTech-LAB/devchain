@@ -1,11 +1,84 @@
 import { useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { createDirectThread, createGroupThread, fetchThreads } from '@/ui/lib/chat';
+import type { Thread, ThreadsListResponse } from '@/ui/lib/chat';
 import { useToast } from '@/ui/hooks/use-toast';
 
 interface ChatLauncherOptions {
-  projectId: string;
+  projectId: string | null;
+}
+
+interface LaunchChatOptions {
+  projectId?: string;
+  apiBase?: string;
+}
+
+interface LaunchChatRequest extends LaunchChatOptions {
+  agentIds: string[];
+}
+
+function normalizeApiBase(apiBase?: string): string {
+  if (!apiBase) {
+    return '';
+  }
+  const trimmed = apiBase.trim();
+  if (!trimmed) {
+    return '';
+  }
+  return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed;
+}
+
+function buildApiUrl(path: string, apiBase?: string): string {
+  return `${normalizeApiBase(apiBase)}${path}`;
+}
+
+async function fetchThreadsForContext(
+  projectId: string,
+  apiBase?: string,
+): Promise<ThreadsListResponse> {
+  const params = new URLSearchParams({
+    projectId,
+    createdByType: 'user',
+    limit: '50',
+    offset: '0',
+  });
+  const response = await fetch(buildApiUrl(`/api/chat/threads?${params.toString()}`, apiBase));
+  if (!response.ok) {
+    throw new Error('Failed to fetch threads');
+  }
+  return response.json();
+}
+
+async function createDirectThreadForContext(
+  projectId: string,
+  agentId: string,
+  apiBase?: string,
+): Promise<Thread> {
+  const response = await fetch(buildApiUrl('/api/chat/threads/direct', apiBase), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projectId, agentId }),
+  });
+  if (!response.ok) {
+    throw new Error('Failed to create direct thread');
+  }
+  return response.json();
+}
+
+async function createGroupThreadForContext(
+  projectId: string,
+  agentIds: string[],
+  apiBase?: string,
+): Promise<Thread> {
+  const response = await fetch(buildApiUrl('/api/chat/threads/group', apiBase), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projectId, agentIds }),
+  });
+  if (!response.ok) {
+    throw new Error('Failed to create group thread');
+  }
+  return response.json();
 }
 
 /**
@@ -18,13 +91,17 @@ export function useChatLauncher({ projectId }: ChatLauncherOptions) {
   const { toast } = useToast();
 
   const launchChatMutation = useMutation({
-    mutationFn: async (agentIds: string[]) => {
+    mutationFn: async ({ agentIds, projectId: overrideProjectId, apiBase }: LaunchChatRequest) => {
       if (agentIds.length === 0) {
         throw new Error('At least one agent is required');
       }
+      const projectIdToUse = overrideProjectId ?? projectId;
+      if (!projectIdToUse) {
+        throw new Error('A project is required to launch chat');
+      }
 
       // Fetch existing user threads
-      const threadsData = await fetchThreads(projectId, 'user');
+      const threadsData = await fetchThreadsForContext(projectIdToUse, apiBase);
 
       // For single agent, look for existing direct thread
       if (agentIds.length === 1) {
@@ -39,7 +116,7 @@ export function useChatLauncher({ projectId }: ChatLauncherOptions) {
         }
 
         // Create new direct thread
-        return createDirectThread({ projectId, agentId });
+        return createDirectThreadForContext(projectIdToUse, agentId, apiBase);
       }
 
       // For multiple agents, look for existing group with exact same members
@@ -58,14 +135,20 @@ export function useChatLauncher({ projectId }: ChatLauncherOptions) {
       }
 
       // Create new group thread
-      return createGroupThread({ projectId, agentIds });
+      return createGroupThreadForContext(projectIdToUse, agentIds, apiBase);
     },
-    onSuccess: (thread) => {
+    onSuccess: (thread, variables) => {
       // Invalidate threads cache to ensure fresh data
-      queryClient.invalidateQueries({ queryKey: ['threads', projectId] });
+      const projectIdToUse = variables.projectId ?? projectId;
+      queryClient.invalidateQueries({ queryKey: ['threads', projectIdToUse] });
 
       // Navigate to chat page with thread ID in URL
-      navigate(`/chat?thread=${thread.id}`);
+      const currentParams =
+        typeof window !== 'undefined'
+          ? new URLSearchParams(window.location.search)
+          : new URLSearchParams();
+      currentParams.set('thread', thread.id);
+      navigate(`/chat?${currentParams.toString()}`);
     },
     onError: (error: Error) => {
       toast({
@@ -77,8 +160,12 @@ export function useChatLauncher({ projectId }: ChatLauncherOptions) {
   });
 
   const launchChat = useCallback(
-    (agentIds: string[]) => {
-      launchChatMutation.mutate(agentIds);
+    (agentIds: string[], options?: LaunchChatOptions) => {
+      launchChatMutation.mutate({
+        agentIds,
+        projectId: options?.projectId,
+        apiBase: options?.apiBase,
+      });
     },
     [launchChatMutation],
   );

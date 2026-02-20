@@ -20,8 +20,13 @@ import { checkClaudeAutoCompact } from '../utils/claude-config';
 import { EventsService } from '../../events/services/events.service';
 import { TerminalGateway } from '../../terminal/gateways/terminal.gateway';
 import { SessionCoordinatorService } from './session-coordinator.service';
+import { HooksConfigService } from '../../hooks/services/hooks-config.service';
+import { getEnvConfig } from '../../../common/config/env.config';
 
 const logger = createLogger('SessionsService');
+
+/** Singleton boot identifier — generated once per server process lifetime. */
+const BOOT_ID = randomUUID();
 
 /**
  * Check if an error is a SQLite unique constraint violation.
@@ -79,6 +84,7 @@ export class SessionsService {
     @Inject(forwardRef(() => ProviderMcpEnsureService))
     private readonly mcpEnsureService: ProviderMcpEnsureService,
     private readonly sessionCoordinator: SessionCoordinatorService,
+    private readonly hooksConfigService: HooksConfigService,
     private readonly moduleRef: ModuleRef,
   ) {
     // Extract raw sqlite instance
@@ -234,23 +240,19 @@ export class SessionsService {
         }
       }
 
-      // Block launch for Claude when auto-compact is enabled in local Claude config.
+      // Recommend enabling auto-compact for Claude when it's disabled (non-blocking).
       if (provider.name.toLowerCase() === 'claude') {
-        const { autoCompactEnabled } = await checkClaudeAutoCompact();
-        if (autoCompactEnabled) {
-          this.getTerminalGateway().broadcastEvent('system', 'session_blocked', {
-            reason: 'claude_auto_compact',
+        const { autoCompactEnabled, configState } = await checkClaudeAutoCompact();
+        // Only recommend if config is valid or missing (not malformed — avoid false triggers)
+        if (!autoCompactEnabled && configState !== 'malformed') {
+          this.getTerminalGateway().broadcastEvent('system', 'session_recommendation', {
+            reason: 'claude_auto_compact_disabled',
             agentId,
             agentName: agent.name,
             providerId: provider.id,
             providerName: provider.name,
             silent,
-          });
-
-          throw new ValidationError('Claude auto-compact is enabled', {
-            code: 'CLAUDE_AUTO_COMPACT_ENABLED',
-            providerId: provider.id,
-            providerName: provider.name,
+            bootId: BOOT_ID,
           });
         }
       }
@@ -298,6 +300,19 @@ export class SessionsService {
             mcpStatus: providerCheck.mcpStatus,
             mcpMessage: providerCheck.mcpMessage,
           });
+        }
+      }
+
+      // Ensure hooks config for Claude provider (non-fatal)
+      if (provider.name.toLowerCase() === 'claude') {
+        try {
+          await this.hooksConfigService.ensureHooksConfig(project.rootPath);
+          logger.info(
+            { projectId, projectRootPath: project.rootPath },
+            'Hooks config ensured for Claude provider',
+          );
+        } catch (error) {
+          logger.warn({ error, projectId }, 'Failed to ensure hooks config (non-fatal)');
         }
       }
 
@@ -365,6 +380,26 @@ export class SessionsService {
         throw error;
       }
 
+      // Inject DEVCHAIN_* env vars for Claude provider (relay script reads these)
+      if (provider.name.toLowerCase() === 'claude') {
+        const env = getEnvConfig();
+        const devchainEnv: Record<string, string> = {
+          DEVCHAIN_API_URL: `http://127.0.0.1:${env.PORT}`,
+          DEVCHAIN_PROJECT_ID: projectId,
+          DEVCHAIN_AGENT_ID: agentId,
+          DEVCHAIN_SESSION_ID: sessionId,
+          DEVCHAIN_TMUX_SESSION_NAME: tmuxSessionName,
+        };
+
+        // Inject auto-compact threshold from provider settings (if configured)
+        if (provider.autoCompactThreshold != null) {
+          devchainEnv.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = String(provider.autoCompactThreshold);
+        }
+
+        // Merge: existing provider env vars take precedence (no clobber)
+        envVars = { ...devchainEnv, ...envVars };
+      }
+
       // Build command with env vars (if any) using env command prefix
       let commandArgs: string[];
       try {
@@ -379,17 +414,10 @@ export class SessionsService {
         throw error;
       }
 
-      logger.info(
-        { sessionId, provider: provider.name, commandArgs, hasEnvVars: !!envVars },
-        'Launching agent with provider binary',
-      );
-      await this.tmuxService.sendCommandArgs(tmuxSessionName, commandArgs);
-
-      // Wait for agent to initialize (7s to allow slower CLIs like Gemini to start)
-      await new Promise((resolve) => setTimeout(resolve, 7000));
-
-      // Insert session into database
-      // If unique constraint is hit, cleanup tmux and return existing session
+      // Insert session into database BEFORE starting CLI command.
+      // This ensures the session row exists when hook events fire during startup,
+      // preventing subscriber executor from skipping init/startup hook events
+      // with 'session_error' due to missing session row.
       try {
         this.sqlite
           .prepare(
@@ -461,17 +489,75 @@ export class SessionsService {
         throw error;
       }
 
-      // Render and inject initial.md
-      await this.renderAndPasteInitialPrompt({
-        sessionId,
-        tmuxSessionName,
-        agentId,
-        project: { id: project.id, name: project.name },
-        agent,
-        epic,
-        profile,
-        provider,
+      logger.info(
+        { sessionId, provider: provider.name, commandArgs, hasEnvVars: !!envVars },
+        'Launching agent with provider binary',
+      );
+
+      try {
+        await this.tmuxService.sendCommandArgs(tmuxSessionName, commandArgs);
+      } catch (error) {
+        // CLI launch failed — clean up the pre-inserted session row and tmux session
+        this.sqlite.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
+        logger.warn(
+          { sessionId, error: String(error) },
+          'CLI launch failed, cleaned up session row',
+        );
+        try {
+          await this.tmuxService.destroySession(tmuxSessionName);
+        } catch (tmuxError) {
+          logger.warn(
+            { tmuxError, tmuxSessionName },
+            'Failed to cleanup tmux session after CLI launch failure',
+          );
+        }
+        throw error;
+      }
+
+      const launchTimestamp = Date.now();
+      const { ready, elapsedMs } = await this.tmuxService.waitForOutput(tmuxSessionName, {
+        pollIntervalMs: 500,
+        timeoutMs: 30_000,
+        settleMs: 1_000,
       });
+      if (!ready) {
+        logger.warn(
+          { sessionId, tmuxSessionName, elapsedMs },
+          'CLI output detection timed out, proceeding anyway',
+        );
+      }
+
+      // Ensure a minimum delay after CLI launch so the provider fully initialises
+      // (loads credentials, renders banner, enters raw/input-ready mode).
+      const MIN_LAUNCH_DELAY_MS = 7_000;
+      const elapsed = Date.now() - launchTimestamp;
+      if (elapsed < MIN_LAUNCH_DELAY_MS) {
+        const remaining = MIN_LAUNCH_DELAY_MS - elapsed;
+        logger.debug(
+          { sessionId, elapsed, remaining },
+          'Waiting for minimum launch delay before initial prompt paste',
+        );
+        await new Promise((resolve) => setTimeout(resolve, remaining));
+      }
+
+      // Render and inject initial.md (non-fatal — session is already running)
+      try {
+        await this.renderAndPasteInitialPrompt({
+          sessionId,
+          tmuxSessionName,
+          agentId,
+          project: { id: project.id, name: project.name },
+          agent,
+          epic,
+          profile,
+          provider,
+        });
+      } catch (promptError) {
+        logger.warn(
+          { sessionId, error: String(promptError) },
+          'Initial prompt submit failed, session continues',
+        );
+      }
 
       // Start PTY streaming for terminal output
       await this.ptyService.startStreaming(sessionId, tmuxSessionName);

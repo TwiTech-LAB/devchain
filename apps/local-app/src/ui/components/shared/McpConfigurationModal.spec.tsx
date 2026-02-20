@@ -72,7 +72,7 @@ describe('McpConfigurationModal', () => {
 
   it('displays correct manual command for Gemini provider', () => {
     render(<McpConfigurationModal {...defaultProps} providerName="Gemini" />);
-    expect(screen.getByText(/gemini mcp add devchain.*--type http/)).toBeInTheDocument();
+    expect(screen.getByText(/gemini mcp add -t http devchain/)).toBeInTheDocument();
   });
 
   it('displays fallback command for unknown providers', () => {

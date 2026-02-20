@@ -2,6 +2,7 @@ import React from 'react';
 import { Badge } from '@/ui/components/ui/badge';
 import { User } from 'lucide-react';
 import { cn } from '@/ui/lib/utils';
+import { getMergedWorktree, isMergedTag } from '@/ui/lib/epic-tags';
 
 export type EpicPreviewProps = {
   statusLabel?: string;
@@ -26,7 +27,9 @@ export function EpicPreview({
 }: EpicPreviewProps) {
   const showMeta = Boolean(statusLabel) || Boolean(agentName);
   const showSub = typeof subCount === 'number' && subCount > 0;
-  const hasTags = tags.length > 0;
+  const mergedFromWorktree = getMergedWorktree(tags);
+  const visibleTags = tags.filter((tag) => !isMergedTag(tag));
+  const hasTags = visibleTags.length > 0 || Boolean(mergedFromWorktree);
 
   return (
     <div className="space-y-2 text-left">
@@ -88,12 +91,17 @@ export function EpicPreview({
               {subCount}
             </Badge>
           )}
-          {tags.slice(0, 3).map((tag) => (
+          {mergedFromWorktree && (
+            <Badge variant="secondary" className="border border-amber-400/40 bg-amber-500/10">
+              Merged from {mergedFromWorktree}
+            </Badge>
+          )}
+          {visibleTags.slice(0, 3).map((tag) => (
             <Badge key={tag} variant="outline">
               {tag}
             </Badge>
           ))}
-          {tags.length > 3 && <Badge variant="outline">+{tags.length - 3}</Badge>}
+          {visibleTags.length > 3 && <Badge variant="outline">+{visibleTags.length - 3}</Badge>}
         </div>
       )}
     </div>

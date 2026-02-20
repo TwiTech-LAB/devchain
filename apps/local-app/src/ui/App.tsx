@@ -21,8 +21,20 @@ import { ProjectSelectionProvider } from './hooks/useProjectSelection';
 import { RecordsDisabledPage } from './pages/RecordsDisabledPage';
 import { RegistryPage } from './pages/RegistryPage';
 import { SkillsPage } from './pages/SkillsPage';
+import { WorktreesPage } from './pages/WorktreesPage';
+import { RuntimeProvider, useRuntime } from './hooks/useRuntime';
 
 export function App() {
+  return (
+    <RuntimeProvider>
+      <AppRoutes />
+    </RuntimeProvider>
+  );
+}
+
+function AppRoutes() {
+  const { runtimeLoading } = useRuntime();
+
   return (
     <Routes>
       {/* Main App Routes */}
@@ -43,14 +55,59 @@ export function App() {
                 <Route path="/agents" element={<AgentsPage />} />
                 <Route path="/statuses" element={<StatusesPage />} />
                 <Route path="/board" element={<BoardPage />} />
-                <Route path="/chat" element={<ChatPage />} />
-                <Route path="/reviews" element={<ReviewsPageWithSuspense />} />
-                <Route path="/reviews/:reviewId" element={<ReviewDetailPageWithSuspense />} />
+                <Route
+                  path="/chat"
+                  element={
+                    runtimeLoading ? (
+                      <div className="px-2 py-4 text-sm text-muted-foreground">
+                        Loading runtime...
+                      </div>
+                    ) : (
+                      <ChatPage />
+                    )
+                  }
+                />
+                <Route
+                  path="/reviews"
+                  element={
+                    runtimeLoading ? (
+                      <div className="px-2 py-4 text-sm text-muted-foreground">
+                        Loading runtime...
+                      </div>
+                    ) : (
+                      <ReviewsPageWithSuspense />
+                    )
+                  }
+                />
+                <Route
+                  path="/reviews/:reviewId"
+                  element={
+                    runtimeLoading ? (
+                      <div className="px-2 py-4 text-sm text-muted-foreground">
+                        Loading runtime...
+                      </div>
+                    ) : (
+                      <ReviewDetailPageWithSuspense />
+                    )
+                  }
+                />
                 <Route path="/records" element={<RecordsDisabledPage />} />
                 <Route path="/epics/:id" element={<EpicDetailPage />} />
                 <Route path="/events" element={<EventsPage />} />
                 <Route path="/messages" element={<MessagesPage />} />
                 <Route path="/automation" element={<AutomationPage />} />
+                <Route
+                  path="/worktrees"
+                  element={
+                    runtimeLoading ? (
+                      <div className="px-2 py-4 text-sm text-muted-foreground">
+                        Loading runtime...
+                      </div>
+                    ) : (
+                      <WorktreesPage />
+                    )
+                  }
+                />
                 <Route path="/settings" element={<SettingsPage />} />
                 <Route path="*" element={<NotFoundPage />} />
               </Routes>

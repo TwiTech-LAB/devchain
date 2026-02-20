@@ -56,6 +56,21 @@ export class SessionApiError extends Error {
   }
 }
 
+function buildApiUrl(url: string, apiBase = ''): string {
+  const trimmedApiBase = apiBase.trim();
+  if (!trimmedApiBase) {
+    return url;
+  }
+
+  if (/^https?:\/\//.test(url)) {
+    return url;
+  }
+
+  const normalizedBase = trimmedApiBase.replace(/\/+$/, '');
+  const normalizedPath = url.startsWith('/') ? url : `/${url}`;
+  return `${normalizedBase}${normalizedPath}`;
+}
+
 /**
  * Extract error message from API response payload.
  * Handles { message: string } format common in our API responses.
@@ -81,8 +96,9 @@ export async function fetchJsonOrThrow<T>(
   url: string,
   options: RequestInit = {},
   fallbackError: string = 'Request failed',
+  apiBase = '',
 ): Promise<T> {
-  const response = await fetch(url, options);
+  const response = await fetch(buildApiUrl(url, apiBase), options);
 
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
@@ -106,8 +122,9 @@ export async function fetchOrThrow(
   url: string,
   options: RequestInit = {},
   fallbackError: string = 'Request failed',
+  apiBase = '',
 ): Promise<void> {
-  const response = await fetch(url, options);
+  const response = await fetch(buildApiUrl(url, apiBase), options);
 
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
@@ -169,11 +186,12 @@ export async function fetchActiveSessions(projectId?: string): Promise<ActiveSes
   return fetchJsonOrThrow<ActiveSession[]>(url, {}, 'Failed to fetch active sessions');
 }
 
-export async function terminateSession(sessionId: string): Promise<void> {
+export async function terminateSession(sessionId: string, apiBase = ''): Promise<void> {
   return fetchOrThrow(
     `/api/sessions/${sessionId}`,
     { method: 'DELETE' },
     'Failed to terminate session',
+    apiBase,
   );
 }
 
@@ -185,6 +203,7 @@ export async function launchSession(
   agentId: string,
   projectId: string,
   options?: { silent?: boolean },
+  apiBase = '',
 ): Promise<ActiveSession> {
   const payload: { agentId: string; projectId: string; options?: { silent?: boolean } } = {
     agentId,
@@ -202,6 +221,7 @@ export async function launchSession(
       body: JSON.stringify(payload),
     },
     'Failed to launch session',
+    apiBase,
   );
 }
 
@@ -225,6 +245,7 @@ export async function restartSession(
   agentId: string,
   projectId: string,
   _currentSessionId: string,
+  apiBase = '',
 ): Promise<RestartSessionResult> {
   const response = await fetchJsonOrThrow<AtomicRestartResponse>(
     `/api/agents/${agentId}/restart`,
@@ -234,6 +255,7 @@ export async function restartSession(
       body: JSON.stringify({ projectId }),
     },
     'Failed to restart session',
+    apiBase,
   );
 
   return {
@@ -246,16 +268,18 @@ export async function restartSession(
 export async function launchAgentSession(
   agentId: string,
   projectId: string,
+  apiBase = '',
 ): Promise<ActiveSession> {
-  return launchSession(agentId, projectId);
+  return launchSession(agentId, projectId, undefined, apiBase);
 }
 
 export async function restartAgentSession(
   agentId: string,
   projectId: string,
   currentSessionId: string,
+  apiBase = '',
 ): Promise<RestartSessionResult> {
-  return restartSession(agentId, projectId, currentSessionId);
+  return restartSession(agentId, projectId, currentSessionId, apiBase);
 }
 
 export async function fetchEpicSummary(epicId: string): Promise<EpicSummary> {

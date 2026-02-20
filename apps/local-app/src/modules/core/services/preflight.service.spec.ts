@@ -71,6 +71,8 @@ const mockExec = exec as jest.MockedFunction<typeof exec>;
 const mockAccess = access as jest.MockedFunction<typeof access>;
 
 describe('PreflightService', () => {
+  const originalEnabledProviders = process.env.ENABLED_PROVIDERS;
+
   let service: PreflightService;
   let mockStorage: jest.Mocked<StorageService>;
   let mockMcpRegistration: {
@@ -83,6 +85,8 @@ describe('PreflightService', () => {
   };
 
   beforeEach(async () => {
+    delete process.env.ENABLED_PROVIDERS;
+
     // Create mock storage service (partial mock - only methods needed for PreflightService)
     mockStorage = {
       listProviders: jest.fn(),
@@ -146,10 +150,19 @@ describe('PreflightService', () => {
   });
 
   afterEach(() => {
+    delete process.env.ENABLED_PROVIDERS;
     jest.clearAllMocks();
     jest.resetAllMocks();
     mockMcpRegistration.resolveBinary.mockReset();
     mockMcpRegistration.listRegistrations.mockReset();
+  });
+
+  afterAll(() => {
+    if (originalEnabledProviders === undefined) {
+      delete process.env.ENABLED_PROVIDERS;
+      return;
+    }
+    process.env.ENABLED_PROVIDERS = originalEnabledProviders;
   });
 
   describe('runChecks', () => {
@@ -387,6 +400,111 @@ describe('PreflightService', () => {
       expect(result.overall).toBe('warn');
       expect(result.checks.some((c) => c.name === 'providers' && c.status === 'warn')).toBe(true);
       expect(result.providers).toHaveLength(0);
+    });
+
+    it('filters provider checks using ENABLED_PROVIDERS when set', async () => {
+      process.env.ENABLED_PROVIDERS = 'claude';
+
+      mockExec.mockImplementation(
+        (
+          cmd: string,
+          optionsOrCallback?: unknown,
+          maybeCallback?: unknown,
+        ): ReturnType<typeof mockExec> => {
+          const callback = (
+            typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback
+          ) as ExecCallback;
+          if (cmd === 'tmux -V' && callback) {
+            callback(null, 'tmux 3.2a', '');
+          }
+          return {} as ReturnType<typeof mockExec>;
+        },
+      );
+
+      mockStorage.listProviders.mockResolvedValue({
+        items: [
+          {
+            id: 'p1',
+            name: 'claude',
+            binPath: '/usr/local/bin/claude',
+            mcpConfigured: true,
+            mcpEndpoint: 'ws://localhost:4000',
+            mcpRegisteredAt: '2024-01-01',
+            createdAt: '',
+            updatedAt: '',
+          },
+          {
+            id: 'p2',
+            name: 'codex',
+            binPath: '/usr/local/bin/codex',
+            mcpConfigured: true,
+            mcpEndpoint: 'ws://localhost:5000',
+            mcpRegisteredAt: '2024-01-01',
+            createdAt: '',
+            updatedAt: '',
+          },
+        ],
+        total: 2,
+        limit: 100,
+        offset: 0,
+      });
+
+      mockAccess.mockResolvedValue(undefined);
+      mockMcpRegistration.listRegistrations.mockResolvedValue({
+        success: true,
+        message: 'OK',
+        entries: [{ alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp' }],
+      });
+
+      const result = await service.runChecks();
+
+      expect(result.providers).toHaveLength(1);
+      expect(result.providers[0].name).toBe('claude');
+      expect(mockMcpRegistration.listRegistrations).toHaveBeenCalledTimes(1);
+    });
+
+    it('gracefully skips provider checks when ENABLED_PROVIDERS is empty', async () => {
+      process.env.ENABLED_PROVIDERS = '';
+
+      mockExec.mockImplementation(
+        (
+          cmd: string,
+          optionsOrCallback?: unknown,
+          maybeCallback?: unknown,
+        ): ReturnType<typeof mockExec> => {
+          const callback = (
+            typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback
+          ) as ExecCallback;
+          if (cmd === 'tmux -V' && callback) {
+            callback(null, 'tmux 3.2', '');
+          }
+          return {} as ReturnType<typeof mockExec>;
+        },
+      );
+
+      mockStorage.listProviders.mockResolvedValue({
+        items: [
+          {
+            id: 'p1',
+            name: 'claude',
+            binPath: '/usr/local/bin/claude',
+            mcpConfigured: true,
+            mcpEndpoint: 'ws://localhost:4000',
+            mcpRegisteredAt: '2024-01-01',
+            createdAt: '',
+            updatedAt: '',
+          },
+        ],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+
+      const result = await service.runChecks();
+
+      expect(result.overall).toBe('pass');
+      expect(result.providers).toHaveLength(0);
+      expect(mockMcpRegistration.listRegistrations).not.toHaveBeenCalled();
     });
   });
 

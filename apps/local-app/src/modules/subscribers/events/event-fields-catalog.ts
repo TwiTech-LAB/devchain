@@ -241,6 +241,26 @@ export const EVENT_FIELDS_CATALOG: Record<string, SubscribableEventDefinition> =
       { field: 'sessionName', label: 'Session Name', type: 'string' },
     ],
   },
+
+  'claude.hooks.session.started': {
+    name: 'claude.hooks.session.started',
+    label: 'Claude Hook: Session Started',
+    description:
+      'Fired when Claude Code reports a session start via hook relay (startup, resume, clear, or compact)',
+    category: 'session',
+    fields: [
+      { field: 'claudeSessionId', label: 'Claude Session ID', type: 'string' },
+      { field: 'source', label: 'Source', type: 'string' },
+      { field: 'model', label: 'Model', type: 'string', nullable: true },
+      { field: 'permissionMode', label: 'Permission Mode', type: 'string', nullable: true },
+      { field: 'tmuxSessionName', label: 'Tmux Session Name', type: 'string' },
+      { field: 'projectId', label: 'Project ID', type: 'string' },
+      { field: 'agentId', label: 'Agent ID', type: 'string', nullable: true },
+      { field: 'agentName', label: 'Agent Name', type: 'string', nullable: true },
+      { field: 'sessionId', label: 'DevChain Session ID', type: 'string', nullable: true },
+      { field: 'transcriptPath', label: 'Transcript Path', type: 'string', nullable: true },
+    ],
+  },
 };
 
 /**

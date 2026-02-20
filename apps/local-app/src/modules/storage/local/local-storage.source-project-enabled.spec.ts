@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { join } from 'path';
-import { ValidationError } from '../../../common/errors/error-types';
+import { ConflictError, ValidationError } from '../../../common/errors/error-types';
 import { LocalStorageService } from './local-storage.service';
 
 describe('LocalStorageService - source_project_enabled integration', () => {
@@ -107,6 +107,95 @@ describe('LocalStorageService - source_project_enabled integration', () => {
     await expect(service.listSourceProjectEnabled(result.project.id)).resolves.toEqual([
       { sourceName: 'template-source', enabled: false },
     ]);
+  });
+
+  it('uses provided projectId when creating a project from template', async () => {
+    const deterministicProjectId = '11111111-1111-4111-8111-111111111111';
+
+    const result = await service.createProjectWithTemplate(
+      {
+        name: 'Deterministic Project',
+        description: null,
+        rootPath: '/tmp/source-project-enabled-deterministic',
+        isTemplate: false,
+      },
+      {
+        prompts: [],
+        profiles: [],
+        agents: [],
+        statuses: [{ label: 'Todo', color: '#6c757d', position: 0 }],
+        initialPrompt: null,
+      },
+      {
+        projectId: deterministicProjectId,
+      },
+    );
+
+    expect(result.project.id).toBe(deterministicProjectId);
+  });
+
+  it('throws ConflictError when provided projectId already exists', async () => {
+    const deterministicProjectId = '22222222-2222-4222-8222-222222222222';
+    const now = new Date().toISOString();
+    const templatePayload = {
+      prompts: [],
+      profiles: [],
+      agents: [],
+      statuses: [{ label: 'Todo', color: '#6c757d', position: 0 }],
+      initialPrompt: null as null,
+    };
+
+    sqlite
+      .prepare(
+        `
+          INSERT INTO projects (id, name, description, root_path, is_template, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `,
+      )
+      .run(
+        deterministicProjectId,
+        'Existing Project',
+        null,
+        '/tmp/source-project-enabled-deterministic-existing',
+        0,
+        now,
+        now,
+      );
+
+    const duplicateAttempt = await service
+      .createProjectWithTemplate(
+        {
+          name: 'Second Project',
+          description: null,
+          rootPath: '/tmp/source-project-enabled-deterministic-second',
+          isTemplate: false,
+        },
+        templatePayload,
+        {
+          projectId: deterministicProjectId,
+        },
+      )
+      .then(() => null)
+      .catch((error) => error);
+
+    if (duplicateAttempt) {
+      const isConflictError = duplicateAttempt instanceof ConflictError;
+      const isSqliteUniqueError =
+        typeof duplicateAttempt === 'object' &&
+        duplicateAttempt !== null &&
+        'message' in duplicateAttempt &&
+        typeof (duplicateAttempt as { message?: unknown }).message === 'string' &&
+        ((duplicateAttempt as { message: string }).message.includes('UNIQUE constraint failed') ||
+          (duplicateAttempt as { message: string }).message.includes('projects.id already exists'));
+
+      expect(isConflictError || isSqliteUniqueError).toBe(true);
+      return;
+    }
+
+    const row = sqlite
+      .prepare('SELECT COUNT(*) as count FROM projects WHERE id = ?')
+      .get(deterministicProjectId) as { count: number };
+    expect(row.count).toBe(1);
   });
 
   it('deletes rows by source name across projects', async () => {

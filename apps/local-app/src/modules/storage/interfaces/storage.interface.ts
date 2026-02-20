@@ -262,12 +262,17 @@ export interface CreateProjectWithTemplateResult {
   initialPromptSet: boolean;
 }
 
+export interface CreateProjectWithTemplateOptions {
+  projectId?: string;
+}
+
 export interface StorageService {
   // Projects
   createProject(data: CreateProject): Promise<Project>;
   createProjectWithTemplate(
     data: CreateProject,
     template: TemplateImportPayload,
+    options?: CreateProjectWithTemplateOptions,
   ): Promise<CreateProjectWithTemplateResult>;
   getProject(id: string): Promise<Project>;
   findProjectByPath(path: string): Promise<Project | null>;

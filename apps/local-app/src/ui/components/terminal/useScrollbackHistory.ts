@@ -1,11 +1,12 @@
 import { useEffect, useRef } from 'react';
-import { getAppSocket } from '@/ui/lib/socket';
+import type { Socket } from 'socket.io-client';
 import { termLog } from '@/ui/lib/debug';
 import {
   DEFAULT_TERMINAL_SCROLLBACK,
   MIN_TERMINAL_SCROLLBACK,
   MAX_TERMINAL_SCROLLBACK,
 } from '@/common/constants/terminal';
+import { resolveTerminalSocket } from './socket';
 
 /**
  * Custom hook for managing scrollback history requests.
@@ -23,6 +24,7 @@ export function useScrollbackHistory(
   hasHistoryRef: React.MutableRefObject<boolean>,
   isHistoryInFlightRef?: React.MutableRefObject<boolean>,
   scrollbackLines: number = DEFAULT_TERMINAL_SCROLLBACK,
+  socket?: Socket | null,
 ) {
   const requestedHistoryRef = useRef<boolean>(false);
   const wasNearBottomRef = useRef<boolean>(true);
@@ -80,8 +82,11 @@ export function useScrollbackHistory(
           clientHeight: host.clientHeight,
           hasHistory: hasHistoryRef.current,
         });
-        const socket = getAppSocket();
-        socket.emit('terminal:request_full_history', { sessionId, maxLines: clampedScrollback });
+        const activeSocket = resolveTerminalSocket(socket);
+        activeSocket.emit('terminal:request_full_history', {
+          sessionId,
+          maxLines: clampedScrollback,
+        });
         requestedHistoryRef.current = true;
       }
 
@@ -90,7 +95,7 @@ export function useScrollbackHistory(
 
     host.addEventListener('scroll', onScroll);
     return () => host.removeEventListener('scroll', onScroll);
-  }, [sessionId, terminalRef, hasHistoryRef, isHistoryInFlightRef, scrollbackLines]);
+  }, [sessionId, terminalRef, hasHistoryRef, isHistoryInFlightRef, scrollbackLines, socket]);
 
   // Note: For terminals where the container does not scroll (overflow hidden),
   // full-history sync is handled via xterm's own scroll events in useXterm.

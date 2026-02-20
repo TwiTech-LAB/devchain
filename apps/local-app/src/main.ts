@@ -2,13 +2,18 @@ import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, NestFastifyApplication } from '@nestjs/platform-fastify';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { ValidationPipe } from '@nestjs/common';
-import { AppModule } from './app.module';
 import { getEnvConfig } from './common/config/env.config';
 import { logger, createLogger } from './common/logging/logger';
 import { join } from 'path';
 import { existsSync } from 'fs';
 
 async function bootstrap() {
+  const mode = process.env.DEVCHAIN_MODE === 'main' ? 'main' : 'normal';
+  const RootModule =
+    mode === 'main'
+      ? (await import('./app.main.module')).MainAppModule
+      : (await import('./app.normal.module')).NormalAppModule;
+
   const config = getEnvConfig();
   const appLogger = createLogger('Bootstrap');
 
@@ -47,7 +52,7 @@ async function bootstrap() {
         };
 
   const app = await NestFactory.create<NestFastifyApplication>(
-    AppModule,
+    RootModule,
     new FastifyAdapter({
       logger: fastifyLogger,
       requestIdLogLabel: 'requestId',
@@ -58,8 +63,7 @@ async function bootstrap() {
     },
   );
 
-  // Register static file serving for SPA assets (production mode only)
-  // In dev mode, Vite dev server handles UI at port 5175
+  // Register static file serving for SPA assets (production mode only).
   const uiPath = join(__dirname, 'ui');
   const isProduction = config.NODE_ENV === 'production';
 
@@ -71,11 +75,11 @@ async function bootstrap() {
       decorateReply: false, // Don't override sendFile
       wildcard: false, // Don't create wildcard route - UiController handles SPA fallback
     });
-    appLogger.info({ path: uiPath }, 'Static UI assets registered');
+    appLogger.info({ mode, path: uiPath }, 'Static UI assets registered');
   } else if (!isProduction) {
     appLogger.info('Development mode: UI served by Vite dev server at http://127.0.0.1:5175');
   } else {
-    appLogger.warn('UI build not found. Run `pnpm build:ui` for production serving.');
+    appLogger.warn('UI build not found. Run `pnpm --filter local-app build:ui`.');
   }
 
   // Global validation pipe
@@ -119,15 +123,43 @@ async function bootstrap() {
   // Bind to localhost only for security
   await app.listen(config.PORT, config.HOST);
 
+  // Resolve actual port (may differ from config.PORT when PORT=0 for OS-assigned ports)
+  const serverAddress = app.getHttpServer().address();
+  const actualPort =
+    serverAddress && typeof serverAddress === 'object' ? serverAddress.port : config.PORT;
+
+  // Write runtime port file for parent process discovery (worktree process runtime)
+  if (config.RUNTIME_PORT_FILE) {
+    const { writeFileSync, mkdirSync } = await import('fs');
+    const { dirname } = await import('path');
+    try {
+      mkdirSync(dirname(config.RUNTIME_PORT_FILE), { recursive: true });
+      writeFileSync(
+        config.RUNTIME_PORT_FILE,
+        JSON.stringify({ port: actualPort, runtimeToken: config.RUNTIME_TOKEN ?? null }),
+      );
+      appLogger.info(
+        { portFile: config.RUNTIME_PORT_FILE, actualPort },
+        'Runtime port file written',
+      );
+    } catch (error) {
+      appLogger.error(
+        { error, portFile: config.RUNTIME_PORT_FILE },
+        'Failed to write runtime port file',
+      );
+    }
+  }
+
   appLogger.info(
     {
-      port: config.PORT,
+      mode,
+      port: actualPort,
       host: config.HOST,
       env: config.NODE_ENV,
     },
-    `Application is running on: http://${config.HOST}:${config.PORT}`,
+    `Application is running on: http://${config.HOST}:${actualPort}`,
   );
-  appLogger.info(`API Documentation: http://${config.HOST}:${config.PORT}/api/docs`);
+  appLogger.info(`API Documentation: http://${config.HOST}:${actualPort}/api/docs`);
 }
 
 bootstrap().catch((error) => {

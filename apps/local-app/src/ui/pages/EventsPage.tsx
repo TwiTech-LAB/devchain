@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { WsEnvelope } from '@/ui/lib/socket';
-import { getAppSocket } from '@/ui/lib/socket';
 import { useAppSocket } from '@/ui/hooks/useAppSocket';
+import type { Socket } from 'socket.io-client';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/ui/components/ui/card';
 import { Input } from '@/ui/components/ui/input';
 import { Label } from '@/ui/components/ui/label';
@@ -194,13 +194,17 @@ export function EventsPage() {
   );
 
   // Subscribe via shared socket; keep a semantic subscribe on connect
-  useAppSocket(
+  const eventsSocketRef = useRef<Socket | null>(null);
+  const eventsSocket = useAppSocket(
     {
-      connect: () => getAppSocket().emit('events:subscribe'),
+      connect: () => {
+        eventsSocketRef.current?.emit('events:subscribe');
+      },
       message: handleEnvelope,
     },
     [handleEnvelope],
   );
+  eventsSocketRef.current = eventsSocket;
 
   const timeFilters = useMemo(() => computeTimeRange(filters.timeRange), [filters.timeRange]);
 

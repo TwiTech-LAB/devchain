@@ -11,6 +11,8 @@ import { seedCompactOnIdleWatcherSeeder } from '../seeders/0001_seed_compact_on_
 import { seedReplacePermissionModePlanSeeder } from '../seeders/0002_seed_replace_permission_mode_plan';
 import { seedPreseedJeffallanClaudeSkillsSeeder } from '../seeders/0003_seed_preseed_jeffallan_claude_skills';
 import { seedDisableMicrosoftSourceDefaultSeeder } from '../seeders/0004_seed_disable_microsoft_source_default';
+import { seedRenewInstructionsSubscriberSeeder } from '../seeders/0005_seed_renew_instructions_subscriber';
+import { seedRenameTemplateSlugsSeeder } from '../seeders/0006_seed_rename_template_slugs';
 
 export const DATA_SEEDERS = 'DATA_SEEDERS';
 const JOURNAL_KEY = 'seeders.journal';
@@ -33,6 +35,8 @@ export const REGISTERED_DATA_SEEDERS: DataSeeder[] = [
   seedReplacePermissionModePlanSeeder,
   seedPreseedJeffallanClaudeSkillsSeeder,
   seedDisableMicrosoftSourceDefaultSeeder,
+  seedRenewInstructionsSubscriberSeeder,
+  seedRenameTemplateSlugsSeeder,
 ];
 
 interface SeederJournalEntry {

@@ -1,9 +1,11 @@
 import { useCallback } from 'react';
 import type { Terminal } from '@xterm/xterm';
 import type { FitAddon } from '@xterm/addon-fit';
-import { getAppSocket, type WsEnvelope } from '@/ui/lib/socket';
+import type { Socket } from 'socket.io-client';
+import { type WsEnvelope } from '@/ui/lib/socket';
 import { termLog } from '@/ui/lib/debug';
 import { DEFAULT_TERMINAL_SCROLLBACK } from '@/common/constants/terminal';
+import { resolveTerminalSocket } from '../socket';
 
 interface TerminalDataPayload {
   data: string;
@@ -95,10 +97,12 @@ export function useTerminalMessageHandlers(
   setIgnoreWindow: (durationMs: number) => void,
   onSessionEnded?: (payload: SessionStatePayload) => void,
   scrollbackLines: number = DEFAULT_TERMINAL_SCROLLBACK,
+  socket?: Socket | null,
 ) {
   const handleMessage = useCallback(
     (envelope: WsEnvelope) => {
       const { topic, type, payload } = envelope;
+      const activeSocket = resolveTerminalSocket(socket);
 
       type Handler<P = unknown> = (payload: P) => void;
 
@@ -395,17 +399,17 @@ export function useTerminalMessageHandlers(
       const handleFocusChanged: Handler<{ clientId?: string | null }> = safe(
         'focus_changed',
         (focusPayload) => {
-          const socket = getAppSocket();
           const clientId = focusPayload?.clientId ?? null;
-          const holdsAuthority = Boolean(clientId && socket.id && clientId === socket.id);
+          const holdsAuthority = Boolean(
+            clientId && activeSocket.id && clientId === activeSocket.id,
+          );
           isAuthorityRef.current = holdsAuthority;
           termLog('focus_changed', { sessionId, clientId, ours: holdsAuthority });
         },
       );
 
       const handleSystemPing: Handler<void> = safe('system_ping', () => {
-        const socket = getAppSocket();
-        socket.emit('pong');
+        activeSocket.emit('pong');
       });
 
       const handleSessionStateChange: Handler<SessionStatePayload> = safe(
@@ -508,6 +512,7 @@ export function useTerminalMessageHandlers(
       setIgnoreWindow,
       onSessionEnded,
       scrollbackLines,
+      socket,
     ],
   );
 

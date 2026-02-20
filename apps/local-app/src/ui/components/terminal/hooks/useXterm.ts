@@ -1,14 +1,15 @@
 import { useEffect } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import type { Socket } from 'socket.io-client';
 import { termLog } from '@/ui/lib/debug';
-import { getAppSocket } from '@/ui/lib/socket';
 import { isTerminalInternalSequence } from '../xterm-utils';
 import {
   DEFAULT_TERMINAL_SCROLLBACK,
   MIN_TERMINAL_SCROLLBACK,
   MAX_TERMINAL_SCROLLBACK,
 } from '@/common/constants/terminal';
+import { resolveTerminalSocket } from '../socket';
 
 /**
  * Buffered frame for sequence-based history deduplication
@@ -62,6 +63,7 @@ export function useXterm(
   isHistoryInFlightRef?: React.MutableRefObject<boolean>,
   pendingHistoryFramesRef?: React.MutableRefObject<BufferedFrame[]>,
   scrollbackLines: number = DEFAULT_TERMINAL_SCROLLBACK,
+  socket?: Socket | null,
 ) {
   useEffect(() => {
     // C1: Clamp scrollbackLines to valid range before using
@@ -91,6 +93,7 @@ export function useXterm(
     }
 
     termLog('terminal_init_start', { sessionId });
+    const activeSocket = resolveTerminalSocket(socket);
 
     const terminal = new Terminal({
       convertEol: true,
@@ -166,9 +169,8 @@ export function useXterm(
           return;
         }
 
-        const socket = getAppSocket();
-        if (socket.connected) {
-          socket.emit('terminal:input', { sessionId, data, ttyMode: true });
+        if (activeSocket.connected) {
+          activeSocket.emit('terminal:input', { sessionId, data, ttyMode: true });
         }
       });
     }
@@ -275,8 +277,10 @@ export function useXterm(
             trigger: 'leaving_bottom',
           });
 
-          const socket = getAppSocket();
-          socket.emit('terminal:request_full_history', { sessionId, maxLines: clampedScrollback });
+          activeSocket.emit('terminal:request_full_history', {
+            sessionId,
+            maxLines: clampedScrollback,
+          });
           requestedHistoryRef.current = true;
           lastRequestTime = now; // Start cooldown period
         }
@@ -369,5 +373,6 @@ export function useXterm(
     isHistoryInFlightRef,
     pendingHistoryFramesRef,
     scrollbackLines,
+    socket,
   ]);
 }

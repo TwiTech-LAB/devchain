@@ -33,28 +33,12 @@ function renderWithQuery(ui: React.ReactElement) {
   return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
 }
 
-function autoCompactErrorResponse(path: string): Response {
-  return {
-    ok: false,
-    status: 409,
-    json: async () => ({
-      statusCode: 409,
-      code: 'SESSION_LAUNCH_FAILED',
-      message: 'Claude auto-compact is enabled.',
-      details: {
-        code: 'CLAUDE_AUTO_COMPACT_ENABLED',
-        providerId: 'provider-1',
-        providerName: 'claude',
-      },
-      timestamp: new Date().toISOString(),
-      path,
-    }),
-  } as Response;
-}
-
-function buildFetchMock(options?: { restartFailsWithAutoCompact?: boolean }) {
-  let launchCallCount = 0;
-
+/**
+ * Build a fetch mock where session launch and restart always succeed.
+ * Auto-compact is now checked server-side and results in a non-blocking
+ * recommendation (via WebSocket), not a 409 error.
+ */
+function buildFetchMock(options?: { agentOnline?: boolean }) {
   return jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
 
@@ -91,7 +75,7 @@ function buildFetchMock(options?: { restartFailsWithAutoCompact?: boolean }) {
       return {
         ok: true,
         json: async () => ({
-          'agent-1': options?.restartFailsWithAutoCompact
+          'agent-1': options?.agentOnline
             ? { online: true, sessionId: 'session-old-1' }
             : { online: false },
         }),
@@ -112,12 +96,6 @@ function buildFetchMock(options?: { restartFailsWithAutoCompact?: boolean }) {
     }
 
     if (url === '/api/sessions/launch' && init?.method === 'POST') {
-      launchCallCount += 1;
-
-      if (launchCallCount === 1) {
-        return autoCompactErrorResponse('/api/sessions/launch');
-      }
-
       return {
         ok: true,
         json: async () => ({
@@ -135,10 +113,6 @@ function buildFetchMock(options?: { restartFailsWithAutoCompact?: boolean }) {
     }
 
     if (url === '/api/agents/agent-1/restart' && init?.method === 'POST') {
-      if (options?.restartFailsWithAutoCompact) {
-        return autoCompactErrorResponse('/api/agents/agent-1/restart');
-      }
-
       return {
         ok: true,
         json: async () => ({
@@ -158,10 +132,6 @@ function buildFetchMock(options?: { restartFailsWithAutoCompact?: boolean }) {
       } as Response;
     }
 
-    if (url === '/api/providers/provider-1/auto-compact/disable' && init?.method === 'POST') {
-      return { ok: true, text: async () => '', json: async () => ({}) } as Response;
-    }
-
     if (url.includes('/api/projects/project-1/presets')) {
       return { ok: true, json: async () => ({ presets: [] }) } as Response;
     }
@@ -174,13 +144,13 @@ function buildFetchMock(options?: { restartFailsWithAutoCompact?: boolean }) {
   });
 }
 
-describe('AgentsPage auto-compact handling', () => {
+describe('AgentsPage auto-compact reversed behavior', () => {
   beforeEach(() => {
     toastSpy.mockReset();
     openTerminalWindowSpy.mockReset();
   });
 
-  it('shows standardized toast on launch auto-compact error', async () => {
+  it('launches session successfully without auto-compact blocking error', async () => {
     const fetchMock = buildFetchMock();
     global.fetch = fetchMock as unknown as typeof fetch;
 
@@ -190,18 +160,20 @@ describe('AgentsPage auto-compact handling', () => {
     fireEvent.click(screen.getByRole('button', { name: /launch session/i }));
 
     await waitFor(() => {
-      expect(toastSpy).toHaveBeenCalledWith(
-        expect.objectContaining({
-          title: 'Session launch blocked',
-          description: 'Claude auto-compact is enabled - see the notification to resolve.',
-        }),
+      const launchCalls = fetchMock.mock.calls.filter(
+        ([url, init]) => String(url) === '/api/sessions/launch' && init?.method === 'POST',
       );
+      expect(launchCalls).toHaveLength(1);
     });
-    expect(screen.queryByText('Claude Auto-Compact Detected')).not.toBeInTheDocument();
+
+    // No auto-compact blocking toast should appear
+    expect(toastSpy).not.toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Session launch blocked' }),
+    );
   });
 
-  it('shows standardized toast on restart auto-compact error', async () => {
-    const fetchMock = buildFetchMock({ restartFailsWithAutoCompact: true });
+  it('restarts session successfully without auto-compact blocking error', async () => {
+    const fetchMock = buildFetchMock({ agentOnline: true });
     global.fetch = fetchMock as unknown as typeof fetch;
 
     renderWithQuery(<AgentsPage />);
@@ -210,17 +182,19 @@ describe('AgentsPage auto-compact handling', () => {
     fireEvent.click(await screen.findByRole('button', { name: /restart session/i }));
 
     await waitFor(() => {
-      expect(toastSpy).toHaveBeenCalledWith(
-        expect.objectContaining({
-          title: 'Session launch blocked',
-          description: 'Claude auto-compact is enabled - see the notification to resolve.',
-        }),
+      const restartCalls = fetchMock.mock.calls.filter(
+        ([url, init]) => String(url) === '/api/agents/agent-1/restart' && init?.method === 'POST',
       );
+      expect(restartCalls).toHaveLength(1);
     });
-    expect(screen.queryByText('Claude Auto-Compact Detected')).not.toBeInTheDocument();
+
+    // No auto-compact blocking toast should appear
+    expect(toastSpy).not.toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Session launch blocked' }),
+    );
   });
 
-  it('does not call disable endpoint or retry launch from page-level handler', async () => {
+  it('does not call auto-compact disable endpoint on successful launch', async () => {
     const fetchMock = buildFetchMock();
     global.fetch = fetchMock as unknown as typeof fetch;
 
@@ -230,21 +204,20 @@ describe('AgentsPage auto-compact handling', () => {
     fireEvent.click(screen.getByRole('button', { name: /launch session/i }));
 
     await waitFor(() => {
-      expect(toastSpy).toHaveBeenCalledWith(
-        expect.objectContaining({
-          title: 'Session launch blocked',
-          description: 'Claude auto-compact is enabled - see the notification to resolve.',
-        }),
+      const launchCalls = fetchMock.mock.calls.filter(
+        ([url, init]) => String(url) === '/api/sessions/launch' && init?.method === 'POST',
       );
+      expect(launchCalls).toHaveLength(1);
     });
 
-    const launchCalls = fetchMock.mock.calls.filter(
-      ([url, init]) => String(url) === '/api/sessions/launch' && init?.method === 'POST',
+    // Auto-compact endpoints should not be called during normal session launch
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      '/api/providers/provider-1/auto-compact/disable',
+      expect.anything(),
     );
-    expect(launchCalls).toHaveLength(1);
-    expect(fetchMock).not.toHaveBeenCalledWith('/api/providers/provider-1/auto-compact/disable', {
-      method: 'POST',
-    });
-    expect(openTerminalWindowSpy).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      '/api/providers/provider-1/auto-compact/enable',
+      expect.anything(),
+    );
   });
 });

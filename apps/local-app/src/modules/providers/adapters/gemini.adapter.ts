@@ -12,8 +12,8 @@ export class GeminiAdapter implements ProviderAdapter {
 
   addMcpServer(options: AddMcpServerOptions): string[] {
     const alias = options.alias ?? 'devchain';
-    // gemini mcp add <alias> <endpoint> --type http
-    const args = ['mcp', 'add', alias, options.endpoint, '--type', 'http'];
+    // gemini mcp add -t http <alias> <endpoint>
+    const args = ['mcp', 'add', '-t', 'http', alias, options.endpoint];
     if (options.extraArgs?.length) {
       args.push(...options.extraArgs);
     }
@@ -33,16 +33,24 @@ export class GeminiAdapter implements ProviderAdapter {
     return ['mcp', 'list'];
   }
 
-  parseListOutput(stdout: string, _stderr?: string): McpServerEntry[] {
+  parseListOutput(stdout: string, stderr?: string): McpServerEntry[] {
+    // Gemini CLI outputs MCP list to stderr, not stdout.
+    // Use stderr as fallback when stdout is empty.
+    const output = stdout.trim() ? stdout : (stderr ?? '');
+
     // Gemini CLI output format:
     // Configured MCP servers:
     //
     // ✓ devchain: http://127.0.0.1:3000/mcp (sse) - Connected
     // ✗ server2: http://127.0.0.1:4000/mcp (sse) - Failed
     const entries: McpServerEntry[] = [];
-    const lines = stdout.split('\n').filter((line) => line.trim().length > 0);
+    const lines = output.split('\n').filter((line) => line.trim().length > 0);
 
-    for (const line of lines) {
+    for (const rawLine of lines) {
+      // Strip ANSI escape codes (color/formatting) that Gemini CLI may emit
+      // even when spawned without a TTY
+      const line = rawLine.replace(/\x1b\[[0-9;]*m/g, '');
+
       // Skip header lines (e.g., "Configured MCP servers:")
       if (line.toLowerCase().includes('configured mcp')) {
         continue;

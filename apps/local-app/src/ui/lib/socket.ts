@@ -8,8 +8,26 @@ export interface WsEnvelope {
   ts: string;
 }
 
+interface WorktreeSocketEntry {
+  socket: Socket;
+  refCount: number;
+}
+
 let socketRef: Socket | null = null;
 let socketRefCount = 0;
+const worktreeSocketPool = new Map<string, WorktreeSocketEntry>();
+
+function resolveWorktreeSocketPath(worktreeName: string): string {
+  return `/wt/${encodeURIComponent(worktreeName)}/socket.io`;
+}
+
+function normalizeWorktreeName(worktreeName: string): string {
+  const normalized = worktreeName.trim();
+  if (!normalized) {
+    throw new Error('worktreeName is required');
+  }
+  return normalized;
+}
 
 /**
  * Test hook: allow components to inject a socket instance.
@@ -17,6 +35,7 @@ let socketRefCount = 0;
  */
 export function setAppSocket(socket: Socket | null) {
   socketRef = socket;
+  socketRefCount = socket ? 1 : 0;
 }
 
 export function getAppSocket(): Socket {
@@ -28,6 +47,7 @@ export function getAppSocket(): Socket {
 
   const url = getWsBaseUrl();
   socketRef = io(url, {
+    path: '/socket.io',
     transports: ['websocket'],
     reconnection: true,
     reconnectionDelay: 1000,
@@ -42,6 +62,69 @@ export function getAppSocket(): Socket {
   });
   socketRefCount = 1;
   return socketRef;
+}
+
+export function getWorktreeSocket(worktreeName: string): Socket {
+  const normalizedName = normalizeWorktreeName(worktreeName);
+  const existingEntry = worktreeSocketPool.get(normalizedName);
+  if (existingEntry) {
+    if (existingEntry.refCount <= 0) {
+      console.warn(
+        `[socket] worktree socket "${normalizedName}" had non-positive refCount; recovering to 1`,
+      );
+      existingEntry.refCount = 1;
+      return existingEntry.socket;
+    }
+    existingEntry.refCount++;
+    return existingEntry.socket;
+  }
+
+  const url = getWsBaseUrl();
+  const path = resolveWorktreeSocketPath(normalizedName);
+  const socket = io(url, {
+    path,
+    transports: ['websocket'],
+    reconnection: true,
+    reconnectionDelay: 1000,
+    reconnectionAttempts: 10,
+  });
+
+  socket.on('message', (envelope: unknown) => {
+    const maybe = envelope as { topic?: string; type?: string };
+    if (maybe?.topic === 'system' && maybe?.type === 'ping') {
+      socket.emit('pong');
+    }
+  });
+
+  worktreeSocketPool.set(normalizedName, {
+    socket,
+    refCount: 1,
+  });
+
+  return socket;
+}
+
+export function releaseWorktreeSocket(worktreeName: string): void {
+  const normalizedName = normalizeWorktreeName(worktreeName);
+  const entry = worktreeSocketPool.get(normalizedName);
+  if (!entry) {
+    return;
+  }
+
+  if (entry.refCount <= 0) {
+    console.warn(
+      `[socket] worktree socket "${normalizedName}" had non-positive refCount on release`,
+    );
+  }
+
+  entry.refCount--;
+
+  if (entry.refCount > 0) {
+    return;
+  }
+
+  entry.socket.disconnect();
+  worktreeSocketPool.delete(normalizedName);
 }
 
 /**

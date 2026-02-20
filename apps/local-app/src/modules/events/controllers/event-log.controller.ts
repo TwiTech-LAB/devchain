@@ -26,6 +26,7 @@ export class EventLogController {
   @Get()
   async listEvents(
     @Query('name') name?: string,
+    @Query('ownerProjectId') ownerProjectId?: string,
     @Query('handler') handler?: string,
     @Query('status') statusParam?: string,
     @Query('from') from?: string,
@@ -34,7 +35,7 @@ export class EventLogController {
     @Query('offset') offsetParam?: string,
   ): Promise<EventLogListResult> {
     logger.info(
-      { name, handler, statusParam, from, to, limitParam, offsetParam },
+      { name, ownerProjectId, handler, statusParam, from, to, limitParam, offsetParam },
       'GET /api/events',
     );
 
@@ -51,6 +52,7 @@ export class EventLogController {
 
     return this.eventLogService.listEvents({
       name: name?.trim() || undefined,
+      ownerProjectId: ownerProjectId?.trim() || undefined,
       handler: handler?.trim() || undefined,
       status,
       from: from?.trim() || undefined,

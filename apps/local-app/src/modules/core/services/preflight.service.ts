@@ -231,12 +231,23 @@ export class PreflightService {
     // Collect provider info from agents' configs (only validate what's actually used)
     try {
       const providerInfoMap = await this.collectProviderInfoFromAgents(scopedProjectId);
+      const enabledProviders = this.getEnabledProvidersFilter();
       logger.debug(
-        { providerCount: providerInfoMap.size },
+        { providerCount: providerInfoMap.size, enabledProviders: enabledProviders ?? 'all' },
         'Collected providers from agent configs for preflight',
       );
 
       for (const info of providerInfoMap.values()) {
+        if (
+          enabledProviders &&
+          !enabledProviders.has((info.provider.name ?? '').trim().toLowerCase())
+        ) {
+          logger.debug(
+            { provider: info.provider.name },
+            'Skipping provider check because it is not in ENABLED_PROVIDERS',
+          );
+          continue;
+        }
         providerChecks.push(
           await this.checkProviderWithConfig(
             info.provider,
@@ -282,6 +293,19 @@ export class PreflightService {
       'Preflight checks completed',
     );
     return result;
+  }
+
+  private getEnabledProvidersFilter(): Set<string> | null {
+    const raw = process.env.ENABLED_PROVIDERS;
+    if (raw === undefined) {
+      return null;
+    }
+
+    const values = raw
+      .split(',')
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean);
+    return new Set(values);
   }
 
   private async evaluateMcpStatus(

@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.9.2",
+  "version": "0.10.0",
   "description": "AI driven development platform",
   "homepage": "https://devchain.twitechlab.com/",
   "repository": {
@@ -8,6 +8,17 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.10.0": [
+      "Details: https://devchain.twitechlab.com/releases/0.10.0/",
+      "",
+      "Worktrees: launch isolated agent environments as Docker containers or local processes, each with their own branch, terminal, and chat",
+      "Container isolation: auto-provision worktree image from GHCR, run agents as non-root with full git identity and Docker CLI access",
+      "Worktree UI: central chat hub with per-worktree terminals, inline agent chat, preset and provider switching, real-time status updates",
+      "Claude Code hooks: integrate Claude Code hook events with DevChain automation",
+      "Auto-compact: moved to non-blocking recommendation with provider-specific thresholds",
+      "UI: compact collapsible sidebar, persistent section state, board context menu with move-to-worktree action",
+      "Templates: 5-agents-dev rename and new 3-agents-dev lightweight template"
+    ],
     "0.9.2": [
       "Per-project source controls, local folder sources, and stale skill cleanup",
       "Auto-sync skills on new source creation"
@@ -175,6 +186,7 @@
     "LICENSE"
   ],
   "dependencies": {
+    "@fastify/http-proxy": "9.5.0",
     "@fastify/static": "^7.0.4",
     "@modelcontextprotocol/sdk": "1.20.1",
     "@nestjs/common": "^10.3.3",
@@ -211,6 +223,7 @@
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "commander": "^12.1.0",
+    "dockerode": "4.0.9",
     "devchain-cli": "0.4.1",
     "dotenv": "^16.4.5",
     "drizzle-orm": "0.44.6",

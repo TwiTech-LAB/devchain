@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef } from 'react';
 import type { Terminal } from '@xterm/xterm';
 import type { FitAddon } from '@xterm/addon-fit';
-import { getAppSocket } from '@/ui/lib/socket';
+import type { Socket } from 'socket.io-client';
 import { termLog } from '@/ui/lib/debug';
+import { resolveTerminalSocket } from '../socket';
 
 /**
  * Simple debounce helper for resize events
@@ -40,6 +41,7 @@ export function useTerminalResize(
   sessionId: string,
   expectingSeedRef?: React.MutableRefObject<boolean>,
   hasHistoryRef?: React.MutableRefObject<boolean>,
+  socket?: Socket | null,
 ) {
   // Track last dimensions to avoid duplicate resize events
   const lastDimensionsRef = useRef<{ cols: number; rows: number } | null>(null);
@@ -62,7 +64,7 @@ export function useTerminalResize(
 
       fitAddonRef.current?.fit();
       if (xtermRef.current) {
-        const socket = getAppSocket();
+        const activeSocket = resolveTerminalSocket(socket);
         const { cols, rows } = xtermRef.current;
         const last = lastDimensionsRef.current;
 
@@ -73,8 +75,8 @@ export function useTerminalResize(
           termLog('resize', { sessionId, cols, rows, isInitialResize });
 
           // Only emit if socket is connected
-          if (socket.connected) {
-            socket.emit('terminal:resize', { sessionId, cols, rows });
+          if (activeSocket.connected) {
+            activeSocket.emit('terminal:resize', { sessionId, cols, rows });
           }
 
           // After resize, TUI might output more than viewport size, creating scrollback
@@ -97,7 +99,7 @@ export function useTerminalResize(
         }
       }
     }, 250), // Debounce: wait 250ms after last resize
-    [sessionId, xtermRef, fitAddonRef, expectingSeedRef, hasHistoryRef],
+    [sessionId, xtermRef, fitAddonRef, expectingSeedRef, hasHistoryRef, socket],
   );
 
   // Handle window resize with debouncing and dimension change detection

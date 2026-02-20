@@ -10,7 +10,7 @@ import {
   isValidVersion,
   VALIDATION_MESSAGES,
 } from '../../../common/validation/template-validation';
-import { getEnvConfig } from '../../../common/config/env.config';
+import { resolveTemplatesDirectory } from '../../../common/templates-directory';
 
 const logger = createLogger('UnifiedTemplateService');
 
@@ -85,32 +85,13 @@ export class UnifiedTemplateService {
    * Find the bundled templates directory
    */
   private findTemplatesDirectory(): string | null {
-    const env = getEnvConfig();
-
-    // 1. Check for explicit TEMPLATES_DIR environment variable override
-    if (env.TEMPLATES_DIR) {
-      if (existsSync(env.TEMPLATES_DIR)) {
-        logger.debug({ path: env.TEMPLATES_DIR }, 'Using TEMPLATES_DIR from environment');
-        return env.TEMPLATES_DIR;
-      }
-      logger.warn({ path: env.TEMPLATES_DIR }, 'TEMPLATES_DIR set but path does not exist');
+    const templatesDir = resolveTemplatesDirectory(__dirname);
+    if (templatesDir) {
+      logger.debug({ path: templatesDir }, 'Found templates directory');
+      return templatesDir;
     }
 
-    // 2. Try template paths for different deployment scenarios
-    const possibleTemplatePaths = [
-      // Relative to this file: works in both dev and prod builds
-      join(__dirname, '..', '..', '..', '..', 'templates'),
-      // Dev mode fallback: running from monorepo root with ts-node
-      join(process.cwd(), 'apps', 'local-app', 'templates'),
-    ];
-
-    for (const path of possibleTemplatePaths) {
-      if (existsSync(path)) {
-        logger.debug({ path }, 'Found templates directory');
-        return path;
-      }
-    }
-
+    logger.warn('Templates directory not found in known locations');
     return null;
   }
 

@@ -14,11 +14,14 @@ import {
   BadRequestException,
   NotFoundException,
   ConflictException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { UpdateProject, Project } from '../../storage/models/domain.models';
 import { z } from 'zod';
 import { createLogger } from '../../../common/logging/logger';
+import { getEnvConfig } from '../../../common/config/env.config';
+import { NotFoundError as StorageNotFoundError } from '../../../common/errors/error-types';
 import {
   SLUG_PATTERN,
   SEMVER_PATTERN,
@@ -135,10 +138,36 @@ export class ProjectsController {
   @Get()
   async listProjects(@Query('limit') limit?: string, @Query('offset') offset?: string) {
     logger.info('GET /api/projects');
-    const result = await this.storage.listProjects({
-      limit: limit ? parseInt(limit, 10) : undefined,
-      offset: offset ? parseInt(offset, 10) : undefined,
-    });
+    const scopedProjectId = this.getContainerScopedProjectId();
+    let projects: Project[];
+    let total: number;
+    let resolvedLimit: number;
+    let resolvedOffset: number;
+
+    if (scopedProjectId) {
+      let scopedProject: Project | null = null;
+      try {
+        scopedProject = await this.storage.getProject(scopedProjectId);
+      } catch (error) {
+        if (!(error instanceof StorageNotFoundError)) {
+          throw error;
+        }
+      }
+
+      projects = scopedProject ? [scopedProject] : [];
+      total = projects.length;
+      resolvedLimit = 1;
+      resolvedOffset = 0;
+    } else {
+      const result = await this.storage.listProjects({
+        limit: limit ? parseInt(limit, 10) : undefined,
+        offset: offset ? parseInt(offset, 10) : undefined,
+      });
+      projects = result.items;
+      total = result.total;
+      resolvedLimit = result.limit;
+      resolvedOffset = result.offset;
+    }
 
     // Batch-load all template metadata in one query (avoids N+1)
     const metadataMap = this.settings.getAllProjectTemplateMetadataMap();
@@ -151,7 +180,7 @@ export class ProjectsController {
     const configurableProjects = this.computeConfigurableProjects(allProfiles.items, allConfigs);
 
     // Batch-check bundled upgrades for all projects
-    const projectsForUpgradeCheck = result.items.map((project) => {
+    const projectsForUpgradeCheck = projects.map((project) => {
       const metadata = metadataMap.get(project.id);
       return {
         projectId: project.id,
@@ -164,8 +193,10 @@ export class ProjectsController {
 
     // Enrich each project with template metadata, isConfigurable, and bundled upgrade info
     return {
-      ...result,
-      items: result.items.map((project) => ({
+      total,
+      limit: resolvedLimit,
+      offset: resolvedOffset,
+      items: projects.map((project) => ({
         ...this.enrichProjectWithMap(project, metadataMap),
         isConfigurable: configurableProjects.has(project.id),
         bundledUpgradeAvailable: bundledUpgrades.get(project.id) ?? null,
@@ -312,6 +343,7 @@ export class ProjectsController {
         name: z.string().min(1, 'Project name is required'),
         description: z.string().nullable().optional(),
         rootPath: z.string().min(1, 'Root path is required'),
+        projectId: z.string().uuid().optional(),
         slug: z.string().min(1).regex(SLUG_PATTERN, VALIDATION_MESSAGES.INVALID_SLUG).optional(),
         version: z
           .string()
@@ -360,6 +392,7 @@ export class ProjectsController {
           name: parsed.name,
           description: parsed.description,
           rootPath: parsed.rootPath,
+          ...(parsed.projectId ? { projectId: parsed.projectId } : {}),
           templatePath: parsed.templatePath,
           familyProviderMappings: normalizeFamilyProviderMappings(parsed.familyProviderMappings),
           presetName: parsed.presetName,
@@ -368,6 +401,7 @@ export class ProjectsController {
           name: parsed.name,
           description: parsed.description,
           rootPath: parsed.rootPath,
+          ...(parsed.projectId ? { projectId: parsed.projectId } : {}),
           slug: parsed.slug ?? parsed.templateId!, // Use slug if provided, else templateId
           version: parsed.version ?? null,
           familyProviderMappings: normalizeFamilyProviderMappings(parsed.familyProviderMappings),
@@ -379,6 +413,7 @@ export class ProjectsController {
   @Put(':id')
   async updateProject(@Param('id') id: string, @Body() body: unknown): Promise<Project> {
     logger.info({ id }, 'PUT /api/projects/:id');
+    this.assertMutationAllowedForScopedProject(id);
     const data = UpdateProjectSchema.parse(body) as UpdateProject;
     return this.storage.updateProject(id, data);
   }
@@ -386,6 +421,7 @@ export class ProjectsController {
   @Delete(':id')
   async deleteProject(@Param('id') id: string): Promise<void> {
     logger.info({ id }, 'DELETE /api/projects/:id');
+    this.assertMutationAllowedForScopedProject(id);
     await this.storage.deleteProject(id);
     // Clean up template metadata and presets from settings to prevent stale entries
     await this.settings.clearProjectTemplateMetadata(id);
@@ -684,5 +720,22 @@ export class ProjectsController {
     }
 
     return { deleted: true };
+  }
+
+  private getContainerScopedProjectId(): string | null {
+    const env = getEnvConfig();
+    if (env.DEVCHAIN_MODE !== 'normal') {
+      return null;
+    }
+    return env.CONTAINER_PROJECT_ID ?? null;
+  }
+
+  private assertMutationAllowedForScopedProject(projectId: string): void {
+    const scopedProjectId = this.getContainerScopedProjectId();
+    if (scopedProjectId && scopedProjectId !== projectId) {
+      throw new ForbiddenException(
+        'Project mutation is restricted to CONTAINER_PROJECT_ID in container mode',
+      );
+    }
   }
 }

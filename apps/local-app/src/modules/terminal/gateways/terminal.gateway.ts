@@ -430,11 +430,18 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
     } else {
       // Use tmux pasteAndSubmit with bracketed paste mode for regular text (form mode)
       // This pastes the text with bracketed paste markers and then sends Enter
-      await tmuxService.pasteAndSubmit(session.tmuxSessionId, data, { bracketed: true });
-      logger.debug(
-        { sessionId, tmuxSessionId: session.tmuxSessionId },
-        'Text pasted and submitted',
-      );
+      try {
+        await tmuxService.pasteAndSubmit(session.tmuxSessionId, data, { bracketed: true });
+        logger.debug(
+          { sessionId, tmuxSessionId: session.tmuxSessionId },
+          'Text pasted and submitted',
+        );
+      } catch (error) {
+        logger.warn(
+          { sessionId, tmuxSessionId: session.tmuxSessionId, error: String(error) },
+          'pasteAndSubmit failed in form-mode input',
+        );
+      }
     }
   }
 

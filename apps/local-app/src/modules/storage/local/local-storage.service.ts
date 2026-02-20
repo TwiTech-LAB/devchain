@@ -505,11 +505,13 @@ export class LocalStorageService implements StorageService {
   async createProjectWithTemplate(
     data: CreateProject,
     template: import('../interfaces/storage.interface').TemplateImportPayload,
+    options?: import('../interfaces/storage.interface').CreateProjectWithTemplateOptions,
   ): Promise<import('../interfaces/storage.interface').CreateProjectWithTemplateResult> {
     const { randomUUID } = await import('crypto');
     const now = new Date().toISOString();
+    const providedProjectId = options?.projectId?.trim();
     const project: Project = {
-      id: randomUUID(),
+      id: providedProjectId || randomUUID(),
       ...data,
       isTemplate: data.isTemplate ?? false,
       createdAt: now,
@@ -777,6 +779,19 @@ export class LocalStorageService implements StorageService {
         logger.error({ rollbackError }, 'Failed to rollback transaction');
       }
       logger.error({ error, projectId: project.id }, 'Transaction failed');
+
+      const errorMessage = error instanceof Error ? error.message : '';
+      if (
+        providedProjectId &&
+        this.isSqliteUniqueConstraint(error) &&
+        errorMessage.includes('projects.id')
+      ) {
+        throw new ConflictError(`Project ID "${providedProjectId}" already exists.`, {
+          field: 'projectId',
+          projectId: providedProjectId,
+        });
+      }
+
       throw error;
     }
 
@@ -2586,6 +2601,14 @@ export class LocalStorageService implements StorageService {
     const now = new Date().toISOString();
     const { providers } = await import('../db/schema');
 
+    // Default autoCompactThreshold to 10 for Claude providers if not explicitly provided
+    const autoCompactThreshold =
+      data.autoCompactThreshold !== undefined
+        ? data.autoCompactThreshold
+        : data.name.toLowerCase() === 'claude'
+          ? 10
+          : null;
+
     const provider: Provider = {
       id: randomUUID(),
       name: data.name,
@@ -2593,6 +2616,7 @@ export class LocalStorageService implements StorageService {
       mcpConfigured: data.mcpConfigured ?? false,
       mcpEndpoint: data.mcpEndpoint ?? null,
       mcpRegisteredAt: data.mcpRegisteredAt ?? null,
+      autoCompactThreshold,
       createdAt: now,
       updatedAt: now,
     };
@@ -2604,6 +2628,7 @@ export class LocalStorageService implements StorageService {
       mcpConfigured: provider.mcpConfigured,
       mcpEndpoint: provider.mcpEndpoint,
       mcpRegisteredAt: provider.mcpRegisteredAt,
+      autoCompactThreshold: provider.autoCompactThreshold,
       createdAt: provider.createdAt,
       updatedAt: provider.updatedAt,
     });

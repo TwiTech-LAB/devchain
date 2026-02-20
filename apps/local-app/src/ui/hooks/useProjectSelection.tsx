@@ -5,10 +5,11 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { useRef } from 'react';
+import { useOptionalWorktreeTab } from './useWorktreeTab';
 
 const PROJECT_STORAGE_KEY = 'devchain:selectedProjectId';
 
@@ -47,21 +48,33 @@ interface ProjectSelectionContextValue {
 
 const ProjectSelectionContext = createContext<ProjectSelectionContextValue | undefined>(undefined);
 
-async function fetchProjects(): Promise<ProjectsResponse> {
-  const res = await fetch('/api/projects');
+const STATS_TIMEOUT_MS = 5000;
+
+async function fetchProjects({ signal }: { signal?: AbortSignal } = {}): Promise<ProjectsResponse> {
+  const res = await fetch('/api/projects', { signal });
   if (!res.ok) throw new Error('Failed to fetch projects');
   const data = await res.json();
 
   const projectsWithStats = await Promise.all(
     data.items.map(async (project: Project) => {
       try {
-        const statsRes = await fetch(`/api/projects/${project.id}/stats`);
+        const timeoutSignal =
+          typeof AbortSignal.timeout === 'function'
+            ? AbortSignal.timeout(STATS_TIMEOUT_MS)
+            : undefined;
+        const statsSignal =
+          signal && timeoutSignal && typeof AbortSignal.any === 'function'
+            ? AbortSignal.any([signal, timeoutSignal])
+            : (signal ?? timeoutSignal);
+        const statsRes = await fetch(`/api/projects/${project.id}/stats`, {
+          signal: statsSignal,
+        });
         if (statsRes.ok) {
           const stats = await statsRes.json();
           return { ...project, stats };
         }
       } catch {
-        // Ignore stats fetch errors; return project without stats.
+        // Ignore stats fetch errors (timeout, abort, network); return project without stats.
       }
       return project;
     }),
@@ -100,19 +113,26 @@ function persistSelectedProject(projectId?: string) {
 }
 
 export function ProjectSelectionProvider({ children }: { children: ReactNode }) {
+  const { activeWorktree } = useOptionalWorktreeTab();
+  const isProjectSelectionLocked = Boolean(activeWorktree);
+  const lockedProjectId =
+    activeWorktree?.devchainProjectId && activeWorktree.devchainProjectId.trim().length > 0
+      ? activeWorktree.devchainProjectId
+      : undefined;
   const [selectedProjectId, setSelectedProjectIdState] = useState<string | undefined>(() => {
     if (typeof window === 'undefined') return undefined;
     return readSelectedProjectId() ?? undefined;
   });
   const appliedFromQueryRef = useRef(false);
   const initializedRef = useRef(false);
+  const wasLockedRef = useRef(false);
 
   const {
     data: projectsData,
     isLoading: projectsLoading,
     isError: projectsError,
     refetch,
-  } = useQuery({ queryKey: ['projects'], queryFn: fetchProjects });
+  } = useQuery({ queryKey: ['projects'], queryFn: ({ signal }) => fetchProjects({ signal }) });
 
   // Initialize: if sessionStorage is empty but localStorage has a value, sync to sessionStorage
   // This ensures new tabs get the localStorage default written to their tab-local storage
@@ -132,6 +152,7 @@ export function ProjectSelectionProvider({ children }: { children: ReactNode }) 
   // Apply URL-driven selection once per load
   useEffect(() => {
     if (typeof window === 'undefined') return;
+    if (isProjectSelectionLocked) return;
     if (!projectsData || appliedFromQueryRef.current) return;
 
     const params = new URLSearchParams(window.location.search || '');
@@ -161,9 +182,21 @@ export function ProjectSelectionProvider({ children }: { children: ReactNode }) 
         return;
       }
     }
-  }, [projectsData]);
+  }, [isProjectSelectionLocked, projectsData]);
 
   useEffect(() => {
+    if (isProjectSelectionLocked) {
+      wasLockedRef.current = true;
+      return;
+    }
+
+    // Skip one validation cycle after lock release to let cache cleanup propagate
+    // fresh project data from the main instance.
+    if (wasLockedRef.current) {
+      wasLockedRef.current = false;
+      return;
+    }
+
     if (!projectsData) return;
 
     const projectItems = projectsData.items ?? [];
@@ -200,16 +233,24 @@ export function ProjectSelectionProvider({ children }: { children: ReactNode }) 
       setSelectedProjectIdState(undefined);
       persistSelectedProject(undefined);
     }
-  }, [projectsData, selectedProjectId]);
+  }, [isProjectSelectionLocked, projectsData, selectedProjectId]);
 
-  const setSelectedProjectId = useCallback((projectId?: string) => {
-    setSelectedProjectIdState(projectId);
-    persistSelectedProject(projectId);
-  }, []);
+  const setSelectedProjectId = useCallback(
+    (projectId?: string) => {
+      if (isProjectSelectionLocked) {
+        return;
+      }
+      setSelectedProjectIdState(projectId);
+      persistSelectedProject(projectId);
+    },
+    [isProjectSelectionLocked],
+  );
+
+  const effectiveSelectedProjectId = lockedProjectId ?? selectedProjectId;
 
   const selectedProject = useMemo(
-    () => projectsData?.items?.find((project) => project.id === selectedProjectId),
-    [projectsData, selectedProjectId],
+    () => projectsData?.items?.find((project) => project.id === effectiveSelectedProjectId),
+    [effectiveSelectedProjectId, projectsData],
   );
 
   const refetchProjects = useCallback(async () => {
@@ -222,7 +263,7 @@ export function ProjectSelectionProvider({ children }: { children: ReactNode }) 
       projectsLoading,
       projectsError,
       refetchProjects,
-      selectedProjectId,
+      selectedProjectId: effectiveSelectedProjectId,
       selectedProject,
       setSelectedProjectId,
     }),
@@ -231,7 +272,7 @@ export function ProjectSelectionProvider({ children }: { children: ReactNode }) 
       projectsLoading,
       projectsError,
       refetchProjects,
-      selectedProjectId,
+      effectiveSelectedProjectId,
       selectedProject,
       setSelectedProjectId,
     ],

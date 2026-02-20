@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import type { SQL } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
@@ -13,6 +13,9 @@ import type {
 import { EventsStreamService } from './events-stream.service';
 
 const logger = createLogger('EventLogService');
+const WORKTREE_ACTIVITY_EVENT_NAME = 'orchestrator.worktree.activity';
+const WORKTREE_ACTIVITY_RETENTION_DAYS = 30;
+const WORKTREE_ACTIVITY_CLEANUP_INTERVAL_MS = 86_400_000;
 
 function safeStringify(value: unknown): string | null {
   if (value === null || value === undefined) {
@@ -45,11 +48,54 @@ function safeParse(value: string | null): unknown {
 }
 
 @Injectable()
-export class EventLogService {
+export class EventLogService implements OnModuleInit, OnModuleDestroy {
+  private cleanupTimer?: NodeJS.Timeout;
+
   constructor(
     @Inject(DB_CONNECTION) private readonly db: BetterSQLite3Database,
     private readonly eventsStreamService: EventsStreamService,
   ) {}
+
+  async onModuleInit(): Promise<void> {
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = undefined;
+    }
+
+    await this.cleanupOldWorktreeActivityEvents().catch((error) => {
+      logger.warn({ error }, 'Failed initial cleanup of worktree activity events');
+    });
+
+    this.cleanupTimer = setInterval(() => {
+      this.cleanupOldWorktreeActivityEvents().catch((error) => {
+        logger.warn({ error }, 'Failed scheduled cleanup of worktree activity events');
+      });
+    }, WORKTREE_ACTIVITY_CLEANUP_INTERVAL_MS);
+    this.cleanupTimer.unref?.();
+  }
+
+  onModuleDestroy(): void {
+    if (!this.cleanupTimer) {
+      return;
+    }
+    clearInterval(this.cleanupTimer);
+    this.cleanupTimer = undefined;
+  }
+
+  async cleanupOldWorktreeActivityEvents(params?: { retentionDays?: number }): Promise<void> {
+    const retentionDaysRaw = params?.retentionDays ?? WORKTREE_ACTIVITY_RETENTION_DAYS;
+    const retentionDays = Number.isFinite(retentionDaysRaw)
+      ? Math.max(1, Math.trunc(retentionDaysRaw))
+      : WORKTREE_ACTIVITY_RETENTION_DAYS;
+    const cutoffIso = new Date(Date.now() - retentionDays * 86_400_000).toISOString();
+
+    const { events } = await import('../../storage/db/schema');
+    const { and, eq, lt } = await import('drizzle-orm');
+
+    await this.db
+      .delete(events)
+      .where(and(eq(events.name, WORKTREE_ACTIVITY_EVENT_NAME), lt(events.publishedAt, cutoffIso)));
+  }
 
   async recordPublished(params: {
     name: string;
@@ -152,6 +198,7 @@ export class EventLogService {
   async listEvents(filters: EventLogListFilters): Promise<EventLogListResult> {
     const { events, eventHandlers } = await import('../../storage/db/schema');
     const { and, eq, gte, lte, inArray, sql, desc } = await import('drizzle-orm');
+    const { safeJsonFieldEquals } = await import('../../storage/db/sqlite-json');
 
     const limit = filters.limit ?? 50;
     const offset = filters.offset ?? 0;
@@ -159,6 +206,11 @@ export class EventLogService {
     const eventConditions: SQL<unknown>[] = [];
     if (filters.name) {
       eventConditions.push(eq(events.name, filters.name));
+    }
+    if (filters.ownerProjectId) {
+      eventConditions.push(
+        safeJsonFieldEquals(events.payloadJson, '$.ownerProjectId', filters.ownerProjectId),
+      );
     }
     if (filters.from) {
       eventConditions.push(gte(events.publishedAt, filters.from));

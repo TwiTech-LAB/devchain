@@ -214,7 +214,7 @@ describe('RegistryController', () => {
         .fn()
         .mockImplementation((projectId: string) => {
           if (projectId === 'project-1') {
-            return { templateSlug: 'dev-loop' };
+            return { templateSlug: '5-agents-dev' };
           }
           return null;
         });
@@ -226,7 +226,7 @@ describe('RegistryController', () => {
         results: [
           {
             projectId: 'project-1',
-            templateSlug: 'dev-loop',
+            templateSlug: '5-agents-dev',
             hasUpdate: true,
             currentVersion: '0.7.0',
             latestVersion: '0.8.0',

@@ -12,7 +12,7 @@ DevChain's Chat page is your primary interface for communicating with AI agents 
 
 Before using Chat, make sure you understand the development flow provided by the template your project uses.
 
-> If you're using the **dev-loop/claude-codex-advanced** (or the older variant) template, review its workflow diagram at [templates/workflow-diagram](https://devchain.twitechlab.com/templates/workflow-diagram.html).
+> If you're using the **5-agents-dev** (or the older variant) template, review its workflow diagram at [templates/workflow-diagram](https://devchain.twitechlab.com/templates/workflow-diagram.html).
 
 DevChain is an **AI-driven system** — agents run the entire development flow and decide their next steps autonomously. The quality of results depends heavily on the LLMs you assign to key roles. Smarter models in planning and review roles lead to better outcomes.
 

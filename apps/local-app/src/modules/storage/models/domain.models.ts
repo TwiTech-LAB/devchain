@@ -124,6 +124,7 @@ export interface Provider {
   mcpConfigured: boolean;
   mcpEndpoint: string | null;
   mcpRegisteredAt: string | null;
+  autoCompactThreshold: number | null; // CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (1-100), null = don't inject
   createdAt: string;
   updatedAt: string;
 }
@@ -251,6 +252,7 @@ export type UpdateTag = Partial<Omit<Tag, 'id' | 'createdAt' | 'updatedAt'>>;
 export interface CreateProvider extends Partial<ProviderMcpMetadata> {
   name: string;
   binPath?: string | null;
+  autoCompactThreshold?: number | null;
 }
 export type UpdateProvider = Partial<Omit<Provider, 'id' | 'createdAt' | 'updatedAt'>>;
 export type UpdateProviderMcpMetadata = Partial<ProviderMcpMetadata>;

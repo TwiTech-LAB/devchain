@@ -103,6 +103,9 @@ export function ProviderMappingModal({
     .filter((f) => f.hasAlternatives)
     .every((f) => mappings[f.familySlug]);
 
+  // Families with no alternatives (used for "Cannot Import" messaging)
+  const familiesWithNoAlternatives = familiesNeedingMapping.filter((f) => !f.hasAlternatives);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl">
@@ -185,14 +188,15 @@ export function ProviderMappingModal({
             </div>
           )}
 
-          {/* Cannot import warning */}
+          {/* Cannot import - canImport is false */}
           {!canImport && (
             <Alert variant="destructive">
               <XCircle className="h-4 w-4" />
               <AlertTitle>Cannot Import</AlertTitle>
               <AlertDescription>
-                Some families have no available alternative providers. Install the missing providers
-                first.
+                One or more required families have no available providers:{' '}
+                {familiesWithNoAlternatives.map((f) => f.familySlug).join(', ')}. Install the
+                missing providers ({missingProviders.join(', ')}) first.
               </AlertDescription>
             </Alert>
           )}

@@ -1,9 +1,10 @@
 import { useCallback, useRef } from 'react';
 import type { Terminal } from '@xterm/xterm';
 import type { FitAddon } from '@xterm/addon-fit';
+import type { Socket } from 'socket.io-client';
 import { termLog } from '@/ui/lib/debug';
-import { getAppSocket } from '@/ui/lib/socket';
 import { DEFAULT_TERMINAL_SCROLLBACK } from '@/common/constants/terminal';
+import { resolveTerminalSocket } from '../socket';
 
 interface TerminalSeedPayload {
   data: string;
@@ -61,6 +62,7 @@ export function useSeedManager(
   hasHistoryRef: React.MutableRefObject<boolean>,
   onSeedReady?: () => void,
   scrollbackLines: number = DEFAULT_TERMINAL_SCROLLBACK,
+  socket?: Socket | null,
 ) {
   const seedStateRef = useRef<SeedState | null>(null);
   const seedTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -293,11 +295,11 @@ export function useSeedManager(
 
             // Force TUI redraw via SIGWINCH (resize jiggle)
             // Use current terminal dimensions, not seed dimensions
-            const socket = getAppSocket();
-            if (socket.connected) {
-              socket.emit('terminal:resize', { sessionId, cols, rows: rows - 1 });
+            const activeSocket = resolveTerminalSocket(socket);
+            if (activeSocket.connected) {
+              activeSocket.emit('terminal:resize', { sessionId, cols, rows: rows - 1 });
               setTimeout(() => {
-                socket.emit('terminal:resize', { sessionId, cols, rows });
+                activeSocket.emit('terminal:resize', { sessionId, cols, rows });
                 termLog('seed_trigger_resize', { sessionId, cols, rows });
               }, 50);
             }
@@ -337,6 +339,7 @@ export function useSeedManager(
       hasHistoryRef,
       onSeedReady,
       scrollbackLines,
+      socket,
     ],
   );
 

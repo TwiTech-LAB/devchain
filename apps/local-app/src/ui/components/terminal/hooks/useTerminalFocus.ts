@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
-import { getAppSocket } from '@/ui/lib/socket';
+import type { Socket } from 'socket.io-client';
+import { resolveTerminalSocket } from '../socket';
 
 /**
  * Custom hook for managing terminal focus event handling.
@@ -13,19 +14,20 @@ export function useTerminalFocus(
   containerRef: React.RefObject<HTMLDivElement>,
   sessionId: string,
   isSubscribedRef: React.MutableRefObject<boolean>,
+  socket?: Socket | null,
 ) {
   useEffect(() => {
-    const socket = getAppSocket();
+    const activeSocket = resolveTerminalSocket(socket);
     const host = containerRef.current;
-    if (!socket || !host) return;
+    if (!host) return;
 
     const handleFocusIn = () => {
-      if (socket.connected && isSubscribedRef.current) {
-        socket.emit('terminal:focus', { sessionId });
+      if (activeSocket.connected && isSubscribedRef.current) {
+        activeSocket.emit('terminal:focus', { sessionId });
       }
     };
 
     host.addEventListener('focusin', handleFocusIn, { capture: true });
     return () => host.removeEventListener('focusin', handleFocusIn, { capture: true });
-  }, [sessionId, isSubscribedRef, containerRef]);
+  }, [sessionId, isSubscribedRef, containerRef, socket]);
 }

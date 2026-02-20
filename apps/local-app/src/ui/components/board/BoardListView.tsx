@@ -60,6 +60,10 @@ export interface BoardListViewProps {
   onAgentChange?: (epic: Epic, agentId: string | null) => Promise<void> | void;
   /** Map of epic ID to sub-epic count (for showing expand button only when has children) */
   subEpicCounts?: Record<string, number>;
+  /** Handler for "Move to worktree" action (parent epics only, main mode) */
+  onMoveToWorktree?: (epic: Epic) => void;
+  /** Whether running worktrees exist (main mode only) */
+  hasRunningWorktrees?: boolean;
   /** Optional className for container */
   className?: string;
 }
@@ -97,6 +101,8 @@ export function BoardListView({
   onStatusChange,
   onAgentChange,
   subEpicCounts,
+  onMoveToWorktree,
+  hasRunningWorktrees,
   className,
 }: BoardListViewProps) {
   // Track which epics are expanded (by epic ID)
@@ -391,6 +397,8 @@ export function BoardListView({
                   onViewDetails={onViewDetails}
                   onBulkEdit={onBulkEditEpic}
                   onToggleParentFilter={onToggleParentFilter}
+                  onMoveToWorktree={onMoveToWorktree}
+                  hasRunningWorktrees={hasRunningWorktrees}
                   onStatusChange={onStatusChange}
                   onAgentChange={onAgentChange}
                   subEpicCount={subEpicCounts?.[epic.id] ?? 0}

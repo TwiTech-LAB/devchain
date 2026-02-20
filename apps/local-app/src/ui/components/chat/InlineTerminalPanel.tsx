@@ -1,14 +1,23 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { Terminal as InlineTerminal, type TerminalHandle } from '@/ui/components/Terminal';
 import { Button } from '@/ui/components/ui/button';
 import { useTerminalWindows } from '@/ui/terminal-windows';
-import { getAppSocket } from '@/ui/lib/socket';
+import {
+  getAppSocket,
+  getWorktreeSocket,
+  releaseAppSocket,
+  releaseWorktreeSocket,
+} from '@/ui/lib/socket';
+import { useOptionalWorktreeTab } from '@/ui/hooks/useWorktreeTab';
+import type { Socket } from 'socket.io-client';
 
 interface InlineTerminalPanelProps {
   sessionId: string | null;
   agentName?: string | null;
   isWindowOpen: boolean;
   emptyState?: React.ReactNode;
+  socket?: Socket;
+  windowId?: string | null;
 }
 
 export function InlineTerminalPanel({
@@ -16,9 +25,35 @@ export function InlineTerminalPanel({
   agentName,
   isWindowOpen,
   emptyState,
+  socket,
+  windowId,
 }: InlineTerminalPanelProps) {
+  const { activeWorktree } = useOptionalWorktreeTab();
+  const worktreeName = useMemo(() => {
+    const normalized = activeWorktree?.name?.trim() ?? '';
+    return normalized.length > 0 ? normalized : null;
+  }, [activeWorktree?.name]);
+
+  const resolvedSocket = useMemo<Socket>(() => {
+    if (socket) return socket;
+    if (worktreeName) return getWorktreeSocket(worktreeName);
+    return getAppSocket();
+  }, [socket, worktreeName]);
+
+  useEffect(() => {
+    if (socket) return;
+    return () => {
+      if (worktreeName) {
+        releaseWorktreeSocket(worktreeName);
+      } else {
+        releaseAppSocket();
+      }
+    };
+  }, [socket, worktreeName]);
+
   const handleRef = useRef<TerminalHandle | null>(null);
   const { closeWindow } = useTerminalWindows();
+  const targetWindowId = windowId ?? sessionId;
 
   // Auto-focus inline terminal when it is rendered as the active view
   useEffect(() => {
@@ -47,8 +82,11 @@ export function InlineTerminalPanel({
           type="button"
           variant="outline"
           onClick={() => {
+            if (!targetWindowId) {
+              return;
+            }
             try {
-              closeWindow(sessionId);
+              closeWindow(targetWindowId);
             } catch {}
             setTimeout(() => handleRef.current?.focus(), 0);
           }}
@@ -65,7 +103,7 @@ export function InlineTerminalPanel({
       ref={handleRef}
       key={sessionId}
       sessionId={sessionId}
-      socket={getAppSocket()}
+      socket={resolvedSocket}
       chrome="none"
       className="flex-1"
       ariaLabel={agentName ? `Inline terminal for ${agentName}` : 'Inline terminal'}

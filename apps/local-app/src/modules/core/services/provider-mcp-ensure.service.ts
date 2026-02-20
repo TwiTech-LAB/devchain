@@ -136,6 +136,18 @@ export class ProviderMcpEnsureService {
       cwd: projectPath,
     });
 
+    logger.info(
+      {
+        providerId: provider.id,
+        success: listResult.success,
+        message: listResult.message,
+        entries: listResult.entries,
+        stdout: listResult.stdout?.substring(0, 500),
+        stderr: listResult.stderr?.substring(0, 500),
+      },
+      'MCP list registrations result',
+    );
+
     if (!listResult.success) {
       logger.error(
         { providerId: provider.id, message: listResult.message },

@@ -3,7 +3,7 @@ import { WatchersController } from './controllers/watchers.controller';
 import { StorageModule } from '../storage/storage.module';
 import { SessionsModule } from '../sessions/sessions.module';
 import { TerminalModule } from '../terminal/terminal.module';
-import { EventsModule } from '../events/events.module';
+import { EventsDomainModule } from '../events/events-domain.module';
 import { WatchersService } from './services/watchers.service';
 import { WatcherRunnerService } from './services/watcher-runner.service';
 
@@ -12,7 +12,7 @@ import { WatcherRunnerService } from './services/watcher-runner.service';
     StorageModule,
     forwardRef(() => SessionsModule),
     forwardRef(() => TerminalModule),
-    forwardRef(() => EventsModule),
+    forwardRef(() => EventsDomainModule),
   ],
   controllers: [WatchersController],
   providers: [WatchersService, WatcherRunnerService],

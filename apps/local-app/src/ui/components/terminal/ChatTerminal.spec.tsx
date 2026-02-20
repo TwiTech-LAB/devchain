@@ -426,6 +426,21 @@ describe('ChatTerminal', () => {
     jest.useRealTimers();
   });
 
+  it('sends form input through the provided socket', async () => {
+    const { socket, utils } = await renderTerminal();
+
+    const input = utils.getByPlaceholderText('Type command...');
+    fireEvent.change(input, { target: { value: 'echo hello' } });
+
+    const sendButton = utils.getByRole('button', { name: /send/i });
+    fireEvent.click(sendButton);
+
+    expect(socket.emit).toHaveBeenCalledWith('terminal:input', {
+      sessionId: 'chat-session',
+      data: 'echo hello',
+    });
+  });
+
   it('requests scrollback history on scroll-up (Option A enables hasHistory)', async () => {
     const { socket, history, viewport } = await renderTerminal();
 

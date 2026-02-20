@@ -53,6 +53,7 @@ export const providers = sqliteTable('providers', {
   mcpConfigured: integer('mcp_configured', { mode: 'boolean' }).notNull().default(false),
   mcpEndpoint: text('mcp_endpoint'),
   mcpRegisteredAt: text('mcp_registered_at'),
+  autoCompactThreshold: integer('auto_compact_threshold'), // CLAUDE_AUTOCOMPACT_PCT_OVERRIDE value (1-100), null = don't inject
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
@@ -172,6 +173,91 @@ export const epics = sqliteTable(
       onDelete: 'set null',
       name: 'epics_agent_id_fk',
     })),
+  }),
+);
+
+// Orchestrator worktrees (migrated from orchestrator Postgres storage)
+export const worktrees = sqliteTable(
+  'worktrees',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull().unique(),
+    branchName: text('branch_name').notNull(),
+    baseBranch: text('base_branch').notNull(),
+    repoPath: text('repo_path').notNull(),
+    worktreePath: text('worktree_path'),
+    containerId: text('container_id'),
+    containerPort: integer('container_port'),
+    templateSlug: text('template_slug').notNull(),
+    ownerProjectId: text('owner_project_id').notNull(),
+    status: text('status').notNull().default('creating'),
+    description: text('description'),
+    devchainProjectId: text('devchain_project_id'),
+    mergeCommit: text('merge_commit'),
+    mergeConflicts: text('merge_conflicts'),
+    errorMessage: text('error_message'),
+    runtimeType: text('runtime_type').notNull().default('container'),
+    processId: integer('process_id'),
+    runtimeToken: text('runtime_token'),
+    startedAt: text('started_at'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    statusIdx: index('worktrees_status_idx').on(table.status),
+  }),
+);
+
+// Orchestrator merged epics history (migrated from orchestrator Postgres storage)
+export const mergedEpics = sqliteTable(
+  'merged_epics',
+  {
+    id: text('id').primaryKey(),
+    worktreeId: text('worktree_id')
+      .notNull()
+      .references(() => worktrees.id, { onDelete: 'cascade' }),
+    devchainEpicId: text('devchain_epic_id').notNull(),
+    title: text('title').notNull(),
+    description: text('description'),
+    statusName: text('status_name'),
+    statusColor: text('status_color'),
+    agentName: text('agent_name'),
+    parentEpicId: text('parent_epic_id'),
+    tags: text('tags', { mode: 'json' })
+      .$type<string[]>()
+      .default(sql`'[]'`),
+    createdAtSource: text('created_at_source'),
+    mergedAt: text('merged_at').notNull(),
+  },
+  (table) => ({
+    worktreeIdx: index('merged_epics_worktree_id_idx').on(table.worktreeId),
+    worktreeEpicUnique: uniqueIndex('merged_epics_worktree_epic_unique').on(
+      table.worktreeId,
+      table.devchainEpicId,
+    ),
+  }),
+);
+
+// Orchestrator merged agents history (migrated from orchestrator Postgres storage)
+export const mergedAgents = sqliteTable(
+  'merged_agents',
+  {
+    id: text('id').primaryKey(),
+    worktreeId: text('worktree_id')
+      .notNull()
+      .references(() => worktrees.id, { onDelete: 'cascade' }),
+    devchainAgentId: text('devchain_agent_id').notNull(),
+    name: text('name'),
+    profileName: text('profile_name'),
+    epicsCompleted: integer('epics_completed').default(0),
+    mergedAt: text('merged_at').notNull(),
+  },
+  (table) => ({
+    worktreeIdx: index('merged_agents_worktree_id_idx').on(table.worktreeId),
+    worktreeAgentUnique: uniqueIndex('merged_agents_worktree_agent_unique').on(
+      table.worktreeId,
+      table.devchainAgentId,
+    ),
   }),
 );
 

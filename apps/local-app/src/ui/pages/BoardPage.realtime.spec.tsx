@@ -148,7 +148,7 @@ describe('BoardPage realtime subscription', () => {
     });
   });
 
-  it('cleans up message listener on unmount without disconnecting socket', async () => {
+  it('cleans up message listener and releases socket on unmount', async () => {
     const { Wrapper } = createWrapper();
     const { unmount } = render(<BoardPage />, { wrapper: Wrapper });
 
@@ -159,7 +159,7 @@ describe('BoardPage realtime subscription', () => {
 
     // Verify off(message) was called during cleanup
     expect(off).toHaveBeenCalledWith('message', expect.any(Function));
-    // Shared socket should not be disconnected by BoardPage cleanup
-    expect(disconnect).not.toHaveBeenCalled();
+    // With leak fix, final consumer cleanup should release/disconnect the socket.
+    expect(disconnect).toHaveBeenCalled();
   });
 });

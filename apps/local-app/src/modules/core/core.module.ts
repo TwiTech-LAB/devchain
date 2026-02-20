@@ -1,16 +1,9 @@
-import { Module, forwardRef } from '@nestjs/common';
-import { HealthController } from './controllers/health.controller';
-import { PreflightController } from './controllers/preflight.controller';
-import { PreflightService } from './services/preflight.service';
-import { ProviderMcpEnsureService } from './services/provider-mcp-ensure.service';
-import { StorageModule } from '../storage/storage.module';
-import { McpModule } from '../mcp/mcp.module';
-import { ProviderAdaptersModule } from '../providers/adapters';
+import { Module } from '@nestjs/common';
+import { CoreCommonModule } from './core-common.module';
+import { CoreNormalModule } from './core-normal.module';
 
 @Module({
-  imports: [StorageModule, forwardRef(() => McpModule), ProviderAdaptersModule],
-  controllers: [HealthController, PreflightController],
-  providers: [PreflightService, ProviderMcpEnsureService],
-  exports: [PreflightService, ProviderMcpEnsureService],
+  imports: [CoreCommonModule, CoreNormalModule],
+  exports: [CoreCommonModule, CoreNormalModule],
 })
 export class CoreModule {}

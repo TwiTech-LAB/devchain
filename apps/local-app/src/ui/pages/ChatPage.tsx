@@ -3,12 +3,25 @@ import { useQueryClient, useQuery, useMutation } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { Loader2, AlertCircle, MessageSquare } from 'lucide-react';
 import { validatePresetAvailability, type PresetAvailability } from '@/ui/lib/preset-validation';
-import { useTerminalWindowManager, useTerminalWindows } from '@/ui/terminal-windows';
+import { restartKeyForMain, restartKeyForWorktree } from '@/ui/lib/restart-keys';
+import {
+  useTerminalWindowManager,
+  useTerminalWindows,
+  useWorktreeTerminalWindowManager,
+} from '@/ui/terminal-windows';
 import { parseMentions } from '@/ui/lib/chat';
 import { useChatLauncher } from '@/ui/components/chat/ChatLauncher';
 import { useToast } from '@/ui/hooks/use-toast';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import { usePointerCoarse } from '@/ui/hooks/usePointerCoarse';
+import { useWorktreeAgents, type WorktreeAgentGroup } from '@/ui/hooks/useWorktreeAgents';
+import { useWorktreeSocket } from '@/ui/hooks/useWorktreeSocket';
+import {
+  launchSession,
+  restartSession,
+  terminateSession,
+  SessionApiError,
+} from '@/ui/lib/sessions';
 
 // Inline terminal components
 import { InlineTerminalPanel } from '@/ui/components/chat/InlineTerminalPanel';
@@ -30,6 +43,17 @@ import { ChatModals } from '@/ui/components/chat/ChatModals';
 
 // Feature flags
 const CHAT_INLINE_TERMINAL_ENABLED = true;
+
+/** Create a worktree-aware fetch function for provider configs. */
+export function createWorktreeProviderConfigFetcher(
+  apiBase: string,
+): (profileId: string) => Promise<Array<{ id: string; name: string; providerId: string }>> {
+  return async (profileId) => {
+    const res = await fetch(`${apiBase}/api/profiles/${profileId}/provider-configs`);
+    if (!res.ok) throw new Error('Failed to fetch provider configs');
+    return res.json();
+  };
+}
 
 // ============================================
 // Preset Types & Helpers
@@ -61,6 +85,42 @@ interface ApplyPresetResult {
   }>;
 }
 
+interface SelectedWorktreeAgent {
+  worktreeName: string;
+  agentId: string;
+  group: WorktreeAgentGroup;
+}
+
+interface WorktreeInlineTerminalProps {
+  worktreeName: string;
+  sessionId: string;
+  agentName: string | null;
+  isWindowOpen: boolean;
+  windowId?: string | null;
+}
+
+type WorktreeSessionAction = 'launching' | 'restarting' | 'terminating';
+
+function WorktreeInlineTerminal({
+  worktreeName,
+  sessionId,
+  agentName,
+  isWindowOpen,
+  windowId,
+}: WorktreeInlineTerminalProps) {
+  const { socket } = useWorktreeSocket(worktreeName);
+
+  return (
+    <InlineTerminalPanel
+      sessionId={sessionId}
+      socket={socket}
+      agentName={agentName}
+      isWindowOpen={isWindowOpen}
+      windowId={windowId}
+    />
+  );
+}
+
 async function fetchPresets(
   projectId: string,
 ): Promise<{ presets: Preset[]; activePreset: string | null }> {
@@ -87,6 +147,7 @@ export function ChatPage() {
   const hasSelectedProject = Boolean(projectId);
   const isCoarsePointer = usePointerCoarse();
   const openTerminalWindow = useTerminalWindowManager();
+  const openWorktreeTerminalWindow = useWorktreeTerminalWindowManager();
   const { windows: terminalWindows, closeWindow, focusedWindowId } = useTerminalWindows();
 
   // Derive selectedThreadId from URL params FIRST (before hooks that depend on it)
@@ -102,8 +163,15 @@ export function ChatPage() {
 
   // Chat launcher for direct thread creation
   const { launchChat, isLaunching: isLaunchingChat } = useChatLauncher({
-    projectId: projectId!,
+    projectId,
   });
+  const { worktreeAgentGroups, worktreeAgentGroupsLoading } = useWorktreeAgents(projectId);
+  const [selectedWorktreeAgent, setSelectedWorktreeAgent] = useState<SelectedWorktreeAgent | null>(
+    null,
+  );
+  const [worktreeSessionActionsByAgentKey, setWorktreeSessionActionsByAgentKey] = useState<
+    Record<string, WorktreeSessionAction | undefined>
+  >({});
 
   // ============================================
   // Initialize Hooks
@@ -156,20 +224,20 @@ export function ChatPage() {
 
   const [pendingRestartAgentIds, setPendingRestartAgentIds] = useState<Set<string>>(new Set());
 
-  // Helper to add agents to pending restart set
-  const markAgentsForRestart = useCallback((agentIds: string[]) => {
+  // Helper to add composite restart keys to pending set
+  const markAgentsForRestart = useCallback((keys: string[]) => {
     setPendingRestartAgentIds((prev) => {
       const next = new Set(prev);
-      agentIds.forEach((id) => next.add(id));
+      keys.forEach((k) => next.add(k));
       return next;
     });
   }, []);
 
-  // Helper to clear a single agent from pending restart set
-  const clearPendingRestart = useCallback((agentId: string) => {
+  // Helper to clear a single composite restart key from pending set
+  const clearPendingRestart = useCallback((key: string) => {
     setPendingRestartAgentIds((prev) => {
       const next = new Set(prev);
-      next.delete(agentId);
+      next.delete(key);
       return next;
     });
   }, []);
@@ -183,7 +251,7 @@ export function ChatPage() {
   const handleRestartSessionWithClear = useCallback(
     async (agentId: string) => {
       await sessionControls.handleRestartSession(agentId);
-      clearPendingRestart(agentId);
+      clearPendingRestart(restartKeyForMain(agentId));
     },
     [sessionControls.handleRestartSession, clearPendingRestart],
   );
@@ -191,7 +259,7 @@ export function ChatPage() {
   const handleTerminateSessionWithClear = useCallback(
     async (agentId: string, sessionId: string) => {
       await sessionControls.handleTerminateSession(agentId, sessionId);
-      clearPendingRestart(agentId);
+      clearPendingRestart(restartKeyForMain(agentId));
     },
     [sessionControls.handleTerminateSession, clearPendingRestart],
   );
@@ -293,7 +361,7 @@ export function ChatPage() {
         (id) => queries.agentPresence[id]?.online === true,
       );
       if (onlineAgentIds.length > 0) {
-        markAgentsForRestart(onlineAgentIds);
+        markAgentsForRestart(onlineAgentIds.map(restartKeyForMain));
       }
 
       queryClient.invalidateQueries({ queryKey: ['agents', projectId] });
@@ -363,6 +431,9 @@ export function ChatPage() {
   // Track which agent is being updated
   const [updatingConfigAgentId, setUpdatingConfigAgentId] = useState<string | null>(null);
 
+  // Track which worktree agent is being updated (composite key: `${apiBase}:${agentId}`)
+  const [updatingWorktreeConfigKey, setUpdatingWorktreeConfigKey] = useState<string | null>(null);
+
   // Update agent provider config mutation
   const updateAgentConfigMutation = useMutation({
     mutationFn: async ({
@@ -388,7 +459,7 @@ export function ChatPage() {
 
       // Mark for restart if agent has active session
       if (isOnline) {
-        markAgentsForRestart([agentId]);
+        markAgentsForRestart([restartKeyForMain(agentId)]);
       }
 
       queryClient.invalidateQueries({ queryKey: ['agents', projectId] });
@@ -415,6 +486,67 @@ export function ChatPage() {
       updateAgentConfigMutation.mutate({ agentId, providerConfigId });
     },
     [updateAgentConfigMutation],
+  );
+
+  // Worktree agent provider config mutation
+  const updateWorktreeAgentConfigMutation = useMutation({
+    mutationFn: async ({
+      apiBase,
+      agentId,
+      providerConfigId,
+    }: {
+      apiBase: string;
+      agentId: string;
+      providerConfigId: string;
+    }) => {
+      const res = await fetch(`${apiBase}/api/agents/${agentId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ providerConfigId }),
+      });
+      if (!res.ok) throw new Error('Failed to update agent config');
+      return res.json();
+    },
+    onMutate: ({ apiBase, agentId }) => {
+      setUpdatingWorktreeConfigKey(`${apiBase}:${agentId}`);
+    },
+    onSuccess: (_, { apiBase, agentId }) => {
+      const group = worktreeAgentGroups.find((g) => g.apiBase === apiBase);
+      const isOnline = group?.agentPresence[agentId]?.online === true;
+
+      // Mark for restart if agent has active session
+      if (isOnline) {
+        markAgentsForRestart([restartKeyForWorktree(apiBase, agentId)]);
+      }
+
+      queryClient.invalidateQueries({ queryKey: ['chat-worktree-agent-groups'] });
+      toast({
+        title: 'Config updated',
+        description: isOnline ? 'Restart to apply changes.' : 'Will apply on next launch.',
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: 'Failed to update config',
+        description: error instanceof Error ? error.message : 'Unknown error',
+        variant: 'destructive',
+      });
+    },
+    onSettled: () => {
+      setUpdatingWorktreeConfigKey(null);
+    },
+  });
+
+  // Handle switching provider config for a worktree agent
+  const handleSwitchWorktreeConfig = useCallback(
+    (group: WorktreeAgentGroup, agentId: string, providerConfigId: string) => {
+      updateWorktreeAgentConfigMutation.mutate({
+        apiBase: group.apiBase,
+        agentId,
+        providerConfigId,
+      });
+    },
+    [updateWorktreeAgentConfigMutation],
   );
 
   // Helper to fetch provider configs for a profile (used by ChatSidebar)
@@ -518,6 +650,377 @@ export function ChatPage() {
     [threadUiState, queries.sendMessageMutation],
   );
 
+  const handleLaunchWorktreeAgentChat = useCallback(
+    (group: WorktreeAgentGroup, agentId: string) => {
+      const selectedAgent = group.agents.find((agent) => agent.id === agentId);
+      if (!selectedAgent) {
+        toast({
+          title: 'Unable to select agent',
+          description: 'Agent details are unavailable.',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      threadUiState.handleSelectThread(null);
+      setSelectedWorktreeAgent({
+        worktreeName: group.name,
+        agentId,
+        group,
+      });
+    },
+    [threadUiState, toast],
+  );
+
+  const handleSelectThread = useCallback(
+    (threadId: string) => {
+      setSelectedWorktreeAgent(null);
+      threadUiState.handleSelectThread(threadId);
+    },
+    [threadUiState],
+  );
+
+  useEffect(() => {
+    if (!selectedWorktreeAgent) {
+      return;
+    }
+
+    const nextGroup = worktreeAgentGroups.find(
+      (group) => group.name === selectedWorktreeAgent.worktreeName,
+    );
+
+    if (!nextGroup) {
+      setSelectedWorktreeAgent(null);
+      return;
+    }
+
+    if (!nextGroup.agents.some((agent) => agent.id === selectedWorktreeAgent.agentId)) {
+      setSelectedWorktreeAgent(null);
+      return;
+    }
+
+    if (nextGroup !== selectedWorktreeAgent.group) {
+      setSelectedWorktreeAgent({
+        ...selectedWorktreeAgent,
+        group: nextGroup,
+      });
+    }
+  }, [selectedWorktreeAgent, worktreeAgentGroups]);
+
+  useEffect(() => {
+    if (threadUiState.selectedThreadId) {
+      setSelectedWorktreeAgent(null);
+    }
+  }, [threadUiState.selectedThreadId]);
+
+  const selectedWorktreeAgentDetails = useMemo(() => {
+    if (!selectedWorktreeAgent) {
+      return null;
+    }
+
+    const agent = selectedWorktreeAgent.group.agents.find(
+      (candidate) => candidate.id === selectedWorktreeAgent.agentId,
+    );
+    if (!agent) {
+      return null;
+    }
+
+    const presence = selectedWorktreeAgent.group.agentPresence[selectedWorktreeAgent.agentId];
+    const sessionId = presence?.sessionId ?? null;
+    const isOnline = Boolean(presence?.online && sessionId);
+
+    return {
+      agentName: agent.name,
+      worktreeName: selectedWorktreeAgent.worktreeName,
+      isOnline,
+      sessionId,
+    };
+  }, [selectedWorktreeAgent]);
+
+  const getWorktreeAgentKey = useCallback((worktreeName: string, agentId: string): string => {
+    return `${worktreeName}:${agentId}`;
+  }, []);
+
+  const setWorktreeSessionAction = useCallback(
+    (agentKey: string, action: WorktreeSessionAction | null) => {
+      setWorktreeSessionActionsByAgentKey((previous) => {
+        if (!action) {
+          if (!(agentKey in previous)) {
+            return previous;
+          }
+          const next = { ...previous };
+          delete next[agentKey];
+          return next;
+        }
+        return {
+          ...previous,
+          [agentKey]: action,
+        };
+      });
+    },
+    [],
+  );
+
+  const showWorktreeMcpToast = useCallback(
+    (providerName?: string) => {
+      toast({
+        title: 'MCP not configured',
+        description: `Switch to worktree tab to configure MCP${providerName ? ` for ${providerName}` : ''}.`,
+        variant: 'destructive',
+      });
+    },
+    [toast],
+  );
+
+  const refreshWorktreeAgentGroups = useCallback(async () => {
+    await queryClient.invalidateQueries({
+      queryKey: ['chat-worktree-agent-groups'],
+      refetchType: 'none',
+    });
+    await queryClient.refetchQueries({
+      queryKey: ['chat-worktree-agent-groups'],
+      type: 'active',
+    });
+  }, [queryClient]);
+
+  const selectedWorktreeSessionId = selectedWorktreeAgentDetails?.isOnline
+    ? selectedWorktreeAgentDetails.sessionId
+    : null;
+
+  const selectedWorktreeWindowId = useMemo(() => {
+    if (!selectedWorktreeSessionId || !selectedWorktreeAgentDetails) {
+      return null;
+    }
+
+    return `worktree:${encodeURIComponent(selectedWorktreeAgentDetails.worktreeName)}:${selectedWorktreeSessionId}`;
+  }, [selectedWorktreeSessionId, selectedWorktreeAgentDetails]);
+
+  const isSelectedWorktreeSessionWindowOpen = useMemo(() => {
+    if (!selectedWorktreeWindowId) {
+      return false;
+    }
+
+    return terminalWindows.some((window) => {
+      return window.id === selectedWorktreeWindowId && !window.minimized;
+    });
+  }, [selectedWorktreeWindowId, terminalWindows]);
+
+  const handleOpenSelectedWorktreeWindow = useCallback(() => {
+    if (!selectedWorktreeSessionId || !selectedWorktreeAgentDetails) {
+      return;
+    }
+
+    openWorktreeTerminalWindow({
+      sessionId: selectedWorktreeSessionId,
+      agentName: selectedWorktreeAgentDetails.agentName,
+      worktreeName: selectedWorktreeAgentDetails.worktreeName,
+    });
+  }, [openWorktreeTerminalWindow, selectedWorktreeSessionId, selectedWorktreeAgentDetails]);
+
+  const handleLaunchWorktreeSession = useCallback(
+    async (group: WorktreeAgentGroup, agentId: string) => {
+      if (!group.devchainProjectId) {
+        toast({
+          title: 'Worktree project unavailable',
+          description: `Cannot launch session for ${group.name} because project metadata is missing.`,
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      const agentKey = getWorktreeAgentKey(group.name, agentId);
+      setWorktreeSessionAction(agentKey, 'launching');
+      try {
+        await launchSession(agentId, group.devchainProjectId, undefined, group.apiBase);
+        toast({
+          title: 'Session launched',
+          description: `Session started for ${group.name}:${agentId}.`,
+        });
+        await refreshWorktreeAgentGroups();
+      } catch (error) {
+        if (error instanceof SessionApiError && error.hasCode('MCP_NOT_CONFIGURED')) {
+          const providerName =
+            typeof error.payload?.details?.providerName === 'string'
+              ? error.payload.details.providerName
+              : undefined;
+          showWorktreeMcpToast(providerName);
+          return;
+        }
+        toast({
+          title: 'Failed to launch session',
+          description:
+            error instanceof Error ? error.message : 'Unable to launch session right now.',
+          variant: 'destructive',
+        });
+      } finally {
+        setWorktreeSessionAction(agentKey, null);
+      }
+    },
+    [
+      getWorktreeAgentKey,
+      refreshWorktreeAgentGroups,
+      setWorktreeSessionAction,
+      showWorktreeMcpToast,
+      toast,
+    ],
+  );
+
+  const handleRestartWorktreeSession = useCallback(
+    async (group: WorktreeAgentGroup, agentId: string) => {
+      if (!group.devchainProjectId) {
+        toast({
+          title: 'Worktree project unavailable',
+          description: `Cannot restart session for ${group.name} because project metadata is missing.`,
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      const agentKey = getWorktreeAgentKey(group.name, agentId);
+      setWorktreeSessionAction(agentKey, 'restarting');
+      try {
+        const currentSessionId = group.agentPresence[agentId]?.sessionId ?? '';
+        const result = await restartSession(
+          agentId,
+          group.devchainProjectId,
+          currentSessionId,
+          group.apiBase,
+        );
+        if (result.terminateWarning) {
+          toast({
+            title: 'Session restarted with warning',
+            description: result.terminateWarning,
+            variant: 'destructive',
+          });
+        } else {
+          toast({
+            title: 'Session restarted',
+            description: `Session ${result.session.id.slice(0, 8)} started.`,
+          });
+        }
+        clearPendingRestart(restartKeyForWorktree(group.apiBase, agentId));
+        await refreshWorktreeAgentGroups();
+      } catch (error) {
+        if (error instanceof SessionApiError && error.hasCode('MCP_NOT_CONFIGURED')) {
+          const providerName =
+            typeof error.payload?.details?.providerName === 'string'
+              ? error.payload.details.providerName
+              : undefined;
+          showWorktreeMcpToast(providerName);
+          return;
+        }
+        toast({
+          title: 'Failed to restart session',
+          description:
+            error instanceof Error ? error.message : 'Unable to restart session right now.',
+          variant: 'destructive',
+        });
+      } finally {
+        setWorktreeSessionAction(agentKey, null);
+      }
+    },
+    [
+      clearPendingRestart,
+      getWorktreeAgentKey,
+      refreshWorktreeAgentGroups,
+      setWorktreeSessionAction,
+      showWorktreeMcpToast,
+      toast,
+    ],
+  );
+
+  const handleTerminateWorktreeSession = useCallback(
+    async (group: WorktreeAgentGroup, agentId: string, sessionId: string) => {
+      const agentKey = getWorktreeAgentKey(group.name, agentId);
+      setWorktreeSessionAction(agentKey, 'terminating');
+      try {
+        await terminateSession(sessionId, group.apiBase);
+        clearPendingRestart(restartKeyForWorktree(group.apiBase, agentId));
+        toast({
+          title: 'Session terminated',
+          description: 'The worktree session was terminated.',
+        });
+        await refreshWorktreeAgentGroups();
+      } catch (error) {
+        toast({
+          title: 'Failed to terminate session',
+          description:
+            error instanceof Error ? error.message : 'Unable to terminate session right now.',
+          variant: 'destructive',
+        });
+      } finally {
+        setWorktreeSessionAction(agentKey, null);
+      }
+    },
+    [
+      clearPendingRestart,
+      getWorktreeAgentKey,
+      refreshWorktreeAgentGroups,
+      setWorktreeSessionAction,
+      toast,
+    ],
+  );
+
+  const selectedWorktreeAgentKey = useMemo(() => {
+    if (!selectedWorktreeAgent) {
+      return null;
+    }
+    return getWorktreeAgentKey(selectedWorktreeAgent.worktreeName, selectedWorktreeAgent.agentId);
+  }, [getWorktreeAgentKey, selectedWorktreeAgent]);
+
+  const isSelectedWorktreeAgentLaunching = Boolean(
+    selectedWorktreeAgentKey &&
+      worktreeSessionActionsByAgentKey[selectedWorktreeAgentKey] === 'launching',
+  );
+
+  const handleLaunchSelectedWorktreeSession = useCallback(async () => {
+    if (!selectedWorktreeAgent) {
+      return;
+    }
+    await handleLaunchWorktreeSession(selectedWorktreeAgent.group, selectedWorktreeAgent.agentId);
+  }, [selectedWorktreeAgent, handleLaunchWorktreeSession]);
+
+  const selectedWorktreeAgentEmptyState = useMemo(() => {
+    if (!selectedWorktreeAgentDetails) {
+      return <p>Select a worktree agent from the sidebar.</p>;
+    }
+
+    return (
+      <div className="flex flex-col items-center gap-3">
+        <p>
+          {selectedWorktreeAgentDetails.agentName} is currently offline in{' '}
+          {selectedWorktreeAgentDetails.worktreeName}.
+        </p>
+        <Button
+          type="button"
+          size="sm"
+          onClick={handleLaunchSelectedWorktreeSession}
+          disabled={
+            isSelectedWorktreeAgentLaunching || !selectedWorktreeAgent?.group.devchainProjectId
+          }
+        >
+          {isSelectedWorktreeAgentLaunching ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Launching…
+            </>
+          ) : (
+            'Launch session'
+          )}
+        </Button>
+      </div>
+    );
+  }, [
+    selectedWorktreeAgentDetails,
+    handleLaunchSelectedWorktreeSession,
+    isSelectedWorktreeAgentLaunching,
+    selectedWorktreeAgent,
+  ]);
+
+  const handleClearSelectedWorktreeAgent = useCallback(() => {
+    setSelectedWorktreeAgent(null);
+  }, []);
+
   const handleCreateGroup = useCallback(
     async (agentIds: string[], title?: string) => {
       if (!projectId) {
@@ -529,6 +1032,7 @@ export function ChatPage() {
         return;
       }
       const thread = await queries.createGroupMutation.mutateAsync({ agentIds, title });
+      setSelectedWorktreeAgent(null);
       threadUiState.handleSelectThread(thread.id);
       toast({
         title: 'Group created',
@@ -811,9 +1315,23 @@ export function ChatPage() {
         terminatingAll={sessionControls.terminatingAll}
         isLaunchingChat={isLaunchingChat}
         selectedThreadId={threadUiState.selectedThreadId}
+        selectedWorktreeAgent={
+          selectedWorktreeAgent
+            ? {
+                worktreeName: selectedWorktreeAgent.worktreeName,
+                agentId: selectedWorktreeAgent.agentId,
+              }
+            : null
+        }
         hasSelectedProject={hasSelectedProject}
-        onSelectThread={threadUiState.handleSelectThread}
+        onSelectThread={handleSelectThread}
         onLaunchChat={launchChat}
+        worktreeAgentGroups={worktreeAgentGroups}
+        worktreeAgentGroupsLoading={worktreeAgentGroupsLoading}
+        onLaunchWorktreeAgentChat={handleLaunchWorktreeAgentChat}
+        onLaunchWorktreeSession={handleLaunchWorktreeSession}
+        onRestartWorktreeSession={handleRestartWorktreeSession}
+        onTerminateWorktreeSession={handleTerminateWorktreeSession}
         onCreateGroup={() => threadUiState.setGroupDialogOpen(true)}
         onStartAllAgents={sessionControls.handleStartAllAgents}
         onTerminateAllConfirm={() => sessionControls.setTerminateAllConfirm(true)}
@@ -825,6 +1343,7 @@ export function ChatPage() {
         getProviderForAgent={queries.getProviderForAgent}
         pendingRestartAgentIds={pendingRestartAgentIds}
         onMarkForRestart={markAgentsForRestart}
+        worktreeSessionActionsByAgentKey={worktreeSessionActionsByAgentKey}
         validatedPresets={validatedPresets}
         activePreset={activePreset}
         onApplyPreset={handleApplyPreset}
@@ -832,35 +1351,67 @@ export function ChatPage() {
         onSwitchConfig={handleSwitchConfig}
         fetchProviderConfigsForProfile={fetchProviderConfigsForProfile}
         updatingConfigAgentIds={updatingConfigAgentIds}
+        onSwitchWorktreeConfig={handleSwitchWorktreeConfig}
+        updatingWorktreeConfigKey={updatingWorktreeConfigKey}
         createGroupPending={queries.createGroupMutation.isPending}
       />
 
       {/* Right Content Area */}
       <div className="flex flex-1 flex-col">
-        {threadUiState.selectedThreadId ? (
+        {selectedWorktreeAgent ? (
+          <div className="flex flex-1 min-h-0 flex-col p-4">
+            <div className="flex h-full flex-col overflow-hidden rounded-xl border border-border bg-terminal text-terminal-foreground shadow-sm">
+              <InlineTerminalHeader
+                agentName={selectedWorktreeAgentDetails?.agentName ?? null}
+                onBackToChat={handleClearSelectedWorktreeAgent}
+                onOpenWindow={
+                  selectedWorktreeSessionId ? handleOpenSelectedWorktreeWindow : undefined
+                }
+              />
+              {selectedWorktreeSessionId ? (
+                <WorktreeInlineTerminal
+                  worktreeName={selectedWorktreeAgent.worktreeName}
+                  sessionId={selectedWorktreeSessionId}
+                  agentName={selectedWorktreeAgentDetails?.agentName ?? null}
+                  isWindowOpen={isSelectedWorktreeSessionWindowOpen}
+                  windowId={selectedWorktreeWindowId}
+                />
+              ) : (
+                <InlineTerminalPanel
+                  sessionId={null}
+                  agentName={selectedWorktreeAgentDetails?.agentName ?? null}
+                  isWindowOpen={false}
+                  emptyState={selectedWorktreeAgentEmptyState}
+                />
+              )}
+            </div>
+          </div>
+        ) : threadUiState.selectedThreadId ? (
           <>
-            {/* Thread Header */}
-            <ChatThreadHeader
-              currentThread={currentThread}
-              currentThreadMembers={currentThreadMembers}
-              selectedAgent={selectedAgent}
-              threadDisplayName={threadDisplayName}
-              agentPresence={queries.agentPresence}
-              inlineUnreadCount={inlineUnreadCount}
-              terminalMenuOpen={threadUiState.terminalMenuOpen}
-              hasSelectedProject={hasSelectedProject}
-              canInviteMembers={canInviteMembers}
-              isCoarsePointer={isCoarsePointer}
-              setTerminalMenuOpen={threadUiState.setTerminalMenuOpen}
-              onOpenTerminal={handleOpenTerminal}
-              onOpenInlineTerminal={handleOpenInlineTerminal}
-              onDetachInlineTerminal={handleDetachInlineTerminal}
-              onOpenInviteDialog={() => threadUiState.setInviteDialogOpen(true)}
-              onOpenSettingsDialog={() => threadUiState.setSettingsDialogOpen(true)}
-              onOpenClearHistoryDialog={() => threadUiState.setClearHistoryDialogOpen(true)}
-              inlineTerminalAgentId={inlineTerminalAgentId}
-              clearHistoryPending={queries.clearHistoryMutation.isPending}
-            />
+            {/* Thread Header — hidden when inline terminal is active to avoid duplication */}
+            {!(showInlineTerminal && CHAT_INLINE_TERMINAL_ENABLED) && (
+              <ChatThreadHeader
+                currentThread={currentThread}
+                currentThreadMembers={currentThreadMembers}
+                selectedAgent={selectedAgent}
+                threadDisplayName={threadDisplayName}
+                agentPresence={queries.agentPresence}
+                inlineUnreadCount={inlineUnreadCount}
+                terminalMenuOpen={threadUiState.terminalMenuOpen}
+                hasSelectedProject={hasSelectedProject}
+                canInviteMembers={canInviteMembers}
+                isCoarsePointer={isCoarsePointer}
+                setTerminalMenuOpen={threadUiState.setTerminalMenuOpen}
+                onOpenTerminal={handleOpenTerminal}
+                onOpenInlineTerminal={handleOpenInlineTerminal}
+                onDetachInlineTerminal={handleDetachInlineTerminal}
+                onOpenInviteDialog={() => threadUiState.setInviteDialogOpen(true)}
+                onOpenSettingsDialog={() => threadUiState.setSettingsDialogOpen(true)}
+                onOpenClearHistoryDialog={() => threadUiState.setClearHistoryDialogOpen(true)}
+                inlineTerminalAgentId={inlineTerminalAgentId}
+                clearHistoryPending={queries.clearHistoryMutation.isPending}
+              />
+            )}
 
             {showInlineTerminal && CHAT_INLINE_TERMINAL_ENABLED ? (
               <div className="flex flex-1 min-h-0 flex-col p-4">

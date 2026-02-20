@@ -1,11 +1,11 @@
 import { forwardRef, useEffect, useImperativeHandle, useReducer, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import type { Socket } from 'socket.io-client';
 import { cn } from '@/ui/lib/utils';
 import { Input } from '@/ui/components/ui/input';
 import { Button } from '@/ui/components/ui/button';
 import '@xterm/xterm/css/xterm.css';
-import { getAppSocket, setAppSocket } from '@/ui/lib/socket';
 import { termLog } from '@/ui/lib/debug';
 import { useAppSocket } from '@/ui/hooks/useAppSocket';
 import { DEFAULT_TERMINAL_SCROLLBACK } from '@/common/constants/terminal';
@@ -19,6 +19,7 @@ import {
 } from './hooks';
 import { useScrollbackHistory } from './useScrollbackHistory';
 import { connectionReducer } from './connectionReducer';
+import { resolveTerminalSocket } from './socket';
 import type { ChatTerminalProps } from './types';
 
 export interface ChatTerminalHandle {
@@ -50,6 +51,7 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
   const terminalRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const fallbackSocketRef = useRef<Socket | null>(null);
   const isAuthorityRef = useRef<boolean>(false);
   const hasHistoryRef = useRef<boolean>(false);
   const isLoadingHistoryRef = useRef<boolean>(false);
@@ -61,6 +63,14 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
     chrome === 'none' ? 'bg-transparent' : 'rounded-xl border border-border bg-terminal shadow-sm',
     className,
   );
+  const socket = _providedSocket
+    ? _providedSocket
+    : (() => {
+        if (!fallbackSocketRef.current) {
+          fallbackSocketRef.current = resolveTerminalSocket();
+        }
+        return fallbackSocketRef.current;
+      })();
 
   // Fetch terminal settings BEFORE mounting terminal
   useEffect(() => {
@@ -87,14 +97,6 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
       });
   }, []);
 
-  // Inject test socket if provided
-  useEffect(() => {
-    if (_providedSocket) {
-      setAppSocket(_providedSocket);
-      return () => setAppSocket(null);
-    }
-  }, [_providedSocket]);
-
   // Create refs that will be shared between hooks
   const xtermRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -102,7 +104,7 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
 
   // Subscription management
   const { lastSequenceRef, isSubscribedRef, expectingSeedRef, attemptSubscription } =
-    useTerminalSubscription(sessionId, xtermRef, dispatchConn);
+    useTerminalSubscription(sessionId, xtermRef, dispatchConn, socket);
 
   // Initialize xterm terminal with onReady callback that triggers subscription.
   // Defer creation until inputMode is loaded so we can honor the configured mode.
@@ -119,6 +121,7 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
     isHistoryInFlightRef,
     pendingHistoryFramesRef,
     scrollbackLines,
+    socket,
   );
 
   // Seed management
@@ -143,11 +146,20 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
       xtermRef.current?.focus?.();
     },
     scrollbackLines,
+    socket,
   );
 
   // Resize handling - pass expectingSeedRef to skip resize events during seed loading
   // Also pass hasHistoryRef to reset it after resize so user can reload history
-  useTerminalResize(terminalRef, xtermRef, fitAddonRef, sessionId, expectingSeedRef, hasHistoryRef);
+  useTerminalResize(
+    terminalRef,
+    xtermRef,
+    fitAddonRef,
+    sessionId,
+    expectingSeedRef,
+    hasHistoryRef,
+    socket,
+  );
 
   // Scrollback history (container scroll fallback; xterm's internal scroll is handled in useXterm)
   useScrollbackHistory(
@@ -156,10 +168,11 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
     hasHistoryRef,
     isHistoryInFlightRef,
     scrollbackLines,
+    socket,
   );
 
   // Focus handling
-  useTerminalFocus(containerRef, sessionId, isSubscribedRef);
+  useTerminalFocus(containerRef, sessionId, isSubscribedRef, socket);
 
   // Message handling
   const handleMessage = useTerminalMessageHandlers(
@@ -185,6 +198,7 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
     setIgnoreWindow,
     onSessionEnded,
     scrollbackLines,
+    socket,
   );
 
   // Socket connection and message handling
@@ -209,7 +223,6 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
   useEffect(() => {
     return () => {
       termLog('terminal_dispose_complete_cleanup', { sessionId });
-      const socket = getAppSocket();
       if (socket.connected && isSubscribedRef.current) {
         socket.emit('terminal:unsubscribe', { sessionId });
       }
@@ -236,6 +249,7 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
     pendingWritesRef,
     lastSequenceRef,
     expectingSeedRef,
+    socket,
   ]);
 
   // Expose imperative handle for terminal operations
@@ -258,7 +272,6 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const socket = getAppSocket();
     if (!input.trim() || !socket.connected) return;
     socket.emit('terminal:input', { sessionId, data: input });
     setInput('');
@@ -307,7 +320,7 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
             />
             <Button
               type="submit"
-              disabled={!getAppSocket().connected || input.trim().length === 0}
+              disabled={!socket.connected || input.trim().length === 0}
               size="sm"
               className="h-7 px-3 text-xs"
             >

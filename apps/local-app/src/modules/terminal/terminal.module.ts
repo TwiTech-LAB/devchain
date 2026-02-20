@@ -5,12 +5,12 @@ import { TerminalStreamService } from './services/terminal-stream.service';
 import { PtyService } from './services/pty.service';
 import { TerminalGateway } from './gateways/terminal.gateway';
 import { McpModule } from '../mcp/mcp.module';
-import { EventsModule } from '../events/events.module';
+import { EventsDomainModule } from '../events/events-domain.module';
 import { SettingsModule } from '../settings/settings.module';
 import { TerminalSeedService } from './services/terminal-seed.service';
 
 @Module({
-  imports: [forwardRef(() => EventsModule), forwardRef(() => McpModule), SettingsModule],
+  imports: [forwardRef(() => EventsDomainModule), forwardRef(() => McpModule), SettingsModule],
   providers: [
     TmuxService,
     TerminalStreamService,

@@ -4,7 +4,7 @@ import { ActionsController } from './controllers/actions.controller';
 import { StorageModule } from '../storage/storage.module';
 import { SessionsModule } from '../sessions/sessions.module';
 import { TerminalModule } from '../terminal/terminal.module';
-import { EventsModule } from '../events/events.module';
+import { EventsDomainModule } from '../events/events-domain.module';
 import { SubscribersService } from './services/subscribers.service';
 import { SubscriberExecutorService } from './services/subscriber-executor.service';
 import { AutomationSchedulerService } from './services/automation-scheduler.service';
@@ -14,7 +14,7 @@ import { AutomationSchedulerService } from './services/automation-scheduler.serv
     StorageModule,
     forwardRef(() => SessionsModule),
     forwardRef(() => TerminalModule),
-    EventsModule,
+    EventsDomainModule,
   ],
   controllers: [SubscribersController, ActionsController],
   providers: [SubscribersService, SubscriberExecutorService, AutomationSchedulerService],

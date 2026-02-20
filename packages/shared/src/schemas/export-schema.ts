@@ -205,6 +205,15 @@ export const ExportSchema = z
       )
       .optional()
       .default([]),
+    // Provider-level settings (carries threshold and future settings across templates)
+    providerSettings: z
+      .array(
+        z.object({
+          name: z.string().min(1),
+          autoCompactThreshold: z.number().int().min(1).max(100).nullable().optional(),
+        }),
+      )
+      .optional(),
     // Template presets - named configurations mapping agents to provider configs
     // Used for quick setup when creating a project from template
     presets: z

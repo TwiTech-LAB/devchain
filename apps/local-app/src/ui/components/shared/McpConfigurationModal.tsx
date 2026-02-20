@@ -43,7 +43,7 @@ function getManualCommand(providerName: string, endpoint: string): string {
     case 'codex':
       return `codex mcp add --url ${endpoint} ${alias}`;
     case 'gemini':
-      return `gemini mcp add ${alias} ${endpoint} --type http`;
+      return `gemini mcp add -t http ${alias} ${endpoint}`;
     default:
       return `# Manual MCP configuration for ${providerName}`;
   }

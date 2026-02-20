@@ -1,8 +1,10 @@
 import {
   launchAgentSession,
   launchSession,
+  restartSession,
   restartAgentSession,
   SessionApiError,
+  terminateSession,
   fetchJsonOrThrow,
   fetchOrThrow,
 } from './sessions';
@@ -69,6 +71,34 @@ describe('ui/lib/sessions helpers', () => {
       projectId: 'project-1',
       options: { silent: true },
     });
+  });
+
+  it('launchSession routes through apiBase when provided', async () => {
+    (global as unknown as { fetch: unknown }).fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => makeSessionPayload(),
+    }));
+
+    await launchSession('agent-1', 'project-1', undefined, '/wt/feature-auth');
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/wt/feature-auth/api/sessions/launch',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('launchSession keeps existing route when apiBase is omitted or empty', async () => {
+    (global as unknown as { fetch: unknown }).fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => makeSessionPayload(),
+    }));
+
+    await launchSession('agent-1', 'project-1');
+    await launchSession('agent-1', 'project-1', undefined, '');
+    await launchSession('agent-1', 'project-1', undefined, '   ');
+
+    const urls = (global.fetch as jest.Mock).mock.calls.map((call) => String(call[0]));
+    expect(urls).toEqual(['/api/sessions/launch', '/api/sessions/launch', '/api/sessions/launch']);
   });
 
   it('launchAgentSession propagates error message on failure', async () => {
@@ -190,6 +220,77 @@ describe('ui/lib/sessions helpers', () => {
 
       await restartAgentSession('agent-1', 'project-123', 'old-session');
       expect(JSON.parse(capturedBody!)).toEqual({ projectId: 'project-123' });
+    });
+
+    it('restartSession routes through apiBase when provided', async () => {
+      (global as unknown as { fetch: unknown }).fetch = jest.fn(async () => ({
+        ok: true,
+        json: async () =>
+          makeRestartResponse({
+            session: { id: 'session-restarted' },
+            terminateStatus: 'success',
+          }),
+      }));
+
+      await restartSession('agent-1', 'project-1', 'old-session', '/wt/feature-auth');
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        '/wt/feature-auth/api/agents/agent-1/restart',
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+
+    it('restartSession keeps existing route when apiBase is omitted or empty', async () => {
+      (global as unknown as { fetch: unknown }).fetch = jest.fn(async () => ({
+        ok: true,
+        json: async () =>
+          makeRestartResponse({
+            session: { id: 'session-restarted' },
+            terminateStatus: 'success',
+          }),
+      }));
+
+      await restartSession('agent-1', 'project-1', 'old-session');
+      await restartSession('agent-1', 'project-1', 'old-session', '');
+      await restartSession('agent-1', 'project-1', 'old-session', '   ');
+
+      const urls = (global.fetch as jest.Mock).mock.calls.map((call) => String(call[0]));
+      expect(urls).toEqual([
+        '/api/agents/agent-1/restart',
+        '/api/agents/agent-1/restart',
+        '/api/agents/agent-1/restart',
+      ]);
+    });
+  });
+
+  describe('terminateSession', () => {
+    it('routes through apiBase when provided', async () => {
+      (global as unknown as { fetch: unknown }).fetch = jest.fn(async () => ({
+        ok: true,
+      }));
+
+      await terminateSession('session-1', '/wt/feature-auth');
+
+      expect(global.fetch).toHaveBeenCalledWith('/wt/feature-auth/api/sessions/session-1', {
+        method: 'DELETE',
+      });
+    });
+
+    it('keeps existing route when apiBase is omitted or empty', async () => {
+      (global as unknown as { fetch: unknown }).fetch = jest.fn(async () => ({
+        ok: true,
+      }));
+
+      await terminateSession('session-1');
+      await terminateSession('session-1', '');
+      await terminateSession('session-1', '   ');
+
+      const urls = (global.fetch as jest.Mock).mock.calls.map((call) => String(call[0]));
+      expect(urls).toEqual([
+        '/api/sessions/session-1',
+        '/api/sessions/session-1',
+        '/api/sessions/session-1',
+      ]);
     });
   });
 

@@ -249,6 +249,71 @@ export class TmuxService implements OnModuleDestroy {
     }
   }
 
+  async waitForOutput(
+    sessionName: string,
+    options?: {
+      pollIntervalMs?: number;
+      timeoutMs?: number;
+      settleMs?: number;
+      lines?: number;
+    },
+  ): Promise<{ ready: boolean; elapsedMs: number }> {
+    const pollIntervalMs = Math.max(1, Math.floor(options?.pollIntervalMs ?? 500));
+    const timeoutMs = Math.max(1, Math.floor(options?.timeoutMs ?? 30_000));
+    const settleMs = Math.max(0, Math.floor(options?.settleMs ?? 1_000));
+    const lines = Math.max(1, Math.floor(options?.lines ?? 150));
+    const startedAt = Date.now();
+
+    const baseline = await this.capturePane(sessionName, lines, false);
+    let previous = baseline;
+    let skipFirstPoll = true;
+    let outputDetected = false;
+    let lastContentChangeAt = 0;
+
+    while (true) {
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, pollIntervalMs);
+      });
+
+      const elapsedAfterSleep = Date.now() - startedAt;
+      if (elapsedAfterSleep >= timeoutMs) {
+        return { ready: false, elapsedMs: elapsedAfterSleep };
+      }
+
+      const current = await this.capturePane(sessionName, lines, false);
+      if (current === '' && baseline !== '') {
+        continue;
+      }
+
+      if (skipFirstPoll) {
+        skipFirstPoll = false;
+        previous = current;
+        continue;
+      }
+
+      if (!outputDetected) {
+        const hasNonEmptyChangeFromBaseline = current !== baseline && current.trim().length > 0;
+        if (hasNonEmptyChangeFromBaseline) {
+          outputDetected = true;
+          lastContentChangeAt = Date.now();
+        }
+        previous = current;
+        continue;
+      }
+
+      if (current !== previous) {
+        previous = current;
+        lastContentChangeAt = Date.now();
+        continue;
+      }
+
+      const settledForMs = Date.now() - lastContentChangeAt;
+      if (settledForMs >= settleMs) {
+        return { ready: true, elapsedMs: Date.now() - startedAt };
+      }
+    }
+  }
+
   /**
    * Get cursor position from tmux pane
    * Returns {x, y} where both are 0-indexed
@@ -449,15 +514,17 @@ export class TmuxService implements OnModuleDestroy {
 
     await this.pasteText(sessionName, text, { bracketed });
     await new Promise((r) => setTimeout(r, delayMs));
-    try {
-      if (submitKeys.length > 0) {
+    if (submitKeys.length > 0) {
+      try {
+        await this.sendKeys(sessionName, submitKeys);
+      } catch (firstError) {
+        logger.warn(
+          { sessionName, submitKeys, error: firstError },
+          'sendKeys failed, retrying once',
+        );
+        await new Promise((r) => setTimeout(r, 150));
         await this.sendKeys(sessionName, submitKeys);
       }
-    } catch (error) {
-      logger.warn(
-        { sessionName, error, submitKeys, bracketed },
-        'Failed to send submit keys after paste',
-      );
     }
   }
 

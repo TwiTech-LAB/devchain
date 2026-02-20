@@ -16,6 +16,6 @@ prebuilds/node-pty/
 packages/shared/src/**/*.js
 packages/shared/src/**/*.d.ts
 packages/shared/src/**/*.js.map
-
+.claude
 # Test coverage
 coverage/

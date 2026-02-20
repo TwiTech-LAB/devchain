@@ -4,7 +4,7 @@
   "sourceRoot": "src",
   "compilerOptions": {
     "deleteOutDir": true,
-    "assets": ["**/*.html", "**/*.css"],
+    "assets": ["**/*.html", "**/*.css", "**/*.sql"],
     "watchAssets": true
   }
 }

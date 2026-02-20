@@ -44,6 +44,8 @@ describe('EventLogService', () => {
   });
 
   afterEach(() => {
+    service.onModuleDestroy();
+    jest.useRealTimers();
     sqlite.close();
   });
 
@@ -108,5 +110,165 @@ describe('EventLogService', () => {
     });
     expect(failureResults.total).toBe(1);
     expect(failureResults.items[0].handlers[0].status).toBe('failure');
+  });
+
+  it('filters worktree activity events by ownerProjectId from payload', async () => {
+    await service.recordPublished({
+      id: 'evt-owner-a',
+      name: 'orchestrator.worktree.activity',
+      payload: {
+        worktreeId: 'wt-1',
+        ownerProjectId: 'project-a',
+        type: 'started',
+      },
+    });
+    await service.recordPublished({
+      id: 'evt-owner-b',
+      name: 'orchestrator.worktree.activity',
+      payload: {
+        worktreeId: 'wt-2',
+        ownerProjectId: 'project-b',
+        type: 'started',
+      },
+    });
+
+    const filtered = await service.listEvents({
+      name: 'orchestrator.worktree.activity',
+      ownerProjectId: 'project-a',
+      limit: 20,
+      offset: 0,
+    });
+
+    expect(filtered.total).toBe(1);
+    expect(filtered.items[0]?.id).toBe('evt-owner-a');
+  });
+
+  it('does not throw on malformed payload_json when filtering by ownerProjectId', async () => {
+    sqlite
+      .prepare(
+        `
+          INSERT INTO events (id, name, payload_json, request_id, published_at)
+          VALUES (?, ?, ?, ?, ?)
+        `,
+      )
+      .run(
+        'evt-invalid-owner-filter',
+        'epic.updated',
+        'not-json',
+        null,
+        '2026-02-18T00:00:00.000Z',
+      );
+
+    await service.recordPublished({
+      id: 'evt-valid-owner-filter',
+      name: 'epic.updated',
+      payload: { ownerProjectId: 'project-safe', epicId: 'epic-1' },
+      publishedAt: '2026-02-18T00:00:01.000Z',
+    });
+
+    const filtered = await service.listEvents({
+      ownerProjectId: 'project-safe',
+      limit: 20,
+      offset: 0,
+    });
+
+    expect(filtered.total).toBe(1);
+    expect(filtered.items[0]?.id).toBe('evt-valid-owner-filter');
+  });
+
+  it('does not throw on malformed payload_json when filtering by name and ownerProjectId', async () => {
+    sqlite
+      .prepare(
+        `
+          INSERT INTO events (id, name, payload_json, request_id, published_at)
+          VALUES (?, ?, ?, ?, ?)
+        `,
+      )
+      .run(
+        'evt-invalid-activity-filter',
+        'orchestrator.worktree.activity',
+        'not-json',
+        null,
+        '2026-02-18T00:00:02.000Z',
+      );
+
+    await service.recordPublished({
+      id: 'evt-valid-activity-filter',
+      name: 'orchestrator.worktree.activity',
+      payload: {
+        ownerProjectId: 'project-safe',
+        worktreeId: 'wt-safe',
+        type: 'started',
+      },
+      publishedAt: '2026-02-18T00:00:03.000Z',
+    });
+
+    const filtered = await service.listEvents({
+      name: 'orchestrator.worktree.activity',
+      ownerProjectId: 'project-safe',
+      limit: 20,
+      offset: 0,
+    });
+
+    expect(filtered.total).toBe(1);
+    expect(filtered.items[0]?.id).toBe('evt-valid-activity-filter');
+  });
+
+  it('cleans only old worktree activity events based on retention', async () => {
+    const now = Date.now();
+    const days = 86_400_000;
+
+    await service.recordPublished({
+      id: 'evt-old-activity',
+      name: 'orchestrator.worktree.activity',
+      payload: { type: 'started' },
+      publishedAt: new Date(now - 31 * days).toISOString(),
+    });
+    await service.recordPublished({
+      id: 'evt-recent-activity',
+      name: 'orchestrator.worktree.activity',
+      payload: { type: 'stopped' },
+      publishedAt: new Date(now - 2 * days).toISOString(),
+    });
+    await service.recordPublished({
+      id: 'evt-old-other',
+      name: 'epic.updated',
+      payload: { epicId: 'epic-1' },
+      publishedAt: new Date(now - 31 * days).toISOString(),
+    });
+
+    await service.cleanupOldWorktreeActivityEvents();
+
+    const activityEvents = await service.listEvents({
+      name: 'orchestrator.worktree.activity',
+      limit: 20,
+      offset: 0,
+    });
+    expect(activityEvents.total).toBe(1);
+    expect(activityEvents.items[0]?.id).toBe('evt-recent-activity');
+
+    const otherEvents = await service.listEvents({
+      name: 'epic.updated',
+      limit: 20,
+      offset: 0,
+    });
+    expect(otherEvents.total).toBe(1);
+    expect(otherEvents.items[0]?.id).toBe('evt-old-other');
+  });
+
+  it('runs cleanup on module init and schedules periodic cleanup', async () => {
+    jest.useFakeTimers();
+    const cleanupSpy = jest
+      .spyOn(service, 'cleanupOldWorktreeActivityEvents')
+      .mockResolvedValue(undefined);
+
+    await service.onModuleInit();
+    expect(cleanupSpy).toHaveBeenCalledTimes(1);
+
+    jest.advanceTimersByTime(86_400_000);
+    expect(cleanupSpy).toHaveBeenCalledTimes(2);
+
+    service.onModuleDestroy();
+    cleanupSpy.mockRestore();
   });
 });

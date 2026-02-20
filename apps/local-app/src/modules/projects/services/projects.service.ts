@@ -11,11 +11,11 @@ import {
   StorageError,
   ConflictError,
 } from '../../../common/errors/error-types';
-import { join, resolve, sep, basename } from 'path';
+import { resolve, sep, basename } from 'path';
 import { existsSync, readdirSync, readFileSync } from 'fs';
-import { getEnvConfig } from '../../../common/config/env.config';
 import { ExportSchema, type ManifestData, isLessThan, isValidSemVer } from '@devchain/shared';
 import { UnifiedTemplateService } from '../../registry/services/unified-template.service';
+import { resolveTemplatesDirectory } from '../../../common/templates-directory';
 
 const logger = createLogger('ProjectsService');
 
@@ -28,6 +28,8 @@ export interface CreateFromTemplateInput {
   name: string;
   description?: string | null;
   rootPath: string;
+  /** Optional project id for deterministic orchestrator-created projects */
+  projectId?: string;
   /** Template slug (unique identifier) - required for slug-based templates */
   slug?: string;
   /** Optional version - if null, uses bundled or latest downloaded */
@@ -102,34 +104,13 @@ export class ProjectsService {
   ) {}
 
   private findTemplatesDirectory(): string | null {
-    const env = getEnvConfig();
-
-    // 1. Check for explicit TEMPLATES_DIR environment variable override
-    if (env.TEMPLATES_DIR) {
-      if (existsSync(env.TEMPLATES_DIR)) {
-        logger.debug({ path: env.TEMPLATES_DIR }, 'Using TEMPLATES_DIR from environment');
-        return env.TEMPLATES_DIR;
-      }
-      logger.warn({ path: env.TEMPLATES_DIR }, 'TEMPLATES_DIR set but path does not exist');
+    const templatesDir = resolveTemplatesDirectory(__dirname);
+    if (templatesDir) {
+      logger.debug({ path: templatesDir }, 'Found templates directory');
+      return templatesDir;
     }
 
-    // 2. Try template paths for different deployment scenarios
-    const possibleTemplatePaths = [
-      // Relative to this file: works in both dev and prod builds
-      // Dev: apps/local-app/src/modules/projects/services -> apps/local-app/templates
-      // Prod: dist/server/modules/projects/services -> dist/server/templates
-      join(__dirname, '..', '..', '..', '..', 'templates'),
-      // Dev mode fallback: running from monorepo root with ts-node
-      join(process.cwd(), 'apps', 'local-app', 'templates'),
-    ];
-
-    for (const path of possibleTemplatePaths) {
-      if (existsSync(path)) {
-        logger.debug({ path }, 'Found templates directory');
-        return path;
-      }
-    }
-
+    logger.warn('Templates directory not found in known locations');
     return null;
   }
 
@@ -254,29 +235,53 @@ export class ProjectsService {
 
     // 4. Check if provider mapping is required
     const needsMapping = familyResult.alternatives.some((alt) => !alt.defaultProviderAvailable);
+    let effectiveFamilyProviderMappings = input.familyProviderMappings;
 
-    if (needsMapping && !input.familyProviderMappings) {
-      // Return provider mapping info so UI can show mapping modal
+    if (needsMapping && !effectiveFamilyProviderMappings) {
+      // Try auto-selection: if every family needing mapping has exactly 1 available provider, auto-pick
+      const autoMappings: Record<string, string> = {};
+      let canAutoSelect = familyResult.canImport;
+
+      for (const alt of familyResult.alternatives) {
+        if (!alt.defaultProviderAvailable) {
+          if (alt.availableProviders.length === 1) {
+            autoMappings[alt.familySlug] = alt.availableProviders[0];
+          } else {
+            canAutoSelect = false;
+          }
+        }
+      }
+
+      if (canAutoSelect) {
+        // All families can be auto-resolved — use auto-mappings
+        effectiveFamilyProviderMappings = autoMappings;
+        logger.info(
+          { autoMappings },
+          'Auto-selected provider mappings for single-alternative families',
+        );
+      } else {
+        // Need manual mapping or can't import — return mapping info for UI
+        return {
+          success: false,
+          providerMappingRequired: {
+            missingProviders: familyResult.missingProviders,
+            familyAlternatives: familyResult.alternatives,
+            canImport: familyResult.canImport,
+          },
+        };
+      }
+    }
+
+    // 4b. Enforce canImport server-side when explicit mappings provided
+    if (!familyResult.canImport) {
       return {
         success: false,
         providerMappingRequired: {
           missingProviders: familyResult.missingProviders,
           familyAlternatives: familyResult.alternatives,
-          canImport: familyResult.canImport,
+          canImport: false,
         },
       };
-    }
-
-    // 4b. Enforce canImport server-side - block if no alternatives available
-    if (!familyResult.canImport) {
-      throw new ValidationError(
-        'Cannot import: some profile families have no available providers',
-        {
-          hint: 'Install the required providers or use a different template',
-          missingProviders: familyResult.missingProviders,
-          familyAlternatives: familyResult.alternatives,
-        },
-      );
     }
 
     // 5. Provider precheck and mapping
@@ -290,7 +295,7 @@ export class ProjectsService {
     const selectedProfilesByFamily = this.selectProfilesForFamilies(
       payload.profiles,
       payload.agents,
-      input.familyProviderMappings,
+      effectiveFamilyProviderMappings,
       available,
     );
 
@@ -343,15 +348,28 @@ export class ProjectsService {
       };
 
     // 5. Create project with template in transaction
-    const result = await this.storage.createProjectWithTemplate(
-      {
-        name: input.name,
-        description: input.description ?? null,
-        rootPath: input.rootPath,
-        isTemplate: false,
-      },
-      templatePayload,
-    );
+    const result = input.projectId
+      ? await this.storage.createProjectWithTemplate(
+          {
+            name: input.name,
+            description: input.description ?? null,
+            rootPath: input.rootPath,
+            isTemplate: false,
+          },
+          templatePayload,
+          {
+            projectId: input.projectId,
+          },
+        )
+      : await this.storage.createProjectWithTemplate(
+          {
+            name: input.name,
+            description: input.description ?? null,
+            rootPath: input.rootPath,
+            isTemplate: false,
+          },
+          templatePayload,
+        );
 
     // 5b. Build name-to-ID maps for watcher scope resolution
     const { agentNameToId: agentNameToNewId, profileNameToId: profileNameToNewId } =
@@ -454,10 +472,27 @@ export class ProjectsService {
           'Updated agent with providerConfigId',
         );
       } else {
-        logger.warn(
-          { agentName: a.name, providerConfigName: agentWithConfig.providerConfigName },
-          'Provider config not found for agent in createFromTemplate',
+        // Fallback: find the first available config for this profile
+        const fallbackKey = Array.from(configLookupMap.keys()).find((key) =>
+          key.startsWith(`${newProfileId}:`),
         );
+        if (fallbackKey) {
+          const fallbackConfigId = configLookupMap.get(fallbackKey)!;
+          await this.storage.updateAgent(newAgentId, { providerConfigId: fallbackConfigId });
+          logger.warn(
+            {
+              agentName: a.name,
+              providerConfigName: agentWithConfig.providerConfigName,
+              fallbackConfigId,
+            },
+            'Agent providerConfigName unavailable, fell back to first available config',
+          );
+        } else {
+          logger.warn(
+            { agentName: a.name, providerConfigName: agentWithConfig.providerConfigName },
+            'No provider config available for agent in createFromTemplate',
+          );
+        }
       }
     }
 
@@ -472,11 +507,19 @@ export class ProjectsService {
         // Skip configs that were created from providerConfigs
         const isFromProviderConfigs = configNames.has(existingConfig.name.trim().toLowerCase());
         if (!isFromProviderConfigs && existingConfig.name === profileName) {
-          await this.storage.deleteProfileProviderConfig(existingConfig.id);
-          logger.debug(
-            { profileName, configId: existingConfig.id },
-            'Deleted duplicate config created by storage layer',
-          );
+          try {
+            await this.storage.deleteProfileProviderConfig(existingConfig.id);
+            logger.debug(
+              { profileName, configId: existingConfig.id },
+              'Deleted duplicate config created by storage layer',
+            );
+          } catch {
+            // Skip deletion if config is still referenced by agents (e.g., fallback assignment)
+            logger.debug(
+              { profileName, configId: existingConfig.id },
+              'Skipped deleting default config — still referenced by agents',
+            );
+          }
         }
       }
     }
@@ -931,6 +974,17 @@ export class ProjectsService {
       priority: s.priority,
     }));
 
+    // Build providerSettings for providers with non-null autoCompactThreshold
+    const providerSettings: Array<{ name: string; autoCompactThreshold: number | null }> = [];
+    for (const prov of providersMap.values()) {
+      if (prov.autoCompactThreshold != null) {
+        providerSettings.push({
+          name: prov.name,
+          autoCompactThreshold: prov.autoCompactThreshold,
+        });
+      }
+    }
+
     // Build _manifest from project metadata and overrides
     const existingMetadata = this.settings.getProjectTemplateMetadata(projectId);
     const manifest: ManifestData = {
@@ -955,6 +1009,8 @@ export class ProjectsService {
         : null,
       // Only include projectSettings if any settings are present
       ...(Object.keys(projectSettings).length > 0 && { projectSettings }),
+      // Only include providerSettings if any providers have settings
+      ...(providerSettings.length > 0 && { providerSettings }),
       // Include watchers and subscribers (empty arrays if none)
       watchers,
       subscribers,
@@ -1774,6 +1830,46 @@ export class ProjectsService {
         );
       }
 
+      // Apply providerSettings from template (if present)
+      // Only apply autoCompactThreshold when the local provider has none set (don't overwrite)
+      const importedProviderSettings = (
+        payload as {
+          providerSettings?: Array<{ name: string; autoCompactThreshold?: number | null }>;
+        }
+      ).providerSettings;
+      if (importedProviderSettings && importedProviderSettings.length > 0) {
+        // Fetch all providers to check current threshold values
+        const allProviders = await this.storage.listProviders();
+        const providersByName = new Map(
+          allProviders.items.map((p) => [p.name.trim().toLowerCase(), p]),
+        );
+
+        for (const setting of importedProviderSettings) {
+          const localProvider = providersByName.get(setting.name.trim().toLowerCase());
+          if (!localProvider) {
+            // Provider not found locally — skip silently
+            continue;
+          }
+          if (localProvider.autoCompactThreshold != null) {
+            // Local provider already has a threshold — keep existing (don't overwrite)
+            logger.debug(
+              { providerName: setting.name, existing: localProvider.autoCompactThreshold },
+              'Skipping providerSettings import: local threshold already set',
+            );
+            continue;
+          }
+          if (setting.autoCompactThreshold != null) {
+            await this.storage.updateProvider(localProvider.id, {
+              autoCompactThreshold: setting.autoCompactThreshold,
+            });
+            logger.info(
+              { providerName: setting.name, threshold: setting.autoCompactThreshold },
+              'Applied autoCompactThreshold from template import',
+            );
+          }
+        }
+      }
+
       return {
         success: true,
         mode: 'replace',
@@ -1856,6 +1952,7 @@ export class ProjectsService {
       name: string;
       provider: { name: string };
       familySlug?: string | null;
+      providerConfigs?: Array<{ providerName: string }>;
     }>,
     templateAgents: Array<{
       id?: string;
@@ -1907,6 +2004,19 @@ export class ProjectsService {
         familyMap.set(providerName, []);
       }
       familyMap.get(providerName)!.push(prof.name);
+
+      // Also scan providerConfigs for additional provider names (deduplicated)
+      if (prof.providerConfigs) {
+        for (const config of prof.providerConfigs) {
+          const configProviderName = config.providerName.trim().toLowerCase();
+          if (!familyMap.has(configProviderName)) {
+            familyMap.set(configProviderName, []);
+          }
+          if (!familyMap.get(configProviderName)!.includes(prof.name)) {
+            familyMap.get(configProviderName)!.push(prof.name);
+          }
+        }
+      }
     }
 
     // 5. For each used family, compute alternatives

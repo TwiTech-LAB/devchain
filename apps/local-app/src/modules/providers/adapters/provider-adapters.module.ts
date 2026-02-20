@@ -8,7 +8,7 @@ import { ProviderAdapterFactory } from './provider-adapter.factory';
  * ProviderAdaptersModule
  *
  * Encapsulates provider adapters and factory to break the circular dependency
- * between CoreModule and ProvidersModule. Both modules can import this module
+ * between CoreNormalModule and ProvidersModule. Both modules can import this module
  * without creating a dependency cycle.
  */
 @Module({

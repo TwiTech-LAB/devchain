@@ -2,6 +2,17 @@ jest.mock('../utils/claude-config', () => ({
   checkClaudeAutoCompact: jest.fn(),
 }));
 
+const mockSessionsLogger = {
+  info: jest.fn(),
+  warn: jest.fn(),
+  error: jest.fn(),
+  debug: jest.fn(),
+};
+
+jest.mock('../../../common/logging/logger', () => ({
+  createLogger: jest.fn(() => mockSessionsLogger),
+}));
+
 import { SessionsService } from './sessions.service';
 import { ValidationError } from '../../../common/errors/error-types';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
@@ -14,6 +25,7 @@ import type { EventsService } from '../../events/services/events.service';
 import type { TerminalSendCoordinatorService } from '../../terminal/services/terminal-send-coordinator.service';
 import { TerminalGateway } from '../../terminal/gateways/terminal.gateway';
 import type { ModuleRef } from '@nestjs/core';
+import type { HooksConfigService } from '../../hooks/services/hooks-config.service';
 import { SessionCoordinatorService } from './session-coordinator.service';
 import { DEFAULT_FEATURE_FLAGS } from '../../../common/config/feature-flags';
 import { checkClaudeAutoCompact } from '../utils/claude-config';
@@ -41,6 +53,7 @@ describe('SessionsService', () => {
     startHealthCheck: jest.Mock;
     sendCommand: jest.Mock;
     sendCommandArgs: jest.Mock;
+    waitForOutput: jest.Mock;
     pasteAndSubmit: jest.Mock;
     setAlternateScreenOff: jest.Mock;
   };
@@ -77,6 +90,7 @@ describe('SessionsService', () => {
       startHealthCheck: jest.fn(),
       sendCommand: jest.fn().mockResolvedValue(undefined),
       sendCommandArgs: jest.fn().mockResolvedValue(undefined),
+      waitForOutput: jest.fn().mockResolvedValue({ ready: true, elapsedMs: 2500 }),
       pasteAndSubmit: jest.fn().mockResolvedValue(undefined),
       setAlternateScreenOff: jest.fn().mockResolvedValue(undefined),
       destroySession: jest.fn().mockResolvedValue(undefined),
@@ -90,7 +104,10 @@ describe('SessionsService', () => {
     preflightService = {
       runChecks: jest.fn().mockResolvedValue({ overall: 'pass', checks: [] }),
     };
-    mockCheckClaudeAutoCompact.mockResolvedValue({ autoCompactEnabled: false });
+    mockCheckClaudeAutoCompact.mockResolvedValue({
+      autoCompactEnabled: false,
+      configState: 'valid',
+    });
 
     mcpEnsureService = {
       ensureMcp: jest.fn().mockResolvedValue({ success: true, action: 'already_configured' }),
@@ -137,6 +154,10 @@ describe('SessionsService', () => {
       }),
     };
 
+    const hooksConfigService = {
+      ensureHooksConfig: jest.fn().mockResolvedValue(undefined),
+    };
+
     service = new SessionsService(
       dbMock,
       storage as unknown as StorageService,
@@ -146,6 +167,7 @@ describe('SessionsService', () => {
       preflightService as unknown as PreflightService,
       mcpEnsureService as unknown as ProviderMcpEnsureService,
       sessionCoordinator as unknown as SessionCoordinatorService,
+      hooksConfigService as unknown as HooksConfigService,
       moduleRef as unknown as ModuleRef,
     );
   });
@@ -235,11 +257,24 @@ describe('SessionsService', () => {
       expect.any(String),
       expect.any(String),
     );
-    expect(tmuxService.sendCommandArgs).toHaveBeenCalledWith('tmux-session', [
-      '/usr/local/bin/claude',
-      '--model',
-      'claude-3',
-    ]);
+    const sendArgs = tmuxService.sendCommandArgs.mock.calls[0][1] as string[];
+    // Verify DEVCHAIN env vars are injected for Claude provider
+    expect(sendArgs).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('DEVCHAIN_API_URL='),
+        expect.stringContaining('DEVCHAIN_PROJECT_ID=project-1'),
+        expect.stringContaining('DEVCHAIN_AGENT_ID=agent-1'),
+      ]),
+    );
+    // Verify the actual command args follow the env vars
+    expect(sendArgs).toEqual(
+      expect.arrayContaining(['/usr/local/bin/claude', '--model', 'claude-3']),
+    );
+    expect(tmuxService.waitForOutput).toHaveBeenCalledWith('tmux-session', {
+      pollIntervalMs: 500,
+      timeoutMs: 30000,
+      settleMs: 1000,
+    });
     expect(storage.getInitialSessionPrompt).toHaveBeenCalledTimes(1);
     expect(tmuxService.pasteAndSubmit).toHaveBeenCalledWith(
       'tmux-session',
@@ -328,11 +363,23 @@ describe('SessionsService', () => {
       expect.any(String),
       expect.any(String),
     );
-    expect(tmuxService.sendCommandArgs).toHaveBeenCalledWith('tmux-session', [
-      '/usr/local/bin/claude',
-      '--model',
-      'claude-3',
-    ]);
+    const sendArgs = tmuxService.sendCommandArgs.mock.calls[0][1] as string[];
+    // Verify DEVCHAIN env vars are injected for Claude provider
+    expect(sendArgs).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('DEVCHAIN_API_URL='),
+        expect.stringContaining('DEVCHAIN_PROJECT_ID=project-1'),
+        expect.stringContaining('DEVCHAIN_AGENT_ID=agent-2'),
+      ]),
+    );
+    expect(sendArgs).toEqual(
+      expect.arrayContaining(['/usr/local/bin/claude', '--model', 'claude-3']),
+    );
+    expect(tmuxService.waitForOutput).toHaveBeenCalledWith('tmux-session', {
+      pollIntervalMs: 500,
+      timeoutMs: 30000,
+      settleMs: 1000,
+    });
     expect(storage.getInitialSessionPrompt).toHaveBeenCalledTimes(1);
     expect(tmuxService.pasteAndSubmit).toHaveBeenCalledWith(
       'tmux-session',
@@ -346,6 +393,81 @@ describe('SessionsService', () => {
     expect(result.id).toBe(sessionId);
     expect(result.epicId).toBeNull();
     expect(result.epic).toBeNull();
+  });
+
+  it('continues launch and logs warning when waitForOutput times out', async () => {
+    jest.useFakeTimers();
+    tmuxService.waitForOutput.mockResolvedValueOnce({ ready: false, elapsedMs: 30000 });
+
+    storage.getAgent.mockResolvedValue({
+      id: 'agent-2',
+      name: 'Independent Agent',
+      projectId: 'project-1',
+      profileId: 'profile-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProject.mockResolvedValue({
+      id: 'project-1',
+      name: 'My Project',
+      rootPath: '/workspace/project-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getAgentProfile.mockResolvedValue({
+      id: 'profile-1',
+      name: 'Helper Profile',
+      options: '--model claude-3',
+      providerId: 'provider-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProvider.mockResolvedValue({
+      id: 'provider-1',
+      name: 'claude',
+      binPath: '/usr/local/bin/claude',
+      mcpConfigured: true,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+      {
+        id: 'config-1',
+        profileId: 'profile-1',
+        providerId: 'provider-1',
+        options: '--model claude-3',
+        env: null,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      },
+    ]);
+
+    const launchPromise = service.launchSession({
+      projectId: 'project-1',
+      agentId: 'agent-2',
+    });
+
+    await jest.runAllTimersAsync();
+    const result = await launchPromise;
+
+    expect(result.id).toBeDefined();
+    expect(tmuxService.waitForOutput).toHaveBeenCalledWith('tmux-session', {
+      pollIntervalMs: 500,
+      timeoutMs: 30000,
+      settleMs: 1000,
+    });
+    expect(mockSessionsLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: expect.any(String),
+        tmuxSessionName: 'tmux-session',
+        elapsedMs: 30000,
+      }),
+      'CLI output detection timed out, proceeding anyway',
+    );
+    expect(eventsService.publish).toHaveBeenCalledWith(
+      'session.started',
+      expect.objectContaining({ sessionId: result.id }),
+    );
   });
 
   it('throws when provider binPath is missing', async () => {
@@ -496,7 +618,8 @@ describe('SessionsService', () => {
     expect(mcpEnsureService.ensureMcp).toHaveBeenCalled();
   });
 
-  it('blocks Claude launch when auto-compact is enabled and broadcasts session_blocked first', async () => {
+  it('broadcasts session_recommendation when Claude auto-compact is disabled (non-blocking)', async () => {
+    jest.useFakeTimers();
     storage.getAgent.mockResolvedValue({
       id: 'agent-1',
       name: 'Helper Agent',
@@ -539,34 +662,38 @@ describe('SessionsService', () => {
       createdAt: '2024-01-01T00:00:00.000Z',
       updatedAt: '2024-01-01T00:00:00.000Z',
     });
-    mockCheckClaudeAutoCompact.mockResolvedValue({ autoCompactEnabled: true });
+    mockCheckClaudeAutoCompact.mockResolvedValue({
+      autoCompactEnabled: false,
+      configState: 'valid',
+    });
 
-    await expect(
-      service.launchSession({
-        projectId: 'project-1',
+    const launchPromise = service.launchSession({
+      projectId: 'project-1',
+      agentId: 'agent-1',
+    });
+    await jest.runAllTimersAsync();
+    await expect(launchPromise).resolves.toBeDefined();
+
+    // Non-blocking: broadcasts recommendation but session proceeds
+    expect(terminalGateway.broadcastEvent).toHaveBeenCalledWith(
+      'system',
+      'session_recommendation',
+      {
+        reason: 'claude_auto_compact_disabled',
         agentId: 'agent-1',
-      }),
-    ).rejects.toMatchObject({
-      message: 'Claude auto-compact is enabled',
-      details: {
-        code: 'CLAUDE_AUTO_COMPACT_ENABLED',
+        agentName: 'Helper Agent',
         providerId: 'provider-1',
         providerName: 'claude',
+        silent: false,
+        bootId: expect.any(String),
       },
-    });
-
-    expect(terminalGateway.broadcastEvent).toHaveBeenCalledWith('system', 'session_blocked', {
-      reason: 'claude_auto_compact',
-      agentId: 'agent-1',
-      agentName: 'Helper Agent',
-      providerId: 'provider-1',
-      providerName: 'claude',
-      silent: false,
-    });
-    expect(preflightService.runChecks).not.toHaveBeenCalled();
+    );
+    expect(preflightService.runChecks).toHaveBeenCalled();
+    jest.useRealTimers();
   });
 
-  it('broadcasts session_blocked with silent=true when launch options request silent mode', async () => {
+  it('does not broadcast recommendation when Claude auto-compact is enabled', async () => {
+    jest.useFakeTimers();
     storage.getAgent.mockResolvedValue({
       id: 'agent-1',
       name: 'Helper Agent',
@@ -609,31 +736,90 @@ describe('SessionsService', () => {
       createdAt: '2024-01-01T00:00:00.000Z',
       updatedAt: '2024-01-01T00:00:00.000Z',
     });
-    mockCheckClaudeAutoCompact.mockResolvedValue({ autoCompactEnabled: true });
-
-    await expect(
-      service.launchSession({
-        projectId: 'project-1',
-        agentId: 'agent-1',
-        options: { silent: true },
-      }),
-    ).rejects.toMatchObject({
-      message: 'Claude auto-compact is enabled',
-      details: {
-        code: 'CLAUDE_AUTO_COMPACT_ENABLED',
-        providerId: 'provider-1',
-        providerName: 'claude',
-      },
+    mockCheckClaudeAutoCompact.mockResolvedValue({
+      autoCompactEnabled: true,
+      configState: 'valid',
     });
 
-    expect(terminalGateway.broadcastEvent).toHaveBeenCalledWith('system', 'session_blocked', {
-      reason: 'claude_auto_compact',
+    const launchPromise = service.launchSession({
+      projectId: 'project-1',
       agentId: 'agent-1',
-      agentName: 'Helper Agent',
-      providerId: 'provider-1',
-      providerName: 'claude',
-      silent: true,
     });
+    await jest.runAllTimersAsync();
+    await expect(launchPromise).resolves.toBeDefined();
+
+    // No recommendation when auto-compact is already enabled
+    expect(terminalGateway.broadcastEvent).not.toHaveBeenCalledWith(
+      'system',
+      'session_recommendation',
+      expect.anything(),
+    );
+    jest.useRealTimers();
+  });
+
+  it('does not broadcast recommendation when config is malformed', async () => {
+    jest.useFakeTimers();
+    storage.getAgent.mockResolvedValue({
+      id: 'agent-1',
+      name: 'Helper Agent',
+      projectId: 'project-1',
+      profileId: 'profile-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProject.mockResolvedValue({
+      id: 'project-1',
+      name: 'My Project',
+      rootPath: '/workspace/project-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getAgentProfile.mockResolvedValue({
+      id: 'profile-1',
+      name: 'Helper Profile',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+      {
+        id: 'config-1',
+        profileId: 'profile-1',
+        providerId: 'provider-1',
+        options: '--model claude-3',
+        env: null,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      },
+    ]);
+    storage.getProvider.mockResolvedValue({
+      id: 'provider-1',
+      name: 'claude',
+      binPath: '/usr/local/bin/claude',
+      mcpConfigured: true,
+      mcpEndpoint: null,
+      mcpRegisteredAt: null,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    mockCheckClaudeAutoCompact.mockResolvedValue({
+      autoCompactEnabled: false,
+      configState: 'malformed',
+    });
+
+    const launchPromise = service.launchSession({
+      projectId: 'project-1',
+      agentId: 'agent-1',
+    });
+    await jest.runAllTimersAsync();
+    await expect(launchPromise).resolves.toBeDefined();
+
+    // No recommendation when config is malformed (avoid false triggers)
+    expect(terminalGateway.broadcastEvent).not.toHaveBeenCalledWith(
+      'system',
+      'session_recommendation',
+      expect.anything(),
+    );
+    jest.useRealTimers();
   });
 
   it('allows Claude launch when auto-compact is disabled', async () => {
@@ -746,6 +932,183 @@ describe('SessionsService', () => {
 
     expect(mockCheckClaudeAutoCompact).not.toHaveBeenCalled();
     expect(preflightService.runChecks).toHaveBeenCalledTimes(1);
+  });
+
+  it('injects CLAUDE_AUTOCOMPACT_PCT_OVERRIDE when provider has autoCompactThreshold', async () => {
+    jest.useFakeTimers();
+    storage.getAgent.mockResolvedValue({
+      id: 'agent-1',
+      name: 'Helper Agent',
+      projectId: 'project-1',
+      profileId: 'profile-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProject.mockResolvedValue({
+      id: 'project-1',
+      name: 'My Project',
+      rootPath: '/workspace/project-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getAgentProfile.mockResolvedValue({
+      id: 'profile-1',
+      name: 'Helper Profile',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+      {
+        id: 'config-1',
+        profileId: 'profile-1',
+        providerId: 'provider-1',
+        options: '--model claude-3',
+        env: null,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      },
+    ]);
+    storage.getProvider.mockResolvedValue({
+      id: 'provider-1',
+      name: 'claude',
+      binPath: '/usr/local/bin/claude',
+      mcpConfigured: true,
+      autoCompactThreshold: 10,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+
+    const launchPromise = service.launchSession({
+      projectId: 'project-1',
+      agentId: 'agent-1',
+    });
+    await jest.runAllTimersAsync();
+    await launchPromise;
+
+    const sendArgs = tmuxService.sendCommandArgs.mock.calls[0][1] as string[];
+    expect(sendArgs).toEqual(
+      expect.arrayContaining([expect.stringContaining('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=10')]),
+    );
+  });
+
+  it('does not inject CLAUDE_AUTOCOMPACT_PCT_OVERRIDE when provider threshold is null', async () => {
+    jest.useFakeTimers();
+    storage.getAgent.mockResolvedValue({
+      id: 'agent-1',
+      name: 'Helper Agent',
+      projectId: 'project-1',
+      profileId: 'profile-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProject.mockResolvedValue({
+      id: 'project-1',
+      name: 'My Project',
+      rootPath: '/workspace/project-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getAgentProfile.mockResolvedValue({
+      id: 'profile-1',
+      name: 'Helper Profile',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+      {
+        id: 'config-1',
+        profileId: 'profile-1',
+        providerId: 'provider-1',
+        options: '--model claude-3',
+        env: null,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      },
+    ]);
+    storage.getProvider.mockResolvedValue({
+      id: 'provider-1',
+      name: 'claude',
+      binPath: '/usr/local/bin/claude',
+      mcpConfigured: true,
+      autoCompactThreshold: null,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+
+    const launchPromise = service.launchSession({
+      projectId: 'project-1',
+      agentId: 'agent-1',
+    });
+    await jest.runAllTimersAsync();
+    await launchPromise;
+
+    const sendArgs = tmuxService.sendCommandArgs.mock.calls[0][1] as string[];
+    const autoCompactArg = sendArgs.find((a: string) =>
+      a.includes('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'),
+    );
+    expect(autoCompactArg).toBeUndefined();
+  });
+
+  it('does not overwrite CLAUDE_AUTOCOMPACT_PCT_OVERRIDE from provider config env', async () => {
+    jest.useFakeTimers();
+    storage.getAgent.mockResolvedValue({
+      id: 'agent-1',
+      name: 'Helper Agent',
+      projectId: 'project-1',
+      profileId: 'profile-1',
+      providerConfigId: 'config-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProject.mockResolvedValue({
+      id: 'project-1',
+      name: 'My Project',
+      rootPath: '/workspace/project-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getAgentProfile.mockResolvedValue({
+      id: 'profile-1',
+      name: 'Helper Profile',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProfileProviderConfig.mockResolvedValue({
+      id: 'config-1',
+      profileId: 'profile-1',
+      providerId: 'provider-1',
+      options: '--model claude-3',
+      env: { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '50' },
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProvider.mockResolvedValue({
+      id: 'provider-1',
+      name: 'claude',
+      binPath: '/usr/local/bin/claude',
+      mcpConfigured: true,
+      autoCompactThreshold: 10,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+
+    const launchPromise = service.launchSession({
+      projectId: 'project-1',
+      agentId: 'agent-1',
+    });
+    await jest.runAllTimersAsync();
+    await launchPromise;
+
+    const sendArgs = tmuxService.sendCommandArgs.mock.calls[0][1] as string[];
+    // User override (50) should win over provider threshold (10)
+    expect(sendArgs).toEqual(
+      expect.arrayContaining([expect.stringContaining('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50')]),
+    );
+    // Should NOT contain the provider default of 10
+    const matchingArgs = sendArgs.filter((a: string) =>
+      a.includes('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=10'),
+    );
+    expect(matchingArgs).toHaveLength(0);
   });
 
   it('rejects invalid config options with ValidationError', async () => {
@@ -945,6 +1308,77 @@ describe('SessionsService', () => {
     const rendered = (tmuxService.pasteAndSubmit as jest.Mock).mock.calls[0][1] as string;
     expect(rendered.startsWith('Session ')).toBe(true);
     expect(rendered.length).toBeLessThan(5000);
+  });
+
+  it('continues session launch when initial prompt paste fails (non-fatal)', async () => {
+    jest.useFakeTimers();
+    storage.getAgent.mockResolvedValue({
+      id: 'agent-1',
+      name: 'Helper Agent',
+      projectId: 'project-1',
+      profileId: 'profile-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProject.mockResolvedValue({
+      id: 'project-1',
+      name: 'My Project',
+      rootPath: '/workspace/project-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getAgentProfile.mockResolvedValue({
+      id: 'profile-1',
+      name: 'Helper Profile',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+      {
+        id: 'config-1',
+        profileId: 'profile-1',
+        providerId: 'provider-1',
+        options: '--model claude-3',
+        env: null,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      },
+    ]);
+    storage.getProvider.mockResolvedValue({
+      id: 'provider-1',
+      name: 'claude',
+      binPath: '/usr/local/bin/claude',
+      mcpConfigured: true,
+      mcpEndpoint: null,
+      mcpRegisteredAt: null,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getInitialSessionPrompt.mockResolvedValueOnce({
+      id: 'prompt-1',
+      projectId: null,
+      title: 'Kickoff',
+      content: 'Hello {agent_name}',
+      version: 1,
+      tags: [],
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+
+    // Make pasteAndSubmit fail (simulates Enter key not sent)
+    tmuxService.pasteAndSubmit.mockRejectedValueOnce(new Error('sendKeys failed twice'));
+
+    const launchPromise = service.launchSession({
+      projectId: 'project-1',
+      agentId: 'agent-1',
+    });
+
+    await jest.runAllTimersAsync();
+
+    // Session launch should succeed despite prompt failure
+    const result = await launchPromise;
+    expect(result).toBeDefined();
+    expect(result.id).toBeDefined();
   });
 
   it('returns existing session when agent already has active session (idempotent)', async () => {
@@ -1163,6 +1597,141 @@ describe('SessionsService', () => {
     expect(result.tmuxSessionId).toBe(existingTmuxId);
     expect(result.status).toBe('running');
   }, 15000); // 15 second timeout for the 7s wait
+
+  it('inserts session row before sendCommandArgs so hook events can resolve the session', async () => {
+    jest.useFakeTimers();
+    storage.getAgent.mockResolvedValue({
+      id: 'agent-1',
+      name: 'Helper Agent',
+      projectId: 'project-1',
+      profileId: 'profile-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProject.mockResolvedValue({
+      id: 'project-1',
+      name: 'My Project',
+      rootPath: '/workspace/project-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getAgentProfile.mockResolvedValue({
+      id: 'profile-1',
+      name: 'Helper Profile',
+      options: null,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+      {
+        id: 'config-1',
+        profileId: 'profile-1',
+        providerId: 'provider-1',
+        options: null,
+        env: null,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      },
+    ]);
+    storage.getProvider.mockResolvedValue({
+      id: 'provider-1',
+      name: 'claude',
+      binPath: '/usr/local/bin/claude',
+      mcpConfigured: true,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+
+    // Track call order: INSERT (via insertRunMock) vs sendCommandArgs
+    const callOrder: string[] = [];
+    insertRunMock.mockImplementation(() => {
+      callOrder.push('db_insert');
+    });
+    tmuxService.sendCommandArgs.mockImplementation(async () => {
+      callOrder.push('send_command');
+    });
+
+    const launchPromise = service.launchSession({
+      projectId: 'project-1',
+      agentId: 'agent-1',
+    });
+
+    await jest.runAllTimersAsync();
+    await launchPromise;
+
+    // DB insert must happen before sendCommandArgs
+    expect(callOrder.indexOf('db_insert')).toBeLessThan(callOrder.indexOf('send_command'));
+  });
+
+  it('cleans up session row and tmux when sendCommandArgs fails', async () => {
+    storage.getAgent.mockResolvedValue({
+      id: 'agent-1',
+      name: 'Helper Agent',
+      projectId: 'project-1',
+      profileId: 'profile-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProject.mockResolvedValue({
+      id: 'project-1',
+      name: 'My Project',
+      rootPath: '/workspace/project-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getAgentProfile.mockResolvedValue({
+      id: 'profile-1',
+      name: 'Helper Profile',
+      options: null,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+      {
+        id: 'config-1',
+        profileId: 'profile-1',
+        providerId: 'provider-1',
+        options: null,
+        env: null,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      },
+    ]);
+    storage.getProvider.mockResolvedValue({
+      id: 'provider-1',
+      name: 'claude',
+      binPath: '/usr/local/bin/claude',
+      mcpConfigured: true,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+
+    // Make sendCommandArgs fail
+    tmuxService.sendCommandArgs.mockRejectedValue(new Error('tmux send failed'));
+
+    // Track DELETE calls via sqlitePrepare
+    const deleteRunMock = jest.fn();
+    sqlitePrepare.mockImplementation((sql: string) => {
+      if (sql.includes('DELETE FROM sessions')) {
+        return { run: deleteRunMock };
+      }
+      return { run: insertRunMock, get: jest.fn(), all: jest.fn().mockReturnValue([]) };
+    });
+
+    await expect(
+      service.launchSession({
+        projectId: 'project-1',
+        agentId: 'agent-1',
+      }),
+    ).rejects.toThrow('tmux send failed');
+
+    // Verify session row was inserted then deleted
+    expect(insertRunMock).toHaveBeenCalled();
+    expect(deleteRunMock).toHaveBeenCalledWith(expect.any(String));
+
+    // Verify tmux session was destroyed
+    expect(tmuxService.destroySession).toHaveBeenCalledWith('tmux-session');
+  });
 });
 
 /**

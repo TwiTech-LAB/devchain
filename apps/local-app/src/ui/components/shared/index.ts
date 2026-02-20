@@ -16,5 +16,3 @@ export { DocsViewer } from './DocsViewer';
 export type { DocsViewerProps } from './DocsViewer';
 export { HelpButton } from './HelpButton';
 export type { HelpButtonProps } from './HelpButton';
-export { AutoCompactWarningModal } from './AutoCompactWarningModal';
-export type { AutoCompactWarningModalProps } from './AutoCompactWarningModal';

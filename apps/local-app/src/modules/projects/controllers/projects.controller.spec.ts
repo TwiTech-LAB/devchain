@@ -4,7 +4,14 @@ import { ProjectsService } from '../services/projects.service';
 import { SettingsService } from '../../settings/services/settings.service';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
 import type { Project } from '../../storage/models/domain.models';
-import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
+import { resetEnvConfig } from '../../../common/config/env.config';
+import { NotFoundError as StorageNotFoundError } from '../../../common/errors/error-types';
 
 jest.mock('../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
@@ -37,6 +44,14 @@ describe('ProjectsController', () => {
   >;
 
   beforeEach(async () => {
+    delete process.env.CONTAINER_PROJECT_ID;
+    delete process.env.DEVCHAIN_MODE;
+    delete process.env.DATABASE_URL;
+    delete process.env.REPO_ROOT;
+    delete process.env.WORKTREES_ROOT;
+    delete process.env.WORKTREES_DATA_ROOT;
+    resetEnvConfig();
+
     storage = {
       createProject: jest.fn(),
       getProject: jest.fn(),
@@ -86,6 +101,16 @@ describe('ProjectsController', () => {
     }).compile();
 
     controller = module.get(ProjectsController);
+  });
+
+  afterEach(() => {
+    delete process.env.CONTAINER_PROJECT_ID;
+    delete process.env.DEVCHAIN_MODE;
+    delete process.env.DATABASE_URL;
+    delete process.env.REPO_ROOT;
+    delete process.env.WORKTREES_ROOT;
+    delete process.env.WORKTREES_DATA_ROOT;
+    resetEnvConfig();
   });
 
   function makeProject(overrides: Partial<Project> = {}): Project {
@@ -212,6 +237,63 @@ describe('ProjectsController', () => {
       const result = await controller.listProjects();
 
       expect(result.items[0].templateMetadata?.source).toBe('registry');
+    });
+
+    it('returns only scoped project when CONTAINER_PROJECT_ID is set in normal mode', async () => {
+      process.env.DEVCHAIN_MODE = 'normal';
+      process.env.CONTAINER_PROJECT_ID = '11111111-1111-4111-8111-111111111111';
+      resetEnvConfig();
+
+      const scopedProject = makeProject({
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'Scoped Project',
+      });
+      storage.getProject.mockResolvedValue(scopedProject);
+
+      const result = await controller.listProjects();
+
+      expect(storage.listProjects).not.toHaveBeenCalled();
+      expect(storage.getProject).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111');
+      expect(result.total).toBe(1);
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0].id).toBe('11111111-1111-4111-8111-111111111111');
+    });
+
+    it('returns empty list when scoped project does not exist', async () => {
+      process.env.DEVCHAIN_MODE = 'normal';
+      process.env.CONTAINER_PROJECT_ID = '11111111-1111-4111-8111-111111111111';
+      resetEnvConfig();
+
+      storage.getProject.mockRejectedValue(
+        new StorageNotFoundError('Project', '11111111-1111-4111-8111-111111111111'),
+      );
+
+      const result = await controller.listProjects();
+
+      expect(result.total).toBe(0);
+      expect(result.items).toHaveLength(0);
+    });
+
+    it('ignores CONTAINER_PROJECT_ID in main mode', async () => {
+      process.env.DEVCHAIN_MODE = 'main';
+      process.env.REPO_ROOT = '/tmp';
+      process.env.CONTAINER_PROJECT_ID = '11111111-1111-4111-8111-111111111111';
+      resetEnvConfig();
+
+      const project1 = makeProject({ id: 'p1', name: 'Project 1' });
+      const project2 = makeProject({ id: 'p2', name: 'Project 2' });
+      storage.listProjects.mockResolvedValue({
+        items: [project1, project2],
+        total: 2,
+        limit: 100,
+        offset: 0,
+      });
+
+      const result = await controller.listProjects();
+
+      expect(storage.listProjects).toHaveBeenCalled();
+      expect(storage.getProject).not.toHaveBeenCalled();
+      expect(result.items).toHaveLength(2);
     });
 
     it('includes bundledUpgradeAvailable in response', async () => {
@@ -501,6 +583,39 @@ describe('ProjectsController', () => {
     expect(fetched.isTemplate).toBe(false);
   });
 
+  it('rejects update mutation for non-scoped project when CONTAINER_PROJECT_ID is set', async () => {
+    process.env.DEVCHAIN_MODE = 'normal';
+    process.env.CONTAINER_PROJECT_ID = '11111111-1111-4111-8111-111111111111';
+    resetEnvConfig();
+
+    await expect(controller.updateProject('p2', { name: 'Nope' })).rejects.toThrow(
+      ForbiddenException,
+    );
+    expect(storage.updateProject).not.toHaveBeenCalled();
+  });
+
+  it('allows update mutation for scoped project when CONTAINER_PROJECT_ID is set', async () => {
+    process.env.DEVCHAIN_MODE = 'normal';
+    process.env.CONTAINER_PROJECT_ID = '11111111-1111-4111-8111-111111111111';
+    resetEnvConfig();
+
+    storage.updateProject.mockResolvedValue(
+      makeProject({
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'Scoped',
+      }),
+    );
+
+    const result = await controller.updateProject('11111111-1111-4111-8111-111111111111', {
+      name: 'Scoped',
+    });
+
+    expect(result.id).toBe('11111111-1111-4111-8111-111111111111');
+    expect(storage.updateProject).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111', {
+      name: 'Scoped',
+    });
+  });
+
   describe('GET /api/projects/by-path', () => {
     it('returns project with templateMetadata when found by absolute Unix path', async () => {
       const project = makeProject({ id: 'p1', rootPath: '/home/user/project' });
@@ -565,6 +680,42 @@ describe('ProjectsController', () => {
   });
 
   describe('POST /api/projects/from-template', () => {
+    it('accepts optional projectId and passes it to service', async () => {
+      const mockResult = {
+        success: true,
+        project: makeProject({ id: '11111111-1111-4111-8111-111111111111', name: 'New Project' }),
+        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 5 },
+      };
+      (projectsService.createFromTemplate as jest.Mock).mockResolvedValue(mockResult);
+
+      await controller.createProjectFromTemplate({
+        name: 'New Project',
+        rootPath: '/tmp/new',
+        slug: 'my-template',
+        projectId: '11111111-1111-4111-8111-111111111111',
+      });
+
+      expect(projectsService.createFromTemplate).toHaveBeenCalledWith({
+        name: 'New Project',
+        description: undefined,
+        rootPath: '/tmp/new',
+        projectId: '11111111-1111-4111-8111-111111111111',
+        slug: 'my-template',
+        version: null,
+      });
+    });
+
+    it('rejects invalid projectId format', async () => {
+      await expect(
+        controller.createProjectFromTemplate({
+          name: 'New Project',
+          rootPath: '/tmp/new',
+          slug: 'my-template',
+          projectId: 'not-a-uuid',
+        }),
+      ).rejects.toThrow();
+    });
+
     it('accepts valid slug and passes to service', async () => {
       const mockResult = {
         success: true,
@@ -1069,6 +1220,24 @@ describe('ProjectsController', () => {
       expect(
         (settingsService as { setProjectActivePreset: jest.Mock }).setProjectActivePreset,
       ).toHaveBeenCalledWith('project-without-metadata', null);
+    });
+
+    it('rejects delete mutation for non-scoped project when CONTAINER_PROJECT_ID is set', async () => {
+      process.env.DEVCHAIN_MODE = 'normal';
+      process.env.CONTAINER_PROJECT_ID = '11111111-1111-4111-8111-111111111111';
+      resetEnvConfig();
+      (settingsService as { setProjectActivePreset: jest.Mock }).setProjectActivePreset = jest
+        .fn()
+        .mockResolvedValue(undefined);
+
+      await expect(controller.deleteProject('p2')).rejects.toThrow(ForbiddenException);
+
+      expect(storage.deleteProject).not.toHaveBeenCalled();
+      expect(settingsService.clearProjectTemplateMetadata).not.toHaveBeenCalled();
+      expect(settingsService.clearProjectPresets).not.toHaveBeenCalled();
+      expect(
+        (settingsService as { setProjectActivePreset: jest.Mock }).setProjectActivePreset,
+      ).not.toHaveBeenCalled();
     });
   });
 

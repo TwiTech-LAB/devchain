@@ -1,7 +1,8 @@
 import { useCallback, useRef } from 'react';
 import type { Terminal } from '@xterm/xterm';
-import { getAppSocket } from '@/ui/lib/socket';
+import type { Socket } from 'socket.io-client';
 import { termLog } from '@/ui/lib/debug';
+import { resolveTerminalSocket } from '../socket';
 
 /**
  * Custom hook for managing terminal session subscription.
@@ -26,6 +27,7 @@ export function useTerminalSubscription(
       | 'ERROR';
     message?: string;
   }>,
+  socket?: Socket | null,
 ) {
   const lastSequenceRef = useRef<number>(0);
   const isSubscribedRef = useRef<boolean>(false);
@@ -43,15 +45,15 @@ export function useTerminalSubscription(
    * 2. Socket connect handler (when socket connects after mount)
    */
   const attemptSubscription = useCallback(() => {
-    const socket = getAppSocket();
+    const activeSocket = resolveTerminalSocket(socket);
     const terminal = xtermRef.current;
 
     // Guard: Check preconditions
-    if (!socket.connected) {
+    if (!activeSocket.connected) {
       termLog('subscribe_blocked', {
         reason: 'socket_not_connected',
         sessionId,
-        socketId: socket.id,
+        socketId: activeSocket.id,
       });
       return false;
     }
@@ -90,7 +92,7 @@ export function useTerminalSubscription(
       sessionId,
       cols: terminal.cols,
       rows: terminal.rows,
-      socketId: socket.id,
+      socketId: activeSocket.id,
       lastSequence: lastSequenceToSend ?? 0,
       isFirstAttach,
     });
@@ -100,21 +102,21 @@ export function useTerminalSubscription(
       expectingSeedRef.current = true;
     }
 
-    socket.emit('terminal:subscribe', {
+    activeSocket.emit('terminal:subscribe', {
       sessionId,
       lastSequence: lastSequenceToSend,
       cols: terminal.cols,
       rows: terminal.rows,
     });
 
-    socket.emit('terminal:focus', { sessionId });
+    activeSocket.emit('terminal:focus', { sessionId });
     // Note: Resize is handled by server during subscribe (using cols/rows from payload)
     // No need to emit separate resize - it would be deduplicated anyway
 
     termLog('subscribe_success', { sessionId, expectingSeed: expectingSeedRef.current });
     hasEverSubscribedRef.current = true;
     return true;
-  }, [sessionId, xtermRef, dispatchConn]);
+  }, [sessionId, xtermRef, dispatchConn, socket]);
 
   return {
     lastSequenceRef,

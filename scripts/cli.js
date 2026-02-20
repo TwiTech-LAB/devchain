@@ -10,9 +10,9 @@ const { Command } = require('commander');
 const getPort = require('get-port');
 const open = require('open');
 const { join, dirname, basename } = require('path');
-const { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, openSync } = require('fs');
+const { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, openSync, realpathSync } = require('fs');
 const { homedir, platform } = require('os');
-const { spawn, execSync } = require('child_process');
+const { spawn, execSync, execFileSync } = require('child_process');
 const { InteractiveCLI } = require('./lib/interactive-cli');
 const readline = require('readline');
 
@@ -96,6 +96,116 @@ function getChangelogBetweenVersions(changelog, fromVersion, toVersion) {
   return changes;
 }
 
+function normalizeCliArgv(argv) {
+  const rawArgs = argv.slice(2);
+  const hasContainerFlag = rawArgs.includes('--container');
+  if (!hasContainerFlag) {
+    return argv;
+  }
+
+  const knownCommands = new Set(['start', 'stop', 'help']);
+  const hasKnownCommand = rawArgs.some((arg) => knownCommands.has(arg));
+  if (hasKnownCommand) {
+    return argv;
+  }
+
+  const passthrough = rawArgs.filter((arg) => arg !== '--container');
+  return [argv[0], argv[1], 'start', '--container', ...passthrough];
+}
+
+const WORKTREE_RUNTIME_TYPES = new Set(['container', 'process']);
+
+function normalizeWorktreeRuntimeType(rawRuntimeType) {
+  if (typeof rawRuntimeType !== 'string') {
+    return null;
+  }
+
+  const normalized = rawRuntimeType.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+
+  if (!WORKTREE_RUNTIME_TYPES.has(normalized)) {
+    throw new Error(
+      `Invalid --worktree-runtime value "${rawRuntimeType}". Expected one of: container, process.`,
+    );
+  }
+
+  return normalized;
+}
+
+function isWorktreeRuntimeModeEnabled(worktreeRuntimeType) {
+  return worktreeRuntimeType === 'container' || worktreeRuntimeType === 'process';
+}
+
+/**
+ * Detect which global package manager owns the devchain install.
+ *
+ * @param {string} packageName - The npm package name (e.g. 'devchain-cli')
+ * @param {object} [deps] - Dependency-injected functions for testability
+ * @returns {{ name: 'npm'|'pnpm', installCmd: string[], sudoInstallCmd: string[]|null, manualCmd: string }|null}
+ */
+function detectGlobalPackageManager(packageName, {
+  realpathSyncFn = realpathSync,
+  execFileSyncFn = execFileSync,
+  argvPath = process.argv[1],
+} = {}) {
+  try {
+    let scriptRealPath;
+    try {
+      scriptRealPath = realpathSyncFn(argvPath);
+    } catch {
+      return null;
+    }
+
+    const pms = [
+      { name: 'pnpm', rootArgs: ['root', '-g'], installVerb: 'add' },
+      { name: 'npm', rootArgs: ['root', '-g'], installVerb: 'install' },
+    ];
+
+    const available = [];
+    for (const pm of pms) {
+      try {
+        execFileSyncFn(pm.name, ['--version'], { stdio: 'ignore' });
+        available.push(pm);
+      } catch {
+        // PM not on PATH
+      }
+    }
+
+    if (available.length === 0) return null;
+
+    const owners = [];
+    for (const pm of available) {
+      try {
+        const globalRoot = execFileSyncFn(pm.name, pm.rootArgs, {
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim();
+        if (globalRoot && scriptRealPath.startsWith(globalRoot)) {
+          owners.push(pm);
+        }
+      } catch {
+        // root -g failed
+      }
+    }
+
+    // Ambiguous: both match or neither match
+    if (owners.length !== 1) return null;
+
+    const pm = owners[0];
+    const installCmd = [pm.name, pm.installVerb, '-g', `${packageName}@latest`];
+    const sudoInstallCmd = platform() !== 'win32'
+      ? ['sudo', ...installCmd]
+      : null;
+    const manualCmd = `${pm.name} ${pm.installVerb} -g ${packageName}`;
+
+    return { name: pm.name, installCmd, sudoInstallCmd, manualCmd };
+  } catch {
+    return null;
+  }
+}
+
 async function checkForUpdates(cli, askYesNoFn) {
   try {
     const pkg = require('../package.json');
@@ -130,26 +240,35 @@ async function checkForUpdates(cli, askYesNoFn) {
       const shouldUpdate = await askYesNoFn('Would you like to update now?', true);
 
       if (shouldUpdate) {
-        cli.info('Updating devchain...');
+        const pm = detectGlobalPackageManager(packageName);
+
+        if (!pm) {
+          // Cannot determine owning PM — show manual instructions
+          cli.warn('Could not detect the package manager used to install devchain.');
+          cli.info('Please update manually:');
+          cli.info('  npm install -g ' + packageName);
+          cli.info('  pnpm add -g ' + packageName);
+          return;
+        }
+
+        cli.info(`Updating devchain via ${pm.name}...`);
         try {
-          // Try without sudo first (works for nvm/fnm/Windows)
-          // Use npm install -g instead of update -g (update can remove packages)
-          execSync(`npm install -g ${packageName}@latest`, { stdio: 'inherit' });
+          execFileSync(pm.installCmd[0], pm.installCmd.slice(1), { stdio: 'inherit' });
           cli.success('Update complete! Please restart devchain.');
           process.exit(0);
         } catch (e) {
-          // On Linux/Mac, might need sudo for system npm
-          if (platform() !== 'win32') {
+          // On Linux/Mac, might need sudo for system installs
+          if (pm.sudoInstallCmd) {
             cli.info('Retrying with sudo...');
             try {
-              execSync(`sudo npm install -g ${packageName}@latest`, { stdio: 'inherit' });
+              execFileSync(pm.sudoInstallCmd[0], pm.sudoInstallCmd.slice(1), { stdio: 'inherit' });
               cli.success('Update complete! Please restart devchain.');
               process.exit(0);
             } catch (e2) {
-              cli.error('Update failed. You can manually run: sudo npm install -g ' + packageName);
+              cli.error('Update failed. You can manually run: sudo ' + pm.manualCmd);
             }
           } else {
-            cli.error('Update failed. You can manually run: npm install -g ' + packageName);
+            cli.error('Update failed. You can manually run: ' + pm.manualCmd);
           }
         }
       }
@@ -179,6 +298,424 @@ function detectInstalledProviders() {
   if (claudePath) detected.set('claude', claudePath);
   if (geminiPath) detected.set('gemini', geminiPath);
   return detected; // Map<name, absolutePath>
+}
+
+const ORCHESTRATOR_WORKTREE_IMAGE_REPO = 'ghcr.io/twitech-lab/devchain';
+const WORKTREE_IMAGE_BUILD_TIMEOUT_MS = 30 * 60 * 1000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function ensureDockerAvailable(execSyncFn = execSync) {
+  try {
+    execSyncFn('docker info --format "{{.ID}}"', {
+      stdio: 'pipe',
+      timeout: 10000,
+    });
+  } catch (_) {
+    throw new Error('Container mode requires Docker. Please install Docker and try again.');
+  }
+}
+
+function isDockerAvailable(execSyncFn = execSync) {
+  try {
+    ensureDockerAvailable(execSyncFn);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function deriveRepoRootFromGit(execSyncFn = execSync) {
+  try {
+    const gitTopLevel = execSyncFn('git rev-parse --show-toplevel', {
+      encoding: 'utf8',
+      stdio: 'pipe',
+      timeout: 5000,
+    }).trim();
+
+    if (!gitTopLevel) {
+      throw new Error('empty-git-top-level');
+    }
+
+    process.env.REPO_ROOT = gitTopLevel;
+    return gitTopLevel;
+  } catch (_) {
+    throw new Error('Container mode must be run from within a git repository.');
+  }
+}
+
+function isInsideGitRepo(execSyncFn = execSync) {
+  const previousRepoRoot = process.env.REPO_ROOT;
+  try {
+    deriveRepoRootFromGit(execSyncFn);
+    return true;
+  } catch (_) {
+    return false;
+  } finally {
+    if (typeof previousRepoRoot === 'string') {
+      process.env.REPO_ROOT = previousRepoRoot;
+    } else {
+      delete process.env.REPO_ROOT;
+    }
+  }
+}
+
+function ensureProjectGitignoreIncludesDevchain(repoRoot) {
+  const normalizedRepoRoot = typeof repoRoot === 'string' ? repoRoot.trim() : '';
+  if (!normalizedRepoRoot || !existsSync(normalizedRepoRoot)) {
+    return;
+  }
+
+  const gitignorePath = join(normalizedRepoRoot, '.gitignore');
+
+  try {
+    const existingContent = existsSync(gitignorePath) ? readFileSync(gitignorePath, 'utf8') : '';
+    const alreadyIgnored = existingContent.split(/\r?\n/).some((line) => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) {
+        return false;
+      }
+      return (
+        trimmed === '.devchain/' ||
+        trimmed === '/.devchain/' ||
+        trimmed === '.devchain' ||
+        trimmed === '/.devchain'
+      );
+    });
+
+    if (alreadyIgnored) {
+      return;
+    }
+
+    const delimiter = existingContent.length > 0 && !existingContent.endsWith('\n') ? '\n' : '';
+    writeFileSync(gitignorePath, `${existingContent}${delimiter}.devchain/\n`, 'utf8');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`Warning: unable to update project .gitignore with .devchain/ (${message})`);
+  }
+}
+
+function resolveRepoRootForDockerBuild(execSyncFn = execSync) {
+  const repoRootFromEnv = typeof process.env.REPO_ROOT === 'string' ? process.env.REPO_ROOT.trim() : '';
+  if (repoRootFromEnv) {
+    return repoRootFromEnv;
+  }
+  try {
+    return deriveRepoRootFromGit(execSyncFn);
+  } catch (_) {
+    return join(__dirname, '..');
+  }
+}
+
+function shouldSkipHostPreflights(enableOrchestration) {
+  return Boolean(enableOrchestration);
+}
+
+function resolveWorktreeImageFromPackageVersion() {
+  const pkg = require('../package.json');
+  const version = typeof pkg?.version === 'string' ? pkg.version.trim() : '';
+  if (!version) {
+    throw new Error('Unable to resolve CLI package version for worktree image provisioning.');
+  }
+  return `${ORCHESTRATOR_WORKTREE_IMAGE_REPO}:${version}`;
+}
+
+function hasWorktreeImageLocally(imageRef, execSyncFn = execSync) {
+  try {
+    execSyncFn(`docker image inspect ${imageRef}`, {
+      stdio: 'pipe',
+      timeout: 15000,
+    });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function buildWorktreeImage({
+  imageRef = resolveWorktreeImageFromPackageVersion(),
+  execSyncFn = execSync,
+} = {}) {
+  const repoRoot = resolveRepoRootForDockerBuild(execSyncFn);
+  const dockerfilePath = join(repoRoot, 'apps', 'local-app', 'Dockerfile');
+  console.log(`Building worktree image: ${imageRef}`);
+  try {
+    execSyncFn(
+      `docker build -f "${dockerfilePath}" -t ${imageRef} "${repoRoot}"`,
+      {
+        stdio: 'inherit',
+        timeout: WORKTREE_IMAGE_BUILD_TIMEOUT_MS,
+      },
+    );
+    console.log(`Built worktree image: ${imageRef}`);
+    return imageRef;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      [
+        `Failed to build worktree image: ${imageRef}`,
+        `Reason: ${message}`,
+        `Try manually: docker build -f "${dockerfilePath}" -t ${imageRef} "${repoRoot}"`,
+      ].join('\n'),
+    );
+  }
+}
+
+function resolveDevchainApiBaseUrlForRestart({
+  readPidFileFn = readPidFile,
+  isProcessRunningFn = isProcessRunning,
+} = {}) {
+  const pidData = readPidFileFn();
+  if (!pidData || !Number.isFinite(Number(pidData.pid)) || !Number.isFinite(Number(pidData.port))) {
+    throw new Error(
+      'Image was rebuilt, but Devchain is not running. Start container mode first, then retry with --restart.',
+    );
+  }
+
+  const pid = Number(pidData.pid);
+  const port = Number(pidData.port);
+  if (!isProcessRunningFn(pid)) {
+    throw new Error(
+      'Image was rebuilt, but Devchain is not running. Start container mode first, then retry with --restart.',
+    );
+  }
+
+  return `http://127.0.0.1:${port}`;
+}
+
+function normalizeWorktreeListPayload(payload) {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+  if (payload && typeof payload === 'object' && Array.isArray(payload.items)) {
+    return payload.items;
+  }
+  throw new Error('Unexpected response shape from /api/worktrees.');
+}
+
+async function restartRunningWorktrees({
+  baseUrl,
+  fetchFn = fetch,
+} = {}) {
+  if (!baseUrl || typeof baseUrl !== 'string') {
+    throw new Error('A baseUrl is required to restart running worktrees.');
+  }
+
+  const listRes = await fetchFn(`${baseUrl}/api/worktrees`);
+  if (!listRes.ok) {
+    throw new Error(`Failed to list worktrees for restart (HTTP ${listRes.status}).`);
+  }
+
+  const worktrees = normalizeWorktreeListPayload(await listRes.json());
+  const runningWorktrees = worktrees.filter(
+    (worktree) => String(worktree?.status || '').toLowerCase() === 'running',
+  );
+
+  if (runningWorktrees.length === 0) {
+    console.log('No running worktrees found. Build completed without restarts.');
+    return 0;
+  }
+
+  console.log(`Restarting ${runningWorktrees.length} running worktree(s)...`);
+  for (const worktree of runningWorktrees) {
+    const worktreeId = typeof worktree?.id === 'string' ? worktree.id.trim() : '';
+    const worktreeName =
+      typeof worktree?.name === 'string' && worktree.name.trim()
+        ? worktree.name.trim()
+        : worktreeId || 'unknown';
+
+    if (!worktreeId) {
+      throw new Error('Cannot restart worktree without an id from /api/worktrees response.');
+    }
+
+    console.log(`Stopping worktree "${worktreeName}"...`);
+    const stopRes = await fetchFn(`${baseUrl}/api/worktrees/${encodeURIComponent(worktreeId)}/stop`, {
+      method: 'POST',
+    });
+    if (!stopRes.ok) {
+      throw new Error(`Failed stopping worktree "${worktreeName}" (HTTP ${stopRes.status}).`);
+    }
+
+    console.log(`Starting worktree "${worktreeName}"...`);
+    const startRes = await fetchFn(`${baseUrl}/api/worktrees/${encodeURIComponent(worktreeId)}/start`, {
+      method: 'POST',
+    });
+    if (!startRes.ok) {
+      throw new Error(`Failed starting worktree "${worktreeName}" (HTTP ${startRes.status}).`);
+    }
+  }
+
+  console.log('Worktree restart complete.');
+  return runningWorktrees.length;
+}
+
+async function ensureWorktreeImage({
+  execSyncFn = execSync,
+  onMissing = 'pull',
+} = {}) {
+  const existingImageOverride =
+    typeof process.env.ORCHESTRATOR_CONTAINER_IMAGE === 'string'
+      ? process.env.ORCHESTRATOR_CONTAINER_IMAGE.trim()
+      : '';
+  if (existingImageOverride) {
+    process.env.ORCHESTRATOR_CONTAINER_IMAGE = existingImageOverride;
+    console.log(`Using worktree image override: ${existingImageOverride}`);
+    return existingImageOverride;
+  }
+
+  const imageRef = resolveWorktreeImageFromPackageVersion();
+
+  if (hasWorktreeImageLocally(imageRef, execSyncFn)) {
+    console.log(`Using local worktree image: ${imageRef}`);
+  } else if (onMissing === 'build') {
+    console.log(`Local worktree image missing: ${imageRef}`);
+    buildWorktreeImage({ imageRef, execSyncFn });
+  } else if (onMissing === 'pull') {
+    console.log(`Pulling worktree image: ${imageRef}`);
+    try {
+      execSyncFn(`docker pull ${imageRef}`, {
+        stdio: 'inherit',
+        timeout: 300000,
+      });
+      console.log(`Pulled worktree image: ${imageRef}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        [
+          `Failed to pull worktree image: ${imageRef}`,
+          `Reason: ${message}`,
+          `Try manually: docker pull ${imageRef}`,
+          `Or build locally: docker build -t ${imageRef} -f apps/local-app/Dockerfile .`,
+        ].join('\n'),
+      );
+    }
+  } else {
+    throw new Error(`Invalid ensureWorktreeImage onMissing strategy: ${onMissing}`);
+  }
+
+  process.env.ORCHESTRATOR_CONTAINER_IMAGE = imageRef;
+  return imageRef;
+}
+
+function ensureWorktreeImageRefFromPackageVersion() {
+  const existingImageOverride =
+    typeof process.env.ORCHESTRATOR_CONTAINER_IMAGE === 'string'
+      ? process.env.ORCHESTRATOR_CONTAINER_IMAGE.trim()
+      : '';
+  if (existingImageOverride) {
+    process.env.ORCHESTRATOR_CONTAINER_IMAGE = existingImageOverride;
+    return existingImageOverride;
+  }
+
+  const imageRef = resolveWorktreeImageFromPackageVersion();
+  process.env.ORCHESTRATOR_CONTAINER_IMAGE = imageRef;
+  return imageRef;
+}
+
+async function bootstrapContainerMode({
+  execSyncFn = execSync,
+} = {}) {
+  ensureDockerAvailable(execSyncFn);
+  const repoRoot = deriveRepoRootFromGit(execSyncFn);
+  ensureProjectGitignoreIncludesDevchain(repoRoot);
+  ensureWorktreeImageRefFromPackageVersion();
+}
+
+function formatOrchestrationDetectionFailureReason({
+  skippedByEnvNormal = false,
+  dockerAvailable = false,
+  insideGitRepo = false,
+} = {}) {
+  if (skippedByEnvNormal) {
+    return 'DEVCHAIN_MODE=normal override is active';
+  }
+
+  const missing = [];
+  if (!dockerAvailable) {
+    missing.push('Docker is unavailable');
+  }
+  if (!insideGitRepo) {
+    missing.push('current directory is not inside a git repository');
+  }
+
+  if (missing.length === 0) {
+    return 'orchestration prerequisites are not met';
+  }
+  if (missing.length === 1) {
+    return missing[0];
+  }
+  return `${missing.slice(0, -1).join(', ')} and ${missing[missing.length - 1]}`;
+}
+
+async function resolveStartupOrchestration({
+  forceContainer = false,
+  env = process.env,
+  execSyncFn = execSync,
+  bootstrapContainerModeFn = bootstrapContainerMode,
+  warnFn = (message) => console.warn(message),
+} = {}) {
+  const modeOverride = typeof env.DEVCHAIN_MODE === 'string' ? env.DEVCHAIN_MODE.trim() : '';
+  const skippedByEnvNormal = modeOverride.toLowerCase() === 'normal';
+  if (skippedByEnvNormal) {
+    if (forceContainer) {
+      throw new Error(
+        `--container requires orchestration, but ${formatOrchestrationDetectionFailureReason({ skippedByEnvNormal })}.`,
+      );
+    }
+    return {
+      enableOrchestration: false,
+      skippedByEnvNormal,
+      dockerAvailable: false,
+      insideGitRepo: false,
+    };
+  }
+
+  const dockerAvailable = isDockerAvailable(execSyncFn);
+  const insideGitRepo = isInsideGitRepo(execSyncFn);
+
+  if (!dockerAvailable || !insideGitRepo) {
+    const reason = formatOrchestrationDetectionFailureReason({
+      dockerAvailable,
+      insideGitRepo,
+    });
+    if (forceContainer) {
+      throw new Error(`--container requires orchestration, but ${reason}.`);
+    }
+    return {
+      enableOrchestration: false,
+      skippedByEnvNormal: false,
+      dockerAvailable,
+      insideGitRepo,
+    };
+  }
+
+  try {
+    await bootstrapContainerModeFn({
+      execSyncFn,
+    });
+    env.DEVCHAIN_MODE = 'main';
+    return {
+      enableOrchestration: true,
+      skippedByEnvNormal: false,
+      dockerAvailable: true,
+      insideGitRepo: true,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (forceContainer) {
+      throw new Error(`--container failed to initialize orchestration: ${message}`);
+    }
+    warnFn(`Container auto-detection found prerequisites but bootstrap failed: ${message}`);
+    return {
+      enableOrchestration: false,
+      skippedByEnvNormal: false,
+      dockerAvailable: true,
+      insideGitRepo: true,
+      bootstrapError: message,
+    };
+  }
 }
 
 async function ensureProvidersInDb(baseUrl, detected, log) {
@@ -542,13 +1079,215 @@ function getTmuxErrorMessage(osType) {
   }
 }
 
+async function runHostPreflightChecks(
+  {
+    enableOrchestration,
+    opts,
+    cli,
+    log,
+    isDetachedChild,
+  },
+  {
+    execSyncFn = execSync,
+    isTmuxInstalledFn = isTmuxInstalled,
+    getOSTypeFn = getOSType,
+    detectInstalledProvidersFn = detectInstalledProviders,
+    ensureClaudeBypassPermissionsFn = ensureClaudeBypassPermissions,
+    platformFn = platform,
+  } = {},
+) {
+  const skipHostPreflights = shouldSkipHostPreflights(enableOrchestration);
+
+  // Tmux preflight check
+  const skipTmuxCheck = process.env.DEVCHAIN_SKIP_TMUX_CHECK === '1';
+  if (skipHostPreflights) {
+    if (opts.foreground) {
+      log('info', 'Skipping tmux check in container mode', { skipReason: 'container_mode' });
+    } else {
+      cli.info('Skipping tmux check in container mode');
+    }
+  } else if (skipTmuxCheck) {
+    if (opts.foreground) {
+      log('info', 'Skipping tmux check (DEVCHAIN_SKIP_TMUX_CHECK=1)', { skipReason: 'env_var' });
+    } else {
+      cli.info('Skipping tmux check (DEVCHAIN_SKIP_TMUX_CHECK=1)');
+    }
+  } else {
+    const osType = getOSTypeFn();
+
+    if (osType === 'windows') {
+      if (opts.foreground) {
+        log('info', 'Skipping tmux check on Windows', { skipReason: 'windows', platform: 'win32' });
+      } else {
+        cli.info('Skipping tmux check on Windows');
+      }
+    } else {
+      if (!opts.foreground) {
+        cli.step('Checking tmux');
+      }
+
+      if (!isTmuxInstalledFn()) {
+        if (opts.foreground) {
+          log('error', 'tmux not found; aborting startup', { platform: osType, checked: 'which tmux' });
+        } else {
+          cli.stepDone('✗ not found');
+          cli.blank();
+        }
+        console.error('\n' + getTmuxErrorMessage(osType));
+        process.exit(1);
+      }
+
+      try {
+        const tmuxPath = execSyncFn('which tmux', { encoding: 'utf8' }).trim();
+        if (opts.foreground) {
+          log('info', 'tmux found', { tmuxPath });
+        } else {
+          cli.stepDone('✓ found');
+        }
+      } catch {
+        if (opts.foreground) {
+          log('info', 'tmux check passed');
+        } else {
+          cli.stepDone('✓');
+        }
+      }
+    }
+  }
+
+  // Provider detection (Linux/macOS only)
+  const skipProviderCheck = process.env.DEVCHAIN_SKIP_PROVIDER_CHECK === '1';
+  const plat = platformFn();
+  if (skipHostPreflights) {
+    if (opts.foreground) {
+      log('info', 'Skipping provider check in container mode', { skipReason: 'container_mode' });
+    } else {
+      cli.info('Skipping provider check in container mode');
+    }
+  } else if (skipProviderCheck) {
+    if (opts.foreground) {
+      log('info', 'Skipping provider check (DEVCHAIN_SKIP_PROVIDER_CHECK=1)', {
+        skipReason: 'env_var',
+      });
+    } else {
+      cli.info('Skipping provider check (DEVCHAIN_SKIP_PROVIDER_CHECK=1)');
+    }
+  } else if (plat === 'win32') {
+    if (opts.foreground) {
+      log('info', 'Skipping provider check on Windows', { skipReason: 'windows' });
+    } else {
+      cli.info('Skipping provider check on Windows');
+    }
+  } else {
+    if (!opts.foreground) {
+      cli.step('Detecting providers');
+    }
+
+    const providersDetected = detectInstalledProvidersFn();
+    if (providersDetected.size === 0) {
+      const guide = [
+        'No provider binaries detected on PATH. Install at least one provider and retry.',
+        'Checked: "which codex", "which claude", and "which gemini"',
+        'Examples:',
+        '  - Install Codex:   npm i -g @openai/codex (example) or follow provider docs',
+        '  - Install Claude:  npm i -g @anthropic-ai/claude-code (example) or follow provider docs',
+        '  - Install Gemini:  npm i -g @google/gemini-cli (example) or follow provider docs',
+        'Advanced: bypass with DEVCHAIN_SKIP_PROVIDER_CHECK=1',
+      ].join('\n');
+      if (opts.foreground) {
+        log('error', 'No providers found; aborting startup', {
+          checked: ['which codex', 'which claude', 'which gemini'],
+        });
+      } else {
+        cli.stepDone('✗ none found');
+        cli.blank();
+      }
+      console.error('\n' + guide + '\n');
+      process.exit(1);
+    }
+
+    opts.__providersDetected = providersDetected;
+    const providerNames = Array.from(providersDetected.keys());
+
+    if (opts.foreground) {
+      log('info', 'Detected providers', {
+        providers: Array.from(providersDetected.entries()).map(([name, p]) => ({ name, path: p })),
+      });
+    } else {
+      cli.stepDone(`✓ ${providerNames.join(', ')}`);
+    }
+  }
+
+  // Prompt for Claude bypass permissions (parent only - requires stdin)
+  // This runs BEFORE detach since it needs user interaction
+  if (!isDetachedChild && opts.__providersDetected && opts.__providersDetected.has('claude')) {
+    await ensureClaudeBypassPermissionsFn(cli);
+  }
+}
+
+function getDevUiConfig(containerMode) {
+  if (containerMode) {
+    return {
+      script: 'dev:ui',
+      startMessage: 'Starting UI (dev mode)...',
+      logLabel: 'UI dev server',
+      url: 'http://127.0.0.1:5175',
+    };
+  }
+
+  return {
+    script: 'dev:ui',
+    startMessage: 'Starting UI (dev mode)...',
+    logLabel: 'UI dev server',
+    url: 'http://127.0.0.1:5175',
+  };
+}
+
+function applyContainerModeDefaults(containerMode, opts = {}, env = process.env) {
+  if (!containerMode) {
+    return;
+  }
+
+  const hasExplicitPortEnv = typeof env.PORT === 'string' && env.PORT.trim() !== '';
+  if (!opts.port && !hasExplicitPortEnv) {
+    env.PORT = '3000';
+  }
+}
+
+function getPreferredDevApiPort(optsPort, containerMode, env = process.env) {
+  if (optsPort) {
+    return Number(optsPort);
+  }
+  if (containerMode) {
+    return Number(env.PORT || 3000);
+  }
+  return 3000;
+}
+
+function getDevModeSpawnConfig({ containerMode, port, env = process.env }) {
+  const ui = getDevUiConfig(containerMode);
+  return {
+    ui,
+    nest: {
+      command: 'pnpm',
+      args: ['--filter', 'local-app', 'dev:api'],
+      env: { ...env, PORT: String(port) },
+    },
+    vite: {
+      command: 'pnpm',
+      args: ['--filter', 'local-app', ui.script],
+      env: { ...env, VITE_API_PORT: String(port) },
+    },
+  };
+}
+
 async function main(argv) {
   const program = new Command();
   const pkg = require('../package.json');
   program
     .name('devchain')
     .description('Devchain — Local-first AI agent orchestration')
-    .version(pkg.version);
+    .version(pkg.version)
+    .option('--container', 'Shorthand for "start --container"');
 
   const startCommand = program
     .command('start [args...]')
@@ -560,6 +1299,14 @@ async function main(argv) {
     .option('--db <path>', 'Path to database directory or file (overrides DB_PATH/DB_FILENAME)')
     .option('--project <path>', 'Initial project root path; creates project if missing')
     .option(
+      '--container',
+      'Force orchestration startup (errors if Docker or git repository prerequisites are missing)'
+    )
+    .option(
+      '--worktree-runtime <type>',
+      '[internal] Worktree runtime context (container|process); bypasses singleton and interactive startup flows',
+    )
+    .option(
       '--log-level <level>',
       'Set log verbosity: error (errors only), warn, info, debug, or trace. ' +
       'Default: "error" (clean) in interactive mode, "info" in foreground. ' +
@@ -567,7 +1314,24 @@ async function main(argv) {
     )
     .option('--dev', 'Development mode with hot reload (spawns nest --watch + vite)')
     .option('--internal-detached-child', '[internal] Marker for detached child process')
-    .action(async (args, opts) => {
+    .action(async (rawArgs, opts) => {
+      const args = Array.isArray(rawArgs) ? [...rawArgs] : [];
+      const usesContainerSubcommand = args[0] === 'container';
+      if (usesContainerSubcommand) {
+        args.shift();
+      }
+      const forceContainer = Boolean(
+        opts.container || program.opts().container || usesContainerSubcommand,
+      );
+      let worktreeRuntimeType = null;
+      try {
+        worktreeRuntimeType = normalizeWorktreeRuntimeType(opts.worktreeRuntime);
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : 'Invalid --worktree-runtime value.');
+        process.exit(1);
+      }
+      const worktreeRuntimeMode = isWorktreeRuntimeModeEnabled(worktreeRuntimeType);
+
       // Check if "help" was passed as an argument
       if (args && args.length > 0 && args[0] === 'help') {
         startCommand.help();
@@ -575,7 +1339,7 @@ async function main(argv) {
       }
 
       // Check if already running (skip for detached child - parent already checked)
-      if (!opts.internalDetachedChild) {
+      if (!opts.internalDetachedChild && !worktreeRuntimeMode) {
         const existingPid = readPidFile();
         if (existingPid && isProcessRunning(existingPid.pid)) {
           console.error(`Devchain is already running (PID ${existingPid.pid}, port ${existingPid.port})`);
@@ -591,16 +1355,19 @@ async function main(argv) {
 
       // Normalize defaults for negatable options (Commander may leave undefined)
       if (typeof opts.open === 'undefined') {
-        opts.open = true;
+        opts.open = worktreeRuntimeMode ? false : forceContainer ? false : true;
+      }
+      if (worktreeRuntimeMode) {
+        opts.open = false;
       }
       // Detached mode by default, unless foreground is explicitly requested
       // Don't detach again if we're already the detached child process
-      const isDetachedChild = opts.internalDetachedChild;
-      const shouldDetach = opts.foreground !== true && !isDetachedChild;
+      const isDetachedChild = Boolean(opts.internalDetachedChild);
+      const shouldDetach = opts.foreground !== true && !isDetachedChild && !worktreeRuntimeMode;
 
       // Initialize interactive CLI (user-friendly output unless in foreground mode)
       const cli = new InteractiveCLI({
-        interactive: !opts.foreground && !isDetachedChild,
+        interactive: !opts.foreground && !isDetachedChild && !worktreeRuntimeMode,
         colors: true,
         spinners: true
       });
@@ -610,140 +1377,69 @@ async function main(argv) {
         console.log(JSON.stringify(entry));
       };
 
+      let enableOrchestration = false;
+      if (worktreeRuntimeMode) {
+        enableOrchestration = worktreeRuntimeType === 'container';
+      } else {
+        try {
+          const orchestrationResolution = await resolveStartupOrchestration({
+            forceContainer,
+            env: process.env,
+            warnFn: (message) => {
+              if (opts.foreground) {
+                log('warn', message);
+              } else {
+                cli.warn(message);
+              }
+            },
+          });
+          enableOrchestration = orchestrationResolution.enableOrchestration;
+        } catch (error) {
+          console.error(
+            error instanceof Error
+              ? error.message
+              : 'Failed to resolve orchestration startup prerequisites.',
+          );
+          process.exit(1);
+        }
+      }
+
+      applyContainerModeDefaults(enableOrchestration, opts, process.env);
+
       // Check for updates (parent process only, skip in dev mode)
-      if (!isDetachedChild && !opts.dev) {
+      if (!isDetachedChild && !opts.dev && !worktreeRuntimeMode) {
         await checkForUpdates(cli, askYesNo);
       }
 
       // Show startup banner (interactive mode only)
-      if (!opts.foreground) {
+      if (!opts.foreground && !worktreeRuntimeMode) {
         cli.blank();
         cli.info('Starting Devchain...');
         cli.blank();
       }
 
-      // Tmux preflight check
-      const skipTmuxCheck = process.env.DEVCHAIN_SKIP_TMUX_CHECK === '1';
-      if (skipTmuxCheck) {
-        if (opts.foreground) {
-          log('info', 'Skipping tmux check (DEVCHAIN_SKIP_TMUX_CHECK=1)', { skipReason: 'env_var' });
-        } else {
-          cli.info('Skipping tmux check (DEVCHAIN_SKIP_TMUX_CHECK=1)');
-        }
+      if (!worktreeRuntimeMode) {
+        await runHostPreflightChecks({
+          enableOrchestration,
+          opts,
+          cli,
+          log,
+          isDetachedChild,
+        });
+      }
+
+      const preferPort = getPreferredDevApiPort(opts.port, enableOrchestration, process.env);
+
+      // In worktree runtime mode, bind strictly to the requested port.
+      // getPort() silently picks a different port when the requested one is unavailable,
+      // which causes the parent orchestrator to talk to the wrong instance.
+      // Let NestJS fail fast with EADDRINUSE instead of silently rebinding.
+      let port;
+      if (worktreeRuntimeMode && preferPort) {
+        port = preferPort;
       } else {
-        const osType = getOSType();
-
-        if (osType === 'windows') {
-          if (opts.foreground) {
-            log('info', 'Skipping tmux check on Windows', { skipReason: 'windows', platform: 'win32' });
-          } else {
-            cli.info('Skipping tmux check on Windows');
-          }
-        } else {
-          // Interactive: show step
-          if (!opts.foreground) {
-            cli.step('Checking tmux');
-          }
-
-          // Check if tmux is installed
-          if (!isTmuxInstalled()) {
-            if (opts.foreground) {
-              log('error', 'tmux not found; aborting startup', { platform: osType, checked: 'which tmux' });
-            } else {
-              cli.stepDone('✗ not found');
-              cli.blank();
-            }
-            console.error('\n' + getTmuxErrorMessage(osType));
-            process.exit(1);
-          }
-
-          // tmux found, log success
-          try {
-            const tmuxPath = execSync('which tmux', { encoding: 'utf8' }).trim();
-            if (opts.foreground) {
-              log('info', 'tmux found', { tmuxPath });
-            } else {
-              cli.stepDone('✓ found');
-            }
-          } catch {
-            // Shouldn't happen since we just checked, but handle gracefully
-            if (opts.foreground) {
-              log('info', 'tmux check passed');
-            } else {
-              cli.stepDone('✓');
-            }
-          }
-        }
+        port = await getPort({ port: preferPort });
       }
-
-      // Provider detection (Linux/macOS only)
-      const skipProviderCheck = process.env.DEVCHAIN_SKIP_PROVIDER_CHECK === '1';
-      const plat = platform();
-      if (skipProviderCheck) {
-        if (opts.foreground) {
-          log('info', 'Skipping provider check (DEVCHAIN_SKIP_PROVIDER_CHECK=1)', {
-            skipReason: 'env_var',
-          });
-        } else {
-          cli.info('Skipping provider check (DEVCHAIN_SKIP_PROVIDER_CHECK=1)');
-        }
-      } else if (plat === 'win32') {
-        if (opts.foreground) {
-          log('info', 'Skipping provider check on Windows', { skipReason: 'windows' });
-        } else {
-          cli.info('Skipping provider check on Windows');
-        }
-      } else {
-        // Interactive: show step
-        if (!opts.foreground) {
-          cli.step('Detecting providers');
-        }
-
-        const providersDetected = detectInstalledProviders();
-        if (providersDetected.size === 0) {
-          // Provide guidance and exit prior to server startup
-          const guide = [
-            'No provider binaries detected on PATH. Install at least one provider and retry.',
-            'Checked: "which codex", "which claude", and "which gemini"',
-            'Examples:',
-            '  - Install Codex:   npm i -g @openai/codex (example) or follow provider docs',
-            '  - Install Claude:  npm i -g @anthropic-ai/claude-code (example) or follow provider docs',
-            '  - Install Gemini:  npm i -g @google/gemini-cli (example) or follow provider docs',
-            'Advanced: bypass with DEVCHAIN_SKIP_PROVIDER_CHECK=1',
-          ].join('\n');
-          if (opts.foreground) {
-            log('error', 'No providers found; aborting startup', {
-              checked: ['which codex', 'which claude', 'which gemini'],
-            });
-          } else {
-            cli.stepDone('✗ none found');
-            cli.blank();
-          }
-          console.error('\n' + guide + '\n');
-          process.exit(1);
-        }
-
-        // stash on opts for later ensure step after server ready
-        opts.__providersDetected = providersDetected;
-        const providerNames = Array.from(providersDetected.keys());
-
-        if (opts.foreground) {
-          log('info', 'Detected providers', {
-            providers: Array.from(providersDetected.entries()).map(([name, p]) => ({ name, path: p })),
-          });
-        } else {
-          cli.stepDone(`✓ ${providerNames.join(', ')}`);
-        }
-      }
-
-      // Prompt for Claude bypass permissions (parent only - requires stdin)
-      // This runs BEFORE detach since it needs user interaction
-      if (!isDetachedChild && opts.__providersDetected && opts.__providersDetected.has('claude')) {
-        await ensureClaudeBypassPermissions(cli);
-      }
-
-      const preferPort = opts.port ? Number(opts.port) : 3000;
-      const port = await getPort({ port: preferPort });
 
       // === DETACH POINT ===
       // All interactive prompts are done. Now spawn the detached child if needed.
@@ -831,9 +1527,15 @@ async function main(argv) {
         };
 
         // Spawn NestJS in watch mode (detached to create process group)
-        const nestProcess = spawn('pnpm', ['--filter', 'local-app', 'dev:api'], {
+        const devSpawnConfig = getDevModeSpawnConfig({
+          containerMode: enableOrchestration,
+          port,
+          env: process.env,
+        });
+
+        const nestProcess = spawn(devSpawnConfig.nest.command, devSpawnConfig.nest.args, {
           stdio: 'inherit',
-          env: { ...process.env, PORT: String(port) },
+          env: devSpawnConfig.nest.env,
           shell: true,
           detached: platform() !== 'win32', // Create process group on Unix
         });
@@ -853,7 +1555,12 @@ async function main(argv) {
         cli.info(`API docs: ${baseUrl}/api/docs`);
 
         // Ensure provider rows exist
-        if (opts.__providersDetected && opts.__providersDetected.size > 0) {
+        if (
+          !worktreeRuntimeMode
+          && !enableOrchestration
+          && opts.__providersDetected
+          && opts.__providersDetected.size > 0
+        ) {
           await ensureProvidersInDb(baseUrl, opts.__providersDetected, log);
         }
 
@@ -863,36 +1570,44 @@ async function main(argv) {
           : process.cwd();
 
         // Validate MCP for all providers
-        await validateMcpForProviders(baseUrl, cli, opts, log, startupPath);
+        if (!worktreeRuntimeMode && !enableOrchestration) {
+          await validateMcpForProviders(baseUrl, cli, opts, log, startupPath);
+        }
 
         // Note: Claude bypass prompt already handled before server start
 
+        const devUiConfig = devSpawnConfig.ui;
+
         cli.blank();
-        cli.info('Starting UI (dev mode)...');
+        cli.info(devUiConfig.startMessage);
 
         // Spawn Vite for UI hot reload (pass API port, detached to create process group)
-        const viteProcess = spawn('pnpm', ['--filter', 'local-app', 'dev:ui'], {
+        const viteProcess = spawn(devSpawnConfig.vite.command, devSpawnConfig.vite.args, {
           stdio: 'inherit',
-          env: { ...process.env, VITE_API_PORT: String(port) },
+          env: devSpawnConfig.vite.env,
           shell: true,
           detached: platform() !== 'win32', // Create process group on Unix
         });
 
         cli.blank();
         cli.success('Development servers running');
-        cli.info(`UI: http://127.0.0.1:5175 (Vite dev server)`);
+        cli.info(`${devUiConfig.logLabel}: ${devUiConfig.url}`);
         cli.info(`API: ${baseUrl}`);
         cli.blank();
 
-        // Write PID file
-        writePidFile(port);
+        // Write PID file for top-level runtime only
+        if (!worktreeRuntimeMode) {
+          writePidFile(port);
+        }
 
         // Handle cleanup on exit - kill entire process groups
         const cleanup = () => {
           console.log('\nShutting down development servers...');
           killProcessGroup(nestProcess);
           killProcessGroup(viteProcess);
-          removePidFile();
+          if (!worktreeRuntimeMode) {
+            removePidFile();
+          }
           process.exit(0);
         };
 
@@ -960,7 +1675,12 @@ async function main(argv) {
       }
 
       // Ensure provider rows exist (idempotent) before opening UI
-      if (opts.__providersDetected && opts.__providersDetected.size > 0) {
+      if (
+        !worktreeRuntimeMode
+        && !enableOrchestration
+        && opts.__providersDetected
+        && opts.__providersDetected.size > 0
+      ) {
         await ensureProvidersInDb(baseUrl, opts.__providersDetected, log);
       }
 
@@ -970,7 +1690,9 @@ async function main(argv) {
         : process.cwd();
 
       // Validate MCP for all providers (with project context)
-      await validateMcpForProviders(baseUrl, cli, opts, log, startupPath);
+      if (!worktreeRuntimeMode && !enableOrchestration) {
+        await validateMcpForProviders(baseUrl, cli, opts, log, startupPath);
+      }
 
       // Note: Claude bypass prompt already handled before server start (in parent process for detach mode)
 
@@ -1020,13 +1742,15 @@ async function main(argv) {
         cli.blank();
       }
 
-      // Write PID file for stop command
-      writePidFile(port);
+      if (!worktreeRuntimeMode) {
+        // Write PID file for stop command
+        writePidFile(port);
 
-      // Clean up PID file on exit (main.ts handles SIGINT/SIGTERM and graceful shutdown)
-      process.on('exit', () => {
-        removePidFile();
-      });
+        // Clean up PID file on exit (main.ts handles SIGINT/SIGTERM and graceful shutdown)
+        process.on('exit', () => {
+          removePidFile();
+        });
+      }
 
       if (opts.open) {
         if (!opts.foreground) {
@@ -1057,65 +1781,132 @@ async function main(argv) {
     });
 
   program
+    .command('dev:image')
+    .description('Rebuild worktree image for Docker-enabled development')
+    .option('--restart', 'After rebuild, restart running worktrees via orchestrator API')
+    .action(async (opts) => {
+      try {
+        ensureDockerAvailable();
+        const imageRef = buildWorktreeImage();
+        process.env.ORCHESTRATOR_CONTAINER_IMAGE = imageRef;
+
+        if (!opts.restart) {
+          console.log('Build complete. Running worktrees were not restarted.');
+          process.exit(0);
+        }
+
+        const baseUrl = resolveDevchainApiBaseUrlForRestart();
+        const ready = await waitForHealth(`${baseUrl}/health`, {
+          timeoutMs: 5000,
+          intervalMs: 250,
+        });
+        if (!ready) {
+          throw new Error(
+            `Image was rebuilt, but orchestrator is not reachable at ${baseUrl}. Start it and retry --restart.`,
+          );
+        }
+
+        await restartRunningWorktrees({ baseUrl });
+        process.exit(0);
+      } catch (error) {
+        console.error(
+          error instanceof Error
+            ? error.message
+            : 'Failed to rebuild worktree image.',
+        );
+        process.exit(1);
+      }
+    });
+
+  program
     .command('stop')
     .description('Stop the running Devchain instance')
-    .action(() => {
+    .action(async () => {
       const pidData = readPidFile();
 
       if (!pidData) {
         console.log('No running Devchain instance found.');
         process.exit(1);
-      }
+      } else {
+        const { pid, port } = pidData;
 
-      const { pid, port } = pidData;
+        if (!isProcessRunning(pid)) {
+          console.log(`Devchain process (PID ${pid}) is not running. Cleaning up stale PID file.`);
+          removePidFile();
+          process.exit(1);
+        } else {
+          console.log(`Stopping Devchain (PID ${pid}, port ${port})...`);
 
-      if (!isProcessRunning(pid)) {
-        console.log(`Devchain process (PID ${pid}) is not running. Cleaning up stale PID file.`);
-        removePidFile();
-        process.exit(1);
-      }
-
-      console.log(`Stopping Devchain (PID ${pid}, port ${port})...`);
-
-      try {
-        process.kill(pid, 'SIGTERM');
-
-        // Wait a bit for graceful shutdown
-        let attempts = 0;
-        const checkInterval = setInterval(() => {
-          attempts++;
-          if (!isProcessRunning(pid)) {
-            clearInterval(checkInterval);
-            removePidFile();
-            console.log('Devchain stopped successfully.');
-            process.exit(0);
+          try {
+            process.kill(pid, 'SIGTERM');
+          } catch (err) {
+            console.error('Failed to stop Devchain:', err.message);
+            process.exit(1);
           }
 
-          if (attempts > 20) {
-            // After 2 seconds, force kill
-            clearInterval(checkInterval);
+          let stopped = false;
+          for (let attempts = 0; attempts <= 20; attempts += 1) {
+            if (!isProcessRunning(pid)) {
+              stopped = true;
+              break;
+            }
+            await sleep(100);
+          }
+
+          if (!stopped) {
             console.log('Graceful shutdown timed out, forcing...');
             try {
               process.kill(pid, 'SIGKILL');
-              removePidFile();
-              console.log('Devchain stopped (forced).');
             } catch (err) {
               console.error('Failed to stop Devchain:', err.message);
               process.exit(1);
             }
-            process.exit(0);
           }
-        }, 100);
-      } catch (err) {
-        console.error('Failed to stop Devchain:', err.message);
-        process.exit(1);
+
+          removePidFile();
+          console.log(stopped ? 'Devchain stopped successfully.' : 'Devchain stopped (forced).');
+        }
       }
+
+      process.exit(0);
     });
 
-  await program.parseAsync(argv);
+  await program.parseAsync(normalizeCliArgv(argv));
 }
 
-main(process.argv).catch((err) => {
-  console.error('Fatal error:', err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main(process.argv).catch((err) => {
+    console.error('Fatal error:', err);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  main,
+  normalizeCliArgv,
+  __test__: {
+    ensureDockerAvailable,
+    isDockerAvailable,
+    deriveRepoRootFromGit,
+    isInsideGitRepo,
+    ensureProjectGitignoreIncludesDevchain,
+    shouldSkipHostPreflights,
+    runHostPreflightChecks,
+    getDevUiConfig,
+    applyContainerModeDefaults,
+    getPreferredDevApiPort,
+    getDevModeSpawnConfig,
+    hasWorktreeImageLocally,
+    buildWorktreeImage,
+    resolveDevchainApiBaseUrlForRestart,
+    restartRunningWorktrees,
+    ensureWorktreeImage,
+    bootstrapContainerMode,
+    ensureWorktreeImageRefFromPackageVersion,
+    formatOrchestrationDetectionFailureReason,
+    resolveStartupOrchestration,
+    normalizeWorktreeRuntimeType,
+    isWorktreeRuntimeModeEnabled,
+    detectGlobalPackageManager,
+  },
+};

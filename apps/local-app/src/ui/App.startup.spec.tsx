@@ -2,6 +2,9 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
+let mockActiveWorktree: { id: string; name: string; devchainProjectId: string | null } | null =
+  null;
+
 // Mock components that use ESM-only modules (must be before App import)
 jest.mock('./components/review/DiffViewer', () => ({
   DiffViewer: () => null,
@@ -28,8 +31,53 @@ jest.mock('./hooks/useCommentMutations', () => ({
   useReplyToComment: () => ({ mutateAsync: jest.fn(), isPending: false }),
 }));
 
+jest.mock('./hooks/useWorktreeTab', () => ({
+  useOptionalWorktreeTab: () => ({
+    activeWorktree: mockActiveWorktree,
+    setActiveWorktree: jest.fn(),
+    apiBase: '',
+    worktrees: [],
+    worktreesLoading: false,
+  }),
+}));
+
 jest.mock('./hooks/useKeyboardShortcuts', () => ({
   useKeyboardShortcuts: () => ({ isHelpOpen: false, closeHelp: jest.fn(), openHelp: jest.fn() }),
+}));
+
+jest.mock('./terminal-windows', () => ({
+  TerminalWindowsProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  TerminalWindowsLayer: () => null,
+  useTerminalWindowManager: () => jest.fn(),
+  useTerminalWindows: () => ({
+    windows: [],
+    closeWindow: jest.fn(),
+    focusedWindowId: null,
+    focusWindow: jest.fn(),
+    minimizeWindow: jest.fn(),
+    restoreWindow: jest.fn(),
+  }),
+}));
+
+jest.mock('./components/terminal-dock', () => ({
+  TerminalDock: () => null,
+  OPEN_TERMINAL_DOCK_EVENT: 'devchain:terminal-dock:open',
+}));
+
+jest.mock('./pages/WorktreesPage', () => ({
+  WorktreesPage: () => <h1>Worktrees Page</h1>,
+}));
+
+jest.mock('./pages/ChatPage', () => ({
+  ChatPage: () => <h1>Chat Page</h1>,
+}));
+
+jest.mock('./pages/ReviewsPage.lazy', () => ({
+  ReviewsPageWithSuspense: () => <h1>Reviews Page</h1>,
+}));
+
+jest.mock('./pages/ReviewDetailPage.lazy', () => ({
+  ReviewDetailPageWithSuspense: () => <h1>Review Detail Page</h1>,
 }));
 
 import { App } from './App';
@@ -63,8 +111,11 @@ jest.mock('./lib/preflight', () => ({
 
 describe('App startup routing', () => {
   let queryClient: QueryClient;
+  let runtimeMode: 'main' | 'normal';
 
   beforeEach(() => {
+    runtimeMode = 'normal';
+    mockActiveWorktree = null;
     queryClient = new QueryClient({
       defaultOptions: {
         queries: {
@@ -99,6 +150,16 @@ describe('App startup routing', () => {
             checks: [],
             providers: [],
             timestamp: new Date().toISOString(),
+          }),
+        } as Response);
+      }
+
+      if (url.startsWith('/api/runtime')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            mode: runtimeMode,
+            version: '1.0.0',
           }),
         } as Response);
       }
@@ -166,6 +227,146 @@ describe('App startup routing', () => {
       // Look for the Projects heading which is rendered by ProjectsPage
       const projectsHeading = screen.queryByRole('heading', { name: /projects/i });
       expect(projectsHeading).toBeInTheDocument();
+    });
+  });
+
+  it('should render /worktrees route in main mode', async () => {
+    runtimeMode = 'main';
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/worktrees']}>
+          <App />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Worktrees Page' })).toBeInTheDocument();
+    });
+  });
+
+  it('should render /worktrees route outside main mode', async () => {
+    runtimeMode = 'normal';
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/worktrees']}>
+          <App />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Worktrees Page' })).toBeInTheDocument();
+    });
+  });
+
+  it('should keep /chat accessible in main mode', async () => {
+    runtimeMode = 'main';
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/chat']}>
+          <App />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Chat Page' })).toBeInTheDocument();
+    });
+  });
+
+  it('should keep /reviews and /reviews/:id accessible in main mode', async () => {
+    runtimeMode = 'main';
+
+    const reviewsRender = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/reviews']}>
+          <App />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Reviews Page' })).toBeInTheDocument();
+    });
+
+    reviewsRender.unmount();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/reviews/review-1']}>
+          <App />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Review Detail Page' })).toBeInTheDocument();
+    });
+  });
+
+  it('should keep /chat and /reviews accessible in main mode when a worktree tab is active', async () => {
+    runtimeMode = 'main';
+    mockActiveWorktree = {
+      id: 'wt-1',
+      name: 'feature-auth',
+      devchainProjectId: 'project-1',
+    };
+
+    const chatRender = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/chat']}>
+          <App />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Chat Page' })).toBeInTheDocument();
+    });
+
+    chatRender.unmount();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/reviews/review-1']}>
+          <App />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Review Detail Page' })).toBeInTheDocument();
+    });
+  });
+
+  it('should keep /chat and /reviews accessible outside main mode', async () => {
+    runtimeMode = 'normal';
+
+    const chatRender = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/chat']}>
+          <App />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Chat Page' })).toBeInTheDocument();
+    });
+
+    chatRender.unmount();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/reviews']}>
+          <App />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Reviews Page' })).toBeInTheDocument();
     });
   });
 });

@@ -93,6 +93,14 @@ if (!(global as any).setImmediate) {
     setTimeout(fn, 0, ...args);
 }
 
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  globalThis.ResizeObserver = class ResizeObserver {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  };
+}
+
 /**
  * Centralized fetch mock for test isolation (Q2: Global Fetch Mock Hygiene)
  *

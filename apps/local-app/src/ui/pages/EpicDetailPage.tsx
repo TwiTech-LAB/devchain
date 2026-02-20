@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '../hooks/use-toast';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import { resolveSkillSlugs, type SkillSummary } from '@/ui/lib/skills';
+import { getMergedWorktree, isMergedTag } from '@/ui/lib/epic-tags';
 import { useTerminalWindowManager } from '@/ui/terminal-windows';
 import { Button } from '@/ui/components/ui/button';
 import { Badge } from '@/ui/components/ui/badge';
@@ -394,6 +395,11 @@ export function EpicDetailPage() {
       { label: epic.title },
     ];
   }, [epic?.parentId, epic?.title, parentEpic?.title, parentEpicLoading]);
+  const mergedFromWorktree = useMemo(() => getMergedWorktree(epic?.tags), [epic?.tags]);
+  const visibleTags = useMemo(
+    () => (epic?.tags ?? []).filter((tag) => !isMergedTag(tag)),
+    [epic?.tags],
+  );
 
   const { data: agentsData } = useQuery({
     queryKey: ['agents', epic?.projectId],
@@ -976,12 +982,16 @@ export function EpicDetailPage() {
           )}
 
           {/* Tags */}
-          {epic.tags.length > 0 &&
-            epic.tags.map((tag) => (
-              <Badge key={tag} variant="outline" className="text-xs">
-                {tag}
-              </Badge>
-            ))}
+          {mergedFromWorktree && (
+            <Badge variant="outline" className="border-amber-400/60 bg-amber-500/10 text-xs">
+              Merged from {mergedFromWorktree}
+            </Badge>
+          )}
+          {visibleTags.map((tag) => (
+            <Badge key={tag} variant="outline" className="text-xs">
+              {tag}
+            </Badge>
+          ))}
         </div>
       </div>
 

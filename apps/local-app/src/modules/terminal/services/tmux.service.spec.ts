@@ -263,4 +263,150 @@ describe('TmuxService', () => {
       expect(result.size).toBe(0);
     });
   });
+
+  describe('waitForOutput', () => {
+    let capturePaneSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+      capturePaneSpy = jest.spyOn(tmuxService, 'capturePane');
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    function mockCaptureSequence(sequence: string[]): void {
+      let index = 0;
+      capturePaneSpy.mockImplementation(async () => {
+        const value = sequence[Math.min(index, sequence.length - 1)] ?? '';
+        index += 1;
+        return value;
+      });
+    }
+
+    it('returns ready after first output change settles', async () => {
+      mockCaptureSequence(['baseline', 'baseline', 'new output', 'new output', 'new output']);
+
+      const promise = tmuxService.waitForOutput('sess-1', {
+        pollIntervalMs: 500,
+        timeoutMs: 5_000,
+        settleMs: 1_000,
+        lines: 150,
+      });
+
+      await jest.advanceTimersByTimeAsync(2_000);
+      const result = await promise;
+
+      expect(result).toEqual({ ready: true, elapsedMs: 2_000 });
+      expect(capturePaneSpy).toHaveBeenNthCalledWith(1, 'sess-1', 150, false);
+      expect(capturePaneSpy).toHaveBeenNthCalledWith(2, 'sess-1', 150, false);
+    });
+
+    it('returns timeout result when output never changes from baseline', async () => {
+      mockCaptureSequence(['baseline', 'baseline', 'baseline', 'baseline', 'baseline']);
+
+      const promise = tmuxService.waitForOutput('sess-1', {
+        pollIntervalMs: 500,
+        timeoutMs: 1_500,
+        settleMs: 1_000,
+      });
+
+      await jest.advanceTimersByTimeAsync(2_000);
+      const result = await promise;
+
+      expect(result.ready).toBe(false);
+      expect(result.elapsedMs).toBeGreaterThanOrEqual(1_500);
+    });
+
+    it('ignores transient empty captures when baseline is non-empty', async () => {
+      mockCaptureSequence(['baseline', 'baseline', 'new output', '', 'new output']);
+
+      const promise = tmuxService.waitForOutput('sess-1', {
+        pollIntervalMs: 500,
+        timeoutMs: 2_200,
+        settleMs: 1_000,
+      });
+
+      await jest.advanceTimersByTimeAsync(2_000);
+      const result = await promise;
+
+      expect(result).toEqual({ ready: true, elapsedMs: 2_000 });
+    });
+
+    it('waits for settle duration when output changes multiple times', async () => {
+      mockCaptureSequence(['baseline', 'baseline', 'output-1', 'output-2', 'output-2', 'output-2']);
+
+      const promise = tmuxService.waitForOutput('sess-1', {
+        pollIntervalMs: 500,
+        timeoutMs: 5_000,
+        settleMs: 1_000,
+      });
+
+      await jest.advanceTimersByTimeAsync(2_500);
+      const result = await promise;
+
+      expect(result).toEqual({ ready: true, elapsedMs: 2_500 });
+    });
+  });
+
+  describe('pasteAndSubmit', () => {
+    let pasteTextSpy: jest.SpyInstance;
+    let sendKeysSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+      pasteTextSpy = jest.spyOn(tmuxService, 'pasteText').mockResolvedValue(undefined);
+      sendKeysSpy = jest.spyOn(tmuxService, 'sendKeys').mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('pastes text and sends Enter on success', async () => {
+      const promise = tmuxService.pasteAndSubmit('sess-1', 'hello world');
+      await jest.runAllTimersAsync();
+      await promise;
+
+      expect(pasteTextSpy).toHaveBeenCalledWith('sess-1', 'hello world', { bracketed: true });
+      expect(sendKeysSpy).toHaveBeenCalledWith('sess-1', ['Enter']);
+    });
+
+    it('retries sendKeys once on first failure then succeeds', async () => {
+      sendKeysSpy
+        .mockRejectedValueOnce(new Error('tmux sendKeys failed'))
+        .mockResolvedValueOnce(undefined);
+
+      const promise = tmuxService.pasteAndSubmit('sess-1', 'hello');
+      await jest.runAllTimersAsync();
+      await promise;
+
+      expect(sendKeysSpy).toHaveBeenCalledTimes(2);
+      expect(pasteTextSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('propagates error when sendKeys fails twice', async () => {
+      sendKeysSpy.mockRejectedValue(new Error('sendKeys failed'));
+
+      const promise = tmuxService.pasteAndSubmit('sess-1', 'hello');
+
+      // Flush initial delay + retry delay timers with microtask draining
+      for (let i = 0; i < 5; i++) {
+        jest.advanceTimersByTime(300);
+        await Promise.resolve();
+      }
+
+      await expect(promise).rejects.toThrow('sendKeys failed');
+    });
+
+    it('skips sendKeys when submitKeys is empty', async () => {
+      const promise = tmuxService.pasteAndSubmit('sess-1', 'hello', { submitKeys: [] });
+      await jest.runAllTimersAsync();
+      await promise;
+
+      expect(pasteTextSpy).toHaveBeenCalledTimes(1);
+      expect(sendKeysSpy).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -19,14 +19,7 @@ describe('GeminiAdapter', () => {
         endpoint: 'http://127.0.0.1:3000/mcp',
       });
 
-      expect(args).toEqual([
-        'mcp',
-        'add',
-        'devchain',
-        'http://127.0.0.1:3000/mcp',
-        '--type',
-        'http',
-      ]);
+      expect(args).toEqual(['mcp', 'add', '-t', 'http', 'devchain', 'http://127.0.0.1:3000/mcp']);
     });
 
     it('builds command with custom alias', () => {
@@ -35,14 +28,7 @@ describe('GeminiAdapter', () => {
         alias: 'myserver',
       });
 
-      expect(args).toEqual([
-        'mcp',
-        'add',
-        'myserver',
-        'http://127.0.0.1:3000/mcp',
-        '--type',
-        'http',
-      ]);
+      expect(args).toEqual(['mcp', 'add', '-t', 'http', 'myserver', 'http://127.0.0.1:3000/mcp']);
     });
 
     it('includes extra args when provided', () => {
@@ -55,10 +41,10 @@ describe('GeminiAdapter', () => {
       expect(args).toEqual([
         'mcp',
         'add',
+        '-t',
+        'http',
         'devchain',
         'http://127.0.0.1:3000/mcp',
-        '--type',
-        'http',
         '--force',
         '--verbose',
       ]);
@@ -169,6 +155,44 @@ describe('GeminiAdapter', () => {
         alias: 'devchain',
         endpoint: 'http://127.0.0.1:3000/mcp',
         transport: 'SSE',
+      });
+    });
+
+    it('strips ANSI color codes before parsing', () => {
+      const stdout = `Loaded cached credentials.
+Configured MCP servers:
+
+\x1b[32m✓\x1b[0m devchain: http://127.0.0.1:3000/mcp (http) - Connected`;
+      const entries = adapter.parseListOutput(stdout);
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toEqual({
+        alias: 'devchain',
+        endpoint: 'http://127.0.0.1:3000/mcp',
+        transport: 'HTTP',
+      });
+    });
+
+    it('handles ANSI codes in multiple entries', () => {
+      const stdout = `\x1b[32m✓\x1b[0m devchain: http://127.0.0.1:3000/mcp (http) - Connected
+\x1b[31m✗\x1b[0m other: http://127.0.0.1:4000/mcp (sse) - Failed`;
+      const entries = adapter.parseListOutput(stdout);
+
+      expect(entries).toHaveLength(2);
+      expect(entries[0].alias).toBe('devchain');
+      expect(entries[1].alias).toBe('other');
+    });
+
+    it('falls back to stderr when stdout is empty', () => {
+      const stdout = '';
+      const stderr = `Loaded cached credentials.\nConfigured MCP servers:\n\n\x1b[32m✓\x1b[0m devchain: http://127.0.0.1:3000/mcp (http) - Connected\n`;
+      const entries = adapter.parseListOutput(stdout, stderr);
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toEqual({
+        alias: 'devchain',
+        endpoint: 'http://127.0.0.1:3000/mcp',
+        transport: 'HTTP',
       });
     });
   });

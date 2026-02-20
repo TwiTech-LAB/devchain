@@ -45,10 +45,15 @@ import {
   LayoutGrid,
   List,
   Filter,
+  GitBranch,
 } from 'lucide-react';
 import { cn } from '@/ui/lib/utils';
+import { useOptionalWorktreeTab } from '@/ui/hooks/useWorktreeTab';
+import { EpicContextMenu } from '@/ui/components/board/EpicContextMenu';
+import { MoveToWorktreeDialog } from '@/ui/components/board/MoveToWorktreeDialog';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import { useBoardFilters } from '@/ui/hooks/useBoardFilters';
+import { getMergedWorktree, isMergedTag } from '@/ui/lib/epic-tags';
 import {
   parseBoardFilters,
   serializeBoardFilters,
@@ -221,6 +226,7 @@ function EpicCard({
   agentName,
   onBulkEdit,
   onViewDetails,
+  onMoveToWorktree,
 }: {
   epic: Epic;
   onEdit: (epic: Epic) => void;
@@ -239,6 +245,7 @@ function EpicCard({
   agentName?: string | null;
   onBulkEdit?: (e: React.MouseEvent) => void;
   onViewDetails?: (e: React.MouseEvent) => void;
+  onMoveToWorktree?: (e: React.MouseEvent) => void;
 }) {
   const navigate = useNavigate();
   const showFilterToggle = epic.parentId === null;
@@ -330,6 +337,7 @@ function EpicCard({
                 showBulkEdit={showFilterToggle}
                 showOpenDetails
                 onBulkEdit={onBulkEdit}
+                onMoveToWorktree={onMoveToWorktree}
                 onEdit={(e) => {
                   e.stopPropagation();
                   onEdit(epic);
@@ -472,79 +480,89 @@ function CollapsedColumn({
       </div>
       {epics.length > 0 && (
         <div className="w-full flex-1 space-y-1 text-left overflow-y-auto min-h-0">
-          {epics.map((epic) => (
-            <div
-              key={epic.id}
-              className="truncate rounded border bg-background px-2 py-1 text-xs text-foreground"
-              draggable
-              onDragStart={() => onDragStartEpic(epic)}
-              onDragEnd={onDragEndEpic}
-            >
-              <EpicTooltipWrapper
-                title={epic.title || 'Untitled'}
-                statusLabel={status.label}
-                statusColor={status.color}
-                agentName={getAgentName(epic.agentId)}
-                description={epic.description ?? undefined}
-                showFilterToggle={epic.parentId === null}
-                showBulkEdit={epic.parentId === null}
-                showOpenDetails
-                onBulkEdit={(e) => {
-                  e.stopPropagation();
-                  onEpicBulkEdit(epic);
-                }}
-                onEdit={(e) => {
-                  e.stopPropagation();
-                  onEpicEdit(epic);
-                }}
-                onDelete={(e) => {
-                  e.stopPropagation();
-                  onEpicDelete(epic);
-                }}
-                onViewDetails={(e) => {
-                  e.stopPropagation();
-                  onEpicViewDetails(epic);
-                }}
-                onToggleParentFilter={(e) => {
-                  e.stopPropagation();
-                  onEpicToggleParentFilter(epic);
-                }}
-                dynamicSide
-                dynamicSideThreshold={360}
-                delayDuration={100}
-                sideOffset={10}
-                contentClassName="w-[340px] max-h-[70vh] overflow-auto space-y-2"
+          {epics.map((epic) => {
+            const mergedFromWorktree = getMergedWorktree(epic.tags ?? []);
+            const visibleTags = (epic.tags ?? []).filter((tag) => !isMergedTag(tag));
+
+            return (
+              <div
+                key={epic.id}
+                className="truncate rounded border bg-background px-2 py-1 text-xs text-foreground"
+                draggable
+                onDragStart={() => onDragStartEpic(epic)}
+                onDragEnd={onDragEndEpic}
               >
-                <div className="truncate font-semibold cursor-pointer">
-                  {epic.title || 'Untitled'}
-                </div>
-              </EpicTooltipWrapper>
-              {((subEpicCounts?.[epic.id] ?? 0) > 0 || (epic.tags && epic.tags.length > 0)) && (
-                <div className="mt-1 flex flex-wrap gap-1">
-                  {(subEpicCounts?.[epic.id] ?? 0) > 0 && (
-                    <span className="inline-flex items-center gap-0.5 rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
-                      <span className="opacity-60">↳</span>
-                      {subEpicCounts?.[epic.id]}
-                    </span>
-                  )}
-                  {epic.tags?.slice(0, 2).map((tag) => (
-                    <span
-                      key={`${epic.id}-${tag}`}
-                      className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground"
-                      title={tag}
-                    >
-                      {tag}
-                    </span>
-                  ))}
-                  {epic.tags && epic.tags.length > 2 && (
-                    <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
-                      +{epic.tags.length - 2}
-                    </span>
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
+                <EpicTooltipWrapper
+                  title={epic.title || 'Untitled'}
+                  statusLabel={status.label}
+                  statusColor={status.color}
+                  agentName={getAgentName(epic.agentId)}
+                  description={epic.description ?? undefined}
+                  showFilterToggle={epic.parentId === null}
+                  showBulkEdit={epic.parentId === null}
+                  showOpenDetails
+                  onBulkEdit={(e) => {
+                    e.stopPropagation();
+                    onEpicBulkEdit(epic);
+                  }}
+                  onEdit={(e) => {
+                    e.stopPropagation();
+                    onEpicEdit(epic);
+                  }}
+                  onDelete={(e) => {
+                    e.stopPropagation();
+                    onEpicDelete(epic);
+                  }}
+                  onViewDetails={(e) => {
+                    e.stopPropagation();
+                    onEpicViewDetails(epic);
+                  }}
+                  onToggleParentFilter={(e) => {
+                    e.stopPropagation();
+                    onEpicToggleParentFilter(epic);
+                  }}
+                  dynamicSide
+                  dynamicSideThreshold={360}
+                  delayDuration={100}
+                  sideOffset={10}
+                  contentClassName="w-[340px] max-h-[70vh] overflow-auto space-y-2"
+                >
+                  <div className="truncate font-semibold cursor-pointer">
+                    {epic.title || 'Untitled'}
+                  </div>
+                </EpicTooltipWrapper>
+                {((subEpicCounts?.[epic.id] ?? 0) > 0 || (epic.tags && epic.tags.length > 0)) && (
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {mergedFromWorktree && (
+                      <span className="rounded-full border border-amber-400/40 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-700">
+                        Merged from {mergedFromWorktree}
+                      </span>
+                    )}
+                    {visibleTags.slice(0, 2).map((tag) => (
+                      <span
+                        key={`${epic.id}-${tag}`}
+                        className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground"
+                        title={tag}
+                      >
+                        {tag}
+                      </span>
+                    ))}
+                    {visibleTags.length > 2 && (
+                      <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+                        +{visibleTags.length - 2}
+                      </span>
+                    )}
+                    {(subEpicCounts?.[epic.id] ?? 0) > 0 && (
+                      <span className="inline-flex items-center gap-0.5 rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+                        <span className="opacity-60">↳</span>
+                        {subEpicCounts?.[epic.id]}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </button>
@@ -572,6 +590,8 @@ function BoardColumn({
   onCollapseColumn,
   onBulkEdit,
   onViewDetails,
+  onMoveToWorktree,
+  hasRunningWorktrees = false,
 }: {
   status: Status;
   epics: Epic[];
@@ -592,6 +612,8 @@ function BoardColumn({
   onCollapseColumn: (statusId: string) => void;
   onBulkEdit: (epic: Epic) => void;
   onViewDetails: (epic: Epic) => void;
+  onMoveToWorktree?: (epic: Epic) => void;
+  hasRunningWorktrees?: boolean;
 }) {
   const navigate = useNavigate();
   return (
@@ -652,98 +674,129 @@ function BoardColumn({
           </div>
         )}
         {epics.map((epic) => (
-          <EpicCard
+          <EpicContextMenu
             key={epic.id}
             epic={epic}
-            onEdit={onEditEpic}
-            onDelete={onDeleteEpic}
-            onDragStart={onDragStart}
-            onDragEnd={onDragEnd}
-            isDragging={draggedEpic?.id === epic.id}
-            onKeyboardMove={onKeyboardMove}
-            onToggleParentFilter={onToggleParentFilter}
-            isActiveParent={activeParentId === epic.id}
-            statuses={statusOrder}
-            renderPreview={() => {
-              const agentName = getAgentName(epic.agentId);
-              const showFilterToggle = epic.parentId === null;
-              const actions = (
-                <>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 w-6 p-0"
-                    aria-label="Open epic details"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      navigate(`/epics/${epic.id}`);
-                    }}
-                  >
-                    <Search className="h-4 w-4" />
-                  </Button>
-                  {showFilterToggle && (
+            onMoveToWorktree={onMoveToWorktree ?? (() => {})}
+            hasRunningWorktrees={hasRunningWorktrees}
+          >
+            <EpicCard
+              epic={epic}
+              onEdit={onEditEpic}
+              onDelete={onDeleteEpic}
+              onDragStart={onDragStart}
+              onDragEnd={onDragEnd}
+              isDragging={draggedEpic?.id === epic.id}
+              onKeyboardMove={onKeyboardMove}
+              onToggleParentFilter={onToggleParentFilter}
+              isActiveParent={activeParentId === epic.id}
+              statuses={statusOrder}
+              renderPreview={() => {
+                const agentName = getAgentName(epic.agentId);
+                const showFilterToggle = epic.parentId === null;
+                const showMoveToWorktree =
+                  showFilterToggle && hasRunningWorktrees && onMoveToWorktree;
+                const actions = (
+                  <>
                     <Button
                       variant="ghost"
                       size="sm"
                       className="h-6 w-6 p-0"
-                      title="Bulk edit parent and sub-epic status/assignee"
-                      aria-label="Bulk edit parent and sub-epics"
+                      aria-label="Open epic details"
                       onClick={(e) => {
                         e.stopPropagation();
-                        onBulkEdit(epic);
+                        navigate(`/epics/${epic.id}`);
                       }}
                     >
-                      <ListChecks className="h-3 w-3" />
+                      <Search className="h-4 w-4" />
                     </Button>
-                  )}
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 w-6 p-0"
-                    aria-label="Edit epic"
-                    onClick={(e) => {
+                    {showFilterToggle && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 w-6 p-0"
+                        title="Bulk edit parent and sub-epic status/assignee"
+                        aria-label="Bulk edit parent and sub-epics"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onBulkEdit(epic);
+                        }}
+                      >
+                        <ListChecks className="h-3 w-3" />
+                      </Button>
+                    )}
+                    {showMoveToWorktree && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 w-6 p-0"
+                        title="Move to worktree"
+                        aria-label="Move to worktree"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onMoveToWorktree(epic);
+                        }}
+                      >
+                        <GitBranch className="h-3 w-3" />
+                      </Button>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 w-6 p-0"
+                      aria-label="Edit epic"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onEditEpic(epic);
+                      }}
+                    >
+                      <Edit className="h-3 w-3" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 w-6 p-0 text-destructive hover:text-destructive"
+                      aria-label="Delete epic"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDeleteEpic(epic);
+                      }}
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  </>
+                );
+                return (
+                  <EpicPreview
+                    agentName={agentName}
+                    description={epic.description}
+                    tags={epic.tags}
+                    maxLines={5}
+                    metaRight={actions}
+                  />
+                );
+              }}
+              statusLabel={status.label}
+              statusColor={status.color}
+              agentName={getAgentName(epic.agentId)}
+              onBulkEdit={(e) => {
+                e.stopPropagation();
+                onBulkEdit(epic);
+              }}
+              onViewDetails={(e) => {
+                e.stopPropagation();
+                onViewDetails(epic);
+              }}
+              onMoveToWorktree={
+                epic.parentId === null && hasRunningWorktrees && onMoveToWorktree
+                  ? (e) => {
                       e.stopPropagation();
-                      onEditEpic(epic);
-                    }}
-                  >
-                    <Edit className="h-3 w-3" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 w-6 p-0 text-destructive hover:text-destructive"
-                    aria-label="Delete epic"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDeleteEpic(epic);
-                    }}
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </Button>
-                </>
-              );
-              return (
-                <EpicPreview
-                  agentName={agentName}
-                  description={epic.description}
-                  tags={epic.tags}
-                  maxLines={5}
-                  metaRight={actions}
-                />
-              );
-            }}
-            statusLabel={status.label}
-            statusColor={status.color}
-            agentName={getAgentName(epic.agentId)}
-            onBulkEdit={(e) => {
-              e.stopPropagation();
-              onBulkEdit(epic);
-            }}
-            onViewDetails={(e) => {
-              e.stopPropagation();
-              onViewDetails(epic);
-            }}
-          />
+                      onMoveToWorktree(epic);
+                    }
+                  : undefined
+              }
+            />
+          </EpicContextMenu>
         ))}
       </div>
     </div>
@@ -756,9 +809,13 @@ export function BoardPage() {
   const location = useLocation();
   const { toast } = useToast();
   const { selectedProjectId, selectedProject: activeProject } = useSelectedProject();
+  const { activeWorktree, worktrees } = useOptionalWorktreeTab();
+  const hasRunningWorktrees =
+    activeWorktree === null && worktrees.some((wt) => wt.status === 'running');
   const [showDialog, setShowDialog] = useState(false);
   const [editingEpic, setEditingEpic] = useState<Epic | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<Epic | null>(null);
+  const [moveToWorktreeEpic, setMoveToWorktreeEpic] = useState<Epic | null>(null);
   const [bulkDeleteIds, setBulkDeleteIds] = useState<string[] | null>(null);
   const [selectedStatusId, setSelectedStatusId] = useState<string>('');
   const [formData, setFormData] = useState({
@@ -1389,6 +1446,10 @@ export function BoardPage() {
   const handleDelete = (epic: Epic) => {
     setDeleteConfirm(epic);
   };
+
+  const handleMoveToWorktree = useCallback((epic: Epic) => {
+    setMoveToWorktreeEpic(epic);
+  }, []);
 
   const handleToggleParentFilter = useCallback(
     (epic: Epic) => {
@@ -2060,6 +2121,8 @@ export function BoardPage() {
                     onCollapseColumn={handleToggleColumnCollapse}
                     onBulkEdit={handleOpenBulkModal}
                     onViewDetails={(epic) => navigate(`/epics/${epic.id}`)}
+                    onMoveToWorktree={hasRunningWorktrees ? handleMoveToWorktree : undefined}
+                    hasRunningWorktrees={hasRunningWorktrees}
                   />
                 );
               })}
@@ -2128,6 +2191,8 @@ export function BoardPage() {
               });
             }}
             subEpicCounts={subEpicCountsMap}
+            onMoveToWorktree={hasRunningWorktrees ? handleMoveToWorktree : undefined}
+            hasRunningWorktrees={hasRunningWorktrees}
             className="flex-1 min-h-0"
           />
         )}
@@ -2435,6 +2500,15 @@ export function BoardPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Move to Worktree Dialog */}
+      <MoveToWorktreeDialog
+        epic={moveToWorktreeEpic}
+        open={!!moveToWorktreeEpic}
+        onOpenChange={(open) => !open && setMoveToWorktreeEpic(null)}
+        sourceStatuses={sortedStatuses}
+        sourceAgents={(agentsData?.items ?? []) as Agent[]}
+      />
     </div>
   );
 }

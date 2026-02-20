@@ -5,15 +5,21 @@ import { join } from 'path';
 const CLAUDE_CONFIG_FILENAME = '.claude.json';
 const DEFAULT_CLAUDE_CONFIG_MODE = 0o600;
 
+export type ClaudeConfigState = 'valid' | 'missing' | 'malformed';
+
 export interface ClaudeAutoCompactStatus {
   autoCompactEnabled: boolean;
+  configState: ClaudeConfigState;
 }
 
-export interface DisableClaudeAutoCompactResult {
+export interface ClaudeAutoCompactWriteResult {
   success: boolean;
   error?: string;
   errorType?: 'invalid_config' | 'io_error';
 }
+
+/** @deprecated Use ClaudeAutoCompactWriteResult instead */
+export type DisableClaudeAutoCompactResult = ClaudeAutoCompactWriteResult;
 
 function getClaudeConfigPath(): string {
   return join(homedir(), CLAUDE_CONFIG_FILENAME);
@@ -43,16 +49,30 @@ export async function checkClaudeAutoCompact(): Promise<ClaudeAutoCompactStatus>
     const parsed = JSON.parse(configRaw) as unknown;
 
     if (!isObjectRecord(parsed)) {
-      return { autoCompactEnabled: false };
+      return { autoCompactEnabled: false, configState: 'malformed' };
     }
 
-    return { autoCompactEnabled: parsed.autoCompactEnabled === true };
-  } catch {
-    return { autoCompactEnabled: false };
+    // Claude Code enables auto-compact by default — only an explicit `false` disables it.
+    // A missing key means "use default" which is enabled.
+    return { autoCompactEnabled: parsed.autoCompactEnabled !== false, configState: 'valid' };
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      // No config file — Claude Code uses defaults, which has auto-compact enabled.
+      return { autoCompactEnabled: true, configState: 'missing' };
+    }
+    if (isJsonParseError(error)) {
+      return { autoCompactEnabled: false, configState: 'malformed' };
+    }
+    // Other I/O errors: treat as malformed to avoid false recommendations
+    return { autoCompactEnabled: false, configState: 'malformed' };
   }
 }
 
-export async function disableClaudeAutoCompact(): Promise<DisableClaudeAutoCompactResult> {
+/**
+ * Atomically write autoCompactEnabled to ~/.claude.json.
+ * Shared logic for both enable and disable operations.
+ */
+async function writeAutoCompactConfig(enabled: boolean): Promise<ClaudeAutoCompactWriteResult> {
   const configPath = getClaudeConfigPath();
   let parsed: unknown = {};
   let hadExistingConfig = true;
@@ -105,7 +125,7 @@ export async function disableClaudeAutoCompact(): Promise<DisableClaudeAutoCompa
 
   const updatedConfig: Record<string, unknown> = {
     ...parsed,
-    autoCompactEnabled: false,
+    autoCompactEnabled: enabled,
   };
   const tempPath = `${configPath}.tmp-${process.pid}-${Date.now()}`;
   const output = `${JSON.stringify(updatedConfig, null, 2)}\n`;
@@ -127,4 +147,12 @@ export async function disableClaudeAutoCompact(): Promise<DisableClaudeAutoCompa
       errorType: 'io_error',
     };
   }
+}
+
+export async function enableClaudeAutoCompact(): Promise<ClaudeAutoCompactWriteResult> {
+  return writeAutoCompactConfig(true);
+}
+
+export async function disableClaudeAutoCompact(): Promise<ClaudeAutoCompactWriteResult> {
+  return writeAutoCompactConfig(false);
 }

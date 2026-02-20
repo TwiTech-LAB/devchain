@@ -208,4 +208,43 @@ describe('useTerminalResize', () => {
       isInitialResize: true,
     });
   });
+
+  it('should emit resize via provided socket when supplied', () => {
+    const terminalRef = { current: mockContainerElement };
+    const xtermRef = { current: mockTerminal };
+    const fitAddonRef = { current: mockFitAddon };
+    const sessionId = 'test-session';
+    const providedSocket = {
+      emit: jest.fn(),
+      connected: true,
+    };
+    mockSocket.connected = false;
+
+    renderHook(() =>
+      useTerminalResize(
+        terminalRef,
+        xtermRef,
+        fitAddonRef,
+        sessionId,
+        undefined,
+        undefined,
+        providedSocket as never,
+      ),
+    );
+
+    const callback = (
+      mockContainerElement as HTMLElement & { _resizeCallback?: ResizeObserverCallback }
+    )._resizeCallback;
+    act(() => {
+      callback?.([] as ResizeObserverEntry[], {} as ResizeObserver);
+      jest.advanceTimersByTime(250);
+    });
+
+    expect(providedSocket.emit).toHaveBeenCalledWith('terminal:resize', {
+      sessionId,
+      cols: 80,
+      rows: 24,
+    });
+    expect(mockSocket.emit).not.toHaveBeenCalled();
+  });
 });

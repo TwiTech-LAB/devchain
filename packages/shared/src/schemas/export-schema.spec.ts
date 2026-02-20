@@ -100,6 +100,83 @@ describe('ExportSchema', () => {
     });
   });
 
+  describe('providerSettings', () => {
+    const baseTemplate = {
+      version: 1,
+      exportedAt: '2024-01-01T00:00:00Z',
+      prompts: [],
+      profiles: [],
+      agents: [],
+      statuses: [],
+    };
+
+    it('should accept template without providerSettings (backward compatible)', () => {
+      const result = ExportSchema.safeParse(baseTemplate);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.providerSettings).toBeUndefined();
+      }
+    });
+
+    it('should accept valid providerSettings with threshold', () => {
+      const template = {
+        ...baseTemplate,
+        providerSettings: [{ name: 'claude', autoCompactThreshold: 10 }],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.providerSettings).toHaveLength(1);
+        expect(result.data.providerSettings![0].autoCompactThreshold).toBe(10);
+      }
+    });
+
+    it('should accept providerSettings with null threshold', () => {
+      const template = {
+        ...baseTemplate,
+        providerSettings: [{ name: 'claude', autoCompactThreshold: null }],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(true);
+    });
+
+    it('should accept providerSettings without threshold field', () => {
+      const template = {
+        ...baseTemplate,
+        providerSettings: [{ name: 'claude' }],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(true);
+    });
+
+    it('should reject providerSettings with threshold out of range', () => {
+      const template = {
+        ...baseTemplate,
+        providerSettings: [{ name: 'claude', autoCompactThreshold: 101 }],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject providerSettings with empty name', () => {
+      const template = {
+        ...baseTemplate,
+        providerSettings: [{ name: '', autoCompactThreshold: 10 }],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(false);
+    });
+
+    it('should accept empty providerSettings array', () => {
+      const template = {
+        ...baseTemplate,
+        providerSettings: [],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(true);
+    });
+  });
+
   describe('presets', () => {
     const baseTemplate = {
       version: 1,

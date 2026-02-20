@@ -239,4 +239,77 @@ describe('validatePresetAvailability', () => {
       expect(result.available).toBe(true);
     });
   });
+
+  describe('partial provider coverage (relaxed import scenario)', () => {
+    // After a relaxed template import where only claude is installed,
+    // presets referencing codex/gemini configs should be unavailable.
+    const partialAgents: Agent[] = [
+      { id: 'agent-1', name: 'Brainstormer', profileId: 'profile-arch' },
+      { id: 'agent-2', name: 'Coder', profileId: 'profile-coder' },
+      { id: 'agent-3', name: 'Code Reviewer', profileId: 'profile-reviewer' },
+    ];
+
+    // Only claude configs exist (codex/gemini not installed)
+    const partialConfigs = new Map<string, ProviderConfig[]>([
+      [
+        'profile-arch',
+        [{ id: 'c1', name: 'opus', profileId: 'profile-arch', providerId: 'p-claude' }],
+      ],
+      [
+        'profile-coder',
+        [
+          { id: 'c2', name: 'opus', profileId: 'profile-coder', providerId: 'p-claude' },
+          { id: 'c3', name: 'sonnet', profileId: 'profile-coder', providerId: 'p-claude' },
+        ],
+      ],
+      [
+        'profile-reviewer',
+        [{ id: 'c4', name: 'opus', profileId: 'profile-reviewer', providerId: 'p-claude' }],
+      ],
+    ]);
+
+    it('returns available=false for presets referencing configs from missing providers', () => {
+      const preset = createPreset('Tier-A[gpt-high]', [
+        { agentName: 'Brainstormer', providerConfigName: 'gpt-high' },
+        { agentName: 'Coder', providerConfigName: 'gpt-high' },
+        { agentName: 'Code Reviewer', providerConfigName: 'gpt-high' },
+      ]);
+
+      const result = validatePresetAvailability(preset, partialAgents, partialConfigs);
+
+      expect(result.available).toBe(false);
+      expect(result.missingConfigs).toHaveLength(3);
+      expect(result.missingConfigs.every((m) => m.reason === 'config_not_found')).toBe(true);
+    });
+
+    it('returns available=true for presets using only installed provider configs', () => {
+      const preset = createPreset('Tier-A[opus]', [
+        { agentName: 'Brainstormer', providerConfigName: 'opus' },
+        { agentName: 'Coder', providerConfigName: 'opus' },
+        { agentName: 'Code Reviewer', providerConfigName: 'opus' },
+      ]);
+
+      const result = validatePresetAvailability(preset, partialAgents, partialConfigs);
+
+      expect(result.available).toBe(true);
+      expect(result.missingConfigs).toEqual([]);
+    });
+
+    it('returns mixed results for presets with partial coverage', () => {
+      const preset = createPreset('Tier-B[opus:sonnet:gpt-high]', [
+        { agentName: 'Brainstormer', providerConfigName: 'opus' },
+        { agentName: 'Coder', providerConfigName: 'sonnet' },
+        { agentName: 'Code Reviewer', providerConfigName: 'gpt-high' },
+      ]);
+
+      const result = validatePresetAvailability(preset, partialAgents, partialConfigs);
+
+      expect(result.available).toBe(false);
+      // Only Code Reviewer's gpt-high config is missing
+      expect(result.missingConfigs).toHaveLength(1);
+      expect(result.missingConfigs[0].agentName).toBe('Code Reviewer');
+      expect(result.missingConfigs[0].configName).toBe('gpt-high');
+      expect(result.missingConfigs[0].reason).toBe('config_not_found');
+    });
+  });
 });

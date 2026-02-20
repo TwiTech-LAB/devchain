@@ -4,6 +4,7 @@ import { Terminal, type TerminalHandle } from '@/ui/components/Terminal';
 import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
 import { useToast } from '@/ui/hooks/use-toast';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
+import { useWorktreeSocket } from '@/ui/hooks/useWorktreeSocket';
 import { TERMINAL_SESSIONS_QUERY_KEY } from '@/ui/components/terminal-dock/TerminalDock';
 import {
   type ActiveSession,
@@ -348,6 +349,159 @@ export function useTerminalWindowManager() {
       });
 
       focusWindow(session.id);
+    },
+    [closeWindow, focusWindow, openWindow],
+  );
+}
+
+interface WorktreeTerminalWindowContentProps {
+  windowId: string;
+  sessionId: string;
+  agentName: string;
+  worktreeName: string;
+  onRequestClose: () => void;
+}
+
+function WorktreeTerminalWindowContent({
+  windowId,
+  sessionId,
+  agentName,
+  worktreeName,
+  onRequestClose,
+}: WorktreeTerminalWindowContentProps) {
+  const { socket } = useWorktreeSocket(worktreeName);
+  const { updateWindowMeta, setWindowHandle } = useTerminalWindows();
+  const handleRef = useRef<TerminalHandle | null>(null);
+  const [connectionLabel, setConnectionLabel] = useState<string>(
+    socket.connected ? 'Connected' : 'Connecting',
+  );
+
+  const publishWindowMeta = useCallback(
+    (handle: TerminalHandle | null) => {
+      const details: TerminalWindowDetail[] = [
+        {
+          label: 'Agent',
+          value: agentName,
+          title: agentName,
+        },
+        {
+          label: 'Worktree',
+          value: worktreeName,
+          title: worktreeName,
+        },
+        {
+          label: 'Connection',
+          value: connectionLabel,
+        },
+      ];
+
+      const menuItems: TerminalWindowMenuItem[] = [
+        {
+          id: 'clear-buffer',
+          label: 'Clear terminal buffer',
+          onSelect: () => handle?.clear?.(),
+          disabled: !handle,
+          shortcut: 'Ctrl+K',
+        },
+      ];
+
+      updateWindowMeta(windowId, {
+        title: `${agentName} — ${worktreeName}`,
+        subtitle: 'Worktree terminal',
+        details,
+        menuItems,
+      });
+    },
+    [agentName, connectionLabel, updateWindowMeta, windowId, worktreeName],
+  );
+
+  useEffect(() => {
+    publishWindowMeta(handleRef.current);
+  }, [publishWindowMeta]);
+
+  useEffect(() => {
+    const onConnect = () => setConnectionLabel('Connected');
+    const onDisconnect = () => setConnectionLabel('Disconnected');
+
+    socket.on('connect', onConnect);
+    socket.on('disconnect', onDisconnect);
+
+    return () => {
+      socket.off('connect', onConnect);
+      socket.off('disconnect', onDisconnect);
+    };
+  }, [socket]);
+
+  const handleTerminalRef = useCallback(
+    (handle: TerminalHandle | null) => {
+      handleRef.current = handle;
+      setWindowHandle(windowId, handle);
+      publishWindowMeta(handle);
+    },
+    [publishWindowMeta, setWindowHandle, windowId],
+  );
+
+  const handleSessionEnded = useCallback(() => {
+    onRequestClose();
+  }, [onRequestClose]);
+
+  return (
+    <Terminal
+      ref={handleTerminalRef}
+      sessionId={sessionId}
+      socket={socket}
+      onSessionEnded={handleSessionEnded}
+    />
+  );
+}
+
+export interface WorktreeTerminalWindowInput {
+  sessionId: string;
+  agentName: string;
+  worktreeName: string;
+}
+
+export function useWorktreeTerminalWindowManager() {
+  const { openWindow, closeWindow, focusWindow } = useTerminalWindows();
+
+  return useCallback(
+    ({ sessionId, agentName, worktreeName }: WorktreeTerminalWindowInput) => {
+      const windowId = `worktree:${encodeURIComponent(worktreeName)}:${sessionId}`;
+
+      openWindow({
+        id: windowId,
+        title: `${agentName} — ${worktreeName}`,
+        subtitle: 'Worktree terminal',
+        menuItems: [],
+        details: [
+          {
+            label: 'Agent',
+            value: agentName,
+            title: agentName,
+          },
+          {
+            label: 'Worktree',
+            value: worktreeName,
+            title: worktreeName,
+          },
+          {
+            label: 'Connection',
+            value: 'Connecting',
+          },
+        ],
+        content: (
+          <WorktreeTerminalWindowContent
+            key={windowId}
+            windowId={windowId}
+            sessionId={sessionId}
+            agentName={agentName}
+            worktreeName={worktreeName}
+            onRequestClose={() => closeWindow(windowId)}
+          />
+        ),
+      });
+
+      focusWindow(windowId);
     },
     [closeWindow, focusWindow, openWindow],
   );

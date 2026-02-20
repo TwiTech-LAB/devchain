@@ -38,6 +38,7 @@ interface Provider {
   id: string;
   name: string;
   binPath: string | null;
+  autoCompactThreshold: number | null;
   mcpConfigured: boolean;
   mcpEndpoint: string | null;
   mcpRegisteredAt: string | null;
@@ -66,7 +67,11 @@ async function fetchProviders() {
   return res.json();
 }
 
-async function createProvider(data: { name: string; binPath: string | null }) {
+async function createProvider(data: {
+  name: string;
+  binPath: string | null;
+  autoCompactThreshold?: number;
+}) {
   const res = await fetch('/api/providers', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -85,7 +90,10 @@ async function createProvider(data: { name: string; binPath: string | null }) {
   return res.json();
 }
 
-async function updateProvider(id: string, data: { binPath?: string | null }) {
+async function updateProvider(
+  id: string,
+  data: { binPath?: string | null; autoCompactThreshold?: number | null },
+) {
   const res = await fetch(`/api/providers/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -135,9 +143,11 @@ export function ProvidersPage() {
   const [showDialog, setShowDialog] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<Provider | null>(null);
-  const [formData, setFormData] = useState({ binPath: '' });
+  const [formData, setFormData] = useState({ binPath: '', autoCompactThreshold: '' });
   const [formError, setFormError] = useState<string | null>(null);
-  const [formErrorField, setFormErrorField] = useState<'binPath' | null>(null);
+  const [formErrorField, setFormErrorField] = useState<'binPath' | 'autoCompactThreshold' | null>(
+    null,
+  );
   const [providerType, setProviderType] = useState<ProviderType>('codex');
   const [binPathTouched, setBinPathTouched] = useState(false);
 
@@ -185,7 +195,7 @@ export function ProvidersPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['providers'] });
       setShowDialog(false);
-      setFormData({ binPath: '' });
+      setFormData({ binPath: '', autoCompactThreshold: '' });
       setFormError(null);
       setFormErrorField(null);
       toast({
@@ -199,7 +209,9 @@ export function ProvidersPage() {
       }
       if (isProviderMutationError(error) && error.field) {
         setFormError(error.message);
-        setFormErrorField('binPath');
+        setFormErrorField(
+          error.field === 'autoCompactThreshold' ? 'autoCompactThreshold' : 'binPath',
+        );
       }
       toast({
         title: 'Error',
@@ -210,8 +222,13 @@ export function ProvidersPage() {
   });
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: { binPath?: string | null } }) =>
-      updateProvider(id, data),
+    mutationFn: ({
+      id,
+      data,
+    }: {
+      id: string;
+      data: { binPath?: string | null; autoCompactThreshold?: number | null };
+    }) => updateProvider(id, data),
     onMutate: async ({ id, data }) => {
       await queryClient.cancelQueries({ queryKey: ['providers'] });
       const previousData = queryClient.getQueryData(['providers']);
@@ -229,7 +246,7 @@ export function ProvidersPage() {
       queryClient.invalidateQueries({ queryKey: ['providers'] });
       setShowDialog(false);
       setEditingProvider(null);
-      setFormData({ binPath: '' });
+      setFormData({ binPath: '', autoCompactThreshold: '' });
       setFormError(null);
       setFormErrorField(null);
       toast({
@@ -243,7 +260,9 @@ export function ProvidersPage() {
       }
       if (isProviderMutationError(error) && error.field) {
         setFormError(error.message);
-        setFormErrorField('binPath');
+        setFormErrorField(
+          error.field === 'autoCompactThreshold' ? 'autoCompactThreshold' : 'binPath',
+        );
       }
       toast({
         title: 'Error',
@@ -324,19 +343,43 @@ export function ProvidersPage() {
     setFormError(null);
     setFormErrorField(null);
 
+    const thresholdStr = formData.autoCompactThreshold.trim();
+
+    // Validate autoCompactThreshold when non-empty
+    if (thresholdStr !== '') {
+      const parsed = Number(thresholdStr);
+      if (isNaN(parsed) || !Number.isInteger(parsed) || parsed < 1 || parsed > 100) {
+        setFormError('Threshold must be an integer between 1 and 100.');
+        setFormErrorField('autoCompactThreshold');
+        return;
+      }
+    }
+
     if (editingProvider) {
+      const autoCompactThreshold: number | null = thresholdStr === '' ? null : Number(thresholdStr);
       updateMutation.mutate({
         id: editingProvider.id,
-        data: { binPath },
+        data: { binPath, autoCompactThreshold },
       });
     } else {
-      createMutation.mutate({ name: providerName, binPath });
+      const payload: { name: string; binPath: string | null; autoCompactThreshold?: number } = {
+        name: providerName,
+        binPath,
+      };
+      if (thresholdStr !== '' && providerType === 'claude') {
+        payload.autoCompactThreshold = Number(thresholdStr);
+      }
+      createMutation.mutate(payload);
     }
   };
 
   const handleEdit = (provider: Provider) => {
     setEditingProvider(provider);
-    setFormData({ binPath: provider.binPath || '' });
+    setFormData({
+      binPath: provider.binPath || '',
+      autoCompactThreshold:
+        provider.autoCompactThreshold != null ? String(provider.autoCompactThreshold) : '',
+    });
     // derive provider type from existing provider
     const t: ProviderType = (
       provider.name === 'codex'
@@ -379,7 +422,7 @@ export function ProvidersPage() {
   const handleOpenDialog = () => {
     setEditingProvider(null);
     const initialType = 'codex';
-    setFormData({ binPath: getDefaultBinPathForType(initialType) });
+    setFormData({ binPath: getDefaultBinPathForType(initialType), autoCompactThreshold: '' });
     setProviderType(initialType);
     setBinPathTouched(false);
     setFormError(null);
@@ -445,6 +488,14 @@ export function ProvidersPage() {
                         {provider.binPath || 'Not configured'}
                       </code>
                     </div>
+                    {provider.name.toLowerCase() === 'claude' && (
+                      <div className="text-sm text-muted-foreground">
+                        Auto-compact:{' '}
+                        {provider.autoCompactThreshold != null
+                          ? `${provider.autoCompactThreshold}%`
+                          : 'disabled'}
+                      </div>
+                    )}
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge variant="secondary" className={cn('text-xs', mcpBadgeClass)}>
                         MCP {(mcpStatus ?? 'warn').toUpperCase()}
@@ -491,7 +542,7 @@ export function ProvidersPage() {
           setShowDialog(open);
           if (!open) {
             setEditingProvider(null);
-            setFormData({ binPath: '' });
+            setFormData({ binPath: '', autoCompactThreshold: '' });
             setFormError(null);
             setFormErrorField(null);
           }
@@ -517,11 +568,16 @@ export function ProvidersPage() {
                   const nextDefault = getDefaultBinPathForType(nextType);
                   setProviderType(nextType);
                   setFormData((prev) => {
+                    const updates: Partial<typeof prev> = {};
                     // Update binPath if user hasn't touched it or it equals previous default
                     if (!binPathTouched || prev.binPath.trim() === prevDefault) {
-                      return { ...prev, binPath: nextDefault };
+                      updates.binPath = nextDefault;
                     }
-                    return prev;
+                    // Clear threshold when switching away from Claude
+                    if (nextType !== 'claude') {
+                      updates.autoCompactThreshold = '';
+                    }
+                    return Object.keys(updates).length > 0 ? { ...prev, ...updates } : prev;
                   });
                 }}
               >
@@ -566,6 +622,38 @@ export function ProvidersPage() {
               )}
             </div>
 
+            {(editingProvider?.name ?? providerType).toLowerCase() === 'claude' && (
+              <div>
+                <Label htmlFor="provider-threshold">Auto-Compact Threshold (%)</Label>
+                <Input
+                  id="provider-threshold"
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={formData.autoCompactThreshold}
+                  onChange={(e) => {
+                    setFormData({ ...formData, autoCompactThreshold: e.target.value });
+                    if (formErrorField === 'autoCompactThreshold') {
+                      setFormError(null);
+                      setFormErrorField(null);
+                    }
+                  }}
+                  className={cn(
+                    formErrorField === 'autoCompactThreshold' &&
+                      'border-destructive focus-visible:ring-destructive',
+                  )}
+                  placeholder="Default: 10"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Context usage percentage (1-100) that triggers auto-compact. Leave empty to use
+                  default on create, or to disable on edit.
+                </p>
+                {formError && formErrorField === 'autoCompactThreshold' && (
+                  <p className="mt-2 text-sm text-destructive">{formError}</p>
+                )}
+              </div>
+            )}
+
             {/* MCP endpoint is auto-configured: ${window.location.origin}/mcp */}
 
             <DialogFooter>
@@ -576,7 +664,10 @@ export function ProvidersPage() {
                   setShowDialog(false);
                   setEditingProvider(null);
                   const initialType = 'codex';
-                  setFormData({ binPath: getDefaultBinPathForType(initialType) });
+                  setFormData({
+                    binPath: getDefaultBinPathForType(initialType),
+                    autoCompactThreshold: '',
+                  });
                   setProviderType(initialType);
                   setBinPathTouched(false);
                   setFormError(null);

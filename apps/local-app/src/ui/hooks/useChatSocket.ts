@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { Socket } from 'socket.io-client';
-import { getAppSocket, releaseAppSocket, type WsEnvelope } from '@/ui/lib/socket';
+import { type WsEnvelope } from '@/ui/lib/socket';
 import { useAppSocket } from '@/ui/hooks/useAppSocket';
 import { useToast } from '@/ui/hooks/use-toast';
 import type { Message } from '@/ui/lib/chat';
@@ -50,23 +50,13 @@ export function useChatSocket({
     latestSelectedThreadRef.current = selectedThreadId;
   }, [selectedThreadId]);
 
-  // Initialize shared socket reference
-  useEffect(() => {
-    socketRef.current = getAppSocket();
-    return () => {
-      releaseAppSocket();
-      socketRef.current = null;
-    };
-  }, []);
-
-  // Subscribe to socket events via shared hook
-  useAppSocket(
+  // Subscribe to socket events via shared hook (worktree-aware by default)
+  const selectedSocket = useAppSocket(
     {
       connect: () => {
-        const socket = getAppSocket();
         const threadToSubscribe = subscribedThreadRef.current ?? getLatestSelectedThreadId();
         if (threadToSubscribe) {
-          socket.emit('chat:subscribe', { threadId: threadToSubscribe });
+          socketRef.current?.emit('chat:subscribe', { threadId: threadToSubscribe });
           subscribedThreadRef.current = threadToSubscribe;
         }
       },
@@ -109,36 +99,37 @@ export function useChatSocket({
 
         // System ping
         if (topic === 'system' && type === 'ping') {
-          getAppSocket().emit('pong');
+          socketRef.current?.emit('pong');
         }
       },
     },
     [agents, queryClient, toast, getLatestSelectedThreadId, isInlineActive, onInlineUnread],
   );
 
+  // Keep socketRef in sync with the selected socket
+  socketRef.current = selectedSocket;
+
   // If project context is removed, unsubscribe from current thread
   useEffect(() => {
-    const socket = getAppSocket();
     if (!hasSelectedProject) {
-      if (socket.connected && subscribedThreadRef.current) {
-        socket.emit('chat:unsubscribe', { threadId: subscribedThreadRef.current });
+      if (selectedSocket.connected && subscribedThreadRef.current) {
+        selectedSocket.emit('chat:unsubscribe', { threadId: subscribedThreadRef.current });
       }
       subscribedThreadRef.current = null;
       return;
     }
-  }, [hasSelectedProject]);
+  }, [hasSelectedProject, selectedSocket]);
 
   // Subscribe to chat thread when selected
   useEffect(() => {
-    const socket = getAppSocket();
-    if (!socket.connected) {
+    if (!selectedSocket.connected) {
       subscribedThreadRef.current = selectedThreadId ?? null;
       return;
     }
 
     if (!selectedThreadId) {
       if (subscribedThreadRef.current) {
-        socket.emit('chat:unsubscribe', { threadId: subscribedThreadRef.current });
+        selectedSocket.emit('chat:unsubscribe', { threadId: subscribedThreadRef.current });
         subscribedThreadRef.current = null;
       }
       return;
@@ -149,11 +140,11 @@ export function useChatSocket({
     }
 
     if (subscribedThreadRef.current) {
-      socket.emit('chat:unsubscribe', { threadId: subscribedThreadRef.current });
+      selectedSocket.emit('chat:unsubscribe', { threadId: subscribedThreadRef.current });
     }
-    socket.emit('chat:subscribe', { threadId: selectedThreadId });
+    selectedSocket.emit('chat:subscribe', { threadId: selectedThreadId });
     subscribedThreadRef.current = selectedThreadId;
-  }, [selectedThreadId]);
+  }, [selectedThreadId, selectedSocket]);
 
   return {
     socketRef,

@@ -28,7 +28,10 @@ import { McpProviderRegistrationService } from '../../mcp/services/mcp-provider-
 import { PreflightService } from '../../core/services/preflight.service';
 import { ProviderMcpEnsureService } from '../../core/services/provider-mcp-ensure.service';
 import { ProviderAdapterFactory } from '../adapters';
-import { disableClaudeAutoCompact } from '../../sessions/utils/claude-config';
+import {
+  disableClaudeAutoCompact,
+  enableClaudeAutoCompact,
+} from '../../sessions/utils/claude-config';
 
 const logger = createLogger('ProvidersController');
 const execFileAsync = promisify(execFile);
@@ -39,6 +42,7 @@ const CreateProviderSchema = z.object({
   mcpConfigured: z.boolean().optional(),
   mcpEndpoint: z.string().nullable().optional(),
   mcpRegisteredAt: z.string().nullable().optional(),
+  autoCompactThreshold: z.number().int().min(1).max(100).nullable().optional(),
 });
 
 const UpdateProviderSchema = z.object({
@@ -47,6 +51,7 @@ const UpdateProviderSchema = z.object({
   mcpConfigured: z.boolean().optional(),
   mcpEndpoint: z.string().nullable().optional(),
   mcpRegisteredAt: z.string().nullable().optional(),
+  autoCompactThreshold: z.number().int().min(1).max(100).nullable().optional(),
 });
 
 const ConfigureMcpSchema = z.object({
@@ -95,6 +100,7 @@ export class ProvidersController {
       mcpConfigured: false,
       mcpEndpoint: parsed.mcpEndpoint ?? null,
       mcpRegisteredAt: null,
+      autoCompactThreshold: parsed.autoCompactThreshold,
     };
 
     // Do not auto-register on create; use Configure MCP action instead
@@ -128,6 +134,10 @@ export class ProvidersController {
 
     if (parsed.mcpRegisteredAt !== undefined) {
       payload.mcpRegisteredAt = parsed.mcpRegisteredAt ?? null;
+    }
+
+    if (parsed.autoCompactThreshold !== undefined) {
+      payload.autoCompactThreshold = parsed.autoCompactThreshold;
     }
 
     const result = await this.storage.updateProvider(id, payload);
@@ -206,6 +216,31 @@ export class ProvidersController {
     }
 
     const result = await disableClaudeAutoCompact();
+    if (!result.success) {
+      if (result.errorType === 'invalid_config') {
+        throw new BadRequestException(
+          '~/.claude.json contains invalid JSON. Please fix the file manually.',
+        );
+      }
+
+      throw new InternalServerErrorException('Failed to write ~/.claude.json');
+    }
+
+    return { success: true };
+  }
+
+  @Post(':id/auto-compact/enable')
+  async enableAutoCompact(@Param('id') id: string) {
+    logger.info({ id }, 'POST /api/providers/:id/auto-compact/enable');
+    const provider = await this.storage.getProvider(id);
+
+    if (provider.name.toLowerCase() !== 'claude') {
+      throw new BadRequestException(
+        'Auto-compact configuration is only applicable to Claude provider',
+      );
+    }
+
+    const result = await enableClaudeAutoCompact();
     if (!result.success) {
       if (result.errorType === 'invalid_config') {
         throw new BadRequestException(

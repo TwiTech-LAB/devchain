@@ -12,7 +12,10 @@ import {
 } from '@nestjs/common';
 import * as fsPromises from 'fs/promises';
 import { Stats, constants } from 'fs';
-import { disableClaudeAutoCompact } from '../../sessions/utils/claude-config';
+import {
+  disableClaudeAutoCompact,
+  enableClaudeAutoCompact,
+} from '../../sessions/utils/claude-config';
 
 jest.mock('fs/promises', () => ({
   stat: jest.fn(),
@@ -21,10 +24,14 @@ jest.mock('fs/promises', () => ({
 
 jest.mock('../../sessions/utils/claude-config', () => ({
   disableClaudeAutoCompact: jest.fn(),
+  enableClaudeAutoCompact: jest.fn(),
 }));
 
 const mockDisableClaudeAutoCompact = disableClaudeAutoCompact as jest.MockedFunction<
   typeof disableClaudeAutoCompact
+>;
+const mockEnableClaudeAutoCompact = enableClaudeAutoCompact as jest.MockedFunction<
+  typeof enableClaudeAutoCompact
 >;
 
 describe('ProvidersController', () => {
@@ -150,6 +157,29 @@ describe('ProvidersController', () => {
       );
       expect(result.mcpConfigured).toBe(false);
     });
+
+    it('passes autoCompactThreshold to storage on create', async () => {
+      const now = new Date('2024-01-01T00:00:00Z');
+      storage.createProvider.mockImplementation(async (payload) => ({
+        id: 'p1',
+        ...payload,
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+      }));
+
+      const result = await controller.createProvider({
+        name: 'claude',
+        binPath: '/usr/local/bin/claude',
+        autoCompactThreshold: 10,
+      });
+
+      expect(storage.createProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          autoCompactThreshold: 10,
+        }),
+      );
+      expect(result.autoCompactThreshold).toBe(10);
+    });
   });
 
   describe('normalizeBinPath', () => {
@@ -202,6 +232,60 @@ describe('ProvidersController', () => {
           mcpEndpoint: 'ws://localhost:5000',
         }),
       );
+    });
+
+    it('passes autoCompactThreshold to storage on update', async () => {
+      storage.updateProvider.mockImplementation(async (id, payload) => ({
+        id,
+        name: 'claude',
+        binPath: '/usr/local/bin/claude',
+        mcpConfigured: true,
+        mcpEndpoint: null,
+        mcpRegisteredAt: null,
+        autoCompactThreshold: 15,
+        createdAt: '2024-01-01',
+        updatedAt: '2024-01-01',
+        ...payload,
+      }));
+
+      const result = await controller.updateProvider('p1', {
+        autoCompactThreshold: 15,
+      });
+
+      expect(storage.updateProvider).toHaveBeenCalledWith(
+        'p1',
+        expect.objectContaining({
+          autoCompactThreshold: 15,
+        }),
+      );
+      expect(result.autoCompactThreshold).toBe(15);
+    });
+
+    it('clears autoCompactThreshold when set to null', async () => {
+      storage.updateProvider.mockImplementation(async (id, payload) => ({
+        id,
+        name: 'claude',
+        binPath: '/usr/local/bin/claude',
+        mcpConfigured: true,
+        mcpEndpoint: null,
+        mcpRegisteredAt: null,
+        autoCompactThreshold: null,
+        createdAt: '2024-01-01',
+        updatedAt: '2024-01-01',
+        ...payload,
+      }));
+
+      const result = await controller.updateProvider('p1', {
+        autoCompactThreshold: null,
+      });
+
+      expect(storage.updateProvider).toHaveBeenCalledWith(
+        'p1',
+        expect.objectContaining({
+          autoCompactThreshold: null,
+        }),
+      );
+      expect(result.autoCompactThreshold).toBeNull();
     });
   });
 
@@ -502,6 +586,85 @@ describe('ProvidersController', () => {
           }),
         );
       }
+    });
+  });
+
+  describe('enableAutoCompact', () => {
+    it('returns success when Claude auto-compact is enabled', async () => {
+      storage.getProvider.mockResolvedValue({
+        id: 'p1',
+        name: 'claude',
+        binPath: '/usr/local/bin/claude',
+        mcpConfigured: true,
+        mcpEndpoint: null,
+        mcpRegisteredAt: null,
+        createdAt: '',
+        updatedAt: '',
+      });
+      mockEnableClaudeAutoCompact.mockResolvedValue({ success: true });
+
+      const response = await controller.enableAutoCompact('p1');
+
+      expect(response).toEqual({ success: true });
+      expect(mockEnableClaudeAutoCompact).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns 400 for non-Claude providers', async () => {
+      storage.getProvider.mockResolvedValue({
+        id: 'p1',
+        name: 'codex',
+        binPath: '/usr/local/bin/codex',
+        mcpConfigured: true,
+        mcpEndpoint: null,
+        mcpRegisteredAt: null,
+        createdAt: '',
+        updatedAt: '',
+      });
+
+      await expect(controller.enableAutoCompact('p1')).rejects.toThrow(BadRequestException);
+      expect(mockEnableClaudeAutoCompact).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 when Claude config is malformed', async () => {
+      storage.getProvider.mockResolvedValue({
+        id: 'p1',
+        name: 'claude',
+        binPath: '/usr/local/bin/claude',
+        mcpConfigured: true,
+        mcpEndpoint: null,
+        mcpRegisteredAt: null,
+        createdAt: '',
+        updatedAt: '',
+      });
+      mockEnableClaudeAutoCompact.mockResolvedValue({
+        success: false,
+        error: 'Unexpected token',
+        errorType: 'invalid_config',
+      });
+
+      await expect(controller.enableAutoCompact('p1')).rejects.toThrow(BadRequestException);
+    });
+
+    it('returns 500 when enable operation fails due to IO error', async () => {
+      storage.getProvider.mockResolvedValue({
+        id: 'p1',
+        name: 'claude',
+        binPath: '/usr/local/bin/claude',
+        mcpConfigured: true,
+        mcpEndpoint: null,
+        mcpRegisteredAt: null,
+        createdAt: '',
+        updatedAt: '',
+      });
+      mockEnableClaudeAutoCompact.mockResolvedValue({
+        success: false,
+        error: 'EACCES: permission denied',
+        errorType: 'io_error',
+      });
+
+      await expect(controller.enableAutoCompact('p1')).rejects.toThrow(
+        InternalServerErrorException,
+      );
     });
   });
 });

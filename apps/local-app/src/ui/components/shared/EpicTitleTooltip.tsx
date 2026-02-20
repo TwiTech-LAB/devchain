@@ -1,6 +1,6 @@
 import React from 'react';
 import { Button } from '@/ui/components/ui/button';
-import { Edit, ListChecks, Trash2, Search, User } from 'lucide-react';
+import { Edit, ListChecks, Trash2, Search, User, GitBranch } from 'lucide-react';
 
 export type EpicTitleTooltipProps = {
   title: string;
@@ -16,7 +16,7 @@ export type EpicTitleTooltipProps = {
   onEdit?: (e: React.MouseEvent) => void;
   onDelete?: (e: React.MouseEvent) => void;
   showOpenDetails?: boolean;
-  // Uses onViewDetails when present
+  onMoveToWorktree?: (e: React.MouseEvent) => void;
 };
 
 export function EpicTitleTooltip({
@@ -33,6 +33,7 @@ export function EpicTitleTooltip({
   onEdit,
   onDelete,
   showOpenDetails,
+  onMoveToWorktree,
 }: EpicTitleTooltipProps) {
   const showMeta = Boolean(statusLabel) || Boolean(agentName);
   return (
@@ -62,7 +63,11 @@ export function EpicTitleTooltip({
           </div>
         )}
       </div>
-      {(showBulkEdit || onEdit || onDelete || (showOpenDetails && onViewDetails)) && (
+      {(showBulkEdit ||
+        onEdit ||
+        onDelete ||
+        onMoveToWorktree ||
+        (showOpenDetails && onViewDetails)) && (
         <div className="flex items-center gap-1">
           {showOpenDetails && onViewDetails && (
             <Button
@@ -85,6 +90,18 @@ export function EpicTitleTooltip({
               onClick={onBulkEdit}
             >
               <ListChecks className="h-3 w-3" />
+            </Button>
+          )}
+          {onMoveToWorktree && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 w-6 p-0"
+              title="Move to worktree"
+              aria-label="Move to worktree"
+              onClick={onMoveToWorktree}
+            >
+              <GitBranch className="h-3 w-3" />
             </Button>
           )}
           {onEdit && (

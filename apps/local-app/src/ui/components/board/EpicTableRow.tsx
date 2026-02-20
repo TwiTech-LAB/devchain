@@ -6,7 +6,9 @@ import { Checkbox } from '@/ui/components/ui/checkbox';
 import { Badge } from '@/ui/components/ui/badge';
 import { Button } from '@/ui/components/ui/button';
 import { cn } from '@/ui/lib/utils';
+import { getMergedWorktree, isMergedTag } from '@/ui/lib/epic-tags';
 import { EpicTooltipWrapper } from '@/ui/components/shared/EpicTooltipWrapper';
+import { EpicContextMenu } from './EpicContextMenu';
 import { InlineStatusSelect } from './InlineStatusSelect';
 import { InlineAgentSelect } from './InlineAgentSelect';
 import type { Epic, Status, Agent } from './types';
@@ -61,6 +63,10 @@ export interface EpicTableRowProps {
   onStatusChange?: (epic: Epic, statusId: string) => Promise<void> | void;
   /** Handler when agent changes (inline editing) */
   onAgentChange?: (epic: Epic, agentId: string | null) => Promise<void> | void;
+  /** Handler for "Move to worktree" action (parent epics only, main mode) */
+  onMoveToWorktree?: (epic: Epic) => void;
+  /** Whether running worktrees exist (main mode only) */
+  hasRunningWorktrees?: boolean;
   /** Depth level for indentation (0 = root, 1 = sub-epic, etc.) */
   depth?: number;
   /** Whether this is a sub-epic row (for styling) */
@@ -93,6 +99,8 @@ export function EpicTableRow({
   onViewDetails,
   onBulkEdit,
   onToggleParentFilter,
+  onMoveToWorktree,
+  hasRunningWorktrees = false,
   onStatusChange,
   onAgentChange,
   depth = 0,
@@ -107,6 +115,8 @@ export function EpicTableRow({
   // Loading states for inline editing
   const [statusLoading, setStatusLoading] = useState(false);
   const [agentLoading, setAgentLoading] = useState(false);
+  const mergedFromWorktree = getMergedWorktree(epic.tags);
+  const visibleTags = epic.tags.filter((tag) => !isMergedTag(tag));
 
   // Use precomputed maps if provided, otherwise create them (fallback for sub-epics)
   const statusMap = statusMapProp ?? new Map(statuses.map((s) => [s.id, s]));
@@ -218,170 +228,195 @@ export function EpicTableRow({
     }
   };
 
+  const moveToWorktreeHandler =
+    isParentEpic && onMoveToWorktree && hasRunningWorktrees ? onMoveToWorktree : undefined;
+
   return (
     <>
       {/* Main row */}
-      <TableRow className={cn(isSubEpic && 'bg-muted/20')}>
-        {/* Selection checkbox */}
-        <TableCell>
-          <Checkbox
-            checked={isSelected}
-            onCheckedChange={() => onToggleSelect?.(epic.id)}
-            aria-label={`Select ${epic.title}`}
-          />
-        </TableCell>
+      <EpicContextMenu
+        epic={epic}
+        onMoveToWorktree={onMoveToWorktree ?? (() => {})}
+        hasRunningWorktrees={hasRunningWorktrees}
+      >
+        <TableRow className={cn(isSubEpic && 'bg-muted/20')}>
+          {/* Selection checkbox */}
+          <TableCell>
+            <Checkbox
+              checked={isSelected}
+              onCheckedChange={() => onToggleSelect?.(epic.id)}
+              aria-label={`Select ${epic.title}`}
+            />
+          </TableCell>
 
-        {/* Expand/collapse toggle - only show for parent epics with sub-epics */}
-        <TableCell>
-          {isParentEpic && subEpicCount > 0 && (
+          {/* Expand/collapse toggle - only show for parent epics with sub-epics */}
+          <TableCell>
+            {isParentEpic && subEpicCount > 0 && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6"
+                onClick={handleToggleExpand}
+                onKeyDown={handleKeyDown}
+                aria-expanded={expanded}
+                aria-label={expanded ? 'Collapse sub-epics' : 'Expand sub-epics'}
+              >
+                {subEpicsLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <ChevronRight
+                    className={cn(
+                      'h-4 w-4 transition-transform duration-200',
+                      expanded && 'rotate-90',
+                    )}
+                  />
+                )}
+              </Button>
+            )}
+          </TableCell>
+
+          {/* Title with indentation for sub-epics and tooltip */}
+          <TableCell className="font-medium">
+            <div className="flex items-center gap-1">
+              {/* Indentation and visual hierarchy indicator for sub-epics */}
+              {isSubEpic && (
+                <span
+                  className="text-muted-foreground select-none"
+                  style={{ paddingLeft: `${(depth - 1) * 16}px` }}
+                >
+                  └─
+                </span>
+              )}
+              <EpicTooltipWrapper
+                title={epic.title}
+                statusLabel={getStatusLabel(epic.statusId)}
+                statusColor={getStatusColor(epic.statusId)}
+                agentName={agentName ?? undefined}
+                description={epic.description ?? undefined}
+                showFilterToggle={isParentEpic && !!onToggleParentFilter}
+                showBulkEdit={isParentEpic && !!onBulkEdit}
+                showOpenDetails={!!onViewDetails}
+                onEdit={
+                  onEditEpic
+                    ? (e) => {
+                        e.stopPropagation();
+                        onEditEpic(epic);
+                      }
+                    : undefined
+                }
+                onDelete={
+                  onDeleteEpic
+                    ? (e) => {
+                        e.stopPropagation();
+                        onDeleteEpic(epic);
+                      }
+                    : undefined
+                }
+                onViewDetails={onViewDetails ? () => onViewDetails(epic) : undefined}
+                onBulkEdit={onBulkEdit ? () => onBulkEdit(epic) : undefined}
+                onToggleParentFilter={
+                  onToggleParentFilter
+                    ? (e) => {
+                        e.stopPropagation();
+                        onToggleParentFilter(epic);
+                      }
+                    : undefined
+                }
+                onMoveToWorktree={
+                  moveToWorktreeHandler
+                    ? (e) => {
+                        e.stopPropagation();
+                        moveToWorktreeHandler(epic);
+                      }
+                    : undefined
+                }
+                dynamicSide
+                dynamicSideThreshold={360}
+                delayDuration={200}
+                sideOffset={8}
+                contentClassName="w-[340px] max-h-[70vh] overflow-auto space-y-2"
+              >
+                <button
+                  type="button"
+                  className="text-left hover:underline focus:outline-none focus:underline cursor-pointer"
+                  onClick={() => onEditEpic?.(epic)}
+                >
+                  {epic.title}
+                </button>
+              </EpicTooltipWrapper>
+            </div>
+          </TableCell>
+
+          {/* Status - Inline editable */}
+          <TableCell onClick={(e) => e.stopPropagation()}>
+            <InlineStatusSelect
+              value={epic.statusId}
+              statuses={statuses.map((s) => ({ id: s.id, label: s.label, color: s.color }))}
+              onChange={handleStatusChange}
+              loading={statusLoading}
+              disabled={!onStatusChange}
+            />
+          </TableCell>
+
+          {/* Agent - Inline editable */}
+          <TableCell onClick={(e) => e.stopPropagation()}>
+            <InlineAgentSelect
+              value={epic.agentId}
+              agents={agents.map((a) => ({ id: a.id, name: a.name }))}
+              onChange={handleAgentChange}
+              loading={agentLoading}
+              disabled={!onAgentChange}
+            />
+          </TableCell>
+
+          {/* Tags */}
+          <TableCell>
+            <div className="flex flex-wrap gap-1">
+              {mergedFromWorktree && (
+                <Badge
+                  variant="secondary"
+                  className="border border-amber-400/40 bg-amber-500/10 text-xs"
+                >
+                  Merged from {mergedFromWorktree}
+                </Badge>
+              )}
+              {visibleTags.slice(0, 3).map((tag) => (
+                <Badge key={tag} variant="secondary" className="text-xs">
+                  {tag}
+                </Badge>
+              ))}
+              {visibleTags.length > 3 && (
+                <Badge variant="secondary" className="text-xs">
+                  +{visibleTags.length - 3}
+                </Badge>
+              )}
+            </div>
+          </TableCell>
+
+          {/* Created */}
+          <TableCell>
+            <span
+              className="text-sm text-muted-foreground"
+              title={new Date(epic.createdAt).toLocaleString()}
+            >
+              {formatRelativeTime(epic.createdAt)}
+            </span>
+          </TableCell>
+
+          {/* Actions */}
+          <TableCell>
             <Button
               variant="ghost"
               size="icon"
-              className="h-6 w-6"
-              onClick={handleToggleExpand}
-              onKeyDown={handleKeyDown}
-              aria-expanded={expanded}
-              aria-label={expanded ? 'Collapse sub-epics' : 'Expand sub-epics'}
+              className="h-8 w-8"
+              aria-label="More actions"
+              onClick={() => onEditEpic?.(epic)}
             >
-              {subEpicsLoading ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <ChevronRight
-                  className={cn(
-                    'h-4 w-4 transition-transform duration-200',
-                    expanded && 'rotate-90',
-                  )}
-                />
-              )}
+              <MoreHorizontal className="h-4 w-4" />
             </Button>
-          )}
-        </TableCell>
-
-        {/* Title with indentation for sub-epics and tooltip */}
-        <TableCell className="font-medium">
-          <div className="flex items-center gap-1">
-            {/* Indentation and visual hierarchy indicator for sub-epics */}
-            {isSubEpic && (
-              <span
-                className="text-muted-foreground select-none"
-                style={{ paddingLeft: `${(depth - 1) * 16}px` }}
-              >
-                └─
-              </span>
-            )}
-            <EpicTooltipWrapper
-              title={epic.title}
-              statusLabel={getStatusLabel(epic.statusId)}
-              statusColor={getStatusColor(epic.statusId)}
-              agentName={agentName ?? undefined}
-              description={epic.description ?? undefined}
-              showFilterToggle={isParentEpic && !!onToggleParentFilter}
-              showBulkEdit={isParentEpic && !!onBulkEdit}
-              showOpenDetails={!!onViewDetails}
-              onEdit={
-                onEditEpic
-                  ? (e) => {
-                      e.stopPropagation();
-                      onEditEpic(epic);
-                    }
-                  : undefined
-              }
-              onDelete={
-                onDeleteEpic
-                  ? (e) => {
-                      e.stopPropagation();
-                      onDeleteEpic(epic);
-                    }
-                  : undefined
-              }
-              onViewDetails={onViewDetails ? () => onViewDetails(epic) : undefined}
-              onBulkEdit={onBulkEdit ? () => onBulkEdit(epic) : undefined}
-              onToggleParentFilter={
-                onToggleParentFilter
-                  ? (e) => {
-                      e.stopPropagation();
-                      onToggleParentFilter(epic);
-                    }
-                  : undefined
-              }
-              dynamicSide
-              dynamicSideThreshold={360}
-              delayDuration={200}
-              sideOffset={8}
-              contentClassName="w-[340px] max-h-[70vh] overflow-auto space-y-2"
-            >
-              <button
-                type="button"
-                className="text-left hover:underline focus:outline-none focus:underline cursor-pointer"
-                onClick={() => onEditEpic?.(epic)}
-              >
-                {epic.title}
-              </button>
-            </EpicTooltipWrapper>
-          </div>
-        </TableCell>
-
-        {/* Status - Inline editable */}
-        <TableCell onClick={(e) => e.stopPropagation()}>
-          <InlineStatusSelect
-            value={epic.statusId}
-            statuses={statuses.map((s) => ({ id: s.id, label: s.label, color: s.color }))}
-            onChange={handleStatusChange}
-            loading={statusLoading}
-            disabled={!onStatusChange}
-          />
-        </TableCell>
-
-        {/* Agent - Inline editable */}
-        <TableCell onClick={(e) => e.stopPropagation()}>
-          <InlineAgentSelect
-            value={epic.agentId}
-            agents={agents.map((a) => ({ id: a.id, name: a.name }))}
-            onChange={handleAgentChange}
-            loading={agentLoading}
-            disabled={!onAgentChange}
-          />
-        </TableCell>
-
-        {/* Tags */}
-        <TableCell>
-          <div className="flex flex-wrap gap-1">
-            {epic.tags.slice(0, 3).map((tag) => (
-              <Badge key={tag} variant="secondary" className="text-xs">
-                {tag}
-              </Badge>
-            ))}
-            {epic.tags.length > 3 && (
-              <Badge variant="secondary" className="text-xs">
-                +{epic.tags.length - 3}
-              </Badge>
-            )}
-          </div>
-        </TableCell>
-
-        {/* Created */}
-        <TableCell>
-          <span
-            className="text-sm text-muted-foreground"
-            title={new Date(epic.createdAt).toLocaleString()}
-          >
-            {formatRelativeTime(epic.createdAt)}
-          </span>
-        </TableCell>
-
-        {/* Actions */}
-        <TableCell>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8"
-            aria-label="More actions"
-            onClick={() => onEditEpic?.(epic)}
-          >
-            <MoreHorizontal className="h-4 w-4" />
-          </Button>
-        </TableCell>
-      </TableRow>
+          </TableCell>
+        </TableRow>
+      </EpicContextMenu>
 
       {/* Sub-epic rows (rendered when expanded) */}
       {expanded && isParentEpic && (

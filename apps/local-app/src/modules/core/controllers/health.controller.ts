@@ -1,8 +1,9 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { getEnvConfig } from '../../../common/config/env.config';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
+import { HealthService } from '../services/health.service';
 
 // Try to read version from root package.json (devchain-cli)
 function getVersion(): string {
@@ -35,6 +36,8 @@ function getVersion(): string {
 @ApiTags('health')
 @Controller('health')
 export class HealthController {
+  constructor(private readonly healthService: HealthService) {}
+
   @Get()
   @ApiOperation({ summary: 'Health check endpoint' })
   @ApiResponse({ status: 200, description: 'Service is healthy' })
@@ -46,5 +49,19 @@ export class HealthController {
       environment: config.NODE_ENV,
       version: getVersion(),
     };
+  }
+
+  @Get('ready')
+  @ApiOperation({ summary: 'Readiness check endpoint' })
+  @ApiResponse({ status: 200, description: 'Service is ready' })
+  @ApiResponse({ status: 503, description: 'Service is not ready' })
+  async ready() {
+    const response = await this.healthService.getReadiness();
+
+    if (!response.ready) {
+      throw new ServiceUnavailableException(response);
+    }
+
+    return response;
   }
 }

@@ -14,6 +14,7 @@ import { reviewCommentCreatedEvent } from './review.comment.created';
 import { reviewCommentResolvedEvent } from './review.comment.resolved';
 import { reviewCommentDeletedEvent } from './review.comment.deleted';
 import { reviewCommentUpdatedEvent } from './review.comment.updated';
+import { claudeHooksSessionStartedEvent } from './claude.hooks.session.started';
 
 // Re-export individual event definitions for direct import
 export { settingsTerminalChangedEvent } from './settings.terminal.changed';
@@ -34,6 +35,7 @@ export const eventCatalog = {
   [reviewCommentResolvedEvent.name]: reviewCommentResolvedEvent.schema,
   [reviewCommentDeletedEvent.name]: reviewCommentDeletedEvent.schema,
   [reviewCommentUpdatedEvent.name]: reviewCommentUpdatedEvent.schema,
+  [claudeHooksSessionStartedEvent.name]: claudeHooksSessionStartedEvent.schema,
 } as const;
 
 export type EventName = keyof typeof eventCatalog;

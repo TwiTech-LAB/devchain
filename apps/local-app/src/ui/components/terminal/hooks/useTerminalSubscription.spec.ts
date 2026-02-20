@@ -132,6 +132,34 @@ describe('useTerminalSubscription', () => {
     });
   });
 
+  it('should use provided socket instead of singleton fallback when passed', () => {
+    const sessionId = 'test-session';
+    const xtermRef = { current: mockTerminal };
+    // If fallback socket were used, subscribe would be blocked.
+    mockSocket.connected = false;
+    const providedSocket = {
+      emit: jest.fn(),
+      connected: true,
+      id: 'provided-socket-id',
+    };
+
+    const { result } = renderHook(() =>
+      useTerminalSubscription(sessionId, xtermRef, mockDispatch, providedSocket as never),
+    );
+
+    act(() => {
+      const success = result.current.attemptSubscription();
+      expect(success).toBe(true);
+    });
+
+    expect(providedSocket.emit).toHaveBeenCalledWith(
+      'terminal:subscribe',
+      expect.objectContaining({ sessionId }),
+    );
+    expect(providedSocket.emit).toHaveBeenCalledWith('terminal:focus', { sessionId });
+    expect(mockSocket.emit).not.toHaveBeenCalled();
+  });
+
   it('should mark expecting seed on first attach', () => {
     const sessionId = 'test-session';
     const xtermRef = { current: mockTerminal };
