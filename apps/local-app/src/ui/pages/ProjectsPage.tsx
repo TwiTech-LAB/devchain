@@ -188,6 +188,12 @@ interface CreateFromTemplateResponse {
     familyAlternatives: FamilyAlternative[];
     canImport: boolean;
   };
+  warnings?: Array<{
+    type: string;
+    originalProvider: string;
+    substituteProvider: string;
+    agentNames: string[];
+  }>;
 }
 
 async function createProjectFromTemplate(data: {
@@ -352,6 +358,17 @@ export function ProjectsPage() {
     templateId: string;
     version: string;
   } | null>(null);
+
+  // Provider mismatch warning modal state (shown after successful creation with substituted providers)
+  const [showProviderWarningModal, setShowProviderWarningModal] = useState(false);
+  const [providerWarnings, setProviderWarnings] = useState<
+    Array<{
+      type: string;
+      originalProvider: string;
+      substituteProvider: string;
+      agentNames: string[];
+    }>
+  >([]);
 
   // Provider mapping modal state for import flow
   const [showImportProviderMappingModal, setShowImportProviderMappingModal] = useState(false);
@@ -551,13 +568,25 @@ export function ProjectsPage() {
       await queryClient.invalidateQueries({ queryKey: ['projects'] });
       setShowTemplateDialog(false);
       resetTemplateForm();
+
+      // Set project context before any modal or navigation
+      if (data.project?.id) {
+        setSelectedProjectId(data.project.id);
+      }
+
+      // Check for provider mismatch warnings
+      if (data.warnings && data.warnings.length > 0) {
+        setProviderWarnings(data.warnings);
+        setShowProviderWarningModal(true);
+        return;
+      }
+
       toast({
         title: 'Success',
         description: data.message || 'Project created from template successfully',
       });
       // Navigate to the new project
       if (data.project?.id) {
-        setSelectedProjectId(data.project.id);
         navigate('/board');
       }
     },
@@ -2182,6 +2211,69 @@ export function ProjectsPage() {
           loading={!!importingProjectId}
         />
       )}
+
+      {/* Provider Mismatch Warning Modal — shown after successful creation when providers were substituted */}
+      <Dialog
+        open={showProviderWarningModal}
+        onOpenChange={() => {
+          /* Require explicit button choice — do not dismiss on outside click */
+        }}
+      >
+        <DialogContent
+          onInteractOutside={(e) => e.preventDefault()}
+          onEscapeKeyDown={(e) => e.preventDefault()}
+        >
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-yellow-500" />
+              Provider Mismatch Warning
+            </DialogTitle>
+            <DialogDescription>
+              Some agents were created with substitute providers because the original providers are
+              not installed.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            {providerWarnings.map((warning, idx) => (
+              <div key={idx} className="rounded-md border p-3 space-y-1">
+                <div className="text-sm font-medium">
+                  <span className="text-muted-foreground">Missing:</span>{' '}
+                  <span className="text-destructive">{warning.originalProvider}</span>
+                  <span className="text-muted-foreground mx-1">&rarr;</span>
+                  <span>{warning.substituteProvider}</span>
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  Affected agents: {warning.agentNames.join(', ')}
+                </div>
+              </div>
+            ))}
+          </div>
+          <p className="text-sm text-muted-foreground">
+            You can configure the correct provider for each agent from the Chat page.
+          </p>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowProviderWarningModal(false);
+                setProviderWarnings([]);
+                navigate('/board');
+              }}
+            >
+              Continue to Board
+            </Button>
+            <Button
+              onClick={() => {
+                setShowProviderWarningModal(false);
+                setProviderWarnings([]);
+                navigate('/chat');
+              }}
+            >
+              Go to Chat
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

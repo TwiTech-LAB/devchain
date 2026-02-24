@@ -883,4 +883,132 @@ describe('ProjectsPage — template creation and badge', () => {
       expect(screen.queryByTestId('upgrade-dialog')).not.toBeInTheDocument();
     });
   });
+
+  describe('provider mismatch warning modal', () => {
+    function createFetchMockWithWarnings(
+      warnings?: Array<{
+        type: string;
+        originalProvider: string;
+        substituteProvider: string;
+        agentNames: string[];
+      }>,
+    ) {
+      return jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === '/api/projects' && (!init || init.method === 'GET')) {
+          return { ok: true, json: async () => ({ items: [] }) } as Response;
+        }
+        if (url === '/api/templates') {
+          return {
+            ok: true,
+            json: async () => ({
+              templates: [
+                {
+                  slug: 'test-template',
+                  name: 'Test Template',
+                  source: 'bundled',
+                  versions: null,
+                  latestVersion: null,
+                },
+              ],
+              total: 1,
+            }),
+          } as Response;
+        }
+        if (url === '/api/projects/from-template' && init?.method === 'POST') {
+          const response: Record<string, unknown> = {
+            success: true,
+            project: {
+              id: 'p-new',
+              name: 'Test',
+              description: null,
+              rootPath: '/tmp/test',
+              isTemplate: false,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            },
+            imported: { prompts: 0, profiles: 1, agents: 1, statuses: 1 },
+            mappings: { promptIdMap: {}, profileIdMap: {}, agentIdMap: {}, statusIdMap: {} },
+            initialPromptSet: false,
+            message: 'Project created from template successfully',
+          };
+          if (warnings && warnings.length > 0) {
+            response.warnings = warnings;
+          }
+          return { ok: true, json: async () => response } as Response;
+        }
+        if (url.endsWith('/stats')) {
+          return { ok: true, json: async () => ({ epicsCount: 0, agentsCount: 0 }) } as Response;
+        }
+        if (url === '/api/fs/stat' && init?.method === 'POST') {
+          return { ok: true, json: async () => ({}) } as Response;
+        }
+        return { ok: true, json: async () => ({}) } as Response;
+      }) as unknown as typeof fetch;
+    }
+
+    async function fillAndSubmitCreateForm() {
+      fireEvent.click(screen.getByText('Create Project'));
+      await waitFor(() => expect(screen.getByLabelText('Template *')).toBeInTheDocument());
+      fireEvent.change(screen.getByLabelText('Name *'), { target: { value: 'Test' } });
+      fireEvent.change(screen.getByLabelText('Root Path *'), { target: { value: '/tmp/test' } });
+      // Wait for path validation
+      await waitFor(() =>
+        expect(global.fetch).toHaveBeenCalledWith('/api/fs/stat', expect.anything()),
+      );
+      fireEvent.click(screen.getByRole('button', { name: /^Create$/ }));
+    }
+
+    it('shows warning modal when response includes warnings', async () => {
+      const warningData = [
+        {
+          type: 'provider_mismatch',
+          originalProvider: 'claude',
+          substituteProvider: 'codex',
+          agentNames: ['Agent A', 'Agent B'],
+        },
+      ];
+
+      global.fetch = createFetchMockWithWarnings(warningData);
+      renderWithQuery(<ProjectsPage />);
+      await fillAndSubmitCreateForm();
+
+      // Wait for the warning modal to appear
+      await waitFor(() => {
+        expect(screen.getByText('Provider Mismatch Warning')).toBeInTheDocument();
+      });
+
+      // Verify warning content
+      expect(screen.getByText('claude')).toBeInTheDocument();
+      expect(screen.getByText('codex')).toBeInTheDocument();
+      expect(screen.getByText('Affected agents: Agent A, Agent B')).toBeInTheDocument();
+
+      // Verify both navigation buttons are present
+      expect(screen.getByRole('button', { name: 'Go to Chat' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Continue to Board' })).toBeInTheDocument();
+
+      // Verify project was selected
+      expect(setSelectedProjectIdMock).toHaveBeenCalledWith('p-new');
+    });
+
+    it('does not show warning modal when response has no warnings', async () => {
+      global.fetch = createFetchMockWithWarnings();
+      renderWithQuery(<ProjectsPage />);
+      await fillAndSubmitCreateForm();
+
+      // Wait for successful creation to complete
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(
+          '/api/projects/from-template',
+          expect.objectContaining({ method: 'POST' }),
+        );
+      });
+
+      // Warning modal should NOT appear
+      expect(screen.queryByText('Provider Mismatch Warning')).not.toBeInTheDocument();
+
+      // Project should still be selected
+      expect(setSelectedProjectIdMock).toHaveBeenCalledWith('p-new');
+    });
+  });
 });

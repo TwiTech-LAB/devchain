@@ -1,24 +1,20 @@
 import { render, screen } from '@testing-library/react';
 import { WorktreesPage } from './WorktreesPage';
-import { useRuntime } from '@/ui/hooks/useRuntime';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
-
-jest.mock('@/ui/hooks/useRuntime', () => ({
-  useRuntime: jest.fn(),
-}));
 
 jest.mock('@/ui/hooks/useProjectSelection', () => ({
   useSelectedProject: jest.fn(),
 }));
 
 jest.mock('@/modules/orchestrator/ui/app/orchestrator-app', () => ({
-  OrchestratorApp: () => <div>Worktrees Dashboard</div>,
+  OrchestratorApp: ({ ownerProjectId }: { ownerProjectId?: string | null }) => (
+    <div>Worktrees Dashboard {ownerProjectId && `(${ownerProjectId})`}</div>
+  ),
 }));
 
-const useRuntimeMock = useRuntime as jest.MockedFunction<typeof useRuntime>;
 const useSelectedProjectMock = useSelectedProject as jest.MockedFunction<typeof useSelectedProject>;
 
-describe('WorktreesPage capability gating', () => {
+describe('WorktreesPage', () => {
   beforeEach(() => {
     useSelectedProjectMock.mockReturnValue({
       selectedProjectId: 'project-1',
@@ -31,31 +27,25 @@ describe('WorktreesPage capability gating', () => {
     });
   });
 
-  it('shows Docker required message when docker is unavailable', () => {
-    useRuntimeMock.mockReturnValue({
-      runtimeInfo: undefined,
-      runtimeLoading: false,
-      isMainMode: false,
-      dockerAvailable: false,
-    });
-
+  it('renders OrchestratorApp with selected project id', () => {
     render(<WorktreesPage />);
 
-    expect(screen.getByRole('heading', { name: 'Docker required' })).toBeInTheDocument();
-    expect(screen.queryByText('Worktrees Dashboard')).not.toBeInTheDocument();
+    expect(screen.getByText('Worktrees Dashboard (project-1)')).toBeInTheDocument();
   });
 
-  it('shows full worktrees dashboard when docker is available', () => {
-    useRuntimeMock.mockReturnValue({
-      runtimeInfo: undefined,
-      runtimeLoading: false,
-      isMainMode: true,
-      dockerAvailable: true,
+  it('renders OrchestratorApp without project id when none selected', () => {
+    useSelectedProjectMock.mockReturnValue({
+      selectedProjectId: undefined,
+      selectedProject: undefined,
+      setSelectedProjectId: jest.fn(),
+      projects: [],
+      projectsLoading: false,
+      projectsError: false,
+      refetchProjects: jest.fn().mockResolvedValue(undefined),
     });
 
     render(<WorktreesPage />);
 
     expect(screen.getByText('Worktrees Dashboard')).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Docker required' })).not.toBeInTheDocument();
   });
 });

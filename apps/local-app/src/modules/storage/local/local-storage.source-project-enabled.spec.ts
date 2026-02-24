@@ -67,15 +67,15 @@ describe('LocalStorageService - source_project_enabled integration', () => {
     ]);
   });
 
-  it('seeds community sources as disabled when creating a new project', async () => {
+  it('seeds community sources as enabled when creating a new project', async () => {
     await createCommunitySource('community-one');
     await createCommunitySource('community-two');
 
     const project = await createProject('Project Seeded', '/tmp/source-project-enabled-seeded');
 
     await expect(service.listSourceProjectEnabled(project.id)).resolves.toEqual([
-      { sourceName: 'community-one', enabled: false },
-      { sourceName: 'community-two', enabled: false },
+      { sourceName: 'community-one', enabled: true },
+      { sourceName: 'community-two', enabled: true },
     ]);
   });
 
@@ -85,7 +85,7 @@ describe('LocalStorageService - source_project_enabled integration', () => {
     await expect(service.listSourceProjectEnabled(project.id)).resolves.toEqual([]);
   });
 
-  it('seeds community sources as disabled when creating a project from template', async () => {
+  it('seeds community sources as enabled when creating a project from template', async () => {
     await createCommunitySource('template-source');
 
     const result = await service.createProjectWithTemplate(
@@ -105,7 +105,7 @@ describe('LocalStorageService - source_project_enabled integration', () => {
     );
 
     await expect(service.listSourceProjectEnabled(result.project.id)).resolves.toEqual([
-      { sourceName: 'template-source', enabled: false },
+      { sourceName: 'template-source', enabled: true },
     ]);
   });
 

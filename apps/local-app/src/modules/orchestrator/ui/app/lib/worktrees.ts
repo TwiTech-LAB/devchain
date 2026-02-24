@@ -129,6 +129,13 @@ export interface TemplateListItem {
   name: string;
 }
 
+function assertJsonContentType(response: Response, context: string): void {
+  const contentType = response.headers?.get?.('content-type') ?? '';
+  if (contentType && !contentType.toLowerCase().includes('application/json')) {
+    throw new Error(`${context}: expected JSON response but received ${contentType}`);
+  }
+}
+
 export async function listWorktrees(opts?: {
   ownerProjectId?: string | null;
 }): Promise<WorktreeSummary[]> {
@@ -146,6 +153,7 @@ export async function listWorktrees(opts?: {
     throw new Error(`Failed to load worktrees: HTTP ${response.status}`);
   }
 
+  assertJsonContentType(response, 'Failed to load worktrees');
   const payload = (await response.json()) as unknown;
   if (!Array.isArray(payload)) {
     throw new Error('Invalid worktree response payload');
@@ -172,6 +180,7 @@ export async function listWorktreeOverviews(opts?: {
     throw new Error(`Failed to load worktree overview: HTTP ${response.status}`);
   }
 
+  assertJsonContentType(response, 'Failed to load worktree overview');
   const payload = (await response.json()) as unknown;
   if (!Array.isArray(payload)) {
     throw new Error('Invalid worktree overview payload');
@@ -199,6 +208,7 @@ export async function listWorktreeActivity(opts?: {
     throw new Error(`Failed to load worktree activity: HTTP ${response.status}`);
   }
 
+  assertJsonContentType(response, 'Failed to load worktree activity');
   const payload = (await response.json()) as unknown;
   const items =
     payload && typeof payload === 'object' && Array.isArray((payload as { items?: unknown }).items)

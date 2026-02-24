@@ -154,7 +154,12 @@ jest.mock('@/ui/hooks/useWorktreeTab', () => ({
 
 // Socket mock (no-op)
 jest.mock('@/ui/hooks/useAppSocket', () => ({
-  useAppSocket: () => {},
+  useAppSocket: () => ({
+    connected: true,
+    on: jest.fn(),
+    off: jest.fn(),
+    emit: jest.fn(),
+  }),
 }));
 jest.mock('@/ui/lib/socket', () => ({
   getAppSocket: jest.fn(() => ({
@@ -413,7 +418,7 @@ describe('ChatPage worktree agent groups', () => {
     const worktreeAgentButton = await screen.findByLabelText(
       /Open terminal for Worktree Agent in feature-auth \(online\)/i,
     );
-    expect(screen.getByText('Process')).toBeInTheDocument();
+    expect(screen.getByLabelText('Process')).toBeInTheDocument();
     fireEvent.click(worktreeAgentButton);
 
     await waitFor(() => {

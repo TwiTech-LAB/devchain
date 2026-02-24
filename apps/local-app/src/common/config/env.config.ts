@@ -24,18 +24,9 @@ const envSchema = z
     TEMPLATES_DIR: z.string().optional(),
   })
   .superRefine((env, ctx) => {
-    const requiresOrchestratorEnv = env.DEVCHAIN_MODE === 'main';
-
-    if (requiresOrchestratorEnv && (!env.REPO_ROOT || !env.REPO_ROOT.trim())) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['REPO_ROOT'],
-        message: 'REPO_ROOT is required when DEVCHAIN_MODE is main',
-      });
-      return;
-    }
-
-    if (requiresOrchestratorEnv && env.REPO_ROOT) {
+    // REPO_ROOT is optional in main mode — orchestration works without a git repo
+    // (worktrees, sessions, etc. use process.cwd() as fallback when REPO_ROOT is unset)
+    if (env.REPO_ROOT && env.REPO_ROOT.trim()) {
       const resolvedRepoRoot = resolve(env.REPO_ROOT);
       if (!existsSync(resolvedRepoRoot)) {
         ctx.addIssue({

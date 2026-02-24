@@ -611,44 +611,49 @@ describe('CLI container bootstrap integration (mocked shell)', () => {
     expect(bootstrapContainerModeFn).toHaveBeenCalledTimes(1);
   });
 
-  it('resolveStartupOrchestration falls back to normal mode when Docker is unavailable', async () => {
+  it('resolveStartupOrchestration enables orchestration without Docker when inside git repo', async () => {
     const testApi = loadCliTestApi();
     const { execSyncMock } = createDockerExecSyncMock({
       dockerAvailable: false,
       gitTopLevel: '/repo-root',
     });
     const env: NodeJS.ProcessEnv = {};
+    const bootstrapContainerModeFn = jest.fn().mockResolvedValue(undefined);
 
     const resolution = await testApi.resolveStartupOrchestration({
       forceContainer: false,
       env,
       execSyncFn: execSyncMock,
+      bootstrapContainerModeFn,
     });
 
-    expect(resolution.enableOrchestration).toBe(false);
+    expect(resolution.enableOrchestration).toBe(true);
     expect(resolution.dockerAvailable).toBe(false);
     expect(resolution.insideGitRepo).toBe(true);
-    expect(env.DEVCHAIN_MODE).toBeUndefined();
+    expect(env.DEVCHAIN_MODE).toBe('main');
+    expect(bootstrapContainerModeFn).toHaveBeenCalledTimes(1);
   });
 
-  it('resolveStartupOrchestration falls back to normal mode when not inside a git repository', async () => {
+  it('resolveStartupOrchestration enables orchestration even when not inside a git repository', async () => {
     const testApi = loadCliTestApi();
     const { execSyncMock } = createDockerExecSyncMock({
       dockerAvailable: true,
       gitTopLevel: null,
     });
     const env: NodeJS.ProcessEnv = {};
+    const bootstrapContainerModeFn = jest.fn().mockResolvedValue(undefined);
 
     const resolution = await testApi.resolveStartupOrchestration({
       forceContainer: false,
       env,
       execSyncFn: execSyncMock,
+      bootstrapContainerModeFn,
     });
 
-    expect(resolution.enableOrchestration).toBe(false);
+    expect(resolution.enableOrchestration).toBe(true);
     expect(resolution.dockerAvailable).toBe(true);
     expect(resolution.insideGitRepo).toBe(false);
-    expect(env.DEVCHAIN_MODE).toBeUndefined();
+    expect(env.DEVCHAIN_MODE).toBe('main');
   });
 
   it('resolveStartupOrchestration respects DEVCHAIN_MODE=normal override', async () => {
@@ -690,7 +695,7 @@ describe('CLI container bootstrap integration (mocked shell)', () => {
         execSyncFn: execSyncMock,
         env: {},
       }),
-    ).rejects.toThrow('--container requires orchestration, but Docker is unavailable.');
+    ).rejects.toThrow('--container requires Docker, but Docker is unavailable.');
   });
 
   it('resolveStartupOrchestration force mode behaves like auto-detect when prerequisites are available', async () => {
@@ -714,7 +719,7 @@ describe('CLI container bootstrap integration (mocked shell)', () => {
     expect(bootstrapContainerModeFn).toHaveBeenCalledTimes(1);
   });
 
-  it('resolveStartupOrchestration warns and continues normal mode when bootstrap fails in auto-detect mode', async () => {
+  it('resolveStartupOrchestration warns but still enables orchestration when bootstrap fails', async () => {
     const testApi = loadCliTestApi();
     const { execSyncMock } = createDockerExecSyncMock({
       dockerAvailable: true,
@@ -733,31 +738,35 @@ describe('CLI container bootstrap integration (mocked shell)', () => {
       },
     });
 
-    expect(resolution.enableOrchestration).toBe(false);
-    expect(resolution.bootstrapError).toBe('bootstrap exploded');
-    expect(env.DEVCHAIN_MODE).toBeUndefined();
+    expect(resolution.enableOrchestration).toBe(true);
+    expect(env.DEVCHAIN_MODE).toBe('main');
     expect(warnFn).toHaveBeenCalledWith(
-      'Container auto-detection found prerequisites but bootstrap failed: bootstrap exploded',
+      'Orchestration bootstrap note: bootstrap exploded',
     );
   });
 
-  it('resolveStartupOrchestration throws when force mode bootstrap fails', async () => {
+  it('resolveStartupOrchestration warns but enables orchestration even when force mode bootstrap fails', async () => {
     const testApi = loadCliTestApi();
     const { execSyncMock } = createDockerExecSyncMock({
       dockerAvailable: true,
       gitTopLevel: '/repo-root',
     });
+    const env: NodeJS.ProcessEnv = {};
+    const warnFn = jest.fn();
 
-    await expect(
-      testApi.resolveStartupOrchestration({
-        forceContainer: true,
-        execSyncFn: execSyncMock,
-        env: {},
-        bootstrapContainerModeFn: async () => {
-          throw new Error('boom');
-        },
-      }),
-    ).rejects.toThrow('--container failed to initialize orchestration: boom');
+    const resolution = await testApi.resolveStartupOrchestration({
+      forceContainer: true,
+      execSyncFn: execSyncMock,
+      env,
+      warnFn,
+      bootstrapContainerModeFn: async () => {
+        throw new Error('boom');
+      },
+    });
+
+    expect(resolution.enableOrchestration).toBe(true);
+    expect(env.DEVCHAIN_MODE).toBe('main');
+    expect(warnFn).toHaveBeenCalledWith('Orchestration bootstrap note: boom');
   });
 
   it('skips host preflights in orchestration mode', async () => {

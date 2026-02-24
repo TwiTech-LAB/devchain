@@ -230,58 +230,149 @@ export class ProjectsService {
       });
     }
 
+    // 2b. When a preset is selected, resolve which agents are fully covered by it.
+    // Walk preset agentConfig → template agent → profileId → profile.providerConfigs
+    // to determine the actual provider each agent will use. If that provider is locally
+    // installed the agent is "covered" and needs no substitution warning.
+    const presetCoveredAgentNames = new Set<string>();
+    const presetAgentResolvedProviders = new Map<string, string>();
+    let presetCoversAllAgents = false;
+    if (input.presetName) {
+      const selectedPreset = (payload.presets ?? []).find(
+        (p: { name: string }) => p.name === input.presetName,
+      );
+      if (selectedPreset) {
+        // Build profileId -> providerConfigs lookup
+        const profileConfigsByProfileId = new Map<string, Map<string, string>>();
+        for (const prof of payload.profiles ?? []) {
+          if (!prof.id) continue;
+          const providerConfigs = (
+            prof as { providerConfigs?: Array<{ name: string; providerName: string }> }
+          ).providerConfigs;
+          if (providerConfigs) {
+            const configMap = new Map<string, string>();
+            for (const pc of providerConfigs) {
+              configMap.set(pc.name.trim().toLowerCase(), pc.providerName.trim().toLowerCase());
+            }
+            profileConfigsByProfileId.set(prof.id, configMap);
+          }
+        }
+
+        // Build agentName -> profileId lookup from template agents
+        const agentNameToProfileId = new Map<string, string>();
+        for (const agent of payload.agents ?? []) {
+          if (agent.profileId) {
+            agentNameToProfileId.set(agent.name.trim().toLowerCase(), agent.profileId);
+          }
+        }
+
+        // Get locally installed provider names
+        const localProviders = await this.storage.listProviders();
+        const localProviderNames = new Set(
+          localProviders.items.map((p) => p.name.trim().toLowerCase()),
+        );
+
+        // Resolve each preset agent entry: agentName → profileId → providerConfig → providerName
+        let allCovered = true;
+        for (const ac of selectedPreset.agentConfigs) {
+          const agentKey = ac.agentName.trim().toLowerCase();
+          const profileId = agentNameToProfileId.get(agentKey);
+          if (!profileId) {
+            allCovered = false;
+            continue;
+          }
+
+          const configMap = profileConfigsByProfileId.get(profileId);
+          const providerName = configMap?.get(ac.providerConfigName.trim().toLowerCase());
+          if (providerName) {
+            presetAgentResolvedProviders.set(agentKey, providerName);
+          }
+          if (providerName && localProviderNames.has(providerName)) {
+            presetCoveredAgentNames.add(ac.agentName.trim().toLowerCase());
+          } else {
+            allCovered = false;
+          }
+        }
+
+        // Preset fully covers all agents only if every template agent is in the preset
+        // and every preset entry resolved to an available provider.
+        const allTemplateAgentNames = new Set(
+          (payload.agents ?? []).map((a) => a.name.trim().toLowerCase()),
+        );
+        presetCoversAllAgents =
+          allCovered && [...allTemplateAgentNames].every((n) => presetCoveredAgentNames.has(n));
+
+        if (presetCoversAllAgents) {
+          logger.info(
+            { presetName: input.presetName, coveredAgents: [...presetCoveredAgentNames] },
+            'Preset covers all agents with available providers — skipping family mapping',
+          );
+        } else if (presetCoveredAgentNames.size > 0) {
+          logger.info(
+            { presetName: input.presetName, coveredAgents: [...presetCoveredAgentNames] },
+            'Preset partially covers agents — suppressing warnings for covered agents only',
+          );
+        }
+      }
+    }
+
     // 3. Compute family alternatives to determine if mapping is needed
     const familyResult = await this.computeFamilyAlternatives(payload.profiles, payload.agents);
 
     // 4. Check if provider mapping is required
-    const needsMapping = familyResult.alternatives.some((alt) => !alt.defaultProviderAvailable);
+    // When a preset covers all agents with available providers, skip mapping entirely —
+    // the preset will assign the correct providerConfig to each agent after creation.
     let effectiveFamilyProviderMappings = input.familyProviderMappings;
 
-    if (needsMapping && !effectiveFamilyProviderMappings) {
-      // Try auto-selection: if every family needing mapping has exactly 1 available provider, auto-pick
-      const autoMappings: Record<string, string> = {};
-      let canAutoSelect = familyResult.canImport;
+    if (!presetCoversAllAgents) {
+      const needsMapping = familyResult.alternatives.some((alt) => !alt.defaultProviderAvailable);
 
-      for (const alt of familyResult.alternatives) {
-        if (!alt.defaultProviderAvailable) {
-          if (alt.availableProviders.length === 1) {
-            autoMappings[alt.familySlug] = alt.availableProviders[0];
-          } else {
-            canAutoSelect = false;
+      if (needsMapping && !effectiveFamilyProviderMappings) {
+        // Try auto-selection: if every family needing mapping has exactly 1 available provider, auto-pick
+        const autoMappings: Record<string, string> = {};
+        let canAutoSelect = familyResult.canImport;
+
+        for (const alt of familyResult.alternatives) {
+          if (!alt.defaultProviderAvailable) {
+            if (alt.availableProviders.length === 1) {
+              autoMappings[alt.familySlug] = alt.availableProviders[0];
+            } else {
+              canAutoSelect = false;
+            }
           }
+        }
+
+        if (canAutoSelect) {
+          // All families can be auto-resolved — use auto-mappings
+          effectiveFamilyProviderMappings = autoMappings;
+          logger.info(
+            { autoMappings },
+            'Auto-selected provider mappings for single-alternative families',
+          );
+        } else {
+          // Need manual mapping or can't import — return mapping info for UI
+          return {
+            success: false,
+            providerMappingRequired: {
+              missingProviders: familyResult.missingProviders,
+              familyAlternatives: familyResult.alternatives,
+              canImport: familyResult.canImport,
+            },
+          };
         }
       }
 
-      if (canAutoSelect) {
-        // All families can be auto-resolved — use auto-mappings
-        effectiveFamilyProviderMappings = autoMappings;
-        logger.info(
-          { autoMappings },
-          'Auto-selected provider mappings for single-alternative families',
-        );
-      } else {
-        // Need manual mapping or can't import — return mapping info for UI
+      // 4b. Enforce canImport server-side when explicit mappings provided
+      if (!familyResult.canImport) {
         return {
           success: false,
           providerMappingRequired: {
             missingProviders: familyResult.missingProviders,
             familyAlternatives: familyResult.alternatives,
-            canImport: familyResult.canImport,
+            canImport: false,
           },
         };
       }
-    }
-
-    // 4b. Enforce canImport server-side when explicit mappings provided
-    if (!familyResult.canImport) {
-      return {
-        success: false,
-        providerMappingRequired: {
-          missingProviders: familyResult.missingProviders,
-          familyAlternatives: familyResult.alternatives,
-          canImport: false,
-        },
-      };
     }
 
     // 5. Provider precheck and mapping
@@ -290,6 +381,13 @@ export class ProjectsService {
     );
     const { available } = await this.resolveProviders(providerNames);
 
+    // 5b. Fail-fast if no providers are installed but template requires profiles
+    if (available.size === 0 && (payload.profiles ?? []).length > 0) {
+      throw new ValidationError(
+        'No providers are installed. At least one provider is required to create a project from a template.',
+      );
+    }
+
     // 6. Build profile selection map based on family mappings
     // When mappings are provided, select the profile for each family that matches the mapped provider
     const selectedProfilesByFamily = this.selectProfilesForFamilies(
@@ -297,7 +395,24 @@ export class ProjectsService {
       payload.agents,
       effectiveFamilyProviderMappings,
       available,
+      { presetCoveredAgentNames, presetAgentResolvedProviders },
     );
+
+    // 6b. Build warnings from provider substitutions (for frontend display)
+    const warnings: Array<{
+      type: 'provider_mismatch';
+      originalProvider: string;
+      substituteProvider: string;
+      agentNames: string[];
+    }> = [];
+    for (const [, substitution] of selectedProfilesByFamily.providerSubstitutions) {
+      warnings.push({
+        type: 'provider_mismatch',
+        originalProvider: substitution.originalProvider,
+        substituteProvider: substitution.substituteProvider,
+        agentNames: substitution.agentNames,
+      });
+    }
 
     // 7. Prepare template payload with resolved provider IDs
     // Filter profiles to only include those selected based on family mappings
@@ -666,6 +781,7 @@ export class ProjectsService {
       mappings: result.mappings,
       initialPromptSet,
       message: 'Project created from template successfully.',
+      ...(warnings.length > 0 ? { warnings } : {}),
     };
   }
 
@@ -1223,7 +1339,17 @@ export class ProjectsService {
     );
     const { available, missing: missingProviders } = await this.resolveProviders(providerNames);
 
+    // Fail-fast if no providers are installed but template requires profiles (skip for dry runs —
+    // dry runs report missing providers via the response, not via exceptions)
+    if (!isDryRun && available.size === 0 && (payload.profiles ?? []).length > 0) {
+      throw new ValidationError(
+        'No providers are installed. At least one provider is required to create a project from a template.',
+      );
+    }
+
     // Build profile selection based on family mappings (used for both dry-run info and actual import)
+    // TODO: Consume selectedProfilesByFamily.providerSubstitutions to surface import warnings
+    // when import warning UI is implemented (Phase 2 parity for importProject path)
     const selectedProfilesByFamily = this.selectProfilesForFamilies(
       payload.profiles,
       payload.agents,
@@ -2095,25 +2221,56 @@ export class ProjectsService {
       instructions?: string | null;
       temperature?: number | null;
       maxTokens?: number | null;
+      providerConfigs?: Array<{ name: string; providerName: string }>;
     }>,
     templateAgents: Array<{
       id?: string;
       name: string;
       profileId?: string;
+      providerConfigName?: string | null;
     }>,
     familyProviderMappings: Record<string, string> | undefined,
     availableProviders: Map<string, string>,
+    options?: {
+      presetCoveredAgentNames?: Set<string>;
+      /** Maps agent name (lowercase) → resolved provider name from the preset's providerConfig */
+      presetAgentResolvedProviders?: Map<string, string>;
+    },
   ): {
     profilesToCreate: typeof templateProfiles;
     agentProfileMap: Map<string, string | undefined>;
     /** Maps original profile names to selected profile names for profiles in the same family (for watcher scope remap) */
     profileNameRemapMap: Map<string, string>;
+    /** Tracks non-family profiles whose provider was substituted with a fallback provider */
+    providerSubstitutions: Map<
+      string,
+      { originalProvider: string; substituteProvider: string; agentNames: string[] }
+    >;
   } {
     // Build profile lookup maps
     const profileById = new Map<string, (typeof templateProfiles)[0]>();
     for (const prof of templateProfiles) {
       if (prof.id) {
         profileById.set(prof.id, prof);
+      }
+    }
+
+    // Resolve each template agent's providerConfigName against its profile's providerConfigs.
+    // This gives us the actual provider each agent uses, independent of preset selection.
+    const templateAgentResolvedProviders = new Map<string, string>();
+    for (const agent of templateAgents) {
+      if (!agent.providerConfigName || !agent.profileId) continue;
+      const profile = profileById.get(agent.profileId);
+      if (!profile?.providerConfigs) continue;
+      const configName = agent.providerConfigName.trim().toLowerCase();
+      const config = profile.providerConfigs.find(
+        (pc) => pc.name.trim().toLowerCase() === configName,
+      );
+      if (config) {
+        templateAgentResolvedProviders.set(
+          agent.name.trim().toLowerCase(),
+          config.providerName.trim().toLowerCase(),
+        );
       }
     }
 
@@ -2190,17 +2347,98 @@ export class ProjectsService {
       }
     }
 
-    // Import ALL profiles whose provider is available (not just one per family)
+    // Include all profiles that agents reference. Profiles whose provider is available
+    // are used as-is. Profiles whose provider is NOT available get assigned the first
+    // available provider so the project can be created — the user must then reconfigure
+    // the correct provider from /chat. We track these as warnings so the frontend can
+    // display a prompt.
+    //
+    // When presetCoveredAgentNames is provided, agents in that set are excluded from
+    // substitution warnings (the preset will override their providerConfig post-creation).
+    // If ALL agents for a substituted profile are covered, the warning is suppressed entirely.
+    const coveredAgents = options?.presetCoveredAgentNames ?? new Set<string>();
     const profilesToCreate: typeof templateProfiles = [];
     const usedProfileIds = new Set<string>();
+    const providerSubstitutions = new Map<
+      string,
+      { originalProvider: string; substituteProvider: string; agentNames: string[] }
+    >();
+    const fallbackProviderName =
+      availableProviders.size > 0 ? [...availableProviders.keys()][0] : undefined;
+
+    // Collect which profiles each agent references (for warning context)
+    const profileAgentNames = new Map<string, string[]>();
+    for (const agent of templateAgents) {
+      if (!agent.profileId) continue;
+      const names = profileAgentNames.get(agent.profileId) ?? [];
+      names.push(agent.name);
+      profileAgentNames.set(agent.profileId, names);
+    }
 
     for (const prof of templateProfiles) {
       if (!prof.id || usedProfileIds.has(prof.id)) continue;
 
       const providerName = prof.provider.name.trim().toLowerCase();
+
       if (availableProviders.has(providerName)) {
+        // Provider is installed — always import as-is
         usedProfileIds.add(prof.id);
         profilesToCreate.push(prof);
+      } else if (fallbackProviderName) {
+        // Provider not installed — skip if the family already has a selected available profile
+        if (prof.familySlug) {
+          const selectedId = selectedProfileIdsByFamily.get(prof.familySlug);
+          if (selectedId && selectedId !== prof.id) continue;
+        }
+
+        // Assign first available provider so project can be created.
+        usedProfileIds.add(prof.id);
+
+        // Only warn about agents NOT covered by the preset and whose template
+        // providerConfig does not already resolve to an available provider.
+        const allAgents = profileAgentNames.get(prof.id) ?? [];
+        const uncoveredAgents = allAgents.filter((name) => {
+          const agentKey = name.trim().toLowerCase();
+          if (coveredAgents.has(agentKey)) return false;
+          const templateResolved = templateAgentResolvedProviders.get(agentKey);
+          if (templateResolved && availableProviders.has(templateResolved)) return false;
+          return true;
+        });
+        if (uncoveredAgents.length > 0) {
+          // Resolve the actual provider each agent needs for accurate warnings.
+          // Priority: preset resolution > template providerConfigName resolution > profile default.
+          // This prevents showing e.g. "gemini" (profile default) when the agent actually
+          // uses a "codex-xhigh" providerConfig that resolves to "codex".
+          // Group by resolved provider so agents needing different providers get
+          // separate warnings (e.g. Agent A needs "claude", Agent B needs "gemini").
+          const presetResolved = options?.presetAgentResolvedProviders;
+          const agentsByMissingProvider = new Map<string, string[]>();
+          for (const agentName of uncoveredAgents) {
+            const agentKey = agentName.trim().toLowerCase();
+            const missing =
+              presetResolved?.get(agentKey) ??
+              templateAgentResolvedProviders.get(agentKey) ??
+              providerName;
+            const list = agentsByMissingProvider.get(missing) ?? [];
+            list.push(agentName);
+            agentsByMissingProvider.set(missing, list);
+          }
+          for (const [missingProvider, agents] of agentsByMissingProvider) {
+            const key =
+              agentsByMissingProvider.size > 1 ? `${prof.name}:${missingProvider}` : prof.name;
+            providerSubstitutions.set(key, {
+              originalProvider: missingProvider,
+              substituteProvider: fallbackProviderName,
+              agentNames: agents,
+            });
+          }
+        }
+
+        profilesToCreate.push({
+          ...prof,
+          provider: { name: fallbackProviderName },
+          options: null,
+        });
       }
     }
 
@@ -2248,7 +2486,7 @@ export class ProjectsService {
       }
     }
 
-    return { profilesToCreate, agentProfileMap, profileNameRemapMap };
+    return { profilesToCreate, agentProfileMap, profileNameRemapMap, providerSubstitutions };
   }
 
   /**

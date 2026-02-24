@@ -55,14 +55,14 @@ describe('env.config', () => {
     consoleSpy.mockRestore();
   });
 
-  it('throws when REPO_ROOT is missing in main mode', () => {
+  it('accepts main mode without REPO_ROOT (non-git context)', () => {
     process.env.DEVCHAIN_MODE = 'main';
     delete process.env.REPO_ROOT;
-    const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
 
-    expect(() => getEnvConfig()).toThrow('Environment validation failed');
+    const config = getEnvConfig();
 
-    consoleSpy.mockRestore();
+    expect(config.DEVCHAIN_MODE).toBe('main');
+    expect(config.REPO_ROOT).toBeUndefined();
   });
 
   it('throws when REPO_ROOT path does not exist in main mode', () => {

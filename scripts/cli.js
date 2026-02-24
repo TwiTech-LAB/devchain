@@ -617,9 +617,15 @@ function ensureWorktreeImageRefFromPackageVersion() {
 async function bootstrapContainerMode({
   execSyncFn = execSync,
 } = {}) {
-  ensureDockerAvailable(execSyncFn);
-  const repoRoot = deriveRepoRootFromGit(execSyncFn);
-  ensureProjectGitignoreIncludesDevchain(repoRoot);
+  let repoRoot;
+  try {
+    repoRoot = deriveRepoRootFromGit(execSyncFn);
+  } catch (_) {
+    // Not inside a git repo — skip repo-specific setup, orchestration still works
+  }
+  if (repoRoot) {
+    ensureProjectGitignoreIncludesDevchain(repoRoot);
+  }
   ensureWorktreeImageRefFromPackageVersion();
 }
 
@@ -675,47 +681,29 @@ async function resolveStartupOrchestration({
   const dockerAvailable = isDockerAvailable(execSyncFn);
   const insideGitRepo = isInsideGitRepo(execSyncFn);
 
-  if (!dockerAvailable || !insideGitRepo) {
-    const reason = formatOrchestrationDetectionFailureReason({
-      dockerAvailable,
-      insideGitRepo,
-    });
-    if (forceContainer) {
-      throw new Error(`--container requires orchestration, but ${reason}.`);
-    }
-    return {
-      enableOrchestration: false,
-      skippedByEnvNormal: false,
-      dockerAvailable,
-      insideGitRepo,
-    };
+  if (!dockerAvailable && forceContainer) {
+    throw new Error(
+      `--container requires Docker, but ${formatOrchestrationDetectionFailureReason({ dockerAvailable, insideGitRepo })}.`,
+    );
   }
 
   try {
     await bootstrapContainerModeFn({
       execSyncFn,
     });
-    env.DEVCHAIN_MODE = 'main';
-    return {
-      enableOrchestration: true,
-      skippedByEnvNormal: false,
-      dockerAvailable: true,
-      insideGitRepo: true,
-    };
   } catch (error) {
+    // Bootstrap is best-effort (e.g. non-git directory); log but don't block orchestration
     const message = error instanceof Error ? error.message : String(error);
-    if (forceContainer) {
-      throw new Error(`--container failed to initialize orchestration: ${message}`);
-    }
-    warnFn(`Container auto-detection found prerequisites but bootstrap failed: ${message}`);
-    return {
-      enableOrchestration: false,
-      skippedByEnvNormal: false,
-      dockerAvailable: true,
-      insideGitRepo: true,
-      bootstrapError: message,
-    };
+    warnFn(`Orchestration bootstrap note: ${message}`);
   }
+
+  env.DEVCHAIN_MODE = 'main';
+  return {
+    enableOrchestration: true,
+    skippedByEnvNormal: false,
+    dockerAvailable,
+    insideGitRepo,
+  };
 }
 
 async function ensureProvidersInDb(baseUrl, detected, log) {

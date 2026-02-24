@@ -71,6 +71,8 @@ interface NavItem {
   label: string;
   path: string;
   icon: typeof FolderOpen;
+  /** Only show this item when the app is running in main (orchestrator) mode */
+  mainModeOnly?: boolean;
 }
 
 interface NavSection {
@@ -102,11 +104,11 @@ const navSections: NavSection[] = [
     collapsible: false,
     items: [
       { label: 'Projects', path: '/projects', icon: FolderOpen },
-      { label: 'Worktrees', path: '/worktrees', icon: GitBranch },
+      { label: 'Worktrees', path: '/worktrees', icon: GitBranch, mainModeOnly: true },
       { label: 'Chat', path: '/chat', icon: MessageSquare },
       { label: 'Board', path: '/board', icon: LayoutGrid },
       { label: 'Reviews', path: '/reviews', icon: GitCompareArrows },
-      { label: 'Registry', path: '/registry', icon: Package },
+      { label: 'Registry', path: '/registry', icon: Package, mainModeOnly: true },
       { label: 'Skills', path: '/skills', icon: Sparkles },
     ],
   },
@@ -405,13 +407,20 @@ function LayoutShell({ children, isMainMode }: LayoutProps & { isMainMode: boole
     [isMainMode, activeWorktree],
   );
   const visibleNavSections = useMemo(() => {
-    if (!activeWorktree) return navSections;
-    const hiddenPaths = new Set(['/worktrees', '/registry']);
+    const hiddenPaths = new Set<string>();
+    if (activeWorktree) {
+      hiddenPaths.add('/worktrees');
+      hiddenPaths.add('/registry');
+    }
     return navSections.map((section) => {
-      const filtered = section.items.filter((item) => !hiddenPaths.has(item.path));
+      const filtered = section.items.filter((item) => {
+        if (hiddenPaths.has(item.path)) return false;
+        if (item.mainModeOnly && !isMainMode) return false;
+        return true;
+      });
       return filtered.length === section.items.length ? section : { ...section, items: filtered };
     });
-  }, [activeWorktree]);
+  }, [activeWorktree, isMainMode]);
   const {
     data: worktreesData,
     isLoading: worktreesLoading,

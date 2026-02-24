@@ -9,7 +9,23 @@ import { resolveTemplatesDirectory } from '../../../../common/templates-director
 
 const logger = createLogger('OrchestratorDockerService');
 
-const DOCKER_SOCKET_PATH = '/var/run/docker.sock';
+const DOCKER_SOCKET_CANDIDATES = [
+  '/var/run/docker.sock',
+  join(homedir(), '.docker', 'run', 'docker.sock'),
+  join(homedir(), '.colima', 'default', 'docker.sock'),
+];
+const DOCKER_CONTAINER_SOCKET_PATH = '/var/run/docker.sock';
+
+function resolveDockerSocketPath(): string {
+  for (const candidate of DOCKER_SOCKET_CANDIDATES) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return DOCKER_SOCKET_CANDIDATES[0];
+}
+
+const DOCKER_SOCKET_PATH = resolveDockerSocketPath();
 const DEFAULT_CONTAINER_PORT = 3000;
 const DEFAULT_CONTAINER_HOME_PATH = '/home/node';
 const DEFAULT_CONTAINER_PROJECT_PATH = '/project';
@@ -432,7 +448,7 @@ export class OrchestratorDockerService {
       `${config.dataPath}:${containerDataPath}:rw`,
       ...authMounts.map((mount) => mount.bind),
       ...(config.additionalBinds ?? []),
-      `${DOCKER_SOCKET_PATH}:${DOCKER_SOCKET_PATH}:rw`,
+      `${DOCKER_SOCKET_PATH}:${DOCKER_CONTAINER_SOCKET_PATH}:rw`,
     ];
 
     const gitCommonDirMount = this.discoverGitCommonDirMount(config.worktreePath);

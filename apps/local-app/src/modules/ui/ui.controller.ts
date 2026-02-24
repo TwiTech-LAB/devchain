@@ -1,15 +1,23 @@
-import { Controller, Get, Res } from '@nestjs/common';
-import { FastifyReply } from 'fastify';
+import { Controller, Get, Req, Res } from '@nestjs/common';
+import { FastifyReply, FastifyRequest } from 'fastify';
 import { join } from 'path';
 import { existsSync, readFileSync } from 'fs';
 
 @Controller()
 export class UiController {
   /**
-   * Serve the SPA for all non-API routes (SPA fallback)
+   * Serve the SPA for all non-API routes (SPA fallback).
+   * API paths (/api/...) are never served as HTML — return 404 so clients
+   * get a proper JSON error instead of the SPA shell.
    */
   @Get('*')
-  async serveSpa(@Res() res: FastifyReply): Promise<void> {
+  async serveSpa(@Req() req: FastifyRequest, @Res() res: FastifyReply): Promise<void> {
+    const pathname = req.url.split('?')[0];
+    if (pathname === '/api' || pathname.startsWith('/api/')) {
+      res.code(404).send({ statusCode: 404, message: 'Not Found' });
+      return;
+    }
+
     // Prefer production build path next to compiled server code
     const candidates = [
       // When running compiled code: dist/modules/ui/../../ui → dist/ui

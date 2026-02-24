@@ -491,7 +491,7 @@ export class LocalStorageService implements StorageService {
             id: randomUUID(),
             projectId: project.id,
             sourceName,
-            enabled: false,
+            enabled: true,
             createdAt: now,
           })),
         );
@@ -594,7 +594,7 @@ export class LocalStorageService implements StorageService {
             id: randomUUID(),
             projectId: project.id,
             sourceName,
-            enabled: false,
+            enabled: true,
             createdAt: now,
           })),
         );

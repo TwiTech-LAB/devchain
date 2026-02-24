@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.10.3",
+  "version": "0.10.5",
   "description": "AI driven development platform",
   "homepage": "https://devchain.twitechlab.com/",
   "repository": {
@@ -8,6 +8,14 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.10.5": [
+      "macOS: fix worktree creation without Docker and improve socket detection",
+      "Fix provider validation and mismatch warnings on template import"
+    ],
+    "0.10.4": [
+      "Enable community/local skill sources by default on new projects",
+      "5-agents template: assign skills in planning"
+    ],
     "0.10.3": [
       "Templates improvements"
     ],

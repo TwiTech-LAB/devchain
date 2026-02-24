@@ -465,11 +465,14 @@ describe('Layout auto-compact recommendation modal', () => {
     expect(localStorage.getItem('devchain:autoCompact:recommended:provider-1')).toBe('true');
   });
 
-  it('shows Worktrees nav link when runtime mode is normal', async () => {
+  it('hides Worktrees nav link when runtime mode is normal', async () => {
     runtimeMode = 'normal';
     renderLayout();
 
-    expect(await screen.findByRole('link', { name: 'Worktrees' })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByRole('link', { name: 'Projects' })).toBeInTheDocument();
+    });
+    expect(screen.queryByRole('link', { name: 'Worktrees' })).not.toBeInTheDocument();
   });
 
   it('shows Worktrees nav link when runtime mode is main', async () => {
