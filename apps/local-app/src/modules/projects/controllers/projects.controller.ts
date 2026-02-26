@@ -83,6 +83,18 @@ function normalizeFamilyProviderMappings(
   return normalized;
 }
 
+/**
+ * Normalize optional string fields from request bodies.
+ * - trims surrounding whitespace
+ * - converts empty strings and null to undefined
+ */
+function normalizeOptionalStringField(value: unknown): unknown {
+  if (value === null) return undefined;
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? undefined : trimmed;
+}
+
 @Controller('api/projects')
 export class ProjectsController {
   constructor(
@@ -344,18 +356,20 @@ export class ProjectsController {
         description: z.string().nullable().optional(),
         rootPath: z.string().min(1, 'Root path is required'),
         projectId: z.string().uuid().optional(),
-        slug: z.string().min(1).regex(SLUG_PATTERN, VALIDATION_MESSAGES.INVALID_SLUG).optional(),
+        slug: z.preprocess(
+          normalizeOptionalStringField,
+          z.string().min(1).regex(SLUG_PATTERN, VALIDATION_MESSAGES.INVALID_SLUG).optional(),
+        ),
         version: z
           .string()
           .regex(SEMVER_PATTERN, VALIDATION_MESSAGES.INVALID_VERSION)
           .nullable()
           .optional(),
-        templateId: z
-          .string()
-          .min(1)
-          .regex(SLUG_PATTERN, VALIDATION_MESSAGES.INVALID_SLUG)
-          .optional(), // Legacy: alias for slug
-        templatePath: z.string().min(1).optional(), // File-based template path
+        templateId: z.preprocess(
+          normalizeOptionalStringField,
+          z.string().min(1).regex(SLUG_PATTERN, VALIDATION_MESSAGES.INVALID_SLUG).optional(),
+        ), // Legacy: alias for slug
+        templatePath: z.preprocess(normalizeOptionalStringField, z.string().min(1).optional()), // File-based template path
         familyProviderMappings: FamilyProviderMappingsSchema,
         presetName: z.string().min(1).optional(), // Optional preset to apply after creation
       })

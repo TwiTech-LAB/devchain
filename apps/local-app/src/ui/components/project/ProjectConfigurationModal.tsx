@@ -18,7 +18,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/ui/components/ui/select';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/ui/components/ui/tooltip';
+import {
+  TooltipProvider,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/ui/components/ui/tooltip';
 import {
   Table,
   TableBody,
@@ -329,182 +334,186 @@ export function ProjectConfigurationModal({
   }, [presets, agents, configsByProfile]);
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Settings className="h-5 w-5" />
-            Project Configuration
-          </DialogTitle>
-          <DialogDescription>
-            {hasPresets
-              ? 'Select a preset to quickly configure agent providers, or view current assignments below.'
-              : 'View current agent provider assignments.'}
-          </DialogDescription>
-        </DialogHeader>
+    <TooltipProvider>
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Settings className="h-5 w-5" />
+              Project Configuration
+            </DialogTitle>
+            <DialogDescription>
+              {hasPresets
+                ? 'Select a preset to quickly configure agent providers, or view current assignments below.'
+                : 'View current agent provider assignments.'}
+            </DialogDescription>
+          </DialogHeader>
 
-        {isLoading ? (
-          <div className="flex items-center justify-center py-8">
-            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-          </div>
-        ) : agents.length === 0 ? (
-          <div className="text-center py-8 text-muted-foreground">
-            No agents found in this project.
-          </div>
-        ) : !hasPresets ? (
-          // Fallback UI when no presets available - replaces entire dialog content
-          <>
-            <div className="flex flex-col items-center justify-center py-12 text-center">
-              <AlertCircle className="h-12 w-12 text-muted-foreground mb-4" />
-              <h3 className="text-lg font-medium mb-2">No presets available</h3>
-              <p className="text-muted-foreground mb-6">
-                {agents.length > 0
-                  ? "This project was created from a template that doesn't include presets, or is a file-based template."
-                  : 'No presets are stored for this project.'}
-              </p>
-              <div className="flex gap-3 justify-center">
-                <Button variant="outline" onClick={() => navigate('/agents')}>
-                  Go to Agents Page
-                </Button>
-                <Button onClick={() => onOpenChange(false)}>Close</Button>
-              </div>
+          {isLoading ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
             </div>
-          </>
-        ) : (
-          <div className="space-y-4 max-h-[60vh] overflow-y-auto">
-            {/* Preset Selector */}
-            {hasPresets && (
-              <div className="space-y-3 p-4 bg-muted/30 rounded-lg border">
-                <div className="flex items-center gap-2">
-                  <Info className="h-4 w-4 text-muted-foreground" />
-                  <Label htmlFor="preset-select" className="text-sm font-medium">
-                    Quick Configuration
-                  </Label>
+          ) : agents.length === 0 ? (
+            <div className="text-center py-8 text-muted-foreground">
+              No agents found in this project.
+            </div>
+          ) : !hasPresets ? (
+            // Fallback UI when no presets available - replaces entire dialog content
+            <>
+              <div className="flex flex-col items-center justify-center py-12 text-center">
+                <AlertCircle className="h-12 w-12 text-muted-foreground mb-4" />
+                <h3 className="text-lg font-medium mb-2">No presets available</h3>
+                <p className="text-muted-foreground mb-6">
+                  {agents.length > 0
+                    ? "This project was created from a template that doesn't include presets, or is a file-based template."
+                    : 'No presets are stored for this project.'}
+                </p>
+                <div className="flex gap-3 justify-center">
+                  <Button variant="outline" onClick={() => navigate('/agents')}>
+                    Go to Agents Page
+                  </Button>
+                  <Button onClick={() => onOpenChange(false)}>Close</Button>
                 </div>
-                <Select value={presetToApply} onValueChange={handlePresetChange}>
-                  <SelectTrigger id="preset-select">
-                    <SelectValue placeholder="Select a preset..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {sortedPresets.map(({ preset, available, missingConfigs }) => (
-                      <SelectItem key={preset.name} value={preset.name}>
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={cn(
-                              'w-2 h-2 rounded-full flex-shrink-0',
-                              available ? 'bg-green-500' : 'bg-yellow-500',
-                            )}
-                          />
-                          <span className="font-medium">{preset.name}</span>
-                          {!available && (
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <Info className="h-3 w-3 text-muted-foreground flex-shrink-0" />
-                              </TooltipTrigger>
-                              <TooltipContent>
-                                Missing configs:{' '}
-                                {missingConfigs
-                                  .map((m) => `${m.agentName} → ${m.configName}`)
-                                  .join(', ')}
-                              </TooltipContent>
-                            </Tooltip>
-                          )}
-                        </div>
-                        {preset.description && (
-                          <div className="text-xs text-muted-foreground">{preset.description}</div>
-                        )}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                {presetToApply && (
-                  <div className="text-xs text-muted-foreground">
-                    This will update{' '}
-                    {presets.find((p) => p.name === presetToApply)?.agentConfigs.length || 0}{' '}
-                    agent(s) to use their preset configurations.
-                  </div>
-                )}
               </div>
-            )}
-
-            {/* Current Assignments Table */}
-            <div>
-              <h3 className="text-sm font-medium mb-2">Current Agent Assignments</h3>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Agent</TableHead>
-                    <TableHead>Profile</TableHead>
-                    <TableHead>Provider Config</TableHead>
-                    <TableHead className="w-[80px]"></TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {agents.map((agent) => {
-                    const currentProfile = getCurrentProfile(agent);
-                    const currentConfig = getCurrentConfig(agent);
-                    const isActive = hasActiveSession(agent.id);
-
-                    const configDisplay = currentConfig ? currentConfig.name : 'Not configured';
-
-                    return (
-                      <TableRow key={agent.id}>
-                        <TableCell>
-                          <div className="font-medium">{agent.name}</div>
-                          {agent.description && (
-                            <div className="text-sm text-muted-foreground truncate max-w-[200px]">
-                              {agent.description}
+            </>
+          ) : (
+            <div className="space-y-4 max-h-[60vh] overflow-y-auto">
+              {/* Preset Selector */}
+              {hasPresets && (
+                <div className="space-y-3 p-4 bg-muted/30 rounded-lg border">
+                  <div className="flex items-center gap-2">
+                    <Info className="h-4 w-4 text-muted-foreground" />
+                    <Label htmlFor="preset-select" className="text-sm font-medium">
+                      Quick Configuration
+                    </Label>
+                  </div>
+                  <Select value={presetToApply} onValueChange={handlePresetChange}>
+                    <SelectTrigger id="preset-select">
+                      <SelectValue placeholder="Select a preset..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {sortedPresets.map(({ preset, available, missingConfigs }) => (
+                        <SelectItem key={preset.name} value={preset.name}>
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={cn(
+                                'w-2 h-2 rounded-full flex-shrink-0',
+                                available ? 'bg-green-500' : 'bg-yellow-500',
+                              )}
+                            />
+                            <span className="font-medium">{preset.name}</span>
+                            {!available && (
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Info className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  Missing configs:{' '}
+                                  {missingConfigs
+                                    .map((m) => `${m.agentName} → ${m.configName}`)
+                                    .join(', ')}
+                                </TooltipContent>
+                              </Tooltip>
+                            )}
+                          </div>
+                          {preset.description && (
+                            <div className="text-xs text-muted-foreground">
+                              {preset.description}
                             </div>
                           )}
-                        </TableCell>
-                        <TableCell>
-                          <span className="text-sm">{currentProfile?.name || 'Unknown'}</span>
-                          {currentProfile?.familySlug && (
-                            <Badge variant="outline" className="ml-2">
-                              {currentProfile.familySlug}
-                            </Badge>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          <span className="text-sm">
-                            {configDisplay}
-                            {currentConfig?.env && Object.keys(currentConfig.env).length > 0 && (
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {presetToApply && (
+                    <div className="text-xs text-muted-foreground">
+                      This will update{' '}
+                      {presets.find((p) => p.name === presetToApply)?.agentConfigs.length || 0}{' '}
+                      agent(s) to use their preset configurations.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Current Assignments Table */}
+              <div>
+                <h3 className="text-sm font-medium mb-2">Current Agent Assignments</h3>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Agent</TableHead>
+                      <TableHead>Profile</TableHead>
+                      <TableHead>Provider Config</TableHead>
+                      <TableHead className="w-[80px]"></TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {agents.map((agent) => {
+                      const currentProfile = getCurrentProfile(agent);
+                      const currentConfig = getCurrentConfig(agent);
+                      const isActive = hasActiveSession(agent.id);
+
+                      const configDisplay = currentConfig ? currentConfig.name : 'Not configured';
+
+                      return (
+                        <TableRow key={agent.id}>
+                          <TableCell>
+                            <div className="font-medium">{agent.name}</div>
+                            {agent.description && (
+                              <div className="text-sm text-muted-foreground truncate max-w-[200px]">
+                                {agent.description}
+                              </div>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            <span className="text-sm">{currentProfile?.name || 'Unknown'}</span>
+                            {currentProfile?.familySlug && (
                               <Badge variant="outline" className="ml-2">
-                                env
+                                {currentProfile.familySlug}
                               </Badge>
                             )}
-                          </span>
-                        </TableCell>
-                        <TableCell>
-                          {isActive && (
-                            <Badge variant="secondary" className="gap-1">
-                              <AlertTriangle className="h-3 w-3" />
-                              Active
-                            </Badge>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
+                          </TableCell>
+                          <TableCell>
+                            <span className="text-sm">
+                              {configDisplay}
+                              {currentConfig?.env && Object.keys(currentConfig.env).length > 0 && (
+                                <Badge variant="outline" className="ml-2">
+                                  env
+                                </Badge>
+                              )}
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            {isActive && (
+                              <Badge variant="secondary" className="gap-1">
+                                <AlertTriangle className="h-3 w-3" />
+                                Active
+                              </Badge>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* DialogFooter - only shown when not showing fallback UI */}
-        {hasPresets && (
-          <DialogFooter>
-            <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isSaving}>
-              Close
-            </Button>
-            <Button onClick={handleApplyPreset} disabled={isSaving || !presetToApply}>
-              {isSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              Apply Preset
-            </Button>
-          </DialogFooter>
-        )}
-      </DialogContent>
-    </Dialog>
+          {/* DialogFooter - only shown when not showing fallback UI */}
+          {hasPresets && (
+            <DialogFooter>
+              <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isSaving}>
+                Close
+              </Button>
+              <Button onClick={handleApplyPreset} disabled={isSaving || !presetToApply}>
+                {isSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                Apply Preset
+              </Button>
+            </DialogFooter>
+          )}
+        </DialogContent>
+      </Dialog>
+    </TooltipProvider>
   );
 }
