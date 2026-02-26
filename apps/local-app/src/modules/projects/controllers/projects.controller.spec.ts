@@ -787,6 +787,54 @@ describe('ProjectsController', () => {
       });
     });
 
+    it('accepts templateId when slug is empty string', async () => {
+      const mockResult = {
+        success: true,
+        project: makeProject({ id: 'p1' }),
+        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 5 },
+      };
+      (projectsService.createFromTemplate as jest.Mock).mockResolvedValue(mockResult);
+
+      await controller.createProjectFromTemplate({
+        name: 'New Project',
+        rootPath: '/tmp/new',
+        slug: '',
+        templateId: 'old-template',
+      });
+
+      expect(projectsService.createFromTemplate).toHaveBeenCalledWith({
+        name: 'New Project',
+        description: undefined,
+        rootPath: '/tmp/new',
+        slug: 'old-template',
+        version: null,
+      });
+    });
+
+    it('treats empty templatePath as undefined when slug is provided', async () => {
+      const mockResult = {
+        success: true,
+        project: makeProject({ id: 'p1' }),
+        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 5 },
+      };
+      (projectsService.createFromTemplate as jest.Mock).mockResolvedValue(mockResult);
+
+      await controller.createProjectFromTemplate({
+        name: 'New Project',
+        rootPath: '/tmp/new',
+        slug: 'my-template',
+        templatePath: '',
+      });
+
+      expect(projectsService.createFromTemplate).toHaveBeenCalledWith({
+        name: 'New Project',
+        description: undefined,
+        rootPath: '/tmp/new',
+        slug: 'my-template',
+        version: null,
+      });
+    });
+
     it('rejects invalid slug format (special characters)', async () => {
       await expect(
         controller.createProjectFromTemplate({
