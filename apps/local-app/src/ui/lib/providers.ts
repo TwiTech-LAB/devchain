@@ -22,6 +22,14 @@ const GEMINI_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" 
   <path d="M12 0C12 6.627 6.627 12 0 12c6.627 0 12 5.373 12 12 0-6.627 5.373-12 12-12-6.627 0-12-5.373-12-12z"/>
 </svg>`;
 
+// OpenCode (z.ai coding plan) icon
+// Source: https://opencode.ai/favicon.svg
+const OPENCODE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#131010"/>
+  <path d="M320 224V352H192V224H320Z" fill="#5A5858"/>
+  <path fill-rule="evenodd" clip-rule="evenodd" d="M384 416H128V96H384V416ZM320 160H192V352H320V160Z" fill="white"/>
+</svg>`;
+
 // Map provider names to their SVG icons
 const PROVIDER_ICONS: Record<string, string> = {
   claude: CLAUDE_SVG,
@@ -31,6 +39,8 @@ const PROVIDER_ICONS: Record<string, string> = {
   gpt: OPENAI_SVG,
   gemini: GEMINI_SVG,
   google: GEMINI_SVG,
+  opencode: OPENCODE_SVG,
+  zai: OPENCODE_SVG,
 };
 
 // Cache for data URIs
@@ -51,6 +61,9 @@ function normalizeProviderName(name: string | null | undefined): string | null {
   }
   if (normalized.includes('gemini') || normalized.includes('google')) {
     return 'gemini';
+  }
+  if (normalized.includes('opencode') || normalized.includes('zai') || normalized.includes('z.ai')) {
+    return 'opencode';
   }
   return normalized;
 }
@@ -115,6 +128,7 @@ export function getProviderIconAltText(name: string | null | undefined): string 
     gpt: 'OpenAI GPT',
     gemini: 'Google Gemini',
     google: 'Google',
+    opencode: 'OpenCode (z.ai)',
   };
 
   return `${displayNames[normalized] ?? normalized} icon`;

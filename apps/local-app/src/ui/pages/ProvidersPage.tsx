@@ -25,12 +25,13 @@ import { cn } from '@/ui/lib/utils';
 import { fetchPreflightChecks } from '@/ui/lib/preflight';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 
-type ProviderType = 'codex' | 'claude' | 'gemini';
+type ProviderType = 'codex' | 'claude' | 'gemini' | 'opencode';
 
 function getDefaultBinPathForType(t: ProviderType) {
   if (t === 'codex') return 'codex';
   if (t === 'claude') return 'claude';
   if (t === 'gemini') return 'gemini';
+  if (t === 'opencode') return 'opencode';
   return '';
 }
 
