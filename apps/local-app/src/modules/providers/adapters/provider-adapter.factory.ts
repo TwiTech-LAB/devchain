@@ -3,12 +3,13 @@ import { ProviderAdapter } from './provider-adapter.interface';
 import { ClaudeAdapter } from './claude.adapter';
 import { CodexAdapter } from './codex.adapter';
 import { GeminiAdapter } from './gemini.adapter';
+import { OpencodeAdapter } from './opencode.adapter';
 import { UnsupportedProviderError } from '../../../common/errors/error-types';
 
 /**
  * Factory for resolving ProviderAdapter instances by provider name
  *
- * Supports known providers only (claude, codex, gemini).
+ * Supports known providers only (claude, codex, gemini, opencode).
  * Throws an error for unsupported provider names.
  */
 @Injectable()
@@ -19,11 +20,13 @@ export class ProviderAdapterFactory {
     claudeAdapter: ClaudeAdapter,
     codexAdapter: CodexAdapter,
     geminiAdapter: GeminiAdapter,
+    opencodeAdapter: OpencodeAdapter,
   ) {
     this.adapters = new Map<string, ProviderAdapter>([
       ['claude', claudeAdapter],
       ['codex', codexAdapter],
       ['gemini', geminiAdapter],
+      ['opencode', opencodeAdapter],
     ]);
   }
 

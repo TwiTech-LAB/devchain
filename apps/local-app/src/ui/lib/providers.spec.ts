@@ -45,6 +45,19 @@ describe('providers', () => {
       expect(googleSvg).toBe(geminiSvg);
     });
 
+    it('returns SVG for opencode', () => {
+      const svg = getProviderIconSvg('opencode');
+      expect(svg).not.toBeNull();
+      expect(svg).toContain('<svg');
+      expect(svg).toContain('fill="white"');
+    });
+
+    it('returns OpenCode SVG for zai', () => {
+      const zaiSvg = getProviderIconSvg('zai');
+      const opencodeSvg = getProviderIconSvg('opencode');
+      expect(zaiSvg).toBe(opencodeSvg);
+    });
+
     it('returns null for unknown provider', () => {
       expect(getProviderIconSvg('unknown-provider')).toBeNull();
     });
@@ -66,6 +79,7 @@ describe('providers', () => {
       expect(getProviderIconSvg('gpt-4')).not.toBeNull();
       expect(getProviderIconSvg('gemini-pro')).not.toBeNull();
       expect(getProviderIconSvg('google-gemini')).not.toBeNull();
+      expect(getProviderIconSvg('z.ai')).not.toBeNull();
     });
   });
 
@@ -108,6 +122,8 @@ describe('providers', () => {
       expect(hasProviderIcon('codex')).toBe(true);
       expect(hasProviderIcon('gemini')).toBe(true);
       expect(hasProviderIcon('google')).toBe(true);
+      expect(hasProviderIcon('opencode')).toBe(true);
+      expect(hasProviderIcon('zai')).toBe(true);
     });
 
     it('returns false for unknown providers', () => {
@@ -140,6 +156,14 @@ describe('providers', () => {
 
     it('returns proper alt text for google (normalized to gemini)', () => {
       expect(getProviderIconAltText('google-ai')).toBe('Google Gemini icon');
+    });
+
+    it('returns proper alt text for opencode', () => {
+      expect(getProviderIconAltText('opencode')).toBe('OpenCode (z.ai) icon');
+    });
+
+    it('returns proper alt text for zai (normalized to opencode)', () => {
+      expect(getProviderIconAltText('zai')).toBe('OpenCode (z.ai) icon');
     });
 
     it('returns fallback for unknown', () => {

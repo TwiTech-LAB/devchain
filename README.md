@@ -7,7 +7,7 @@
 
 **[Homepage](https://devchain.twitechlab.com/)** · **[Quick Start Guide (PDF)](https://devchain.twitechlab.com/docs/devchain-quick-start-guide.pdf)** · **[What's New in v0.10.0](https://devchain.twitechlab.com/releases/0.10.0/)**
 
-Devchain runs your AI coding agents as a coordinated team — each with their own terminal session, task queue, and chat. Assign epics, track progress on a visual board, and let agents collaborate through a structured workflow. Supports Claude Code, Codex, and Gemini CLI out of the box.
+Devchain runs your AI coding agents as a coordinated team — each with their own terminal session, task queue, and chat. Assign epics, track progress on a visual board, and let agents collaborate through a structured workflow. Supports Claude Code, Codex, Gemini CLI, and OpenCode (z.ai) out of the box.
 
 ---
 
@@ -17,7 +17,7 @@ Devchain runs your AI coding agents as a coordinated team — each with their ow
 Spin up isolated agent environments on dedicated git branches. Each worktree gets its own agent team, terminals, and chat — run multiple features in parallel and merge when ready. Worktrees run as Docker containers or local processes with full branch isolation.
 
 ### Container Isolation
-Worktree containers are provisioned automatically from the official Devchain image on [GHCR](https://github.com/orgs/TwiTech-LAB/packages/container/package/devchain). Each container has Claude Code, Codex, and Gemini CLI pre-installed, runs as a non-root user, and shares your git identity for correct commit attribution.
+Worktree containers are provisioned automatically from the official Devchain image on [GHCR](https://github.com/orgs/TwiTech-LAB/packages/container/package/devchain). Each container has Claude Code, Codex, Gemini CLI, and OpenCode pre-installed, runs as a non-root user, and shares your git identity for correct commit attribution.
 
 ### Skills
 Browse and sync AI agent skills from community sources (Anthropic, OpenAI, Vercel, and more). Enable or disable skills per project and expose them to agents via MCP tools.
@@ -32,7 +32,7 @@ Real terminal streaming via tmux and WebSocket. Each agent gets its own session 
 Live pre-commit diff viewer with agent integration, inline comments, `@mentions`, comment threading, and VS Code-style file navigation.
 
 ### Multi-Provider
-Works with Claude Code, OpenAI Codex, Google Gemini CLI, and GLM models. Switch providers per agent or switch the whole team preset with a single click.
+Works with Claude Code, OpenAI Codex, Google Gemini CLI, OpenCode (z.ai), and GLM models. Switch providers per agent or switch the whole team preset with a single click.
 
 ### MCP Integration
 Full Model Context Protocol support. Agents get access to epics, chat, skills, reviews, and more through MCP tools — auto-configured before each session.
@@ -53,6 +53,7 @@ All data stored in a local SQLite database. No cloud account required, no data l
   - [`claude`](https://claude.ai/claude-code) CLI
   - [`codex`](https://github.com/openai/codex) CLI
   - [`gemini`](https://github.com/google-gemini/gemini-cli) CLI
+  - [`opencode`](https://opencode.ai) CLI (z.ai coding plan)
 
 ---
 

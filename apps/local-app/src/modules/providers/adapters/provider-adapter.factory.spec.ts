@@ -2,6 +2,7 @@ import { ProviderAdapterFactory } from './provider-adapter.factory';
 import { ClaudeAdapter } from './claude.adapter';
 import { CodexAdapter } from './codex.adapter';
 import { GeminiAdapter } from './gemini.adapter';
+import { OpencodeAdapter } from './opencode.adapter';
 import { UnsupportedProviderError } from '../../../common/errors/error-types';
 
 describe('ProviderAdapterFactory', () => {
@@ -9,12 +10,14 @@ describe('ProviderAdapterFactory', () => {
   let claudeAdapter: ClaudeAdapter;
   let codexAdapter: CodexAdapter;
   let geminiAdapter: GeminiAdapter;
+  let opencodeAdapter: OpencodeAdapter;
 
   beforeEach(() => {
     claudeAdapter = new ClaudeAdapter();
     codexAdapter = new CodexAdapter();
     geminiAdapter = new GeminiAdapter();
-    factory = new ProviderAdapterFactory(claudeAdapter, codexAdapter, geminiAdapter);
+    opencodeAdapter = new OpencodeAdapter();
+    factory = new ProviderAdapterFactory(claudeAdapter, codexAdapter, geminiAdapter, opencodeAdapter);
   });
 
   describe('getAdapter', () => {
@@ -36,10 +39,17 @@ describe('ProviderAdapterFactory', () => {
       expect(adapter.providerName).toBe('gemini');
     });
 
+    it('returns OpencodeAdapter for opencode provider', () => {
+      const adapter = factory.getAdapter('opencode');
+      expect(adapter).toBeInstanceOf(OpencodeAdapter);
+      expect(adapter.providerName).toBe('opencode');
+    });
+
     it('returns the exact injected adapter instances (DI)', () => {
       expect(factory.getAdapter('claude')).toBe(claudeAdapter);
       expect(factory.getAdapter('codex')).toBe(codexAdapter);
       expect(factory.getAdapter('gemini')).toBe(geminiAdapter);
+      expect(factory.getAdapter('opencode')).toBe(opencodeAdapter);
     });
 
     it('normalizes provider name to lowercase (case-insensitive lookup)', () => {
@@ -47,12 +57,14 @@ describe('ProviderAdapterFactory', () => {
       expect(factory.getAdapter('CLAUDE')).toBe(claudeAdapter);
       expect(factory.getAdapter('Codex')).toBe(codexAdapter);
       expect(factory.getAdapter('GEMINI')).toBe(geminiAdapter);
+      expect(factory.getAdapter('OpenCode')).toBe(opencodeAdapter);
+      expect(factory.getAdapter('OPENCODE')).toBe(opencodeAdapter);
     });
 
     it('throws UnsupportedProviderError for unsupported provider', () => {
       expect(() => factory.getAdapter('unknown')).toThrow(UnsupportedProviderError);
       expect(() => factory.getAdapter('unknown')).toThrow(
-        'Unsupported provider: unknown. Supported providers: claude, codex, gemini',
+        'Unsupported provider: unknown. Supported providers: claude, codex, gemini, opencode',
       );
     });
 
@@ -68,7 +80,7 @@ describe('ProviderAdapterFactory', () => {
         expect(unsupportedError.code).toBe('unsupported_provider');
         expect(unsupportedError.details).toEqual({
           providerName: 'unknown',
-          supportedProviders: ['claude', 'codex', 'gemini'],
+          supportedProviders: ['claude', 'codex', 'gemini', 'opencode'],
         });
       }
     });
@@ -91,6 +103,10 @@ describe('ProviderAdapterFactory', () => {
       expect(factory.isSupported('gemini')).toBe(true);
     });
 
+    it('returns true for opencode', () => {
+      expect(factory.isSupported('opencode')).toBe(true);
+    });
+
     it('returns false for unsupported provider', () => {
       expect(factory.isSupported('unknown')).toBe(false);
     });
@@ -104,14 +120,16 @@ describe('ProviderAdapterFactory', () => {
       expect(factory.isSupported('CLAUDE')).toBe(true);
       expect(factory.isSupported('Codex')).toBe(true);
       expect(factory.isSupported('GEMINI')).toBe(true);
+      expect(factory.isSupported('OpenCode')).toBe(true);
+      expect(factory.isSupported('OPENCODE')).toBe(true);
     });
   });
 
   describe('getSupportedProviders', () => {
     it('returns array of supported provider names', () => {
       const supported = factory.getSupportedProviders();
-      expect(supported).toEqual(expect.arrayContaining(['claude', 'codex', 'gemini']));
-      expect(supported).toHaveLength(3);
+      expect(supported).toEqual(expect.arrayContaining(['claude', 'codex', 'gemini', 'opencode']));
+      expect(supported).toHaveLength(4);
     });
   });
 });

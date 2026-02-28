@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ClaudeAdapter } from './claude.adapter';
 import { CodexAdapter } from './codex.adapter';
 import { GeminiAdapter } from './gemini.adapter';
+import { OpencodeAdapter } from './opencode.adapter';
 import { ProviderAdapterFactory } from './provider-adapter.factory';
 
 /**
@@ -12,7 +13,7 @@ import { ProviderAdapterFactory } from './provider-adapter.factory';
  * without creating a dependency cycle.
  */
 @Module({
-  providers: [ClaudeAdapter, CodexAdapter, GeminiAdapter, ProviderAdapterFactory],
+  providers: [ClaudeAdapter, CodexAdapter, GeminiAdapter, OpencodeAdapter, ProviderAdapterFactory],
   exports: [ProviderAdapterFactory],
 })
 export class ProviderAdaptersModule {}
