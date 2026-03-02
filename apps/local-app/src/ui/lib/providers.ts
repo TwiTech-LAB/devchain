@@ -22,7 +22,7 @@ const GEMINI_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" 
   <path d="M12 0C12 6.627 6.627 12 0 12c6.627 0 12 5.373 12 12 0-6.627 5.373-12 12-12-6.627 0-12-5.373-12-12z"/>
 </svg>`;
 
-// OpenCode (z.ai coding plan) icon
+// OpenCode icon (multi-model terminal AI agent)
 // Source: https://opencode.ai/favicon.svg
 const OPENCODE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <rect width="512" height="512" fill="#131010"/>
@@ -40,7 +40,6 @@ const PROVIDER_ICONS: Record<string, string> = {
   gemini: GEMINI_SVG,
   google: GEMINI_SVG,
   opencode: OPENCODE_SVG,
-  zai: OPENCODE_SVG,
 };
 
 // Cache for data URIs
@@ -62,7 +61,7 @@ function normalizeProviderName(name: string | null | undefined): string | null {
   if (normalized.includes('gemini') || normalized.includes('google')) {
     return 'gemini';
   }
-  if (normalized.includes('opencode') || normalized.includes('zai') || normalized.includes('z.ai')) {
+  if (normalized.includes('opencode')) {
     return 'opencode';
   }
   return normalized;
@@ -128,7 +127,7 @@ export function getProviderIconAltText(name: string | null | undefined): string 
     gpt: 'OpenAI GPT',
     gemini: 'Google Gemini',
     google: 'Google',
-    opencode: 'OpenCode (z.ai)',
+    opencode: 'OpenCode',
   };
 
   return `${displayNames[normalized] ?? normalized} icon`;

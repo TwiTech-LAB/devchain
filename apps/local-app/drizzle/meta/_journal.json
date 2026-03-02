@@ -337,6 +337,20 @@
       "when": 1771500000000,
       "tag": "0047_fix_claude_auto_compact_default",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "6",
+      "when": 1771600000000,
+      "tag": "0048_sessions_transcript_fields",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "6",
+      "when": 1771700000000,
+      "tag": "0049_provider_models_and_agent_model_override",
+      "breakpoints": true
     }
   ]
 }

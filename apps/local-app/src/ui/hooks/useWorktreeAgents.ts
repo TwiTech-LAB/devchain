@@ -93,6 +93,10 @@ function parseAgentsPayload(payload: unknown): AgentOrGuest[] {
       type,
       tmuxSessionId: typeof item.tmuxSessionId === 'string' ? item.tmuxSessionId : undefined,
       providerConfigId: typeof item.providerConfigId === 'string' ? item.providerConfigId : null,
+      modelOverride:
+        typeof item.modelOverride === 'string' || item.modelOverride === null
+          ? item.modelOverride
+          : null,
       providerConfig,
     });
   }

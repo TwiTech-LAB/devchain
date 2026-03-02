@@ -75,6 +75,12 @@ describe('McpConfigurationModal', () => {
     expect(screen.getByText(/gemini mcp add -t http devchain/)).toBeInTheDocument();
   });
 
+  it('displays file-edit instructions for OpenCode provider', () => {
+    render(<McpConfigurationModal {...defaultProps} providerName="opencode" />);
+    expect(screen.getByText(/Add to opencode\.json in your project root/)).toBeInTheDocument();
+    expect(screen.getByText(/"type": "remote"/)).toBeInTheDocument();
+  });
+
   it('displays fallback command for unknown providers', () => {
     render(<McpConfigurationModal {...defaultProps} providerName="UnknownProvider" />);
     expect(screen.getByText(/# Manual MCP configuration for UnknownProvider/)).toBeInTheDocument();

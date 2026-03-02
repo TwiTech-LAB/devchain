@@ -1,4 +1,5 @@
 import type { PreflightResult, ProviderCheck } from './preflight';
+import type { UnifiedMetrics } from '@/modules/session-reader/dtos/unified-session.types';
 
 export interface ActiveSession {
   id: string;
@@ -345,6 +346,27 @@ export interface AgentPresence {
 
 export interface AgentPresenceMap {
   [agentId: string]: AgentPresence;
+}
+
+/** Summary response from GET /api/sessions/:id/transcript/summary */
+export interface TranscriptSummary {
+  sessionId: string;
+  providerName: string;
+  metrics: UnifiedMetrics;
+  messageCount: number;
+  isOngoing: boolean;
+}
+
+export async function fetchTranscriptSummary(
+  sessionId: string,
+  apiBase = '',
+): Promise<TranscriptSummary> {
+  return fetchJsonOrThrow<TranscriptSummary>(
+    `/api/sessions/${sessionId}/transcript/summary`,
+    {},
+    'Failed to fetch transcript summary',
+    apiBase,
+  );
 }
 
 export async function fetchAgentPresence(projectId: string): Promise<AgentPresenceMap> {

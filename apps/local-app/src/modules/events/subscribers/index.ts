@@ -5,6 +5,7 @@ import { ChatMessageDeliverySubscriber } from './chat-message-delivery.subscribe
 import { ReviewCommentNotifierSubscriber } from './review-comment-notifier.subscriber';
 import { ReviewBroadcasterSubscriber } from './review-broadcaster.subscriber';
 import { WorktreeBroadcasterSubscriber } from './worktree-broadcaster.subscriber';
+import { TranscriptBroadcasterSubscriber } from './transcript-broadcaster.subscriber';
 
 export const subscribers: Provider[] = [
   EpicAssignmentNotifierSubscriber,
@@ -13,4 +14,5 @@ export const subscribers: Provider[] = [
   ReviewCommentNotifierSubscriber,
   ReviewBroadcasterSubscriber,
   WorktreeBroadcasterSubscriber,
+  TranscriptBroadcasterSubscriber,
 ];

@@ -37,6 +37,7 @@ COPY apps/local-app/index.html ./apps/local-app/
 COPY apps/local-app/drizzle.config.ts ./apps/local-app/
 COPY apps/local-app/public ./apps/local-app/public
 COPY apps/local-app/src ./apps/local-app/src
+COPY apps/local-app/scripts ./apps/local-app/scripts
 COPY apps/local-app/templates ./apps/local-app/templates
 COPY apps/local-app/drizzle ./apps/local-app/drizzle
 

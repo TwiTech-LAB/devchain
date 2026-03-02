@@ -3,7 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import type { Socket } from 'socket.io-client';
 import { termLog } from '@/ui/lib/debug';
-import { isTerminalInternalSequence } from '../xterm-utils';
+import { isTerminalInternalSequence, supportsWheelMouseTracking } from '../xterm-utils';
 import {
   DEFAULT_TERMINAL_SCROLLBACK,
   MIN_TERMINAL_SCROLLBACK,
@@ -138,21 +138,21 @@ export function useXterm(
     terminal.loadAddon(fitAddon);
 
     terminal.open(terminalRef.current);
-    // Dampen wheel scrolling directly on the xterm viewport and stop native wheel handling
-    const viewport =
-      (terminal.element?.querySelector('.xterm-viewport') as HTMLDivElement | null) ?? null;
-    const wheelHandler = (event: WheelEvent) => {
-      if (!event.deltaY) return;
+    // Attach a custom wheel handler that respects TUI mouse tracking and dampens scrolling
+    terminal.attachCustomWheelEventHandler((event) => {
+      // When the TUI has mouse-tracking enabled, let xterm.js forward the wheel event
+      // to the running application (e.g., vim, htop) instead of scrolling the buffer.
+      if (inputMode === 'tty' && supportsWheelMouseTracking(terminal.modes.mouseTrackingMode)) {
+        return true;
+      }
+      if (!event.deltaY) return false;
       event.preventDefault();
-      event.stopPropagation();
       // ~1–2 lines per notch depending on device delta
       const magnitude = Math.max(1, Math.round((Math.abs(event.deltaY) / 120) * 1.5));
       const lines = Math.sign(event.deltaY) * magnitude; // preserve direction, avoid rounding to 0
       terminal.scrollLines(lines);
-    };
-    // Capture phase to pre-empt xterm's own wheel handler
-    viewport?.addEventListener('wheel', wheelHandler, { passive: false, capture: true });
-    terminalRef.current.addEventListener('wheel', wheelHandler, { passive: false, capture: true });
+      return false;
+    });
 
     // Add direct TTY input handler for TTY mode
     if (inputMode === 'tty') {
@@ -352,12 +352,6 @@ export function useXterm(
       clearTimeout(timeoutId);
       scrollDisposable?.dispose();
       termLog('terminal_dispose', { sessionId });
-      terminalRef.current?.removeEventListener('wheel', wheelHandler, {
-        capture: true,
-      } as EventListenerOptions);
-      viewport?.removeEventListener('wheel', wheelHandler, {
-        capture: true,
-      } as EventListenerOptions);
       terminal.dispose();
       xtermRef.current = null;
       fitAddonRef.current = null;

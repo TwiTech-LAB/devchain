@@ -343,7 +343,7 @@ describe('TemplateUpgradeService', () => {
       expect(backups).toHaveLength(0);
     });
 
-    it('should return error and keep backup when provider mapping is required', async () => {
+    it('should pass empty familyProviderMappings to auto-select providers on upgrade', async () => {
       mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
         templateSlug: 'test-template',
         installedVersion: '1.0.0',
@@ -355,26 +355,18 @@ describe('TemplateUpgradeService', () => {
         content: { prompts: [] },
         metadata: { slug: 'test', version: '2.0.0', checksum: 'abc', cachedAt: '', size: 0 },
       });
-      // importProject returns provider mapping required
-      mockProjectsService.importProject.mockResolvedValue(
-        createMockProviderMappingRequired(['claude', 'gpt-4']),
-      );
+      mockProjectsService.importProject.mockResolvedValue({ success: true, warnings: [] });
 
-      const result = await service.upgradeProject({
+      await service.upgradeProject({
         projectId: 'project-123',
         targetVersion: '2.0.0',
       });
 
-      expect(result.success).toBe(false);
-      expect(result.error).toContain('provider configuration');
-      expect(result.error).toContain('claude');
-      expect(result.error).toContain('gpt-4');
-      expect(result.backupId).toBeDefined();
-      // Metadata should NOT be updated
-      expect(mockSettingsService.setProjectTemplateMetadata).not.toHaveBeenCalled();
-      // Backup should be kept for retry
-      const backups = service.getProjectBackups('project-123');
-      expect(backups).toHaveLength(1);
+      expect(mockProjectsService.importProject).toHaveBeenCalledWith(
+        expect.objectContaining({
+          familyProviderMappings: {},
+        }),
+      );
     });
 
     it('should return error and keep backup when import fails without throwing', async () => {

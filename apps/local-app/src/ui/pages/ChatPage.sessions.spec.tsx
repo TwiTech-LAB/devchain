@@ -152,14 +152,14 @@ jest.mock('@/ui/hooks/useWorktreeTab', () => ({
   }),
 }));
 
-// Socket mock (no-op)
+// Socket mock — must return a Socket-like object with `connected` property
 jest.mock('@/ui/hooks/useAppSocket', () => ({
-  useAppSocket: () => ({
+  useAppSocket: jest.fn(() => ({
     connected: true,
     on: jest.fn(),
     off: jest.fn(),
     emit: jest.fn(),
-  }),
+  })),
 }));
 jest.mock('@/ui/lib/socket', () => ({
   getAppSocket: jest.fn(() => ({
@@ -1088,7 +1088,10 @@ describe('ChatPage worktree provider config context menu', () => {
     mainPresence?: Record<string, unknown>;
     worktreeAgents?: Array<Record<string, unknown>>;
     worktreePresence?: Record<string, unknown>;
+    mainProviderConfigs?: Array<Record<string, unknown>>;
     worktreeProviderConfigs?: Array<Record<string, unknown>>;
+    mainProviderModels?: Record<string, Array<Record<string, unknown>>>;
+    worktreeProviderModels?: Record<string, Array<Record<string, unknown>>>;
     worktreeProjectId?: string | null;
   }) {
     const {
@@ -1112,10 +1115,16 @@ describe('ChatPage worktree provider config context menu', () => {
         },
       ],
       worktreePresence = { 'agent-wt-1': { online: true, sessionId: 'session-wt-1' } },
+      mainProviderConfigs = [
+        { id: 'config-1', name: 'Config A', providerId: 'provider-1' },
+        { id: 'config-2', name: 'Config B', providerId: 'provider-1' },
+      ],
       worktreeProviderConfigs = [
         { id: 'wt-config-1', name: 'WT Config A', providerId: 'provider-1' },
         { id: 'wt-config-2', name: 'WT Config B', providerId: 'provider-1' },
       ],
+      mainProviderModels = { 'provider-1': [] },
+      worktreeProviderModels = { 'provider-1': [] },
       worktreeProjectId = 'project-wt-1',
     } = overrides ?? {};
 
@@ -1175,14 +1184,27 @@ describe('ChatPage worktree provider config context menu', () => {
       if (url.startsWith('/wt/feature-auth/api/profiles/') && url.endsWith('/provider-configs')) {
         return { ok: true, json: async () => worktreeProviderConfigs } as Response;
       }
+      if (url.startsWith('/wt/feature-auth/api/providers/') && url.endsWith('/models')) {
+        const match = url.match(/^\/wt\/feature-auth\/api\/providers\/([^/]+)\/models$/);
+        const providerId = match?.[1] ? decodeURIComponent(match[1]) : '';
+        return {
+          ok: true,
+          json: async () => (providerId ? (worktreeProviderModels[providerId] ?? []) : []),
+        } as Response;
+      }
       // Main provider configs
       if (url.startsWith('/api/profiles/') && url.endsWith('/provider-configs')) {
         return {
           ok: true,
-          json: async () => [
-            { id: 'config-1', name: 'Config A', providerId: 'provider-1' },
-            { id: 'config-2', name: 'Config B', providerId: 'provider-1' },
-          ],
+          json: async () => mainProviderConfigs,
+        } as Response;
+      }
+      if (url.startsWith('/api/providers/') && url.endsWith('/models')) {
+        const match = url.match(/^\/api\/providers\/([^/]+)\/models$/);
+        const providerId = match?.[1] ? decodeURIComponent(match[1]) : '';
+        return {
+          ok: true,
+          json: async () => (providerId ? (mainProviderModels[providerId] ?? []) : []),
         } as Response;
       }
       // PUT for worktree config update
@@ -1223,6 +1245,100 @@ describe('ChatPage worktree provider config context menu', () => {
     });
   });
 
+  it('shows shortened model override labels for main and worktree agents', async () => {
+    setupFetch({
+      mainAgents: [
+        {
+          id: 'agent-main-override',
+          name: 'Main Override Agent',
+          projectId: 'project-1',
+          profileId: 'p1',
+          providerConfigId: 'config-main-override',
+          providerConfig: {
+            id: 'config-main-override',
+            name: 'Main Config Override',
+            providerId: 'provider-1',
+            providerName: 'claude',
+          },
+          modelOverride: 'zai-coding-plan/glm-5',
+        },
+        {
+          id: 'agent-main-default',
+          name: 'Main Default Agent',
+          projectId: 'project-1',
+          profileId: 'p1',
+          providerConfigId: 'config-main-default',
+          providerConfig: {
+            id: 'config-main-default',
+            name: 'Main Config Default',
+            providerId: 'provider-1',
+            providerName: 'claude',
+          },
+          modelOverride: null,
+        },
+      ],
+      mainPresence: {
+        'agent-main-override': { online: true, sessionId: 'session-main-override' },
+        'agent-main-default': { online: true, sessionId: 'session-main-default' },
+      },
+      worktreeAgents: [
+        {
+          id: 'agent-wt-override',
+          name: 'Worktree Override Agent',
+          profileId: 'p1',
+          type: 'agent',
+          providerConfigId: 'wt-config-override',
+          providerConfig: {
+            id: 'wt-config-override',
+            name: 'WT Config Override',
+            providerId: 'provider-1',
+            providerName: 'claude',
+          },
+          modelOverride: 'anthropic/claude-sonnet-4-5',
+        },
+        {
+          id: 'agent-wt-default',
+          name: 'Worktree Default Agent',
+          profileId: 'p1',
+          type: 'agent',
+          providerConfigId: 'wt-config-default',
+          providerConfig: {
+            id: 'wt-config-default',
+            name: 'WT Config Default',
+            providerId: 'provider-1',
+            providerName: 'claude',
+          },
+          modelOverride: null,
+        },
+      ],
+      worktreePresence: {
+        'agent-wt-override': { online: true, sessionId: 'session-wt-override' },
+        'agent-wt-default': { online: true, sessionId: 'session-wt-default' },
+      },
+    });
+    renderWithClient(<ChatPage />);
+
+    const mainOverrideButton = await screen.findByLabelText(
+      /Chat with Main Override Agent \(online\)/i,
+    );
+    expect(mainOverrideButton).toHaveTextContent('Main Override Agent (glm-5)');
+
+    const mainDefaultButton = await screen.findByLabelText(
+      /Chat with Main Default Agent \(online\)/i,
+    );
+    expect(mainDefaultButton).toHaveTextContent('Main Default Agent (Main Config Default)');
+
+    const worktreeOverrideButton = await screen.findByLabelText(
+      /Open terminal for Worktree Override Agent in feature-auth \(online\)/i,
+    );
+    expect(worktreeOverrideButton).toHaveTextContent('Worktree Override Agent (claude-sonnet-4-5)');
+
+    const worktreeDefaultButton = await screen.findByLabelText(
+      /Open terminal for Worktree Default Agent in feature-auth \(online\)/i,
+    );
+    expect(worktreeDefaultButton).toHaveTextContent('Worktree Default Agent (WT Config Default)');
+  });
+
   it('fetches provider configs from worktree proxy and triggers proxied PUT on selection', async () => {
     setupFetch();
     renderWithClient(<ChatPage />);
@@ -1249,8 +1365,735 @@ describe('ChatPage worktree provider config context menu', () => {
       const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
       expect(urls).toContain('/wt/feature-auth/api/agents/agent-wt-1');
     });
+    const putCall = (global.fetch as jest.Mock).mock.calls.find(
+      (call) =>
+        String(call[0]) === '/wt/feature-auth/api/agents/agent-wt-1' && call[1]?.method === 'PUT',
+    );
+    expect(putCall?.[1]?.body).toBe(JSON.stringify({ providerConfigId: 'wt-config-2' }));
     await waitFor(() => {
       expect(toastSpy).toHaveBeenCalledWith(expect.objectContaining({ title: 'Config updated' }));
+    });
+  });
+
+  it('renders cascading model submenu with override label for providers that have models', async () => {
+    setupFetch({
+      worktreeProviderConfigs: [
+        { id: 'wt-config-model', name: 'WT Config With Models', providerId: 'provider-1' },
+        { id: 'wt-config-plain', name: 'WT Config Plain', providerId: 'provider-2' },
+      ],
+      worktreeProviderModels: {
+        'provider-1': [
+          { id: 'm-1', providerId: 'provider-1', name: 'anthropic/claude-sonnet-4-5' },
+          { id: 'm-2', providerId: 'provider-1', name: 'openai/gpt-4.1' },
+        ],
+        'provider-2': [],
+      },
+    });
+    renderWithClient(<ChatPage />);
+
+    const worktreeAgentButton = await screen.findByLabelText(
+      /Open terminal for Worktree Agent in feature-auth \(online\)/i,
+    );
+    fireEvent.contextMenu(worktreeAgentButton);
+
+    const providerTrigger = await screen.findByText('Provider Config');
+    fireEvent.keyDown(providerTrigger, { key: 'ArrowRight' });
+
+    expect(await screen.findByText('WT Config Plain')).toBeInTheDocument();
+    await waitFor(() => {
+      const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
+      expect(urls).toContain('/wt/feature-auth/api/providers/provider-1/models');
+    });
+    const withModels = await screen.findByText('WT Config With Models');
+    await waitFor(() => {
+      expect(withModels).toHaveAttribute('aria-haspopup', 'menu');
+    });
+
+    fireEvent.keyDown(withModels, { key: 'ArrowRight' });
+    await waitFor(() => {
+      expect(screen.getByText('Override model:')).toBeInTheDocument();
+    });
+    expect(screen.getByText('Default (no override)')).toBeInTheDocument();
+    const shortClaude = screen.getByText('claude-sonnet-4-5');
+    expect(shortClaude).toBeInTheDocument();
+    expect(shortClaude).toHaveAttribute('title', 'anthropic/claude-sonnet-4-5');
+    const shortGpt = screen.getByText('gpt-4.1');
+    expect(shortGpt).toBeInTheDocument();
+    expect(shortGpt).toHaveAttribute('title', 'openai/gpt-4.1');
+  });
+
+  it('keeps no-model configs clickable while other provider model fetches are still loading', async () => {
+    setupFetch({
+      worktreeAgents: [
+        {
+          id: 'agent-wt-1',
+          name: 'Worktree Agent',
+          profileId: 'p1',
+          type: 'agent',
+          providerConfigId: 'wt-config-model',
+        },
+      ],
+      worktreeProviderConfigs: [
+        { id: 'wt-config-model', name: 'WT Config With Models', providerId: 'provider-1' },
+        { id: 'wt-config-plain', name: 'WT Config Plain', providerId: 'provider-2' },
+      ],
+      worktreeProviderModels: {
+        'provider-1': [{ id: 'm-1', providerId: 'provider-1', name: 'openai/gpt-4.1' }],
+        'provider-2': [],
+      },
+    });
+
+    let resolveProviderOneModels: (() => void) | null = null;
+    const baseFetch = global.fetch as jest.Mock;
+    const originalImpl = baseFetch.getMockImplementation()!;
+    baseFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/wt/feature-auth/api/providers/provider-1/models') {
+        return new Promise<Response>((resolve) => {
+          resolveProviderOneModels = () =>
+            resolve({
+              ok: true,
+              json: async () => [{ id: 'm-1', providerId: 'provider-1', name: 'openai/gpt-4.1' }],
+            } as Response);
+        });
+      }
+      return originalImpl(input, init);
+    });
+
+    renderWithClient(<ChatPage />);
+
+    const worktreeAgentButton = await screen.findByLabelText(
+      /Open terminal for Worktree Agent in feature-auth \(online\)/i,
+    );
+    fireEvent.contextMenu(worktreeAgentButton);
+
+    const providerTrigger = await screen.findByText('Provider Config');
+    fireEvent.keyDown(providerTrigger, { key: 'ArrowRight' });
+
+    const plainConfig = await screen.findByText('WT Config Plain');
+    fireEvent.click(plainConfig);
+
+    await waitFor(() => {
+      const putCall = (global.fetch as jest.Mock).mock.calls.find(
+        (call) =>
+          String(call[0]) === '/wt/feature-auth/api/agents/agent-wt-1' && call[1]?.method === 'PUT',
+      );
+      expect(putCall).toBeTruthy();
+      expect(putCall?.[1]?.body).toBe(JSON.stringify({ providerConfigId: 'wt-config-plain' }));
+    });
+
+    await act(async () => {
+      resolveProviderOneModels?.();
+    });
+  });
+
+  it('sends modelOverride: null when selecting default override option for worktree agent', async () => {
+    setupFetch({
+      worktreeAgents: [
+        {
+          id: 'agent-wt-1',
+          name: 'Worktree Agent',
+          profileId: 'p1',
+          type: 'agent',
+          providerConfigId: 'wt-config-model',
+          modelOverride: 'openai/gpt-4.1',
+        },
+      ],
+      worktreeProviderConfigs: [
+        { id: 'wt-config-model', name: 'WT Config With Models', providerId: 'provider-1' },
+      ],
+      worktreeProviderModels: {
+        'provider-1': [
+          { id: 'm-1', providerId: 'provider-1', name: 'anthropic/claude-sonnet-4-5' },
+          { id: 'm-2', providerId: 'provider-1', name: 'openai/gpt-4.1' },
+        ],
+      },
+    });
+    renderWithClient(<ChatPage />);
+
+    const worktreeAgentButton = await screen.findByLabelText(
+      /Open terminal for Worktree Agent in feature-auth \(online\)/i,
+    );
+    fireEvent.contextMenu(worktreeAgentButton);
+
+    fireEvent.keyDown(await screen.findByText('Provider Config'), { key: 'ArrowRight' });
+    await waitFor(() => {
+      const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
+      expect(urls).toContain('/wt/feature-auth/api/providers/provider-1/models');
+    });
+    const withModels = await screen.findByText('WT Config With Models');
+    await waitFor(() => {
+      expect(withModels).toHaveAttribute('aria-haspopup', 'menu');
+    });
+    fireEvent.keyDown(withModels, { key: 'ArrowRight' });
+
+    const defaultOption = await screen.findByText('Default (no override)');
+    fireEvent.click(defaultOption);
+
+    await waitFor(() => {
+      const putCall = (global.fetch as jest.Mock).mock.calls.find(
+        (call) =>
+          String(call[0]) === '/wt/feature-auth/api/agents/agent-wt-1' && call[1]?.method === 'PUT',
+      );
+      expect(putCall).toBeTruthy();
+      expect(putCall?.[1]?.body).toBe(
+        JSON.stringify({ providerConfigId: 'wt-config-model', modelOverride: null }),
+      );
+    });
+    await waitFor(() => {
+      expect(toastSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Model override updated' }),
+      );
+    });
+  });
+
+  it('sends modelOverride value when selecting a model option for worktree agent', async () => {
+    setupFetch({
+      worktreeAgents: [
+        {
+          id: 'agent-wt-1',
+          name: 'Worktree Agent',
+          profileId: 'p1',
+          type: 'agent',
+          providerConfigId: 'wt-config-model',
+          modelOverride: null,
+        },
+      ],
+      worktreeProviderConfigs: [
+        { id: 'wt-config-model', name: 'WT Config With Models', providerId: 'provider-1' },
+      ],
+      worktreeProviderModels: {
+        'provider-1': [
+          { id: 'm-1', providerId: 'provider-1', name: 'anthropic/claude-sonnet-4-5' },
+        ],
+      },
+    });
+    renderWithClient(<ChatPage />);
+
+    const worktreeAgentButton = await screen.findByLabelText(
+      /Open terminal for Worktree Agent in feature-auth \(online\)/i,
+    );
+    fireEvent.contextMenu(worktreeAgentButton);
+
+    fireEvent.keyDown(await screen.findByText('Provider Config'), { key: 'ArrowRight' });
+    await waitFor(() => {
+      const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
+      expect(urls).toContain('/wt/feature-auth/api/providers/provider-1/models');
+    });
+    const withModels = await screen.findByText('WT Config With Models');
+    await waitFor(() => {
+      expect(withModels).toHaveAttribute('aria-haspopup', 'menu');
+    });
+    fireEvent.keyDown(withModels, { key: 'ArrowRight' });
+
+    const modelOption = await screen.findByText('claude-sonnet-4-5');
+    fireEvent.click(modelOption);
+
+    await waitFor(() => {
+      const putCall = (global.fetch as jest.Mock).mock.calls.find(
+        (call) =>
+          String(call[0]) === '/wt/feature-auth/api/agents/agent-wt-1' && call[1]?.method === 'PUT',
+      );
+      expect(putCall).toBeTruthy();
+      expect(putCall?.[1]?.body).toBe(
+        JSON.stringify({
+          providerConfigId: 'wt-config-model',
+          modelOverride: 'anthropic/claude-sonnet-4-5',
+        }),
+      );
+    });
+    await waitFor(() => {
+      expect(toastSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Model override updated' }),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.queryByText('Provider Config')).not.toBeInTheDocument();
+    });
+  });
+
+  it('supports modelOverride selection in the main agent flow', async () => {
+    setupFetch({
+      mainAgents: [
+        {
+          id: 'agent-1',
+          name: 'Main Agent',
+          projectId: 'project-1',
+          profileId: 'p1',
+          providerConfigId: 'config-main-model',
+          modelOverride: null,
+        },
+      ],
+      mainProviderConfigs: [
+        {
+          id: 'config-main-model',
+          name: 'Main Config With Models',
+          providerId: 'provider-1',
+        },
+      ],
+      mainProviderModels: {
+        'provider-1': [{ id: 'm-main-1', providerId: 'provider-1', name: 'openai/gpt-4.1' }],
+      },
+    });
+    renderWithClient(<ChatPage />);
+
+    const mainAgentButton = await screen.findByLabelText(/Chat with Main Agent \(online\)/i);
+    fireEvent.contextMenu(mainAgentButton);
+
+    fireEvent.keyDown(await screen.findByText('Provider Config'), { key: 'ArrowRight' });
+    await waitFor(() => {
+      const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
+      expect(urls).toContain('/api/providers/provider-1/models');
+    });
+    const mainWithModels = await screen.findByText('Main Config With Models');
+    await waitFor(() => {
+      expect(mainWithModels).toHaveAttribute('aria-haspopup', 'menu');
+    });
+    fireEvent.keyDown(mainWithModels, { key: 'ArrowRight' });
+
+    fireEvent.click(await screen.findByText('gpt-4.1'));
+
+    await waitFor(() => {
+      const putCall = (global.fetch as jest.Mock).mock.calls.find(
+        (call) => String(call[0]) === '/api/agents/agent-1' && call[1]?.method === 'PUT',
+      );
+      expect(putCall).toBeTruthy();
+      expect(putCall?.[1]?.body).toBe(
+        JSON.stringify({
+          providerConfigId: 'config-main-model',
+          modelOverride: 'openai/gpt-4.1',
+        }),
+      );
+    });
+    await waitFor(() => {
+      expect(toastSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Model override updated' }),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.queryByText('Provider Config')).not.toBeInTheDocument();
+    });
+  });
+
+  it('renders searchable, scrollable model override submenu and resets filter on reopen', async () => {
+    const largeModelSet = Array.from({ length: 1100 }, (_, index) => ({
+      id: `m-main-${index}`,
+      providerId: 'provider-1',
+      name: `openai/model-${index}`,
+    }));
+
+    setupFetch({
+      mainAgents: [
+        {
+          id: 'agent-1',
+          name: 'Main Agent',
+          projectId: 'project-1',
+          profileId: 'p1',
+          providerConfigId: 'config-main-large',
+          modelOverride: null,
+        },
+      ],
+      mainProviderConfigs: [
+        {
+          id: 'config-main-large',
+          name: 'Main Config Large',
+          providerId: 'provider-1',
+        },
+      ],
+      mainProviderModels: {
+        'provider-1': [
+          { id: 'm-main-sonnet', providerId: 'provider-1', name: 'anthropic/claude-sonnet-4-5' },
+          ...largeModelSet,
+        ],
+      },
+    });
+    renderWithClient(<ChatPage />);
+
+    const mainAgentButton = await screen.findByLabelText(/Chat with Main Agent \(online\)/i);
+    fireEvent.contextMenu(mainAgentButton);
+
+    fireEvent.keyDown(await screen.findByText('Provider Config'), { key: 'ArrowRight' });
+    await waitFor(() => {
+      const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
+      expect(urls).toContain('/api/providers/provider-1/models');
+    });
+    const configWithModels = await screen.findByText('Main Config Large');
+    await waitFor(() => {
+      expect(configWithModels).toHaveAttribute('aria-haspopup', 'menu');
+    });
+    fireEvent.keyDown(configWithModels, { key: 'ArrowRight' });
+
+    const searchInput = await screen.findByRole('textbox', {
+      name: /Search models for Main Config Large/i,
+    });
+    await waitFor(() => {
+      expect(searchInput).toHaveFocus();
+    });
+
+    const optionsContainer = screen.getByTestId('model-override-options-config-main-large');
+    expect(optionsContainer.className).toContain('max-h-[min(400px,60vh)]');
+    expect(optionsContainer.className).toContain('overflow-y-auto');
+
+    fireEvent.keyDown(searchInput, { key: 'o' });
+    expect(
+      screen.getByRole('textbox', { name: /Search models for Main Config Large/i }),
+    ).toBeInTheDocument();
+
+    fireEvent.change(searchInput, { target: { value: 'sonnet-4-5' } });
+    expect(await screen.findByText('claude-sonnet-4-5')).toBeInTheDocument();
+    expect(screen.queryByText('model-1099')).not.toBeInTheDocument();
+
+    fireEvent.change(searchInput, { target: { value: 'does-not-exist' } });
+    expect(await screen.findByText('No matching models')).toBeInTheDocument();
+    expect(screen.getByText('Default (no override)')).toBeInTheDocument();
+
+    fireEvent.click(document.body);
+    fireEvent.contextMenu(mainAgentButton);
+    fireEvent.keyDown(await screen.findByText('Provider Config'), { key: 'ArrowRight' });
+    const reopenedConfigWithModels = await screen.findByText('Main Config Large');
+    await waitFor(() => {
+      expect(reopenedConfigWithModels).toHaveAttribute('aria-haspopup', 'menu');
+    });
+    fireEvent.keyDown(reopenedConfigWithModels, { key: 'ArrowRight' });
+
+    const reopenedSearchInput = await screen.findByRole('textbox', {
+      name: /Search models for Main Config Large/i,
+    });
+    expect(reopenedSearchInput).toHaveValue('');
+    expect(screen.queryByText('No matching models')).not.toBeInTheDocument();
+    expect(await screen.findByText('model-1099')).toBeInTheDocument();
+  });
+
+  it('supports cross-config modelOverride selection in the main agent flow', async () => {
+    setupFetch({
+      mainAgents: [
+        {
+          id: 'agent-1',
+          name: 'Main Agent',
+          projectId: 'project-1',
+          profileId: 'p1',
+          providerConfigId: 'config-a',
+          modelOverride: null,
+        },
+      ],
+      mainProviderConfigs: [
+        { id: 'config-a', name: 'Main Config A', providerId: 'provider-1' },
+        { id: 'config-b', name: 'Main Config B', providerId: 'provider-2' },
+      ],
+      mainProviderModels: {
+        'provider-1': [],
+        'provider-2': [
+          { id: 'm-main-1', providerId: 'provider-2', name: 'anthropic/claude-sonnet-4-5' },
+        ],
+      },
+    });
+    renderWithClient(<ChatPage />);
+
+    const mainAgentButton = await screen.findByLabelText(/Chat with Main Agent \(online\)/i);
+    fireEvent.contextMenu(mainAgentButton);
+
+    fireEvent.keyDown(await screen.findByText('Provider Config'), { key: 'ArrowRight' });
+    await waitFor(() => {
+      const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
+      expect(urls).toContain('/api/providers/provider-2/models');
+    });
+    const configB = await screen.findByText('Main Config B');
+    await waitFor(() => {
+      expect(configB).toHaveAttribute('aria-haspopup', 'menu');
+    });
+    fireEvent.keyDown(configB, { key: 'ArrowRight' });
+
+    fireEvent.click(await screen.findByText('claude-sonnet-4-5'));
+
+    await waitFor(() => {
+      const putCall = (global.fetch as jest.Mock).mock.calls.find(
+        (call) => String(call[0]) === '/api/agents/agent-1' && call[1]?.method === 'PUT',
+      );
+      expect(putCall).toBeTruthy();
+      expect(putCall?.[1]?.body).toBe(
+        JSON.stringify({
+          providerConfigId: 'config-b',
+          modelOverride: 'anthropic/claude-sonnet-4-5',
+        }),
+      );
+    });
+  });
+
+  it('supports cross-config default modelOverride selection in the main agent flow', async () => {
+    setupFetch({
+      mainAgents: [
+        {
+          id: 'agent-1',
+          name: 'Main Agent',
+          projectId: 'project-1',
+          profileId: 'p1',
+          providerConfigId: 'config-a',
+          modelOverride: 'openai/gpt-4.1',
+        },
+      ],
+      mainProviderConfigs: [
+        { id: 'config-a', name: 'Main Config A', providerId: 'provider-1' },
+        { id: 'config-b', name: 'Main Config B', providerId: 'provider-2' },
+      ],
+      mainProviderModels: {
+        'provider-1': [],
+        'provider-2': [
+          { id: 'm-main-1', providerId: 'provider-2', name: 'anthropic/claude-sonnet-4-5' },
+          { id: 'm-main-2', providerId: 'provider-2', name: 'openai/gpt-4.1' },
+        ],
+      },
+    });
+    renderWithClient(<ChatPage />);
+
+    const mainAgentButton = await screen.findByLabelText(/Chat with Main Agent \(online\)/i);
+    fireEvent.contextMenu(mainAgentButton);
+
+    fireEvent.keyDown(await screen.findByText('Provider Config'), { key: 'ArrowRight' });
+    await waitFor(() => {
+      const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
+      expect(urls).toContain('/api/providers/provider-2/models');
+    });
+    const configB = await screen.findByText('Main Config B');
+    await waitFor(() => {
+      expect(configB).toHaveAttribute('aria-haspopup', 'menu');
+    });
+    fireEvent.keyDown(configB, { key: 'ArrowRight' });
+
+    fireEvent.click(await screen.findByText('Default (no override)'));
+
+    await waitFor(() => {
+      const putCall = (global.fetch as jest.Mock).mock.calls.find(
+        (call) => String(call[0]) === '/api/agents/agent-1' && call[1]?.method === 'PUT',
+      );
+      expect(putCall).toBeTruthy();
+      expect(putCall?.[1]?.body).toBe(
+        JSON.stringify({
+          providerConfigId: 'config-b',
+          modelOverride: null,
+        }),
+      );
+    });
+  });
+
+  it('clicking a config with models resets override to default in the main agent flow', async () => {
+    setupFetch({
+      mainAgents: [
+        {
+          id: 'agent-1',
+          name: 'Main Agent',
+          projectId: 'project-1',
+          profileId: 'p1',
+          providerConfigId: 'config-a',
+          modelOverride: 'openai/gpt-4.1',
+        },
+      ],
+      mainProviderConfigs: [
+        { id: 'config-a', name: 'Main Config A', providerId: 'provider-1' },
+        { id: 'config-b', name: 'Main Config B', providerId: 'provider-2' },
+      ],
+      mainProviderModels: {
+        'provider-1': [],
+        'provider-2': [
+          { id: 'm-main-1', providerId: 'provider-2', name: 'anthropic/claude-sonnet-4-5' },
+        ],
+      },
+    });
+    renderWithClient(<ChatPage />);
+
+    const mainAgentButton = await screen.findByLabelText(/Chat with Main Agent \(online\)/i);
+    fireEvent.contextMenu(mainAgentButton);
+
+    fireEvent.keyDown(await screen.findByText('Provider Config'), { key: 'ArrowRight' });
+    await waitFor(() => {
+      const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
+      expect(urls).toContain('/api/providers/provider-2/models');
+    });
+
+    fireEvent.click(await screen.findByText('Main Config B'));
+
+    await waitFor(() => {
+      const putCall = (global.fetch as jest.Mock).mock.calls.find(
+        (call) => String(call[0]) === '/api/agents/agent-1' && call[1]?.method === 'PUT',
+      );
+      expect(putCall).toBeTruthy();
+      expect(putCall?.[1]?.body).toBe(
+        JSON.stringify({
+          providerConfigId: 'config-b',
+          modelOverride: null,
+        }),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.queryByText('Provider Config')).not.toBeInTheDocument();
+    });
+  });
+
+  it('does not dispatch global Escape when clicking provider config to reset override', async () => {
+    setupFetch({
+      mainAgents: [
+        {
+          id: 'agent-1',
+          name: 'Main Agent',
+          projectId: 'project-1',
+          profileId: 'p1',
+          providerConfigId: 'config-a',
+          modelOverride: 'openai/gpt-4.1',
+        },
+      ],
+      mainProviderConfigs: [
+        { id: 'config-a', name: 'Main Config A', providerId: 'provider-1' },
+        { id: 'config-b', name: 'Main Config B', providerId: 'provider-2' },
+      ],
+      mainProviderModels: {
+        'provider-1': [],
+        'provider-2': [
+          { id: 'm-main-1', providerId: 'provider-2', name: 'anthropic/claude-sonnet-4-5' },
+        ],
+      },
+    });
+    const dispatchEventSpy = jest.spyOn(document, 'dispatchEvent');
+    try {
+      renderWithClient(<ChatPage />);
+
+      const mainAgentButton = await screen.findByLabelText(/Chat with Main Agent \(online\)/i);
+      fireEvent.contextMenu(mainAgentButton);
+
+      fireEvent.keyDown(await screen.findByText('Provider Config'), { key: 'ArrowRight' });
+      await waitFor(() => {
+        const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
+        expect(urls).toContain('/api/providers/provider-2/models');
+      });
+
+      fireEvent.click(await screen.findByText('Main Config B'));
+
+      await waitFor(() => {
+        const putCall = (global.fetch as jest.Mock).mock.calls.find(
+          (call) => String(call[0]) === '/api/agents/agent-1' && call[1]?.method === 'PUT',
+        );
+        expect(putCall).toBeTruthy();
+      });
+
+      const dispatchedEscape = dispatchEventSpy.mock.calls.some(
+        ([event]) =>
+          event instanceof KeyboardEvent && event.type === 'keydown' && event.key === 'Escape',
+      );
+      expect(dispatchedEscape).toBe(false);
+    } finally {
+      dispatchEventSpy.mockRestore();
+    }
+  });
+
+  it('supports cross-config modelOverride selection in the worktree agent flow', async () => {
+    setupFetch({
+      worktreeAgents: [
+        {
+          id: 'agent-wt-1',
+          name: 'Worktree Agent',
+          profileId: 'p1',
+          type: 'agent',
+          providerConfigId: 'wt-config-a',
+          modelOverride: null,
+        },
+      ],
+      worktreeProviderConfigs: [
+        { id: 'wt-config-a', name: 'WT Config A', providerId: 'provider-1' },
+        { id: 'wt-config-b', name: 'WT Config B', providerId: 'provider-2' },
+      ],
+      worktreeProviderModels: {
+        'provider-1': [],
+        'provider-2': [
+          { id: 'm-wt-1', providerId: 'provider-2', name: 'anthropic/claude-sonnet-4-5' },
+        ],
+      },
+    });
+    renderWithClient(<ChatPage />);
+
+    const worktreeAgentButton = await screen.findByLabelText(
+      /Open terminal for Worktree Agent in feature-auth \(online\)/i,
+    );
+    fireEvent.contextMenu(worktreeAgentButton);
+
+    fireEvent.keyDown(await screen.findByText('Provider Config'), { key: 'ArrowRight' });
+    await waitFor(() => {
+      const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
+      expect(urls).toContain('/wt/feature-auth/api/providers/provider-2/models');
+    });
+    const configB = await screen.findByText('WT Config B');
+    await waitFor(() => {
+      expect(configB).toHaveAttribute('aria-haspopup', 'menu');
+    });
+    fireEvent.keyDown(configB, { key: 'ArrowRight' });
+
+    fireEvent.click(await screen.findByText('claude-sonnet-4-5'));
+
+    await waitFor(() => {
+      const putCall = (global.fetch as jest.Mock).mock.calls.find(
+        (call) =>
+          String(call[0]) === '/wt/feature-auth/api/agents/agent-wt-1' && call[1]?.method === 'PUT',
+      );
+      expect(putCall).toBeTruthy();
+      expect(putCall?.[1]?.body).toBe(
+        JSON.stringify({
+          providerConfigId: 'wt-config-b',
+          modelOverride: 'anthropic/claude-sonnet-4-5',
+        }),
+      );
+    });
+  });
+
+  it('clicking a config with models resets override to default in the worktree agent flow', async () => {
+    setupFetch({
+      worktreeAgents: [
+        {
+          id: 'agent-wt-1',
+          name: 'Worktree Agent',
+          profileId: 'p1',
+          type: 'agent',
+          providerConfigId: 'wt-config-a',
+          modelOverride: 'openai/gpt-4.1',
+        },
+      ],
+      worktreeProviderConfigs: [
+        { id: 'wt-config-a', name: 'WT Config A', providerId: 'provider-1' },
+        { id: 'wt-config-b', name: 'WT Config B', providerId: 'provider-2' },
+      ],
+      worktreeProviderModels: {
+        'provider-1': [],
+        'provider-2': [
+          { id: 'm-wt-1', providerId: 'provider-2', name: 'anthropic/claude-sonnet-4-5' },
+        ],
+      },
+    });
+    renderWithClient(<ChatPage />);
+
+    const worktreeAgentButton = await screen.findByLabelText(
+      /Open terminal for Worktree Agent in feature-auth \(online\)/i,
+    );
+    fireEvent.contextMenu(worktreeAgentButton);
+
+    fireEvent.keyDown(await screen.findByText('Provider Config'), { key: 'ArrowRight' });
+    await waitFor(() => {
+      const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
+      expect(urls).toContain('/wt/feature-auth/api/providers/provider-2/models');
+    });
+
+    fireEvent.click(await screen.findByText('WT Config B'));
+
+    await waitFor(() => {
+      const putCall = (global.fetch as jest.Mock).mock.calls.find(
+        (call) =>
+          String(call[0]) === '/wt/feature-auth/api/agents/agent-wt-1' && call[1]?.method === 'PUT',
+      );
+      expect(putCall).toBeTruthy();
+      expect(putCall?.[1]?.body).toBe(
+        JSON.stringify({
+          providerConfigId: 'wt-config-b',
+          modelOverride: null,
+        }),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.queryByText('Provider Config')).not.toBeInTheDocument();
     });
   });
 
@@ -1347,10 +2190,10 @@ describe('ChatPage worktree provider config context menu', () => {
 
     // Main agent's Provider Config submenu should be present and NOT show updating state
     await waitFor(() => {
-      const mainTrigger = screen.getByText('Provider Config');
-      expect(mainTrigger).toBeInTheDocument();
-      // The trigger should not be disabled (state isolation)
-      expect(mainTrigger).not.toHaveAttribute('data-disabled');
+      const triggers = screen.getAllByText('Provider Config');
+      expect(triggers.length).toBeGreaterThan(0);
+      // At least one visible trigger (main agent) should remain enabled.
+      expect(triggers.some((trigger) => !trigger.hasAttribute('data-disabled'))).toBe(true);
     });
 
     // Resolve the pending worktree PUT
@@ -1569,5 +2412,787 @@ describe('Mass agent controls', () => {
     // Stop button should be disabled when no agents have sessions
     const stopButton = screen.getByRole('button', { name: /^stop/i });
     expect(stopButton).toBeDisabled();
+  });
+});
+
+describe('ChatPage context bar integration', () => {
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    toastSpy.mockReset();
+    setActiveWorktreeMock.mockReset();
+    openTerminalWindowMock.mockReset();
+    openWorktreeTerminalWindowMock.mockReset();
+    closeWindowMock.mockReset();
+    terminalWindowsMock.splice(0, terminalWindowsMock.length);
+  });
+
+  afterEach(() => {
+    if (originalFetch) {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it('renders context bar for online agent with active session and context data', async () => {
+    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/agents?projectId=')) {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [
+              { id: 'agent-1', name: 'Alpha', projectId: 'project-1', profileId: 'p1' },
+              { id: 'agent-2', name: 'Beta', projectId: 'project-1', profileId: 'p1' },
+            ],
+          }),
+        } as Response;
+      }
+      if (url.startsWith('/api/sessions/agents/presence')) {
+        return {
+          ok: true,
+          json: async () => ({
+            'agent-1': { online: false, sessionId: null },
+            'agent-2': { online: true, sessionId: 'session-2' },
+          }),
+        } as Response;
+      }
+      // Summary endpoint — must be before generic /api/sessions catch-all
+      if (url.includes('/transcript/summary')) {
+        return {
+          ok: true,
+          json: async () => ({
+            sessionId: 'session-2',
+            providerName: 'claude',
+            metrics: {
+              inputTokens: 30000,
+              outputTokens: 10000,
+              cacheReadTokens: 0,
+              cacheCreationTokens: 0,
+              totalTokens: 40000,
+              totalContextConsumption: 0,
+              compactionCount: 0,
+              phaseBreakdowns: [],
+              visibleContextTokens: 0,
+              totalContextTokens: 100000,
+              contextWindowTokens: 200000,
+              costUsd: 0,
+            },
+            messageCount: 5,
+            isOngoing: true,
+          }),
+        } as Response;
+      }
+      if (url.startsWith('/api/threads?projectId=')) {
+        return { ok: true, json: async () => ({ items: [] }) } as Response;
+      }
+      if (url.includes('/api/profiles/') && url.endsWith('/provider-configs')) {
+        return { ok: true, json: async () => [] } as Response;
+      }
+      if (url.startsWith('/api/sessions')) {
+        return { ok: true, json: async () => ({ id: 'session-new' }) } as Response;
+      }
+      if (url.startsWith('/api/preflight')) {
+        return {
+          ok: true,
+          json: async () => ({
+            overall: 'pass',
+            checks: [],
+            providers: [],
+            supportedMcpProviders: [],
+            timestamp: new Date().toISOString(),
+          }),
+        } as Response;
+      }
+      return { ok: true, json: async () => ({ items: [] }) } as Response;
+    }) as unknown as typeof fetch;
+
+    renderWithClient(<ChatPage />);
+
+    // Wait for agents to render
+    await screen.findByLabelText(/Chat with Beta \(online\)/i);
+
+    // Context bar should appear for the online agent with a session
+    await waitFor(() => {
+      const progressbars = screen.getAllByRole('progressbar');
+      expect(progressbars.length).toBeGreaterThanOrEqual(1);
+    });
+
+    const progressbar = screen.getAllByRole('progressbar')[0];
+    expect(progressbar).toHaveAttribute('aria-valuenow', '50');
+    expect(progressbar).toHaveAttribute('aria-label', 'Context window usage');
+  });
+
+  it('does not render context bar for offline agents', async () => {
+    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/agents?projectId=')) {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [{ id: 'agent-1', name: 'Alpha', projectId: 'project-1', profileId: 'p1' }],
+          }),
+        } as Response;
+      }
+      if (url.startsWith('/api/sessions/agents/presence')) {
+        return {
+          ok: true,
+          json: async () => ({
+            'agent-1': { online: false, sessionId: null },
+          }),
+        } as Response;
+      }
+      if (url.startsWith('/api/threads?projectId=')) {
+        return { ok: true, json: async () => ({ items: [] }) } as Response;
+      }
+      return { ok: true, json: async () => ({ items: [] }) } as Response;
+    }) as unknown as typeof fetch;
+
+    renderWithClient(<ChatPage />);
+
+    await screen.findByLabelText(/Chat with Alpha \(offline\)/i);
+
+    // No context bar for offline agents (no session → no metrics query)
+    expect(screen.queryAllByRole('progressbar')).toHaveLength(0);
+  });
+
+  it('context menu stays accessible after context bar renders', async () => {
+    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/agents?projectId=')) {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [{ id: 'agent-1', name: 'Alpha', projectId: 'project-1', profileId: 'p1' }],
+          }),
+        } as Response;
+      }
+      if (url.startsWith('/api/sessions/agents/presence')) {
+        return {
+          ok: true,
+          json: async () => ({
+            'agent-1': { online: true, sessionId: 'session-1' },
+          }),
+        } as Response;
+      }
+      if (url.includes('/transcript/summary')) {
+        return {
+          ok: true,
+          json: async () => ({
+            sessionId: 'session-1',
+            providerName: 'claude',
+            metrics: {
+              inputTokens: 0,
+              outputTokens: 0,
+              cacheReadTokens: 0,
+              cacheCreationTokens: 0,
+              totalTokens: 0,
+              totalContextConsumption: 0,
+              compactionCount: 0,
+              phaseBreakdowns: [],
+              visibleContextTokens: 0,
+              totalContextTokens: 160000,
+              contextWindowTokens: 200000,
+              costUsd: 0,
+            },
+            messageCount: 3,
+            isOngoing: true,
+          }),
+        } as Response;
+      }
+      if (url.startsWith('/api/threads?projectId=')) {
+        return { ok: true, json: async () => ({ items: [] }) } as Response;
+      }
+      if (url.includes('/api/profiles/') && url.endsWith('/provider-configs')) {
+        return { ok: true, json: async () => [] } as Response;
+      }
+      if (url.startsWith('/api/sessions')) {
+        return { ok: true, json: async () => ({ id: 'session-new' }) } as Response;
+      }
+      if (url.startsWith('/api/preflight')) {
+        return {
+          ok: true,
+          json: async () => ({
+            overall: 'pass',
+            checks: [],
+            providers: [],
+            supportedMcpProviders: [],
+            timestamp: new Date().toISOString(),
+          }),
+        } as Response;
+      }
+      return { ok: true, json: async () => ({ items: [] }) } as Response;
+    }) as unknown as typeof fetch;
+
+    renderWithClient(<ChatPage />);
+
+    const agentButton = await screen.findByLabelText(/Chat with Alpha \(online\)/i);
+
+    // Wait for context bar to appear
+    await waitFor(() => {
+      expect(screen.getAllByRole('progressbar').length).toBeGreaterThanOrEqual(1);
+    });
+
+    // Context menu should still work after context bar renders
+    fireEvent.contextMenu(agentButton);
+    await waitFor(() => {
+      expect(screen.getByText(/Terminate session/i)).toBeInTheDocument();
+    });
+  });
+
+  it('no wrapper div for zero-usage main agent (spacer leak regression)', async () => {
+    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/agents?projectId=')) {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [{ id: 'agent-1', name: 'Alpha', projectId: 'project-1', profileId: 'p1' }],
+          }),
+        } as Response;
+      }
+      if (url.startsWith('/api/sessions/agents/presence')) {
+        return {
+          ok: true,
+          json: async () => ({
+            'agent-1': { online: true, sessionId: 'session-1' },
+          }),
+        } as Response;
+      }
+      // Summary returns zero context tokens → contextPercent = 0
+      if (url.includes('/transcript/summary')) {
+        return {
+          ok: true,
+          json: async () => ({
+            sessionId: 'session-1',
+            providerName: 'claude',
+            metrics: {
+              inputTokens: 0,
+              outputTokens: 0,
+              cacheReadTokens: 0,
+              cacheCreationTokens: 0,
+              totalTokens: 0,
+              totalContextConsumption: 0,
+              compactionCount: 0,
+              phaseBreakdowns: [],
+              visibleContextTokens: 0,
+              totalContextTokens: 0,
+              contextWindowTokens: 200000,
+              costUsd: 0,
+            },
+            messageCount: 0,
+            isOngoing: true,
+          }),
+        } as Response;
+      }
+      if (url.startsWith('/api/threads?projectId=')) {
+        return { ok: true, json: async () => ({ items: [] }) } as Response;
+      }
+      if (url.includes('/api/profiles/') && url.endsWith('/provider-configs')) {
+        return { ok: true, json: async () => [] } as Response;
+      }
+      if (url.startsWith('/api/sessions')) {
+        return { ok: true, json: async () => ({ id: 'session-new' }) } as Response;
+      }
+      if (url.startsWith('/api/preflight')) {
+        return {
+          ok: true,
+          json: async () => ({
+            overall: 'pass',
+            checks: [],
+            providers: [],
+            supportedMcpProviders: [],
+            timestamp: new Date().toISOString(),
+          }),
+        } as Response;
+      }
+      return { ok: true, json: async () => ({ items: [] }) } as Response;
+    }) as unknown as typeof fetch;
+
+    renderWithClient(<ChatPage />);
+
+    await screen.findByLabelText(/Chat with Alpha \(online\)/i);
+
+    // Wait for summary query to settle
+    await waitFor(() => {
+      const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
+      expect(urls.some((u) => u.includes('/transcript/summary'))).toBe(true);
+    });
+
+    // Zero-usage agent → no progressbar rendered (no spacer wrapper div)
+    expect(screen.queryAllByRole('progressbar')).toHaveLength(0);
+  });
+
+  it('no wrapper div for zero-usage worktree agent (spacer leak regression)', async () => {
+    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/runtime') {
+        return {
+          ok: true,
+          json: async () => ({ mode: 'main', version: '1.0.0' }),
+        } as Response;
+      }
+      if (url === '/api/worktrees' || url.startsWith('/api/worktrees?')) {
+        return {
+          ok: true,
+          json: async () => [
+            {
+              id: 'wt-1',
+              name: 'feature-auth',
+              branchName: 'feature/auth',
+              status: 'running',
+              runtimeType: 'process',
+              containerPort: 4310,
+              devchainProjectId: 'project-wt-1',
+            },
+          ],
+        } as Response;
+      }
+      if (url.startsWith('/api/agents?projectId=')) {
+        return { ok: true, json: async () => ({ items: [] }) } as Response;
+      }
+      if (url.startsWith('/api/sessions/agents/presence')) {
+        return { ok: true, json: async () => ({}) } as Response;
+      }
+      if (url.startsWith('/api/chat/threads?projectId=')) {
+        return {
+          ok: true,
+          json: async () => ({ items: [], total: 0, limit: 50, offset: 0 }),
+        } as Response;
+      }
+      if (url.startsWith('/api/threads?projectId=')) {
+        return { ok: true, json: async () => ({ items: [] }) } as Response;
+      }
+      if (url === '/wt/feature-auth/api/agents?projectId=project-wt-1&includeGuests=true') {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [{ id: 'agent-wt-1', name: 'Worktree Agent', profileId: 'p1', type: 'agent' }],
+          }),
+        } as Response;
+      }
+      if (url === '/wt/feature-auth/api/sessions/agents/presence?projectId=project-wt-1') {
+        return {
+          ok: true,
+          json: async () => ({ 'agent-wt-1': { online: true, sessionId: 'session-wt-1' } }),
+        } as Response;
+      }
+      // Worktree summary returns zero context tokens
+      if (url.includes('/transcript/summary')) {
+        return {
+          ok: true,
+          json: async () => ({
+            sessionId: 'session-wt-1',
+            providerName: 'claude',
+            metrics: {
+              inputTokens: 0,
+              outputTokens: 0,
+              cacheReadTokens: 0,
+              cacheCreationTokens: 0,
+              totalTokens: 0,
+              totalContextConsumption: 0,
+              compactionCount: 0,
+              phaseBreakdowns: [],
+              visibleContextTokens: 0,
+              totalContextTokens: 0,
+              contextWindowTokens: 200000,
+              costUsd: 0,
+            },
+            messageCount: 0,
+            isOngoing: true,
+          }),
+        } as Response;
+      }
+      if (url.includes('/api/profiles/') && url.endsWith('/provider-configs')) {
+        return { ok: true, json: async () => [] } as Response;
+      }
+      if (url.startsWith('/api/preflight')) {
+        return {
+          ok: true,
+          json: async () => ({
+            overall: 'pass',
+            checks: [],
+            providers: [],
+            supportedMcpProviders: [],
+            timestamp: new Date().toISOString(),
+          }),
+        } as Response;
+      }
+      return { ok: true, json: async () => ({ items: [] }) } as Response;
+    }) as unknown as typeof fetch;
+
+    renderWithClient(<ChatPage />);
+
+    await screen.findByLabelText(/Open terminal for Worktree Agent in feature-auth \(online\)/i);
+
+    // Wait for summary query to settle
+    await waitFor(() => {
+      const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
+      expect(urls.some((u) => u.includes('/transcript/summary'))).toBe(true);
+    });
+
+    // Zero-usage worktree agent → no progressbar rendered (no spacer wrapper div)
+    expect(screen.queryAllByRole('progressbar')).toHaveLength(0);
+  });
+});
+
+describe('ChatPage context bar toggle', () => {
+  const originalFetch = global.fetch;
+  const LS_KEY = 'devchain:chatSidebar:contextBarHidden';
+
+  beforeEach(() => {
+    toastSpy.mockReset();
+    setActiveWorktreeMock.mockReset();
+    openTerminalWindowMock.mockReset();
+    openWorktreeTerminalWindowMock.mockReset();
+    closeWindowMock.mockReset();
+    terminalWindowsMock.splice(0, terminalWindowsMock.length);
+    window.localStorage.removeItem(LS_KEY);
+  });
+
+  afterEach(() => {
+    if (originalFetch) {
+      global.fetch = originalFetch;
+    }
+    window.localStorage.removeItem(LS_KEY);
+  });
+
+  /** Fetch mock for an online agent with non-zero context metrics */
+  function setupContextBarFetch(overrides?: {
+    agents?: Array<Record<string, unknown>>;
+    presence?: Record<string, unknown>;
+    summaryMetrics?: Record<string, unknown>;
+  }) {
+    const {
+      agents = [{ id: 'agent-1', name: 'Alpha', projectId: 'project-1', profileId: 'p1' }],
+      presence = { 'agent-1': { online: true, sessionId: 'session-1' } },
+      summaryMetrics = {
+        inputTokens: 30000,
+        outputTokens: 10000,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        totalTokens: 40000,
+        totalContextConsumption: 0,
+        compactionCount: 0,
+        phaseBreakdowns: [],
+        visibleContextTokens: 0,
+        totalContextTokens: 100000,
+        contextWindowTokens: 200000,
+        costUsd: 0,
+      },
+    } = overrides ?? {};
+
+    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/agents?projectId=')) {
+        return { ok: true, json: async () => ({ items: agents }) } as Response;
+      }
+      if (url.startsWith('/api/sessions/agents/presence')) {
+        return { ok: true, json: async () => presence } as Response;
+      }
+      if (url.includes('/transcript/summary')) {
+        return {
+          ok: true,
+          json: async () => ({
+            sessionId: 'session-1',
+            providerName: 'claude',
+            metrics: summaryMetrics,
+            messageCount: 5,
+            isOngoing: true,
+          }),
+        } as Response;
+      }
+      if (url.startsWith('/api/threads?projectId=')) {
+        return { ok: true, json: async () => ({ items: [] }) } as Response;
+      }
+      if (url.includes('/api/profiles/') && url.endsWith('/provider-configs')) {
+        return { ok: true, json: async () => [] } as Response;
+      }
+      if (url.startsWith('/api/sessions')) {
+        return { ok: true, json: async () => ({ id: 'session-new' }) } as Response;
+      }
+      if (url.startsWith('/api/preflight')) {
+        return {
+          ok: true,
+          json: async () => ({
+            overall: 'pass',
+            checks: [],
+            providers: [],
+            supportedMcpProviders: [],
+            timestamp: new Date().toISOString(),
+          }),
+        } as Response;
+      }
+      return { ok: true, json: async () => ({ items: [] }) } as Response;
+    }) as unknown as typeof fetch;
+  }
+
+  it('default state: context bar visible with non-zero metrics and no localStorage entry', async () => {
+    expect(window.localStorage.getItem(LS_KEY)).toBeNull();
+    setupContextBarFetch();
+    renderWithClient(<ChatPage />);
+
+    await screen.findByLabelText(/Chat with Alpha \(online\)/i);
+    await waitFor(() => {
+      expect(screen.getAllByRole('progressbar').length).toBeGreaterThanOrEqual(1);
+    });
+
+    const progressbar = screen.getAllByRole('progressbar')[0];
+    expect(progressbar).toHaveAttribute('aria-valuenow', '50');
+  });
+
+  it('toggle hides bar: uncheck Context tracking removes context bar', async () => {
+    setupContextBarFetch();
+    renderWithClient(<ChatPage />);
+
+    const agentButton = await screen.findByLabelText(/Chat with Alpha \(online\)/i);
+
+    // Wait for context bar to render
+    await waitFor(() => {
+      expect(screen.getAllByRole('progressbar').length).toBeGreaterThanOrEqual(1);
+    });
+
+    // Right-click to open context menu
+    fireEvent.contextMenu(agentButton);
+
+    // Find and click the "Context tracking" checkbox to uncheck it
+    const checkbox = await screen.findByRole('menuitemcheckbox', { name: /Context tracking/i });
+    expect(checkbox).toHaveAttribute('data-state', 'checked');
+    fireEvent.click(checkbox);
+
+    // Context bar should be hidden
+    await waitFor(() => {
+      expect(screen.queryAllByRole('progressbar')).toHaveLength(0);
+    });
+  });
+
+  it('toggle shows bar: re-check Context tracking restores context bar', async () => {
+    // Pre-populate localStorage with hidden key
+    window.localStorage.setItem(LS_KEY, JSON.stringify(['agent-1']));
+    setupContextBarFetch();
+    renderWithClient(<ChatPage />);
+
+    const agentButton = await screen.findByLabelText(/Chat with Alpha \(online\)/i);
+
+    // Wait for summary query to settle (metrics fetched but bar hidden)
+    await waitFor(() => {
+      const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
+      expect(urls.some((u: string) => u.includes('/transcript/summary'))).toBe(true);
+    });
+
+    // No progressbar because bar is hidden
+    expect(screen.queryAllByRole('progressbar')).toHaveLength(0);
+
+    // Right-click and check "Context tracking"
+    fireEvent.contextMenu(agentButton);
+    const checkbox = await screen.findByRole('menuitemcheckbox', { name: /Context tracking/i });
+    expect(checkbox).toHaveAttribute('data-state', 'unchecked');
+    fireEvent.click(checkbox);
+
+    // Context bar should reappear
+    await waitFor(() => {
+      expect(screen.getAllByRole('progressbar').length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  it('localStorage persistence: toggle off writes key and survives remount', async () => {
+    setupContextBarFetch();
+    const { unmount } = renderWithClient(<ChatPage />);
+
+    const agentButton = await screen.findByLabelText(/Chat with Alpha \(online\)/i);
+    await waitFor(() => {
+      expect(screen.getAllByRole('progressbar').length).toBeGreaterThanOrEqual(1);
+    });
+
+    // Toggle off
+    fireEvent.contextMenu(agentButton);
+    const checkbox = await screen.findByRole('menuitemcheckbox', { name: /Context tracking/i });
+    fireEvent.click(checkbox);
+
+    // Verify localStorage contains the agent key
+    await waitFor(() => {
+      const stored = window.localStorage.getItem(LS_KEY);
+      expect(stored).not.toBeNull();
+      const parsed = JSON.parse(stored!) as string[];
+      expect(parsed).toContain('agent-1');
+    });
+
+    // Unmount and remount — bar should stay hidden
+    unmount();
+    renderWithClient(<ChatPage />);
+
+    await screen.findByLabelText(/Chat with Alpha \(online\)/i);
+    await waitFor(() => {
+      const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
+      expect(urls.some((u: string) => u.includes('/transcript/summary'))).toBe(true);
+    });
+
+    // Bar still hidden after remount
+    expect(screen.queryAllByRole('progressbar')).toHaveLength(0);
+  });
+
+  it('worktree key isolation: same agentId with different apiBase produces distinct keys', async () => {
+    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/runtime') {
+        return { ok: true, json: async () => ({ mode: 'main', version: '1.0.0' }) } as Response;
+      }
+      if (url === '/api/worktrees' || url.startsWith('/api/worktrees?')) {
+        return {
+          ok: true,
+          json: async () => [
+            {
+              id: 'wt-1',
+              name: 'feature-auth',
+              branchName: 'feature/auth',
+              status: 'running',
+              runtimeType: 'process',
+              containerPort: 4310,
+              devchainProjectId: 'project-wt-1',
+            },
+          ],
+        } as Response;
+      }
+      if (url.startsWith('/api/agents?projectId=')) {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [
+              { id: 'shared-id', name: 'Main Agent', projectId: 'project-1', profileId: 'p1' },
+            ],
+          }),
+        } as Response;
+      }
+      if (url.startsWith('/api/sessions/agents/presence')) {
+        return {
+          ok: true,
+          json: async () => ({ 'shared-id': { online: true, sessionId: 'session-main' } }),
+        } as Response;
+      }
+      if (url.startsWith('/api/chat/threads?projectId=')) {
+        return {
+          ok: true,
+          json: async () => ({ items: [], total: 0, limit: 50, offset: 0 }),
+        } as Response;
+      }
+      if (url.startsWith('/api/threads?projectId=')) {
+        return { ok: true, json: async () => ({ items: [] }) } as Response;
+      }
+      if (url === '/wt/feature-auth/api/agents?projectId=project-wt-1&includeGuests=true') {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [{ id: 'shared-id', name: 'Worktree Agent', profileId: 'p1', type: 'agent' }],
+          }),
+        } as Response;
+      }
+      if (url === '/wt/feature-auth/api/sessions/agents/presence?projectId=project-wt-1') {
+        return {
+          ok: true,
+          json: async () => ({ 'shared-id': { online: true, sessionId: 'session-wt' } }),
+        } as Response;
+      }
+      if (url.includes('/transcript/summary')) {
+        return {
+          ok: true,
+          json: async () => ({
+            sessionId: url.includes('session-main') ? 'session-main' : 'session-wt',
+            providerName: 'claude',
+            metrics: {
+              inputTokens: 30000,
+              outputTokens: 10000,
+              cacheReadTokens: 0,
+              cacheCreationTokens: 0,
+              totalTokens: 40000,
+              totalContextConsumption: 0,
+              compactionCount: 0,
+              phaseBreakdowns: [],
+              visibleContextTokens: 0,
+              totalContextTokens: 100000,
+              contextWindowTokens: 200000,
+              costUsd: 0,
+            },
+            messageCount: 5,
+            isOngoing: true,
+          }),
+        } as Response;
+      }
+      if (url.includes('/api/profiles/') && url.endsWith('/provider-configs')) {
+        return { ok: true, json: async () => [] } as Response;
+      }
+      if (url.startsWith('/api/preflight')) {
+        return {
+          ok: true,
+          json: async () => ({
+            overall: 'pass',
+            checks: [],
+            providers: [],
+            supportedMcpProviders: [],
+            timestamp: new Date().toISOString(),
+          }),
+        } as Response;
+      }
+      return { ok: true, json: async () => ({ items: [] }) } as Response;
+    }) as unknown as typeof fetch;
+
+    renderWithClient(<ChatPage />);
+
+    const mainButton = await screen.findByLabelText(/Chat with Main Agent \(online\)/i);
+    await screen.findByLabelText(/Open terminal for Worktree Agent in feature-auth \(online\)/i);
+
+    // Both agents have context bars
+    await waitFor(() => {
+      expect(screen.getAllByRole('progressbar').length).toBe(2);
+    });
+
+    // Hide the MAIN agent's context bar
+    fireEvent.contextMenu(mainButton);
+    const checkbox = await screen.findByRole('menuitemcheckbox', { name: /Context tracking/i });
+    fireEvent.click(checkbox);
+
+    // Main bar hidden, worktree bar still visible → 1 progressbar remains
+    await waitFor(() => {
+      expect(screen.getAllByRole('progressbar').length).toBe(1);
+    });
+
+    // localStorage has main key (agentId only), NOT the worktree key (apiBase:agentId)
+    const stored = JSON.parse(window.localStorage.getItem(LS_KEY)!) as string[];
+    expect(stored).toContain('shared-id');
+    expect(stored).not.toContain('/wt/feature-auth:shared-id');
+  });
+
+  it('menu item always enabled: checkbox not disabled even without active session', async () => {
+    setupContextBarFetch({
+      presence: { 'agent-1': { online: false, sessionId: null } },
+    });
+    renderWithClient(<ChatPage />);
+
+    const agentButton = await screen.findByLabelText(/Chat with Alpha \(offline\)/i);
+    fireEvent.contextMenu(agentButton);
+
+    const checkbox = await screen.findByRole('menuitemcheckbox', { name: /Context tracking/i });
+    expect(checkbox).not.toHaveAttribute('data-disabled');
+    expect(checkbox).toHaveAttribute('data-state', 'checked');
+  });
+
+  it('no empty-spacer artifact when bar is hidden via toggle', async () => {
+    window.localStorage.setItem(LS_KEY, JSON.stringify(['agent-1']));
+    setupContextBarFetch();
+    const { container } = renderWithClient(<ChatPage />);
+
+    await screen.findByLabelText(/Chat with Alpha \(online\)/i);
+
+    // Wait for summary query to settle
+    await waitFor(() => {
+      const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
+      expect(urls.some((u: string) => u.includes('/transcript/summary'))).toBe(true);
+    });
+
+    // Bar hidden → no progressbar
+    expect(screen.queryAllByRole('progressbar')).toHaveLength(0);
+
+    // No empty wrapper div with context bar padding classes (Remediation 13 regression guard)
+    // The AgentContextBar wrapper uses "px-3 -mt-0.5 pb-1" — should not exist when hidden
+    const contextBarWrappers = container.querySelectorAll('[aria-label="Context window usage"]');
+    expect(contextBarWrappers).toHaveLength(0);
   });
 });

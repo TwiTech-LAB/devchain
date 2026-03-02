@@ -323,6 +323,15 @@ export class PreflightService {
       };
     }
 
+    // Config-file providers require project context to verify MCP status
+    const adapter = this.adapterFactory.getAdapter(provider.name);
+    if (adapter.mcpMode === 'project_config' && !projectPath) {
+      return {
+        mcpStatus: 'warn',
+        mcpMessage: `${provider.name} MCP requires project context — select a project to verify.`,
+      };
+    }
+
     // Compute expected endpoint using runtime config
     const { getEnvConfig } = await import('../../../common/config/env.config');
     const env = getEnvConfig();

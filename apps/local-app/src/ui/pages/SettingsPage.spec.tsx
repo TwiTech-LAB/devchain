@@ -1,5 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { SettingsPage } from './SettingsPage';
 
 const toastSpy = jest.fn();
@@ -101,7 +103,43 @@ beforeAll(() => {
   }
 });
 
-function createWrapper() {
+/** Helper: minimal fetch mock that returns safe defaults for all API routes. */
+function createBaseFetchMock(overrides?: {
+  settings?: Record<string, unknown>;
+  prompts?: { items: { id: string; title: string }[] };
+}) {
+  const settings = overrides?.settings ?? {};
+  const prompts = overrides?.prompts ?? { items: [], total: 0, limit: 0, offset: 0 };
+
+  return jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input.toString();
+
+    if (url.startsWith('/api/settings') && (!init || !init.method || init.method === 'GET')) {
+      return { ok: true, json: async () => settings } as Response;
+    }
+    if (url.startsWith('/api/prompts')) {
+      return { ok: true, json: async () => prompts } as Response;
+    }
+    if (url.startsWith('/api/preflight')) {
+      return {
+        ok: true,
+        json: async () => ({
+          overall: 'pass',
+          checks: [],
+          providers: [],
+          timestamp: new Date().toISOString(),
+        }),
+      } as Response;
+    }
+    if (url === '/api/settings' && init?.method === 'PUT') {
+      const payload = init.body ? JSON.parse(init.body.toString()) : {};
+      return { ok: true, json: async () => ({ ...settings, ...payload }) } as Response;
+    }
+    return { ok: true, json: async () => ({}) } as Response;
+  });
+}
+
+function createWrapper(initialEntries: string[] = ['/settings']) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: {
@@ -111,11 +149,108 @@ function createWrapper() {
   });
 
   const Wrapper = ({ children }: { children: React.ReactNode }) => (
-    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    <MemoryRouter initialEntries={initialEntries}>
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    </MemoryRouter>
   );
 
   return { Wrapper, queryClient };
 }
+
+// ---------------------------------------------------------------------------
+// Sub-navigation tests
+// ---------------------------------------------------------------------------
+
+describe('SettingsPage sub-navigation', () => {
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    useSelectedProjectMock.mockReturnValue({
+      selectedProjectId: null,
+      selectedProject: null,
+      projects: [],
+      projectsLoading: false,
+      projectsError: false,
+      refetchProjects: jest.fn(),
+      setSelectedProjectId: jest.fn(),
+    });
+    global.fetch = createBaseFetchMock() as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    toastSpy.mockReset();
+  });
+
+  it('defaults to GeneralSection when no section param is present', async () => {
+    const { Wrapper } = createWrapper(['/settings']);
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <SettingsPage />
+        </Wrapper>,
+      );
+    });
+
+    expect(await screen.findByText(/Initial Session Prompt/i)).toBeInTheDocument();
+  });
+
+  it('deep-links to TerminalSection via ?section=terminal', async () => {
+    const { Wrapper } = createWrapper(['/settings?section=terminal']);
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <SettingsPage />
+        </Wrapper>,
+      );
+    });
+
+    expect(await screen.findByText(/Terminal Settings/i)).toBeInTheDocument();
+  });
+
+  it('falls back to GeneralSection for invalid ?section=bogus', async () => {
+    const { Wrapper } = createWrapper(['/settings?section=bogus']);
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <SettingsPage />
+        </Wrapper>,
+      );
+    });
+
+    expect(await screen.findByText(/Initial Session Prompt/i)).toBeInTheDocument();
+  });
+
+  it('switches sections when a nav item is clicked', async () => {
+    const user = userEvent.setup();
+    const { Wrapper } = createWrapper(['/settings']);
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <SettingsPage />
+        </Wrapper>,
+      );
+    });
+
+    // Default: General section visible
+    expect(await screen.findByText(/Initial Session Prompt/i)).toBeInTheDocument();
+
+    // Click the Events nav tab (userEvent dispatches pointer+focus events that Radix expects)
+    const eventsTab = screen.getByRole('tab', { name: /Events/i });
+    await user.click(eventsTab);
+
+    // Events section content should appear
+    expect(await screen.findByText(/Epic Assigned message/i)).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Existing interaction tests (adapted for section-based rendering)
+// ---------------------------------------------------------------------------
 
 describe('SettingsPage initial session prompt selector', () => {
   const originalFetch = global.fetch;
@@ -211,7 +346,8 @@ describe('SettingsPage initial session prompt selector', () => {
   });
 
   it('updates and persists the selected initial session prompt', async () => {
-    const { Wrapper } = createWrapper();
+    // General section is the default, so no section param needed
+    const { Wrapper } = createWrapper(['/settings']);
 
     await act(async () => {
       render(
@@ -323,7 +459,8 @@ describe('SettingsPage events template editor', () => {
   });
 
   it('edits and saves the epic assigned template', async () => {
-    const { Wrapper } = createWrapper();
+    // Deep-link to events section
+    const { Wrapper } = createWrapper(['/settings?section=events']);
 
     await act(async () => {
       render(
@@ -425,7 +562,8 @@ describe('SettingsPage terminal streaming settings', () => {
   });
 
   it('updates scrollback lines and seed max bytes', async () => {
-    const { Wrapper } = createWrapper();
+    // Deep-link to terminal section
+    const { Wrapper } = createWrapper(['/settings?section=terminal']);
 
     await act(async () => {
       render(
@@ -549,7 +687,8 @@ describe('SettingsPage preflight MCP provider rendering', () => {
   });
 
   it('renders MCP status and details, and updates on refresh', async () => {
-    const { Wrapper } = createWrapper();
+    // Deep-link to system section
+    const { Wrapper } = createWrapper(['/settings?section=system']);
 
     await act(async () => {
       render(

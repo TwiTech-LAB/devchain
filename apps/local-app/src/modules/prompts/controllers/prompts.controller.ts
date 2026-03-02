@@ -10,7 +10,7 @@ import {
   Inject,
   BadRequestException,
 } from '@nestjs/common';
-import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
+import { PromptStorage, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { CreatePrompt, UpdatePrompt, Prompt } from '../../storage/models/domain.models';
 import { z } from 'zod';
 import { createLogger } from '../../../common/logging/logger';
@@ -33,7 +33,7 @@ const UpdatePromptSchema = z.object({
 
 @Controller('api/prompts')
 export class PromptsController {
-  constructor(@Inject(STORAGE_SERVICE) private readonly storage: StorageService) {}
+  constructor(@Inject(STORAGE_SERVICE) private readonly storage: PromptStorage) {}
 
   @Get()
   async listPrompts(

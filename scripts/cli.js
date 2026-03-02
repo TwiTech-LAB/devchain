@@ -294,9 +294,11 @@ function detectInstalledProviders() {
   const codexPath = isBinaryInstalled('codex');
   const claudePath = isBinaryInstalled('claude');
   const geminiPath = isBinaryInstalled('gemini');
+  const opencodePath = isBinaryInstalled('opencode');
   if (codexPath) detected.set('codex', codexPath);
   if (claudePath) detected.set('claude', claudePath);
   if (geminiPath) detected.set('gemini', geminiPath);
+  if (opencodePath) detected.set('opencode', opencodePath);
   return detected; // Map<name, absolutePath>
 }
 
@@ -409,8 +411,10 @@ function resolveRepoRootForDockerBuild(execSyncFn = execSync) {
   }
 }
 
-function shouldSkipHostPreflights(enableOrchestration) {
-  return Boolean(enableOrchestration);
+function shouldSkipHostPreflights() {
+  // Parent process always runs host preflights (tmux, providers).
+  // Worktree children bypass runHostPreflightChecks() entirely via worktreeRuntimeMode guard.
+  return false;
 }
 
 function resolveWorktreeImageFromPackageVersion() {
@@ -884,24 +888,21 @@ function askYesNo(question, defaultYes = false) {
 }
 
 async function ensureClaudeBypassPermissions(cli) {
-  const claudeConfigPath = join(homedir(), '.claude.json');
+  const settingsPath = join(homedir(), '.claude', 'settings.json');
 
-  // Skip if file doesn't exist
-  if (!existsSync(claudeConfigPath)) {
-    return;
-  }
-
-  // Try to read and parse config
-  let config;
+  // Read existing settings if present
+  let settings = {};
   try {
-    config = JSON.parse(readFileSync(claudeConfigPath, 'utf-8'));
+    if (existsSync(settingsPath)) {
+      settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    }
   } catch {
-    // Invalid JSON - skip silently
-    return;
+    // Invalid JSON — start fresh
+    settings = {};
   }
 
   // Skip silently if already enabled
-  if (config.bypassPermissionsModeAccepted === true) {
+  if (settings.skipDangerousModePermissionPrompt === true) {
     return;
   }
 
@@ -914,15 +915,19 @@ async function ensureClaudeBypassPermissions(cli) {
   cli.blank();
 
   if (confirmed) {
-    config.bypassPermissionsModeAccepted = true;
+    settings.skipDangerousModePermissionPrompt = true;
     try {
-      writeFileSync(claudeConfigPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
-      cli.success('Bypass permissions mode enabled in ~/.claude.json');
+      const settingsDir = join(homedir(), '.claude');
+      if (!existsSync(settingsDir)) {
+        mkdirSync(settingsDir, { recursive: true });
+      }
+      writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf-8');
+      cli.success('Bypass permissions mode enabled in ~/.claude/settings.json');
     } catch (error) {
-      cli.warn('Failed to update ~/.claude.json - you may need to enable manually');
+      cli.warn('Failed to update ~/.claude/settings.json - you may need to enable manually');
     }
   } else {
-    cli.info('Skipped - you can enable this later in ~/.claude.json');
+    cli.info('Skipped - you can enable this later in ~/.claude/settings.json');
   }
 }
 
@@ -1174,16 +1179,17 @@ async function runHostPreflightChecks(
     if (providersDetected.size === 0) {
       const guide = [
         'No provider binaries detected on PATH. Install at least one provider and retry.',
-        'Checked: "which codex", "which claude", and "which gemini"',
+        'Checked: "which codex", "which claude", "which gemini", and "which opencode"',
         'Examples:',
-        '  - Install Codex:   npm i -g @openai/codex (example) or follow provider docs',
-        '  - Install Claude:  npm i -g @anthropic-ai/claude-code (example) or follow provider docs',
-        '  - Install Gemini:  npm i -g @google/gemini-cli (example) or follow provider docs',
+        '  - Install Codex:    npm i -g @openai/codex (example) or follow provider docs',
+        '  - Install Claude:   npm i -g @anthropic-ai/claude-code (example) or follow provider docs',
+        '  - Install Gemini:   npm i -g @google/gemini-cli (example) or follow provider docs',
+        '  - Install OpenCode: go install github.com/opencode-ai/opencode@latest or follow provider docs',
         'Advanced: bypass with DEVCHAIN_SKIP_PROVIDER_CHECK=1',
       ].join('\n');
       if (opts.foreground) {
         log('error', 'No providers found; aborting startup', {
-          checked: ['which codex', 'which claude', 'which gemini'],
+          checked: ['which codex', 'which claude', 'which gemini', 'which opencode'],
         });
       } else {
         cli.stepDone('✗ none found');
@@ -1545,7 +1551,6 @@ async function main(argv) {
         // Ensure provider rows exist
         if (
           !worktreeRuntimeMode
-          && !enableOrchestration
           && opts.__providersDetected
           && opts.__providersDetected.size > 0
         ) {
@@ -1558,7 +1563,7 @@ async function main(argv) {
           : process.cwd();
 
         // Validate MCP for all providers
-        if (!worktreeRuntimeMode && !enableOrchestration) {
+        if (!worktreeRuntimeMode) {
           await validateMcpForProviders(baseUrl, cli, opts, log, startupPath);
         }
 
@@ -1665,7 +1670,6 @@ async function main(argv) {
       // Ensure provider rows exist (idempotent) before opening UI
       if (
         !worktreeRuntimeMode
-        && !enableOrchestration
         && opts.__providersDetected
         && opts.__providersDetected.size > 0
       ) {
@@ -1678,7 +1682,7 @@ async function main(argv) {
         : process.cwd();
 
       // Validate MCP for all providers (with project context)
-      if (!worktreeRuntimeMode && !enableOrchestration) {
+      if (!worktreeRuntimeMode) {
         await validateMcpForProviders(baseUrl, cli, opts, log, startupPath);
       }
 

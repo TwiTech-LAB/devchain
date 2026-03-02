@@ -38,6 +38,7 @@ import { Loader2, AlertTriangle, Settings, Info, AlertCircle } from 'lucide-reac
 import { fetchAgentPresence, type AgentPresenceMap } from '@/ui/lib/sessions';
 import { cn } from '@/ui/lib/utils';
 import { validatePresetAvailability } from '@/ui/lib/preset-validation';
+import type { Preset } from '@/ui/lib/preset-types';
 
 interface Agent {
   id: string;
@@ -68,15 +69,6 @@ interface ProviderConfig {
   name: string;
   options: string | null;
   env: Record<string, string> | null;
-}
-
-interface Preset {
-  name: string;
-  description?: string | null;
-  agentConfigs: Array<{
-    agentName: string;
-    providerConfigName: string;
-  }>;
 }
 
 interface ProjectConfigurationModalProps {

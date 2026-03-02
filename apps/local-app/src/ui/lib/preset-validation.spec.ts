@@ -1,4 +1,6 @@
 import { validatePresetAvailability } from './preset-validation';
+import type { Agent, ProviderConfig } from './preset-validation';
+import type { Preset, PresetAgentConfig } from './preset-types';
 
 describe('validatePresetAvailability', () => {
   // Test data fixtures
@@ -27,10 +29,7 @@ describe('validatePresetAvailability', () => {
     ],
   ]);
 
-  const createPreset = (
-    name: string,
-    agentConfigs: Array<{ agentName: string; providerConfigName: string }>,
-  ): Preset => ({
+  const createPreset = (name: string, agentConfigs: PresetAgentConfig[]): Preset => ({
     name,
     description: null,
     agentConfigs,

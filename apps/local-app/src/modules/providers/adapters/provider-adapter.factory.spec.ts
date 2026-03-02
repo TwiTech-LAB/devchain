@@ -17,7 +17,12 @@ describe('ProviderAdapterFactory', () => {
     codexAdapter = new CodexAdapter();
     geminiAdapter = new GeminiAdapter();
     opencodeAdapter = new OpencodeAdapter();
-    factory = new ProviderAdapterFactory(claudeAdapter, codexAdapter, geminiAdapter, opencodeAdapter);
+    factory = new ProviderAdapterFactory(
+      claudeAdapter,
+      codexAdapter,
+      geminiAdapter,
+      opencodeAdapter,
+    );
   });
 
   describe('getAdapter', () => {

@@ -2,6 +2,21 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
+// Polyfill window.matchMedia for Layout's responsive sidebar
+Object.defineProperty(window, 'matchMedia', {
+  writable: true,
+  value: jest.fn().mockImplementation((query: string) => ({
+    matches: true,
+    media: query,
+    onchange: null,
+    addListener: jest.fn(),
+    removeListener: jest.fn(),
+    addEventListener: jest.fn(),
+    removeEventListener: jest.fn(),
+    dispatchEvent: jest.fn(),
+  })),
+});
+
 let mockActiveWorktree: { id: string; name: string; devchainProjectId: string | null } | null =
   null;
 
@@ -29,6 +44,32 @@ jest.mock('./hooks/useReviewSubscription', () => ({
 jest.mock('./hooks/useCommentMutations', () => ({
   useCreateComment: () => ({ mutateAsync: jest.fn(), isPending: false }),
   useReplyToComment: () => ({ mutateAsync: jest.fn(), isPending: false }),
+}));
+
+jest.mock('./hooks/useAppSocket', () => ({
+  useAppSocket: jest.fn(() => ({
+    connected: true,
+    on: jest.fn(),
+    off: jest.fn(),
+    emit: jest.fn(),
+  })),
+}));
+
+jest.mock('./lib/socket', () => ({
+  getAppSocket: jest.fn(() => ({
+    connected: true,
+    on: jest.fn(),
+    off: jest.fn(),
+    emit: jest.fn(),
+  })),
+  getWorktreeSocket: jest.fn(() => ({
+    connected: true,
+    on: jest.fn(),
+    off: jest.fn(),
+    emit: jest.fn(),
+  })),
+  releaseAppSocket: jest.fn(),
+  releaseWorktreeSocket: jest.fn(),
 }));
 
 jest.mock('./hooks/useWorktreeTab', () => ({

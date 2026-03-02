@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { HelpButton } from '@/ui/components/shared';
 import { Button } from '@/ui/components/ui/button';
 import { Badge } from '@/ui/components/ui/badge';
@@ -11,7 +11,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/ui/components/ui/tooltip';
-import { useQuery } from '@tanstack/react-query';
+import { useQueries, useQuery } from '@tanstack/react-query';
 import { PresetPopover } from './PresetPopover';
 import { WorktreePresetButton } from './WorktreePresetButton';
 import { restartKeyForMain, restartKeyForWorktree } from '@/ui/lib/restart-keys';
@@ -26,6 +26,8 @@ import {
   ContextMenuSubContent,
   ContextMenuRadioGroup,
   ContextMenuRadioItem,
+  ContextMenuCheckboxItem,
+  ContextMenuLabel,
 } from '@/ui/components/ui/context-menu';
 import { cn } from '@/ui/lib/utils';
 import {
@@ -47,11 +49,19 @@ import {
   Box,
 } from 'lucide-react';
 import type { AgentPresenceMap } from '@/ui/lib/sessions';
+import {
+  useAgentSessionMetrics,
+  getMetricsKey,
+  type AgentSessionEntry,
+} from '@/ui/hooks/useAgentSessionMetrics';
+import { AgentContextBar } from './AgentContextBar';
 import type { Thread } from '@/ui/lib/chat';
 import type { AgentOrGuest } from '@/ui/hooks/useChatQueries';
 import type { WorktreeAgentGroup } from '@/ui/hooks/useWorktreeAgents';
 import type { PresetAvailability } from '@/ui/lib/preset-validation';
 import { getProviderIconDataUri } from '@/ui/lib/providers';
+import { providerModelQueryKeys } from '@/ui/lib/provider-model-query-keys';
+import { shortModelName } from '@/ui/lib/model-utils';
 
 // ============================================
 // Feature Flags
@@ -128,7 +138,11 @@ export interface ChatSidebarProps {
   applyingPreset: boolean;
 
   // Provider config switching
-  onSwitchConfig: (agentId: string, providerConfigId: string) => void;
+  onSwitchConfig: (
+    agentId: string,
+    providerConfigId: string,
+    modelOverride?: string | null,
+  ) => void;
   fetchProviderConfigsForProfile: (
     profileId: string,
   ) => Promise<Array<{ id: string; name: string; providerId: string }>>;
@@ -139,6 +153,7 @@ export interface ChatSidebarProps {
     group: WorktreeAgentGroup,
     agentId: string,
     providerConfigId: string,
+    modelOverride?: string | null,
   ) => void;
   updatingWorktreeConfigKey: string | null;
 
@@ -155,7 +170,12 @@ interface ProviderConfigSubmenuProps {
   agent: AgentOrGuest;
   hasSelectedProject: boolean;
   isBusy: boolean;
-  onSwitchConfig: (agentId: string, providerConfigId: string) => void;
+  onRequestCloseMenu?: () => void;
+  onSwitchConfig: (
+    agentId: string,
+    providerConfigId: string,
+    modelOverride?: string | null,
+  ) => void;
   fetchProviderConfigsForProfile: (
     profileId: string,
   ) => Promise<Array<{ id: string; name: string; providerId: string }>>;
@@ -163,10 +183,153 @@ interface ProviderConfigSubmenuProps {
   apiBase?: string;
 }
 
+interface ProviderModelOption {
+  id: string;
+  name: string;
+}
+
+interface ModelOverrideSubmenuProps {
+  config: { id: string; name: string };
+  providerModels: ProviderModelOption[];
+  currentConfigId: string;
+  currentModelOverride: string | null;
+  isUpdating: boolean;
+  onRequestCloseMenu?: () => void;
+  onSelectModelOverride: (configId: string, nextModelOverride: string | null) => void;
+}
+
+const MODEL_OVERRIDE_DEFAULT = '__default_no_override__';
+const MODEL_OVERRIDE_NONE_SELECTED = '__none_selected__';
+
+export function normalizeModelOverrideSelection(value: string): string | null | undefined {
+  if (value === MODEL_OVERRIDE_NONE_SELECTED) {
+    return undefined;
+  }
+  if (value === MODEL_OVERRIDE_DEFAULT) {
+    return null;
+  }
+  return value;
+}
+
+function getAgentConfigDisplayName(agent: AgentOrGuest): string | null {
+  if (!agent.providerConfig?.name) {
+    return null;
+  }
+  return agent.modelOverride ? shortModelName(agent.modelOverride) : agent.providerConfig.name;
+}
+
+function parseProviderModels(payload: unknown, providerId: string): ProviderModelOption[] {
+  if (!Array.isArray(payload)) {
+    return [];
+  }
+
+  return payload
+    .map((rawModel, index) => {
+      if (
+        !rawModel ||
+        typeof rawModel !== 'object' ||
+        Array.isArray(rawModel) ||
+        typeof (rawModel as { name?: unknown }).name !== 'string'
+      ) {
+        return null;
+      }
+
+      const model = rawModel as { id?: unknown; name: string };
+      const name = model.name.trim();
+      if (!name) {
+        return null;
+      }
+
+      const id =
+        typeof model.id === 'string' && model.id.trim().length > 0
+          ? model.id
+          : `${providerId}:${name}:${index}`;
+      return { id, name };
+    })
+    .filter((model): model is ProviderModelOption => Boolean(model));
+}
+
+function ModelOverrideSubmenu({
+  config,
+  providerModels,
+  currentConfigId,
+  currentModelOverride,
+  isUpdating,
+  onRequestCloseMenu,
+  onSelectModelOverride,
+}: ModelOverrideSubmenuProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const requestCloseMenu = useCallback(() => {
+    onRequestCloseMenu?.();
+  }, [onRequestCloseMenu]);
+
+  const activeModelValue =
+    currentConfigId === config.id
+      ? (currentModelOverride ?? MODEL_OVERRIDE_DEFAULT)
+      : MODEL_OVERRIDE_NONE_SELECTED;
+
+  return (
+    <ContextMenuSub
+      open={isOpen}
+      onOpenChange={setIsOpen}
+    >
+      <ContextMenuSubTrigger
+        disabled={isUpdating}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onSelectModelOverride(config.id, null);
+          setIsOpen(false);
+          requestCloseMenu();
+        }}
+      >
+        {config.name}
+      </ContextMenuSubTrigger>
+      <ContextMenuSubContent className="w-[min(30rem,80vw)] p-0">
+        <div className="border-b bg-popover px-2 py-2">
+          <ContextMenuLabel className="px-0 py-0 text-xs font-medium text-muted-foreground">
+            Override model:
+          </ContextMenuLabel>
+        </div>
+
+        <div
+          className="max-h-[min(400px,60vh)] overflow-y-auto p-1"
+          data-testid={`model-override-options-${config.id}`}
+        >
+          <ContextMenuRadioGroup
+            value={activeModelValue}
+            onValueChange={(value) => {
+              const nextModelOverride = normalizeModelOverrideSelection(value);
+              if (nextModelOverride === undefined) return;
+              onSelectModelOverride(config.id, nextModelOverride);
+              requestCloseMenu();
+            }}
+          >
+            <ContextMenuRadioItem value={MODEL_OVERRIDE_DEFAULT} disabled={isUpdating}>
+              Default (no override)
+            </ContextMenuRadioItem>
+            {providerModels.map((model) => (
+              <ContextMenuRadioItem
+                key={model.id}
+                value={model.name}
+                title={model.name}
+                disabled={isUpdating}
+              >
+                {shortModelName(model.name)}
+              </ContextMenuRadioItem>
+            ))}
+          </ContextMenuRadioGroup>
+        </div>
+      </ContextMenuSubContent>
+    </ContextMenuSub>
+  );
+}
+
 function ProviderConfigSubmenu({
   agent,
   hasSelectedProject,
   isBusy,
+  onRequestCloseMenu,
   onSwitchConfig,
   fetchProviderConfigsForProfile,
   updatingConfigAgentIds,
@@ -199,14 +362,64 @@ function ProviderConfigSubmenu({
 
   // Defensive guard: ensure configs is always an array (API returns array, but tests may mock incorrectly)
   const configs = Array.isArray(rawConfigs) ? rawConfigs : [];
+  const uniqueProviderIds = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          configs
+            .map((config) => config.providerId)
+            .filter((providerId): providerId is string => Boolean(providerId)),
+        ),
+      ).sort(),
+    [configs],
+  );
+
+  const providerModelQueries = useQueries({
+    queries: uniqueProviderIds.map((providerId) => ({
+      queryKey: providerModelQueryKeys.byContext(apiBase ?? 'main', providerId),
+      queryFn: async () => {
+        const base = apiBase ?? '';
+        const res = await fetch(`${base}/api/providers/${providerId}/models`);
+        if (!res.ok) {
+          return [] as ProviderModelOption[];
+        }
+        const payload = (await res.json().catch(() => [])) as unknown;
+        return parseProviderModels(payload, providerId);
+      },
+      staleTime: 5 * 60 * 1000, // Cache for 5 minutes
+    })),
+  });
+
+  const providerModelsStateByProviderId = useMemo(() => {
+    const state: Record<string, { models: ProviderModelOption[]; isLoading: boolean }> = {};
+    uniqueProviderIds.forEach((providerId, index) => {
+      const query = providerModelQueries[index];
+      state[providerId] = {
+        models: Array.isArray(query?.data) ? query.data : [],
+        isLoading: Boolean(query?.isLoading),
+      };
+    });
+    return state;
+  }, [providerModelQueries, uniqueProviderIds]);
 
   const currentConfigId = agent.providerConfigId ?? '';
+  const currentModelOverride = agent.modelOverride ?? null;
   const isUpdating = updatingConfigAgentIds[agent.id];
 
-  const handleValueChange = (configId: string) => {
+  const handleConfigSwitch = (configId: string) => {
     if (configId !== currentConfigId) {
       onSwitchConfig(agent.id, configId);
     }
+  };
+  const requestCloseMenu = useCallback(() => {
+    onRequestCloseMenu?.();
+  }, [onRequestCloseMenu]);
+
+  const handleModelOverrideSwitch = (configId: string, nextModelOverride: string | null) => {
+    if (configId === currentConfigId && currentModelOverride === nextModelOverride) {
+      return;
+    }
+    onSwitchConfig(agent.id, configId, nextModelOverride);
   };
 
   return (
@@ -225,13 +438,46 @@ function ProviderConfigSubmenu({
         ) : configs.length === 0 ? (
           <div className="px-2 py-1.5 text-sm text-muted-foreground">No configs available</div>
         ) : (
-          <ContextMenuRadioGroup value={currentConfigId} onValueChange={handleValueChange}>
-            {configs.map((config) => (
-              <ContextMenuRadioItem key={config.id} value={config.id} disabled={isUpdating}>
-                {config.name}
-              </ContextMenuRadioItem>
-            ))}
-          </ContextMenuRadioGroup>
+          <>
+            {configs.map((config) => {
+              const providerModelState = providerModelsStateByProviderId[config.providerId] ?? {
+                models: [],
+                isLoading: false,
+              };
+              const providerModels = providerModelState.models;
+              const isProviderModelsLoading = providerModelState.isLoading;
+              const hasModels = providerModels.length > 0;
+              if (!hasModels || isProviderModelsLoading) {
+                return (
+                  <ContextMenuItem
+                    key={config.id}
+                    disabled={isUpdating}
+                    onSelect={(event) => {
+                      event.preventDefault();
+                      handleConfigSwitch(config.id);
+                      requestCloseMenu();
+                    }}
+                  >
+                    {config.name}
+                    {isProviderModelsLoading && <Loader2 className="ml-2 h-3 w-3 animate-spin" />}
+                  </ContextMenuItem>
+                );
+              }
+
+              return (
+                <ModelOverrideSubmenu
+                  key={config.id}
+                  config={config}
+                  providerModels={providerModels}
+                  currentConfigId={currentConfigId}
+                  currentModelOverride={currentModelOverride}
+                  isUpdating={Boolean(isUpdating)}
+                  onSelectModelOverride={handleModelOverrideSwitch}
+                  onRequestCloseMenu={onRequestCloseMenu}
+                />
+              );
+            })}
+          </>
         )}
       </ContextMenuSubContent>
     </ContextMenuSub>
@@ -348,6 +594,43 @@ export function ChatSidebar({
     );
   }, [collapsedWorktreeGroups]);
 
+  // Per-agent context bar hidden set (persisted to localStorage)
+  const [contextBarHidden, setContextBarHidden] = useState<Set<string>>(() => {
+    if (typeof window === 'undefined') return new Set();
+    try {
+      const stored = window.localStorage.getItem('devchain:chatSidebar:contextBarHidden');
+      return stored ? new Set(JSON.parse(stored) as string[]) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
+  const [mainContextMenuVersionByAgentId, setMainContextMenuVersionByAgentId] = useState<
+    Record<string, number>
+  >({});
+  const [worktreeContextMenuVersionByKey, setWorktreeContextMenuVersionByKey] = useState<
+    Record<string, number>
+  >({});
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(
+      'devchain:chatSidebar:contextBarHidden',
+      JSON.stringify([...contextBarHidden]),
+    );
+  }, [contextBarHidden]);
+
+  const handleToggleContextBar = useCallback((key: string) => {
+    setContextBarHidden((previous) => {
+      const next = new Set(previous);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }, []);
+
   const toggleWorktreeGroup = useCallback((groupId: string) => {
     const key = `worktree:${groupId}`;
     setCollapsedWorktreeGroups((previous) => ({
@@ -411,6 +694,31 @@ export function ChatSidebar({
   const renderActivityBadge = (agentId: string) => {
     return renderActivityBadgeForPresence(agentPresence[agentId]);
   };
+
+  const agentSessionEntries = useMemo(() => {
+    const entries: AgentSessionEntry[] = [];
+    for (const agent of agents) {
+      const presence = agentPresence[agent.id];
+      if (presence?.online && presence.sessionId) {
+        entries.push({ agentId: agent.id, sessionId: presence.sessionId });
+      }
+    }
+    for (const group of worktreeAgentGroups) {
+      for (const agent of group.agents) {
+        const presence = group.agentPresence[agent.id];
+        if (presence?.online && presence.sessionId) {
+          entries.push({
+            agentId: agent.id,
+            sessionId: presence.sessionId,
+            apiBase: group.apiBase,
+          });
+        }
+      }
+    }
+    return entries;
+  }, [agents, agentPresence, worktreeAgentGroups]);
+
+  const contextMetrics = useAgentSessionMetrics(agentSessionEntries);
 
   return (
     <div className="flex w-80 flex-col border-r bg-card">
@@ -517,9 +825,10 @@ export function ChatSidebar({
                   const isLaunching = Boolean(launchingAgentIds[agent.id]);
                   const isRestarting = restartingAgentId === agent.id;
                   const anyBusy = isLaunching || isRestarting;
+                  const mainContextMenuVersion = mainContextMenuVersionByAgentId[agent.id] ?? 0;
 
                   return (
-                    <ContextMenu key={agent.id}>
+                    <ContextMenu key={`${agent.id}:${mainContextMenuVersion}`}>
                       <ContextMenuTrigger asChild>
                         <button
                           onClick={() => onLaunchChat([agent.id])}
@@ -552,10 +861,10 @@ export function ChatSidebar({
                           <div className="min-w-0 flex-1 overflow-hidden text-left">
                             <div className="truncate">
                               {agent.name}
-                              {agent.providerConfig?.name && (
+                              {getAgentConfigDisplayName(agent) && (
                                 <span className="text-muted-foreground">
                                   {' '}
-                                  ({agent.providerConfig.name})
+                                  ({getAgentConfigDisplayName(agent)})
                                 </span>
                               )}
                             </div>
@@ -583,15 +892,34 @@ export function ChatSidebar({
                           )}
                         </button>
                       </ContextMenuTrigger>
+                      {contextMetrics.has(getMetricsKey(agent.id)) &&
+                        !contextBarHidden.has(getMetricsKey(agent.id)) && (
+                          <div className="px-3 -mt-0.5 pb-1">
+                            <AgentContextBar {...contextMetrics.get(getMetricsKey(agent.id))!} />
+                          </div>
+                        )}
                       <ContextMenuContent className="w-56">
                         <ProviderConfigSubmenu
                           agent={agent}
                           hasSelectedProject={hasSelectedProject}
                           isBusy={anyBusy}
                           onSwitchConfig={onSwitchConfig}
+                          onRequestCloseMenu={() => {
+                            setMainContextMenuVersionByAgentId((previous) => ({
+                              ...previous,
+                              [agent.id]: (previous[agent.id] ?? 0) + 1,
+                            }));
+                          }}
                           fetchProviderConfigsForProfile={fetchProviderConfigsForProfile}
                           updatingConfigAgentIds={updatingConfigAgentIds}
                         />
+                        <ContextMenuSeparator />
+                        <ContextMenuCheckboxItem
+                          checked={!contextBarHidden.has(getMetricsKey(agent.id))}
+                          onCheckedChange={() => handleToggleContextBar(getMetricsKey(agent.id))}
+                        >
+                          Context tracking
+                        </ContextMenuCheckboxItem>
                         <ContextMenuSeparator />
                         <ContextMenuItem
                           onSelect={async (e) => {
@@ -754,9 +1082,13 @@ export function ChatSidebar({
                             const providerIcon = providerName
                               ? getProviderIconDataUri(providerName)
                               : null;
-
+                            const worktreeContextMenuKey = `${group.apiBase}:${agent.id}`;
+                            const worktreeContextMenuVersion =
+                              worktreeContextMenuVersionByKey[worktreeContextMenuKey] ?? 0;
                             return (
-                              <ContextMenu key={`${group.id}:${agent.id}`}>
+                              <ContextMenu
+                                key={`${group.id}:${agent.id}:${worktreeContextMenuVersion}`}
+                              >
                                 <ContextMenuTrigger asChild>
                                   <button
                                     onClick={() => onLaunchWorktreeAgentChat(group, agent.id)}
@@ -789,10 +1121,10 @@ export function ChatSidebar({
                                     )}
                                     <span className="min-w-0 flex-1 truncate text-left">
                                       {agent.name}
-                                      {agent.providerConfig?.name && (
+                                      {getAgentConfigDisplayName(agent) && (
                                         <span className="text-muted-foreground">
                                           {' '}
-                                          ({agent.providerConfig.name})
+                                          ({getAgentConfigDisplayName(agent)})
                                         </span>
                                       )}
                                     </span>
@@ -814,14 +1146,36 @@ export function ChatSidebar({
                                       )}
                                   </button>
                                 </ContextMenuTrigger>
+                                {contextMetrics.has(getMetricsKey(agent.id, group.apiBase)) &&
+                                  !contextBarHidden.has(getMetricsKey(agent.id, group.apiBase)) && (
+                                    <div className="px-3 -mt-0.5 pb-1">
+                                      <AgentContextBar
+                                        {...contextMetrics.get(
+                                          getMetricsKey(agent.id, group.apiBase),
+                                        )!}
+                                      />
+                                    </div>
+                                  )}
                                 <ContextMenuContent className="w-56">
                                   <ProviderConfigSubmenu
                                     agent={agent}
                                     hasSelectedProject={Boolean(group.devchainProjectId)}
                                     isBusy={anyWorktreeBusy}
-                                    onSwitchConfig={(agentId, providerConfigId) =>
-                                      onSwitchWorktreeConfig(group, agentId, providerConfigId)
+                                    onSwitchConfig={(agentId, providerConfigId, modelOverride) =>
+                                      onSwitchWorktreeConfig(
+                                        group,
+                                        agentId,
+                                        providerConfigId,
+                                        modelOverride,
+                                      )
                                     }
+                                    onRequestCloseMenu={() => {
+                                      setWorktreeContextMenuVersionByKey((previous) => ({
+                                        ...previous,
+                                        [worktreeContextMenuKey]:
+                                          (previous[worktreeContextMenuKey] ?? 0) + 1,
+                                      }));
+                                    }}
                                     fetchProviderConfigsForProfile={async (profileId) => {
                                       const res = await fetch(
                                         `${group.apiBase}/api/profiles/${profileId}/provider-configs`,
@@ -837,6 +1191,17 @@ export function ChatSidebar({
                                     }
                                     apiBase={group.apiBase}
                                   />
+                                  <ContextMenuSeparator />
+                                  <ContextMenuCheckboxItem
+                                    checked={
+                                      !contextBarHidden.has(getMetricsKey(agent.id, group.apiBase))
+                                    }
+                                    onCheckedChange={() =>
+                                      handleToggleContextBar(getMetricsKey(agent.id, group.apiBase))
+                                    }
+                                  >
+                                    Context tracking
+                                  </ContextMenuCheckboxItem>
                                   <ContextMenuSeparator />
                                   <ContextMenuItem
                                     onSelect={async (event) => {

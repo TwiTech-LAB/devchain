@@ -76,3 +76,30 @@ export function parseProfileOptions(raw?: string | null): string[] {
   finishToken();
   return tokens;
 }
+
+/**
+ * Inject model override into parsed argv, replacing any existing model flags.
+ * Handles: --model X, -m X, --model=X, -m=X.
+ */
+export function injectModelOverride(args: string[], model: string): string[] {
+  const cleanedArgs: string[] = [];
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+
+    if (arg === '--model' || arg === '-m') {
+      if (i + 1 < args.length) {
+        i += 1;
+      }
+      continue;
+    }
+
+    if (arg.startsWith('--model=') || arg.startsWith('-m=')) {
+      continue;
+    }
+
+    cleanedArgs.push(arg);
+  }
+
+  return ['--model', model, ...cleanedArgs];
+}

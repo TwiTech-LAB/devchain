@@ -5,6 +5,15 @@ import { SkillsRequiredInputSchema } from '../../skills/dtos/skill.dto';
  * MCP Tool Request schemas
  */
 
+// Shared schema for epic ID fields that accept a full UUID or an 8–36 char hex prefix.
+// Constrains input to UUID-safe characters (hex digits + hyphens) to prevent SQL LIKE
+// wildcard injection and enforce true UUID-prefix semantics at the validation layer.
+const EpicIdPrefixSchema = z
+  .string()
+  .min(8)
+  .max(36)
+  .regex(/^[a-f0-9-]+$/, 'Epic ID prefix must contain only hex characters and hyphens');
+
 // devchain.create_record
 export const CreateRecordParamsSchema = z
   .object({
@@ -221,7 +230,7 @@ export type CreateEpicParams = z.infer<typeof CreateEpicParamsSchema>;
 export const GetEpicByIdParamsSchema = z
   .object({
     sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
-    id: z.string().uuid(),
+    id: EpicIdPrefixSchema, // Epic UUID or 8+ char hex prefix
   })
   .strict();
 
@@ -232,7 +241,7 @@ export type GetEpicByIdParams = z.infer<typeof GetEpicByIdParamsSchema>;
 export const AddEpicCommentParamsSchema = z
   .object({
     sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
-    epicId: z.string().uuid(),
+    epicId: EpicIdPrefixSchema, // Epic UUID or 8+ char hex prefix
     content: z.string().min(1),
   })
   .strict();
@@ -243,7 +252,7 @@ export type AddEpicCommentParams = z.infer<typeof AddEpicCommentParamsSchema>;
 export const UpdateEpicParamsSchema = z
   .object({
     sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
-    id: z.string().uuid(),
+    id: EpicIdPrefixSchema, // Epic UUID or 8+ char hex prefix
     version: z.number().int().positive(),
     title: z.string().min(1).optional(),
     description: z.string().optional(),

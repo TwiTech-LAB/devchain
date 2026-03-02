@@ -8,7 +8,10 @@ import {
   Inject,
   BadRequestException,
 } from '@nestjs/common';
-import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
+import {
+  ProfileProviderConfigStorage,
+  STORAGE_SERVICE,
+} from '../../storage/interfaces/storage.interface';
 import { ProfileProviderConfig } from '../../storage/models/domain.models';
 import { createLogger } from '../../../common/logging/logger';
 import { UpdateProviderConfigSchema, ProfileProviderConfigSchema } from '../dto';
@@ -18,7 +21,7 @@ const logger = createLogger('ProviderConfigsController');
 
 @Controller('api/provider-configs')
 export class ProviderConfigsController {
-  constructor(@Inject(STORAGE_SERVICE) private readonly storage: StorageService) {}
+  constructor(@Inject(STORAGE_SERVICE) private readonly storage: ProfileProviderConfigStorage) {}
 
   @Get(':id')
   async getProviderConfig(@Param('id') id: string): Promise<ProfileProviderConfig> {

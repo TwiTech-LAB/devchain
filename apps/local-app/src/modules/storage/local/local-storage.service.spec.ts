@@ -122,11 +122,13 @@ describe('LocalStorageService', () => {
         };
 
         mockDb.select = jest.fn().mockReturnValueOnce(countChain).mockReturnValueOnce(rowsChain);
+        const delegate = (
+          service as unknown as {
+            epicDelegate: { batchFetchTags: () => Promise<Map<string, string[]>> };
+          }
+        ).epicDelegate;
         const batchFetchTagsSpy = jest
-          .spyOn(
-            service as unknown as { batchFetchTags: () => Promise<Map<string, string[]>> },
-            'batchFetchTags',
-          )
+          .spyOn(delegate, 'batchFetchTags')
           .mockResolvedValue(new Map([[mockEpic.id, []]]));
 
         const result = await service.listProjectEpics('project-1', {
@@ -192,11 +194,13 @@ describe('LocalStorageService', () => {
           name: 'Case Agent',
         } as Agent & { profile?: AgentProfile });
 
+        const delegate = (
+          service as unknown as {
+            epicDelegate: { batchFetchTags: () => Promise<Map<string, string[]>> };
+          }
+        ).epicDelegate;
         const batchFetchTagsSpy = jest
-          .spyOn(
-            service as unknown as { batchFetchTags: () => Promise<Map<string, string[]>> },
-            'batchFetchTags',
-          )
+          .spyOn(delegate, 'batchFetchTags')
           .mockResolvedValue(new Map([[mockEpic.id, []]]));
 
         const result = await service.listAssignedEpics('project-1', {
@@ -237,17 +241,20 @@ describe('LocalStorageService', () => {
 
         mockDb.select = jest.fn().mockReturnValueOnce(statusChain);
 
+        const delegate = (
+          service as unknown as {
+            epicDelegate: {
+              ensureValidAgent: (...args: unknown[]) => Promise<void>;
+              ensureValidEpicParent: (...args: unknown[]) => Promise<void>;
+              createEpic: (...args: unknown[]) => Promise<Epic>;
+            };
+          }
+        ).epicDelegate;
         const ensureAgentSpy = jest
-          .spyOn(
-            service as unknown as { ensureValidAgent: (...args: unknown[]) => Promise<void> },
-            'ensureValidAgent',
-          )
+          .spyOn(delegate, 'ensureValidAgent')
           .mockResolvedValue(undefined);
         const ensureParentSpy = jest
-          .spyOn(
-            service as unknown as { ensureValidEpicParent: (...args: unknown[]) => Promise<void> },
-            'ensureValidEpicParent',
-          )
+          .spyOn(delegate, 'ensureValidEpicParent')
           .mockResolvedValue(undefined);
 
         jest.spyOn(service, 'getAgentByName').mockResolvedValue({
@@ -273,7 +280,7 @@ describe('LocalStorageService', () => {
           updatedAt: '2024-01-10T00:00:00Z',
         };
 
-        const createEpicSpy = jest.spyOn(service, 'createEpic').mockResolvedValue(mockEpic);
+        const createEpicSpy = jest.spyOn(delegate, 'createEpic').mockResolvedValue(mockEpic);
 
         const result = await service.createEpicForProject('project-1', {
           title: 'Created Epic',
@@ -1345,9 +1352,7 @@ describe('LocalStorageService', () => {
 
         const result = await service.createAgentProfile({
           name: 'Coder Profile',
-          providerId: 'provider-1',
           familySlug: 'coder',
-          options: '--model claude-opus-4-5',
           systemPrompt: null,
           temperature: null,
           maxTokens: null,
@@ -1365,8 +1370,6 @@ describe('LocalStorageService', () => {
 
         const result = await service.createAgentProfile({
           name: 'Profile Without Family',
-          providerId: 'provider-1',
-          options: null,
           systemPrompt: null,
           temperature: null,
           maxTokens: null,
@@ -1418,8 +1421,6 @@ describe('LocalStorageService', () => {
             id: 'profile-1',
             projectId: 'project-2',
             name: 'P',
-            providerId: 'provider-1',
-            options: null,
             systemPrompt: null,
             instructions: null,
             temperature: null,
@@ -1445,8 +1446,6 @@ describe('LocalStorageService', () => {
             id: 'profile-1',
             projectId: 'project-1',
             name: 'Profile',
-            providerId: 'provider-1',
-            options: null,
             systemPrompt: null,
             instructions: null,
             temperature: null,
@@ -1466,8 +1465,10 @@ describe('LocalStorageService', () => {
             id: 'config-1',
             profileId: 'profile-2', // Different profile!
             providerId: 'provider-1',
+            name: 'Config One',
             options: null,
             env: null,
+            position: 0,
             createdAt: '2024-01-01T00:00:00Z',
             updatedAt: '2024-01-01T00:00:00Z',
           });
@@ -1506,6 +1507,7 @@ describe('LocalStorageService', () => {
             name: 'Agent',
             description: null,
             providerConfigId: 'config-1',
+            modelOverride: null,
             createdAt: '2024-01-01T00:00:00Z',
             updatedAt: '2024-01-01T00:00:00Z',
           });
@@ -1519,8 +1521,6 @@ describe('LocalStorageService', () => {
             id: 'profile-1',
             projectId: 'project-1',
             name: 'Profile',
-            providerId: 'provider-1',
-            options: null,
             systemPrompt: null,
             instructions: null,
             temperature: null,
@@ -1540,8 +1540,10 @@ describe('LocalStorageService', () => {
             id: 'config-2',
             profileId: 'profile-2', // Different profile!
             providerId: 'provider-1',
+            name: 'Config Two',
             options: null,
             env: null,
+            position: 1,
             createdAt: '2024-01-01T00:00:00Z',
             updatedAt: '2024-01-01T00:00:00Z',
           });
@@ -1569,6 +1571,7 @@ describe('LocalStorageService', () => {
             name: 'Agent',
             description: null,
             providerConfigId: 'config-1',
+            modelOverride: null,
             createdAt: '2024-01-01T00:00:00Z',
             updatedAt: '2024-01-01T00:00:00Z',
           });
@@ -1582,8 +1585,6 @@ describe('LocalStorageService', () => {
             id: 'profile-2',
             projectId: 'project-1',
             name: 'New Profile',
-            providerId: 'provider-1',
-            options: null,
             systemPrompt: null,
             instructions: null,
             temperature: null,
@@ -1603,8 +1604,10 @@ describe('LocalStorageService', () => {
             id: 'config-1',
             profileId: 'profile-1', // Original profile, not new one!
             providerId: 'provider-1',
+            name: 'Config One',
             options: null,
             env: null,
+            position: 0,
             createdAt: '2024-01-01T00:00:00Z',
             updatedAt: '2024-01-01T00:00:00Z',
           });
@@ -1621,6 +1624,293 @@ describe('LocalStorageService', () => {
         expect(getProfileSpy).toHaveBeenCalledWith('profile-2');
         // Uses existing config-1 from current agent
         expect(getConfigSpy).toHaveBeenCalledWith('config-1');
+      });
+
+      it('preserves explicitly supplied modelOverride when providerConfigId changes', async () => {
+        const getAgentSpy = jest
+          .spyOn(service as unknown as { getAgent: (id: string) => Promise<Agent> }, 'getAgent')
+          .mockResolvedValueOnce({
+            id: 'agent-1',
+            projectId: 'project-1',
+            profileId: 'profile-1',
+            name: 'Agent',
+            description: null,
+            providerConfigId: 'config-1',
+            modelOverride: 'gpt-4.1',
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          })
+          .mockResolvedValueOnce({
+            id: 'agent-1',
+            projectId: 'project-1',
+            profileId: 'profile-1',
+            name: 'Agent',
+            description: null,
+            providerConfigId: 'config-2',
+            modelOverride: 'should-be-preserved',
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-02T00:00:00Z',
+          });
+
+        jest
+          .spyOn(
+            service as unknown as { getAgentProfile: (id: string) => Promise<AgentProfile> },
+            'getAgentProfile',
+          )
+          .mockResolvedValue({
+            id: 'profile-1',
+            projectId: 'project-1',
+            name: 'Profile',
+            systemPrompt: null,
+            instructions: null,
+            temperature: null,
+            maxTokens: null,
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          });
+
+        jest
+          .spyOn(
+            service as unknown as {
+              getProfileProviderConfig: (id: string) => Promise<ProfileProviderConfig>;
+            },
+            'getProfileProviderConfig',
+          )
+          .mockResolvedValue({
+            id: 'config-2',
+            profileId: 'profile-1',
+            providerId: 'provider-1',
+            name: 'Config Two',
+            options: null,
+            env: null,
+            position: 1,
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          });
+
+        const setSpy = jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue(undefined),
+        });
+        mockDb.update = jest.fn().mockReturnValue({ set: setSpy });
+
+        const result = await service.updateAgent('agent-1', {
+          providerConfigId: 'config-2',
+          modelOverride: 'should-be-preserved',
+        });
+
+        expect(setSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            providerConfigId: 'config-2',
+            modelOverride: 'should-be-preserved',
+          }),
+        );
+        expect(getAgentSpy).toHaveBeenCalledTimes(2);
+        expect(result.providerConfigId).toBe('config-2');
+        expect(result.modelOverride).toBe('should-be-preserved');
+      });
+
+      it('clears modelOverride when providerConfigId changes and modelOverride is omitted', async () => {
+        const getAgentSpy = jest
+          .spyOn(service as unknown as { getAgent: (id: string) => Promise<Agent> }, 'getAgent')
+          .mockResolvedValueOnce({
+            id: 'agent-1',
+            projectId: 'project-1',
+            profileId: 'profile-1',
+            name: 'Agent',
+            description: null,
+            providerConfigId: 'config-1',
+            modelOverride: 'gpt-4.1',
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          })
+          .mockResolvedValueOnce({
+            id: 'agent-1',
+            projectId: 'project-1',
+            profileId: 'profile-1',
+            name: 'Agent',
+            description: null,
+            providerConfigId: 'config-2',
+            modelOverride: null,
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-02T00:00:00Z',
+          });
+
+        jest
+          .spyOn(
+            service as unknown as { getAgentProfile: (id: string) => Promise<AgentProfile> },
+            'getAgentProfile',
+          )
+          .mockResolvedValue({
+            id: 'profile-1',
+            projectId: 'project-1',
+            name: 'Profile',
+            systemPrompt: null,
+            instructions: null,
+            temperature: null,
+            maxTokens: null,
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          });
+
+        jest
+          .spyOn(
+            service as unknown as {
+              getProfileProviderConfig: (id: string) => Promise<ProfileProviderConfig>;
+            },
+            'getProfileProviderConfig',
+          )
+          .mockResolvedValue({
+            id: 'config-2',
+            profileId: 'profile-1',
+            providerId: 'provider-1',
+            name: 'Config Two',
+            options: null,
+            env: null,
+            position: 1,
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          });
+
+        const setSpy = jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue(undefined),
+        });
+        mockDb.update = jest.fn().mockReturnValue({ set: setSpy });
+
+        const result = await service.updateAgent('agent-1', {
+          providerConfigId: 'config-2',
+        });
+
+        expect(setSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            providerConfigId: 'config-2',
+            modelOverride: null,
+          }),
+        );
+        expect(getAgentSpy).toHaveBeenCalledTimes(2);
+        expect(result.providerConfigId).toBe('config-2');
+        expect(result.modelOverride).toBeNull();
+      });
+
+      it('respects explicit modelOverride=null when providerConfigId changes', async () => {
+        const getAgentSpy = jest
+          .spyOn(service as unknown as { getAgent: (id: string) => Promise<Agent> }, 'getAgent')
+          .mockResolvedValueOnce({
+            id: 'agent-1',
+            projectId: 'project-1',
+            profileId: 'profile-1',
+            name: 'Agent',
+            description: null,
+            providerConfigId: 'config-1',
+            modelOverride: 'gpt-4.1',
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          })
+          .mockResolvedValueOnce({
+            id: 'agent-1',
+            projectId: 'project-1',
+            profileId: 'profile-1',
+            name: 'Agent',
+            description: null,
+            providerConfigId: 'config-2',
+            modelOverride: null,
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-02T00:00:00Z',
+          });
+
+        jest
+          .spyOn(
+            service as unknown as { getAgentProfile: (id: string) => Promise<AgentProfile> },
+            'getAgentProfile',
+          )
+          .mockResolvedValue({
+            id: 'profile-1',
+            projectId: 'project-1',
+            name: 'Profile',
+            systemPrompt: null,
+            instructions: null,
+            temperature: null,
+            maxTokens: null,
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          });
+
+        jest
+          .spyOn(
+            service as unknown as {
+              getProfileProviderConfig: (id: string) => Promise<ProfileProviderConfig>;
+            },
+            'getProfileProviderConfig',
+          )
+          .mockResolvedValue({
+            id: 'config-2',
+            profileId: 'profile-1',
+            providerId: 'provider-1',
+            name: 'Config Two',
+            options: null,
+            env: null,
+            position: 1,
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          });
+
+        const setSpy = jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue(undefined),
+        });
+        mockDb.update = jest.fn().mockReturnValue({ set: setSpy });
+
+        const result = await service.updateAgent('agent-1', {
+          providerConfigId: 'config-2',
+          modelOverride: null,
+        });
+
+        expect(setSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            providerConfigId: 'config-2',
+            modelOverride: null,
+          }),
+        );
+        expect(getAgentSpy).toHaveBeenCalledTimes(2);
+        expect(result.providerConfigId).toBe('config-2');
+        expect(result.modelOverride).toBeNull();
+      });
+
+      it('persists modelOverride when only modelOverride changes', async () => {
+        const getAgentSpy = jest
+          .spyOn(service as unknown as { getAgent: (id: string) => Promise<Agent> }, 'getAgent')
+          .mockResolvedValue({
+            id: 'agent-1',
+            projectId: 'project-1',
+            profileId: 'profile-1',
+            name: 'Agent',
+            description: null,
+            providerConfigId: 'config-1',
+            modelOverride: 'openai/gpt-4.1',
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-02T00:00:00Z',
+          });
+
+        const setSpy = jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue(undefined),
+        });
+        mockDb.update = jest.fn().mockReturnValue({ set: setSpy });
+
+        const result = await service.updateAgent('agent-1', {
+          modelOverride: 'openai/gpt-4.1',
+        });
+
+        expect(setSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            modelOverride: 'openai/gpt-4.1',
+          }),
+        );
+        expect(setSpy).not.toHaveBeenCalledWith(
+          expect.objectContaining({
+            modelOverride: null,
+          }),
+        );
+        expect(getAgentSpy).toHaveBeenCalledTimes(1);
+        expect(result.providerConfigId).toBe('config-1');
+        expect(result.modelOverride).toBe('openai/gpt-4.1');
       });
     });
 
@@ -1772,6 +2062,89 @@ describe('LocalStorageService', () => {
         expect(result.name).toBe('codex');
         expect(result.binPath).toBeNull();
         expect(result.mcpConfigured).toBe(false);
+      });
+    });
+
+    describe('provider models', () => {
+      it('should trim model names in createProviderModel', async () => {
+        mockDb.select = jest.fn().mockReturnValue({
+          from: jest.fn().mockReturnValue({
+            where: jest.fn().mockResolvedValue([{ maxPos: 1 }]),
+          }),
+        });
+        const valuesSpy = jest.fn().mockResolvedValue(undefined);
+        mockDb.insert = jest.fn().mockReturnValue({ values: valuesSpy });
+
+        const result = await service.createProviderModel({
+          providerId: 'provider-1',
+          name: '  claude-sonnet-4  ',
+        });
+
+        expect(result.name).toBe('claude-sonnet-4');
+        expect(result.position).toBe(2);
+        expect(valuesSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            providerId: 'provider-1',
+            name: 'claude-sonnet-4',
+            position: 2,
+          }),
+        );
+      });
+
+      it('should bulk create models and skip case-insensitive duplicates', async () => {
+        (mockDb as unknown as { exec: jest.Mock }).exec = jest.fn();
+
+        let selectCall = 0;
+        mockDb.select = jest.fn().mockImplementation(() => {
+          selectCall += 1;
+          if (selectCall === 1) {
+            // Existing models lookup
+            return {
+              from: jest.fn().mockReturnValue({
+                where: jest.fn().mockResolvedValue([{ name: 'gpt-4.1' }]),
+              }),
+            };
+          }
+
+          // Max position lookup
+          return {
+            from: jest.fn().mockReturnValue({
+              where: jest.fn().mockResolvedValue([{ maxPos: 3 }]),
+            }),
+          };
+        });
+
+        const valuesSpy = jest.fn().mockResolvedValue(undefined);
+        mockDb.insert = jest.fn().mockReturnValue({ values: valuesSpy });
+
+        const result = await service.bulkCreateProviderModels('provider-1', [
+          'gpt-4.1',
+          ' claude-sonnet-4 ',
+          'CLAUDE-SONNET-4',
+        ]);
+
+        expect(result).toEqual({
+          added: ['claude-sonnet-4'],
+          existing: ['gpt-4.1', 'claude-sonnet-4'],
+        });
+
+        expect(valuesSpy).toHaveBeenCalledWith([
+          expect.objectContaining({
+            providerId: 'provider-1',
+            name: 'claude-sonnet-4',
+            position: 4,
+          }),
+        ]);
+        expect((mockDb as unknown as { exec: jest.Mock }).exec).toHaveBeenCalledWith(
+          'BEGIN IMMEDIATE TRANSACTION',
+        );
+        expect((mockDb as unknown as { exec: jest.Mock }).exec).toHaveBeenCalledWith('COMMIT');
+      });
+
+      it('should reject empty model names in bulkCreateProviderModels', async () => {
+        await expect(
+          service.bulkCreateProviderModels('provider-1', ['   ', 'claude-sonnet-4']),
+        ).rejects.toThrow(ValidationError);
       });
     });
 
@@ -1981,7 +2354,12 @@ describe('LocalStorageService', () => {
           },
         ];
 
-        jest.spyOn(service, 'getEpic').mockResolvedValue(mockEpic);
+        const delegate = (
+          service as unknown as {
+            epicDelegate: { getEpic: (id: string) => Promise<Epic> };
+          }
+        ).epicDelegate;
+        jest.spyOn(delegate, 'getEpic').mockResolvedValue(mockEpic);
 
         const rowsChain = {
           from: jest.fn().mockReturnValue({
@@ -2027,7 +2405,12 @@ describe('LocalStorageService', () => {
           updatedAt: '2024-01-01T00:00:00Z',
         };
 
-        jest.spyOn(service, 'getEpic').mockResolvedValue(mockEpic);
+        const delegate = (
+          service as unknown as {
+            epicDelegate: { getEpic: (id: string) => Promise<Epic> };
+          }
+        ).epicDelegate;
+        jest.spyOn(delegate, 'getEpic').mockResolvedValue(mockEpic);
 
         mockDb.insert = jest.fn().mockReturnValue({
           values: jest.fn().mockResolvedValue(undefined),
@@ -2650,6 +3033,51 @@ describe('LocalStorageService', () => {
           text: { source: 'custom', customValue: 'Error detected!' },
         });
       });
+    });
+  });
+
+  describe('getEpicsByIdPrefix', () => {
+    it('delegates to epicDelegate.getEpicsByIdPrefix', async () => {
+      const mockResult = [{ id: 'abcd1234-5678-9abc-def0-123456789abc', title: 'My Epic' }];
+      const delegate = (
+        service as unknown as {
+          epicDelegate: { getEpicsByIdPrefix: jest.Mock };
+        }
+      ).epicDelegate;
+      const spy = jest.spyOn(delegate, 'getEpicsByIdPrefix').mockResolvedValue(mockResult);
+
+      const result = await service.getEpicsByIdPrefix('project-1', 'abcd1234');
+
+      expect(spy).toHaveBeenCalledWith('project-1', 'abcd1234');
+      expect(result).toEqual(mockResult);
+    });
+
+    it('passes prefix containing % literally without wildcard expansion', async () => {
+      const delegate = (
+        service as unknown as {
+          epicDelegate: { getEpicsByIdPrefix: jest.Mock };
+        }
+      ).epicDelegate;
+      const spy = jest.spyOn(delegate, 'getEpicsByIdPrefix').mockResolvedValue([]);
+
+      const result = await service.getEpicsByIdPrefix('project-1', 'abcd%234');
+
+      expect(spy).toHaveBeenCalledWith('project-1', 'abcd%234');
+      expect(result).toEqual([]);
+    });
+
+    it('passes prefix containing _ literally without wildcard expansion', async () => {
+      const delegate = (
+        service as unknown as {
+          epicDelegate: { getEpicsByIdPrefix: jest.Mock };
+        }
+      ).epicDelegate;
+      const spy = jest.spyOn(delegate, 'getEpicsByIdPrefix').mockResolvedValue([]);
+
+      const result = await service.getEpicsByIdPrefix('project-1', 'abcd_234');
+
+      expect(spy).toHaveBeenCalledWith('project-1', 'abcd_234');
+      expect(result).toEqual([]);
     });
   });
 });

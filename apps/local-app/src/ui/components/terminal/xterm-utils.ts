@@ -65,3 +65,28 @@ export function isTerminalInternalSequence(data: string): boolean {
 
   return false;
 }
+
+/**
+ * Check whether the terminal's current mouse-tracking mode supports wheel events.
+ *
+ * xterm.js sets `terminal.modes.mouseTrackingMode` when a TUI application
+ * (e.g., vim, htop) enables mouse reporting via DECSET escape sequences.
+ * Relevant modes:
+ *   - `'vt200'`     — normal tracking (press + release, includes wheel buttons 4/5)
+ *   - `'drag'`      — button-event (drag) tracking (includes wheel)
+ *   - `'any'`       — any-event tracking (includes wheel)
+ *   - `'x10'`       — basic press-only tracking (NO wheel support)
+ *   - `'vt200Highlight'` — highlight tracking (rarely used)
+ *   - `'none'`      — mouse tracking is off
+ *
+ * Modes `'vt200'`, `'drag'`, and `'any'` include wheel-button codes (64/65)
+ * in their reports, so the TUI already handles wheel events.  Returning
+ * `true` tells the caller to let xterm.js forward the event to the TUI
+ * instead of performing normal scrollback scrolling.
+ *
+ * @param mode - The value of `terminal.modes.mouseTrackingMode`
+ * @returns `true` when the active mode reports wheel events
+ */
+export function supportsWheelMouseTracking(mode: string): boolean {
+  return mode === 'vt200' || mode === 'drag' || mode === 'any';
+}

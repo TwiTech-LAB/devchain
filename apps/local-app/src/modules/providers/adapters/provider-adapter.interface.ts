@@ -32,9 +32,17 @@ export interface AddMcpServerOptions {
  */
 export interface ProviderAdapter {
   /**
-   * Provider name (e.g., 'claude', 'codex', 'gemini')
+   * Provider name (e.g., 'claude', 'codex', 'gemini', 'opencode')
    */
   readonly providerName: string;
+
+  /**
+   * MCP configuration mode:
+   * - 'cli': MCP managed via CLI subcommands (claude, codex, gemini)
+   * - 'project_config': MCP managed via project config file (opencode)
+   * Defaults to 'cli' if not specified.
+   */
+  readonly mcpMode?: 'cli' | 'project_config';
 
   /**
    * Build command arguments for adding an MCP server

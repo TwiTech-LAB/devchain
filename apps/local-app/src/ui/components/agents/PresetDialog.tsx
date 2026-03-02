@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Dialog,
   DialogContent,
@@ -23,13 +23,16 @@ import {
 } from '@/ui/components/ui/select';
 import { useToast } from '@/ui/hooks/use-toast';
 import { Loader2, Save, AlertCircle, Pencil } from 'lucide-react';
-import { type Preset } from '@/ui/lib/preset-validation';
+import type { Preset, PresetAgentConfig } from '@/ui/lib/preset-types';
+import { providerModelQueryKeys } from '@/ui/lib/provider-model-query-keys';
+import { shortModelName } from '@/ui/lib/model-utils';
 
 interface Agent {
   id: string;
   name: string;
   profileId: string;
   providerConfigId?: string | null;
+  modelOverride?: string | null;
   providerConfig?: {
     id: string;
     name: string;
@@ -45,23 +48,8 @@ interface PresetDialogProps {
   presetToEdit?: Preset | null;
 }
 
-interface CreatePresetResponse {
-  name: string;
-  description?: string | null;
-  agentConfigs: Array<{
-    agentName: string;
-    providerConfigName: string;
-  }>;
-}
-
-interface UpdatePresetResponse {
-  name: string;
-  description?: string | null;
-  agentConfigs: Array<{
-    agentName: string;
-    providerConfigName: string;
-  }>;
-}
+type CreatePresetResponse = Preset;
+type UpdatePresetResponse = Preset;
 
 interface ProviderConfig {
   id: string;
@@ -70,14 +58,45 @@ interface ProviderConfig {
   providerId: string;
 }
 
-async function createPreset(
-  projectId: string,
-  preset: {
-    name: string;
-    description?: string | null;
-    agentConfigs: Array<{ agentName: string; providerConfigName: string }>;
-  },
-): Promise<CreatePresetResponse> {
+interface ProviderModelOption {
+  id: string;
+  name: string;
+}
+
+const DEFAULT_MODEL_OVERRIDE = '__default_model_override__';
+
+function parseProviderModels(payload: unknown, providerId: string): ProviderModelOption[] {
+  if (!Array.isArray(payload)) {
+    return [];
+  }
+
+  return payload
+    .map((rawModel, index) => {
+      if (
+        !rawModel ||
+        typeof rawModel !== 'object' ||
+        Array.isArray(rawModel) ||
+        typeof (rawModel as { name?: unknown }).name !== 'string'
+      ) {
+        return null;
+      }
+
+      const model = rawModel as { id?: unknown; name: string };
+      const name = model.name.trim();
+      if (!name) {
+        return null;
+      }
+
+      const id =
+        typeof model.id === 'string' && model.id.trim().length > 0
+          ? model.id
+          : `${providerId}:${name}:${index}`;
+      return { id, name };
+    })
+    .filter((model): model is ProviderModelOption => Boolean(model));
+}
+
+async function createPreset(projectId: string, preset: Preset): Promise<CreatePresetResponse> {
   const res = await fetch(`/api/projects/${projectId}/presets`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -96,7 +115,7 @@ async function updatePreset(
   updates: {
     name?: string;
     description?: string | null;
-    agentConfigs?: Array<{ agentName: string; providerConfigName: string }>;
+    agentConfigs?: PresetAgentConfig[];
   },
 ): Promise<UpdatePresetResponse> {
   const res = await fetch(`/api/projects/${projectId}/presets`, {
@@ -124,9 +143,7 @@ export function PresetDialog({
   const [isSaving, setIsSaving] = useState(false);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [selectedAgentConfigs, setSelectedAgentConfigs] = useState<
-    Array<{ agentName: string; providerConfigName: string }>
-  >([]);
+  const [selectedAgentConfigs, setSelectedAgentConfigs] = useState<PresetAgentConfig[]>([]);
 
   const isEditMode = !!presetToEdit;
 
@@ -136,7 +153,12 @@ export function PresetDialog({
       if (presetToEdit) {
         setName(presetToEdit.name);
         setDescription(presetToEdit.description || '');
-        setSelectedAgentConfigs(presetToEdit.agentConfigs);
+        setSelectedAgentConfigs(
+          presetToEdit.agentConfigs.map((config) => ({
+            ...config,
+            modelOverride: config.modelOverride ?? null,
+          })),
+        );
       } else {
         setName('');
         setDescription('');
@@ -146,6 +168,7 @@ export function PresetDialog({
           agentsWithConfigs.map((a) => ({
             agentName: a.name,
             providerConfigName: a.providerConfig!.name,
+            modelOverride: a.modelOverride ?? null,
           })),
         );
       }
@@ -192,6 +215,55 @@ export function PresetDialog({
     enabled: open && agentsWithProfiles.length > 0,
   });
 
+  const selectedProviderIds = useMemo(() => {
+    if (!configsMap) return [];
+
+    const providerIds = new Set<string>();
+    for (const agentConfig of selectedAgentConfigs) {
+      const agent = agentsWithProfiles.find(
+        (candidate) => candidate.name === agentConfig.agentName,
+      );
+      if (!agent) continue;
+
+      const profileConfigsRaw = configsMap.get(agent.profileId);
+      const profileConfigs = Array.isArray(profileConfigsRaw) ? profileConfigsRaw : [];
+      const selectedConfig = profileConfigs.find(
+        (config) => config.name === agentConfig.providerConfigName,
+      );
+      if (selectedConfig?.providerId) {
+        providerIds.add(selectedConfig.providerId);
+      }
+    }
+
+    return Array.from(providerIds).sort();
+  }, [agentsWithProfiles, configsMap, selectedAgentConfigs]);
+
+  const providerModelQueries = useQueries({
+    queries: selectedProviderIds.map((providerId) => ({
+      queryKey: providerModelQueryKeys.main(providerId),
+      queryFn: async () => {
+        const res = await fetch(`/api/providers/${providerId}/models`);
+        if (!res.ok) {
+          return [] as ProviderModelOption[];
+        }
+
+        const payload = (await res.json().catch(() => [])) as unknown;
+        return parseProviderModels(payload, providerId);
+      },
+      staleTime: 5 * 60 * 1000,
+      enabled: open,
+    })),
+  });
+
+  const providerModelsByProviderId = useMemo(() => {
+    const map = new Map<string, ProviderModelOption[]>();
+    selectedProviderIds.forEach((providerId, index) => {
+      const query = providerModelQueries[index];
+      map.set(providerId, Array.isArray(query?.data) ? query.data : []);
+    });
+    return map;
+  }, [providerModelQueries, selectedProviderIds]);
+
   // Validate name
   const nameError = name.trim()
     ? existingPresetNames.some(
@@ -220,11 +292,18 @@ export function PresetDialog({
 
     setIsSaving(true);
     try {
+      const normalizedAgentConfigs: PresetAgentConfig[] = selectedAgentConfigs.map(
+        (agentConfig) => ({
+          ...agentConfig,
+          modelOverride: agentConfig.modelOverride ?? null,
+        }),
+      );
+
       if (isEditMode) {
         const updates = {
           name: name.trim(),
           description: description.trim() || null,
-          agentConfigs: selectedAgentConfigs,
+          agentConfigs: normalizedAgentConfigs,
         };
 
         const result = await updatePreset(projectId, presetToEdit!.name, updates);
@@ -237,7 +316,7 @@ export function PresetDialog({
         const preset = {
           name: name.trim(),
           description: description.trim() || null,
-          agentConfigs: selectedAgentConfigs,
+          agentConfigs: normalizedAgentConfigs,
         };
 
         const result = await createPreset(projectId, preset);
@@ -274,6 +353,10 @@ export function PresetDialog({
     return selectedAgentConfigs.find((ac) => ac.agentName === agentName)?.providerConfigName;
   };
 
+  const getSelectedModelOverride = (agentName: string): string | null => {
+    return selectedAgentConfigs.find((ac) => ac.agentName === agentName)?.modelOverride ?? null;
+  };
+
   // Handler for checkbox: toggles agent in/out of preset
   const handleAgentCheckboxChange = (agentName: string, checked: boolean) => {
     const existingIndex = selectedAgentConfigs.findIndex((ac) => ac.agentName === agentName);
@@ -288,7 +371,11 @@ export function PresetDialog({
       if (configToUse) {
         setSelectedAgentConfigs((prev) => [
           ...prev,
-          { agentName, providerConfigName: configToUse },
+          {
+            agentName,
+            providerConfigName: configToUse,
+            modelOverride: agent?.modelOverride ?? null,
+          },
         ]);
       }
     } else if (!checked && existingIndex >= 0) {
@@ -304,18 +391,32 @@ export function PresetDialog({
       // Update existing agent's config
       setSelectedAgentConfigs((prev) =>
         prev.map((ac, i) =>
-          i === existingIndex ? { agentName, providerConfigName: configName } : ac,
+          i === existingIndex
+            ? { ...ac, agentName, providerConfigName: configName, modelOverride: null }
+            : ac,
         ),
       );
     } else {
       // Add agent with selected config
-      setSelectedAgentConfigs((prev) => [...prev, { agentName, providerConfigName: configName }]);
+      setSelectedAgentConfigs((prev) => [
+        ...prev,
+        { agentName, providerConfigName: configName, modelOverride: null },
+      ]);
     }
+  };
+
+  const handleAgentModelSelect = (agentName: string, modelName: string | null) => {
+    const existingIndex = selectedAgentConfigs.findIndex((ac) => ac.agentName === agentName);
+    if (existingIndex < 0) return;
+
+    setSelectedAgentConfigs((prev) =>
+      prev.map((ac, i) => (i === existingIndex ? { ...ac, modelOverride: modelName } : ac)),
+    );
   };
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-xl">
         <DialogHeader>
           <DialogTitle>{isEditMode ? 'Edit Preset' : 'Save as Preset'}</DialogTitle>
           <DialogDescription>
@@ -367,11 +468,12 @@ export function PresetDialog({
               </span>
             </div>
             {agentsWithProfiles.length > 0 ? (
-              <ScrollArea className="h-48 border rounded-md p-2">
+              <ScrollArea className="h-56 border rounded-md p-2" data-testid="preset-agents-scroll">
                 <div className="space-y-1 pr-4">
                   {agentsWithProfiles.map((agent) => {
                     const isSelected = isAgentSelected(agent.name);
                     const selectedConfig = getSelectedConfigName(agent.name);
+                    const selectedModelOverride = getSelectedModelOverride(agent.name);
                     const agentConfigName = agent.providerConfig?.name;
                     const availableConfigs = configsMap?.get(agent.profileId);
                     const configsArray = Array.isArray(availableConfigs) ? availableConfigs : [];
@@ -389,6 +491,14 @@ export function PresetDialog({
                         : isSelected && agentConfigName
                           ? agentConfigName
                           : '';
+                    const selectedConfigOption = configsArray.find(
+                      (config: ProviderConfig) => config.name === displayValue,
+                    );
+                    const selectedProviderId = selectedConfigOption?.providerId;
+                    const providerModels = selectedProviderId
+                      ? (providerModelsByProviderId.get(selectedProviderId) ?? [])
+                      : [];
+                    const hasProviderModels = providerModels.length > 0;
 
                     return (
                       <div
@@ -401,13 +511,22 @@ export function PresetDialog({
                             handleAgentCheckboxChange(agent.name, checked === true)
                           }
                         />
-                        <span className="flex-1 text-sm">{agent.name}</span>
+                        <span
+                          className="flex-1 min-w-0 truncate text-sm"
+                          title={agent.name}
+                          data-testid={`preset-agent-name-${agent.id}`}
+                        >
+                          {agent.name}
+                        </span>
                         <Select
                           value={displayValue}
                           onValueChange={(value) => handleAgentConfigSelect(agent.name, value)}
                           disabled={!isSelected || !hasConfigs}
                         >
-                          <SelectTrigger className="h-7 w-32 text-xs">
+                          <SelectTrigger
+                            className="h-7 w-32 text-xs"
+                            data-testid={`preset-config-select-${agent.id}`}
+                          >
                             <SelectValue
                               placeholder={
                                 isMissingConfig
@@ -426,6 +545,39 @@ export function PresetDialog({
                             ))}
                           </SelectContent>
                         </Select>
+                        {isSelected && selectedProviderId && hasProviderModels ? (
+                          <Select
+                            value={selectedModelOverride ?? DEFAULT_MODEL_OVERRIDE}
+                            onValueChange={(value) =>
+                              handleAgentModelSelect(
+                                agent.name,
+                                value === DEFAULT_MODEL_OVERRIDE ? null : value,
+                              )
+                            }
+                          >
+                            <SelectTrigger
+                              className="h-7 w-36 text-xs"
+                              data-testid={`preset-model-select-${agent.id}`}
+                            >
+                              <SelectValue placeholder="Default" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value={DEFAULT_MODEL_OVERRIDE} className="text-xs">
+                                Default
+                              </SelectItem>
+                              {providerModels.map((model) => (
+                                <SelectItem
+                                  key={model.id}
+                                  value={model.name}
+                                  title={model.name}
+                                  className="text-xs"
+                                >
+                                  {shortModelName(model.name)}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        ) : null}
                       </div>
                     );
                   })}

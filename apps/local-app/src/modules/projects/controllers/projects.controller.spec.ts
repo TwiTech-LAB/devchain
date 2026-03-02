@@ -1761,6 +1761,63 @@ describe('ProjectsController', () => {
       expect(result?.agentConfigs).toHaveLength(2);
     });
 
+    it('accepts agentConfigs with modelOverride values', async () => {
+      storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
+      const updatedPresets = [
+        {
+          name: 'Existing Preset',
+          description: 'Original description',
+          agentConfigs: [
+            {
+              agentName: 'Coder',
+              providerConfigName: 'claude-config',
+              modelOverride: 'openai/gpt-5',
+            },
+            {
+              agentName: 'Reviewer',
+              providerConfigName: 'gemini-config',
+              modelOverride: null,
+            },
+          ],
+        },
+      ];
+      getProjectPresetsMock.mockReturnValue(updatedPresets);
+
+      const result = await controller.updatePreset('p1', {
+        presetName: 'Existing Preset',
+        updates: {
+          agentConfigs: [
+            {
+              agentName: 'Coder',
+              providerConfigName: 'claude-config',
+              modelOverride: 'openai/gpt-5',
+            },
+            {
+              agentName: 'Reviewer',
+              providerConfigName: 'gemini-config',
+              modelOverride: null,
+            },
+          ],
+        },
+      });
+
+      expect(updateProjectPresetMock).toHaveBeenCalledWith('p1', 'Existing Preset', {
+        agentConfigs: [
+          {
+            agentName: 'Coder',
+            providerConfigName: 'claude-config',
+            modelOverride: 'openai/gpt-5',
+          },
+          {
+            agentName: 'Reviewer',
+            providerConfigName: 'gemini-config',
+            modelOverride: null,
+          },
+        ],
+      });
+      expect(result?.agentConfigs).toEqual(updatedPresets[0].agentConfigs);
+    });
+
     it('throws BadRequestException for invalid request body', async () => {
       storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
 

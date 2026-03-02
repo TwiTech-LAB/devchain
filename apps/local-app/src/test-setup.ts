@@ -93,26 +93,28 @@ if (!(global as any).setImmediate) {
     setTimeout(fn, 0, ...args);
 }
 
-// Polyfill window.matchMedia for components using responsive media queries (e.g., Layout)
-if (typeof window !== 'undefined' && !window.matchMedia) {
-  window.matchMedia = jest.fn((query: string) => ({
-    matches: true,
-    media: query,
-    onchange: null,
-    addListener: jest.fn(),
-    removeListener: jest.fn(),
-    addEventListener: jest.fn(),
-    removeEventListener: jest.fn(),
-    dispatchEvent: jest.fn(),
-  })) as unknown as typeof window.matchMedia;
-}
-
 if (typeof globalThis.ResizeObserver === 'undefined') {
   globalThis.ResizeObserver = class ResizeObserver {
     observe(): void {}
     unobserve(): void {}
     disconnect(): void {}
   };
+}
+
+// JSDOM misses pointer capture APIs used by Radix Select trigger handlers.
+if (typeof Element !== 'undefined') {
+  if (!Element.prototype.hasPointerCapture) {
+    Element.prototype.hasPointerCapture = () => false;
+  }
+  if (!Element.prototype.setPointerCapture) {
+    Element.prototype.setPointerCapture = () => {};
+  }
+  if (!Element.prototype.releasePointerCapture) {
+    Element.prototype.releasePointerCapture = () => {};
+  }
+  if (!Element.prototype.scrollIntoView) {
+    Element.prototype.scrollIntoView = () => {};
+  }
 }
 
 /**

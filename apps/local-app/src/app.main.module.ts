@@ -26,6 +26,7 @@ import { SubscribersModule } from './modules/subscribers/subscribers.module';
 import { RegistryModule } from './modules/registry/registry.module';
 import { GuestsModule } from './modules/guests/guests.module';
 import { HooksModule } from './modules/hooks/hooks.module';
+import { SessionReaderModule } from './modules/session-reader/session-reader.module';
 import { DataSeederModule } from './modules/seeders/seeders.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { EventsInfraModule } from './modules/events/events-infra.module';
@@ -70,6 +71,7 @@ import { OrchestratorProxyModule } from './modules/orchestrator/proxy/orchestrat
     RegistryModule,
     GuestsModule,
     HooksModule,
+    SessionReaderModule,
     OrchestratorStorageModule,
     OrchestratorDockerModule,
     OrchestratorGitModule,

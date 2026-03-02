@@ -1,5 +1,5 @@
 import { Inject, Injectable, NotFoundException, forwardRef } from '@nestjs/common';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import { STORAGE_SERVICE, type WatcherStorage } from '../../storage/interfaces/storage.interface';
 import type { Watcher, CreateWatcher, UpdateWatcher } from '../../storage/models/domain.models';
 import { WatcherRunnerService } from './watcher-runner.service';
 import { createLogger } from '../../../common/logging/logger';
@@ -32,7 +32,7 @@ export class WatchersService {
   private readonly logger = createLogger('WatchersService');
 
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE) private readonly storage: WatcherStorage,
     @Inject(forwardRef(() => WatcherRunnerService))
     private readonly watcherRunner: WatcherRunnerService,
   ) {}

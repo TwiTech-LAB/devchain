@@ -1,8 +1,10 @@
 import { ZodError } from 'zod';
 import {
+  AddEpicCommentParamsSchema,
   ChatAckParamsSchema,
   ChatListMembersParamsSchema,
   CreateEpicParamsSchema,
+  GetEpicByIdParamsSchema,
   TmuxSessionIdSchema,
   RegisterGuestParamsSchema,
   UpdateEpicParamsSchema,
@@ -164,6 +166,175 @@ describe('MCP chat DTO schemas', () => {
       expect(unrecognizedIssue).toBeDefined();
       expect((unrecognizedIssue as { keys: string[] }).keys).toContain('unknown_param');
     }
+  });
+});
+
+describe('Epic ID prefix support — schema validation', () => {
+  const FULL_UUID = '22222222-2222-2222-2222-222222222222';
+  const PREFIX_8 = 'abcd1234';
+  const TOO_SHORT = 'abcd123'; // 7 chars
+  const TOO_LONG = 'a'.repeat(37); // 37 chars — exceeds max 36
+  const WITH_WILDCARDS = 'abcd1234%_'; // SQL LIKE wildcards
+  const WITH_UPPERCASE = 'ABCD1234'; // uppercase hex — not allowed
+  const WITH_SPACES = 'abcd 1234'; // spaces
+  const WITH_SPECIAL = 'abcd1234!@#$'; // special chars
+  const NON_HEX = 'zzzzzzzz'; // non-hex alpha characters
+  const PREFIX_WITH_HYPHENS = 'ed49311c-a3f6'; // valid prefix with hyphens
+
+  describe('GetEpicByIdParamsSchema.id', () => {
+    it('accepts a full UUID', () => {
+      expect(() =>
+        GetEpicByIdParamsSchema.parse({ sessionId: 'abcd1234', id: FULL_UUID }),
+      ).not.toThrow();
+    });
+
+    it('accepts an 8-char hex prefix', () => {
+      expect(() =>
+        GetEpicByIdParamsSchema.parse({ sessionId: 'abcd1234', id: PREFIX_8 }),
+      ).not.toThrow();
+    });
+
+    it('rejects strings shorter than 8 chars', () => {
+      expect(() => GetEpicByIdParamsSchema.parse({ sessionId: 'abcd1234', id: TOO_SHORT })).toThrow(
+        ZodError,
+      );
+    });
+
+    it('rejects strings longer than 36 chars', () => {
+      expect(() => GetEpicByIdParamsSchema.parse({ sessionId: 'abcd1234', id: TOO_LONG })).toThrow(
+        ZodError,
+      );
+    });
+
+    it('rejects SQL LIKE wildcards (% and _)', () => {
+      expect(() =>
+        GetEpicByIdParamsSchema.parse({ sessionId: 'abcd1234', id: WITH_WILDCARDS }),
+      ).toThrow(ZodError);
+    });
+
+    it('rejects uppercase hex characters', () => {
+      expect(() =>
+        GetEpicByIdParamsSchema.parse({ sessionId: 'abcd1234', id: WITH_UPPERCASE }),
+      ).toThrow(ZodError);
+    });
+
+    it('rejects special characters', () => {
+      expect(() =>
+        GetEpicByIdParamsSchema.parse({ sessionId: 'abcd1234', id: WITH_SPECIAL }),
+      ).toThrow(ZodError);
+    });
+
+    it('rejects non-hex alphabetic characters (e.g., zzzzzzzz)', () => {
+      expect(() => GetEpicByIdParamsSchema.parse({ sessionId: 'abcd1234', id: NON_HEX })).toThrow(
+        ZodError,
+      );
+    });
+
+    it('accepts a prefix with hyphens (e.g., ed49311c-a3f6)', () => {
+      expect(() =>
+        GetEpicByIdParamsSchema.parse({ sessionId: 'abcd1234', id: PREFIX_WITH_HYPHENS }),
+      ).not.toThrow();
+    });
+  });
+
+  describe('UpdateEpicParamsSchema.id', () => {
+    it('accepts a full UUID', () => {
+      expect(() =>
+        UpdateEpicParamsSchema.parse({ sessionId: 'abcd1234', id: FULL_UUID, version: 1 }),
+      ).not.toThrow();
+    });
+
+    it('accepts an 8-char hex prefix', () => {
+      expect(() =>
+        UpdateEpicParamsSchema.parse({ sessionId: 'abcd1234', id: PREFIX_8, version: 1 }),
+      ).not.toThrow();
+    });
+
+    it('rejects strings shorter than 8 chars', () => {
+      expect(() =>
+        UpdateEpicParamsSchema.parse({ sessionId: 'abcd1234', id: TOO_SHORT, version: 1 }),
+      ).toThrow(ZodError);
+    });
+
+    it('rejects strings longer than 36 chars', () => {
+      expect(() =>
+        UpdateEpicParamsSchema.parse({ sessionId: 'abcd1234', id: TOO_LONG, version: 1 }),
+      ).toThrow(ZodError);
+    });
+
+    it('rejects SQL LIKE wildcards (% and _)', () => {
+      expect(() =>
+        UpdateEpicParamsSchema.parse({ sessionId: 'abcd1234', id: WITH_WILDCARDS, version: 1 }),
+      ).toThrow(ZodError);
+    });
+
+    it('rejects spaces and non-hex characters', () => {
+      expect(() =>
+        UpdateEpicParamsSchema.parse({ sessionId: 'abcd1234', id: WITH_SPACES, version: 1 }),
+      ).toThrow(ZodError);
+    });
+  });
+
+  describe('AddEpicCommentParamsSchema.epicId', () => {
+    it('accepts a full UUID', () => {
+      expect(() =>
+        AddEpicCommentParamsSchema.parse({
+          sessionId: 'abcd1234',
+          epicId: FULL_UUID,
+          content: 'hello',
+        }),
+      ).not.toThrow();
+    });
+
+    it('accepts an 8-char hex prefix', () => {
+      expect(() =>
+        AddEpicCommentParamsSchema.parse({
+          sessionId: 'abcd1234',
+          epicId: PREFIX_8,
+          content: 'hello',
+        }),
+      ).not.toThrow();
+    });
+
+    it('rejects strings shorter than 8 chars', () => {
+      expect(() =>
+        AddEpicCommentParamsSchema.parse({
+          sessionId: 'abcd1234',
+          epicId: TOO_SHORT,
+          content: 'hello',
+        }),
+      ).toThrow(ZodError);
+    });
+
+    it('rejects strings longer than 36 chars', () => {
+      expect(() =>
+        AddEpicCommentParamsSchema.parse({
+          sessionId: 'abcd1234',
+          epicId: TOO_LONG,
+          content: 'hello',
+        }),
+      ).toThrow(ZodError);
+    });
+
+    it('rejects SQL LIKE wildcards (% and _)', () => {
+      expect(() =>
+        AddEpicCommentParamsSchema.parse({
+          sessionId: 'abcd1234',
+          epicId: WITH_WILDCARDS,
+          content: 'hello',
+        }),
+      ).toThrow(ZodError);
+    });
+
+    it('rejects non-hex characters', () => {
+      expect(() =>
+        AddEpicCommentParamsSchema.parse({
+          sessionId: 'abcd1234',
+          epicId: WITH_SPECIAL,
+          content: 'hello',
+        }),
+      ).toThrow(ZodError);
+    });
   });
 });
 

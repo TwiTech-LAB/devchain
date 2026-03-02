@@ -5,6 +5,11 @@ import { Input } from '@/ui/components/ui/input';
 import { Label } from '@/ui/components/ui/label';
 import { Badge } from '@/ui/components/ui/badge';
 import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/ui/components/ui/collapsible';
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -20,9 +25,10 @@ import {
   DialogDescription,
 } from '@/ui/components/ui/dialog';
 import { useToast } from '@/ui/hooks/use-toast';
-import { Plus, Server, AlertCircle } from 'lucide-react';
+import { Plus, Server, AlertCircle, ChevronDown, ChevronRight, Trash2 } from 'lucide-react';
 import { cn } from '@/ui/lib/utils';
 import { fetchPreflightChecks } from '@/ui/lib/preflight';
+import { providerModelQueryKeys } from '@/ui/lib/provider-model-query-keys';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 
 type ProviderType = 'codex' | 'claude' | 'gemini' | 'opencode';
@@ -43,6 +49,15 @@ interface Provider {
   mcpConfigured: boolean;
   mcpEndpoint: string | null;
   mcpRegisteredAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface ProviderModel {
+  id: string;
+  providerId: string;
+  name: string;
+  position: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -135,6 +150,248 @@ async function ensureProviderMcp(id: string, projectPath?: string) {
     throw new Error(error.message || 'Failed to ensure MCP configuration');
   }
   return res.json();
+}
+
+async function fetchProviderModels(providerId: string): Promise<ProviderModel[]> {
+  const res = await fetch(`/api/providers/${providerId}/models`);
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ message: 'Failed to fetch provider models' }));
+    throw new Error(error.message || 'Failed to fetch provider models');
+  }
+  return res.json();
+}
+
+async function addProviderModel(providerId: string, name: string): Promise<ProviderModel> {
+  const res = await fetch(`/api/providers/${providerId}/models`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ message: 'Failed to add model' }));
+    throw new Error(error.message || 'Failed to add model');
+  }
+  return res.json();
+}
+
+async function removeProviderModel(providerId: string, modelId: string): Promise<void> {
+  const res = await fetch(`/api/providers/${providerId}/models/${modelId}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ message: 'Failed to delete model' }));
+    throw new Error(error.message || 'Failed to delete model');
+  }
+}
+
+async function discoverProviderModels(
+  providerId: string,
+): Promise<{ added: string[]; existing: string[]; total: number }> {
+  const res = await fetch(`/api/providers/${providerId}/models/discover`, { method: 'POST' });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ message: 'Failed to auto-discover models' }));
+    throw new Error(error.message || 'Failed to auto-discover models');
+  }
+  return res.json();
+}
+
+function ProviderModelsSection({ provider }: { provider: Provider }) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const [isOpen, setIsOpen] = useState(false);
+  const [newModelName, setNewModelName] = useState('');
+  const [modelDeleteConfirm, setModelDeleteConfirm] = useState<ProviderModel | null>(null);
+  const modelsQueryKey = providerModelQueryKeys.main(provider.id);
+
+  const {
+    data: models = [],
+    isLoading,
+    isFetching,
+    isError,
+    error,
+  } = useQuery({
+    queryKey: modelsQueryKey,
+    queryFn: () => fetchProviderModels(provider.id),
+    enabled: true,
+  });
+
+  const addModelMutation = useMutation({
+    mutationFn: (name: string) => addProviderModel(provider.id, name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: providerModelQueryKeys.all });
+      setNewModelName('');
+      toast({
+        title: 'Model added',
+        description: `Added model to ${provider.name}.`,
+      });
+    },
+    onError: (mutationError) => {
+      toast({
+        title: 'Add failed',
+        description:
+          mutationError instanceof Error ? mutationError.message : 'Failed to add model.',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const deleteModelMutation = useMutation({
+    mutationFn: (modelId: string) => removeProviderModel(provider.id, modelId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: providerModelQueryKeys.all });
+      setModelDeleteConfirm(null);
+      toast({
+        title: 'Model deleted',
+        description: `Removed model from ${provider.name}.`,
+      });
+    },
+    onError: (mutationError) => {
+      setModelDeleteConfirm(null);
+      toast({
+        title: 'Delete failed',
+        description:
+          mutationError instanceof Error ? mutationError.message : 'Failed to delete model.',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const discoverModelsMutation = useMutation({
+    mutationFn: () => discoverProviderModels(provider.id),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: providerModelQueryKeys.all });
+      toast({
+        title: 'Discovery complete',
+        description: `Added ${result.added.length} models, ${result.existing.length} already existed.`,
+      });
+    },
+    onError: (mutationError) => {
+      toast({
+        title: 'Auto-discover failed',
+        description:
+          mutationError instanceof Error
+            ? mutationError.message
+            : 'Failed to discover models for provider.',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const handleAddModel = () => {
+    const name = newModelName.trim();
+    if (!name) {
+      toast({
+        title: 'Model name required',
+        description: 'Enter a model name before adding.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    addModelMutation.mutate(name);
+  };
+
+  const modelCount = models.length;
+
+  return (
+    <>
+      <Collapsible open={isOpen} onOpenChange={setIsOpen} className="mt-4 border-t pt-4">
+        <CollapsibleTrigger asChild>
+          <Button variant="ghost" className="w-full justify-between px-2">
+            <span className="flex items-center gap-2 text-sm font-medium">
+              {isOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              Models ({modelCount})
+              {isFetching && <span className="text-xs text-muted-foreground">Refreshing...</span>}
+            </span>
+            <span className="text-xs text-muted-foreground">Manage provider models</span>
+          </Button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="space-y-3 pt-3">
+          {isLoading && <p className="text-sm text-muted-foreground">Loading models...</p>}
+          {isError && (
+            <p className="text-sm text-destructive">
+              {error instanceof Error ? error.message : 'Failed to load models.'}
+            </p>
+          )}
+
+          {!isLoading && !isError && (
+            <>
+              <div className="max-h-56 overflow-y-auto rounded-md border bg-background">
+                {models.length === 0 && (
+                  <p className="px-3 py-2 text-sm text-muted-foreground">No models configured.</p>
+                )}
+                {models.map((model) => (
+                  <div
+                    key={model.id}
+                    className="flex items-center justify-between gap-2 border-b px-3 py-2 last:border-b-0"
+                  >
+                    <code className="text-xs">{model.name}</code>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setModelDeleteConfirm(model)}
+                      aria-label={`Delete model ${model.name}`}
+                    >
+                      <Trash2 className="h-4 w-4 text-destructive" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Input
+                  value={newModelName}
+                  onChange={(e) => setNewModelName(e.target.value)}
+                  placeholder="provider/model-name"
+                  aria-label="Add Model"
+                />
+                <Button onClick={handleAddModel} disabled={addModelMutation.isPending}>
+                  Add Model
+                </Button>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                {provider.name.toLowerCase() === 'opencode' && (
+                  <Button
+                    variant="outline"
+                    onClick={() => discoverModelsMutation.mutate()}
+                    disabled={discoverModelsMutation.isPending}
+                  >
+                    {discoverModelsMutation.isPending ? 'Discovering...' : 'Auto Discover'}
+                  </Button>
+                )}
+              </div>
+            </>
+          )}
+        </CollapsibleContent>
+      </Collapsible>
+
+      <Dialog
+        open={!!modelDeleteConfirm}
+        onOpenChange={(open) => !open && setModelDeleteConfirm(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Model</DialogTitle>
+            <DialogDescription>
+              Delete <strong>{modelDeleteConfirm?.name}</strong> from {provider.name}?
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setModelDeleteConfirm(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() =>
+                modelDeleteConfirm && deleteModelMutation.mutate(modelDeleteConfirm.id)
+              }
+              disabled={deleteModelMutation.isPending}
+            >
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
 }
 
 export function ProvidersPage() {
@@ -389,7 +646,9 @@ export function ProvidersPage() {
           ? 'claude'
           : provider.name === 'gemini'
             ? 'gemini'
-            : 'codex'
+            : provider.name === 'opencode'
+              ? 'opencode'
+              : 'codex'
     ) as ProviderType;
     setProviderType(t);
     setBinPathTouched(false);
@@ -530,6 +789,7 @@ export function ProvidersPage() {
                     </Button>
                   </div>
                 </div>
+                <ProviderModelsSection provider={provider} />
               </div>
             );
           })}
@@ -589,6 +849,7 @@ export function ProvidersPage() {
                   <SelectItem value="codex">Codex</SelectItem>
                   <SelectItem value="claude">Claude</SelectItem>
                   <SelectItem value="gemini">Gemini</SelectItem>
+                  <SelectItem value="opencode">OpenCode</SelectItem>
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground mt-1">

@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import { STORAGE_SERVICE, type AgentStorage } from '../../storage/interfaces/storage.interface';
 import { EventsService } from '../../events/services/events.service';
 import type { HookEventData, HookEventResponse } from '../dtos/hook-event.dto';
 import { createLogger } from '../../../common/logging/logger';
@@ -12,7 +12,7 @@ const FIELD_WARN_LENGTH = 2000;
 @Injectable()
 export class HooksService {
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE) private readonly storage: AgentStorage,
     private readonly events: EventsService,
   ) {}
 

@@ -43,6 +43,8 @@ export interface AgentOrGuestItem {
   profileId: string | null;
   description?: string | null;
   type: 'agent' | 'guest';
+  /** Model override for agents; null for guests */
+  modelOverride: string | null;
   /** For guests, their tmux session ID */
   tmuxSessionId?: string;
   /** Provider config ID for agents (Phase 4+) */
@@ -81,6 +83,7 @@ const UpdateAgentSchema = z.object({
   description: z.string().nullable().optional(),
   // providerConfigId can be updated but NOT set to null (DB column is NOT NULL)
   providerConfigId: z.string().min(1).optional(),
+  modelOverride: z.string().min(1).nullable().optional(),
 });
 
 @Controller('api/agents')
@@ -168,6 +171,7 @@ export class AgentsController {
         profileId: agent.profileId,
         description: agent.description,
         type: 'agent' as const,
+        modelOverride: agent.modelOverride,
         providerConfigId: agent.providerConfigId,
         providerConfig:
           config && provider
@@ -187,6 +191,7 @@ export class AgentsController {
       profileId: null,
       description: null,
       type: 'guest' as const,
+      modelOverride: null,
       tmuxSessionId: guest.tmuxSessionId,
       providerConfigId: null,
       providerConfig: null,

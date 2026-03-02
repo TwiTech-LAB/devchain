@@ -1,5 +1,5 @@
 import { Injectable, Inject, OnModuleDestroy } from '@nestjs/common';
-import { access } from 'fs/promises';
+import { access, readFile, writeFile, rename } from 'fs/promises';
 import { constants } from 'fs';
 import { execFile, spawn } from 'child_process';
 import * as path from 'path';
@@ -7,6 +7,7 @@ import { promisify } from 'util';
 import { Provider } from '../../storage/models/domain.models';
 import { createLogger } from '../../../common/logging/logger';
 import { ProviderAdapterFactory, McpServerEntry } from '../../providers/adapters';
+import { OpencodeAdapter } from '../../providers/adapters/opencode.adapter';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import { UnsupportedProviderError } from '../../../common/errors/error-types';
 
@@ -183,25 +184,18 @@ export class McpProviderRegistrationService implements OnModuleDestroy {
     options: McpRegisterOptions,
     execOptions?: { cwd?: string; timeoutMs?: number },
   ): Promise<McpCommandResult> {
-    const resolution = await this.resolveBinary(provider);
-    if (!resolution.success || !resolution.binaryPath) {
-      return {
-        success: false,
-        message: resolution.message ?? 'Unable to resolve provider binary',
-        stdout: '',
-        stderr: '',
-        exitCode: null,
-      };
-    }
-
     try {
       const adapter = this.adapterFactory.getAdapter(provider.name);
-      const args = adapter.addMcpServer({
-        endpoint: options.endpoint,
-        alias: options.alias,
-        extraArgs: options.extraArgs,
-      });
-      return this.runCommand(resolution.binaryPath, args, execOptions);
+
+      if (adapter.mcpMode === 'project_config') {
+        return this.registerProviderViaConfigFile(
+          adapter as OpencodeAdapter,
+          options,
+          execOptions?.cwd,
+        );
+      }
+
+      return this.registerProviderViaCli(provider, options, execOptions);
     } catch (error) {
       if (error instanceof UnsupportedProviderError) {
         return {
@@ -220,6 +214,66 @@ export class McpProviderRegistrationService implements OnModuleDestroy {
     provider: Provider,
     execOptions?: { cwd?: string; timeoutMs?: number },
   ): Promise<McpListResult> {
+    try {
+      const adapter = this.adapterFactory.getAdapter(provider.name);
+
+      if (adapter.mcpMode === 'project_config') {
+        return this.listRegistrationsFromConfigFile(adapter as OpencodeAdapter, execOptions?.cwd);
+      }
+
+      return this.listRegistrationsViaCli(provider, adapter, execOptions);
+    } catch (error) {
+      if (error instanceof UnsupportedProviderError) {
+        return {
+          success: false,
+          message: error.message,
+          entries: [],
+          stdout: '',
+          stderr: '',
+        };
+      }
+      throw error;
+    }
+  }
+
+  async removeRegistration(
+    provider: Provider,
+    alias: string,
+    execOptions?: { cwd?: string; timeoutMs?: number },
+  ): Promise<McpCommandResult> {
+    try {
+      const adapter = this.adapterFactory.getAdapter(provider.name);
+
+      if (adapter.mcpMode === 'project_config') {
+        return this.removeRegistrationViaConfigFile(
+          adapter as OpencodeAdapter,
+          alias,
+          execOptions?.cwd,
+        );
+      }
+
+      return this.removeRegistrationViaCli(provider, alias, execOptions);
+    } catch (error) {
+      if (error instanceof UnsupportedProviderError) {
+        return {
+          success: false,
+          message: error.message,
+          stdout: '',
+          stderr: '',
+          exitCode: null,
+        };
+      }
+      throw error;
+    }
+  }
+
+  // ── CLI-based methods (existing flow, extracted) ──────────────────────
+
+  private async listRegistrationsViaCli(
+    provider: Provider,
+    adapter: ReturnType<ProviderAdapterFactory['getAdapter']>,
+    execOptions?: { cwd?: string; timeoutMs?: number },
+  ): Promise<McpListResult> {
     const resolution = await this.resolveBinary(provider);
     if (!resolution.success || !resolution.binaryPath) {
       return {
@@ -232,50 +286,60 @@ export class McpProviderRegistrationService implements OnModuleDestroy {
       };
     }
 
-    try {
-      const adapter = this.adapterFactory.getAdapter(provider.name);
-      const args = adapter.listMcpServers();
-      const result = await this.runCommand(resolution.binaryPath, args, {
-        timeoutMs: execOptions?.timeoutMs ?? 10_000,
-        cwd: execOptions?.cwd,
-      });
+    const args = adapter.listMcpServers();
+    const result = await this.runCommand(resolution.binaryPath, args, {
+      timeoutMs: execOptions?.timeoutMs ?? 10_000,
+      cwd: execOptions?.cwd,
+    });
 
-      if (!result.success) {
-        return {
-          success: false,
-          message: result.message,
-          entries: [],
-          binaryPath: result.binaryPath,
-          stdout: result.stdout,
-          stderr: result.stderr,
-        };
-      }
-
-      const entries = adapter.parseListOutput(result.stdout, result.stderr);
+    if (!result.success) {
       return {
-        success: true,
+        success: false,
         message: result.message,
-        entries,
+        entries: [],
         binaryPath: result.binaryPath,
         stdout: result.stdout,
         stderr: result.stderr,
       };
-    } catch (error) {
-      if (error instanceof UnsupportedProviderError) {
-        return {
-          success: false,
-          message: error.message,
-          entries: [],
-          binaryPath: resolution.binaryPath,
-          stdout: '',
-          stderr: '',
-        };
-      }
-      throw error;
     }
+
+    const entries = adapter.parseListOutput(result.stdout, result.stderr);
+    return {
+      success: true,
+      message: result.message,
+      entries,
+      binaryPath: result.binaryPath,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    };
   }
 
-  async removeRegistration(
+  private async registerProviderViaCli(
+    provider: Provider,
+    options: McpRegisterOptions,
+    execOptions?: { cwd?: string; timeoutMs?: number },
+  ): Promise<McpCommandResult> {
+    const resolution = await this.resolveBinary(provider);
+    if (!resolution.success || !resolution.binaryPath) {
+      return {
+        success: false,
+        message: resolution.message ?? 'Unable to resolve provider binary',
+        stdout: '',
+        stderr: '',
+        exitCode: null,
+      };
+    }
+
+    const adapter = this.adapterFactory.getAdapter(provider.name);
+    const args = adapter.addMcpServer({
+      endpoint: options.endpoint,
+      alias: options.alias,
+      extraArgs: options.extraArgs,
+    });
+    return this.runCommand(resolution.binaryPath, args, execOptions);
+  }
+
+  private async removeRegistrationViaCli(
     provider: Provider,
     alias: string,
     execOptions?: { cwd?: string; timeoutMs?: number },
@@ -291,25 +355,228 @@ export class McpProviderRegistrationService implements OnModuleDestroy {
       };
     }
 
+    const adapter = this.adapterFactory.getAdapter(provider.name);
+    const args = adapter.removeMcpServer(alias);
+    return this.runCommand(resolution.binaryPath, args, {
+      timeoutMs: execOptions?.timeoutMs ?? 10_000,
+      cwd: execOptions?.cwd,
+    });
+  }
+
+  // ── Config-file-based methods (project_config mode) ──────────────────
+
+  private async listRegistrationsFromConfigFile(
+    adapter: OpencodeAdapter,
+    cwd?: string,
+  ): Promise<McpListResult> {
+    if (!cwd) {
+      return {
+        success: false,
+        message: `Provider ${adapter.providerName} requires a project path (cwd) for config-file MCP management`,
+        entries: [],
+      };
+    }
+
+    const configPath = path.join(cwd, adapter.configFileName);
+
     try {
-      const adapter = this.adapterFactory.getAdapter(provider.name);
-      const args = adapter.removeMcpServer(alias);
-      return this.runCommand(resolution.binaryPath, args, {
-        timeoutMs: execOptions?.timeoutMs ?? 10_000,
-        cwd: execOptions?.cwd,
-      });
-    } catch (error) {
-      if (error instanceof UnsupportedProviderError) {
+      const content = await readFile(configPath, 'utf-8');
+      const entries = adapter.parseProjectConfig(content);
+      return {
+        success: true,
+        message: `Read ${entries.length} MCP entry(ies) from ${adapter.configFileName}`,
+        entries,
+      };
+    } catch (error: unknown) {
+      if (error instanceof SyntaxError) {
         return {
           success: false,
-          message: error.message,
+          message: `${adapter.configFileName} is malformed JSON — please fix it manually`,
+          entries: [],
+        };
+      }
+      if (this.isNodeError(error) && error.code === 'ENOENT') {
+        return {
+          success: true,
+          message: `${adapter.configFileName} not found — no MCP entries configured`,
+          entries: [],
+        };
+      }
+      throw error;
+    }
+  }
+
+  private async registerProviderViaConfigFile(
+    adapter: OpencodeAdapter,
+    options: McpRegisterOptions,
+    cwd?: string,
+  ): Promise<McpCommandResult> {
+    if (!cwd) {
+      return {
+        success: false,
+        message: `Provider ${adapter.providerName} requires a project path (cwd) for config-file MCP management`,
+        stdout: '',
+        stderr: '',
+        exitCode: null,
+      };
+    }
+
+    const configPath = path.join(cwd, adapter.configFileName);
+    let config: Record<string, unknown> = {};
+
+    try {
+      const content = await readFile(configPath, 'utf-8');
+      const parsed = JSON.parse(content);
+      if (!this.isPlainRecord(parsed)) {
+        return {
+          success: false,
+          message: `${adapter.configFileName} has invalid root structure (expected JSON object) — please fix it manually`,
           stdout: '',
           stderr: '',
           exitCode: null,
         };
       }
+      config = parsed;
+    } catch (error: unknown) {
+      if (error instanceof SyntaxError) {
+        return {
+          success: false,
+          message: `${adapter.configFileName} is malformed JSON — please fix it manually before registering MCP`,
+          stdout: '',
+          stderr: '',
+          exitCode: null,
+        };
+      }
+      if (this.isNodeError(error) && error.code === 'ENOENT') {
+        // File doesn't exist — start from empty config
+        config = {};
+      } else {
+        throw error;
+      }
+    }
+
+    const entry = adapter.buildMcpConfigEntry(options);
+    if (config.mcp !== undefined && !this.isPlainRecord(config.mcp)) {
+      return {
+        success: false,
+        message: `${adapter.configFileName} has invalid "mcp" field (expected object) — please fix it manually`,
+        stdout: '',
+        stderr: '',
+        exitCode: null,
+      };
+    }
+    const mcp = (config.mcp as Record<string, unknown>) ?? {};
+    mcp[entry.key] = entry.value;
+    config.mcp = mcp;
+
+    const tmpPath = configPath + '.tmp';
+    await writeFile(tmpPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
+    await rename(tmpPath, configPath);
+
+    return {
+      success: true,
+      message: `MCP entry '${entry.key}' written to ${adapter.configFileName}`,
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+    };
+  }
+
+  private async removeRegistrationViaConfigFile(
+    adapter: OpencodeAdapter,
+    alias: string,
+    cwd?: string,
+  ): Promise<McpCommandResult> {
+    if (!cwd) {
+      return {
+        success: false,
+        message: `Provider ${adapter.providerName} requires a project path (cwd) for config-file MCP management`,
+        stdout: '',
+        stderr: '',
+        exitCode: null,
+      };
+    }
+
+    const configPath = path.join(cwd, adapter.configFileName);
+    let config: Record<string, unknown>;
+
+    try {
+      const content = await readFile(configPath, 'utf-8');
+      const parsed = JSON.parse(content);
+      if (!this.isPlainRecord(parsed)) {
+        return {
+          success: false,
+          message: `${adapter.configFileName} has invalid root structure (expected JSON object) — please fix it manually`,
+          stdout: '',
+          stderr: '',
+          exitCode: null,
+        };
+      }
+      config = parsed;
+    } catch (error: unknown) {
+      if (error instanceof SyntaxError) {
+        return {
+          success: false,
+          message: `${adapter.configFileName} is malformed JSON — please fix it manually`,
+          stdout: '',
+          stderr: '',
+          exitCode: null,
+        };
+      }
+      if (this.isNodeError(error) && error.code === 'ENOENT') {
+        return {
+          success: true,
+          message: `${adapter.configFileName} not found — nothing to remove`,
+          stdout: '',
+          stderr: '',
+          exitCode: 0,
+        };
+      }
       throw error;
     }
+
+    if (config.mcp !== undefined && !this.isPlainRecord(config.mcp)) {
+      return {
+        success: false,
+        message: `${adapter.configFileName} has invalid "mcp" field (expected object) — please fix it manually`,
+        stdout: '',
+        stderr: '',
+        exitCode: null,
+      };
+    }
+    const mcp = config.mcp as Record<string, unknown> | undefined;
+    if (!mcp || !(alias in mcp)) {
+      return {
+        success: true,
+        message: `MCP entry '${alias}' not found in ${adapter.configFileName}`,
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+      };
+    }
+
+    delete mcp[alias];
+    config.mcp = mcp;
+
+    const tmpPath = configPath + '.tmp';
+    await writeFile(tmpPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
+    await rename(tmpPath, configPath);
+
+    return {
+      success: true,
+      message: `MCP entry '${alias}' removed from ${adapter.configFileName}`,
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+    };
+  }
+
+  private isPlainRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  private isNodeError(error: unknown): error is NodeJS.ErrnoException {
+    return error instanceof Error && 'code' in error;
   }
 
   private async verifyBinary(

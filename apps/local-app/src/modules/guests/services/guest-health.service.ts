@@ -1,6 +1,6 @@
 import { Injectable, Inject, OnModuleInit, OnModuleDestroy, forwardRef } from '@nestjs/common';
 import { createLogger } from '../../../common/logging/logger';
-import { STORAGE_SERVICE, StorageService } from '../../storage/interfaces/storage.interface';
+import { STORAGE_SERVICE, GuestStorage } from '../../storage/interfaces/storage.interface';
 import { TmuxService } from '../../terminal/services/tmux.service';
 import { EventsService } from '../../events/services/events.service';
 import { GuestsService } from './guests.service';
@@ -14,7 +14,7 @@ export class GuestHealthService implements OnModuleInit, OnModuleDestroy {
   private healthCheckIntervals: Map<string, NodeJS.Timeout> = new Map();
 
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE) private readonly storage: GuestStorage,
     @Inject(forwardRef(() => TmuxService)) private readonly tmuxService: TmuxService,
     @Inject(forwardRef(() => EventsService)) private readonly eventsService: EventsService,
     @Inject(forwardRef(() => GuestsService)) private readonly guestsService: GuestsService,

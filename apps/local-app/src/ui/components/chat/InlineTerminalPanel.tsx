@@ -10,6 +10,7 @@ import {
 } from '@/ui/lib/socket';
 import { useOptionalWorktreeTab } from '@/ui/hooks/useWorktreeTab';
 import type { Socket } from 'socket.io-client';
+import type { InlineTerminalTab } from './InlineTerminalHeader';
 
 interface InlineTerminalPanelProps {
   sessionId: string | null;
@@ -18,6 +19,10 @@ interface InlineTerminalPanelProps {
   emptyState?: React.ReactNode;
   socket?: Socket;
   windowId?: string | null;
+  /** Currently active tab — controls CSS visibility of terminal */
+  activeTab?: InlineTerminalTab;
+  /** Content to render when Session tab is active */
+  sessionContent?: React.ReactNode;
 }
 
 export function InlineTerminalPanel({
@@ -27,6 +32,8 @@ export function InlineTerminalPanel({
   emptyState,
   socket,
   windowId,
+  activeTab = 'terminal',
+  sessionContent,
 }: InlineTerminalPanelProps) {
   const { activeWorktree } = useOptionalWorktreeTab();
   const worktreeName = useMemo(() => {
@@ -57,12 +64,12 @@ export function InlineTerminalPanel({
 
   // Auto-focus inline terminal when it is rendered as the active view
   useEffect(() => {
-    if (sessionId && !isWindowOpen) {
+    if (sessionId && !isWindowOpen && activeTab === 'terminal') {
       const t = setTimeout(() => handleRef.current?.focus(), 0);
       return () => clearTimeout(t);
     }
     return;
-  }, [sessionId, isWindowOpen]);
+  }, [sessionId, isWindowOpen, activeTab]);
 
   if (!sessionId) {
     return (
@@ -99,14 +106,33 @@ export function InlineTerminalPanel({
   }
 
   return (
-    <InlineTerminal
-      ref={handleRef}
-      key={sessionId}
-      sessionId={sessionId}
-      socket={resolvedSocket}
-      chrome="none"
-      className="flex-1"
-      ariaLabel={agentName ? `Inline terminal for ${agentName}` : 'Inline terminal'}
-    />
+    <div className="flex flex-1 min-h-0 flex-col">
+      {/* Terminal — always mounted, CSS-hidden when Session tab active */}
+      <div
+        className="flex-1 min-h-0"
+        style={{ display: activeTab === 'terminal' ? 'flex' : 'none' }}
+      >
+        <InlineTerminal
+          ref={handleRef}
+          key={sessionId}
+          sessionId={sessionId}
+          socket={resolvedSocket}
+          chrome="none"
+          className="flex-1"
+          ariaLabel={agentName ? `Inline terminal for ${agentName}` : 'Inline terminal'}
+        />
+      </div>
+
+      {/* Session viewer — shown when Session tab active */}
+      {activeTab === 'session' && (
+        <div className="flex flex-1 min-h-0 flex-col" data-testid="session-tab-content">
+          {sessionContent ?? (
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+              <p>Session viewer loading…</p>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }

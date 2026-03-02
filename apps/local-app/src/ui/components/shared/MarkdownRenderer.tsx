@@ -7,6 +7,7 @@
  * SECURITY: Output is sanitized with DOMPurify to prevent XSS attacks.
  */
 
+import { memo, useMemo } from 'react';
 import DOMPurify from 'dompurify';
 import { cn } from '@/ui/lib/utils';
 
@@ -115,7 +116,7 @@ function parseCodeBlock(lines: string[], startIndex: number): [string, number] {
   const code = escapeHtml(codeLines.join('\n'));
   const langAttr = language ? ` data-language="${language}"` : '';
   return [
-    `<pre class="bg-muted p-4 rounded-md text-sm overflow-x-auto my-4"${langAttr}><code class="font-mono">${code}</code></pre>`,
+    `<pre class="bg-muted text-foreground p-4 rounded-md text-sm overflow-x-auto my-4"${langAttr}><code class="font-mono">${code}</code></pre>`,
     i,
   ];
 }
@@ -229,7 +230,7 @@ export function renderMarkdown(content: string): string {
       }
       // Render as preformatted text for now (full table support is out of scope)
       output.push(
-        `<pre class="bg-muted p-2 rounded text-sm overflow-x-auto my-2 font-mono">${escapeHtml(tableLines.join('\n'))}</pre>`,
+        `<pre class="bg-muted text-foreground p-2 rounded text-sm overflow-x-auto my-2 font-mono">${escapeHtml(tableLines.join('\n'))}</pre>`,
       );
       continue;
     }
@@ -315,8 +316,8 @@ export function extractHeadings(content: string): Heading[] {
  *
  * Renders markdown content with proper styling and XSS protection.
  */
-export function MarkdownRenderer({ content, className }: MarkdownRendererProps) {
-  const html = renderMarkdown(content);
+function MarkdownRendererComponent({ content, className }: MarkdownRendererProps) {
+  const html = useMemo(() => renderMarkdown(content), [content]);
 
   return (
     <div
@@ -325,3 +326,7 @@ export function MarkdownRenderer({ content, className }: MarkdownRendererProps) 
     />
   );
 }
+
+export const MarkdownRenderer = memo(MarkdownRendererComponent);
+
+MarkdownRenderer.displayName = 'MarkdownRenderer';

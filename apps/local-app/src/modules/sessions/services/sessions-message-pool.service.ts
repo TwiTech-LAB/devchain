@@ -6,7 +6,7 @@ import { MessageActivityStreamService } from './message-activity-stream.service'
 import { TerminalSendCoordinatorService } from '../../terminal/services/terminal-send-coordinator.service';
 import { TmuxService } from '../../terminal/services/tmux.service';
 import { SettingsService } from '../../settings/services/settings.service';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import { STORAGE_SERVICE, type AgentStorage } from '../../storage/interfaces/storage.interface';
 import { createLogger } from '../../../common/logging/logger';
 
 const logger = createLogger('SessionsMessagePoolService');
@@ -220,7 +220,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     private readonly tmux: TmuxService,
     @Inject(forwardRef(() => SettingsService))
     private readonly settings: SettingsService,
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE) private readonly storage: AgentStorage,
     @Inject(forwardRef(() => MessageActivityStreamService))
     private readonly activityStream: MessageActivityStreamService,
   ) {

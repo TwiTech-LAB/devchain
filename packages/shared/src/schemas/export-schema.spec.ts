@@ -177,6 +177,69 @@ describe('ExportSchema', () => {
     });
   });
 
+  describe('providerModels', () => {
+    const baseTemplate = {
+      version: 1,
+      exportedAt: '2024-01-01T00:00:00Z',
+      prompts: [],
+      profiles: [],
+      agents: [],
+      statuses: [],
+    };
+
+    it('should default providerModels to empty array when omitted (backward compatibility)', () => {
+      const result = ExportSchema.safeParse(baseTemplate);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.providerModels).toEqual([]);
+      }
+    });
+
+    it('should accept valid providerModels payload', () => {
+      const template = {
+        ...baseTemplate,
+        providerModels: [
+          {
+            providerName: 'opencode',
+            models: ['anthropic/claude-sonnet-4-5', 'openai/gpt-5'],
+          },
+        ],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.providerModels).toEqual(template.providerModels);
+      }
+    });
+
+    it('should reject providerModels when models contains non-string values', () => {
+      const template = {
+        ...baseTemplate,
+        providerModels: [
+          {
+            providerName: 'opencode',
+            models: ['openai/gpt-5', 123],
+          },
+        ],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject providerModels entries missing providerName', () => {
+      const template = {
+        ...baseTemplate,
+        providerModels: [
+          {
+            models: ['openai/gpt-5'],
+          },
+        ],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(false);
+    });
+  });
+
   describe('presets', () => {
     const baseTemplate = {
       version: 1,
@@ -238,6 +301,60 @@ describe('ExportSchema', () => {
       };
       const result = ExportSchema.safeParse(template);
       expect(result.success).toBe(true);
+    });
+
+    it('should accept agentConfig with modelOverride string', () => {
+      const preset = {
+        name: 'with-model-override',
+        agentConfigs: [
+          {
+            agentName: 'agent',
+            providerConfigName: 'config',
+            modelOverride: 'openai/gpt-5',
+          },
+        ],
+      };
+      const template = {
+        ...baseTemplate,
+        presets: [preset],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.presets[0].agentConfigs[0].modelOverride).toBe('openai/gpt-5');
+      }
+    });
+
+    it('should accept agentConfig with null modelOverride', () => {
+      const preset = {
+        name: 'with-null-model-override',
+        agentConfigs: [{ agentName: 'agent', providerConfigName: 'config', modelOverride: null }],
+      };
+      const template = {
+        ...baseTemplate,
+        presets: [preset],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.presets[0].agentConfigs[0].modelOverride).toBeNull();
+      }
+    });
+
+    it('should accept agentConfig without modelOverride for backward compatibility', () => {
+      const preset = {
+        name: 'without-model-override',
+        agentConfigs: [{ agentName: 'agent', providerConfigName: 'config' }],
+      };
+      const template = {
+        ...baseTemplate,
+        presets: [preset],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.presets[0].agentConfigs[0].modelOverride).toBeUndefined();
+      }
     });
 
     it('should reject preset with missing name', () => {

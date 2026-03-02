@@ -23,7 +23,8 @@ global.fetch = mockFetch;
 
 // Helper to mock profile configs response
 const mockProfileConfigs = (
-  profileConfigs: Record<string, Array<{ id: string; name: string }>>,
+  profileConfigs: Record<string, Array<{ id: string; name: string; providerId?: string }>>,
+  providerModels: Record<string, Array<{ id?: string; name: string }>> = {},
 ) => {
   mockFetch.mockImplementation((url: string) => {
     if (url.includes('/provider-configs')) {
@@ -35,6 +36,20 @@ const mockProfileConfigs = (
         return Promise.resolve({
           ok: true,
           json: async () => configs,
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => [],
+      });
+    }
+    if (url.includes('/providers/') && url.includes('/models')) {
+      const match = url.match(/\/providers\/([^\/]+)\/models/);
+      if (match) {
+        const providerId = match[1];
+        return Promise.resolve({
+          ok: true,
+          json: async () => providerModels[providerId] || [],
         });
       }
       return Promise.resolve({
@@ -70,6 +85,7 @@ const mockAgents = [
     name: 'Coder',
     profileId: 'profile-1',
     providerConfigId: 'config-1',
+    modelOverride: 'anthropic/claude-sonnet-4-5',
     providerConfig: { id: 'config-1', name: 'claude-config' },
   },
   {
@@ -77,6 +93,7 @@ const mockAgents = [
     name: 'Reviewer',
     profileId: 'profile-1',
     providerConfigId: 'config-2',
+    modelOverride: null,
     providerConfig: { id: 'config-2', name: 'gemini-config' },
   },
   {
@@ -99,6 +116,7 @@ describe('PresetDialog', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    global.fetch = mockFetch as unknown as typeof fetch;
   });
 
   describe('rendering - create mode', () => {
@@ -156,6 +174,22 @@ describe('PresetDialog', () => {
         expect(screen.getByText('Reviewer')).toBeInTheDocument();
         expect(screen.getByText('Tester')).toBeInTheDocument(); // Unassigned agent now shown
       });
+    });
+
+    it('uses wider modal layout and truncating agent-name row styling', async () => {
+      renderWithQueryClient(<PresetDialog {...defaultProps} />);
+
+      const dialog = screen.getByRole('dialog');
+      expect(dialog).toHaveClass('max-w-xl');
+      expect(screen.getByTestId('preset-agents-scroll')).toHaveClass('h-56');
+
+      await waitFor(() => {
+        expect(screen.getByTestId('preset-agent-name-agent-1')).toBeInTheDocument();
+      });
+
+      const agentName = screen.getByTestId('preset-agent-name-agent-1');
+      expect(agentName).toHaveClass('truncate');
+      expect(agentName).toHaveAttribute('title', 'Coder');
     });
 
     it('shows save button and cancel button', () => {
@@ -394,6 +428,142 @@ describe('PresetDialog', () => {
 
       // Tester should be unchecked (no existing config)
       expect(checkboxes[2]).not.toBeChecked(); // Tester
+    });
+  });
+
+  describe('model override selection', () => {
+    beforeEach(() => {
+      mockProfileConfigs(
+        {
+          'profile-1': [
+            { id: 'config-1', name: 'claude-config', providerId: 'provider-claude' },
+            { id: 'config-2', name: 'gemini-config', providerId: 'provider-gemini' },
+          ],
+          'profile-2': [{ id: 'config-3', name: 'gpt-config', providerId: 'provider-openai' }],
+        },
+        {
+          'provider-claude': [
+            { id: 'm1', name: 'anthropic/claude-sonnet-4-5' },
+            { id: 'm2', name: 'anthropic/claude-opus-4-1' },
+          ],
+          'provider-gemini': [{ id: 'm3', name: 'google/gemini-2.5-pro' }],
+        },
+      );
+    });
+
+    it('shows model selects when selected config provider has models', async () => {
+      renderWithQueryClient(<PresetDialog {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('preset-model-select-agent-1')).toBeInTheDocument();
+        expect(screen.getByTestId('preset-model-select-agent-2')).toBeInTheDocument();
+      });
+    });
+
+    it('hides model select when provider has no models', async () => {
+      mockProfileConfigs({
+        'profile-1': [
+          { id: 'config-1', name: 'claude-config', providerId: 'provider-claude' },
+          { id: 'config-2', name: 'gemini-config', providerId: 'provider-gemini' },
+        ],
+      });
+
+      renderWithQueryClient(<PresetDialog {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('preset-model-select-agent-1')).not.toBeInTheDocument();
+      });
+    });
+
+    it('preselects model override from current agent in create mode', async () => {
+      renderWithQueryClient(<PresetDialog {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('preset-model-select-agent-1')).toHaveTextContent(
+          'claude-sonnet-4-5',
+        );
+      });
+    });
+
+    it('preselects saved model override in edit mode', async () => {
+      const presetToEdit = {
+        name: 'preset-with-model',
+        description: 'Preset with model override',
+        agentConfigs: [
+          {
+            agentName: 'Coder',
+            providerConfigName: 'claude-config',
+            modelOverride: 'anthropic/claude-opus-4-1',
+          },
+        ],
+      };
+
+      renderWithQueryClient(<PresetDialog {...defaultProps} presetToEdit={presetToEdit} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('preset-model-select-agent-1')).toHaveTextContent(
+          'claude-opus-4-1',
+        );
+      });
+    });
+
+    it('resets model override to Default when provider config changes', async () => {
+      renderWithQueryClient(<PresetDialog {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('preset-config-select-agent-1')).toBeInTheDocument();
+      });
+
+      await userEvent.click(screen.getByTestId('preset-config-select-agent-1'));
+      await userEvent.click(await screen.findByRole('option', { name: 'gemini-config' }));
+
+      await waitFor(() => {
+        expect(screen.getByTestId('preset-model-select-agent-1')).toHaveTextContent('Default');
+      });
+    });
+
+    it('saves modelOverride values in preset payload', async () => {
+      renderWithQueryClient(<PresetDialog {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('2 selected')).toBeInTheDocument();
+      });
+
+      const nameInput = await screen.findByLabelText('Name *');
+      await userEvent.type(nameInput, 'preset-with-model-overrides');
+      const saveButton = screen.getByRole('button', { name: 'Save Preset' });
+      await waitFor(() => {
+        expect(saveButton).toBeEnabled();
+      });
+      await userEvent.click(saveButton);
+
+      await waitFor(() => {
+        const createCall = mockFetch.mock.calls.find(
+          ([url, init]) =>
+            typeof url === 'string' &&
+            url.endsWith('/api/projects/project-123/presets') &&
+            typeof init === 'object' &&
+            init !== null &&
+            (init as { method?: string }).method === 'POST',
+        );
+        expect(createCall).toBeDefined();
+
+        const body = JSON.parse((createCall![1] as { body: string }).body);
+        expect(body.agentConfigs).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              agentName: 'Coder',
+              providerConfigName: 'claude-config',
+              modelOverride: 'anthropic/claude-sonnet-4-5',
+            }),
+            expect.objectContaining({
+              agentName: 'Reviewer',
+              providerConfigName: 'gemini-config',
+              modelOverride: null,
+            }),
+          ]),
+        );
+      });
     });
   });
 

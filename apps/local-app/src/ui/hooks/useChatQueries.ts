@@ -37,6 +37,7 @@ export type AgentOrGuest = {
   tmuxSessionId?: string;
   // Provider info enriched from providerConfig by backend
   providerConfigId?: string | null;
+  modelOverride?: string | null;
   providerConfig?: {
     id: string;
     name: string;

@@ -235,30 +235,20 @@ export class TemplateUpgradeService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      // Apply template (imports over existing project)
+      // Apply template (imports over existing project).
+      // Pass empty familyProviderMappings so the import auto-selects available providers
+      // instead of hard-failing when some template providers are missing.
+      // This is an upgrade of a working project — provider validation is not needed.
       const importResult = await this.projectsService.importProject({
         projectId,
         payload: templateContent,
         dryRun: false,
+        familyProviderMappings: {},
       });
 
       // Validate import succeeded - importProject can return { success: false } without throwing
       // Type guard: dryRun=false means result always has 'success' property, but TS needs help
       if (!('success' in importResult) || !importResult.success) {
-        // Check if provider mapping is required
-        if ('providerMappingRequired' in importResult && importResult.providerMappingRequired) {
-          const { missingProviders } = importResult.providerMappingRequired;
-          logger.warn(
-            { projectId, targetVersion, missingProviders },
-            'Upgrade requires provider mapping - aborting',
-          );
-          return {
-            success: false,
-            error: `Upgrade requires provider configuration. Missing providers: ${missingProviders.join(', ')}`,
-            backupId, // Keep backup for retry after provider setup
-          };
-        }
-
         // Generic import failure
         logger.error({ projectId, targetVersion, importResult }, 'Import returned failure status');
         return {

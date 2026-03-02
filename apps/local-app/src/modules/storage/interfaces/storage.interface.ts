@@ -17,6 +17,8 @@ import {
   UpdateTag,
   Provider,
   CreateProvider,
+  ProviderModel,
+  CreateProviderModel,
   UpdateProvider,
   ProviderMcpMetadata,
   UpdateProviderMcpMetadata,
@@ -266,8 +268,7 @@ export interface CreateProjectWithTemplateOptions {
   projectId?: string;
 }
 
-export interface StorageService {
-  // Projects
+export interface ProjectStorage {
   createProject(data: CreateProject): Promise<Project>;
   createProjectWithTemplate(
     data: CreateProject,
@@ -279,16 +280,21 @@ export interface StorageService {
   listProjects(options?: ListOptions): Promise<ListResult<Project>>;
   updateProject(id: string, data: UpdateProject): Promise<Project>;
   deleteProject(id: string): Promise<void>;
+  getProjectByRootPath(rootPath: string): Promise<Project | null>;
+  findProjectContainingPath(absolutePath: string): Promise<Project | null>;
+  getFeatureFlags(): FeatureFlagConfig;
+}
 
-  // Statuses
+export interface StatusStorage {
   createStatus(data: CreateStatus): Promise<Status>;
   getStatus(id: string): Promise<Status>;
   listStatuses(projectId: string, options?: ListOptions): Promise<ListResult<Status>>;
   findStatusByName(projectId: string, name: string): Promise<Status | null>;
   updateStatus(id: string, data: UpdateStatus): Promise<Status>;
   deleteStatus(id: string): Promise<void>;
+}
 
-  // Epics (with optimistic locking)
+export interface EpicStorage {
   createEpic(data: CreateEpic): Promise<Epic>;
   getEpic(id: string): Promise<Epic>;
   listEpics(projectId: string, options?: ListOptions): Promise<ListResult<Epic>>;
@@ -302,10 +308,6 @@ export interface StorageService {
   updateEpic(id: string, data: UpdateEpic, expectedVersion: number): Promise<Epic>;
   deleteEpic(id: string): Promise<void>;
   listSubEpics(parentId: string, options?: ListOptions): Promise<ListResult<Epic>>;
-  /**
-   * Batch-fetch sub-epics for multiple parent IDs efficiently.
-   * Returns a Map where keys are parentIds and values are arrays of sub-epics.
-   */
   listSubEpicsForParents(
     projectId: string,
     parentIds: string[],
@@ -314,24 +316,42 @@ export interface StorageService {
   countSubEpicsByStatus(parentId: string): Promise<Record<string, number>>;
   countEpicsByStatus(statusId: string): Promise<number>;
   updateEpicsStatus(oldStatusId: string, newStatusId: string): Promise<number>;
+  listEpicComments(epicId: string, options?: ListOptions): Promise<ListResult<EpicComment>>;
+  createEpicComment(data: CreateEpicComment): Promise<EpicComment>;
+  deleteEpicComment(id: string): Promise<void>;
+  getEpicsByIdPrefix(
+    projectId: string,
+    prefix: string,
+  ): Promise<Array<{ id: string; title: string }>>;
+}
 
-  // Prompts (with optimistic locking)
+export interface PromptStorage {
   createPrompt(data: CreatePrompt): Promise<Prompt>;
   getPrompt(id: string): Promise<Prompt>;
   listPrompts(filters?: PromptListFilters): Promise<ListResult<PromptSummary>>;
   updatePrompt(id: string, data: UpdatePrompt, expectedVersion: number): Promise<Prompt>;
   deletePrompt(id: string): Promise<void>;
   getInitialSessionPrompt(projectId: string | null): Promise<Prompt | null>;
+}
 
-  // Tags
+export interface TagStorage {
   createTag(data: CreateTag): Promise<Tag>;
   getTag(id: string): Promise<Tag>;
   listTags(projectId: string | null, options?: ListOptions): Promise<ListResult<Tag>>;
   updateTag(id: string, data: UpdateTag): Promise<Tag>;
   deleteTag(id: string): Promise<void>;
+}
 
-  // Providers
+export interface ProviderStorage {
   createProvider(data: CreateProvider): Promise<Provider>;
+  createProviderModel(data: CreateProviderModel): Promise<ProviderModel>;
+  listProviderModelsByProvider(providerId: string): Promise<ProviderModel[]>;
+  listProviderModelsByProviderIds(providerIds: string[]): Promise<ProviderModel[]>;
+  deleteProviderModel(id: string): Promise<void>;
+  bulkCreateProviderModels(
+    providerId: string,
+    names: string[],
+  ): Promise<{ added: string[]; existing: string[] }>;
   getProvider(id: string): Promise<Provider>;
   listProviders(options?: ListOptions): Promise<ListResult<Provider>>;
   listProvidersByIds(ids: string[]): Promise<Provider[]>;
@@ -339,21 +359,18 @@ export interface StorageService {
   deleteProvider(id: string): Promise<void>;
   getProviderMcpMetadata(id: string): Promise<ProviderMcpMetadata>;
   updateProviderMcpMetadata(id: string, metadata: UpdateProviderMcpMetadata): Promise<Provider>;
+}
 
-  // Community Skill Sources
+export interface SkillSourceStorage {
   listCommunitySkillSources(): Promise<CommunitySkillSource[]>;
   getCommunitySkillSource(id: string): Promise<CommunitySkillSource>;
   getCommunitySkillSourceByName(name: string): Promise<CommunitySkillSource | null>;
   createCommunitySkillSource(data: CreateCommunitySkillSource): Promise<CommunitySkillSource>;
   deleteCommunitySkillSource(id: string): Promise<void>;
-
-  // Local Skill Sources
   listLocalSkillSources(): Promise<LocalSkillSource[]>;
   getLocalSkillSource(id: string): Promise<LocalSkillSource | null>;
   createLocalSkillSource(data: CreateLocalSkillSource): Promise<LocalSkillSource>;
   deleteLocalSkillSource(id: string): Promise<void>;
-
-  // Source-Project enablement mapping
   getSourceProjectEnabled(projectId: string, sourceName: string): Promise<boolean | null>;
   setSourceProjectEnabled(projectId: string, sourceName: string, enabled: boolean): Promise<void>;
   listSourceProjectEnabled(
@@ -361,19 +378,18 @@ export interface StorageService {
   ): Promise<Array<{ sourceName: string; enabled: boolean }>>;
   seedSourceProjectDisabled(projectId: string, sourceNames: string[]): Promise<void>;
   deleteSourceProjectEnabledBySource(sourceName: string): Promise<void>;
+}
 
-  // Agent Profiles
+export interface AgentProfileStorage {
   createAgentProfile(data: CreateAgentProfile): Promise<AgentProfile>;
   getAgentProfile(id: string): Promise<AgentProfile>;
   listAgentProfiles(options?: ProfileListOptions): Promise<ListResult<AgentProfile>>;
   updateAgentProfile(id: string, data: UpdateAgentProfile): Promise<AgentProfile>;
   deleteAgentProfile(id: string): Promise<void>;
-  // Profile prompt assignments
   setAgentProfilePrompts(profileId: string, promptIdsOrdered: string[]): Promise<void>;
   getAgentProfilePrompts(
     profileId: string,
   ): Promise<Array<{ promptId: string; createdAt: string }>>;
-  // Joined helpers to avoid N+1 when hydrating prompts with titles
   getAgentProfileWithPrompts(
     id: string,
   ): Promise<AgentProfile & { prompts: Array<{ promptId: string; title: string; order: number }> }>;
@@ -384,8 +400,9 @@ export interface StorageService {
       AgentProfile & { prompts: Array<{ promptId: string; title: string; order: number }> }
     >
   >;
+}
 
-  // Profile Provider Configs
+export interface ProfileProviderConfigStorage {
   createProfileProviderConfig(data: CreateProfileProviderConfig): Promise<ProfileProviderConfig>;
   getProfileProviderConfig(id: string): Promise<ProfileProviderConfig>;
   listProfileProviderConfigsByProfile(profileId: string): Promise<ProfileProviderConfig[]>;
@@ -397,104 +414,69 @@ export interface StorageService {
   ): Promise<ProfileProviderConfig>;
   deleteProfileProviderConfig(id: string): Promise<void>;
   reorderProfileProviderConfigs(profileId: string, configIds: string[]): Promise<void>;
+}
 
-  // Agents
+export interface AgentStorage {
   createAgent(data: CreateAgent): Promise<Agent>;
   getAgent(id: string): Promise<Agent>;
   listAgents(projectId: string, options?: ListOptions): Promise<ListResult<Agent>>;
   getAgentByName(projectId: string, name: string): Promise<Agent & { profile?: AgentProfile }>;
   updateAgent(id: string, data: UpdateAgent): Promise<Agent>;
   deleteAgent(id: string): Promise<void>;
+}
 
-  // Records (with optimistic locking)
+export interface RecordStorage {
   createRecord(data: CreateEpicRecord): Promise<EpicRecord>;
   getRecord(id: string): Promise<EpicRecord>;
   listRecords(epicId: string, options?: ListOptions): Promise<ListResult<EpicRecord>>;
   updateRecord(id: string, data: UpdateEpicRecord, expectedVersion: number): Promise<EpicRecord>;
   deleteRecord(id: string): Promise<void>;
+}
 
-  // Epic comments
-  listEpicComments(epicId: string, options?: ListOptions): Promise<ListResult<EpicComment>>;
-  createEpicComment(data: CreateEpicComment): Promise<EpicComment>;
-  deleteEpicComment(id: string): Promise<void>;
-
-  // Documents
+export interface DocumentStorage {
   listDocuments(filters?: DocumentListFilters): Promise<ListResult<Document>>;
   getDocument(identifier: DocumentIdentifier): Promise<Document>;
   createDocument(data: CreateDocument): Promise<Document>;
   updateDocument(id: string, data: UpdateDocument): Promise<Document>;
   deleteDocument(id: string): Promise<void>;
+}
 
-  // Chat message reads
-  markMessageAsRead(messageId: string, agentId: string, readAt: string): Promise<void>;
-
-  // Feature flags
-  getFeatureFlags(): FeatureFlagConfig;
-
-  // ============================================
-  // PROJECT PATH LOOKUPS
-  // ============================================
-  /**
-   * Get project by exact rootPath match.
-   */
-  getProjectByRootPath(rootPath: string): Promise<Project | null>;
-
-  /**
-   * Find project containing a given path (subdirectory matching).
-   * Returns the most specific match (longest rootPath that is a prefix of the given path).
-   * Handles pagination internally to check all projects.
-   * Uses path.resolve for normalization.
-   */
-  findProjectContainingPath(absolutePath: string): Promise<Project | null>;
-
-  // ============================================
-  // GUESTS - External agents registered via MCP
-  // ============================================
+export interface GuestStorage {
   createGuest(data: CreateGuest): Promise<Guest>;
   getGuest(id: string): Promise<Guest>;
   getGuestByName(projectId: string, name: string): Promise<Guest | null>;
   getGuestByTmuxSessionId(tmuxSessionId: string): Promise<Guest | null>;
-  /**
-   * Find guests whose ID starts with the given prefix.
-   * Used for prefix-based session resolution (e.g., "abc123" matches "abc12345-...").
-   * Returns empty array if no matches.
-   */
   getGuestsByIdPrefix(prefix: string): Promise<Guest[]>;
   listGuests(projectId: string): Promise<Guest[]>;
   listAllGuests(): Promise<Guest[]>;
   deleteGuest(id: string): Promise<void>;
   updateGuestLastSeen(id: string, lastSeenAt: string): Promise<Guest>;
+}
 
-  // ============================================
-  // TERMINAL WATCHERS
-  // ============================================
+export interface WatcherStorage {
   listWatchers(projectId: string): Promise<Watcher[]>;
   getWatcher(id: string): Promise<Watcher | null>;
   createWatcher(data: CreateWatcher): Promise<Watcher>;
   updateWatcher(id: string, data: UpdateWatcher): Promise<Watcher>;
   deleteWatcher(id: string): Promise<void>;
-  listEnabledWatchers(): Promise<Watcher[]>; // All enabled watchers across all projects (for runtime)
+  listEnabledWatchers(): Promise<Watcher[]>;
+}
 
-  // ============================================
-  // AUTOMATION SUBSCRIBERS
-  // ============================================
+export interface SubscriberStorage {
   listSubscribers(projectId: string): Promise<Subscriber[]>;
   getSubscriber(id: string): Promise<Subscriber | null>;
   createSubscriber(data: CreateSubscriber): Promise<Subscriber>;
   updateSubscriber(id: string, data: UpdateSubscriber): Promise<Subscriber>;
   deleteSubscriber(id: string): Promise<void>;
   findSubscribersByEventName(projectId: string, eventName: string): Promise<Subscriber[]>;
+}
 
-  // ============================================
-  // CODE REVIEWS
-  // ============================================
+export interface ReviewStorage {
   createReview(data: CreateReview): Promise<Review>;
   getReview(id: string): Promise<Review>;
   updateReview(id: string, data: UpdateReview, expectedVersion: number): Promise<Review>;
   deleteReview(id: string): Promise<void>;
   listReviews(projectId: string, options?: ListReviewsOptions): Promise<ListResult<Review>>;
-
-  // Review Comments
   createReviewComment(data: CreateReviewComment, targetAgentIds?: string[]): Promise<ReviewComment>;
   getReviewComment(id: string): Promise<ReviewComment>;
   updateReviewComment(
@@ -507,18 +489,28 @@ export interface StorageService {
     reviewId: string,
     options?: ListReviewCommentsOptions,
   ): Promise<ListResult<ReviewCommentEnriched>>;
-
-  // Review Comment Targets
   addReviewCommentTargets(commentId: string, agentIds: string[]): Promise<ReviewCommentTarget[]>;
   getReviewCommentTargets(commentId: string): Promise<ReviewCommentTarget[]>;
-
-  /**
-   * Delete all non-resolved comments for a review.
-   * Keeps resolved and wont_fix comments (they have conversation value).
-   * @param reviewId - Review ID
-   * @returns Number of deleted comments
-   */
   deleteNonResolvedComments(reviewId: string): Promise<number>;
+  markMessageAsRead(messageId: string, agentId: string, readAt: string): Promise<void>;
 }
+
+export interface StorageService
+  extends ProjectStorage,
+    StatusStorage,
+    EpicStorage,
+    PromptStorage,
+    TagStorage,
+    ProviderStorage,
+    SkillSourceStorage,
+    AgentProfileStorage,
+    ProfileProviderConfigStorage,
+    AgentStorage,
+    RecordStorage,
+    DocumentStorage,
+    GuestStorage,
+    WatcherStorage,
+    SubscriberStorage,
+    ReviewStorage {}
 
 export const STORAGE_SERVICE = 'STORAGE_SERVICE';

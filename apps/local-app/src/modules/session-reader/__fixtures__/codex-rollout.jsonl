@@ -1,0 +1,14 @@
+{"timestamp":"2026-02-24T10:00:00.000Z","type":"session_meta","payload":{"id":"codex-test-session-001"}}
+{"timestamp":"2026-02-24T10:00:01.000Z","type":"turn_context","payload":{"model":"o3","context_window":200000}}
+{"timestamp":"2026-02-24T10:00:02.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn_001"}}
+{"timestamp":"2026-02-24T10:00:03.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Fix the bug in auth.ts"}]}}
+{"timestamp":"2026-02-24T10:00:05.000Z","type":"response_item","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"Analyzing the authentication module for potential bugs"}]}}
+{"timestamp":"2026-02-24T10:00:06.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I'll look at the auth.ts file to find the bug."}]}}
+{"timestamp":"2026-02-24T10:00:07.000Z","type":"response_item","payload":{"type":"function_call","call_id":"call_001","name":"read_file","arguments":"{\"path\":\"src/auth.ts\"}"}}
+{"timestamp":"2026-02-24T10:00:08.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_001","output":"export function validateToken(token: string) {\n  return token.length > 0;\n}"}}
+{"timestamp":"2026-02-24T10:00:10.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Found the issue. The token validation is too simple. Let me fix it."}]}}
+{"timestamp":"2026-02-24T10:00:12.000Z","type":"response_item","payload":{"type":"function_call","call_id":"call_002","name":"write_file","arguments":"{\"path\":\"src/auth.ts\",\"content\":\"export function validateToken(token: string) {\\n  if (!token || token.length < 10) return false;\\n  return true;\\n}\"}"}}
+{"timestamp":"2026-02-24T10:00:13.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_002","output":"File written successfully"}}
+{"timestamp":"2026-02-24T10:00:15.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I've fixed the token validation to require a minimum length of 10 characters."}]}}
+{"timestamp":"2026-02-24T10:00:16.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":850,"output_tokens":120,"cached_input_tokens":200,"reasoning_output_tokens":45,"total_tokens":1215},"model_context_window":200000}}}
+{"timestamp":"2026-02-24T10:00:17.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn_001"}}

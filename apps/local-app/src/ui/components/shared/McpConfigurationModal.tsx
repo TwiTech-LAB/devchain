@@ -44,6 +44,8 @@ function getManualCommand(providerName: string, endpoint: string): string {
       return `codex mcp add --url ${endpoint} ${alias}`;
     case 'gemini':
       return `gemini mcp add -t http ${alias} ${endpoint}`;
+    case 'opencode':
+      return `# Add to opencode.json in your project root:\n# "mcp": { "${alias}": { "type": "remote", "url": "${endpoint}" } }`;
     default:
       return `# Manual MCP configuration for ${providerName}`;
   }

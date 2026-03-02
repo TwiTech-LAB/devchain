@@ -27,6 +27,13 @@ jest.mock('@xterm/xterm', () => {
         if (container) container.textContent = '';
       }),
       dispose: jest.fn(),
+      attachCustomWheelEventHandler: jest.fn(),
+      scrollLines: jest.fn(),
+      onData: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+      onScroll: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+      buffer: { active: { viewportY: 0, baseY: 0, cursorY: 0, length: 24 } },
+      options: { scrollback: 10000 },
+      modes: { mouseTrackingMode: 'none' },
       rows: 24,
       cols: 80,
     })),
@@ -328,6 +335,112 @@ describe('useXterm', () => {
           scrollback: validValue,
         }),
       );
+    });
+  });
+
+  describe('wheel handler mouse tracking conditional', () => {
+    /**
+     * Helper: render useXterm with given inputMode, capture the callback
+     * passed to attachCustomWheelEventHandler, then set mouseTrackingMode.
+     */
+    function setupWheelTest(inputMode: 'form' | 'tty', mouseTrackingMode: string) {
+      const terminalRef = { current: mockContainerElement };
+      const { result } = renderHook(() => {
+        const xtermRef = useRef<Terminal | null>(null);
+        const fitAddonRef = useRef<FitAddon | null>(null);
+        useXterm(terminalRef, 'test-session', xtermRef, fitAddonRef, undefined, inputMode);
+        return { xtermRef, fitAddonRef };
+      });
+
+      const terminal = result.current.xtermRef.current as Record<string, unknown>;
+      // Mutate modes to desired tracking mode (read dynamically by the callback)
+      (terminal.modes as { mouseTrackingMode: string }).mouseTrackingMode = mouseTrackingMode;
+
+      // Extract the callback registered with attachCustomWheelEventHandler
+      const wheelCallback = (terminal.attachCustomWheelEventHandler as jest.Mock).mock
+        .calls[0][0] as (event: WheelEvent) => boolean;
+
+      return { terminal, wheelCallback };
+    }
+
+    function makeWheelEvent(deltaY: number): WheelEvent {
+      return { deltaY, preventDefault: jest.fn() } as unknown as WheelEvent;
+    }
+
+    // --- TTY mode + wheel-capable tracking modes → bypass to xterm (return true) ---
+
+    it('tty + any: bypasses to xterm (returns true, no scrollLines)', () => {
+      const { terminal, wheelCallback } = setupWheelTest('tty', 'any');
+      const event = makeWheelEvent(120);
+
+      expect(wheelCallback(event)).toBe(true);
+      expect(terminal.scrollLines).not.toHaveBeenCalled();
+    });
+
+    it('tty + drag: bypasses to xterm (returns true, no scrollLines)', () => {
+      const { terminal, wheelCallback } = setupWheelTest('tty', 'drag');
+      const event = makeWheelEvent(120);
+
+      expect(wheelCallback(event)).toBe(true);
+      expect(terminal.scrollLines).not.toHaveBeenCalled();
+    });
+
+    it('tty + vt200: bypasses to xterm (returns true, no scrollLines)', () => {
+      const { terminal, wheelCallback } = setupWheelTest('tty', 'vt200');
+      const event = makeWheelEvent(120);
+
+      expect(wheelCallback(event)).toBe(true);
+      expect(terminal.scrollLines).not.toHaveBeenCalled();
+    });
+
+    // --- TTY mode + non-wheel tracking modes → custom dampened scroll ---
+
+    it('tty + none: custom scroll (scrollLines called, returns false)', () => {
+      const { terminal, wheelCallback } = setupWheelTest('tty', 'none');
+      const event = makeWheelEvent(120);
+
+      expect(wheelCallback(event)).toBe(false);
+      expect(terminal.scrollLines).toHaveBeenCalledWith(2); // Math.sign(120) * max(1, round(1*1.5)) = 2
+      expect((event as unknown as { preventDefault: jest.Mock }).preventDefault).toHaveBeenCalled();
+    });
+
+    it('tty + x10: custom scroll (scrollLines called, returns false)', () => {
+      const { terminal, wheelCallback } = setupWheelTest('tty', 'x10');
+      const event = makeWheelEvent(-240);
+
+      expect(wheelCallback(event)).toBe(false);
+      expect(terminal.scrollLines).toHaveBeenCalledWith(-3); // Math.sign(-240) * max(1, round(2*1.5)) = -3
+      expect((event as unknown as { preventDefault: jest.Mock }).preventDefault).toHaveBeenCalled();
+    });
+
+    // --- Form mode → always custom scroll (dead wheel guard) ---
+
+    it('form + any: custom scroll despite active tracking (dead wheel guard)', () => {
+      const { terminal, wheelCallback } = setupWheelTest('form', 'any');
+      const event = makeWheelEvent(120);
+
+      expect(wheelCallback(event)).toBe(false);
+      expect(terminal.scrollLines).toHaveBeenCalledWith(2);
+      expect((event as unknown as { preventDefault: jest.Mock }).preventDefault).toHaveBeenCalled();
+    });
+
+    it('form + none: custom scroll (returns false)', () => {
+      const { terminal, wheelCallback } = setupWheelTest('form', 'none');
+      const event = makeWheelEvent(120);
+
+      expect(wheelCallback(event)).toBe(false);
+      expect(terminal.scrollLines).toHaveBeenCalledWith(2);
+      expect((event as unknown as { preventDefault: jest.Mock }).preventDefault).toHaveBeenCalled();
+    });
+
+    // --- Edge case: deltaY === 0 ---
+
+    it('returns false and does not scroll when deltaY is 0', () => {
+      const { terminal, wheelCallback } = setupWheelTest('form', 'none');
+      const event = makeWheelEvent(0);
+
+      expect(wheelCallback(event)).toBe(false);
+      expect(terminal.scrollLines).not.toHaveBeenCalled();
     });
   });
 });

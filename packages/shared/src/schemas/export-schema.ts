@@ -4,11 +4,9 @@ import { isValidSemVer } from '../utils/semver.js';
 /**
  * Semver string schema with validation
  */
-const semverString = z
-  .string()
-  .refine((v) => isValidSemVer(v), {
-    message: 'Must be a valid semantic version (e.g., "1.0.0", "0.4.0-beta.1")',
-  });
+const semverString = z.string().refine((v) => isValidSemVer(v), {
+  message: 'Must be a valid semantic version (e.g., "1.0.0", "0.4.0-beta.1")',
+});
 
 /**
  * ManifestSchema - Template metadata embedded in export files.
@@ -214,6 +212,15 @@ export const ExportSchema = z
         }),
       )
       .optional(),
+    providerModels: z
+      .array(
+        z.object({
+          providerName: z.string().min(1),
+          models: z.array(z.string()),
+        }),
+      )
+      .optional()
+      .default([]),
     // Template presets - named configurations mapping agents to provider configs
     // Used for quick setup when creating a project from template
     presets: z
@@ -225,6 +232,7 @@ export const ExportSchema = z
             z.object({
               agentName: z.string().min(1),
               providerConfigName: z.string().min(1),
+              modelOverride: z.string().nullable().optional(),
             }),
           ),
         }),

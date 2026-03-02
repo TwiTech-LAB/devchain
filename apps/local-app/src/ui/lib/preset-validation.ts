@@ -2,14 +2,9 @@
  * Preset validation utilities for config switcher functionality.
  */
 
-export interface Preset {
-  name: string;
-  description?: string | null;
-  agentConfigs: Array<{
-    agentName: string;
-    providerConfigName: string;
-  }>;
-}
+import type { Preset } from './preset-types';
+
+export type { Preset, PresetAgentConfig } from './preset-types';
 
 export interface Agent {
   id: string;

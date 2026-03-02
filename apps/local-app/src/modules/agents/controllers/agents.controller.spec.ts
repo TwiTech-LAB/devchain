@@ -39,6 +39,7 @@ describe('AgentsController', () => {
     projectId: 'project-1',
     profileId: 'profile-1',
     providerConfigId: 'config-1', // Required after Phase 4
+    modelOverride: null,
     name: 'Test Agent',
     description: null,
     createdAt: '2024-01-01T00:00:00.000Z',
@@ -74,6 +75,7 @@ describe('AgentsController', () => {
     id: 'config-1',
     profileId: 'profile-1',
     providerId: 'provider-1',
+    name: 'default',
     options: '--model opus',
     env: { API_KEY: 'test-key' },
     createdAt: '2024-01-01T00:00:00.000Z',
@@ -177,7 +179,7 @@ describe('AgentsController', () => {
 
     it('includes guests when includeGuests=true', async () => {
       storage.listAgents.mockResolvedValue({
-        items: [mockAgent],
+        items: [{ ...mockAgent, modelOverride: 'openai/gpt-4.1' }],
         total: 1,
         limit: 100,
         offset: 0,
@@ -215,6 +217,7 @@ describe('AgentsController', () => {
         name: 'Test Agent',
         profileId: 'profile-1',
         type: 'agent',
+        modelOverride: 'openai/gpt-4.1',
         providerConfigId: 'config-1',
         providerConfig: {
           id: 'config-1',
@@ -232,6 +235,7 @@ describe('AgentsController', () => {
         name: 'GuestBot',
         profileId: null,
         type: 'guest',
+        modelOverride: null,
         tmuxSessionId: 'tmux-guest-1',
         providerConfigId: null,
         providerConfig: null,
@@ -399,6 +403,29 @@ describe('AgentsController', () => {
           providerConfigId: string;
         }),
       ).rejects.toThrow();
+    });
+
+    it('updates modelOverride with a non-empty string', async () => {
+      storage.updateAgent.mockResolvedValue({ ...mockAgent, modelOverride: 'gpt-4.1' });
+
+      const result = await controller.updateAgent('agent-1', { modelOverride: 'gpt-4.1' });
+
+      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', { modelOverride: 'gpt-4.1' });
+      expect(result.modelOverride).toBe('gpt-4.1');
+    });
+
+    it('updates modelOverride to null', async () => {
+      storage.updateAgent.mockResolvedValue({ ...mockAgent, modelOverride: null });
+
+      const result = await controller.updateAgent('agent-1', { modelOverride: null });
+
+      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', { modelOverride: null });
+      expect(result.modelOverride).toBeNull();
+    });
+
+    it('rejects empty modelOverride string', async () => {
+      await expect(controller.updateAgent('agent-1', { modelOverride: '' })).rejects.toThrow();
+      expect(storage.updateAgent).not.toHaveBeenCalled();
     });
   });
 

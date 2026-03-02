@@ -58,6 +58,33 @@ export const providers = sqliteTable('providers', {
   updatedAt: text('updated_at').notNull(),
 });
 
+// Provider Models (supported model variants per provider)
+export const providerModels = sqliteTable(
+  'provider_models',
+  {
+    id: text('id').primaryKey(),
+    providerId: text('provider_id')
+      .notNull()
+      .references(() => providers.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    position: integer('position').notNull().default(0),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    // Case-insensitive uniqueness per provider to prevent duplicate model names.
+    providerNameUniqueCi: uniqueIndex('provider_models_provider_name_ci_idx').on(
+      table.providerId,
+      sql`lower(${table.name})`,
+    ),
+    // Supports ordered list queries by provider.
+    providerPositionIdx: index('provider_models_provider_position_idx').on(
+      table.providerId,
+      table.position,
+    ),
+  }),
+);
+
 // Agent Profiles
 // Note: providerId and options columns removed in migration 0031
 // Provider configuration now lives in profile_provider_configs table
@@ -131,6 +158,7 @@ export const agents = sqliteTable('agents', {
   providerConfigId: text('provider_config_id')
     .notNull()
     .references(() => profileProviderConfigs.id, { onDelete: 'restrict' }),
+  modelOverride: text('model_override'),
   name: text('name').notNull(),
   description: text('description'),
   createdAt: text('created_at').notNull(),
@@ -520,6 +548,8 @@ export const sessions = sqliteTable(
     lastActivityAt: text('last_activity_at'),
     activityState: text('activity_state'), // 'idle' | 'busy'
     busySince: text('busy_since'),
+    transcriptPath: text('transcript_path'),
+    claudeSessionId: text('claude_session_id'),
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
   },

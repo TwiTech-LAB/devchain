@@ -825,6 +825,48 @@ describe('SettingsService (preset CRUD)', () => {
       expect(presets[0]).toEqual(validPreset);
     });
 
+    it('accepts agentConfig modelOverride as string', async () => {
+      await service.createProjectPreset('proj-1', {
+        ...validPreset,
+        agentConfigs: [
+          {
+            agentName: 'Agent1',
+            providerConfigName: 'Config1',
+            modelOverride: 'openai/gpt-5',
+          },
+        ],
+      });
+
+      const presets = service.getProjectPresets('proj-1');
+      expect(presets).toHaveLength(1);
+      expect(presets[0].agentConfigs[0]).toEqual({
+        agentName: 'Agent1',
+        providerConfigName: 'Config1',
+        modelOverride: 'openai/gpt-5',
+      });
+    });
+
+    it('accepts agentConfig modelOverride as null', async () => {
+      await service.createProjectPreset('proj-1', {
+        ...validPreset,
+        agentConfigs: [
+          {
+            agentName: 'Agent1',
+            providerConfigName: 'Config1',
+            modelOverride: null,
+          },
+        ],
+      });
+
+      const presets = service.getProjectPresets('proj-1');
+      expect(presets).toHaveLength(1);
+      expect(presets[0].agentConfigs[0]).toEqual({
+        agentName: 'Agent1',
+        providerConfigName: 'Config1',
+        modelOverride: null,
+      });
+    });
+
     it('throws ValidationError for duplicate name (case-insensitive)', async () => {
       await service.createProjectPreset('proj-1', validPreset);
 

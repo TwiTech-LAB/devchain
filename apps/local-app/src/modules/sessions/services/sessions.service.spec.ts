@@ -395,6 +395,130 @@ describe('SessionsService', () => {
     expect(result.epic).toBeNull();
   });
 
+  it('replaces existing model flags with agent modelOverride on launch', async () => {
+    jest.useFakeTimers();
+    storage.getAgent.mockResolvedValue({
+      id: 'agent-override',
+      name: 'Override Agent',
+      projectId: 'project-1',
+      profileId: 'profile-1',
+      providerConfigId: 'config-1',
+      modelOverride: 'anthropic/claude-sonnet-4-5',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProject.mockResolvedValue({
+      id: 'project-1',
+      name: 'My Project',
+      rootPath: '/workspace/project-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getAgentProfile.mockResolvedValue({
+      id: 'profile-1',
+      name: 'Helper Profile',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProfileProviderConfig.mockResolvedValue({
+      id: 'config-1',
+      profileId: 'profile-1',
+      providerId: 'provider-1',
+      options: '--model old-a -m old-b --model=old-c -m=old-d --max-tokens 4000',
+      env: null,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProvider.mockResolvedValue({
+      id: 'provider-1',
+      name: 'claude',
+      binPath: '/usr/local/bin/claude',
+      mcpConfigured: true,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+
+    const launchPromise = service.launchSession({
+      projectId: 'project-1',
+      agentId: 'agent-override',
+    });
+
+    await jest.runAllTimersAsync();
+    await launchPromise;
+
+    const sendArgs = tmuxService.sendCommandArgs.mock.calls[0][1] as string[];
+    const binaryIndex = sendArgs.indexOf('/usr/local/bin/claude');
+    expect(binaryIndex).toBeGreaterThan(-1);
+    expect(sendArgs.slice(binaryIndex + 1)).toEqual([
+      '--model',
+      'anthropic/claude-sonnet-4-5',
+      '--max-tokens',
+      '4000',
+    ]);
+  });
+
+  it('keeps parsed options unchanged when modelOverride is null', async () => {
+    jest.useFakeTimers();
+    storage.getAgent.mockResolvedValue({
+      id: 'agent-no-override',
+      name: 'No Override Agent',
+      projectId: 'project-1',
+      profileId: 'profile-1',
+      providerConfigId: 'config-1',
+      modelOverride: null,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProject.mockResolvedValue({
+      id: 'project-1',
+      name: 'My Project',
+      rootPath: '/workspace/project-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getAgentProfile.mockResolvedValue({
+      id: 'profile-1',
+      name: 'Helper Profile',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProfileProviderConfig.mockResolvedValue({
+      id: 'config-1',
+      profileId: 'profile-1',
+      providerId: 'provider-1',
+      options: '-m existing-model --max-tokens 2000',
+      env: null,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProvider.mockResolvedValue({
+      id: 'provider-1',
+      name: 'claude',
+      binPath: '/usr/local/bin/claude',
+      mcpConfigured: true,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+
+    const launchPromise = service.launchSession({
+      projectId: 'project-1',
+      agentId: 'agent-no-override',
+    });
+
+    await jest.runAllTimersAsync();
+    await launchPromise;
+
+    const sendArgs = tmuxService.sendCommandArgs.mock.calls[0][1] as string[];
+    const binaryIndex = sendArgs.indexOf('/usr/local/bin/claude');
+    expect(binaryIndex).toBeGreaterThan(-1);
+    expect(sendArgs.slice(binaryIndex + 1)).toEqual([
+      '-m',
+      'existing-model',
+      '--max-tokens',
+      '2000',
+    ]);
+  });
+
   it('continues launch and logs warning when waitForOutput times out', async () => {
     jest.useFakeTimers();
     tmuxService.waitForOutput.mockResolvedValueOnce({ ready: false, elapsedMs: 30000 });

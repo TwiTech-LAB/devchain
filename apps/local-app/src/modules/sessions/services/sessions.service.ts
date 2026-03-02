@@ -13,7 +13,11 @@ import { SessionDto, SessionDetailDto, LaunchSessionDto } from '../dtos/sessions
 import { DB_CONNECTION } from '../../storage/db/db.provider';
 import { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import Database from 'better-sqlite3';
-import { parseProfileOptions, ProfileOptionsError } from '../utils/profile-options';
+import {
+  parseProfileOptions,
+  ProfileOptionsError,
+  injectModelOverride,
+} from '../utils/profile-options';
 import { buildSessionCommand, EnvBuilderError } from '../utils/env-builder';
 import { buildInitialPromptContext, renderInitialPromptTemplate } from '../utils/template-renderer';
 import { checkClaudeAutoCompact } from '../utils/claude-config';
@@ -59,6 +63,8 @@ interface SessionRow {
   last_activity_at: string | null;
   activity_state: 'idle' | 'busy' | null;
   busy_since: string | null;
+  transcript_path: string | null;
+  claude_session_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -380,6 +386,10 @@ export class SessionsService {
         throw error;
       }
 
+      if (agent.modelOverride) {
+        optionArgs = injectModelOverride(optionArgs, agent.modelOverride);
+      }
+
       // Inject DEVCHAIN_* env vars for Claude provider (relay script reads these)
       if (provider.name.toLowerCase() === 'claude') {
         const env = getEnvConfig();
@@ -590,6 +600,8 @@ export class SessionsService {
         status: 'running',
         startedAt: now,
         endedAt: null,
+        transcriptPath: null,
+        claudeSessionId: null,
         createdAt: now,
         updatedAt: now,
         epic: epic
@@ -691,7 +703,7 @@ export class SessionsService {
     const row = this.sqlite
       .prepare(
         `
-      SELECT id, epic_id, agent_id, tmux_session_id, status, started_at, ended_at, last_activity_at, activity_state, busy_since, created_at, updated_at
+      SELECT id, epic_id, agent_id, tmux_session_id, status, started_at, ended_at, last_activity_at, activity_state, busy_since, transcript_path, claude_session_id, created_at, updated_at
       FROM sessions
       WHERE id = ?
     `,
@@ -714,6 +726,8 @@ export class SessionsService {
       lastActivityAt: row.last_activity_at ?? null,
       activityState: row.activity_state ?? null,
       busySince: row.busy_since ?? null,
+      transcriptPath: row.transcript_path ?? null,
+      claudeSessionId: row.claude_session_id ?? null,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -730,7 +744,7 @@ export class SessionsService {
     const rows = this.sqlite
       .prepare(
         `
-      SELECT id, epic_id, agent_id, tmux_session_id, status, started_at, ended_at, last_activity_at, activity_state, busy_since, created_at, updated_at
+      SELECT id, epic_id, agent_id, tmux_session_id, status, started_at, ended_at, last_activity_at, activity_state, busy_since, transcript_path, claude_session_id, created_at, updated_at
       FROM sessions
       WHERE status = 'running'
       ORDER BY started_at DESC
@@ -781,6 +795,8 @@ export class SessionsService {
         lastActivityAt: row.last_activity_at ?? null,
         activityState: row.activity_state ?? null,
         busySince: row.busy_since ?? null,
+        transcriptPath: row.transcript_path ?? null,
+        claudeSessionId: row.claude_session_id ?? null,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
       }));
@@ -807,7 +823,8 @@ export class SessionsService {
         `
         SELECT id, epic_id, agent_id, tmux_session_id, status,
                started_at, ended_at, last_activity_at, activity_state,
-               busy_since, created_at, updated_at
+               busy_since, transcript_path, claude_session_id,
+               created_at, updated_at
         FROM sessions
         WHERE status = 'running' AND agent_id = ?
         ORDER BY started_at DESC
@@ -831,6 +848,8 @@ export class SessionsService {
       lastActivityAt: row.last_activity_at ?? null,
       activityState: row.activity_state ?? null,
       busySince: row.busy_since ?? null,
+      transcriptPath: row.transcript_path ?? null,
+      claudeSessionId: row.claude_session_id ?? null,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -846,7 +865,8 @@ export class SessionsService {
         `
         SELECT s.id, s.epic_id, s.agent_id, s.tmux_session_id, s.status,
                s.started_at, s.ended_at, s.last_activity_at, s.activity_state,
-               s.busy_since, s.created_at, s.updated_at
+               s.busy_since, s.transcript_path, s.claude_session_id,
+               s.created_at, s.updated_at
         FROM sessions s
         JOIN agents a ON s.agent_id = a.id
         WHERE s.status = 'running' AND a.project_id = ?
@@ -866,6 +886,8 @@ export class SessionsService {
       lastActivityAt: row.last_activity_at ?? null,
       activityState: row.activity_state ?? null,
       busySince: row.busy_since ?? null,
+      transcriptPath: row.transcript_path ?? null,
+      claudeSessionId: row.claude_session_id ?? null,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }));

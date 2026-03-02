@@ -1,4 +1,4 @@
-import { isTerminalInternalSequence } from './xterm-utils';
+import { isTerminalInternalSequence, supportsWheelMouseTracking } from './xterm-utils';
 
 describe('xterm-utils', () => {
   describe('isTerminalInternalSequence', () => {
@@ -102,6 +102,36 @@ describe('xterm-utils', () => {
       it('should NOT filter empty string', () => {
         expect(isTerminalInternalSequence('')).toBe(false);
       });
+    });
+  });
+
+  describe('supportsWheelMouseTracking', () => {
+    it('returns true for "any" mode (any-event tracking)', () => {
+      expect(supportsWheelMouseTracking('any')).toBe(true);
+    });
+
+    it('returns true for "drag" mode (button-event tracking)', () => {
+      expect(supportsWheelMouseTracking('drag')).toBe(true);
+    });
+
+    it('returns false for "none" mode (tracking off)', () => {
+      expect(supportsWheelMouseTracking('none')).toBe(false);
+    });
+
+    it('returns true for "vt200" mode (normal tracking with wheel)', () => {
+      expect(supportsWheelMouseTracking('vt200')).toBe(true);
+    });
+
+    it('returns false for "vt200Highlight" mode', () => {
+      expect(supportsWheelMouseTracking('vt200Highlight')).toBe(false);
+    });
+
+    it('returns false for "x10" mode (button-press only, no wheel)', () => {
+      expect(supportsWheelMouseTracking('x10')).toBe(false);
+    });
+
+    it('returns false for empty string', () => {
+      expect(supportsWheelMouseTracking('')).toBe(false);
     });
   });
 });

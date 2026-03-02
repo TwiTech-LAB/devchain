@@ -1,0 +1,121 @@
+{
+  "sessionId": "gemini-test-session-001",
+  "projectHash": "abc123def456789",
+  "startTime": "2026-02-24T10:00:00.000Z",
+  "lastUpdated": "2026-02-24T10:02:30.000Z",
+  "messages": [
+    {
+      "id": "msg-user-001",
+      "timestamp": "2026-02-24T10:00:05.000Z",
+      "type": "user",
+      "content": "Fix the bug in auth.ts"
+    },
+    {
+      "id": "msg-gemini-001",
+      "timestamp": "2026-02-24T10:00:10.000Z",
+      "type": "gemini",
+      "content": "I'll examine the auth.ts file to identify the bug.",
+      "model": "gemini-2.5-pro",
+      "thoughts": [
+        {
+          "subject": "Analyzing request",
+          "description": "The user wants me to fix a bug in auth.ts. I should read the file first.",
+          "timestamp": "2026-02-24T10:00:08.000Z"
+        }
+      ],
+      "tokens": {
+        "input": 450,
+        "output": 85,
+        "cached": 100,
+        "thoughts": 30,
+        "tool": 120,
+        "total": 785
+      },
+      "toolCalls": [
+        {
+          "id": "call-gem-001",
+          "name": "read_file",
+          "args": { "target": "src/auth.ts" },
+          "status": "success",
+          "timestamp": "2026-02-24T10:00:12.000Z",
+          "displayName": "Read File",
+          "description": "Read the contents of a file",
+          "result": [
+            {
+              "functionResponse": {
+                "id": "call-gem-001",
+                "name": "read_file",
+                "response": {
+                  "output": "export function validateToken(token: string) {\n  return token.length > 0;\n}"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "msg-gemini-002",
+      "timestamp": "2026-02-24T10:01:00.000Z",
+      "type": "gemini",
+      "content": "Found the issue. The token validation is too simple. I've fixed it to require a minimum length.",
+      "model": "gemini-2.5-pro",
+      "tokens": {
+        "input": 680,
+        "output": 95,
+        "cached": 200,
+        "thoughts": 25,
+        "tool": 85,
+        "total": 1085
+      },
+      "toolCalls": [
+        {
+          "id": "call-gem-002",
+          "name": "edit_file",
+          "args": { "target": "src/auth.ts", "instruction": "Add minimum length check" },
+          "status": "success",
+          "timestamp": "2026-02-24T10:01:05.000Z",
+          "displayName": "Edit File",
+          "result": [
+            {
+              "functionResponse": {
+                "id": "call-gem-002",
+                "name": "edit_file",
+                "response": {
+                  "output": "Successfully edited src/auth.ts"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "msg-info-001",
+      "timestamp": "2026-02-24T10:02:00.000Z",
+      "type": "info",
+      "content": "Session checkpoint created"
+    },
+    {
+      "id": "msg-user-002",
+      "timestamp": "2026-02-24T10:02:10.000Z",
+      "type": "user",
+      "content": "Looks good, thanks!"
+    },
+    {
+      "id": "msg-gemini-003",
+      "timestamp": "2026-02-24T10:02:25.000Z",
+      "type": "gemini",
+      "content": "You're welcome! The authentication should be more secure now.",
+      "model": "gemini-2.5-pro",
+      "tokens": {
+        "input": 820,
+        "output": 40,
+        "cached": 350,
+        "total": 1210
+      }
+    }
+  ],
+  "summary": "Fixed token validation bug in auth.ts by adding minimum length requirement",
+  "kind": "main"
+}

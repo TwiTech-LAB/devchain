@@ -3,6 +3,7 @@ import { useQueryClient, useQuery, useMutation } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { Loader2, AlertCircle, MessageSquare } from 'lucide-react';
 import { validatePresetAvailability, type PresetAvailability } from '@/ui/lib/preset-validation';
+import type { Preset } from '@/ui/lib/preset-types';
 import { restartKeyForMain, restartKeyForWorktree } from '@/ui/lib/restart-keys';
 import {
   useTerminalWindowManager,
@@ -25,8 +26,15 @@ import {
 
 // Inline terminal components
 import { InlineTerminalPanel } from '@/ui/components/chat/InlineTerminalPanel';
-import { InlineTerminalHeader } from '@/ui/components/chat/InlineTerminalHeader';
+import {
+  InlineTerminalHeader,
+  type InlineTerminalTab,
+} from '@/ui/components/chat/InlineTerminalHeader';
 import { Button } from '@/ui/components/ui/button';
+
+// Session reader
+import { useSessionTranscript } from '@/ui/hooks/useSessionTranscript';
+import { SessionViewerPanel } from '@/ui/components/session-reader/SessionViewerPanel';
 
 // Extracted hooks
 import { useChatQueries } from '@/ui/hooks/useChatQueries';
@@ -53,19 +61,6 @@ export function createWorktreeProviderConfigFetcher(
     if (!res.ok) throw new Error('Failed to fetch provider configs');
     return res.json();
   };
-}
-
-// ============================================
-// Preset Types & Helpers
-// ============================================
-
-interface Preset {
-  name: string;
-  description?: string | null;
-  agentConfigs: Array<{
-    agentName: string;
-    providerConfigName: string;
-  }>;
 }
 
 interface ProviderConfig {
@@ -439,14 +434,23 @@ export function ChatPage() {
     mutationFn: async ({
       agentId,
       providerConfigId,
+      modelOverride,
     }: {
       agentId: string;
       providerConfigId: string;
+      modelOverride?: string | null;
     }) => {
+      const body: { providerConfigId: string; modelOverride?: string | null } = {
+        providerConfigId,
+      };
+      if (modelOverride !== undefined) {
+        body.modelOverride = modelOverride;
+      }
+
       const res = await fetch(`/api/agents/${agentId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ providerConfigId }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error('Failed to update agent config');
       return res.json();
@@ -454,8 +458,9 @@ export function ChatPage() {
     onMutate: ({ agentId }) => {
       setUpdatingConfigAgentId(agentId);
     },
-    onSuccess: (_, { agentId }) => {
+    onSuccess: (_, { agentId, modelOverride }) => {
       const isOnline = queries.agentPresence[agentId]?.online === true;
+      const isModelOverrideUpdate = modelOverride !== undefined;
 
       // Mark for restart if agent has active session
       if (isOnline) {
@@ -464,7 +469,7 @@ export function ChatPage() {
 
       queryClient.invalidateQueries({ queryKey: ['agents', projectId] });
       toast({
-        title: 'Config updated',
+        title: isModelOverrideUpdate ? 'Model override updated' : 'Config updated',
         description: isOnline ? 'Restart to apply changes.' : 'Will apply on next launch.',
       });
     },
@@ -482,8 +487,8 @@ export function ChatPage() {
 
   // Handle switching provider config for an agent
   const handleSwitchConfig = useCallback(
-    (agentId: string, providerConfigId: string) => {
-      updateAgentConfigMutation.mutate({ agentId, providerConfigId });
+    (agentId: string, providerConfigId: string, modelOverride?: string | null) => {
+      updateAgentConfigMutation.mutate({ agentId, providerConfigId, modelOverride });
     },
     [updateAgentConfigMutation],
   );
@@ -494,15 +499,24 @@ export function ChatPage() {
       apiBase,
       agentId,
       providerConfigId,
+      modelOverride,
     }: {
       apiBase: string;
       agentId: string;
       providerConfigId: string;
+      modelOverride?: string | null;
     }) => {
+      const body: { providerConfigId: string; modelOverride?: string | null } = {
+        providerConfigId,
+      };
+      if (modelOverride !== undefined) {
+        body.modelOverride = modelOverride;
+      }
+
       const res = await fetch(`${apiBase}/api/agents/${agentId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ providerConfigId }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error('Failed to update agent config');
       return res.json();
@@ -510,9 +524,10 @@ export function ChatPage() {
     onMutate: ({ apiBase, agentId }) => {
       setUpdatingWorktreeConfigKey(`${apiBase}:${agentId}`);
     },
-    onSuccess: (_, { apiBase, agentId }) => {
+    onSuccess: (_, { apiBase, agentId, modelOverride }) => {
       const group = worktreeAgentGroups.find((g) => g.apiBase === apiBase);
       const isOnline = group?.agentPresence[agentId]?.online === true;
+      const isModelOverrideUpdate = modelOverride !== undefined;
 
       // Mark for restart if agent has active session
       if (isOnline) {
@@ -521,7 +536,7 @@ export function ChatPage() {
 
       queryClient.invalidateQueries({ queryKey: ['chat-worktree-agent-groups'] });
       toast({
-        title: 'Config updated',
+        title: isModelOverrideUpdate ? 'Model override updated' : 'Config updated',
         description: isOnline ? 'Restart to apply changes.' : 'Will apply on next launch.',
       });
     },
@@ -539,11 +554,17 @@ export function ChatPage() {
 
   // Handle switching provider config for a worktree agent
   const handleSwitchWorktreeConfig = useCallback(
-    (group: WorktreeAgentGroup, agentId: string, providerConfigId: string) => {
+    (
+      group: WorktreeAgentGroup,
+      agentId: string,
+      providerConfigId: string,
+      modelOverride?: string | null,
+    ) => {
       updateWorktreeAgentConfigMutation.mutate({
         apiBase: group.apiBase,
         agentId,
         providerConfigId,
+        modelOverride,
       });
     },
     [updateWorktreeAgentConfigMutation],
@@ -632,6 +653,24 @@ export function ChatPage() {
     if (!inlineTerminalSessionId) return false;
     return terminalWindows.some((w) => w.id === inlineTerminalSessionId && !w.minimized);
   }, [inlineTerminalSessionId, terminalWindows]);
+
+  // Per-agent tab state for Terminal/Session toggle
+  const [agentTabStates, setAgentTabStates] = useState<Record<string, InlineTerminalTab>>({});
+  const inlineActiveTab: InlineTerminalTab =
+    (inlineTerminalAgentId ? agentTabStates[inlineTerminalAgentId] : undefined) ?? 'terminal';
+
+  const handleInlineTabChange = useCallback(
+    (tab: InlineTerminalTab) => {
+      if (!inlineTerminalAgentId) return;
+      setAgentTabStates((prev) => ({ ...prev, [inlineTerminalAgentId]: tab }));
+    },
+    [inlineTerminalAgentId],
+  );
+
+  // Session transcript for Session tab
+  const sessionTranscript = useSessionTranscript(inlineTerminalSessionId, {
+    enableTranscript: inlineActiveTab === 'session',
+  });
 
   // ============================================
   // Handlers
@@ -1425,15 +1464,40 @@ export function ChatPage() {
                         ? () => handleOpenTerminal(inlineTerminalAgentId)
                         : undefined
                     }
+                    activeTab={inlineActiveTab}
+                    onTabChange={handleInlineTabChange}
+                    hasTranscript={Boolean(inlineTerminalSessionId)}
+                    sessionChip={
+                      sessionTranscript.metrics
+                        ? {
+                            metrics: sessionTranscript.metrics,
+                            activeTab: inlineActiveTab,
+                            onSwitchToSession: () => handleInlineTabChange('session'),
+                          }
+                        : undefined
+                    }
                   />
                   <InlineTerminalPanel
                     sessionId={inlineTerminalSessionId}
                     agentName={inlineTerminalAgentName}
                     isWindowOpen={isInlineSessionWindowOpen}
+                    activeTab={inlineActiveTab}
                     emptyState={
                       directLaunchCta ?? (
                         <p>Agent must be online before the terminal is available.</p>
                       )
+                    }
+                    sessionContent={
+                      <SessionViewerPanel
+                        sessionId={inlineTerminalSessionId}
+                        messages={sessionTranscript.messages}
+                        chunks={sessionTranscript.chunks}
+                        metrics={sessionTranscript.metrics}
+                        isLive={sessionTranscript.isLive}
+                        isLoading={sessionTranscript.isLoading}
+                        error={sessionTranscript.error}
+                        warnings={sessionTranscript.session?.warnings}
+                      />
                     }
                   />
                 </div>

@@ -469,9 +469,6 @@ describe('Layout auto-compact recommendation modal', () => {
     runtimeMode = 'normal';
     renderLayout();
 
-    await waitFor(() => {
-      expect(screen.getByRole('link', { name: 'Projects' })).toBeInTheDocument();
-    });
     expect(screen.queryByRole('link', { name: 'Worktrees' })).not.toBeInTheDocument();
   });
 

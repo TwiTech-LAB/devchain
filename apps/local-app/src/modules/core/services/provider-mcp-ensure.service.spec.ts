@@ -37,6 +37,7 @@ describe('ProviderMcpEnsureService', () => {
   };
   let mockAdapterFactory: {
     isSupported: jest.Mock;
+    getAdapter: jest.Mock;
   };
   let mockPreflight: {
     clearCache: jest.Mock;
@@ -76,7 +77,15 @@ describe('ProviderMcpEnsureService', () => {
     mockAdapterFactory = {
       isSupported: jest
         .fn()
-        .mockImplementation((name: string) => ['claude', 'codex', 'gemini'].includes(name)),
+        .mockImplementation((name: string) =>
+          ['claude', 'codex', 'gemini', 'opencode'].includes(name),
+        ),
+      getAdapter: jest.fn().mockImplementation((name: string) => {
+        if (name === 'opencode') {
+          return { providerName: 'opencode', mcpMode: 'project_config' };
+        }
+        return { providerName: name };
+      }),
     };
 
     mockPreflight = {
@@ -677,6 +686,60 @@ describe('ProviderMcpEnsureService', () => {
       expect(result.action).toBe('error');
       // After normalize, this becomes /etc/passwd which is not registered
       expect(result.message).toBe('Project path is not a registered project');
+    });
+  });
+
+  describe('config-file provider (opencode)', () => {
+    const opencodeProvider = createProvider({ id: 'provider-oc', name: 'opencode' });
+
+    it('returns error when opencode has no projectPath', async () => {
+      const result = await service.ensureMcp(opencodeProvider);
+
+      expect(result.success).toBe(false);
+      expect(result.action).toBe('error');
+      expect(result.message).toContain('requires a project path');
+      expect(result.message).toContain('opencode');
+      expect(mockMcpRegistration.listRegistrations).not.toHaveBeenCalled();
+    });
+
+    it('delegates to registration service when projectPath is provided', async () => {
+      const projectPath = '/home/user/project';
+      mockMcpRegistration.listRegistrations.mockResolvedValue({
+        success: true,
+        message: 'OK',
+        entries: [{ alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp' }],
+      });
+
+      const result = await service.ensureMcp(opencodeProvider, projectPath);
+
+      expect(result.success).toBe(true);
+      expect(result.action).toBe('already_configured');
+      expect(mockMcpRegistration.listRegistrations).toHaveBeenCalledWith(opencodeProvider, {
+        cwd: projectPath,
+      });
+    });
+
+    it('registers MCP via config file when not yet configured', async () => {
+      const projectPath = '/home/user/project';
+      mockMcpRegistration.listRegistrations.mockResolvedValue({
+        success: true,
+        message: 'OK',
+        entries: [],
+      });
+      mockMcpRegistration.registerProvider.mockResolvedValue({
+        success: true,
+        message: 'OK',
+      });
+
+      const result = await service.ensureMcp(opencodeProvider, projectPath);
+
+      expect(result.success).toBe(true);
+      expect(result.action).toBe('added');
+      expect(mockMcpRegistration.registerProvider).toHaveBeenCalledWith(
+        opencodeProvider,
+        { endpoint: 'http://127.0.0.1:3000/mcp', alias: 'devchain' },
+        { cwd: projectPath },
+      );
     });
   });
 });

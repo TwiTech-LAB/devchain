@@ -12,7 +12,7 @@ import {
 } from '@nestjs/common';
 import { z } from 'zod';
 import {
-  StorageService,
+  DocumentStorage,
   STORAGE_SERVICE,
   DocumentListFilters,
   ListResult,
@@ -41,7 +41,7 @@ const UpdateDocumentSchema = z.object({
 
 @Controller('api/documents')
 export class DocumentsController {
-  constructor(@Inject(STORAGE_SERVICE) private readonly storage: StorageService) {}
+  constructor(@Inject(STORAGE_SERVICE) private readonly storage: DocumentStorage) {}
 
   @Get()
   async listDocuments(

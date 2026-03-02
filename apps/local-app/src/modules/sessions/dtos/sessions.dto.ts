@@ -33,6 +33,8 @@ export interface SessionDto {
   lastActivityAt?: string | null;
   activityState?: 'idle' | 'busy' | null;
   busySince?: string | null;
+  transcriptPath?: string | null;
+  claudeSessionId?: string | null;
   createdAt: string;
   updatedAt: string;
 }

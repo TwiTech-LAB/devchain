@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.10.5",
+  "version": "0.11.0",
   "description": "AI driven development platform",
   "homepage": "https://devchain.twitechlab.com/",
   "repository": {
@@ -8,9 +8,22 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.11.0": [
+      "Details: https://devchain.twitechlab.com/releases/0.11.0/",
+      "",
+      "Session Reader: full transcript viewer for active sessions with token usage, cost tracking, AI turn grouping, and hotspot detection",
+      "Context tracking: real-time context window progress bars per agent with token tooltips",
+      "Provider model override: change provider and model per agent from the context menu",
+      "OpenCode provider integration with GLM model support",
+      "Multi-provider transcript support for Claude Code and Codex",
+      "Inline session summary bar in terminals: model, cost, context %, compactions",
+      "Major refactoring: decomposed storage, MCP, projects services and UI pages into focused modules"
+    ],
     "0.10.5": [
       "macOS: fix worktree creation without Docker and improve socket detection",
-      "Fix provider validation and mismatch warnings on template import"
+      "Fix provider validation and mismatch warnings on template import",
+      "Fix host preflights skipped when orchestration enabled without Docker",
+      "Fix auto-created project on fresh start — let user pick template instead"
     ],
     "0.10.4": [
       "Enable community/local skill sources by default on new projects",

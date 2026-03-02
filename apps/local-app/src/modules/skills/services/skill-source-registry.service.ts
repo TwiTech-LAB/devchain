@@ -2,7 +2,10 @@ import { Inject, Injectable } from '@nestjs/common';
 import { CommunitySkillSourceAdapter } from '../adapters/community-skill-source.adapter';
 import { LocalSkillSourceAdapter } from '../adapters/local-skill-source.adapter';
 import { SKILL_SOURCE_ADAPTERS, type SkillSourceAdapter } from '../adapters/skill-source.adapter';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type SkillSourceStorage,
+} from '../../storage/interfaces/storage.interface';
 import { createLogger } from '../../../common/logging/logger';
 
 export type SkillSourceKind = 'builtin' | 'community' | 'local';
@@ -19,7 +22,7 @@ const logger = createLogger('SkillSourceRegistryService');
 export class SkillSourceRegistryService {
   constructor(
     @Inject(SKILL_SOURCE_ADAPTERS) private readonly builtInAdapters: SkillSourceAdapter[],
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE) private readonly storage: SkillSourceStorage,
   ) {}
 
   getBuiltInSourceNames(): string[] {

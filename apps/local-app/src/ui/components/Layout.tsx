@@ -1126,7 +1126,7 @@ function LayoutShell({ children, isMainMode }: LayoutProps & { isMainMode: boole
               <div className="flex items-center gap-2">
                 <h1 className="text-xl font-bold">Devchain</h1>
                 <Link
-                  to="/settings"
+                  to="/settings?section=system"
                   onClick={() => setSidebarOpen(false)}
                   className={cn(
                     'relative flex h-7 w-7 items-center justify-center rounded-md border transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2',
@@ -1286,7 +1286,9 @@ function LayoutShell({ children, isMainMode }: LayoutProps & { isMainMode: boole
               sidebarCollapsed ? 'justify-center px-1' : 'justify-between px-4',
             )}
           >
-            <div
+            <Link
+              to="/settings?section=system"
+              onClick={() => setSidebarOpen(false)}
               className={cn(
                 'flex items-center text-sm',
                 sidebarCollapsed ? 'flex-col gap-0.5' : 'gap-2',
@@ -1302,7 +1304,7 @@ function LayoutShell({ children, isMainMode }: LayoutProps & { isMainMode: boole
               ) : (
                 <span className={preflightFooterTextClass}>{preflightBadgeLabel}</span>
               )}
-            </div>
+            </Link>
             {!sidebarCollapsed && appVersion && (
               <span className="text-xs text-muted-foreground">v{appVersion}</span>
             )}

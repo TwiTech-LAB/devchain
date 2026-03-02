@@ -28,6 +28,9 @@ describe('ProjectsService', () => {
   let storage: {
     getProject: jest.Mock;
     listProviders: jest.Mock;
+    listProvidersByIds: jest.Mock;
+    listProviderModelsByProviderIds: jest.Mock;
+    bulkCreateProviderModels: jest.Mock;
     listPrompts: jest.Mock;
     getPrompt: jest.Mock;
     listAgentProfiles: jest.Mock;
@@ -100,6 +103,8 @@ describe('ProjectsService', () => {
       }),
       listProviders: jest.fn(),
       listProvidersByIds: jest.fn().mockResolvedValue([]),
+      listProviderModelsByProviderIds: jest.fn().mockResolvedValue([]),
+      bulkCreateProviderModels: jest.fn().mockResolvedValue({ added: [], existing: [] }),
       listPrompts: jest.fn(),
       getPrompt: jest.fn(),
       listAgentProfiles: jest.fn(),
@@ -1854,8 +1859,7 @@ describe('ProjectsService', () => {
         storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
         storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
 
-        // Even with mappings provided, should fail because no providers are installed
-        // (zero-provider guard fires before canImport check)
+        // Even with mappings provided, should fail because canImport is false
         await expect(
           service.importProject({
             projectId,
@@ -1863,7 +1867,7 @@ describe('ProjectsService', () => {
             dryRun: false,
             familyProviderMappings: { special: 'anything' },
           }),
-        ).rejects.toThrow('No providers are installed');
+        ).rejects.toThrow('Cannot import: some profile families have no available providers');
 
         jest.restoreAllMocks();
       });
@@ -2264,6 +2268,103 @@ describe('ProjectsService', () => {
         );
 
         jest.restoreAllMocks();
+      });
+    });
+
+    describe('presets import', () => {
+      it('stores imported presets preserving modelOverride values', async () => {
+        const projectId = 'project-123';
+        const payload = {
+          prompts: [],
+          profiles: [],
+          agents: [],
+          statuses: [],
+          presets: [
+            {
+              name: 'with-model',
+              agentConfigs: [
+                {
+                  agentName: 'Coder',
+                  providerConfigName: 'claude-config',
+                  modelOverride: 'openai/gpt-5',
+                },
+              ],
+            },
+          ],
+        };
+
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
+          ...payload,
+          version: 1,
+          exportedAt: undefined,
+          initialPrompt: undefined,
+          projectSettings: undefined,
+          watchers: [],
+          subscribers: [],
+          _manifest: undefined,
+        } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+        storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+        storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        storage.listAgentProfiles.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 10000,
+          offset: 0,
+        });
+        storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        sessions.getActiveSessionsForProject.mockReturnValue([]);
+        settings.updateSettings.mockResolvedValue(undefined);
+
+        await service.importProject({ projectId, payload, dryRun: false });
+
+        expect(settings.setProjectPresets).toHaveBeenCalledWith(projectId, payload.presets);
+        expect(settings.clearProjectPresets).not.toHaveBeenCalled();
+      });
+
+      it('stores legacy imported presets without modelOverride (backward compatibility)', async () => {
+        const projectId = 'project-123';
+        const payload = {
+          prompts: [],
+          profiles: [],
+          agents: [],
+          statuses: [],
+          presets: [
+            {
+              name: 'legacy',
+              agentConfigs: [{ agentName: 'Coder', providerConfigName: 'claude-config' }],
+            },
+          ],
+        };
+
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
+          ...payload,
+          version: 1,
+          exportedAt: undefined,
+          initialPrompt: undefined,
+          projectSettings: undefined,
+          watchers: [],
+          subscribers: [],
+          _manifest: undefined,
+        } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+        storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+        storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        storage.listAgentProfiles.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 10000,
+          offset: 0,
+        });
+        storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        sessions.getActiveSessionsForProject.mockReturnValue([]);
+        settings.updateSettings.mockResolvedValue(undefined);
+
+        await service.importProject({ projectId, payload, dryRun: false });
+
+        expect(settings.setProjectPresets).toHaveBeenCalledWith(projectId, payload.presets);
       });
     });
   });
@@ -2899,6 +3000,134 @@ describe('ProjectsService', () => {
 
       expect(result.providerSettings).toBeUndefined();
     });
+
+    it('should include providerModels for providers that have models using a single batch call', async () => {
+      const projectId = 'project-123';
+
+      storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.listAgentProfiles.mockResolvedValue({
+        items: [{ id: 'prof-1', name: 'Test Profile' }],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        {
+          id: 'config-1',
+          profileId: 'prof-1',
+          providerId: 'prov-1',
+          name: 'default',
+          options: null,
+          env: null,
+          position: 0,
+          createdAt: '',
+          updatedAt: '',
+        },
+      ]);
+      storage.listProvidersByIds.mockResolvedValue([
+        { id: 'prov-1', name: 'claude', autoCompactThreshold: null },
+      ]);
+      storage.listProviderModelsByProviderIds.mockResolvedValue([
+        {
+          id: 'model-1',
+          providerId: 'prov-1',
+          name: 'anthropic/claude-sonnet-4-5',
+          position: 1,
+          createdAt: '',
+          updatedAt: '',
+        },
+        {
+          id: 'model-2',
+          providerId: 'prov-1',
+          name: 'anthropic/claude-opus-4-1',
+          position: 2,
+          createdAt: '',
+          updatedAt: '',
+        },
+      ]);
+      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.getInitialSessionPrompt.mockResolvedValue(null);
+      storage.listWatchers.mockResolvedValue([]);
+      storage.listSubscribers.mockResolvedValue([]);
+
+      const result = await service.exportProject(projectId);
+
+      expect(storage.listProviderModelsByProviderIds).toHaveBeenCalledTimes(1);
+      expect(storage.listProviderModelsByProviderIds).toHaveBeenCalledWith(['prov-1']);
+      expect(result.providerModels).toEqual([
+        {
+          providerName: 'claude',
+          models: ['anthropic/claude-sonnet-4-5', 'anthropic/claude-opus-4-1'],
+        },
+      ]);
+    });
+
+    it('should exclude providers with zero models from providerModels export', async () => {
+      const projectId = 'project-123';
+
+      storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.listAgentProfiles.mockResolvedValue({
+        items: [{ id: 'prof-1', name: 'Test Profile' }],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        {
+          id: 'config-1',
+          profileId: 'prof-1',
+          providerId: 'prov-1',
+          name: 'claude-default',
+          options: null,
+          env: null,
+          position: 0,
+          createdAt: '',
+          updatedAt: '',
+        },
+        {
+          id: 'config-2',
+          profileId: 'prof-1',
+          providerId: 'prov-2',
+          name: 'gemini-default',
+          options: null,
+          env: null,
+          position: 1,
+          createdAt: '',
+          updatedAt: '',
+        },
+      ]);
+      storage.listProvidersByIds.mockResolvedValue([
+        { id: 'prov-1', name: 'claude', autoCompactThreshold: null },
+        { id: 'prov-2', name: 'gemini', autoCompactThreshold: null },
+      ]);
+      storage.listProviderModelsByProviderIds.mockResolvedValue([
+        {
+          id: 'model-1',
+          providerId: 'prov-1',
+          name: 'anthropic/claude-sonnet-4-5',
+          position: 1,
+          createdAt: '',
+          updatedAt: '',
+        },
+      ]);
+      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.getInitialSessionPrompt.mockResolvedValue(null);
+      storage.listWatchers.mockResolvedValue([]);
+      storage.listSubscribers.mockResolvedValue([]);
+
+      const result = await service.exportProject(projectId);
+
+      expect(storage.listProviderModelsByProviderIds).toHaveBeenCalledTimes(1);
+      expect(storage.listProviderModelsByProviderIds).toHaveBeenCalledWith(['prov-1', 'prov-2']);
+      expect(result.providerModels).toEqual([
+        {
+          providerName: 'claude',
+          models: ['anthropic/claude-sonnet-4-5'],
+        },
+      ]);
+    });
   });
 
   describe('importProject providerSettings', () => {
@@ -2906,6 +3135,7 @@ describe('ProjectsService', () => {
 
     function buildMinimalPayload(
       providerSettings?: Array<{ name: string; autoCompactThreshold?: number | null }>,
+      providerModels?: Array<{ providerName: string; models: string[] }>,
     ) {
       return {
         version: 1,
@@ -2918,6 +3148,7 @@ describe('ProjectsService', () => {
         statuses: [],
         watchers: [],
         subscribers: [],
+        providerModels: providerModels ?? [],
         ...(providerSettings !== undefined ? { providerSettings } : {}),
       } as ReturnType<typeof devchainShared.ExportSchema.parse>;
     }
@@ -3021,6 +3252,186 @@ describe('ProjectsService', () => {
         return updatePayload.autoCompactThreshold !== undefined;
       });
       expect(thresholdCalls).toHaveLength(0);
+
+      jest.restoreAllMocks();
+    });
+
+    it('should import providerModels for matching local providers', async () => {
+      const payload = buildMinimalPayload(undefined, [
+        { providerName: 'claude', models: ['anthropic/claude-sonnet-4-5', 'openai/gpt-5'] },
+      ]);
+      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(payload);
+      setupImportMocks();
+
+      storage.listProviders.mockResolvedValue({
+        items: [{ id: 'prov-1', name: 'claude', autoCompactThreshold: null }],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      storage.bulkCreateProviderModels.mockResolvedValue({
+        added: ['anthropic/claude-sonnet-4-5', 'openai/gpt-5'],
+        existing: [],
+      });
+
+      await service.importProject({ projectId, payload, dryRun: false });
+
+      expect(storage.bulkCreateProviderModels).toHaveBeenCalledTimes(1);
+      expect(storage.bulkCreateProviderModels).toHaveBeenCalledWith('prov-1', [
+        'anthropic/claude-sonnet-4-5',
+        'openai/gpt-5',
+      ]);
+
+      jest.restoreAllMocks();
+    });
+
+    it('should skip providerModels entries when provider is not found locally', async () => {
+      const payload = buildMinimalPayload(undefined, [
+        { providerName: 'missing-provider', models: ['model-a'] },
+      ]);
+      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(payload);
+      setupImportMocks();
+
+      storage.listProviders.mockResolvedValue({
+        items: [{ id: 'prov-1', name: 'claude', autoCompactThreshold: null }],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+
+      await service.importProject({ projectId, payload, dryRun: false });
+
+      expect(storage.bulkCreateProviderModels).not.toHaveBeenCalled();
+
+      jest.restoreAllMocks();
+    });
+
+    it('should deduplicate existing models via bulkCreateProviderModels existing result', async () => {
+      const payload = buildMinimalPayload(undefined, [
+        { providerName: 'claude', models: ['anthropic/claude-sonnet-4-5', 'openai/gpt-5'] },
+      ]);
+      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(payload);
+      setupImportMocks();
+
+      storage.listProviders.mockResolvedValue({
+        items: [{ id: 'prov-1', name: 'claude', autoCompactThreshold: null }],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      storage.bulkCreateProviderModels.mockResolvedValue({
+        added: ['openai/gpt-5'],
+        existing: ['anthropic/claude-sonnet-4-5'],
+      });
+
+      const result = await service.importProject({ projectId, payload, dryRun: false });
+
+      expect(storage.bulkCreateProviderModels).toHaveBeenCalledTimes(1);
+      expect(result.success).toBe(true);
+
+      jest.restoreAllMocks();
+    });
+
+    it('should no-op when providerModels is an empty array', async () => {
+      const payload = buildMinimalPayload(undefined, []);
+      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(payload);
+      setupImportMocks();
+
+      storage.listProviders.mockResolvedValue({
+        items: [{ id: 'prov-1', name: 'claude', autoCompactThreshold: null }],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+
+      await service.importProject({ projectId, payload, dryRun: false });
+
+      expect(storage.bulkCreateProviderModels).not.toHaveBeenCalled();
+      expect(storage.listProviders).toHaveBeenCalledTimes(2);
+
+      jest.restoreAllMocks();
+    });
+
+    it('should preserve providerModels names and order on export/import round trip', async () => {
+      storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.listAgentProfiles.mockResolvedValue({
+        items: [{ id: 'prof-1', name: 'Test Profile' }],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        {
+          id: 'config-1',
+          profileId: 'prof-1',
+          providerId: 'prov-1',
+          name: 'default',
+          options: null,
+          env: null,
+          position: 0,
+          createdAt: '',
+          updatedAt: '',
+        },
+      ]);
+      storage.listProvidersByIds.mockResolvedValue([
+        { id: 'prov-1', name: 'claude', autoCompactThreshold: null },
+      ]);
+      storage.listProviderModelsByProviderIds.mockResolvedValue([
+        {
+          id: 'model-1',
+          providerId: 'prov-1',
+          name: 'anthropic/claude-opus-4-1',
+          position: 1,
+          createdAt: '',
+          updatedAt: '',
+        },
+        {
+          id: 'model-2',
+          providerId: 'prov-1',
+          name: 'anthropic/claude-sonnet-4-5',
+          position: 2,
+          createdAt: '',
+          updatedAt: '',
+        },
+      ]);
+      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.getInitialSessionPrompt.mockResolvedValue(null);
+      storage.listWatchers.mockResolvedValue([]);
+      storage.listSubscribers.mockResolvedValue([]);
+
+      const exported = await service.exportProject(projectId);
+      expect(exported.providerModels).toEqual([
+        {
+          providerName: 'claude',
+          models: ['anthropic/claude-opus-4-1', 'anthropic/claude-sonnet-4-5'],
+        },
+      ]);
+
+      setupImportMocks();
+      storage.listProviders.mockResolvedValue({
+        items: [{ id: 'prov-1', name: 'claude', autoCompactThreshold: null }],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      storage.bulkCreateProviderModels.mockResolvedValue({
+        added: ['anthropic/claude-opus-4-1', 'anthropic/claude-sonnet-4-5'],
+        existing: [],
+      });
+
+      const importPayload = buildMinimalPayload(undefined, exported.providerModels);
+      jest
+        .spyOn(devchainShared.ExportSchema, 'parse')
+        .mockReturnValue(importPayload as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+      await service.importProject({ projectId, payload: importPayload, dryRun: false });
+
+      expect(storage.bulkCreateProviderModels).toHaveBeenCalledTimes(1);
+      expect(storage.bulkCreateProviderModels).toHaveBeenCalledWith('prov-1', [
+        'anthropic/claude-opus-4-1',
+        'anthropic/claude-sonnet-4-5',
+      ]);
 
       jest.restoreAllMocks();
     });
@@ -4526,6 +4937,171 @@ describe('ProjectsService', () => {
       expect(updatedAgents[1].providerConfigId).toBe(geminiConfigId);
     });
 
+    it('should apply preset and forward explicit modelOverride values to updateAgent', async () => {
+      const preset = {
+        name: 'default',
+        description: 'Default preset',
+        agentConfigs: [
+          {
+            agentName: 'Coder',
+            providerConfigName: 'claude-config',
+            modelOverride: 'openai/gpt-5',
+          },
+          { agentName: 'Reviewer', providerConfigName: 'gemini-config', modelOverride: null },
+        ],
+      };
+
+      (settings as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue([preset]);
+
+      const profileId = 'profile-1';
+      const claudeConfigId = 'config-claude';
+      const geminiConfigId = 'config-gemini';
+
+      storage.listAgentProfiles.mockResolvedValue({
+        items: [
+          {
+            id: profileId,
+            projectId,
+            name: 'CodeOpus',
+            familySlug: 'coder',
+            providerId: 'claude',
+            instructions: null,
+            temperature: null,
+            maxTokens: null,
+            options: null,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+        ],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+
+      storage.listAgents.mockResolvedValue({
+        items: [
+          { id: 'agent-1', name: 'Coder', profileId, providerConfigId: null, modelOverride: null },
+          {
+            id: 'agent-2',
+            name: 'Reviewer',
+            profileId,
+            providerConfigId: null,
+            modelOverride: 'stale-model',
+          },
+        ],
+        total: 2,
+        limit: 1000,
+        offset: 0,
+      });
+
+      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        {
+          id: claudeConfigId,
+          profileId,
+          providerId: 'claude',
+          name: 'claude-config',
+          options: null,
+          env: null,
+          createdAt: '',
+          updatedAt: '',
+        },
+        {
+          id: geminiConfigId,
+          profileId,
+          providerId: 'gemini',
+          name: 'gemini-config',
+          options: null,
+          env: null,
+          createdAt: '',
+          updatedAt: '',
+        },
+      ]);
+
+      storage.updateAgent.mockResolvedValue({} as never);
+
+      await service.applyPreset(projectId, 'default');
+
+      expect(storage.updateAgent).toHaveBeenNthCalledWith(1, 'agent-1', {
+        providerConfigId: claudeConfigId,
+        modelOverride: 'openai/gpt-5',
+      });
+      expect(storage.updateAgent).toHaveBeenNthCalledWith(2, 'agent-2', {
+        providerConfigId: geminiConfigId,
+        modelOverride: null,
+      });
+    });
+
+    it('should apply preset and coerce omitted modelOverride to null', async () => {
+      const preset = {
+        name: 'default',
+        description: 'Default preset',
+        agentConfigs: [{ agentName: 'Coder', providerConfigName: 'claude-config' }],
+      };
+
+      (settings as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue([preset]);
+
+      const profileId = 'profile-1';
+      const claudeConfigId = 'config-claude';
+
+      storage.listAgentProfiles.mockResolvedValue({
+        items: [
+          {
+            id: profileId,
+            projectId,
+            name: 'CodeOpus',
+            familySlug: 'coder',
+            providerId: 'claude',
+            instructions: null,
+            temperature: null,
+            maxTokens: null,
+            options: null,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+        ],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+
+      storage.listAgents.mockResolvedValue({
+        items: [
+          {
+            id: 'agent-1',
+            name: 'Coder',
+            profileId,
+            providerConfigId: null,
+            modelOverride: 'stale-model',
+          },
+        ],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+
+      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        {
+          id: claudeConfigId,
+          profileId,
+          providerId: 'claude',
+          name: 'claude-config',
+          options: null,
+          env: null,
+          createdAt: '',
+          updatedAt: '',
+        },
+      ]);
+
+      storage.updateAgent.mockResolvedValue({} as never);
+
+      await service.applyPreset(projectId, 'default');
+
+      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', {
+        providerConfigId: claudeConfigId,
+        modelOverride: null,
+      });
+    });
+
     it('should throw NotFoundError when preset not found', async () => {
       (settings as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue([
         { name: 'other', agentConfigs: [] },
@@ -4994,1060 +5570,96 @@ describe('ProjectsService', () => {
 
       expect(result.presets).toEqual(overridePresets);
     });
-  });
 
-  describe('createFromTemplate provider substitution warnings', () => {
-    const profileIdClaude = 'aa111111-1111-1111-1111-111111111111';
-    const profileIdCodex = 'aa222222-2222-2222-2222-222222222222';
-    const agentId1 = 'aa333333-3333-3333-3333-333333333333';
-    const agentId2 = 'aa444444-4444-4444-4444-444444444444';
-    const providerId = 'aa555555-5555-5555-5555-555555555555';
-
-    function setupTemplateMock(template: Record<string, unknown>) {
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-        ...template,
-        exportedAt: undefined,
-        initialPrompt: undefined,
-        projectSettings: undefined,
-        watchers: [],
-        subscribers: [],
-        _manifest: undefined,
-      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
-
-      unifiedTemplateService.getTemplate.mockResolvedValue({
-        content: template,
-        source: 'bundled',
-        version: null,
-      });
-    }
-
-    afterEach(() => {
-      jest.restoreAllMocks();
-    });
-
-    it('should return warnings when non-family profile provider is substituted', async () => {
-      // Template uses "claude" but only "codex" is installed
-      const template = {
-        version: 1,
-        prompts: [],
-        profiles: [{ id: profileIdClaude, name: 'Claude Profile', provider: { name: 'claude' } }],
-        agents: [{ id: agentId1, name: 'Agent A', profileId: profileIdClaude }],
-        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
-      };
-
-      setupTemplateMock(template);
-
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: providerId, name: 'codex' }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'new-proj', name: 'Test' },
-        imported: { prompts: 0, profiles: 1, agents: 1, statuses: 1 },
-        mappings: {
-          promptIdMap: {},
-          profileIdMap: { [profileIdClaude]: 'new-profile' },
-          agentIdMap: { [agentId1]: 'new-agent' },
-          statusIdMap: {},
-        },
-      });
-
-      const result = await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'test-template',
-      });
-
-      expect(result.success).toBe(true);
-      expect(result.warnings).toBeDefined();
-      expect(result.warnings).toHaveLength(1);
-      expect(result.warnings![0]).toEqual({
-        type: 'provider_mismatch',
-        originalProvider: 'claude',
-        substituteProvider: 'codex',
-        agentNames: ['Agent A'],
-      });
-    });
-
-    it('should return no warnings when all providers are available', async () => {
-      const template = {
-        version: 1,
-        prompts: [],
-        profiles: [{ id: profileIdClaude, name: 'Claude Profile', provider: { name: 'claude' } }],
-        agents: [{ id: agentId1, name: 'Agent A', profileId: profileIdClaude }],
-        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
-      };
-
-      setupTemplateMock(template);
-
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: providerId, name: 'claude' }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'new-proj', name: 'Test' },
-        imported: { prompts: 0, profiles: 1, agents: 1, statuses: 1 },
-        mappings: {
-          promptIdMap: {},
-          profileIdMap: { [profileIdClaude]: 'new-profile' },
-          agentIdMap: { [agentId1]: 'new-agent' },
-          statusIdMap: {},
-        },
-      });
-
-      const result = await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'test-template',
-      });
-
-      expect(result.success).toBe(true);
-      expect(result.warnings).toBeUndefined();
-    });
-
-    it('should aggregate multiple agents referencing the same substituted profile', async () => {
-      const template = {
-        version: 1,
-        prompts: [],
-        profiles: [{ id: profileIdClaude, name: 'Claude Profile', provider: { name: 'claude' } }],
-        agents: [
-          { id: agentId1, name: 'Agent A', profileId: profileIdClaude },
-          { id: agentId2, name: 'Agent B', profileId: profileIdClaude },
-        ],
-        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
-      };
-
-      setupTemplateMock(template);
-
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: providerId, name: 'codex' }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'new-proj', name: 'Test' },
-        imported: { prompts: 0, profiles: 1, agents: 2, statuses: 1 },
-        mappings: {
-          promptIdMap: {},
-          profileIdMap: { [profileIdClaude]: 'new-profile' },
-          agentIdMap: { [agentId1]: 'new-agent-1', [agentId2]: 'new-agent-2' },
-          statusIdMap: {},
-        },
-      });
-
-      const result = await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'test-template',
-      });
-
-      expect(result.success).toBe(true);
-      expect(result.warnings).toHaveLength(1);
-      expect(result.warnings![0].agentNames).toEqual(['Agent A', 'Agent B']);
-    });
-
-    it('should throw ValidationError when no providers installed but template has profiles', async () => {
-      const template = {
-        version: 1,
-        prompts: [],
-        profiles: [{ id: profileIdClaude, name: 'Claude Profile', provider: { name: 'claude' } }],
-        agents: [{ id: agentId1, name: 'Agent A', profileId: profileIdClaude }],
-        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
-      };
-
-      setupTemplateMock(template);
-
-      storage.listProviders.mockResolvedValue({
-        items: [],
-        total: 0,
-        limit: 100,
-        offset: 0,
-      });
-
-      await expect(
-        service.createFromTemplate({
-          name: 'Test Project',
-          rootPath: '/test',
-          slug: 'test-template',
-        }),
-      ).rejects.toThrow(ValidationError);
-
-      await expect(
-        service.createFromTemplate({
-          name: 'Test Project',
-          rootPath: '/test',
-          slug: 'test-template',
-        }),
-      ).rejects.toThrow('No providers are installed');
-    });
-
-    it('should not throw when no providers installed and template has no profiles', async () => {
-      const template = {
-        version: 1,
-        prompts: [],
-        profiles: [],
-        agents: [],
-        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
-      };
-
-      setupTemplateMock(template);
-
-      storage.listProviders.mockResolvedValue({
-        items: [],
-        total: 0,
-        limit: 100,
-        offset: 0,
-      });
-
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'new-proj', name: 'Test' },
-        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 1 },
-        mappings: { promptIdMap: {}, profileIdMap: {}, agentIdMap: {}, statusIdMap: {} },
-      });
-
-      const result = await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'test-template',
-      });
-
-      expect(result.success).toBe(true);
-    });
-
-    it('should not substitute family-based profiles in fallback logic', async () => {
-      // Family profiles should be handled by family selection, not fallback substitution
-      const template = {
-        version: 1,
-        prompts: [],
-        profiles: [
-          {
-            id: profileIdClaude,
-            name: 'Coder Claude',
-            provider: { name: 'claude' },
-            familySlug: 'coder',
-          },
-          {
-            id: profileIdCodex,
-            name: 'Coder Codex',
-            provider: { name: 'codex' },
-            familySlug: 'coder',
-          },
-        ],
-        agents: [{ id: agentId1, name: 'Coder', profileId: profileIdCodex }],
-        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
-      };
-
-      setupTemplateMock(template);
-
-      // Only claude is installed — codex (agent's original) is missing
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: providerId, name: 'claude' }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'new-proj', name: 'Test' },
-        imported: { prompts: 0, profiles: 1, agents: 1, statuses: 1 },
-        mappings: {
-          promptIdMap: {},
-          profileIdMap: { [profileIdClaude]: 'new-profile' },
-          agentIdMap: { [agentId1]: 'new-agent' },
-          statusIdMap: {},
-        },
-      });
-
-      const result = await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'test-template',
-      });
-
-      expect(result.success).toBe(true);
-      // Family profiles are handled by family selection logic — no fallback substitution warning
-      expect(result.warnings).toBeUndefined();
-
-      // Verify that the claude profile was selected (family alternative), not a substitution
-      const [, templatePayload] = storage.createProjectWithTemplate.mock.calls[0];
-      expect(templatePayload.profiles).toHaveLength(1);
-      expect(templatePayload.profiles[0].name).toBe('Coder Claude');
-    });
-
-    it('should handle mixed family and non-family profiles correctly', async () => {
-      const nonFamilyProfileId = 'aa666666-6666-6666-6666-666666666666';
-      const agentId3 = 'aa777777-7777-7777-7777-777777777777';
-
-      const template = {
-        version: 1,
-        prompts: [],
-        profiles: [
-          // Family profiles
-          {
-            id: profileIdClaude,
-            name: 'Coder Claude',
-            provider: { name: 'claude' },
-            familySlug: 'coder',
-          },
-          {
-            id: profileIdCodex,
-            name: 'Coder Codex',
-            provider: { name: 'codex' },
-            familySlug: 'coder',
-          },
-          // Non-family profile with missing provider
-          { id: nonFamilyProfileId, name: 'Custom GPT', provider: { name: 'openai' } },
-        ],
-        agents: [
-          { id: agentId1, name: 'Coder', profileId: profileIdCodex },
-          { id: agentId3, name: 'Reviewer', profileId: nonFamilyProfileId },
-        ],
-        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
-      };
-
-      setupTemplateMock(template);
-
-      // Only claude is installed — codex and openai are missing
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: providerId, name: 'claude' }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'new-proj', name: 'Test' },
-        imported: { prompts: 0, profiles: 2, agents: 2, statuses: 1 },
-        mappings: {
-          promptIdMap: {},
-          profileIdMap: {
-            [profileIdClaude]: 'new-profile-1',
-            [nonFamilyProfileId]: 'new-profile-2',
-          },
-          agentIdMap: { [agentId1]: 'new-agent-1', [agentId3]: 'new-agent-3' },
-          statusIdMap: {},
-        },
-      });
-
-      const result = await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'test-template',
-      });
-
-      expect(result.success).toBe(true);
-      // Only the non-family profile should generate a substitution warning
-      expect(result.warnings).toHaveLength(1);
-      expect(result.warnings![0]).toEqual({
-        type: 'provider_mismatch',
-        originalProvider: 'openai',
-        substituteProvider: 'claude',
-        agentNames: ['Reviewer'],
-      });
-    });
-
-    it('should suppress warnings when preset covers all agents with available providers', async () => {
-      // Profile primary provider is "claude" but has providerConfigs for both claude and codex.
-      // Preset maps all agents to "codex-high" config (backed by codex provider).
-      // Only codex is installed. Without preset awareness, this would generate a mismatch warning.
+    it('round-trips exported presets with modelOverride through import', async () => {
+      const projectId = 'project-123';
       const presets = [
         {
-          name: 'Codex Only',
-          agentConfigs: [{ agentName: 'Brainstormer', providerConfigName: 'codex-high' }],
-        },
-      ];
-      const template = {
-        version: 1,
-        prompts: [],
-        profiles: [
-          {
-            id: profileIdClaude,
-            name: 'Architect',
-            provider: { name: 'claude' },
-            providerConfigs: [
-              { name: 'opus', providerName: 'claude' },
-              { name: 'codex-high', providerName: 'codex' },
-            ],
-          },
-        ],
-        agents: [{ id: agentId1, name: 'Brainstormer', profileId: profileIdClaude }],
-        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
-        presets,
-      };
-
-      setupTemplateMock(template);
-
-      // Only codex is installed (not claude)
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: providerId, name: 'codex' }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'new-proj', name: 'Test' },
-        imported: { prompts: 0, profiles: 1, agents: 1, statuses: 1 },
-        mappings: {
-          promptIdMap: {},
-          profileIdMap: { [profileIdClaude]: 'new-profile' },
-          agentIdMap: { [agentId1]: 'new-agent' },
-          statusIdMap: {},
-        },
-      });
-
-      storage.createProfileProviderConfig.mockResolvedValue({ id: 'new-config-1' });
-
-      // applyPreset reads presets back from settings
-      settings.getProjectPresets.mockReturnValue(presets);
-      (settings as Record<string, jest.Mock>).setProjectActivePreset = jest.fn();
-
-      // applyPreset needs listAgents for agent lookup
-      storage.listAgents.mockResolvedValue({
-        items: [
-          {
-            id: 'new-agent',
-            name: 'Brainstormer',
-            profileId: 'new-profile',
-            providerConfigId: null,
-          },
-        ],
-        total: 1,
-        limit: 1000,
-        offset: 0,
-      });
-
-      storage.updateAgent.mockResolvedValue({});
-
-      const result = await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'test-template',
-        presetName: 'Codex Only',
-      });
-
-      expect(result.success).toBe(true);
-      // No warnings — preset ensures all agents will use codex via providerConfig
-      expect(result.warnings).toBeUndefined();
-    });
-
-    it('should warn only for uncovered agents when preset is partial', async () => {
-      // Two agents: preset only covers one of them
-      const presets = [
-        {
-          name: 'Partial Preset',
-          // Only covers Brainstormer, not Reviewer
-          agentConfigs: [{ agentName: 'Brainstormer', providerConfigName: 'codex-high' }],
-        },
-      ];
-      const template = {
-        version: 1,
-        prompts: [],
-        profiles: [
-          {
-            id: profileIdClaude,
-            name: 'Claude Profile',
-            provider: { name: 'claude' },
-            providerConfigs: [
-              { name: 'opus', providerName: 'claude' },
-              { name: 'codex-high', providerName: 'codex' },
-            ],
-          },
-          {
-            id: profileIdCodex,
-            name: 'GPT Profile',
-            provider: { name: 'openai' },
-          },
-        ],
-        agents: [
-          { id: agentId1, name: 'Brainstormer', profileId: profileIdClaude },
-          { id: agentId2, name: 'Reviewer', profileId: profileIdCodex },
-        ],
-        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
-        presets,
-      };
-
-      setupTemplateMock(template);
-
-      // Only codex is installed
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: providerId, name: 'codex' }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'new-proj', name: 'Test' },
-        imported: { prompts: 0, profiles: 2, agents: 2, statuses: 1 },
-        mappings: {
-          promptIdMap: {},
-          profileIdMap: { [profileIdClaude]: 'new-profile-1', [profileIdCodex]: 'new-profile-2' },
-          agentIdMap: { [agentId1]: 'new-agent-1', [agentId2]: 'new-agent-2' },
-          statusIdMap: {},
-        },
-      });
-
-      storage.createProfileProviderConfig.mockResolvedValue({ id: 'new-config-1' });
-
-      // applyPreset reads presets back from settings
-      settings.getProjectPresets.mockReturnValue(presets);
-      (settings as Record<string, jest.Mock>).setProjectActivePreset = jest.fn();
-
-      storage.listAgents.mockResolvedValue({
-        items: [
-          {
-            id: 'new-agent-1',
-            name: 'Brainstormer',
-            profileId: 'new-profile-1',
-            providerConfigId: null,
-          },
-          {
-            id: 'new-agent-2',
-            name: 'Reviewer',
-            profileId: 'new-profile-2',
-            providerConfigId: null,
-          },
-        ],
-        total: 2,
-        limit: 1000,
-        offset: 0,
-      });
-
-      storage.updateAgent.mockResolvedValue({});
-
-      const result = await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'test-template',
-        presetName: 'Partial Preset',
-      });
-
-      expect(result.success).toBe(true);
-      // Warning only for Reviewer (uncovered by preset), not Brainstormer (covered)
-      expect(result.warnings).toHaveLength(1);
-      expect(result.warnings![0]).toEqual({
-        type: 'provider_mismatch',
-        originalProvider: 'openai',
-        substituteProvider: 'codex',
-        agentNames: ['Reviewer'],
-      });
-    });
-
-    it('should resolve preset providers per agent/profile (not globally) when config names collide', async () => {
-      // Two profiles share config name "gpt-high" but with different providers.
-      // Preset assigns Agent A to profile1's "gpt-high" (codex) and Agent B to profile2's "gpt-high" (openai).
-      // Only codex is installed — Agent B should still get a warning.
-      const profile2Id = 'aa888888-8888-8888-8888-888888888888';
-      const presets = [
-        {
-          name: 'Colliding Names',
+          name: 'with-model',
+          description: 'Has model override',
           agentConfigs: [
-            { agentName: 'Agent A', providerConfigName: 'gpt-high' },
-            { agentName: 'Agent B', providerConfigName: 'gpt-high' },
+            {
+              agentName: 'Coder',
+              providerConfigName: 'claude-config',
+              modelOverride: 'openai/gpt-5',
+            },
+            {
+              agentName: 'Reviewer',
+              providerConfigName: 'gemini-config',
+              modelOverride: null,
+            },
           ],
         },
-      ];
-
-      const template = {
-        version: 1,
-        prompts: [],
-        profiles: [
-          {
-            id: profileIdClaude,
-            name: 'Profile A',
-            provider: { name: 'claude' },
-            providerConfigs: [{ name: 'gpt-high', providerName: 'codex' }],
-          },
-          {
-            id: profile2Id,
-            name: 'Profile B',
-            provider: { name: 'claude' },
-            providerConfigs: [{ name: 'gpt-high', providerName: 'openai' }],
-          },
-        ],
-        agents: [
-          { id: agentId1, name: 'Agent A', profileId: profileIdClaude },
-          { id: agentId2, name: 'Agent B', profileId: profile2Id },
-        ],
-        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
-        presets,
-      };
-
-      setupTemplateMock(template);
-
-      // Only codex is installed (not openai or claude)
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: providerId, name: 'codex' }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'new-proj', name: 'Test' },
-        imported: { prompts: 0, profiles: 2, agents: 2, statuses: 1 },
-        mappings: {
-          promptIdMap: {},
-          profileIdMap: { [profileIdClaude]: 'new-profile-1', [profile2Id]: 'new-profile-2' },
-          agentIdMap: { [agentId1]: 'new-agent-1', [agentId2]: 'new-agent-2' },
-          statusIdMap: {},
-        },
-      });
-
-      storage.createProfileProviderConfig.mockResolvedValue({ id: 'new-config-1' });
-
-      // applyPreset reads presets back from settings
-      settings.getProjectPresets.mockReturnValue(presets);
-      (settings as Record<string, jest.Mock>).setProjectActivePreset = jest.fn();
-
-      storage.listAgents.mockResolvedValue({
-        items: [
-          {
-            id: 'new-agent-1',
-            name: 'Agent A',
-            profileId: 'new-profile-1',
-            providerConfigId: null,
-          },
-          {
-            id: 'new-agent-2',
-            name: 'Agent B',
-            profileId: 'new-profile-2',
-            providerConfigId: null,
-          },
-        ],
-        total: 2,
-        limit: 1000,
-        offset: 0,
-      });
-
-      storage.updateAgent.mockResolvedValue({});
-
-      const result = await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'test-template',
-        presetName: 'Colliding Names',
-      });
-
-      expect(result.success).toBe(true);
-      // Agent A is covered (codex available), Agent B is NOT (openai unavailable)
-      expect(result.warnings).toHaveLength(1);
-      expect(result.warnings![0].agentNames).toEqual(['Agent B']);
-    });
-
-    it('should show preset-resolved provider in warning instead of profile default', async () => {
-      // Profile has provider.name "gemini" but the agent's preset config resolves to "claude".
-      // Warning should say "claude → codex", not "gemini → codex".
-      const presets = [
         {
-          name: 'Codex-Codex-Opus',
-          agentConfigs: [
-            { agentName: 'Brainstormer', providerConfigName: 'codex-high' },
-            { agentName: 'Code Reviewer', providerConfigName: 'opus' },
-          ],
+          name: 'legacy-no-model',
+          agentConfigs: [{ agentName: 'Tester', providerConfigName: 'default-config' }],
         },
       ];
-      const reviewerProfileId = 'aa666666-6666-6666-6666-666666666666';
-      const template = {
-        version: 1,
-        prompts: [],
-        profiles: [
-          {
-            id: profileIdClaude,
-            name: 'Architect',
-            provider: { name: 'claude' },
-            familySlug: 'architect',
-            providerConfigs: [
-              { name: 'opus', providerName: 'claude' },
-              { name: 'codex-high', providerName: 'codex' },
-            ],
-          },
-          {
-            id: reviewerProfileId,
-            name: 'Code Reviewer',
-            provider: { name: 'gemini' },
-            familySlug: 'code reviewer',
-            providerConfigs: [
-              { name: 'gemini3', providerName: 'gemini' },
-              { name: 'codex-high', providerName: 'codex' },
-              { name: 'opus', providerName: 'claude' },
-            ],
-          },
-        ],
-        agents: [
-          { id: agentId1, name: 'Brainstormer', profileId: profileIdClaude },
-          { id: agentId2, name: 'Code Reviewer', profileId: reviewerProfileId },
-        ],
-        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
-        presets,
-      };
 
-      setupTemplateMock(template);
+      (settings as { getProjectPresets: jest.Mock }).getProjectPresets = jest
+        .fn()
+        .mockReturnValue(presets);
 
-      // Only codex is installed (not claude or gemini)
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: providerId, name: 'codex' }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'new-proj', name: 'Test' },
-        imported: { prompts: 0, profiles: 2, agents: 2, statuses: 1 },
-        mappings: {
-          promptIdMap: {},
-          profileIdMap: {
-            [profileIdClaude]: 'new-profile-1',
-            [reviewerProfileId]: 'new-profile-2',
-          },
-          agentIdMap: { [agentId1]: 'new-agent-1', [agentId2]: 'new-agent-2' },
-          statusIdMap: {},
-        },
-      });
-
-      storage.createProfileProviderConfig.mockResolvedValue({ id: 'new-config-1' });
-
-      settings.getProjectPresets.mockReturnValue(presets);
-      (settings as Record<string, jest.Mock>).setProjectActivePreset = jest.fn();
-
-      storage.listAgents.mockResolvedValue({
-        items: [
-          {
-            id: 'new-agent-1',
-            name: 'Brainstormer',
-            profileId: 'new-profile-1',
-            providerConfigId: null,
-          },
-          {
-            id: 'new-agent-2',
-            name: 'Code Reviewer',
-            profileId: 'new-profile-2',
-            providerConfigId: null,
-          },
-        ],
-        total: 2,
-        limit: 1000,
-        offset: 0,
-      });
-
-      storage.updateAgent.mockResolvedValue({});
-
-      const result = await service.createFromTemplate({
+      storage.getProject.mockResolvedValue({
+        id: projectId,
         name: 'Test Project',
-        rootPath: '/test',
-        slug: 'test-template',
-        presetName: 'Codex-Codex-Opus',
+        rootPath: '/test/path',
+        isTemplate: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       });
-
-      expect(result.success).toBe(true);
-      // Brainstormer covered (codex-high → codex, installed)
-      // Code Reviewer NOT covered (opus → claude, NOT installed)
-      // Warning should show "claude" (preset-resolved) not "gemini" (profile default)
-      expect(result.warnings).toHaveLength(1);
-      expect(result.warnings![0]).toEqual({
-        type: 'provider_mismatch',
-        originalProvider: 'claude',
-        substituteProvider: 'codex',
-        agentNames: ['Code Reviewer'],
-      });
-    });
-
-    it('should split warnings by resolved provider when same profile has agents needing different providers', async () => {
-      // Two agents share one profile but preset assigns them to different unavailable providers.
-      // Agent A → "opus" (claude), Agent B → "gemini3" (gemini). Only codex installed.
-      // Should produce two separate warnings: one for claude, one for gemini.
-      const sharedProfileId = 'aa777777-7777-7777-7777-777777777777';
-      const agentId3 = 'aa888888-8888-8888-8888-888888888888';
-      const presets = [
-        {
-          name: 'Mixed Preset',
-          agentConfigs: [
-            { agentName: 'Agent A', providerConfigName: 'opus' },
-            { agentName: 'Agent B', providerConfigName: 'gemini3' },
-          ],
-        },
-      ];
-      const template = {
-        version: 1,
-        prompts: [],
-        profiles: [
-          {
-            id: sharedProfileId,
-            name: 'Shared Profile',
-            provider: { name: 'openai' },
-            providerConfigs: [
-              { name: 'opus', providerName: 'claude' },
-              { name: 'gemini3', providerName: 'gemini' },
-              { name: 'codex-high', providerName: 'codex' },
-            ],
-          },
-        ],
-        agents: [
-          { id: agentId1, name: 'Agent A', profileId: sharedProfileId },
-          { id: agentId3, name: 'Agent B', profileId: sharedProfileId },
-        ],
-        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
-        presets,
-      };
-
-      setupTemplateMock(template);
-
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: providerId, name: 'codex' }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'new-proj', name: 'Test' },
-        imported: { prompts: 0, profiles: 1, agents: 2, statuses: 1 },
-        mappings: {
-          promptIdMap: {},
-          profileIdMap: { [sharedProfileId]: 'new-profile-1' },
-          agentIdMap: { [agentId1]: 'new-agent-1', [agentId3]: 'new-agent-2' },
-          statusIdMap: {},
-        },
-      });
-
-      storage.createProfileProviderConfig.mockResolvedValue({ id: 'new-config-1' });
-
-      settings.getProjectPresets.mockReturnValue(presets);
-      (settings as Record<string, jest.Mock>).setProjectActivePreset = jest.fn();
-
-      storage.listAgents.mockResolvedValue({
-        items: [
-          {
-            id: 'new-agent-1',
-            name: 'Agent A',
-            profileId: 'new-profile-1',
-            providerConfigId: null,
-          },
-          {
-            id: 'new-agent-2',
-            name: 'Agent B',
-            profileId: 'new-profile-1',
-            providerConfigId: null,
-          },
-        ],
-        total: 2,
-        limit: 1000,
-        offset: 0,
-      });
-
-      storage.updateAgent.mockResolvedValue({});
-
-      const result = await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'test-template',
-        presetName: 'Mixed Preset',
-      });
-
-      expect(result.success).toBe(true);
-      // Two warnings: Agent A needs claude, Agent B needs gemini
-      expect(result.warnings).toHaveLength(2);
-      const sorted = result.warnings!.sort((a, b) =>
-        a.originalProvider.localeCompare(b.originalProvider),
-      );
-      expect(sorted[0]).toEqual({
-        type: 'provider_mismatch',
-        originalProvider: 'claude',
-        substituteProvider: 'codex',
-        agentNames: ['Agent A'],
-      });
-      expect(sorted[1]).toEqual({
-        type: 'provider_mismatch',
-        originalProvider: 'gemini',
-        substituteProvider: 'codex',
-        agentNames: ['Agent B'],
-      });
-    });
-
-    it('should use template providerConfigName resolution when no preset is selected', async () => {
-      // No preset. Two agents: one whose providerConfigName resolves to an available
-      // provider (should be suppressed), one whose resolves to unavailable (warning
-      // should show resolved provider, not profile default).
-      // Profile default is "gemini" but agents use "codex-high" (codex) and "opus" (claude).
-      const reviewerProfileId = 'aa999999-9999-9999-9999-999999999999';
-      const template = {
-        version: 1,
-        prompts: [],
-        profiles: [
-          {
-            id: reviewerProfileId,
-            name: 'Reviewer',
-            provider: { name: 'gemini' },
-            providerConfigs: [
-              { name: 'gemini3', providerName: 'gemini' },
-              { name: 'codex-high', providerName: 'codex' },
-              { name: 'opus', providerName: 'claude' },
-            ],
-          },
-        ],
-        agents: [
-          {
-            id: agentId1,
-            name: 'Agent A',
-            profileId: reviewerProfileId,
-            providerConfigName: 'codex-high',
-          },
-          {
-            id: agentId2,
-            name: 'Agent B',
-            profileId: reviewerProfileId,
-            providerConfigName: 'opus',
-          },
-        ],
-        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
-      };
-
-      setupTemplateMock(template);
-
-      // Only codex installed
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: providerId, name: 'codex' }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'new-proj', name: 'Test' },
-        imported: { prompts: 0, profiles: 1, agents: 2, statuses: 1 },
-        mappings: {
-          promptIdMap: {},
-          profileIdMap: { [reviewerProfileId]: 'new-profile-1' },
-          agentIdMap: { [agentId1]: 'new-agent-1', [agentId2]: 'new-agent-2' },
-          statusIdMap: {},
-        },
-      });
-
-      storage.createProfileProviderConfig.mockResolvedValue({ id: 'new-config-1' });
-
-      const result = await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'test-template',
-        // No presetName — testing non-preset path
-      });
-
-      expect(result.success).toBe(true);
-      // Agent A: codex-high → codex (installed) → NO warning
-      // Agent B: opus → claude (not installed) → warning "claude → codex"
-      // NOT "gemini → codex" (profile default)
-      expect(result.warnings).toHaveLength(1);
-      expect(result.warnings![0]).toEqual({
-        type: 'provider_mismatch',
-        originalProvider: 'claude',
-        substituteProvider: 'codex',
-        agentNames: ['Agent B'],
-      });
-    });
-  });
-
-  describe('importProject zero-provider guard', () => {
-    it('should throw ValidationError when no providers installed and template has profiles (non-dry-run)', async () => {
-      const profileId = 'bb111111-1111-1111-1111-111111111111';
-      const agentId = 'bb222222-2222-2222-2222-222222222222';
-
-      const payload = {
-        version: 1,
-        prompts: [],
-        profiles: [{ id: profileId, name: 'Custom Profile', provider: { name: 'openai' } }],
-        agents: [{ id: agentId, name: 'Agent A', profileId }],
-        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
-      };
-
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-        ...payload,
-        exportedAt: undefined,
-        initialPrompt: undefined,
-        projectSettings: undefined,
-        watchers: [],
-        subscribers: [],
-        _manifest: undefined,
-      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
-
-      storage.listProviders.mockResolvedValue({
+      storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      storage.listAgentProfiles.mockResolvedValue({
         items: [],
         total: 0,
         limit: 100,
         offset: 0,
       });
+      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      storage.listWatchers.mockResolvedValue([]);
+      storage.listSubscribers.mockResolvedValue([]);
 
-      await expect(
-        service.importProject({
-          projectId: 'project-123',
-          payload,
-          dryRun: false,
-        }),
-      ).rejects.toThrow(ValidationError);
+      const exported = await service.exportProject(projectId);
+      expect(exported.presets).toEqual(presets);
 
-      await expect(
-        service.importProject({
-          projectId: 'project-123',
-          payload,
-          dryRun: false,
-        }),
-      ).rejects.toThrow('No providers are installed');
-
-      jest.restoreAllMocks();
-    });
-
-    it('should not throw in dry-run mode when no providers installed (reports missing providers instead)', async () => {
-      const profileId = 'bb111111-1111-1111-1111-111111111111';
-
-      const payload = {
-        version: 1,
-        prompts: [],
-        profiles: [{ id: profileId, name: 'Custom Profile', provider: { name: 'openai' } }],
-        agents: [{ name: 'Agent A' }],
-        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
-      };
-
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-        ...payload,
-        exportedAt: undefined,
-        initialPrompt: undefined,
-        projectSettings: undefined,
-        watchers: [],
-        subscribers: [],
-        _manifest: undefined,
-      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
-
-      storage.listProviders.mockResolvedValue({
-        items: [],
-        total: 0,
-        limit: 100,
-        offset: 0,
-      });
-
+      storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
       storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
-      storage.listAgentProfiles.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+      storage.listAgentProfiles.mockResolvedValue({
+        items: [],
+        total: 0,
+        limit: 10000,
+        offset: 0,
+      });
       storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
       storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+      sessions.getActiveSessionsForProject.mockReturnValue([]);
+      settings.updateSettings.mockResolvedValue(undefined);
 
-      const result = await service.importProject({
-        projectId: 'project-123',
-        payload,
-        dryRun: true,
-      });
+      const { _manifest: _omittedManifest, ...importPayload } = exported;
+      void _omittedManifest;
+      jest
+        .spyOn(devchainShared.ExportSchema, 'parse')
+        .mockReturnValue(importPayload as ReturnType<typeof devchainShared.ExportSchema.parse>);
 
-      expect(result.dryRun).toBe(true);
-      expect(result.missingProviders).toContain('openai');
+      await service.importProject({ projectId, payload: importPayload, dryRun: false });
 
-      jest.restoreAllMocks();
+      expect(settings.setProjectPresets).toHaveBeenCalledWith(projectId, presets);
+      const setPresetCalls = (settings.setProjectPresets as jest.Mock).mock.calls;
+      const importedPresets = setPresetCalls[setPresetCalls.length - 1]?.[1] as
+        | Array<{
+            name: string;
+            agentConfigs: Array<{
+              agentName: string;
+              providerConfigName: string;
+              modelOverride?: string | null;
+            }>;
+          }>
+        | undefined;
+
+      expect(importedPresets?.[0].agentConfigs[0].modelOverride).toBe('openai/gpt-5');
+      expect(importedPresets?.[0].agentConfigs[1].modelOverride).toBeNull();
+      expect(importedPresets?.[1].agentConfigs[0].modelOverride).toBeUndefined();
     });
   });
 });

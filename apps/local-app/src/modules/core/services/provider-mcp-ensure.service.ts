@@ -122,6 +122,16 @@ export class ProviderMcpEnsureService {
     provider: Provider,
     projectPath?: string,
   ): Promise<EnsureMcpResult> {
+    // Config-file providers require projectPath
+    const adapter = this.adapterFactory.getAdapter(provider.name);
+    if (adapter.mcpMode === 'project_config' && !projectPath) {
+      return {
+        success: false,
+        action: 'error',
+        message: `Provider ${provider.name} requires a project path for MCP configuration (uses project config file)`,
+      };
+    }
+
     const env = getEnvConfig();
     const expectedEndpoint = `http://127.0.0.1:${env.PORT}/mcp`;
     const expectedAlias = 'devchain';

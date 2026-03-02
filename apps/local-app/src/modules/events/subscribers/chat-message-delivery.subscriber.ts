@@ -4,7 +4,7 @@ import { SessionsMessagePoolService } from '../../sessions/services/sessions-mes
 import { SessionsService } from '../../sessions/services/sessions.service';
 import { TmuxService } from '../../terminal/services/tmux.service';
 import { ChatService } from '../../chat/services/chat.service';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import { STORAGE_SERVICE, type AgentStorage } from '../../storage/interfaces/storage.interface';
 
 interface ChatMessageCreatedPayload {
   threadId: string;
@@ -39,7 +39,7 @@ export class ChatMessageDeliverySubscriber {
     @Inject(forwardRef(() => TmuxService))
     private readonly tmuxService: TmuxService,
     private readonly chatService: ChatService,
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE) private readonly storage: AgentStorage,
   ) {}
 
   @OnEvent('chat.message.created', { async: true })

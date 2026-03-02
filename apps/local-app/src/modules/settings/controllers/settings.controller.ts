@@ -12,7 +12,7 @@ import { z } from 'zod';
 import { SettingsService } from '../services/settings.service';
 import { SettingsDto, SettingsSchema } from '../dtos/settings.dto';
 import { createLogger } from '../../../common/logging/logger';
-import { STORAGE_SERVICE, StorageService } from '../../storage/interfaces/storage.interface';
+import { STORAGE_SERVICE, PromptStorage } from '../../storage/interfaces/storage.interface';
 import { NotFoundError } from '../../../common/errors/error-types';
 
 // Schema for per-project auto-clean status update
@@ -26,7 +26,7 @@ const logger = createLogger('SettingsController');
 export class SettingsController {
   constructor(
     private readonly settingsService: SettingsService,
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE) private readonly storage: PromptStorage,
   ) {}
 
   @Get()

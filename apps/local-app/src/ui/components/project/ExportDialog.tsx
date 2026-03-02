@@ -21,6 +21,7 @@ import {
 } from '@/ui/components/ui/collapsible';
 import { useToast } from '@/ui/hooks/use-toast';
 import { Loader2, Upload, X, ChevronDown, ChevronRight, ExternalLink } from 'lucide-react';
+import type { Preset as PresetData } from '@/ui/lib/preset-types';
 
 interface ManifestData {
   slug?: string;
@@ -32,15 +33,6 @@ interface ManifestData {
   changelog?: string;
   authorName?: string;
   minDevchainVersion?: string;
-}
-
-interface PresetData {
-  name: string;
-  description?: string | null;
-  agentConfigs: Array<{
-    agentName: string;
-    providerConfigName: string;
-  }>;
 }
 
 interface ExportDialogProps {

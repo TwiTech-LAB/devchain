@@ -1,6 +1,9 @@
 import { Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { createLogger } from '../../../common/logging/logger';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type SubscriberStorage,
+} from '../../storage/interfaces/storage.interface';
 import type {
   Subscriber,
   CreateSubscriber,
@@ -17,7 +20,7 @@ import type {
 export class SubscribersService {
   private readonly logger = createLogger('SubscribersService');
 
-  constructor(@Inject(STORAGE_SERVICE) private readonly storage: StorageService) {}
+  constructor(@Inject(STORAGE_SERVICE) private readonly storage: SubscriberStorage) {}
 
   /**
    * List all subscribers for a project.

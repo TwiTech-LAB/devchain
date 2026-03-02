@@ -82,6 +82,7 @@ describe('PreflightService', () => {
   let mockAdapterFactory: {
     isSupported: jest.Mock;
     getSupportedProviders: jest.Mock;
+    getAdapter: jest.Mock;
   };
 
   beforeEach(async () => {
@@ -114,8 +115,16 @@ describe('PreflightService', () => {
     mockAdapterFactory = {
       isSupported: jest
         .fn()
-        .mockImplementation((name: string) => ['claude', 'codex', 'gemini'].includes(name)),
-      getSupportedProviders: jest.fn().mockReturnValue(['claude', 'codex', 'gemini']),
+        .mockImplementation((name: string) =>
+          ['claude', 'codex', 'gemini', 'opencode'].includes(name),
+        ),
+      getSupportedProviders: jest.fn().mockReturnValue(['claude', 'codex', 'gemini', 'opencode']),
+      getAdapter: jest.fn().mockImplementation((name: string) => {
+        if (name === 'opencode') {
+          return { providerName: 'opencode', mcpMode: 'project_config' };
+        }
+        return { providerName: name };
+      }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -908,6 +917,112 @@ describe('PreflightService', () => {
       expect(mockStorage.listProviders).toHaveBeenCalled();
       expect(mockStorage.listAllProfileProviderConfigs).toHaveBeenCalled();
       expect(result.providers).toHaveLength(1);
+    });
+  });
+
+  describe('config-file provider (opencode) preflight', () => {
+    const opencodeProvider = {
+      id: 'p-oc',
+      name: 'opencode',
+      binPath: '/usr/local/bin/opencode',
+      mcpConfigured: false,
+      mcpEndpoint: null,
+      mcpRegisteredAt: null,
+      createdAt: '',
+      updatedAt: '',
+    };
+
+    beforeEach(() => {
+      mockExec.mockImplementation(
+        (
+          cmd: string,
+          optionsOrCallback?: unknown,
+          maybeCallback?: unknown,
+        ): ReturnType<typeof mockExec> => {
+          const callback = (
+            typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback
+          ) as ExecCallback;
+          if (cmd === 'tmux -V' && callback) {
+            callback(null, 'tmux 3.2', '');
+          }
+          return {} as ReturnType<typeof mockExec>;
+        },
+      );
+    });
+
+    it('returns warn MCP status for opencode without project context', async () => {
+      mockStorage.listProviders.mockResolvedValue({
+        items: [opencodeProvider],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      mockStorage.listAllProfileProviderConfigs.mockResolvedValue([]);
+      mockAccess.mockResolvedValue(undefined);
+
+      const result = await service.runChecks();
+
+      expect(result.providers).toHaveLength(1);
+      expect(result.providers[0].name).toBe('opencode');
+      expect(result.providers[0].mcpStatus).toBe('warn');
+      expect(result.providers[0].mcpMessage).toContain('requires project context');
+      expect(mockMcpRegistration.listRegistrations).not.toHaveBeenCalled();
+    });
+
+    it('evaluates MCP normally for opencode with project context', async () => {
+      mockStorage.findProjectByPath.mockResolvedValue({
+        id: 'project-1',
+        name: 'Test',
+        rootPath: '/test',
+        isTemplate: false,
+        description: null,
+        createdAt: '',
+        updatedAt: '',
+      });
+      mockStorage.listAgents.mockResolvedValue({
+        items: [
+          {
+            id: 'agent-oc',
+            projectId: 'project-1',
+            profileId: 'profile-1',
+            providerConfigId: 'config-oc',
+            name: 'OC Agent',
+            description: null,
+            createdAt: '',
+            updatedAt: '',
+          },
+        ],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      mockStorage.listProfileProviderConfigsByIds.mockResolvedValue([
+        {
+          id: 'config-oc',
+          profileId: 'profile-1',
+          providerId: 'p-oc',
+          options: null,
+          env: null,
+          createdAt: '',
+          updatedAt: '',
+        },
+      ]);
+      mockStorage.listProvidersByIds.mockResolvedValue([opencodeProvider]);
+      mockAccess.mockResolvedValue(undefined);
+      mockMcpRegistration.listRegistrations.mockResolvedValue({
+        success: true,
+        message: 'OK',
+        entries: [{ alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp' }],
+      });
+
+      const result = await service.runChecks('/test/project');
+
+      expect(result.providers).toHaveLength(1);
+      expect(result.providers[0].name).toBe('opencode');
+      expect(result.providers[0].mcpStatus).toBe('pass');
+      expect(mockMcpRegistration.listRegistrations).toHaveBeenCalledWith(opencodeProvider, {
+        cwd: '/test/project',
+      });
     });
   });
 });

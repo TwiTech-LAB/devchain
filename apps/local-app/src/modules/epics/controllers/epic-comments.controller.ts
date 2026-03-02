@@ -2,7 +2,7 @@ import { Body, Controller, Delete, Get, Inject, Param, Post, Query } from '@nest
 import { z } from 'zod';
 import {
   STORAGE_SERVICE,
-  StorageService,
+  EpicStorage,
   ListResult,
   ListOptions,
 } from '../../storage/interfaces/storage.interface';
@@ -18,7 +18,7 @@ const CreateEpicCommentSchema = z.object({
 
 @Controller('api')
 export class EpicCommentsController {
-  constructor(@Inject(STORAGE_SERVICE) private readonly storage: StorageService) {}
+  constructor(@Inject(STORAGE_SERVICE) private readonly storage: EpicStorage) {}
 
   @Get('epics/:id/comments')
   async listEpicComments(

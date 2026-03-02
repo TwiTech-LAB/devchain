@@ -53,6 +53,13 @@ export class MainProjectBootstrapService implements OnApplicationBootstrap {
       return this.mainProjectId;
     }
 
+    // Only auto-create in worktree children (identified by CONTAINER_PROJECT_ID).
+    // On the parent/host process, let the user create a project via the UI template flow.
+    if (!env.CONTAINER_PROJECT_ID) {
+      logger.info({ repoRoot }, 'No projects found; waiting for user to create via template');
+      return null;
+    }
+
     const created = await this.storage.createProject({
       name: this.deriveMainProjectName(repoRoot),
       description: 'Auto-created main project for merged worktree epics',

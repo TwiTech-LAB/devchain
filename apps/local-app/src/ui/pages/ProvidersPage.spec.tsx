@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ProvidersPage } from './ProvidersPage';
 
@@ -15,11 +15,20 @@ jest.mock('@/ui/hooks/useProjectSelection', () => ({
   }),
 }));
 
-function renderWithQuery(ui: React.ReactElement) {
-  const queryClient = new QueryClient({
+function renderWithQuery(ui: React.ReactElement, queryClient?: QueryClient) {
+  const client =
+    queryClient ??
+    new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+  const view = render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+  return { ...view, queryClient: client };
+}
+
+function createQueryClient() {
+  return new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
 }
 
 describe('ProvidersPage - Provider Type presets and command previews', () => {
@@ -29,12 +38,6 @@ describe('ProvidersPage - Provider Type presets and command previews', () => {
     (global as unknown as { fetch: unknown }).fetch = jest.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ items: [] }),
-    });
-
-    // Mock clipboard in jsdom (navigator.clipboard is undefined by default)
-    Object.defineProperty(global.navigator, 'clipboard', {
-      value: { writeText: jest.fn().mockResolvedValue(undefined) },
-      configurable: true,
     });
 
     // jsdom lacks scrollIntoView; Radix Select calls it
@@ -235,10 +238,6 @@ describe('ProvidersPage - autoCompactThreshold display and edit', () => {
   }
 
   beforeEach(() => {
-    Object.defineProperty(global.navigator, 'clipboard', {
-      value: { writeText: jest.fn().mockResolvedValue(undefined) },
-      configurable: true,
-    });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (Element as unknown as { prototype: { scrollIntoView: unknown } }).prototype.scrollIntoView =
       jest.fn();
@@ -555,4 +554,342 @@ describe('ProvidersPage - autoCompactThreshold display and edit', () => {
       expect(updateCalls).toHaveLength(0);
     },
   );
+});
+
+describe('ProvidersPage - provider models management', () => {
+  const opencodeProvider = {
+    id: 'p-opencode',
+    name: 'opencode',
+    binPath: '/usr/local/bin/opencode',
+    autoCompactThreshold: null,
+    mcpConfigured: true,
+    mcpEndpoint: 'http://127.0.0.1:3000/mcp',
+    mcpRegisteredAt: '2024-01-01',
+    createdAt: '2024-01-01',
+    updatedAt: '2024-01-01',
+  };
+
+  const codexProvider = {
+    id: 'p-codex',
+    name: 'codex',
+    binPath: '/usr/local/bin/codex',
+    autoCompactThreshold: null,
+    mcpConfigured: true,
+    mcpEndpoint: 'http://127.0.0.1:3000/mcp',
+    mcpRegisteredAt: '2024-01-01',
+    createdAt: '2024-01-01',
+    updatedAt: '2024-01-01',
+  };
+
+  const modelsByProvider: Record<
+    string,
+    Array<{ id: string; providerId: string; name: string }>
+  > = {
+    'p-opencode': [
+      { id: 'm-1', providerId: 'p-opencode', name: 'opencode/model-a' },
+      { id: 'm-2', providerId: 'p-opencode', name: 'opencode/model-b' },
+    ],
+    'p-codex': [{ id: 'm-3', providerId: 'p-codex', name: 'openai/gpt-5' }],
+  };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function setupFetch(providers: any[]) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (global as unknown as { fetch: unknown }).fetch = jest.fn(
+      (url: string, options?: RequestInit) => {
+        if (url === '/api/providers' && (!options || !options.method)) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              items: providers,
+              total: providers.length,
+              limit: 100,
+              offset: 0,
+            }),
+          });
+        }
+        if (url === '/api/preflight') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              overall: 'pass',
+              checks: [],
+              providers: providers.map((p) => ({
+                id: p.id,
+                mcpStatus: p.mcpConfigured ? 'pass' : 'warn',
+              })),
+              supportedMcpProviders: ['claude', 'codex', 'gemini', 'opencode'],
+              timestamp: new Date().toISOString(),
+            }),
+          });
+        }
+        if (url.match(/^\/api\/providers\/[^/]+\/models$/) && (!options || !options.method)) {
+          const providerId = url.split('/')[3];
+          const models = modelsByProvider[providerId] ?? [];
+          return Promise.resolve({
+            ok: true,
+            json: async () =>
+              models.map((model, index) => ({
+                ...model,
+                position: index,
+                createdAt: '2024-01-01',
+                updatedAt: '2024-01-01',
+              })),
+          });
+        }
+        if (url.match(/^\/api\/providers\/[^/]+\/models$/) && options?.method === 'POST') {
+          const body = JSON.parse(options.body as string);
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              id: 'm-new',
+              providerId: url.split('/')[3],
+              name: body.name,
+              position: 0,
+              createdAt: '2024-01-01',
+              updatedAt: '2024-01-01',
+            }),
+          });
+        }
+        if (
+          url.match(/^\/api\/providers\/[^/]+\/models\/discover$/) &&
+          options?.method === 'POST'
+        ) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ added: ['new-1', 'new-2'], existing: ['old-1'], total: 3 }),
+          });
+        }
+        if (url.match(/^\/api\/providers\/[^/]+\/models\/[^/]+$/) && options?.method === 'DELETE') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ success: true }),
+          });
+        }
+        if (url.match(/\/api\/providers\/[\w-]+$/) && options?.method === 'PUT') {
+          const id = url.split('/').pop()!;
+          const body = JSON.parse(options.body as string);
+          const existing = providers.find((p: { id: string }) => p.id === id);
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ ...existing, ...body, updatedAt: new Date().toISOString() }),
+          });
+        }
+        return Promise.resolve({ ok: false });
+      },
+    );
+  }
+
+  beforeEach(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (Element as unknown as { prototype: { scrollIntoView: unknown } }).prototype.scrollIntoView =
+      jest.fn();
+  });
+
+  it('fetches models on page load and shows correct collapsed model count', async () => {
+    setupFetch([opencodeProvider]);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('opencode')).toBeInTheDocument());
+
+    const fetchMock = (global as unknown as { fetch?: unknown }).fetch as jest.Mock;
+    const modelCallsOnLoad = fetchMock.mock.calls.filter(
+      (call: [string, RequestInit?]) =>
+        call[0] === '/api/providers/p-opencode/models' && (!call[1] || !call[1].method),
+    );
+    expect(modelCallsOnLoad.length).toBeGreaterThan(0);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Models \(2\)/i })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /Models \(/i }));
+
+    await waitFor(() => expect(screen.getByText('opencode/model-a')).toBeInTheDocument());
+  });
+
+  it('adds and deletes models from the models section', async () => {
+    setupFetch([opencodeProvider]);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('opencode')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /Models \(/i }));
+    await waitFor(() => expect(screen.getByText('opencode/model-a')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText('Add Model'), {
+      target: { value: 'opencode/model-new' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Model' }));
+
+    await waitFor(() => {
+      const fetchMock = (global as unknown as { fetch?: unknown }).fetch as jest.Mock;
+      const postCalls = fetchMock.mock.calls.filter(
+        (call: [string, RequestInit?]) =>
+          call[0] === '/api/providers/p-opencode/models' && call[1]?.method === 'POST',
+      );
+      expect(postCalls.length).toBeGreaterThan(0);
+      const postBody = JSON.parse(postCalls[0][1].body as string);
+      expect(postBody).toEqual({ name: 'opencode/model-new' });
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete model opencode/model-a' }));
+    await waitFor(() => expect(screen.getByText('Delete Model')).toBeInTheDocument());
+    const dialog = screen.getByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => {
+      const fetchMock = (global as unknown as { fetch?: unknown }).fetch as jest.Mock;
+      const deleteCalls = fetchMock.mock.calls.filter(
+        (call: [string, RequestInit?]) =>
+          call[0] === '/api/providers/p-opencode/models/m-1' && call[1]?.method === 'DELETE',
+      );
+      expect(deleteCalls.length).toBeGreaterThan(0);
+    });
+  });
+
+  it('shows Auto Discover only for OpenCode providers and calls discover endpoint', async () => {
+    setupFetch([opencodeProvider, codexProvider]);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('opencode')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('codex')).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByRole('button', { name: /Models \(/i })[0]);
+    fireEvent.click(screen.getAllByRole('button', { name: /Models \(/i })[1]);
+
+    const discoverButtons = await screen.findAllByRole('button', { name: /Auto Discover/i });
+    expect(discoverButtons).toHaveLength(1);
+    fireEvent.click(discoverButtons[0]);
+
+    await waitFor(() => {
+      const fetchMock = (global as unknown as { fetch?: unknown }).fetch as jest.Mock;
+      const discoverCalls = fetchMock.mock.calls.filter(
+        (call: [string, RequestInit?]) =>
+          call[0] === '/api/providers/p-opencode/models/discover' && call[1]?.method === 'POST',
+      );
+      expect(discoverCalls.length).toBeGreaterThan(0);
+    });
+  });
+
+  it('invalidates provider-models caches across contexts after add/delete/discover', async () => {
+    setupFetch([opencodeProvider]);
+    const queryClient = createQueryClient();
+    const invalidateSpy = jest.spyOn(queryClient, 'invalidateQueries');
+    renderWithQuery(<ProvidersPage />, queryClient);
+    await waitFor(() => expect(screen.getByText('opencode')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /Models \(/i }));
+    await waitFor(() => expect(screen.getByText('opencode/model-a')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText('Add Model'), {
+      target: { value: 'opencode/model-new' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Model' }));
+    await waitFor(() => {
+      expect(
+        invalidateSpy.mock.calls.some(
+          ([arg]) =>
+            (arg as { queryKey?: unknown[] })?.queryKey?.length === 1 &&
+            (arg as { queryKey?: unknown[] })?.queryKey?.[0] === 'provider-models',
+        ),
+      ).toBe(true);
+    });
+
+    invalidateSpy.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete model opencode/model-a' }));
+    await waitFor(() => expect(screen.getByText('Delete Model')).toBeInTheDocument());
+    const dialog = screen.getByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => {
+      expect(
+        invalidateSpy.mock.calls.some(
+          ([arg]) =>
+            (arg as { queryKey?: unknown[] })?.queryKey?.length === 1 &&
+            (arg as { queryKey?: unknown[] })?.queryKey?.[0] === 'provider-models',
+        ),
+      ).toBe(true);
+    });
+
+    invalidateSpy.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: /Auto Discover/i }));
+    await waitFor(() => {
+      expect(
+        invalidateSpy.mock.calls.some(
+          ([arg]) =>
+            (arg as { queryKey?: unknown[] })?.queryKey?.length === 1 &&
+            (arg as { queryKey?: unknown[] })?.queryKey?.[0] === 'provider-models',
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it('closes delete confirmation dialog when delete request fails', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (global as unknown as { fetch: unknown }).fetch = jest.fn(
+      (url: string, options?: RequestInit) => {
+        if (url === '/api/providers' && (!options || !options.method)) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ items: [opencodeProvider], total: 1, limit: 100, offset: 0 }),
+          });
+        }
+        if (url === '/api/preflight') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              overall: 'pass',
+              checks: [],
+              providers: [{ id: opencodeProvider.id, mcpStatus: 'pass' }],
+              supportedMcpProviders: ['opencode'],
+              timestamp: new Date().toISOString(),
+            }),
+          });
+        }
+        if (url === '/api/providers/p-opencode/models' && (!options || !options.method)) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => [
+              {
+                id: 'm-1',
+                providerId: 'p-opencode',
+                name: 'opencode/model-a',
+                position: 0,
+                createdAt: '2024-01-01',
+                updatedAt: '2024-01-01',
+              },
+            ],
+          });
+        }
+        if (url === '/api/providers/p-opencode/models/m-1' && options?.method === 'DELETE') {
+          return Promise.resolve({
+            ok: false,
+            json: async () => ({ message: 'Delete failed on server' }),
+          });
+        }
+        return Promise.resolve({ ok: false });
+      },
+    );
+
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('opencode')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /Models \(/i }));
+    await waitFor(() => expect(screen.getByText('opencode/model-a')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete model opencode/model-a' }));
+    await waitFor(() => expect(screen.getByText('Delete Model')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => {
+      expect(screen.queryByText('Delete Model')).not.toBeInTheDocument();
+    });
+  });
+
+  it('preselects OpenCode in edit dialog for opencode providers', async () => {
+    setupFetch([opencodeProvider]);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('opencode')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    await waitFor(() => expect(screen.getByText('Edit Provider')).toBeInTheDocument());
+    expect(screen.getByLabelText('Provider Type')).toHaveTextContent('OpenCode');
+  });
 });

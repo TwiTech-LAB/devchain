@@ -137,4 +137,73 @@ describe('InlineTerminalPanel', () => {
     expect(getWorktreeSocketMock).not.toHaveBeenCalled();
     expect(lastTerminalProps?.socket).toBe(propSocket);
   });
+
+  // -------------------------------------------------------------------------
+  // Tab toggle (Terminal / Session)
+  // -------------------------------------------------------------------------
+
+  it('renders terminal visible by default (activeTab omitted)', () => {
+    render(<InlineTerminalPanel sessionId="session-1" isWindowOpen={false} />);
+
+    expect(screen.getByTestId('inline-terminal')).toBeInTheDocument();
+    expect(screen.queryByTestId('session-tab-content')).not.toBeInTheDocument();
+  });
+
+  it('renders terminal visible when activeTab is terminal', () => {
+    render(<InlineTerminalPanel sessionId="session-1" isWindowOpen={false} activeTab="terminal" />);
+
+    const terminalContainer = screen.getByTestId('inline-terminal').parentElement!;
+    expect(terminalContainer.style.display).not.toBe('none');
+    expect(screen.queryByTestId('session-tab-content')).not.toBeInTheDocument();
+  });
+
+  it('hides terminal via CSS and shows session content when activeTab is session', () => {
+    render(<InlineTerminalPanel sessionId="session-1" isWindowOpen={false} activeTab="session" />);
+
+    // Terminal is still mounted (CSS hidden, not unmounted)
+    const terminalContainer = screen.getByTestId('inline-terminal').parentElement!;
+    expect(terminalContainer.style.display).toBe('none');
+
+    // Session tab content is shown
+    expect(screen.getByTestId('session-tab-content')).toBeInTheDocument();
+  });
+
+  it('renders custom sessionContent when provided and session tab active', () => {
+    render(
+      <InlineTerminalPanel
+        sessionId="session-1"
+        isWindowOpen={false}
+        activeTab="session"
+        sessionContent={<div data-testid="custom-viewer">Custom Session Viewer</div>}
+      />,
+    );
+
+    expect(screen.getByTestId('custom-viewer')).toBeInTheDocument();
+    expect(screen.getByText('Custom Session Viewer')).toBeInTheDocument();
+  });
+
+  it('shows default placeholder when session tab active and no sessionContent', () => {
+    render(<InlineTerminalPanel sessionId="session-1" isWindowOpen={false} activeTab="session" />);
+
+    expect(screen.getByText(/Session viewer loading/)).toBeInTheDocument();
+  });
+
+  it('keeps terminal mounted when switching to session tab (no unmount)', () => {
+    const { rerender } = render(
+      <InlineTerminalPanel sessionId="session-1" isWindowOpen={false} activeTab="terminal" />,
+    );
+
+    // Terminal is visible
+    expect(screen.getByTestId('inline-terminal')).toBeInTheDocument();
+
+    // Switch to session tab
+    rerender(
+      <InlineTerminalPanel sessionId="session-1" isWindowOpen={false} activeTab="session" />,
+    );
+
+    // Terminal is still in the DOM (CSS hidden), not unmounted
+    expect(screen.getByTestId('inline-terminal')).toBeInTheDocument();
+    const terminalContainer = screen.getByTestId('inline-terminal').parentElement!;
+    expect(terminalContainer.style.display).toBe('none');
+  });
 });

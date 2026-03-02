@@ -14,8 +14,8 @@ describe('MainProjectBootstrapService', () => {
     tempRepoRoot = mkdtempSync(join(tmpdir(), 'main-project-bootstrap-'));
     process.env = { ...originalEnv };
     delete process.env.DEVCHAIN_MODE;
-    delete process.env.DATABASE_URL;
     delete process.env.REPO_ROOT;
+    delete process.env.CONTAINER_PROJECT_ID;
     resetEnvConfig();
 
     storage = {
@@ -43,10 +43,31 @@ describe('MainProjectBootstrapService', () => {
     expect(storage.createProject).not.toHaveBeenCalled();
   });
 
-  it('auto-creates main project when no projects exist', async () => {
+  it('does not auto-create on parent process when no projects exist', async () => {
     process.env.DEVCHAIN_MODE = 'main';
-    process.env.DATABASE_URL = 'postgres://postgres:postgres@localhost:5432/devchain';
+
     process.env.REPO_ROOT = tempRepoRoot;
+    resetEnvConfig();
+
+    storage.listProjects.mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 1000,
+      offset: 0,
+    });
+
+    const service = new MainProjectBootstrapService(storage);
+    await service.onApplicationBootstrap();
+
+    expect(storage.createProject).not.toHaveBeenCalled();
+    expect(service.getMainProjectId()).toBeNull();
+  });
+
+  it('auto-creates main project in worktree child when no projects exist', async () => {
+    process.env.DEVCHAIN_MODE = 'main';
+
+    process.env.REPO_ROOT = tempRepoRoot;
+    process.env.CONTAINER_PROJECT_ID = '00000000-0000-0000-0000-000000000001';
     resetEnvConfig();
 
     storage.listProjects.mockResolvedValue({
@@ -80,7 +101,7 @@ describe('MainProjectBootstrapService', () => {
 
   it('uses existing project for matching REPO_ROOT and avoids duplicates', async () => {
     process.env.DEVCHAIN_MODE = 'main';
-    process.env.DATABASE_URL = 'postgres://postgres:postgres@localhost:5432/devchain';
+
     process.env.REPO_ROOT = tempRepoRoot;
     resetEnvConfig();
 

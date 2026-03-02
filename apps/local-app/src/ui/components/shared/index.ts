@@ -16,3 +16,5 @@ export { DocsViewer } from './DocsViewer';
 export type { DocsViewerProps } from './DocsViewer';
 export { HelpButton } from './HelpButton';
 export type { HelpButtonProps } from './HelpButton';
+export { SubNavLayout } from './SubNavLayout';
+export type { SubNavSection } from './SubNavLayout';

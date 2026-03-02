@@ -1,5 +1,5 @@
 import { Controller, Get, Param, Query, Inject, BadRequestException } from '@nestjs/common';
-import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
+import { RecordStorage, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { EpicRecord } from '../../storage/models/domain.models';
 import { createLogger } from '../../../common/logging/logger';
 
@@ -7,7 +7,7 @@ const logger = createLogger('RecordsController');
 
 @Controller('api/records')
 export class RecordsController {
-  constructor(@Inject(STORAGE_SERVICE) private readonly storage: StorageService) {}
+  constructor(@Inject(STORAGE_SERVICE) private readonly storage: RecordStorage) {}
 
   @Get()
   async listRecords(

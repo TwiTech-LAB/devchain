@@ -87,6 +87,7 @@ describe('McpService', () => {
       listGuests: jest.fn().mockResolvedValue([]),
       getGuestByName: jest.fn().mockResolvedValue(null),
       getGuestsByIdPrefix: jest.fn().mockResolvedValue([]),
+      getEpicsByIdPrefix: jest.fn().mockResolvedValue([]),
     } as unknown as jest.Mocked<StorageService>;
 
     chatService = {
@@ -3474,6 +3475,197 @@ describe('McpService', () => {
 
         expect(response.success).toBe(false);
         expect(response.error?.code).toBe('SESSION_NOT_FOUND');
+      });
+    });
+
+    describe('epic ID prefix resolution', () => {
+      it('devchain_get_epic_by_id resolves 8-char prefix and returns epic', async () => {
+        const project = makeProject();
+        const epic = makeEpic();
+        const comment = makeComment({ epicId: epic.id });
+
+        storage.findProjectByPath.mockResolvedValue(project);
+        (
+          storage as unknown as { getEpicsByIdPrefix: jest.Mock }
+        ).getEpicsByIdPrefix.mockResolvedValue([{ id: epic.id, title: epic.title }]);
+        storage.getEpic.mockResolvedValue(epic);
+        storage.listEpicComments.mockResolvedValue({
+          items: [comment],
+          total: 1,
+          limit: 250,
+          offset: 0,
+        });
+        storage.listSubEpics.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 250,
+          offset: 0,
+        });
+        storage.listStatuses.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 1000,
+          offset: 0,
+        });
+
+        const prefix = epic.id.substring(0, 8);
+        const response = await service.handleToolCall('devchain_get_epic_by_id', {
+          sessionId: TEST_SESSION_ID,
+          id: prefix,
+        });
+
+        expect(response.success).toBe(true);
+        const payload = response.data as { epic: { id: string } };
+        expect(payload.epic.id).toBe(epic.id);
+        // Verify storage.getEpic was called with the RESOLVED full UUID, not the prefix
+        expect(storage.getEpic).toHaveBeenCalledWith(epic.id);
+      });
+
+      it('devchain_get_epic_by_id returns AMBIGUOUS_EPIC for ambiguous prefix', async () => {
+        const project = makeProject();
+        storage.findProjectByPath.mockResolvedValue(project);
+        (
+          storage as unknown as { getEpicsByIdPrefix: jest.Mock }
+        ).getEpicsByIdPrefix.mockResolvedValue([
+          { id: 'aabbccdd-1111-1111-1111-111111111111', title: 'Epic A' },
+          { id: 'aabbccdd-2222-2222-2222-222222222222', title: 'Epic B' },
+        ]);
+
+        const response = await service.handleToolCall('devchain_get_epic_by_id', {
+          sessionId: TEST_SESSION_ID,
+          id: 'aabbccdd',
+        });
+
+        expect(response.success).toBe(false);
+        expect(response.error?.code).toBe('AMBIGUOUS_EPIC');
+      });
+
+      it('devchain_update_epic resolves prefix and updates correct epic', async () => {
+        const project = makeProject();
+        const epic = makeEpic({ version: 1 });
+        const updatedEpic = makeEpic({ title: 'Updated', version: 2 });
+
+        storage.findProjectByPath.mockResolvedValue(project);
+        (
+          storage as unknown as { getEpicsByIdPrefix: jest.Mock }
+        ).getEpicsByIdPrefix.mockResolvedValue([{ id: epic.id, title: epic.title }]);
+        storage.getEpic.mockResolvedValue(epic);
+        epicsService.updateEpic.mockResolvedValue(updatedEpic);
+
+        const prefix = epic.id.substring(0, 8);
+        const response = await service.handleToolCall('devchain_update_epic', {
+          sessionId: TEST_SESSION_ID,
+          id: prefix,
+          version: 1,
+          title: 'Updated',
+        });
+
+        expect(response.success).toBe(true);
+        // Verify epicsService.updateEpic called with RESOLVED full UUID
+        expect(epicsService.updateEpic).toHaveBeenCalledWith(
+          epic.id,
+          expect.objectContaining({ title: 'Updated' }),
+          1,
+          expect.any(Object),
+        );
+      });
+
+      it('devchain_add_epic_comment resolves prefix and adds comment to correct epic', async () => {
+        const project = makeProject();
+        const epic = makeEpic();
+        const comment = makeComment({ epicId: epic.id, content: 'New comment' });
+
+        storage.findProjectByPath.mockResolvedValue(project);
+        (
+          storage as unknown as { getEpicsByIdPrefix: jest.Mock }
+        ).getEpicsByIdPrefix.mockResolvedValue([{ id: epic.id, title: epic.title }]);
+        storage.getEpic.mockResolvedValue(epic);
+        storage.createEpicComment.mockResolvedValue(comment);
+
+        const prefix = epic.id.substring(0, 8);
+        const response = await service.handleToolCall('devchain_add_epic_comment', {
+          sessionId: TEST_SESSION_ID,
+          epicId: prefix,
+          content: 'New comment',
+        });
+
+        expect(response.success).toBe(true);
+        // Verify createEpicComment called with RESOLVED full UUID
+        expect(storage.createEpicComment).toHaveBeenCalledWith({
+          epicId: epic.id,
+          authorName: 'Test Agent',
+          content: 'New comment',
+        });
+      });
+
+      it('full UUID still works without calling getEpicsByIdPrefix', async () => {
+        const project = makeProject();
+        const epic = makeEpic();
+
+        storage.findProjectByPath.mockResolvedValue(project);
+        storage.getEpic.mockResolvedValue(epic);
+        storage.listEpicComments.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 250,
+          offset: 0,
+        });
+        storage.listSubEpics.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 250,
+          offset: 0,
+        });
+        storage.listStatuses.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 1000,
+          offset: 0,
+        });
+
+        const response = await service.handleToolCall('devchain_get_epic_by_id', {
+          sessionId: TEST_SESSION_ID,
+          id: epic.id,
+        });
+
+        expect(response.success).toBe(true);
+        // Full UUID should bypass prefix resolution entirely
+        expect(
+          (storage as unknown as { getEpicsByIdPrefix: jest.Mock }).getEpicsByIdPrefix,
+        ).not.toHaveBeenCalled();
+      });
+
+      it('devchain_get_epic_by_id rejects wildcard characters at schema level', async () => {
+        const response = await service.handleToolCall('devchain_get_epic_by_id', {
+          sessionId: TEST_SESSION_ID,
+          id: 'abcd1234%_',
+        });
+
+        expect(response.success).toBe(false);
+        expect(response.error?.code).toBe('VALIDATION_ERROR');
+      });
+
+      it('devchain_update_epic rejects wildcard characters at schema level', async () => {
+        const response = await service.handleToolCall('devchain_update_epic', {
+          sessionId: TEST_SESSION_ID,
+          id: 'abcd1234%_',
+          version: 1,
+          title: 'Updated',
+        });
+
+        expect(response.success).toBe(false);
+        expect(response.error?.code).toBe('VALIDATION_ERROR');
+      });
+
+      it('devchain_add_epic_comment rejects wildcard characters at schema level', async () => {
+        const response = await service.handleToolCall('devchain_add_epic_comment', {
+          sessionId: TEST_SESSION_ID,
+          epicId: 'abcd1234%_',
+          content: 'hello',
+        });
+
+        expect(response.success).toBe(false);
+        expect(response.error?.code).toBe('VALIDATION_ERROR');
       });
     });
   });

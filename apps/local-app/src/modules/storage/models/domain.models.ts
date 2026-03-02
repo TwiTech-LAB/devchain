@@ -129,6 +129,15 @@ export interface Provider {
   updatedAt: string;
 }
 
+export interface ProviderModel {
+  id: string;
+  providerId: string;
+  name: string;
+  position: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ProviderMcpMetadata {
   mcpConfigured: boolean;
   mcpEndpoint: string | null;
@@ -180,6 +189,7 @@ export interface Agent {
   projectId: string;
   profileId: string;
   providerConfigId: string; // FK to profile_provider_configs.id
+  modelOverride: string | null;
   name: string;
   description: string | null;
   createdAt: string;
@@ -254,6 +264,9 @@ export interface CreateProvider extends Partial<ProviderMcpMetadata> {
   binPath?: string | null;
   autoCompactThreshold?: number | null;
 }
+export type CreateProviderModel = Omit<ProviderModel, 'id' | 'createdAt' | 'updatedAt' | 'position'> & {
+  position?: number;
+};
 export type UpdateProvider = Partial<Omit<Provider, 'id' | 'createdAt' | 'updatedAt'>>;
 export type UpdateProviderMcpMetadata = Partial<ProviderMcpMetadata>;
 
@@ -291,10 +304,11 @@ export type UpdateDocument = Partial<Omit<Document, 'id' | 'createdAt' | 'update
 
 export type CreateAgent = Omit<
   Agent,
-  'id' | 'createdAt' | 'updatedAt' | 'description' | 'providerConfigId'
+  'id' | 'createdAt' | 'updatedAt' | 'description' | 'providerConfigId' | 'modelOverride'
 > & {
   description?: string | null;
   providerConfigId: string;
+  modelOverride?: string | null;
 };
 export type UpdateAgent = Partial<Omit<Agent, 'id' | 'createdAt' | 'updatedAt'>>;
 

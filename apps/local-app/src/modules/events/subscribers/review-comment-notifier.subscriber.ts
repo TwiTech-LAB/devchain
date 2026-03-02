@@ -6,7 +6,7 @@ import { EventLogService } from '../services/event-log.service';
 import { SessionsService } from '../../sessions/services/sessions.service';
 import { SessionCoordinatorService } from '../../sessions/services/session-coordinator.service';
 import { SessionsMessagePoolService } from '../../sessions/services/sessions-message-pool.service';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import { STORAGE_SERVICE, type AgentStorage } from '../../storage/interfaces/storage.interface';
 import type { ReviewCommentCreatedEventPayload } from '../catalog/review.comment.created';
 
 const DEFAULT_TEMPLATE = `[Review Comment]
@@ -34,7 +34,7 @@ export class ReviewCommentNotifierSubscriber {
     private readonly sessionCoordinator: SessionCoordinatorService,
     @Inject(forwardRef(() => SessionsMessagePoolService))
     private readonly messagePoolService: SessionsMessagePoolService,
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE) private readonly storage: AgentStorage,
   ) {}
 
   @OnEvent('review.comment.created', { async: true })

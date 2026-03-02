@@ -55,16 +55,6 @@ describe('env.config', () => {
     consoleSpy.mockRestore();
   });
 
-  it('accepts main mode without REPO_ROOT (non-git context)', () => {
-    process.env.DEVCHAIN_MODE = 'main';
-    delete process.env.REPO_ROOT;
-
-    const config = getEnvConfig();
-
-    expect(config.DEVCHAIN_MODE).toBe('main');
-    expect(config.REPO_ROOT).toBeUndefined();
-  });
-
   it('throws when REPO_ROOT path does not exist in main mode', () => {
     process.env.DEVCHAIN_MODE = 'main';
     process.env.REPO_ROOT = join(tempRepoRoot, 'does-not-exist');

@@ -2,56 +2,80 @@ import { Injectable } from '@nestjs/common';
 import { ProviderAdapter, AddMcpServerOptions, McpServerEntry } from './provider-adapter.interface';
 
 /**
- * OpenCode provider adapter (z.ai coding plan)
+ * OpenCode provider adapter
  *
  * Implements MCP command building and output parsing for the OpenCode CLI.
- * Uses Claude-compatible MCP command structure.
+ * OpenCode manages MCP via project config file (opencode.json), not CLI commands.
+ * CLI methods return safe fallback commands; actual MCP management is handled
+ * by the registration service's config-file mode.
  */
 @Injectable()
 export class OpencodeAdapter implements ProviderAdapter {
   readonly providerName = 'opencode';
+  readonly mcpMode = 'project_config' as const;
+  readonly configFileName = 'opencode.json';
 
-  addMcpServer(options: AddMcpServerOptions): string[] {
-    const alias = options.alias ?? this.providerName;
-    const args = ['mcp', 'add', '--transport', 'http', alias, options.endpoint];
-    if (options.extraArgs?.length) {
-      args.push(...options.extraArgs);
-    }
-    return args;
+  addMcpServer(_options: AddMcpServerOptions): string[] {
+    // OpenCode MCP is managed via opencode.json config file, not CLI.
+    // Return version check as safe no-op fallback.
+    return ['--version'];
   }
 
   listMcpServers(): string[] {
     return ['mcp', 'list'];
   }
 
-  removeMcpServer(alias: string): string[] {
-    return ['mcp', 'remove', alias];
+  removeMcpServer(_alias: string): string[] {
+    // OpenCode has no mcp remove command; managed via config file.
+    return ['--version'];
   }
 
-  binaryCheck(alias: string): string[] {
-    return ['mcp', 'check', alias];
+  binaryCheck(_alias: string): string[] {
+    return ['--version'];
   }
 
-  parseListOutput(stdout: string, _stderr?: string): McpServerEntry[] {
+  parseListOutput(_stdout: string, _stderr?: string): McpServerEntry[] {
+    // OpenCode mcp list outputs TUI-formatted text with box-drawing chars.
+    // Config-file mode reads opencode.json directly instead.
+    return [];
+  }
+
+  /**
+   * Parse MCP entries from opencode.json config file content.
+   * Caller is responsible for handling JSON parse errors.
+   */
+  parseProjectConfig(content: string): McpServerEntry[] {
+    const config = JSON.parse(content);
+    const mcp = config?.mcp;
+    if (!mcp || typeof mcp !== 'object') return [];
+
     const entries: McpServerEntry[] = [];
-    const lines = stdout.split('\n').filter((line) => line.trim().length > 0);
-
-    for (const line of lines) {
-      if (line.toLowerCase().startsWith('checking')) {
-        continue;
-      }
-
-      const match = line.match(/^(\S+):\s+(\S+)\s+\(([^)]+)\)/);
-      if (match) {
-        const [, alias, endpoint, transport] = match;
+    for (const [alias, serverConfig] of Object.entries(mcp)) {
+      const cfg = serverConfig as Record<string, unknown>;
+      if (cfg?.url && typeof cfg.url === 'string') {
         entries.push({
           alias,
-          endpoint,
-          transport: transport.toUpperCase(),
+          endpoint: cfg.url,
+          transport: typeof cfg.type === 'string' ? cfg.type.toUpperCase() : 'REMOTE',
         });
       }
     }
-
     return entries;
+  }
+
+  /**
+   * Build the MCP config entry to write into opencode.json.
+   */
+  buildMcpConfigEntry(options: AddMcpServerOptions): {
+    key: string;
+    value: Record<string, unknown>;
+  } {
+    return {
+      key: options.alias ?? 'devchain',
+      value: {
+        type: 'remote',
+        url: options.endpoint,
+      },
+    };
   }
 }
