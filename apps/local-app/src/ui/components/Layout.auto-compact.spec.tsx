@@ -167,6 +167,7 @@ describe('Layout auto-compact recommendation modal', () => {
     branchName: string;
     status: string;
     containerPort: number | null;
+    ownerProjectId: string;
     devchainProjectId: string | null;
     errorMessage: string | null;
   }>;
@@ -181,6 +182,7 @@ describe('Layout auto-compact recommendation modal', () => {
         branchName: 'feature/auth',
         status: 'running',
         containerPort: 4310,
+        ownerProjectId: 'project-1',
         devchainProjectId: 'project-1',
         errorMessage: null,
       },
@@ -190,6 +192,7 @@ describe('Layout auto-compact recommendation modal', () => {
         branchName: 'bugfix/ci',
         status: 'stopped',
         containerPort: null,
+        ownerProjectId: 'project-1',
         devchainProjectId: 'project-2',
         errorMessage: null,
       },
@@ -199,6 +202,7 @@ describe('Layout auto-compact recommendation modal', () => {
         branchName: 'done/epic',
         status: 'completed',
         containerPort: 4312,
+        ownerProjectId: 'project-1',
         devchainProjectId: 'project-3',
         errorMessage: null,
       },
@@ -541,6 +545,315 @@ describe('Layout auto-compact recommendation modal', () => {
     expect(screen.getByRole('tab', { name: /feature-auth/i })).toBeEnabled();
     expect(screen.getByRole('tab', { name: /bugfix-ci/i })).toBeDisabled();
     expect(screen.getByRole('tab', { name: /done-epic/i })).toBeEnabled();
+  });
+
+  it('filters visible worktree tabs by ownerProjectId when selected project changes', async () => {
+    runtimeMode = 'main';
+    worktreesPayload = [
+      {
+        id: 'wt-1',
+        name: 'feature-auth',
+        branchName: 'feature/auth',
+        status: 'running',
+        containerPort: 4310,
+        ownerProjectId: 'project-1',
+        devchainProjectId: 'worktree-project-1',
+        errorMessage: null,
+      },
+      {
+        id: 'wt-2',
+        name: 'bugfix-ci',
+        branchName: 'bugfix/ci',
+        status: 'completed',
+        containerPort: 4312,
+        ownerProjectId: 'project-1',
+        devchainProjectId: 'worktree-project-2',
+        errorMessage: null,
+      },
+      {
+        id: 'wt-3',
+        name: 'project-two-worktree',
+        branchName: 'feature/project-two',
+        status: 'running',
+        containerPort: 4313,
+        ownerProjectId: 'project-2',
+        devchainProjectId: 'worktree-project-3',
+        errorMessage: null,
+      },
+    ];
+
+    const projects = [
+      { id: 'project-1', name: 'Project One', rootPath: '/tmp/project-one' },
+      { id: 'project-2', name: 'Project Two', rootPath: '/tmp/project-two' },
+    ];
+    let setSelectedProjectIdState: ((projectId: string | null) => void) | null = null;
+    useSelectedProjectMock.mockImplementation(() => {
+      const [selectedProjectId, setSelectedProjectId] = React.useState<string | null>('project-1');
+      setSelectedProjectIdState = setSelectedProjectId;
+      return {
+        projects,
+        projectsLoading: false,
+        projectsError: false,
+        refetchProjects: jest.fn(),
+        selectedProjectId,
+        selectedProject: projects.find((project) => project.id === selectedProjectId) ?? null,
+        setSelectedProjectId,
+      };
+    });
+
+    renderLayout(['/board']);
+
+    expect(await screen.findByRole('tab', { name: /feature-auth/i })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /bugfix-ci/i })).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: /project-two-worktree/i })).not.toBeInTheDocument();
+
+    await act(async () => {
+      setSelectedProjectIdState?.('project-2');
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: /project-two-worktree/i })).toBeInTheDocument();
+      expect(screen.queryByRole('tab', { name: /feature-auth/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('tab', { name: /bugfix-ci/i })).not.toBeInTheDocument();
+    });
+  });
+
+  it('keeps worktrees visible when ownerProjectId matches selected project even if devchainProjectId differs', async () => {
+    runtimeMode = 'main';
+    worktreesPayload = [
+      {
+        id: 'wt-1',
+        name: 'owner-match-devchain-mismatch',
+        branchName: 'feature/mismatch',
+        status: 'running',
+        containerPort: 4310,
+        ownerProjectId: 'project-1',
+        devchainProjectId: 'container-project-xyz',
+        errorMessage: null,
+      },
+      {
+        id: 'wt-2',
+        name: 'different-owner',
+        branchName: 'feature/other-owner',
+        status: 'running',
+        containerPort: 4312,
+        ownerProjectId: 'project-2',
+        devchainProjectId: 'project-2',
+        errorMessage: null,
+      },
+    ];
+
+    useSelectedProjectMock.mockReturnValue({
+      projects: [{ id: 'project-1', name: 'Project One', rootPath: '/tmp/project-one' }],
+      projectsLoading: false,
+      projectsError: false,
+      refetchProjects: jest.fn(),
+      selectedProjectId: 'project-1',
+      selectedProject: { id: 'project-1', name: 'Project One', rootPath: '/tmp/project-one' },
+      setSelectedProjectId: jest.fn(),
+    });
+
+    renderLayout(['/board']);
+
+    expect(
+      await screen.findByRole('tab', { name: /owner-match-devchain-mismatch/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: /different-owner/i })).not.toBeInTheDocument();
+  });
+
+  it('does not show a removed-worktree toast on owner-scope changes', async () => {
+    runtimeMode = 'main';
+    worktreesPayload = [
+      {
+        id: 'wt-1',
+        name: 'feature-auth',
+        branchName: 'feature/auth',
+        status: 'running',
+        containerPort: 4310,
+        ownerProjectId: 'project-1',
+        devchainProjectId: 'worktree-project-1',
+        errorMessage: null,
+      },
+      {
+        id: 'wt-2',
+        name: 'other-owner',
+        branchName: 'feature/other-owner',
+        status: 'running',
+        containerPort: 4312,
+        ownerProjectId: 'project-2',
+        devchainProjectId: 'worktree-project-2',
+        errorMessage: null,
+      },
+    ];
+
+    const projects = [
+      { id: 'project-1', name: 'Project One', rootPath: '/tmp/project-one' },
+      { id: 'project-2', name: 'Project Two', rootPath: '/tmp/project-two' },
+    ];
+    let setSelectedProjectIdState: ((projectId: string | null) => void) | null = null;
+    useSelectedProjectMock.mockImplementation(() => {
+      const [selectedProjectId, setSelectedProjectId] = React.useState<string | null>('project-1');
+      setSelectedProjectIdState = setSelectedProjectId;
+      return {
+        projects,
+        projectsLoading: false,
+        projectsError: false,
+        refetchProjects: jest.fn(),
+        selectedProjectId,
+        selectedProject: projects.find((project) => project.id === selectedProjectId) ?? null,
+        setSelectedProjectId,
+      };
+    });
+
+    renderLayout(['/board']);
+
+    const activeWorktreeTab = await screen.findByRole('tab', { name: /feature-auth/i });
+    await act(async () => {
+      activeWorktreeTab.click();
+      await Promise.resolve();
+    });
+    await waitFor(() => {
+      expect(activeWorktreeTab).toHaveAttribute('aria-selected', 'true');
+    });
+
+    toastSpy.mockClear();
+    await act(async () => {
+      setSelectedProjectIdState?.('project-2');
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: /feature-auth/i })).toBeInTheDocument();
+      expect(screen.queryByRole('tab', { name: /other-owner/i })).not.toBeInTheDocument();
+    });
+
+    const removalToastShown = toastSpy.mock.calls.some((call) => {
+      const payload = call[0] as { description?: unknown } | undefined;
+      return (
+        typeof payload?.description === 'string' &&
+        payload.description.includes('was removed and is no longer available')
+      );
+    });
+    expect(removalToastShown).toBe(false);
+  });
+
+  it('shows sibling worktrees for the same owner in locked mode', async () => {
+    runtimeMode = 'main';
+    worktreesPayload = [
+      {
+        id: 'wt-1',
+        name: 'feature-auth',
+        branchName: 'feature/auth',
+        status: 'running',
+        containerPort: 4310,
+        ownerProjectId: 'project-1',
+        devchainProjectId: 'worktree-project-1',
+        errorMessage: null,
+      },
+      {
+        id: 'wt-2',
+        name: 'feature-sibling',
+        branchName: 'feature/sibling',
+        status: 'completed',
+        containerPort: 4312,
+        ownerProjectId: 'project-1',
+        devchainProjectId: 'worktree-project-3',
+        errorMessage: null,
+      },
+      {
+        id: 'wt-3',
+        name: 'other-owner',
+        branchName: 'feature/other-owner',
+        status: 'running',
+        containerPort: 4313,
+        ownerProjectId: 'project-2',
+        devchainProjectId: 'worktree-project-2',
+        errorMessage: null,
+      },
+    ];
+
+    const projects = [
+      { id: 'project-1', name: 'Project One', rootPath: '/tmp/project-one' },
+      { id: 'project-2', name: 'Project Two', rootPath: '/tmp/project-two' },
+    ];
+    let setSelectedProjectIdState: ((projectId: string | null) => void) | null = null;
+    useSelectedProjectMock.mockImplementation(() => {
+      const [selectedProjectId, setSelectedProjectId] = React.useState<string | null>('project-1');
+      setSelectedProjectIdState = setSelectedProjectId;
+      return {
+        projects,
+        projectsLoading: false,
+        projectsError: false,
+        refetchProjects: jest.fn(),
+        selectedProjectId,
+        selectedProject: projects.find((project) => project.id === selectedProjectId) ?? null,
+        setSelectedProjectId,
+      };
+    });
+
+    renderLayout(['/board']);
+
+    const activeWorktreeTab = await screen.findByRole('tab', { name: /feature-auth/i });
+    await act(async () => {
+      activeWorktreeTab.click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      setSelectedProjectIdState?.('project-2');
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: /feature-auth/i })).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: /feature-sibling/i })).toBeInTheDocument();
+      expect(screen.queryByRole('tab', { name: /other-owner/i })).not.toBeInTheDocument();
+      expect(screen.getByTestId('project-selector-locked')).toBeInTheDocument();
+    });
+  });
+
+  it('shows all worktrees when no project is selected and no worktree is active', async () => {
+    runtimeMode = 'main';
+    worktreesPayload = [
+      {
+        id: 'wt-1',
+        name: 'feature-auth',
+        branchName: 'feature/auth',
+        status: 'running',
+        containerPort: 4310,
+        ownerProjectId: 'project-1',
+        devchainProjectId: 'worktree-project-1',
+        errorMessage: null,
+      },
+      {
+        id: 'wt-2',
+        name: 'other-owner',
+        branchName: 'feature/other-owner',
+        status: 'running',
+        containerPort: 4312,
+        ownerProjectId: 'project-2',
+        devchainProjectId: 'worktree-project-2',
+        errorMessage: null,
+      },
+    ];
+
+    useSelectedProjectMock.mockReturnValue({
+      projects: [
+        { id: 'project-1', name: 'Project One', rootPath: '/tmp/project-one' },
+        { id: 'project-2', name: 'Project Two', rootPath: '/tmp/project-two' },
+      ],
+      projectsLoading: false,
+      projectsError: false,
+      refetchProjects: jest.fn(),
+      selectedProjectId: null,
+      selectedProject: null,
+      setSelectedProjectId: jest.fn(),
+    });
+
+    renderLayout(['/board']);
+
+    expect(await screen.findByRole('tab', { name: /feature-auth/i })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /other-owner/i })).toBeInTheDocument();
   });
 
   it('updates selected tab and URL search params when clicking a running worktree tab', async () => {

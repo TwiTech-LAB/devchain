@@ -43,7 +43,7 @@ export const CreateWorktreeSchema = z.object({
   templateSlug: z.string().min(1).max(255),
   ownerProjectId: z.string().min(1),
   description: z.string().max(5000).optional(),
-  repoPath: z.string().min(1).optional(),
+  includeIgnoredFiles: z.array(z.string().min(1).max(500)).max(100).optional().default([]),
   runtimeType: WorktreeRuntimeTypeSchema.optional(),
   presetName: z.string().min(1).optional(),
 });
@@ -63,10 +63,24 @@ export const DeleteWorktreeQuerySchema = z.object({
     .transform((value) => value !== 'false'),
 });
 
-export type CreateWorktreeDto = z.infer<typeof CreateWorktreeSchema>;
+type CreateWorktreeSchemaDto = z.infer<typeof CreateWorktreeSchema>;
+export type CreateWorktreeDto = CreateWorktreeSchemaDto & {
+  // Deprecated legacy field retained for direct service callers without controller schema parsing.
+  repoPath?: string;
+};
 export type WorktreeLogsQueryDto = z.infer<typeof WorktreeLogsQuerySchema>;
 export type DeleteWorktreeQueryDto = z.infer<typeof DeleteWorktreeQuerySchema>;
 export type WorktreeListQueryDto = z.infer<typeof WorktreeListQuerySchema>;
+
+export interface WorktreeCopyFailureDto {
+  path: string;
+  error: string;
+}
+
+export interface WorktreeCopyResultsDto {
+  copied: string[];
+  failed: WorktreeCopyFailureDto[];
+}
 
 export interface WorktreeResponseDto {
   id: string;
@@ -93,6 +107,7 @@ export interface WorktreeResponseDto {
   startedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  copyResults?: WorktreeCopyResultsDto;
 }
 
 export interface WorktreeOverviewDto {

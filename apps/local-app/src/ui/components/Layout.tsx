@@ -433,6 +433,14 @@ function LayoutShell({ children, isMainMode }: LayoutProps & { isMainMode: boole
     refetchOnWindowFocus: true,
   });
   const worktreeTabs = useMemo(() => worktreesData ?? [], [worktreesData]);
+  const worktreeOwnerScope = activeWorktree ? activeWorktree.ownerProjectId : selectedProjectId;
+  const visibleWorktreeTabs = useMemo(
+    () =>
+      worktreeOwnerScope
+        ? worktreeTabs.filter((worktree) => worktree.ownerProjectId === worktreeOwnerScope)
+        : worktreeTabs,
+    [worktreeOwnerScope, worktreeTabs],
+  );
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -889,6 +897,7 @@ function LayoutShell({ children, isMainMode }: LayoutProps & { isMainMode: boole
       setActiveWorktree({
         id: worktree.id,
         name: worktree.name,
+        ownerProjectId: worktree.ownerProjectId,
         devchainProjectId: worktree.devchainProjectId ?? null,
         status: worktree.status,
       });
@@ -1459,7 +1468,7 @@ function LayoutShell({ children, isMainMode }: LayoutProps & { isMainMode: boole
                   </div>
                 )}
 
-                {worktreeTabs.map((worktree) => {
+                {visibleWorktreeTabs.map((worktree) => {
                   const isActive = activeWorktreeName === worktree.name;
                   const enabled = isWorktreeTabEnabled(worktree);
                   const visualStatus = getWorktreeVisualStatus(String(worktree.status));

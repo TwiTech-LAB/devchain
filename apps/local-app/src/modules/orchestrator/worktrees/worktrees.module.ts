@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { EventsInfraModule } from '../../events/events-infra.module';
 import { EventsDomainModule } from '../../events/events-domain.module';
+import { StorageModule } from '../../storage/storage.module';
 import { OrchestratorDockerModule } from '../docker/docker.module';
 import { OrchestratorGitModule } from '../git/git.module';
 import { OrchestratorStorageModule } from '../orchestrator-storage/orchestrator-storage.module';
@@ -14,6 +15,7 @@ import { WORKTREES_STORE } from './worktrees.store';
     EventsInfraModule,
     EventsDomainModule,
     OrchestratorStorageModule,
+    StorageModule,
     OrchestratorDockerModule,
     OrchestratorGitModule,
   ],

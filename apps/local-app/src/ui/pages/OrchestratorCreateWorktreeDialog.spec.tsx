@@ -41,11 +41,11 @@ function buildProps(overrides: Partial<React.ComponentProps<typeof CreateWorktre
 }
 
 describe('CreateWorktreeDialog docker runtime selection', () => {
-  it('defaults docker checkbox to checked and enabled when docker is available', () => {
+  it('defaults docker checkbox to unchecked when docker is available', () => {
     renderWithClient(<CreateWorktreeDialog {...buildProps({ dockerAvailable: true })} />);
 
     const checkbox = screen.getByRole('checkbox', { name: /use docker container/i });
-    expect(checkbox).toHaveAttribute('data-state', 'checked');
+    expect(checkbox).toHaveAttribute('data-state', 'unchecked');
     expect(checkbox).not.toBeDisabled();
   });
 
@@ -62,7 +62,7 @@ describe('CreateWorktreeDialog docker runtime selection', () => {
     ).toBeInTheDocument();
   });
 
-  it('submits runtimeType=container by default when docker is available', async () => {
+  it('submits runtimeType=process by default when docker is available', async () => {
     const onSubmit = jest.fn().mockResolvedValue(undefined);
     renderWithClient(<CreateWorktreeDialog {...buildProps({ dockerAvailable: true, onSubmit })} />);
 
@@ -76,13 +76,13 @@ describe('CreateWorktreeDialog docker runtime selection', () => {
           branchName: 'feature-auth',
           baseBranch: 'main',
           templateSlug: '3-agent-dev',
-          runtimeType: 'container',
+          runtimeType: 'process',
         }),
       );
     });
   });
 
-  it('submits runtimeType=process when docker checkbox is unchecked', async () => {
+  it('submits runtimeType=container when docker checkbox is checked', async () => {
     const onSubmit = jest.fn().mockResolvedValue(undefined);
     renderWithClient(<CreateWorktreeDialog {...buildProps({ dockerAvailable: true, onSubmit })} />);
 
@@ -93,7 +93,7 @@ describe('CreateWorktreeDialog docker runtime selection', () => {
     await waitFor(() => {
       expect(onSubmit).toHaveBeenCalledWith(
         expect.objectContaining({
-          runtimeType: 'process',
+          runtimeType: 'container',
         }),
       );
     });

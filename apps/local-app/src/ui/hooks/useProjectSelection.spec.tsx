@@ -15,6 +15,7 @@ const flushPromises = () => new Promise((resolve) => setTimeout(resolve, 0));
 const originalFetch = global.fetch;
 let mockActiveWorktree: { id: string; name: string; devchainProjectId: string | null } | null =
   null;
+let mockRuntimeResolved = true;
 
 jest.mock('./useWorktreeTab', () => ({
   useOptionalWorktreeTab: () => ({
@@ -23,6 +24,7 @@ jest.mock('./useWorktreeTab', () => ({
     apiBase: '',
     worktrees: [],
     worktreesLoading: false,
+    runtimeResolved: mockRuntimeResolved,
   }),
 }));
 
@@ -39,6 +41,7 @@ describe('ProjectSelectionProvider', () => {
     root = createRoot(container);
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     mockActiveWorktree = null;
+    mockRuntimeResolved = true;
     localStorage.clear();
     sessionStorage.clear();
   });
@@ -111,6 +114,8 @@ describe('ProjectSelectionProvider', () => {
 
   interface TrackerState {
     currentSelection: string | undefined;
+    currentProject: string | undefined;
+    projectsLoading: boolean;
     updateSelection: (projectId?: string) => void;
   }
 
@@ -121,16 +126,21 @@ describe('ProjectSelectionProvider', () => {
   function renderTrackerWithControls(): { state: TrackerState; rerender: () => void } {
     const state: TrackerState = {
       currentSelection: undefined,
+      currentProject: undefined,
+      projectsLoading: false,
       updateSelection: () => undefined,
     };
 
     const Tracker = () => {
-      const { selectedProjectId, setSelectedProjectId } = useSelectedProject();
+      const { selectedProjectId, selectedProject, projectsLoading, setSelectedProjectId } =
+        useSelectedProject();
 
       useEffect(() => {
         state.currentSelection = selectedProjectId;
+        state.currentProject = selectedProject?.id;
+        state.projectsLoading = projectsLoading;
         state.updateSelection = setSelectedProjectId;
-      }, [selectedProjectId, setSelectedProjectId]);
+      }, [selectedProjectId, selectedProject, projectsLoading, setSelectedProjectId]);
 
       return null;
     };
@@ -416,6 +426,32 @@ describe('ProjectSelectionProvider', () => {
 
     await waitFor(() => {
       expect(state.currentSelection).toBe('project-alpha');
+    });
+  });
+
+  it('gates projects query and exposed selection until runtime resolves', async () => {
+    sessionStorage.setItem(PROJECT_STORAGE_KEY, 'project-alpha');
+    localStorage.setItem(PROJECT_STORAGE_KEY, 'project-alpha');
+    mockRuntimeResolved = false;
+    const mockFetch = setupMockFetch();
+    const { state, rerender } = renderTrackerWithControls();
+
+    await act(async () => await flushPromises());
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(state.projectsLoading).toBe(true);
+    expect(state.currentSelection).toBeUndefined();
+    expect(state.currentProject).toBeUndefined();
+
+    mockRuntimeResolved = true;
+    rerender();
+    await act(async () => await flushPromises());
+
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledWith('/api/projects', expect.any(Object));
+      expect(state.currentSelection).toBe('project-alpha');
+      expect(state.currentProject).toBe('project-alpha');
+      expect(state.projectsLoading).toBe(false);
     });
   });
 });

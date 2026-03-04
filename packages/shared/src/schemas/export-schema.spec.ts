@@ -177,6 +177,49 @@ describe('ExportSchema', () => {
     });
   });
 
+  describe('agents.modelOverride', () => {
+    const baseTemplate = {
+      version: 1,
+      exportedAt: '2024-01-01T00:00:00Z',
+      prompts: [],
+      profiles: [],
+      agents: [{ name: 'Coder' }],
+      statuses: [],
+    };
+
+    it('should accept agent with modelOverride as string', () => {
+      const template = {
+        ...baseTemplate,
+        agents: [{ name: 'Coder', modelOverride: 'anthropic/claude-sonnet-4-5' }],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.agents[0].modelOverride).toBe('anthropic/claude-sonnet-4-5');
+      }
+    });
+
+    it('should accept agent with modelOverride as null', () => {
+      const template = {
+        ...baseTemplate,
+        agents: [{ name: 'Coder', modelOverride: null }],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.agents[0].modelOverride).toBeNull();
+      }
+    });
+
+    it('should accept agent without modelOverride for backward compatibility', () => {
+      const result = ExportSchema.safeParse(baseTemplate);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.agents[0].modelOverride).toBeUndefined();
+      }
+    });
+  });
+
   describe('providerModels', () => {
     const baseTemplate = {
       version: 1,

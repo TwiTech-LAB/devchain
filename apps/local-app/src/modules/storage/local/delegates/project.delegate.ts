@@ -378,6 +378,7 @@ export class ProjectStorageDelegate extends BaseStorageDelegate {
           profileId: newProfileId,
           providerConfigId: configId,
           description: a.description ?? null,
+          modelOverride: a.modelOverride ?? null,
           createdAt: now,
           updatedAt: now,
         });

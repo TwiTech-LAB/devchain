@@ -30,6 +30,14 @@ interface ProxyErrorPayload {
   worktreeName?: unknown;
 }
 
+function getNonEmptyString(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function getOrigin(origin?: string): string {
   if (origin) {
     return origin;
@@ -123,16 +131,29 @@ async function emitWorktreeUnavailableEvent(
     return;
   }
 
-  const payload = await readProxyErrorPayload(response);
+  const headerWorktreeName = getNonEmptyString(response.headers.get('X-Worktree-Name'));
+  let payload: ProxyErrorPayload | null = null;
+  let payloadWorktreeName: string | null = null;
+
+  if (response.status === 404 && !headerWorktreeName) {
+    payload = await readProxyErrorPayload(response);
+    payloadWorktreeName = getNonEmptyString(payload?.worktreeName);
+    if (!payloadWorktreeName) {
+      return;
+    }
+  } else if (response.status === 503) {
+    payload = await readProxyErrorPayload(response);
+    payloadWorktreeName = getNonEmptyString(payload?.worktreeName);
+  }
+
   const message = typeof payload?.message === 'string' ? payload.message : null;
-  const payloadWorktreeName =
-    typeof payload?.worktreeName === 'string' ? payload.worktreeName : worktreeName;
+  const detailWorktreeName = headerWorktreeName ?? payloadWorktreeName ?? worktreeName;
 
   window.dispatchEvent(
     new CustomEvent<WorktreeProxyUnavailableDetail>(WORKTREE_PROXY_UNAVAILABLE_EVENT, {
       detail: {
         statusCode: response.status,
-        worktreeName: payloadWorktreeName,
+        worktreeName: detailWorktreeName,
         message,
         requestUrl: parsedUrl.pathname + parsedUrl.search,
       },

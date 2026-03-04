@@ -79,6 +79,7 @@ jest.mock('./hooks/useWorktreeTab', () => ({
     apiBase: '',
     worktrees: [],
     worktreesLoading: false,
+    runtimeResolved: true,
   }),
 }));
 

@@ -22,6 +22,7 @@ const WORKTREE_TAB_REFRESH_MS = 15_000;
 export interface ActiveWorktreeTab {
   id: string;
   name: string;
+  ownerProjectId: string;
   devchainProjectId: string | null;
   status: string;
 }
@@ -32,6 +33,7 @@ export interface WorktreeTabContextValue {
   apiBase: string;
   worktrees: ActiveWorktreeTab[];
   worktreesLoading: boolean;
+  runtimeResolved: boolean;
 }
 
 const WorktreeTabContext = createContext<WorktreeTabContextValue | null>(null);
@@ -42,6 +44,7 @@ const fallbackWorktreeTabContext: WorktreeTabContextValue = {
   apiBase: '',
   worktrees: [],
   worktreesLoading: false,
+  runtimeResolved: true,
 };
 
 function readWorktreeNameFromUrl(): string | null {
@@ -111,6 +114,7 @@ export function WorktreeTabProvider({ children }: { children: ReactNode }) {
       worktreeSummaries.map((worktree) => ({
         id: worktree.id,
         name: worktree.name,
+        ownerProjectId: worktree.ownerProjectId,
         devchainProjectId: worktree.devchainProjectId ?? null,
         status: worktree.status,
       })),
@@ -121,8 +125,20 @@ export function WorktreeTabProvider({ children }: { children: ReactNode }) {
     if (!isMainMode || !activeWorktreeName) {
       return null;
     }
-    return worktrees.find((worktree) => worktree.name === activeWorktreeName) ?? null;
-  }, [activeWorktreeName, isMainMode, worktrees]);
+    const matchedWorktree = worktreeSummaries.find(
+      (worktree) => worktree.name === activeWorktreeName,
+    );
+    if (!matchedWorktree) {
+      return null;
+    }
+    return {
+      id: matchedWorktree.id,
+      name: matchedWorktree.name,
+      ownerProjectId: matchedWorktree.ownerProjectId,
+      devchainProjectId: matchedWorktree.devchainProjectId ?? null,
+      status: matchedWorktree.status,
+    };
+  }, [activeWorktreeName, isMainMode, worktreeSummaries]);
 
   const apiBase = useMemo(() => {
     if (!isMainMode || !activeWorktreeName) {
@@ -142,9 +158,7 @@ export function WorktreeTabProvider({ children }: { children: ReactNode }) {
   const previousTabCacheScopeRef = useRef<string | null>(null);
 
   const apiBaseRef = useRef(apiBase);
-  useEffect(() => {
-    apiBaseRef.current = apiBase;
-  }, [apiBase]);
+  apiBaseRef.current = apiBase;
 
   useEffect(() => {
     return installWorktreeFetchInterceptor({
@@ -289,8 +303,9 @@ export function WorktreeTabProvider({ children }: { children: ReactNode }) {
       apiBase,
       worktrees,
       worktreesLoading,
+      runtimeResolved,
     }),
-    [activeWorktree, apiBase, setActiveWorktree, worktrees, worktreesLoading],
+    [activeWorktree, apiBase, setActiveWorktree, worktrees, worktreesLoading, runtimeResolved],
   );
 
   return <WorktreeTabContext.Provider value={contextValue}>{children}</WorktreeTabContext.Provider>;

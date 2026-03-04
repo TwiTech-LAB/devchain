@@ -87,7 +87,7 @@ describe('project-presets.helpers', () => {
       expect(result).toBe(true);
     });
 
-    it('returns false when modelOverride differs', async () => {
+    it('detects drift when preset explicitly defines a different modelOverride', async () => {
       storage.listAgents.mockResolvedValue({
         items: [
           {
@@ -177,7 +177,7 @@ describe('project-presets.helpers', () => {
       expect(result).toBe(false);
     });
 
-    it('returns true when both agent and preset have undefined modelOverride', async () => {
+    it('returns true when preset omits modelOverride and agent has undefined modelOverride', async () => {
       storage.listAgents.mockResolvedValue({
         items: [
           {
@@ -216,7 +216,7 @@ describe('project-presets.helpers', () => {
       expect(result).toBe(true);
     });
 
-    it('treats omitted modelOverride as null for backward compatibility', async () => {
+    it('treats omitted modelOverride as "do not care" when agent has modelOverride', async () => {
       storage.listAgents.mockResolvedValue({
         items: [
           {
@@ -224,7 +224,7 @@ describe('project-presets.helpers', () => {
             name: 'Coder',
             profileId: 'profile-1',
             providerConfigId: 'cfg-1',
-            modelOverride: null,
+            modelOverride: 'openai/gpt-5',
           },
         ],
         total: 1,
@@ -257,7 +257,7 @@ describe('project-presets.helpers', () => {
   });
 
   describe('applyPresetWithHelper', () => {
-    it('always sets modelOverride from preset (or null when omitted)', async () => {
+    it('sets modelOverride only when explicitly defined by preset', async () => {
       const preset: ProjectPreset = {
         name: 'default',
         description: 'Default',
@@ -346,15 +346,97 @@ describe('project-presets.helpers', () => {
       });
 
       expect(result).toEqual({ applied: 2, warnings: [] });
-      expect(storage.updateAgent).toHaveBeenNthCalledWith(1, 'agent-1', {
-        providerConfigId: 'cfg-claude',
-        modelOverride: 'openai/gpt-5',
+      expect(storage.updateAgent).toHaveBeenNthCalledWith(
+        1,
+        'agent-1',
+        expect.objectContaining({
+          providerConfigId: 'cfg-claude',
+          modelOverride: 'openai/gpt-5',
+        }),
+      );
+      const secondCallPayload = storage.updateAgent.mock.calls[1]?.[1] as
+        | { providerConfigId: string; modelOverride?: string | null }
+        | undefined;
+      expect(secondCallPayload).toEqual(
+        expect.objectContaining({
+          providerConfigId: 'cfg-gemini',
+        }),
+      );
+      expect(secondCallPayload).toEqual(
+        expect.not.objectContaining({
+          modelOverride: expect.anything(),
+        }),
+      );
+      expect(settings.setProjectActivePreset).toHaveBeenCalledWith(projectId, 'default');
+    });
+
+    it('clears modelOverride when preset explicitly sets modelOverride to null', async () => {
+      const preset: ProjectPreset = {
+        name: 'default',
+        description: 'Default',
+        agentConfigs: [
+          { agentName: 'Coder', providerConfigName: 'claude-config', modelOverride: null },
+        ],
+      };
+
+      settings.getProjectPresets.mockReturnValue([preset]);
+      storage.listAgents.mockResolvedValue({
+        items: [
+          {
+            id: 'agent-1',
+            name: 'Coder',
+            profileId: 'profile-1',
+            providerConfigId: 'old-cfg',
+            modelOverride: 'stale-model',
+          },
+        ],
+        total: 1,
+        limit: 1000,
+        offset: 0,
       });
-      expect(storage.updateAgent).toHaveBeenNthCalledWith(2, 'agent-2', {
-        providerConfigId: 'cfg-gemini',
+      storage.listAgentProfiles.mockResolvedValue({
+        items: [
+          {
+            id: 'profile-1',
+            projectId,
+            name: 'Code Profile',
+            providerId: 'provider-1',
+            familySlug: null,
+            instructions: null,
+            temperature: null,
+            maxTokens: null,
+            options: null,
+            createdAt: '',
+            updatedAt: '',
+          },
+        ],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        {
+          id: 'cfg-claude',
+          profileId: 'profile-1',
+          providerId: 'provider-1',
+          name: 'claude-config',
+          options: null,
+          env: null,
+          createdAt: '',
+          updatedAt: '',
+        },
+      ]);
+      storage.updateAgent.mockResolvedValue({} as never);
+
+      await applyPresetWithHelper(projectId, 'default', {
+        storage: storage as unknown as StorageService,
+        settings: settings as unknown as SettingsService,
+      });
+
+      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', {
+        providerConfigId: 'cfg-claude',
         modelOverride: null,
       });
-      expect(settings.setProjectActivePreset).toHaveBeenCalledWith(projectId, 'default');
     });
   });
 });

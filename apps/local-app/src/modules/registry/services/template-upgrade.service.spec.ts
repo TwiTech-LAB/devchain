@@ -30,16 +30,6 @@ const createMockImportResult = (): any => ({
   imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
 });
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const createMockProviderMappingRequired = (missingProviders: string[]): any => ({
-  success: false,
-  providerMappingRequired: {
-    missingProviders,
-    familyAlternatives: [],
-    canImport: false,
-  },
-});
-
 describe('TemplateUpgradeService', () => {
   let service: TemplateUpgradeService;
   let mockOrchestrationService: jest.Mocked<RegistryOrchestrationService>;

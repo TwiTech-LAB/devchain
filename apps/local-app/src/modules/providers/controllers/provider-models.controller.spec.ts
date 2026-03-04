@@ -5,15 +5,15 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { ProviderModelsController } from './provider-models.controller';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { McpProviderRegistrationService } from '../../mcp/services/mcp-provider-registration.service';
 import { ConflictError } from '../../../common/errors/error-types';
 
 jest.mock('child_process', () => {
-  const { promisify } = require('util');
   const execFileMock = jest.fn();
-  execFileMock[promisify.custom] = (...args: unknown[]) =>
+  execFileMock[Symbol.for('nodejs.util.promisify.custom')] = (...args: unknown[]) =>
     new Promise((resolve, reject) => {
       const callback = (error: Error | null, stdout: string, stderr: string) => {
         if (error) {
@@ -27,13 +27,13 @@ jest.mock('child_process', () => {
   return { execFile: execFileMock };
 });
 
-const mockExecFile = execFile as jest.MockedFunction<typeof execFile>;
+type ExecFileWithPromisify = typeof execFile & {
+  [promisify.custom]: (...args: unknown[]) => Promise<{ stdout: string; stderr: string }>;
+};
 
-function mockExecFileCallback(
-  error: Error | null,
-  stdout: string,
-  stderr: string,
-): void {
+const mockExecFile = execFile as jest.MockedFunction<ExecFileWithPromisify>;
+
+function mockExecFileCallback(error: Error | null, stdout: string, stderr: string): void {
   mockExecFile.mockImplementation((...args: unknown[]) => {
     const cb = args.find(
       (arg): arg is (err: Error | null, out: string, errOut: string) => void =>
@@ -156,11 +156,7 @@ describe('ProviderModelsController', () => {
       });
 
       const result = await controller.createProviderModel('provider-1', {
-        models: [
-          { name: 'b', position: 2 },
-          { name: 'a', position: 1 },
-          { name: 'c' },
-        ],
+        models: [{ name: 'b', position: 2 }, { name: 'a', position: 1 }, { name: 'c' }],
       });
 
       expect(storage.bulkCreateProviderModels).toHaveBeenCalledWith('provider-1', ['a', 'b', 'c']);
@@ -196,9 +192,9 @@ describe('ProviderModelsController', () => {
         new ConflictError('Model "gpt-4.1" already exists for this provider.'),
       );
 
-      await expect(controller.createProviderModel('provider-1', { name: 'gpt-4.1' })).rejects.toThrow(
-        ConflictError,
-      );
+      await expect(
+        controller.createProviderModel('provider-1', { name: 'gpt-4.1' }),
+      ).rejects.toThrow(ConflictError);
       expect(storage.createProviderModel).toHaveBeenCalledWith({
         providerId: 'provider-1',
         name: 'gpt-4.1',

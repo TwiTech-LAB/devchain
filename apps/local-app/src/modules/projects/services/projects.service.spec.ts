@@ -1304,10 +1304,21 @@ describe('ProjectsService', () => {
             name: 'Test Agent',
             profileId: profId,
             description: 'Agent description text',
+            modelOverride: 'openai/gpt-5',
           },
         ],
         statuses: [],
       };
+      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
+        ...payload,
+        version: 1,
+        exportedAt: undefined,
+        initialPrompt: undefined,
+        projectSettings: undefined,
+        watchers: [],
+        subscribers: [],
+        _manifest: undefined,
+      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
 
       storage.listProviders.mockResolvedValue({
         items: [{ id: provId, name: 'claude' }],
@@ -1332,8 +1343,10 @@ describe('ProjectsService', () => {
           projectId,
           name: 'Test Agent',
           description: 'Agent description text',
+          modelOverride: 'openai/gpt-5',
         }),
       );
+      jest.restoreAllMocks();
     });
 
     it('should pass all profile fields to createAgentProfile', async () => {
@@ -2264,6 +2277,141 @@ describe('ProjectsService', () => {
             name: 'Legacy Agent',
             profileId: 'new-profile-1',
             providerConfigId: 'default-config-1',
+            modelOverride: null,
+          }),
+        );
+
+        jest.restoreAllMocks();
+      });
+
+      it('round-trips agent modelOverride values through export and import', async () => {
+        const projectId = 'project-123';
+        const providerId = 'provider-claude-id';
+        const profileId = 'profile-1';
+        const providerConfigId = 'config-1';
+
+        storage.getProject.mockResolvedValue({
+          id: projectId,
+          name: 'Round Trip Project',
+          rootPath: '/test/path',
+          isTemplate: false,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+        storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+        storage.listAgentProfiles.mockResolvedValue({
+          items: [
+            {
+              id: profileId,
+              name: 'Runner',
+              providerId,
+              familySlug: 'coder',
+              options: null,
+              instructions: null,
+              temperature: null,
+              maxTokens: null,
+            },
+          ],
+          total: 1,
+          limit: 1000,
+          offset: 0,
+        });
+        storage.listAgents.mockResolvedValue({
+          items: [
+            {
+              id: 'agent-1',
+              name: 'Coder',
+              profileId,
+              providerConfigId,
+              description: null,
+              modelOverride: 'openai/gpt-5',
+            },
+            {
+              id: 'agent-2',
+              name: 'Reviewer',
+              profileId,
+              providerConfigId,
+              description: null,
+              modelOverride: null,
+            },
+          ],
+          total: 2,
+          limit: 1000,
+          offset: 0,
+        });
+        storage.listStatuses.mockResolvedValue({
+          items: [{ id: 'status-1', label: 'To Do', color: '#3b82f6', position: 0 }],
+          total: 1,
+          limit: 1000,
+          offset: 0,
+        });
+        storage.listWatchers.mockResolvedValue([]);
+        storage.listSubscribers.mockResolvedValue([]);
+        storage.getInitialSessionPrompt.mockResolvedValue(null);
+        storage.listProvidersByIds.mockResolvedValue([{ id: providerId, name: 'claude' }]);
+        storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+          {
+            id: providerConfigId,
+            profileId,
+            providerId,
+            name: 'claude',
+            options: null,
+            env: null,
+            position: 0,
+          },
+        ]);
+
+        const exported = await service.exportProject(projectId);
+        expect(exported.agents).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ name: 'Coder', modelOverride: 'openai/gpt-5' }),
+            expect.objectContaining({ name: 'Reviewer', modelOverride: null }),
+          ]),
+        );
+
+        storage.listProviders.mockResolvedValue({
+          items: [{ id: providerId, name: 'claude' }],
+          total: 1,
+          limit: 100,
+          offset: 0,
+        });
+        storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        storage.listAgentProfiles.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 10000,
+          offset: 0,
+        });
+        storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        sessions.getActiveSessionsForProject.mockReturnValue([]);
+        storage.createStatus.mockResolvedValue({ id: 'new-status-1' });
+        storage.createAgentProfile.mockResolvedValue({ id: 'new-profile-1' });
+        storage.createProfileProviderConfig.mockResolvedValue({ id: 'new-config-1' });
+        storage.createAgent
+          .mockResolvedValueOnce({ id: 'new-agent-1' })
+          .mockResolvedValueOnce({ id: 'new-agent-2' });
+
+        const { _manifest: _omittedManifest, ...importPayload } = exported;
+        void _omittedManifest;
+        jest
+          .spyOn(devchainShared.ExportSchema, 'parse')
+          .mockReturnValue(importPayload as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+        await service.importProject({ projectId, payload: importPayload, dryRun: false });
+
+        expect(storage.createAgent).toHaveBeenNthCalledWith(
+          1,
+          expect.objectContaining({
+            name: 'Coder',
+            modelOverride: 'openai/gpt-5',
+          }),
+        );
+        expect(storage.createAgent).toHaveBeenNthCalledWith(
+          2,
+          expect.objectContaining({
+            name: 'Reviewer',
+            modelOverride: null,
           }),
         );
 
@@ -2416,6 +2564,7 @@ describe('ProjectsService', () => {
         name: 'Test Agent',
         profileId: 'prof-1',
         description: 'Detailed agent description',
+        modelOverride: null,
       });
     });
 
@@ -2708,6 +2857,7 @@ describe('ProjectsService', () => {
             profileId: 'prof-1',
             providerConfigId: 'config-1',
             description: null,
+            modelOverride: 'anthropic/claude-sonnet-4-5',
           },
         ],
         total: 1,
@@ -2769,6 +2919,7 @@ describe('ProjectsService', () => {
       // Agent should have providerConfigName
       expect(result.agents).toHaveLength(1);
       expect(result.agents[0].providerConfigName).toBe('claude');
+      expect(result.agents[0].modelOverride).toBe('anthropic/claude-sonnet-4-5');
     });
 
     it('should not include providerConfigs in export when profile has none', async () => {
@@ -2821,6 +2972,7 @@ describe('ProjectsService', () => {
       // Agent should NOT have providerConfigName
       expect(result.agents).toHaveLength(1);
       expect(result.agents[0].providerConfigName).toBeUndefined();
+      expect(result.agents[0].modelOverride).toBeNull();
     });
 
     it('should export watcher idleAfterSeconds', async () => {
@@ -3906,7 +4058,14 @@ describe('ProjectsService', () => {
             familySlug: 'coder',
           },
         ],
-        agents: [{ id: agentId, name: 'Coder', profileId: profileId1 }],
+        agents: [
+          {
+            id: agentId,
+            name: 'Coder',
+            profileId: profileId1,
+            modelOverride: 'anthropic/claude-sonnet-4-5',
+          },
+        ],
         statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
       };
 
@@ -3963,6 +4122,14 @@ describe('ProjectsService', () => {
       expect(templatePayload.profiles).toHaveLength(1);
       expect(templatePayload.profiles[0].name).toBe('Coder Claude');
       expect(templatePayload.profiles[0].providerId).toBe(providerId);
+      expect(templatePayload.agents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'Coder',
+            modelOverride: 'anthropic/claude-sonnet-4-5',
+          }),
+        ]),
+      );
 
       // Cleanup
       jest.restoreAllMocks();
@@ -4250,6 +4417,7 @@ describe('ProjectsService', () => {
       const [, templatePayload] = storage.createProjectWithTemplate.mock.calls[0];
       expect(templatePayload.profiles).toHaveLength(1);
       expect(templatePayload.profiles[0].name).toBe('Coder Claude');
+      expect(templatePayload.agents[0].modelOverride).toBeNull();
 
       jest.restoreAllMocks();
     });
@@ -4287,6 +4455,7 @@ describe('ProjectsService', () => {
             name: 'Coder',
             profileId: profileId1,
             providerConfigName: 'gpt-high', // codex config — unavailable
+            modelOverride: 'openai/gpt-5',
           },
         ],
         statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
@@ -4342,6 +4511,170 @@ describe('ProjectsService', () => {
       expect(storage.updateAgent).toHaveBeenCalledWith(newAgentId, {
         providerConfigId: opusConfigId,
       });
+      const [, templatePayload] = storage.createProjectWithTemplate.mock.calls[0];
+      expect(templatePayload.agents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'Coder',
+            modelOverride: 'openai/gpt-5',
+          }),
+        ]),
+      );
+      const reassignmentPayload = (storage.updateAgent as jest.Mock).mock.calls[0]?.[1] as
+        | { providerConfigId: string; modelOverride?: string | null }
+        | undefined;
+      expect(reassignmentPayload?.providerConfigId).toBe(opusConfigId);
+      expect(reassignmentPayload).not.toHaveProperty('modelOverride');
+
+      jest.restoreAllMocks();
+    });
+
+    it('preserves modelOverride when create-from-template applies a preset that omits modelOverride', async () => {
+      const selectedPresetName = 'balanced';
+      const opusConfigId = 'created-opus-config';
+      const newProfileId = 'new-profile-1';
+      const newAgentId = 'new-agent-1';
+      const initialModelOverride = 'anthropic/claude-sonnet-4-5';
+
+      const templateWithPreset = {
+        version: 1,
+        prompts: [],
+        profiles: [
+          {
+            id: profileId1,
+            name: 'Coder Claude',
+            provider: { name: 'claude' },
+            familySlug: 'coder',
+            providerConfigs: [{ name: 'opus', providerName: 'claude', options: null, env: null }],
+          },
+        ],
+        agents: [
+          {
+            id: agentId,
+            name: 'Coder',
+            profileId: profileId1,
+            providerConfigName: 'opus',
+            modelOverride: initialModelOverride,
+          },
+        ],
+        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+        presets: [
+          {
+            name: selectedPresetName,
+            agentConfigs: [{ agentName: 'Coder', providerConfigName: 'opus' }],
+          },
+        ],
+      };
+
+      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
+        ...templateWithPreset,
+        exportedAt: undefined,
+        initialPrompt: undefined,
+        projectSettings: undefined,
+        watchers: [],
+        subscribers: [],
+        _manifest: undefined,
+      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+      unifiedTemplateService.getTemplate.mockResolvedValue({
+        content: templateWithPreset,
+        source: 'bundled',
+        version: null,
+      });
+
+      storage.listProviders.mockResolvedValue({
+        items: [{ id: providerId, name: 'claude' }],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      storage.createProjectWithTemplate.mockResolvedValue({
+        project: { id: 'new-project-1', name: 'Test' },
+        imported: { prompts: 0, profiles: 1, agents: 1, statuses: 1 },
+        mappings: {
+          promptIdMap: {},
+          profileIdMap: { [profileId1]: newProfileId },
+          agentIdMap: { [agentId]: newAgentId },
+          statusIdMap: {},
+        },
+      });
+      storage.createProfileProviderConfig.mockResolvedValue({
+        id: opusConfigId,
+        profileId: newProfileId,
+        providerId,
+        name: 'opus',
+        options: null,
+        env: null,
+        createdAt: '',
+        updatedAt: '',
+      });
+
+      let currentAgent = {
+        id: newAgentId,
+        name: 'Coder',
+        profileId: newProfileId,
+        providerConfigId: null as string | null,
+        modelOverride: initialModelOverride,
+      };
+      storage.listAgents.mockImplementation(async () => ({
+        items: [currentAgent],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      }));
+      storage.updateAgent.mockImplementation(async (id, data) => {
+        if (id === currentAgent.id) {
+          currentAgent = { ...currentAgent, ...data };
+        }
+        return { id, ...data } as never;
+      });
+
+      const storedPresetsByProject = new Map<string, unknown[]>();
+      (settings as { setProjectActivePreset: jest.Mock }).setProjectActivePreset = jest
+        .fn()
+        .mockResolvedValue(undefined);
+      (settings as { setProjectPresets: jest.Mock }).setProjectPresets.mockImplementation(
+        async (projectIdParam: string, presets: unknown[]) => {
+          storedPresetsByProject.set(projectIdParam, presets);
+        },
+      );
+      (settings as { getProjectPresets: jest.Mock }).getProjectPresets.mockImplementation(
+        (projectIdParam: string) => storedPresetsByProject.get(projectIdParam) ?? [],
+      );
+
+      const result = await service.createFromTemplate({
+        name: 'Test Project',
+        rootPath: '/test',
+        slug: 'test-template',
+        presetName: selectedPresetName,
+      });
+
+      expect(result.success).toBe(true);
+      const [, templatePayload] = storage.createProjectWithTemplate.mock.calls[0];
+      expect(templatePayload.agents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'Coder',
+            modelOverride: initialModelOverride,
+          }),
+        ]),
+      );
+      for (const [, updatePayload] of (storage.updateAgent as jest.Mock).mock.calls) {
+        expect(updatePayload).toEqual(
+          expect.objectContaining({
+            providerConfigId: opusConfigId,
+          }),
+        );
+        expect(updatePayload).toEqual(
+          expect.not.objectContaining({
+            modelOverride: expect.anything(),
+          }),
+        );
+      }
+      expect(currentAgent.modelOverride).toBe(initialModelOverride);
+      expect(
+        (settings as { setProjectActivePreset: jest.Mock }).setProjectActivePreset,
+      ).toHaveBeenCalledWith('new-project-1', selectedPresetName);
 
       jest.restoreAllMocks();
     });
@@ -5031,7 +5364,7 @@ describe('ProjectsService', () => {
       });
     });
 
-    it('should apply preset and coerce omitted modelOverride to null', async () => {
+    it('should apply preset and preserve modelOverride when omitted in preset', async () => {
       const preset = {
         name: 'default',
         description: 'Default preset',
@@ -5096,10 +5429,19 @@ describe('ProjectsService', () => {
 
       await service.applyPreset(projectId, 'default');
 
-      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', {
-        providerConfigId: claudeConfigId,
-        modelOverride: null,
-      });
+      const updatePayload = (storage.updateAgent as jest.Mock).mock.calls[0]?.[1] as
+        | { providerConfigId: string; modelOverride?: string | null }
+        | undefined;
+      expect(updatePayload).toEqual(
+        expect.objectContaining({
+          providerConfigId: claudeConfigId,
+        }),
+      );
+      expect(updatePayload).toEqual(
+        expect.not.objectContaining({
+          modelOverride: expect.anything(),
+        }),
+      );
     });
 
     it('should throw NotFoundError when preset not found', async () => {

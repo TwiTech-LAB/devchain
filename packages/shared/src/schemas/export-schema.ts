@@ -100,6 +100,7 @@ export const ExportSchema = z
           name: z.string().min(1),
           profileId: z.string().uuid().optional(),
           description: z.string().nullable().optional(),
+          modelOverride: z.string().nullable().optional(),
           // Provider config reference (new in v2)
           // References a config by name within the agent's profile
           providerConfigName: z.string().nullable().optional(),

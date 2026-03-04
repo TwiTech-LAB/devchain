@@ -64,10 +64,13 @@ export async function doesProjectMatchPresetWithHelper(
       return false;
     }
 
-    const expectedModelOverride = agentConfig.modelOverride ?? null;
-    const currentModelOverride = agent.modelOverride ?? null;
-    if (currentModelOverride !== expectedModelOverride) {
-      return false;
+    // Omitted modelOverride means "don't care" for preset matching.
+    if (agentConfig.modelOverride !== undefined) {
+      const expectedModelOverride = agentConfig.modelOverride ?? null;
+      const currentModelOverride = agent.modelOverride ?? null;
+      if (currentModelOverride !== expectedModelOverride) {
+        return false;
+      }
     }
   }
 
@@ -127,11 +130,24 @@ export async function applyPresetWithHelper(
       continue;
     }
 
-    const modelOverride = agentConfig.modelOverride ?? null;
-    await deps.storage.updateAgent(agentId, { providerConfigId, modelOverride });
+    const updatePayload: { providerConfigId: string; modelOverride?: string | null } = {
+      providerConfigId,
+    };
+    if (agentConfig.modelOverride !== undefined) {
+      updatePayload.modelOverride = agentConfig.modelOverride;
+    }
+    await deps.storage.updateAgent(agentId, updatePayload);
     applied++;
     logger.debug(
-      { projectId, agentId, agentName: agentConfig.agentName, providerConfigId, modelOverride },
+      {
+        projectId,
+        agentId,
+        agentName: agentConfig.agentName,
+        providerConfigId,
+        ...(agentConfig.modelOverride !== undefined
+          ? { modelOverride: agentConfig.modelOverride }
+          : {}),
+      },
       'Applied preset: updated agent provider config and model override',
     );
   }

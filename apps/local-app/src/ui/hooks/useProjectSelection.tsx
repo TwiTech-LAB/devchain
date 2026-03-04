@@ -113,7 +113,7 @@ function persistSelectedProject(projectId?: string) {
 }
 
 export function ProjectSelectionProvider({ children }: { children: ReactNode }) {
-  const { activeWorktree } = useOptionalWorktreeTab();
+  const { activeWorktree, runtimeResolved = true } = useOptionalWorktreeTab();
   const isProjectSelectionLocked = Boolean(activeWorktree);
   const lockedProjectId =
     activeWorktree?.devchainProjectId && activeWorktree.devchainProjectId.trim().length > 0
@@ -129,10 +129,15 @@ export function ProjectSelectionProvider({ children }: { children: ReactNode }) 
 
   const {
     data: projectsData,
-    isLoading: projectsLoading,
+    isLoading: projectsQueryLoading,
     isError: projectsError,
     refetch,
-  } = useQuery({ queryKey: ['projects'], queryFn: ({ signal }) => fetchProjects({ signal }) });
+  } = useQuery({
+    queryKey: ['projects'],
+    queryFn: ({ signal }) => fetchProjects({ signal }),
+    enabled: runtimeResolved,
+  });
+  const projectsLoading = !runtimeResolved || projectsQueryLoading;
 
   // Initialize: if sessionStorage is empty but localStorage has a value, sync to sessionStorage
   // This ensures new tabs get the localStorage default written to their tab-local storage
@@ -246,11 +251,16 @@ export function ProjectSelectionProvider({ children }: { children: ReactNode }) 
     [isProjectSelectionLocked],
   );
 
-  const effectiveSelectedProjectId = lockedProjectId ?? selectedProjectId;
+  const effectiveSelectedProjectId = runtimeResolved
+    ? (lockedProjectId ?? selectedProjectId)
+    : undefined;
 
   const selectedProject = useMemo(
-    () => projectsData?.items?.find((project) => project.id === effectiveSelectedProjectId),
-    [effectiveSelectedProjectId, projectsData],
+    () =>
+      runtimeResolved
+        ? projectsData?.items?.find((project) => project.id === effectiveSelectedProjectId)
+        : undefined,
+    [effectiveSelectedProjectId, projectsData, runtimeResolved],
   );
 
   const refetchProjects = useCallback(async () => {

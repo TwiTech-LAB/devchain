@@ -21,6 +21,7 @@ jest.mock('@/ui/hooks/useWorktreeTab', () => ({
     apiBase: activeWorktreeName ? `/wt/${encodeURIComponent(activeWorktreeName)}` : '',
     worktrees: [],
     worktreesLoading: false,
+    runtimeResolved: true,
   }),
 }));
 

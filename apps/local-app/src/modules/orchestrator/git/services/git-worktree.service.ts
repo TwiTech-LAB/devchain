@@ -73,6 +73,12 @@ export interface WorkingTreeStatus {
   output: string;
 }
 
+export interface IgnoredFileInfo {
+  path: string;
+  type: 'file' | 'directory';
+  defaultIncluded: boolean;
+}
+
 type GitCommandRunner = (
   cwd: string,
   args: string[],
@@ -171,6 +177,21 @@ export class GitWorktreeService {
         .split('\n')
         .map((branch) => branch.trim())
         .filter(Boolean);
+    });
+  }
+
+  async listIgnoredFiles(repoPath?: string): Promise<IgnoredFileInfo[]> {
+    return this.enqueue(async () => {
+      const resolvedRepoPath = this.resolveRepoPath(repoPath);
+      const { stdout } = await this.runGit(resolvedRepoPath, [
+        'ls-files',
+        '--others',
+        '--ignored',
+        '--exclude-standard',
+        '--directory',
+        '-z',
+      ]);
+      return parseIgnoredFileList(stdout);
     });
   }
 
@@ -621,4 +642,51 @@ function parseMergeTreeConflicts(rawOutput: string): string[] {
   }
 
   return [...conflicts];
+}
+
+function parseIgnoredFileList(rawOutput: string): IgnoredFileInfo[] {
+  if (!rawOutput) {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const results: IgnoredFileInfo[] = [];
+  for (const rawEntry of rawOutput.split('\0')) {
+    if (!rawEntry || seen.has(rawEntry)) {
+      continue;
+    }
+    seen.add(rawEntry);
+    results.push({
+      path: rawEntry,
+      type: rawEntry.endsWith('/') ? 'directory' : 'file',
+      defaultIncluded: resolveDefaultIncluded(rawEntry),
+    });
+  }
+
+  return results;
+}
+
+function resolveDefaultIncluded(path: string): boolean {
+  const normalized = path.endsWith('/') ? path.slice(0, -1) : path;
+  const segments = normalized.split('/').filter(Boolean);
+  const baseName = segments[segments.length - 1] ?? '';
+  const hasSegment = (value: string): boolean => segments.includes(value);
+
+  if (baseName.endsWith('.log')) {
+    return false;
+  }
+  if (hasSegment('dist') || hasSegment('build') || hasSegment('.next') || hasSegment('.turbo')) {
+    return false;
+  }
+  if (hasSegment('__pycache__') || hasSegment('.cache')) {
+    return false;
+  }
+  if (baseName.startsWith('.env')) {
+    return true;
+  }
+  if (hasSegment('node_modules') || hasSegment('vendor') || hasSegment('.vscode')) {
+    return true;
+  }
+
+  return false;
 }

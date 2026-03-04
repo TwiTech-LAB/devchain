@@ -274,6 +274,7 @@ function buildExportAgents(
       name: agent.name,
       profileId: agent.profileId,
       description: agent.description,
+      modelOverride: agent.modelOverride ?? null,
       ...(providerConfigName && { providerConfigName }),
     };
   });

@@ -739,6 +739,7 @@ async function createImportedAgents(
       profileId: newProfileId,
       description: agent.description ?? null,
       providerConfigId,
+      modelOverride: agent.modelOverride ?? null,
     });
 
     const agentKey = agent.id || `name:${agent.name.trim().toLowerCase()}`;

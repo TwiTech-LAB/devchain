@@ -1,7 +1,7 @@
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import * as childProcess from 'child_process';
-import { mkdtemp, mkdir, rm, writeFile } from 'fs/promises';
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { resetEnvConfig } from '../../../../common/config/env.config';
@@ -11,6 +11,7 @@ import { SeedPreparationService } from '../../docker/services/seed-preparation.s
 import { WORKTREE_TASK_MERGE_REQUESTED_EVENT } from '../../sync/events/task-merge.events';
 import { WORKTREE_CHANGED_EVENT } from '../events/worktree.events';
 import { EventLogService } from '../../../events/services/event-log.service';
+import { type StorageService } from '../../../storage/interfaces/storage.interface';
 import {
   CreateWorktreeRecordInput,
   UpdateWorktreeRecordInput,
@@ -123,6 +124,7 @@ describe('WorktreesService', () => {
   let seedPreparation: jest.Mocked<Partial<SeedPreparationService>>;
   let eventEmitter: jest.Mocked<Pick<EventEmitter2, 'emitAsync' | 'emit'>>;
   let eventLogService: jest.Mocked<Pick<EventLogService, 'recordPublished'>>;
+  let storage: jest.Mocked<Pick<StorageService, 'getProject'>>;
   let service: WorktreesService;
   let dockerEventHandler:
     | ((event: { id?: string; status?: string; Action?: string }) => void)
@@ -161,6 +163,7 @@ describe('WorktreesService', () => {
     };
     git = {
       createWorktree: jest.fn(),
+      listIgnoredFiles: jest.fn().mockResolvedValue([]),
       removeWorktree: jest.fn().mockResolvedValue(undefined),
       deleteBranch: jest.fn().mockResolvedValue(undefined),
       getBranchStatus: jest.fn().mockResolvedValue({
@@ -216,6 +219,12 @@ describe('WorktreesService', () => {
         .fn()
         .mockResolvedValue({ id: 'event-1', publishedAt: '2026-02-18T00:00:00.000Z' }),
     };
+    storage = {
+      getProject: jest.fn(async (id: string) => ({
+        id,
+        rootPath: repoPath,
+      })) as jest.MockedFunction<StorageService['getProject']>,
+    };
 
     service = new WorktreesService(
       store,
@@ -224,6 +233,7 @@ describe('WorktreesService', () => {
       seedPreparation as unknown as SeedPreparationService,
       eventEmitter as unknown as EventEmitter2,
       eventLogService as unknown as EventLogService,
+      storage,
     );
 
     global.fetch = jest.fn(async (url: string, init?: RequestInit) => {
@@ -334,11 +344,12 @@ describe('WorktreesService', () => {
     );
   });
 
-  it('uses REPO_ROOT when repoPath is omitted in main mode', async () => {
-    process.env.DEVCHAIN_MODE = 'main';
-    process.env.DATABASE_URL = 'postgres://postgres:postgres@localhost:5432/devchain';
-    process.env.REPO_ROOT = repoPath;
-    resetEnvConfig();
+  it('prefers owner project rootPath over provided repoPath when creating worktree', async () => {
+    const ownerProjectRoot = join(tempRoot, 'owner-project-root');
+    storage.getProject.mockResolvedValue({
+      id: 'project-main',
+      rootPath: ownerProjectRoot,
+    } as never);
 
     docker.createContainer?.mockResolvedValue({
       id: 'container-1',
@@ -355,14 +366,280 @@ describe('WorktreesService', () => {
       baseBranch: 'main',
       templateSlug: '3-agent-dev',
       ownerProjectId: 'project-main',
+      repoPath: join(tempRoot, 'untrusted-client-path'),
     });
 
+    expect(storage.getProject).toHaveBeenCalledWith('project-main');
     expect(git.createWorktree).toHaveBeenCalledWith({
       name: 'feature-auth',
       branchName: 'feature/auth',
       baseBranch: 'main',
-      repoPath,
-      worktreePath: join(repoPath, '.devchain', 'worktrees', 'feature-auth'),
+      repoPath: ownerProjectRoot,
+      worktreePath: join(ownerProjectRoot, 'worktrees', 'feature-auth'),
+    });
+  });
+
+  it('copies selected ignored paths before runtime start and returns copyResults in container mode', async () => {
+    await writeFile(join(repoPath, '.env.local'), 'TOKEN=secret\n');
+    await mkdir(join(repoPath, 'node_modules', 'pkg'), { recursive: true });
+    await writeFile(join(repoPath, 'node_modules', 'pkg', 'index.js'), 'module.exports = {};\n');
+    git.listIgnoredFiles?.mockResolvedValue([
+      { path: '.env.local', type: 'file', defaultIncluded: true },
+      { path: 'node_modules/', type: 'directory', defaultIncluded: true },
+    ]);
+    docker.createContainer?.mockResolvedValue({
+      id: 'container-1',
+      name: 'devchain-wt-feature-auth',
+      image: 'devchain:latest',
+      hostPort: 41001,
+      state: 'running',
+    });
+    docker.waitForHealthy?.mockResolvedValue(true);
+
+    const result = await service.createWorktree({
+      name: 'feature-auth',
+      branchName: 'feature/auth',
+      baseBranch: 'main',
+      templateSlug: '3-agent-dev',
+      ownerProjectId: 'project-main',
+      includeIgnoredFiles: ['.env.local', 'node_modules/', './.env.local', 'node_modules//'],
+    });
+
+    const copiedEnv = await readFile(
+      join(repoPath, 'worktrees', 'feature-auth', '.env.local'),
+      'utf-8',
+    );
+    const copiedModule = await readFile(
+      join(repoPath, 'worktrees', 'feature-auth', 'node_modules', 'pkg', 'index.js'),
+      'utf-8',
+    );
+    expect(copiedEnv).toContain('TOKEN=secret');
+    expect(copiedModule).toContain('module.exports');
+    expect(result.copyResults).toEqual({
+      copied: ['.env.local', 'node_modules'],
+      failed: [],
+    });
+    const listIgnoredFilesOrder = git.listIgnoredFiles?.mock.invocationCallOrder[0] ?? 0;
+    const seedPreparationOrder = seedPreparation.prepareSeedData?.mock.invocationCallOrder[0] ?? 0;
+    const createContainerOrder = docker.createContainer?.mock.invocationCallOrder[0] ?? 0;
+    expect(listIgnoredFilesOrder).toBeGreaterThan(0);
+    expect(listIgnoredFilesOrder).toBeLessThan(seedPreparationOrder);
+    expect(listIgnoredFilesOrder).toBeLessThan(createContainerOrder);
+  });
+
+  it('copies selected ignored paths and exposes them in process mode worktree', async () => {
+    await writeFile(join(repoPath, '.env.process'), 'MODE=process\n');
+    git.listIgnoredFiles?.mockResolvedValue([
+      { path: '.env.process', type: 'file', defaultIncluded: true },
+    ]);
+    const startProcessRuntimeSpy = jest
+      .spyOn(
+        service as unknown as { startProcessRuntime: (...args: unknown[]) => Promise<unknown> },
+        'startProcessRuntime',
+      )
+      .mockResolvedValue({
+        processId: 4321,
+        hostPort: 43123,
+        runtimeToken: 'runtime-token-1',
+        startedAt: new Date('2026-02-17T00:00:00.000Z'),
+      });
+
+    const result = await service.createWorktree({
+      name: 'feature-process-copy',
+      branchName: 'feature/process-copy',
+      baseBranch: 'main',
+      templateSlug: '3-agent-dev',
+      ownerProjectId: 'project-main',
+      runtimeType: 'process',
+      includeIgnoredFiles: ['.env.process'],
+    });
+
+    const copied = await readFile(
+      join(repoPath, 'worktrees', 'feature-process-copy', '.env.process'),
+      'utf-8',
+    );
+    expect(startProcessRuntimeSpy).toHaveBeenCalledTimes(1);
+    expect(copied).toContain('MODE=process');
+    expect(result.copyResults).toEqual({
+      copied: ['.env.process'],
+      failed: [],
+    });
+  });
+
+  it('rejects includeIgnoredFiles paths not in server-side ignored allowlist', async () => {
+    git.listIgnoredFiles?.mockResolvedValue([
+      { path: '.env', type: 'file', defaultIncluded: true },
+    ]);
+
+    await expect(
+      service.createWorktree({
+        name: 'feature-auth',
+        branchName: 'feature/auth',
+        baseBranch: 'main',
+        templateSlug: '3-agent-dev',
+        ownerProjectId: 'project-main',
+        includeIgnoredFiles: ['not-ignored.txt'],
+      }),
+    ).rejects.toThrow(BadRequestException);
+
+    expect(git.createWorktree).toHaveBeenCalledTimes(1);
+    expect(git.removeWorktree).toHaveBeenCalled();
+    expect(docker.createContainer).not.toHaveBeenCalled();
+  });
+
+  it('rejects includeIgnoredFiles path traversal even if path appears in allowlist', async () => {
+    git.listIgnoredFiles?.mockResolvedValue([
+      { path: '../escape.txt', type: 'file', defaultIncluded: false },
+    ]);
+
+    await expect(
+      service.createWorktree({
+        name: 'feature-auth',
+        branchName: 'feature/auth',
+        baseBranch: 'main',
+        templateSlug: '3-agent-dev',
+        ownerProjectId: 'project-main',
+        includeIgnoredFiles: ['../escape.txt'],
+      }),
+    ).rejects.toThrow(BadRequestException);
+
+    expect(git.removeWorktree).toHaveBeenCalled();
+    expect(docker.createContainer).not.toHaveBeenCalled();
+  });
+
+  it('rejects includeIgnoredFiles symlink escapes even if path appears in allowlist', async () => {
+    const outsideFile = join(tempRoot, 'outside-secret.txt');
+    await writeFile(outsideFile, 'outside\n');
+    await symlink(outsideFile, join(repoPath, 'escaped-link'));
+    git.listIgnoredFiles?.mockResolvedValue([
+      { path: 'escaped-link', type: 'file', defaultIncluded: false },
+    ]);
+
+    await expect(
+      service.createWorktree({
+        name: 'feature-auth',
+        branchName: 'feature/auth',
+        baseBranch: 'main',
+        templateSlug: '3-agent-dev',
+        ownerProjectId: 'project-main',
+        includeIgnoredFiles: ['escaped-link'],
+      }),
+    ).rejects.toThrow(BadRequestException);
+
+    expect(git.removeWorktree).toHaveBeenCalled();
+    expect(docker.createContainer).not.toHaveBeenCalled();
+  });
+
+  it('continues worktree creation when ignored-file copy has IO failures and returns warnings', async () => {
+    await writeFile(join(repoPath, '.env.copy-ok'), 'ok\n');
+    git.listIgnoredFiles?.mockResolvedValue([
+      { path: '.env.copy-ok', type: 'file', defaultIncluded: true },
+      { path: 'missing.file', type: 'file', defaultIncluded: false },
+    ]);
+    docker.createContainer?.mockResolvedValue({
+      id: 'container-1',
+      name: 'devchain-wt-feature-auth',
+      image: 'devchain:latest',
+      hostPort: 41001,
+      state: 'running',
+    });
+    docker.waitForHealthy?.mockResolvedValue(true);
+
+    const result = await service.createWorktree({
+      name: 'feature-copy-warnings',
+      branchName: 'feature/copy-warnings',
+      baseBranch: 'main',
+      templateSlug: '3-agent-dev',
+      ownerProjectId: 'project-main',
+      includeIgnoredFiles: ['.env.copy-ok', 'missing.file'],
+    });
+
+    expect(result.status).toBe('running');
+    expect(result.copyResults?.copied).toEqual(['.env.copy-ok']);
+    expect(result.copyResults?.failed).toEqual([
+      expect.objectContaining({
+        path: 'missing.file',
+      }),
+    ]);
+    expect(result.copyResults?.failed[0]?.error).toContain('ENOENT');
+    expect(docker.createContainer).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed when owner project lookup fails even if repoPath is provided', async () => {
+    const lookupError = new NotFoundException('Project not found: project-missing');
+    storage.getProject.mockRejectedValue(lookupError);
+
+    await expect(
+      service.createWorktree({
+        name: 'feature-auth',
+        branchName: 'feature/auth',
+        baseBranch: 'main',
+        templateSlug: '3-agent-dev',
+        ownerProjectId: 'project-missing',
+        repoPath: join(tempRoot, 'untrusted-client-path'),
+      }),
+    ).rejects.toBe(lookupError);
+
+    expect(git.createWorktree).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when owner project rootPath is blank even if repoPath is provided', async () => {
+    storage.getProject.mockResolvedValue({
+      id: 'project-main',
+      rootPath: '   ',
+    } as never);
+
+    await expect(
+      service.createWorktree({
+        name: 'feature-auth',
+        branchName: 'feature/auth',
+        baseBranch: 'main',
+        templateSlug: '3-agent-dev',
+        ownerProjectId: 'project-main',
+        repoPath: join(tempRoot, 'untrusted-client-path'),
+      }),
+    ).rejects.toThrow('Project project-main has no rootPath configured');
+
+    expect(git.createWorktree).not.toHaveBeenCalled();
+  });
+
+  it('uses provided repoPath when storage is not wired (legacy compat path)', async () => {
+    const serviceWithoutStorage = new WorktreesService(
+      store,
+      docker as unknown as OrchestratorDockerService,
+      git as unknown as GitWorktreeService,
+      seedPreparation as unknown as SeedPreparationService,
+      eventEmitter as unknown as EventEmitter2,
+      eventLogService as unknown as EventLogService,
+    );
+    const legacyRepoPath = join(tempRoot, 'legacy-client-path');
+    await mkdir(legacyRepoPath, { recursive: true });
+
+    docker.createContainer?.mockResolvedValue({
+      id: 'container-1',
+      name: 'devchain-wt-feature-auth',
+      image: 'devchain:latest',
+      hostPort: 41001,
+      state: 'running',
+    });
+    docker.waitForHealthy?.mockResolvedValue(true);
+
+    await serviceWithoutStorage.createWorktree({
+      name: 'feature-auth',
+      branchName: 'feature/auth',
+      baseBranch: 'main',
+      templateSlug: '3-agent-dev',
+      ownerProjectId: 'project-main',
+      repoPath: legacyRepoPath,
+    });
+
+    expect(storage.getProject).not.toHaveBeenCalled();
+    expect(git.createWorktree).toHaveBeenCalledWith({
+      name: 'feature-auth',
+      branchName: 'feature/auth',
+      baseBranch: 'main',
+      repoPath: legacyRepoPath,
+      worktreePath: join(legacyRepoPath, 'worktrees', 'feature-auth'),
     });
   });
 

@@ -1,5 +1,9 @@
 import type { CreateProviderModel, ProviderModel } from '../../models/domain.models';
-import { ConflictError, StorageError, ValidationError } from '../../../../common/errors/error-types';
+import {
+  ConflictError,
+  StorageError,
+  ValidationError,
+} from '../../../../common/errors/error-types';
 import { createLogger } from '../../../../common/logging/logger';
 import { isSqliteUniqueConstraint } from '../helpers/storage-helpers';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
@@ -89,7 +93,11 @@ export class ProviderModelStorageDelegate extends BaseStorageDelegate {
       .select()
       .from(providerModels)
       .where(inArray(providerModels.providerId, providerIds))
-      .orderBy(asc(providerModels.providerId), asc(providerModels.position), asc(providerModels.id));
+      .orderBy(
+        asc(providerModels.providerId),
+        asc(providerModels.position),
+        asc(providerModels.id),
+      );
 
     return rows as ProviderModel[];
   }

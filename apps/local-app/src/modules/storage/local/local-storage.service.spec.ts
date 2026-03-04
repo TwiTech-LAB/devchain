@@ -1709,7 +1709,7 @@ describe('LocalStorageService', () => {
         expect(result.modelOverride).toBe('should-be-preserved');
       });
 
-      it('clears modelOverride when providerConfigId changes and modelOverride is omitted', async () => {
+      it('preserves modelOverride when providerConfigId changes and modelOverride is omitted', async () => {
         const getAgentSpy = jest
           .spyOn(service as unknown as { getAgent: (id: string) => Promise<Agent> }, 'getAgent')
           .mockResolvedValueOnce({
@@ -1730,7 +1730,7 @@ describe('LocalStorageService', () => {
             name: 'Agent',
             description: null,
             providerConfigId: 'config-2',
-            modelOverride: null,
+            modelOverride: 'gpt-4.1',
             createdAt: '2024-01-01T00:00:00Z',
             updatedAt: '2024-01-02T00:00:00Z',
           });
@@ -1783,12 +1783,13 @@ describe('LocalStorageService', () => {
         expect(setSpy).toHaveBeenCalledWith(
           expect.objectContaining({
             providerConfigId: 'config-2',
-            modelOverride: null,
           }),
         );
+        const updatePayload = setSpy.mock.calls[0]?.[0];
+        expect(updatePayload).not.toHaveProperty('modelOverride');
         expect(getAgentSpy).toHaveBeenCalledTimes(2);
         expect(result.providerConfigId).toBe('config-2');
-        expect(result.modelOverride).toBeNull();
+        expect(result.modelOverride).toBe('gpt-4.1');
       });
 
       it('respects explicit modelOverride=null when providerConfigId changes', async () => {

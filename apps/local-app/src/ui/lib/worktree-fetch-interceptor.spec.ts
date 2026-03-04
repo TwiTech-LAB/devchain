@@ -231,4 +231,145 @@ describe('installWorktreeFetchInterceptor', () => {
       uninstall();
     }
   });
+
+  it('does not dispatch unavailable events for proxied 404 responses without proxy markers', async () => {
+    const fetchMock = jest.fn(async (_input: RequestInfo | URL) => {
+      const payload = {
+        statusCode: 404,
+        message: 'Thread not found',
+      };
+      return {
+        ok: false,
+        status: 404,
+        headers: {
+          get: (name: string) =>
+            name.toLowerCase() === 'content-type' ? 'application/json; charset=utf-8' : null,
+        } as Headers,
+        clone: () =>
+          ({
+            json: async () => payload,
+          }) as Response,
+        json: async () => payload,
+      } as Response;
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+    window.fetch = fetchMock as unknown as typeof fetch;
+
+    const events: WorktreeProxyUnavailableDetail[] = [];
+    const onUnavailable = (event: Event) => {
+      events.push((event as CustomEvent<WorktreeProxyUnavailableDetail>).detail);
+    };
+    window.addEventListener(WORKTREE_PROXY_UNAVAILABLE_EVENT, onUnavailable);
+
+    const uninstall = installWorktreeFetchInterceptor({
+      getApiBase: () => '/wt/feature-auth',
+      origin: TEST_ORIGIN,
+      mainInstanceApiPrefixes: MAIN_INSTANCE_API_PREFIXES,
+    });
+
+    try {
+      await window.fetch('/api/threads/thread-1');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(events).toHaveLength(0);
+    } finally {
+      window.removeEventListener(WORKTREE_PROXY_UNAVAILABLE_EVENT, onUnavailable);
+      uninstall();
+    }
+  });
+
+  it('dispatches unavailable events for proxied 404 responses with X-Worktree-Name marker header', async () => {
+    const fetchMock = jest.fn(async (_input: RequestInfo | URL) => {
+      return {
+        ok: false,
+        status: 404,
+        headers: {
+          get: (name: string) => (name.toLowerCase() === 'x-worktree-name' ? 'feature-auth' : null),
+        } as Headers,
+      } as Response;
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+    window.fetch = fetchMock as unknown as typeof fetch;
+
+    const events: WorktreeProxyUnavailableDetail[] = [];
+    const onUnavailable = (event: Event) => {
+      events.push((event as CustomEvent<WorktreeProxyUnavailableDetail>).detail);
+    };
+    window.addEventListener(WORKTREE_PROXY_UNAVAILABLE_EVENT, onUnavailable);
+
+    const uninstall = installWorktreeFetchInterceptor({
+      getApiBase: () => '/wt/feature-auth',
+      origin: TEST_ORIGIN,
+      mainInstanceApiPrefixes: MAIN_INSTANCE_API_PREFIXES,
+    });
+
+    try {
+      await window.fetch('/api/threads/thread-1');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual({
+        statusCode: 404,
+        message: null,
+        worktreeName: 'feature-auth',
+        requestUrl: '/wt/feature-auth/api/threads/thread-1',
+      });
+    } finally {
+      window.removeEventListener(WORKTREE_PROXY_UNAVAILABLE_EVENT, onUnavailable);
+      uninstall();
+    }
+  });
+
+  it('dispatches unavailable events for proxied 404 responses with worktreeName payload marker', async () => {
+    const fetchMock = jest.fn(async (_input: RequestInfo | URL) => {
+      const payload = {
+        statusCode: 404,
+        message: 'Worktree not found',
+        worktreeName: 'feature-auth',
+      };
+      return {
+        ok: false,
+        status: 404,
+        headers: {
+          get: (name: string) =>
+            name.toLowerCase() === 'content-type' ? 'application/json; charset=utf-8' : null,
+        } as Headers,
+        clone: () =>
+          ({
+            json: async () => payload,
+          }) as Response,
+        json: async () => payload,
+      } as Response;
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+    window.fetch = fetchMock as unknown as typeof fetch;
+
+    const events: WorktreeProxyUnavailableDetail[] = [];
+    const onUnavailable = (event: Event) => {
+      events.push((event as CustomEvent<WorktreeProxyUnavailableDetail>).detail);
+    };
+    window.addEventListener(WORKTREE_PROXY_UNAVAILABLE_EVENT, onUnavailable);
+
+    const uninstall = installWorktreeFetchInterceptor({
+      getApiBase: () => '/wt/feature-auth',
+      origin: TEST_ORIGIN,
+      mainInstanceApiPrefixes: MAIN_INSTANCE_API_PREFIXES,
+    });
+
+    try {
+      await window.fetch('/api/threads/thread-1');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual({
+        statusCode: 404,
+        message: 'Worktree not found',
+        worktreeName: 'feature-auth',
+        requestUrl: '/wt/feature-auth/api/threads/thread-1',
+      });
+    } finally {
+      window.removeEventListener(WORKTREE_PROXY_UNAVAILABLE_EVENT, onUnavailable);
+      uninstall();
+    }
+  });
 });

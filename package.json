@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.11.0",
+  "version": "0.11.2",
   "description": "AI driven development platform",
   "homepage": "https://devchain.twitechlab.com/",
   "repository": {
@@ -8,6 +8,17 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.11.2": [
+      "Fix worktree project queries and selection gated on runtime resolution"
+    ],
+    "0.11.1": [
+      "Preserve agent model override through export/import and preset application",
+      "Worktree creation: copy gitignored files and UX improvements",
+      "Show provider mismatch warnings after template creation",
+      "Fix worktree tabs and branch dropdown scoped to wrong project",
+      "Fix worktree tab double-click-to-switch bug",
+      "Updated model pricing"
+    ],
     "0.11.0": [
       "Details: https://devchain.twitechlab.com/releases/0.11.0/",
       "",

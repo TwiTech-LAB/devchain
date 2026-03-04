@@ -499,6 +499,7 @@ function buildTemplateImportPayload(
         name: agent.name,
         profileId: remappedProfileId,
         description: agent.description,
+        modelOverride: agent.modelOverride ?? null,
       };
     }),
     statuses: payload.statuses.map((status) => ({

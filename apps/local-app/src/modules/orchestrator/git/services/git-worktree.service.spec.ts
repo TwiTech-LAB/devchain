@@ -91,6 +91,80 @@ describe('GitWorktreeService', () => {
     expect(branches).toEqual(expect.arrayContaining(['main', 'feature/list-branches']));
   });
 
+  it('lists ignored files with null-delimited parsing, type detection, and smart defaults', async () => {
+    const runner = jest.fn(async () => ({
+      stdout:
+        '.env.local\0node_modules/\0vendor/\0.vscode/\0dist/\0build/\0.next/\0.turbo/\0__pycache__/\0.cache/\0logs/runtime.log\0tmp.txt\0',
+      stderr: '',
+    }));
+    const ignoredService = new GitWorktreeService(runner);
+
+    const result = await ignoredService.listIgnoredFiles('/tmp/repo-ignored');
+
+    expect(runner).toHaveBeenCalledWith('/tmp/repo-ignored', [
+      'ls-files',
+      '--others',
+      '--ignored',
+      '--exclude-standard',
+      '--directory',
+      '-z',
+    ]);
+    expect(result).toEqual([
+      { path: '.env.local', type: 'file', defaultIncluded: true },
+      { path: 'node_modules/', type: 'directory', defaultIncluded: true },
+      { path: 'vendor/', type: 'directory', defaultIncluded: true },
+      { path: '.vscode/', type: 'directory', defaultIncluded: true },
+      { path: 'dist/', type: 'directory', defaultIncluded: false },
+      { path: 'build/', type: 'directory', defaultIncluded: false },
+      { path: '.next/', type: 'directory', defaultIncluded: false },
+      { path: '.turbo/', type: 'directory', defaultIncluded: false },
+      { path: '__pycache__/', type: 'directory', defaultIncluded: false },
+      { path: '.cache/', type: 'directory', defaultIncluded: false },
+      { path: 'logs/runtime.log', type: 'file', defaultIncluded: false },
+      { path: 'tmp.txt', type: 'file', defaultIncluded: false },
+    ]);
+  });
+
+  it('discovers ignored files for both repository and worktree paths', async () => {
+    await writeFile(join(repoPath, '.gitignore'), '.env*\nnode_modules/\n');
+    await git(repoPath, ['add', '.gitignore']);
+    await git(repoPath, ['commit', '-m', 'add ignore rules']);
+
+    const worktreePath = join(repoPath, '.devchain', 'worktrees', 'feature-ignored');
+    await service.createWorktree({
+      name: 'feature-ignored',
+      branchName: 'feature/ignored',
+      baseBranch: 'main',
+      repoPath,
+      worktreePath,
+    });
+
+    await writeFile(join(repoPath, '.env.repo'), 'repo\n');
+    await writeFile(join(worktreePath, '.env.worktree'), 'worktree\n');
+
+    const repoIgnored = await service.listIgnoredFiles(repoPath);
+    const worktreeIgnored = await service.listIgnoredFiles(worktreePath);
+
+    expect(repoIgnored).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: '.env.repo',
+          type: 'file',
+          defaultIncluded: true,
+        }),
+      ]),
+    );
+    expect(worktreeIgnored).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: '.env.worktree',
+          type: 'file',
+          defaultIncluded: true,
+        }),
+      ]),
+    );
+  });
+
   it('deletes branch with -- separator and force flag', async () => {
     const runner = jest.fn(async () => ({ stdout: '', stderr: '' }));
     const branchService = new GitWorktreeService(runner);
@@ -287,12 +361,21 @@ describe('GitWorktreeService', () => {
 
     await envAwareService.listWorktrees();
     await envAwareService.listBranches();
+    await envAwareService.listIgnoredFiles();
 
     expect(runner).toHaveBeenCalledWith(repoPath, ['worktree', 'list', '--porcelain']);
     expect(runner).toHaveBeenCalledWith(repoPath, [
       'branch',
       '--list',
       '--format=%(refname:short)',
+    ]);
+    expect(runner).toHaveBeenCalledWith(repoPath, [
+      'ls-files',
+      '--others',
+      '--ignored',
+      '--exclude-standard',
+      '--directory',
+      '-z',
     ]);
   });
 

@@ -6,6 +6,11 @@ import { waitFor } from '@testing-library/react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { Socket } from 'socket.io-client';
 import { WorktreeTabProvider, useWorktreeTab, type ActiveWorktreeTab } from './useWorktreeTab';
+import {
+  PROJECT_STORAGE_KEY,
+  ProjectSelectionProvider,
+  useSelectedProject,
+} from './useProjectSelection';
 import { getAppSocket, releaseAppSocket } from '@/ui/lib/socket';
 
 jest.mock('@/ui/lib/socket', () => ({
@@ -110,6 +115,7 @@ describe('WorktreeTabProvider', () => {
     apiBase: string;
     worktrees: ActiveWorktreeTab[];
     worktreesLoading: boolean;
+    runtimeResolved: boolean;
     setActiveWorktree: (worktree: ActiveWorktreeTab | null) => void;
   }
 
@@ -119,6 +125,7 @@ describe('WorktreeTabProvider', () => {
       apiBase: '',
       worktrees: [],
       worktreesLoading: false,
+      runtimeResolved: false,
       setActiveWorktree: () => undefined,
     };
 
@@ -129,6 +136,7 @@ describe('WorktreeTabProvider', () => {
         state.apiBase = context.apiBase;
         state.worktrees = context.worktrees;
         state.worktreesLoading = context.worktreesLoading;
+        state.runtimeResolved = context.runtimeResolved;
         state.setActiveWorktree = context.setActiveWorktree;
       }, [context]);
       return null;
@@ -198,6 +206,175 @@ describe('WorktreeTabProvider', () => {
     await waitFor(() => {
       expect(state.activeWorktree?.name).toBe('feature-auth');
       expect(state.apiBase).toBe('/wt/feature-auth');
+    });
+  });
+
+  it('exposes runtimeResolved transition from false to true after runtime detection resolves', async () => {
+    let resolveRuntime: ((response: Response) => void) | null = null;
+    const fetchMock = jest.fn((input: RequestInfo | URL) => {
+      const url = asRequestUrl(input);
+      if (url === '/api/runtime') {
+        return new Promise<Response>((resolve) => {
+          resolveRuntime = resolve;
+        });
+      }
+      if (url === '/api/worktrees') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => [],
+        } as Response);
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({}),
+      } as Response);
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+    window.fetch = fetchMock as unknown as typeof fetch;
+
+    const state = renderTracker();
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/runtime', expect.any(Object));
+    });
+    expect(state.runtimeResolved).toBe(false);
+
+    act(() => {
+      resolveRuntime?.({
+        ok: true,
+        json: async () => ({ mode: 'main', version: '1.0.0' }),
+      } as Response);
+    });
+    await act(async () => await flushPromises());
+
+    await waitFor(() => {
+      expect(state.runtimeResolved).toBe(true);
+    });
+  });
+
+  it('suppresses project-scoped fetches until runtime resolves on initial ?wt load with stale storage', async () => {
+    window.history.replaceState({}, '', '/chat?wt=feature-auth');
+    window.sessionStorage.setItem(PROJECT_STORAGE_KEY, 'project-stale-container');
+    window.localStorage.setItem(PROJECT_STORAGE_KEY, 'project-stale-container');
+
+    let resolveRuntime: ((response: Response) => void) | null = null;
+    const fetchMock = jest.fn((input: RequestInfo | URL) => {
+      const url = asRequestUrl(input);
+      if (url === '/api/runtime') {
+        return new Promise<Response>((resolve) => {
+          resolveRuntime = resolve;
+        });
+      }
+      if (url === '/api/worktrees') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => [
+            {
+              id: 'wt-1',
+              name: 'feature-auth',
+              ownerProjectId: 'project-main-1',
+              devchainProjectId: 'project-wt-1',
+              status: 'running',
+            },
+          ],
+        } as Response);
+      }
+      if (url === '/wt/feature-auth/api/projects') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            items: [
+              {
+                id: 'project-wt-1',
+                name: 'Worktree Project',
+                description: null,
+                rootPath: '/tmp/wt',
+                createdAt: '2024-01-01T00:00:00.000Z',
+                updatedAt: '2024-01-01T00:00:00.000Z',
+              },
+            ],
+            total: 1,
+          }),
+        } as Response);
+      }
+      if (url.startsWith('/wt/feature-auth/api/projects/') && url.endsWith('/stats')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ epicsCount: 0, agentsCount: 0 }),
+        } as Response);
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({}),
+      } as Response);
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+    window.fetch = fetchMock as unknown as typeof fetch;
+
+    const state = {
+      runtimeResolved: false,
+      selectedProjectId: undefined as string | undefined,
+      selectedProject: undefined as string | undefined,
+      activeWorktreeName: null as string | null,
+      projectsLoading: false,
+    };
+
+    const Tracker = () => {
+      const worktree = useWorktreeTab();
+      const projectSelection = useSelectedProject();
+      useEffect(() => {
+        state.runtimeResolved = worktree.runtimeResolved;
+        state.activeWorktreeName = worktree.activeWorktree?.name ?? null;
+        state.selectedProjectId = projectSelection.selectedProjectId;
+        state.selectedProject = projectSelection.selectedProject?.id;
+        state.projectsLoading = projectSelection.projectsLoading;
+      }, [worktree, projectSelection]);
+      return null;
+    };
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <WorktreeTabProvider>
+            <ProjectSelectionProvider>
+              <Tracker />
+            </ProjectSelectionProvider>
+          </WorktreeTabProvider>
+        </QueryClientProvider>,
+      );
+    });
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/runtime', expect.any(Object));
+    });
+
+    const urlsBeforeResolve = fetchMock.mock.calls.map((call) =>
+      asRequestUrl(call[0] as RequestInfo),
+    );
+    expect(
+      urlsBeforeResolve.some((url) => url === '/api/projects' || url.startsWith('/api/projects/')),
+    ).toBe(false);
+    expect(state.runtimeResolved).toBe(false);
+    expect(state.projectsLoading).toBe(true);
+    expect(state.selectedProjectId).toBeUndefined();
+    expect(state.selectedProject).toBeUndefined();
+
+    act(() => {
+      resolveRuntime?.({
+        ok: true,
+        json: async () => ({ mode: 'main', version: '1.0.0' }),
+      } as Response);
+    });
+    await act(async () => await flushPromises());
+
+    await waitFor(() => {
+      const urls = fetchMock.mock.calls.map((call) => asRequestUrl(call[0] as RequestInfo));
+      expect(urls).toContain('/wt/feature-auth/api/projects');
+      expect(urls.some((url) => url === '/api/projects')).toBe(false);
+      expect(state.runtimeResolved).toBe(true);
+      expect(state.activeWorktreeName).toBe('feature-auth');
+      expect(state.selectedProjectId).toBe('project-wt-1');
+      expect(state.selectedProject).toBe('project-wt-1');
     });
   });
 

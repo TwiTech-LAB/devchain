@@ -4,6 +4,7 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  Optional,
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
@@ -20,6 +21,7 @@ import {
   WorktreeMergePreviewDto,
   WorktreeLogsQueryDto,
   WorktreeOverviewDto,
+  WorktreeCopyResultsDto,
   WorktreeResponseDto,
   WorktreeStatusSchema,
 } from '../dtos/worktree.dto';
@@ -29,9 +31,18 @@ import { OrchestratorDockerService } from '../../docker/services/docker.service'
 import { SeedPreparationService } from '../../docker/services/seed-preparation.service';
 import { WORKTREE_TASK_MERGE_REQUESTED_EVENT } from '../../sync/events/task-merge.events';
 import { WORKTREE_CHANGED_EVENT, WorktreeChangedEvent } from '../events/worktree.events';
-import { mkdir, open, readFile, rm } from 'fs/promises';
-import { isAbsolute, join, relative, resolve, sep } from 'path';
+import { cp, mkdir, open, readFile, rm } from 'fs/promises';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { isValidGitBranchName, isValidWorktreeName } from '../worktree-validation';
+import {
+  STORAGE_SERVICE,
+  type StorageService,
+} from '../../../storage/interfaces/storage.interface';
+import { ValidationError } from '../../../../common/errors/error-types';
+import {
+  validatePathWithinRoot,
+  validateResolvedPathWithinRoot,
+} from '../../../../common/validation/path-validation';
 
 const logger = createLogger('OrchestratorWorktreesService');
 
@@ -64,6 +75,18 @@ type WorktreeActivityType =
 interface WorktreeActivity {
   type: WorktreeActivityType;
   message: string;
+}
+
+interface IgnoredCopyOperation {
+  relativePath: string;
+  sourcePath: string;
+  destinationPath: string;
+}
+
+interface IgnoredCopyPlan {
+  requestedCount: number;
+  deduplicatedCount: number;
+  operations: IgnoredCopyOperation[];
 }
 
 interface RegisterProjectResult {
@@ -114,6 +137,7 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
     private readonly seedPreparationService: SeedPreparationService,
     private readonly eventEmitter: EventEmitter2,
     private readonly eventLogService: EventLogService,
+    @Optional() @Inject(STORAGE_SERVICE) private readonly storage?: StorageService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -157,7 +181,7 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
     this.assertValidBranchName(input.baseBranch, 'baseBranch');
 
     const runtimeType = this.resolveRuntimeType(input.runtimeType);
-    const repoPath = this.resolveRepoPath(input.repoPath);
+    const repoPath = await this.resolveCreateRepoPath(input);
     const existing = await this.store.getByName(input.name);
     if (existing) {
       throw new ConflictException(`Worktree with name "${input.name}" already exists`);
@@ -184,6 +208,10 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
     let containerId: string | null = null;
     let processId: number | null = null;
     let gitWorktreeCreated = false;
+    const copyResults: WorktreeCopyResultsDto = {
+      copied: [],
+      failed: [],
+    };
 
     try {
       await this.gitService.createWorktree({
@@ -194,6 +222,46 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
         worktreePath,
       });
       gitWorktreeCreated = true;
+
+      const ignoredCopyPlan = await this.prepareIgnoredCopyPlan(
+        repoPath,
+        worktreePath,
+        input.includeIgnoredFiles ?? [],
+      );
+      for (const operation of ignoredCopyPlan.operations) {
+        try {
+          await mkdir(dirname(operation.destinationPath), { recursive: true });
+          await cp(operation.sourcePath, operation.destinationPath, { recursive: true });
+          copyResults.copied.push(operation.relativePath);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          copyResults.failed.push({
+            path: operation.relativePath,
+            error: errorMessage,
+          });
+          logger.warn(
+            {
+              error,
+              sourcePath: operation.sourcePath,
+              destinationPath: operation.destinationPath,
+              worktreeName: input.name,
+            },
+            'Failed to copy selected ignored path into worktree',
+          );
+        }
+      }
+      logger.info(
+        {
+          worktreeName: input.name,
+          ownerProjectId: input.ownerProjectId,
+          requested: ignoredCopyPlan.requestedCount,
+          deduplicated: ignoredCopyPlan.deduplicatedCount,
+          copied: copyResults.copied.length,
+          failed: copyResults.failed.length,
+          skipped: ignoredCopyPlan.requestedCount - ignoredCopyPlan.deduplicatedCount,
+        },
+        'Ignored file copy step completed',
+      );
 
       await mkdir(dataPath, { recursive: true });
       await this.seedPreparationService.prepareSeedData(dataPath);
@@ -279,7 +347,11 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
         message: `Worktree '${created.name}' created on branch ${created.branchName}`,
       });
 
-      return this.toResponse(created);
+      const response = await this.toResponse(created);
+      return {
+        ...response,
+        copyResults,
+      };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       await this.tryUpdateStatus(created.id, 'error', {
@@ -1570,6 +1642,115 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
     }
 
     return resolve(process.cwd());
+  }
+
+  private async resolveCreateRepoPath(input: CreateWorktreeDto): Promise<string> {
+    if (!this.storage) {
+      return this.resolveRepoPath(input.repoPath);
+    }
+
+    const project = await this.storage.getProject(input.ownerProjectId);
+    const rootPath = project.rootPath?.trim();
+    if (!rootPath) {
+      throw new BadRequestException(`Project ${input.ownerProjectId} has no rootPath configured`);
+    }
+
+    return resolve(rootPath);
+  }
+
+  private async prepareIgnoredCopyPlan(
+    repoPath: string,
+    worktreePath: string,
+    requestedPaths: string[],
+  ): Promise<IgnoredCopyPlan> {
+    if (requestedPaths.length === 0) {
+      return {
+        requestedCount: 0,
+        deduplicatedCount: 0,
+        operations: [],
+      };
+    }
+
+    const normalizedRequested = this.normalizeAndDedupeIgnoredPaths(requestedPaths);
+    const ignoredFiles = await this.gitService.listIgnoredFiles(repoPath);
+    const allowedPaths = new Set(
+      ignoredFiles.map((entry) => this.normalizeIgnoredPath(entry.path)),
+    );
+
+    const operations: IgnoredCopyOperation[] = [];
+    for (const relativePath of normalizedRequested) {
+      if (!allowedPaths.has(relativePath)) {
+        throw new BadRequestException(
+          `Ignored path "${relativePath}" is not currently gitignored in repository`,
+        );
+      }
+
+      try {
+        const validatedSource = validatePathWithinRoot(repoPath, relativePath, {
+          errorPrefix: 'Ignored file validation failed',
+        });
+        const sourcePath = await validateResolvedPathWithinRoot(
+          validatedSource.absolutePath,
+          repoPath,
+          {
+            errorPrefix: 'Ignored file validation failed',
+          },
+        );
+        const validatedDestination = validatePathWithinRoot(worktreePath, relativePath, {
+          errorPrefix: 'Ignored file validation failed',
+        });
+        const destinationPath = await validateResolvedPathWithinRoot(
+          validatedDestination.absolutePath,
+          worktreePath,
+          {
+            errorPrefix: 'Ignored file validation failed',
+            allowNonExistent: true,
+          },
+        );
+        operations.push({
+          relativePath,
+          sourcePath,
+          destinationPath,
+        });
+      } catch (error) {
+        if (error instanceof ValidationError) {
+          throw new BadRequestException(error.message);
+        }
+        throw error;
+      }
+    }
+
+    return {
+      requestedCount: requestedPaths.length,
+      deduplicatedCount: normalizedRequested.length,
+      operations,
+    };
+  }
+
+  private normalizeAndDedupeIgnoredPaths(requestedPaths: string[]): string[] {
+    const deduplicated: string[] = [];
+    const seen = new Set<string>();
+
+    for (const requestedPath of requestedPaths) {
+      const normalizedPath = this.normalizeIgnoredPath(requestedPath);
+      if (!normalizedPath) {
+        throw new BadRequestException('Ignored file path cannot be empty');
+      }
+      if (seen.has(normalizedPath)) {
+        continue;
+      }
+      seen.add(normalizedPath);
+      deduplicated.push(normalizedPath);
+    }
+
+    return deduplicated;
+  }
+
+  private normalizeIgnoredPath(path: string): string {
+    const trimmed = path.trim().replace(/\\/g, '/');
+    const withoutLeadingDot = trimmed.replace(/^\.\/+/, '');
+    const collapsedSeparators = withoutLeadingDot.replace(/\/{2,}/g, '/');
+    return collapsedSeparators.replace(/\/+$/, '');
   }
 
   private resolveWorktreeRoot(repoPath: string): string {

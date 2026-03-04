@@ -2,7 +2,10 @@ import { type FormEvent, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AlertCircle,
+  ChevronDown,
+  ChevronRight,
   CheckCircle2,
+  FileText,
   FileWarning,
   FolderOpen,
   GitBranch,
@@ -18,6 +21,11 @@ import { Badge } from '@/ui/components/ui/badge';
 import { Button } from '@/ui/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/ui/components/ui/card';
 import { Checkbox } from '@/ui/components/ui/checkbox';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/ui/components/ui/collapsible';
 import {
   Dialog,
   DialogContent,
@@ -37,6 +45,7 @@ import {
 } from '@/ui/components/ui/select';
 import { Separator } from '@/ui/components/ui/separator';
 import { Textarea } from '@/ui/components/ui/textarea';
+import { useToast } from '@/ui/hooks/use-toast';
 import { fetchRuntimeInfo } from '@/ui/lib/runtime';
 import { cn } from '@/ui/lib/utils';
 import {
@@ -44,6 +53,7 @@ import {
   deleteWorktree,
   fetchTemplate,
   listBranches,
+  listIgnoredFiles,
   listWorktreeActivity,
   listTemplates,
   listWorktreeOverviews,
@@ -72,6 +82,11 @@ const OVERVIEW_TAB_ID = 'overview';
 const WORKTREE_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const INVALID_BRANCH_CONTROL_OR_SPACE = /[\x00-\x20\x7f]/;
 const INVALID_BRANCH_CHARS = /[~^:?*\[]/;
+const IGNORED_SELECTION_STORAGE_PREFIX = 'devchain:worktree-ignored-selection';
+
+function getIgnoredSelectionStorageKey(ownerProjectId: string): string {
+  return `${IGNORED_SELECTION_STORAGE_PREFIX}:${ownerProjectId}`;
+}
 
 function formatMaybeCount(value: number | null): string {
   if (value === null || value === undefined) {
@@ -289,6 +304,7 @@ function getActivityIconVisual(type: WorktreeActivityEvent['type']): {
 export function CreateWorktreeDialog({
   open,
   onOpenChange,
+  ownerProjectId,
   templates,
   baseBranchOptions,
   isBranchesLoading,
@@ -301,6 +317,7 @@ export function CreateWorktreeDialog({
 }: {
   open: boolean;
   onOpenChange: (value: boolean) => void;
+  ownerProjectId?: string | null;
   templates: TemplateListItem[];
   baseBranchOptions: string[];
   isBranchesLoading: boolean;
@@ -311,14 +328,19 @@ export function CreateWorktreeDialog({
   isSubmitting: boolean;
   onSubmit: (input: Omit<CreateWorktreeInput, 'ownerProjectId'>) => Promise<void>;
 }) {
+  const scopedOwnerProjectId = ownerProjectId?.trim() || null;
   const [name, setName] = useState('');
   const [branchName, setBranchName] = useState('');
   const [baseBranch, setBaseBranch] = useState('');
   const [templateSlug, setTemplateSlug] = useState('');
   const [description, setDescription] = useState('');
-  const [useDockerContainer, setUseDockerContainer] = useState(dockerAvailable);
+  const [useDockerContainer, setUseDockerContainer] = useState(false);
   const [branchIsAutoDerived, setBranchIsAutoDerived] = useState(true);
   const [selectedPreset, setSelectedPreset] = useState('');
+  const [showIgnoredFiles, setShowIgnoredFiles] = useState(false);
+  const [ignoredFilesFilter, setIgnoredFilesFilter] = useState('');
+  const [selectedIgnoredFiles, setSelectedIgnoredFiles] = useState<string[]>([]);
+  const [ignoredFilesSelectionTouched, setIgnoredFilesSelectionTouched] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -330,11 +352,32 @@ export function CreateWorktreeDialog({
     setBaseBranch(baseBranchOptions[0] ?? '');
     setTemplateSlug(templates[0]?.slug ?? '');
     setDescription('');
-    setUseDockerContainer(dockerAvailable);
+    setUseDockerContainer(false);
     setBranchIsAutoDerived(true);
     setSelectedPreset('');
+    setShowIgnoredFiles(false);
+    setSelectedIgnoredFiles([]);
+    setIgnoredFilesSelectionTouched(false);
     setError(null);
   }, [open, baseBranchOptions, dockerAvailable, templates]);
+
+  useEffect(() => {
+    if (open) {
+      return;
+    }
+    setIgnoredFilesFilter('');
+  }, [open]);
+
+  useEffect(() => {
+    setIgnoredFilesFilter('');
+  }, [scopedOwnerProjectId]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    setIgnoredFilesSelectionTouched(false);
+  }, [open, scopedOwnerProjectId]);
 
   useEffect(() => {
     if (!open) {
@@ -362,6 +405,14 @@ export function CreateWorktreeDialog({
     staleTime: 5 * 60 * 1000,
   });
 
+  const ignoredFilesQuery = useQuery({
+    queryKey: ['worktree-ignored-files', scopedOwnerProjectId],
+    queryFn: () =>
+      scopedOwnerProjectId ? listIgnoredFiles(scopedOwnerProjectId) : Promise.resolve([]),
+    enabled: open && Boolean(scopedOwnerProjectId),
+    staleTime: 30_000,
+  });
+
   const availablePresets = useMemo(() => {
     const presets = templateDetail?.content?.presets;
     if (!Array.isArray(presets) || presets.length === 0) return [];
@@ -372,6 +423,67 @@ export function CreateWorktreeDialog({
   useEffect(() => {
     setSelectedPreset('');
   }, [templateSlug]);
+
+  useEffect(() => {
+    if (!open || ignoredFilesSelectionTouched || !ignoredFilesQuery.data) {
+      return;
+    }
+
+    const discoverablePaths = ignoredFilesQuery.data.map((entry) => entry.path);
+    const defaultIncludedPaths = ignoredFilesQuery.data
+      .filter((entry) => entry.defaultIncluded)
+      .map((entry) => entry.path);
+
+    if (!scopedOwnerProjectId) {
+      setSelectedIgnoredFiles(defaultIncludedPaths);
+      return;
+    }
+
+    try {
+      const rawSavedSelection = localStorage.getItem(
+        getIgnoredSelectionStorageKey(scopedOwnerProjectId),
+      );
+      if (rawSavedSelection) {
+        const parsedSavedSelection: unknown = JSON.parse(rawSavedSelection);
+        if (
+          Array.isArray(parsedSavedSelection) &&
+          parsedSavedSelection.every((item) => typeof item === 'string')
+        ) {
+          const discoverablePathSet = new Set(discoverablePaths);
+          const intersectedSelection = parsedSavedSelection.filter((path) =>
+            discoverablePathSet.has(path),
+          );
+          if (intersectedSelection.length > 0) {
+            setSelectedIgnoredFiles(intersectedSelection);
+            setIgnoredFilesSelectionTouched(true);
+            return;
+          }
+        }
+      }
+    } catch {
+      // Fall back to defaultIncluded when localStorage is unavailable or malformed.
+    }
+
+    setSelectedIgnoredFiles(defaultIncludedPaths);
+  }, [
+    open,
+    ignoredFilesSelectionTouched,
+    ignoredFilesQuery.data,
+    scopedOwnerProjectId,
+    baseBranchOptions,
+    dockerAvailable,
+    templates,
+  ]);
+
+  function toggleIgnoredFile(path: string, checked: boolean): void {
+    setIgnoredFilesSelectionTouched(true);
+    setSelectedIgnoredFiles((current) => {
+      if (checked) {
+        return current.includes(path) ? current : [...current, path];
+      }
+      return current.filter((item) => item !== path);
+    });
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -408,6 +520,7 @@ export function CreateWorktreeDialog({
         baseBranch: resolvedBaseBranch,
         templateSlug,
         description: resolvedDescription.length > 0 ? resolvedDescription : undefined,
+        includeIgnoredFiles: selectedIgnoredFiles,
         runtimeType: useDockerContainer && dockerAvailable ? 'container' : 'process',
         ...(selectedPreset && { presetName: selectedPreset }),
       });
@@ -419,6 +532,49 @@ export function CreateWorktreeDialog({
   const canSelectBaseBranch = baseBranchOptions.length > 0;
   const showManualBaseBranchInput =
     Boolean(branchesError) || (!isBranchesLoading && baseBranchOptions.length === 0);
+  const ignoredFiles = ignoredFilesQuery.data ?? [];
+  const normalizedIgnoredFilesFilter = ignoredFilesFilter.trim().toLowerCase();
+  const filteredIgnoredFiles = useMemo(() => {
+    if (!normalizedIgnoredFilesFilter) {
+      return ignoredFiles;
+    }
+    return ignoredFiles.filter((entry) =>
+      entry.path.toLowerCase().includes(normalizedIgnoredFilesFilter),
+    );
+  }, [ignoredFiles, normalizedIgnoredFilesFilter]);
+  const filteredIgnoredPaths = useMemo(
+    () => filteredIgnoredFiles.map((entry) => entry.path),
+    [filteredIgnoredFiles],
+  );
+  const filteredSelectedCount = filteredIgnoredPaths.filter((path) =>
+    selectedIgnoredFiles.includes(path),
+  ).length;
+  const allFilteredSelected =
+    filteredIgnoredPaths.length > 0 && filteredSelectedCount === filteredIgnoredPaths.length;
+  const someFilteredSelected = filteredSelectedCount > 0 && !allFilteredSelected;
+  const checkAllState: boolean | 'indeterminate' = allFilteredSelected
+    ? true
+    : someFilteredSelected
+      ? 'indeterminate'
+      : false;
+
+  function toggleAllFilteredIgnoredFiles(): void {
+    if (filteredIgnoredPaths.length === 0) {
+      return;
+    }
+
+    setIgnoredFilesSelectionTouched(true);
+    setSelectedIgnoredFiles((current) => {
+      if (allFilteredSelected) {
+        const filteredPathSet = new Set(filteredIgnoredPaths);
+        return current.filter((path) => !filteredPathSet.has(path));
+      }
+
+      const next = new Set(current);
+      filteredIgnoredPaths.forEach((path) => next.add(path));
+      return Array.from(next);
+    });
+  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -611,6 +767,106 @@ export function CreateWorktreeDialog({
                 </p>
               )}
             </div>
+            <Collapsible
+              open={showIgnoredFiles}
+              onOpenChange={setShowIgnoredFiles}
+              className="rounded-md border p-3"
+            >
+              <CollapsibleTrigger asChild>
+                <Button type="button" variant="ghost" className="w-full justify-between px-1">
+                  <span className="flex items-center gap-2 text-sm font-medium">
+                    {showIgnoredFiles ? (
+                      <ChevronDown className="h-4 w-4" />
+                    ) : (
+                      <ChevronRight className="h-4 w-4" />
+                    )}
+                    Include gitignored files
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {selectedIgnoredFiles.length} selected
+                  </span>
+                </Button>
+              </CollapsibleTrigger>
+              <CollapsibleContent className="space-y-2 pt-2">
+                {ignoredFilesQuery.isLoading ? (
+                  <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Loading gitignored files...
+                  </p>
+                ) : ignoredFilesQuery.error instanceof Error ? (
+                  <p className="rounded-md border border-red-300 bg-red-50 p-2 text-xs text-red-700">
+                    {ignoredFilesQuery.error.message}
+                  </p>
+                ) : ignoredFiles.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">No gitignored files found</p>
+                ) : (
+                  <>
+                    <Input
+                      placeholder="Filter files..."
+                      value={ignoredFilesFilter}
+                      onChange={(event) => setIgnoredFilesFilter(event.target.value)}
+                      disabled={isSubmitting}
+                    />
+                    <div className="flex items-center justify-between rounded-md border bg-background px-2 py-1.5">
+                      <div className="flex items-center gap-2">
+                        <Checkbox
+                          id="wt-ignored-files-select-all"
+                          checked={checkAllState}
+                          onCheckedChange={() => toggleAllFilteredIgnoredFiles()}
+                          disabled={isSubmitting || filteredIgnoredPaths.length === 0}
+                        />
+                        <Label
+                          htmlFor="wt-ignored-files-select-all"
+                          className="cursor-pointer text-xs font-medium"
+                        >
+                          Select all shown
+                        </Label>
+                      </div>
+                      <div className="text-right text-xs text-muted-foreground">
+                        {normalizedIgnoredFilesFilter && (
+                          <p>
+                            Showing {filteredIgnoredFiles.length} of {ignoredFiles.length}
+                          </p>
+                        )}
+                        <p>{selectedIgnoredFiles.length} selected</p>
+                      </div>
+                    </div>
+                    {filteredIgnoredFiles.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">No files match filter</p>
+                    ) : (
+                      <div className="max-h-64 space-y-2 overflow-y-auto rounded-md border bg-background p-2">
+                        {filteredIgnoredFiles.map((entry, index) => {
+                          const checked = selectedIgnoredFiles.includes(entry.path);
+                          return (
+                            <div key={entry.path} className="flex items-center gap-2">
+                              <Checkbox
+                                id={`wt-ignored-file-${index}`}
+                                checked={checked}
+                                onCheckedChange={(value) =>
+                                  toggleIgnoredFile(entry.path, value === true)
+                                }
+                                disabled={isSubmitting}
+                              />
+                              {entry.type === 'directory' ? (
+                                <FolderOpen className="h-4 w-4 text-muted-foreground" />
+                              ) : (
+                                <FileText className="h-4 w-4 text-muted-foreground" />
+                              )}
+                              <Label
+                                htmlFor={`wt-ignored-file-${index}`}
+                                className="cursor-pointer text-xs font-normal"
+                              >
+                                {entry.path}
+                              </Label>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </>
+                )}
+              </CollapsibleContent>
+            </Collapsible>
             {error && (
               <p className="rounded-md border border-red-300 bg-red-50 p-2 text-sm text-red-700">
                 {error}
@@ -808,6 +1064,8 @@ function DeleteWorktreeDialog({
 
 export function OrchestratorApp({ ownerProjectId }: { ownerProjectId?: string | null } = {}) {
   const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const scopedOwnerProjectId = ownerProjectId?.trim() || null;
   const scopedWorktreesQueryKey = ['orchestrator-worktrees', ownerProjectId ?? null] as const;
   const scopedActivityQueryKey = [
     'orchestrator-worktree-activity',
@@ -874,9 +1132,10 @@ export function OrchestratorApp({ ownerProjectId }: { ownerProjectId?: string | 
   });
 
   const branchesQuery = useQuery({
-    queryKey: ['orchestrator-branches'],
-    queryFn: listBranches,
-    enabled: createDialogOpen,
+    queryKey: ['orchestrator-branches', scopedOwnerProjectId],
+    queryFn: () =>
+      scopedOwnerProjectId ? listBranches(scopedOwnerProjectId) : Promise.resolve([]),
+    enabled: createDialogOpen && Boolean(scopedOwnerProjectId),
     staleTime: 30_000,
   });
 
@@ -892,6 +1151,16 @@ export function OrchestratorApp({ ownerProjectId }: { ownerProjectId?: string | 
       setCreateDialogOpen(false);
       setActiveTabId(createdWorktree.id);
       setActionError(null);
+      const copyFailures = createdWorktree.copyResults?.failed ?? [];
+      if (copyFailures.length > 0) {
+        const previewPaths = copyFailures.slice(0, 5).map((failure) => failure.path);
+        const hiddenCount = copyFailures.length - previewPaths.length;
+        const suffix = hiddenCount > 0 ? ` and ${hiddenCount} more` : '';
+        toast({
+          title: 'Worktree created with warnings',
+          description: `Failed to copy gitignored files: ${previewPaths.join(', ')}${suffix}.`,
+        });
+      }
       queryClient.setQueryData<WorktreeSummary[]>(scopedWorktreesQueryKey, (existing) => {
         const items = existing ?? [];
         const withoutCreated = items.filter((item) => item.id !== createdWorktree.id);
@@ -1068,10 +1337,20 @@ export function OrchestratorApp({ ownerProjectId }: { ownerProjectId?: string | 
       throw new Error('Select a project before creating a worktree.');
     }
 
-    await createWorktreeMutation.mutateAsync({
+    const createInput: CreateWorktreeInput = {
       ...input,
       ownerProjectId: resolvedOwnerProjectId,
-    });
+    };
+    await createWorktreeMutation.mutateAsync(createInput);
+
+    try {
+      localStorage.setItem(
+        getIgnoredSelectionStorageKey(resolvedOwnerProjectId),
+        JSON.stringify(createInput.includeIgnoredFiles ?? []),
+      );
+    } catch {
+      // Ignore storage write failures; creation already succeeded.
+    }
   }
 
   async function handleStopWorktree(id: string): Promise<void> {
@@ -1725,6 +2004,7 @@ export function OrchestratorApp({ ownerProjectId }: { ownerProjectId?: string | 
       <CreateWorktreeDialog
         open={createDialogOpen}
         onOpenChange={setCreateDialogOpen}
+        ownerProjectId={scopedOwnerProjectId}
         templates={templates}
         baseBranchOptions={baseBranchOptions}
         isBranchesLoading={

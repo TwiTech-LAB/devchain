@@ -233,6 +233,7 @@ export interface TemplateImportPayload {
     name: string;
     profileId?: string;
     description?: string | null;
+    modelOverride?: string | null;
   }>;
   statuses: Array<{
     id?: string;

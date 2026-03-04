@@ -2,6 +2,7 @@ node_modules/
 dev-flow/
 .devchain/
 .gemini/
+opencode.json
 .aider*
 apps/mcp-server/dist/
 dist/

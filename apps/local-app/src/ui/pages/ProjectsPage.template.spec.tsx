@@ -4,12 +4,20 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { ProjectsPage } from './ProjectsPage';
 
+const navigateMock = jest.fn();
 const setSelectedProjectIdMock = jest.fn();
 jest.mock('@/ui/hooks/useProjectSelection', () => ({
   useSelectedProject: () => ({
     setSelectedProjectId: setSelectedProjectIdMock,
   }),
 }));
+jest.mock('react-router-dom', () => {
+  const actual = jest.requireActual('react-router-dom');
+  return {
+    ...actual,
+    useNavigate: () => navigateMock,
+  };
+});
 
 // Mock UpgradeDialog to capture props without rendering the full dialog
 const mockUpgradeDialogProps = jest.fn();
@@ -61,6 +69,8 @@ describe('ProjectsPage — template creation and badge', () => {
     if (mockFetch && typeof mockFetch.mockClear === 'function') {
       mockFetch.mockClear();
     }
+    navigateMock.mockClear();
+    setSelectedProjectIdMock.mockClear();
     mockUpgradeDialogProps.mockClear();
   });
 
@@ -99,7 +109,7 @@ describe('ProjectsPage — template creation and badge', () => {
     expect(screen.getByLabelText('Template project')).toBeInTheDocument();
   });
 
-  it('creates project via template flow and preselects it', async () => {
+  it('creates project via template flow and preselects it when no warnings are returned', async () => {
     const fetchMock = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === '/api/projects' && (!init || init.method === 'GET')) {
@@ -179,7 +189,154 @@ describe('ProjectsPage — template creation and badge', () => {
       );
       // Preselect new project
       expect(setSelectedProjectIdMock).toHaveBeenCalledWith('p2');
+      expect(navigateMock).toHaveBeenCalledWith('/board');
+      expect(screen.queryByText('Provider Mismatch Warning')).not.toBeInTheDocument();
     });
+  });
+
+  it('shows provider mismatch warning modal and closes create dialog when warnings are returned', async () => {
+    const fetchMock = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/projects' && (!init || init.method === 'GET')) {
+        return { ok: true, json: async () => ({ items: [] }) } as Response;
+      }
+      if (url === '/api/templates') {
+        return {
+          ok: true,
+          json: async () => ({
+            templates: [
+              {
+                slug: 'empty-project',
+                name: 'Empty Project',
+                source: 'bundled',
+                versions: null,
+                latestVersion: null,
+              },
+            ],
+            total: 1,
+          }),
+        } as Response;
+      }
+      if (url === '/api/projects/from-template' && init?.method === 'POST') {
+        return {
+          ok: true,
+          json: async () => ({
+            success: true,
+            project: { id: 'p-warn', name: 'Warned Project' },
+            warnings: [
+              {
+                type: 'provider_mismatch',
+                originalProvider: 'claude',
+                substituteProvider: 'codex',
+                agentNames: ['Agent A', 'Agent B'],
+              },
+            ],
+          }),
+        } as Response;
+      }
+      if (url.endsWith('/stats')) {
+        return { ok: true, json: async () => ({ epicsCount: 0, agentsCount: 0 }) } as Response;
+      }
+      if (url === '/api/fs/stat' && init?.method === 'POST') {
+        return { ok: true, json: async () => ({}) } as Response;
+      }
+      return { ok: true, json: async () => ({}) } as Response;
+    }) as unknown as typeof fetch;
+    global.fetch = fetchMock;
+
+    renderWithQuery(<ProjectsPage />);
+
+    fireEvent.click(screen.getByText('Create Project'));
+    await waitFor(() => expect(screen.getByLabelText('Template *')).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText('Name *'), { target: { value: 'Warned Project' } });
+    fireEvent.change(screen.getByLabelText('Root Path *'), { target: { value: '/tmp/warned' } });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/fs/stat', expect.anything()));
+    fireEvent.click(screen.getByRole('button', { name: /^Create$/ }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Provider Mismatch Warning')).toBeInTheDocument();
+      expect(screen.getByText('Missing: claude')).toBeInTheDocument();
+      expect(screen.getByText('codex')).toBeInTheDocument();
+      expect(screen.getByText('Affected agents: Agent A, Agent B')).toBeInTheDocument();
+      expect(screen.queryByLabelText('Template *')).not.toBeInTheDocument();
+      expect(setSelectedProjectIdMock).toHaveBeenCalledWith('p-warn');
+    });
+
+    const continueToBoardButton = screen.getByRole('button', { name: 'Continue to Board' });
+    const goToChatButton = screen.getByRole('button', { name: 'Go to Chat' });
+    expect(continueToBoardButton).toBeInTheDocument();
+    expect(goToChatButton).toBeInTheDocument();
+
+    fireEvent.click(goToChatButton);
+    expect(navigateMock).toHaveBeenCalledWith('/chat');
+  });
+
+  it('navigates to /board when Continue to Board is clicked in warning modal', async () => {
+    const fetchMock = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/projects' && (!init || init.method === 'GET')) {
+        return { ok: true, json: async () => ({ items: [] }) } as Response;
+      }
+      if (url === '/api/templates') {
+        return {
+          ok: true,
+          json: async () => ({
+            templates: [
+              {
+                slug: 'empty-project',
+                name: 'Empty Project',
+                source: 'bundled',
+                versions: null,
+                latestVersion: null,
+              },
+            ],
+            total: 1,
+          }),
+        } as Response;
+      }
+      if (url === '/api/projects/from-template' && init?.method === 'POST') {
+        return {
+          ok: true,
+          json: async () => ({
+            success: true,
+            project: { id: 'p-warn-board', name: 'Warned Project Board' },
+            warnings: [
+              {
+                type: 'provider_mismatch',
+                originalProvider: 'claude',
+                substituteProvider: 'codex',
+                agentNames: ['Agent A'],
+              },
+            ],
+          }),
+        } as Response;
+      }
+      if (url.endsWith('/stats')) {
+        return { ok: true, json: async () => ({ epicsCount: 0, agentsCount: 0 }) } as Response;
+      }
+      if (url === '/api/fs/stat' && init?.method === 'POST') {
+        return { ok: true, json: async () => ({}) } as Response;
+      }
+      return { ok: true, json: async () => ({}) } as Response;
+    }) as unknown as typeof fetch;
+    global.fetch = fetchMock;
+
+    renderWithQuery(<ProjectsPage />);
+
+    fireEvent.click(screen.getByText('Create Project'));
+    await waitFor(() => expect(screen.getByLabelText('Template *')).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText('Name *'), {
+      target: { value: 'Warned Project Board' },
+    });
+    fireEvent.change(screen.getByLabelText('Root Path *'), {
+      target: { value: '/tmp/warned-board' },
+    });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/fs/stat', expect.anything()));
+    fireEvent.click(screen.getByRole('button', { name: /^Create$/ }));
+
+    await waitFor(() => expect(screen.getByText('Provider Mismatch Warning')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Continue to Board' }));
+    expect(navigateMock).toHaveBeenCalledWith('/board');
   });
 
   it('edit dialog reflects isTemplate=true and can update to false', async () => {

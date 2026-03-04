@@ -26,11 +26,22 @@ export interface WorktreeSummary {
   startedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  copyResults?: WorktreeCopyResults;
 }
 
 export interface WorktreeMergeConflict {
   file: string;
   type: 'merge' | 'rebase' | 'uncommitted' | string;
+}
+
+export interface WorktreeCopyFailure {
+  path: string;
+  error: string;
+}
+
+export interface WorktreeCopyResults {
+  copied: string[];
+  failed: WorktreeCopyFailure[];
 }
 
 export interface WorktreeMergePreview {
@@ -105,8 +116,15 @@ export interface CreateWorktreeInput {
   templateSlug: string;
   ownerProjectId: string;
   description?: string;
+  includeIgnoredFiles?: string[];
   runtimeType?: 'container' | 'process';
   presetName?: string;
+}
+
+export interface IgnoredFileEntry {
+  path: string;
+  type: 'file' | 'directory';
+  defaultIncluded: boolean;
 }
 
 export interface TemplatePreset {
@@ -342,8 +360,14 @@ export async function triggerMerge(id: string): Promise<WorktreeSummary> {
   return (await response.json()) as WorktreeSummary;
 }
 
-export async function listBranches(): Promise<string[]> {
-  const response = await fetch('/api/branches', {
+export async function listBranches(ownerProjectId: string): Promise<string[]> {
+  const scopedOwnerProjectId = ownerProjectId.trim();
+  if (!scopedOwnerProjectId) {
+    return [];
+  }
+
+  const query = new URLSearchParams({ ownerProjectId: scopedOwnerProjectId });
+  const response = await fetch(`/api/branches?${query.toString()}`, {
     headers: { accept: 'application/json' },
   });
 
@@ -364,6 +388,30 @@ export async function listBranches(): Promise<string[]> {
     .filter((branch): branch is string => typeof branch === 'string' && branch.trim().length > 0)
     .map((branch) => branch.trim())
     .sort((left, right) => left.localeCompare(right));
+}
+
+export async function listIgnoredFiles(ownerProjectId: string): Promise<IgnoredFileEntry[]> {
+  const scopedOwnerProjectId = ownerProjectId.trim();
+  if (!scopedOwnerProjectId) {
+    return [];
+  }
+
+  const query = new URLSearchParams({ ownerProjectId: scopedOwnerProjectId });
+  const endpoint = `/api/worktrees/ignored-files?${query.toString()}`;
+  const response = await fetch(endpoint, {
+    headers: { accept: 'application/json' },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to load ignored files: HTTP ${response.status}`);
+  }
+
+  const payload = (await response.json()) as unknown;
+  if (!Array.isArray(payload)) {
+    throw new Error('Invalid ignored files response payload');
+  }
+
+  return payload as IgnoredFileEntry[];
 }
 
 export async function listTemplates(): Promise<TemplateListItem[]> {

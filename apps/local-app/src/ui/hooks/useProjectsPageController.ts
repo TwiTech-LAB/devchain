@@ -8,6 +8,7 @@ import { useProjectImport } from '@/ui/hooks/useProjectImport';
 import { useTemplateForm } from '@/ui/hooks/useTemplateForm';
 import type { FamilyAlternative } from '@/ui/components/project/ProviderMappingModal';
 import {
+  type CreateFromTemplateResponse,
   fetchProjects,
   validatePath,
   fetchTemplates,
@@ -118,6 +119,10 @@ export function useProjectsPageController() {
     templateId: string;
     version: string;
   } | null>(null);
+  const [showProviderWarningModal, setShowProviderWarningModal] = useState(false);
+  const [providerWarnings, setProviderWarnings] = useState<CreateFromTemplateResponse['warnings']>(
+    [],
+  );
 
   // Templates query for upgrade checking (always enabled)
   const { data: allTemplates } = useQuery({
@@ -349,16 +354,25 @@ export function useProjectsPageController() {
       }
 
       // Project created successfully
-      await queryClient.invalidateQueries({ queryKey: ['projects'] });
       setShowTemplateDialog(false);
       resetTemplateForm();
+      await queryClient.invalidateQueries({ queryKey: ['projects'] });
+      if (data.project?.id) {
+        setSelectedProjectId(data.project.id);
+      }
+
+      if (data.warnings?.length) {
+        setProviderWarnings(data.warnings);
+        setShowProviderWarningModal(true);
+        return;
+      }
+
       toast({
         title: 'Success',
         description: data.message || 'Project created from template successfully',
       });
       // Navigate to the new project
       if (data.project?.id) {
-        setSelectedProjectId(data.project.id);
         navigate('/board');
       }
     },
@@ -402,6 +416,15 @@ export function useProjectsPageController() {
     // Reopen the template dialog so user can try again or cancel
     setShowTemplateDialog(true);
   };
+
+  const handleWarningModalNavigate = useCallback(
+    (destination: '/chat' | '/board') => {
+      setShowProviderWarningModal(false);
+      setProviderWarnings([]);
+      navigate(destination);
+    },
+    [navigate],
+  );
 
   // Filter and sort projects
   const filteredAndSortedProjects = useMemo(() => {
@@ -618,6 +641,9 @@ export function useProjectsPageController() {
     showProviderMappingModal,
     handleProviderMappingCancel,
     handleProviderMappingConfirm,
+    showProviderWarningModal,
+    providerWarnings,
+    handleWarningModalNavigate,
     importProviderMappingData,
     showImportProviderMappingModal,
     handleImportProviderMappingCancel,

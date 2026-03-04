@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import {
   useQuery,
   useMutation,
@@ -148,6 +149,32 @@ export function useChatQueries({
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const hasSelectedProject = Boolean(projectId);
+  const normalizedProjectId = projectId ?? null;
+  const previousProjectIdRef = useRef<string | null>(normalizedProjectId);
+  const blockedProjectIdRef = useRef<string | null>(null);
+  const blockedThreadIdRef = useRef<string | null>(null);
+  const previousProjectId = previousProjectIdRef.current;
+  const projectChanged = previousProjectId !== null && previousProjectId !== normalizedProjectId;
+
+  if (projectChanged) {
+    blockedProjectIdRef.current = normalizedProjectId;
+    blockedThreadIdRef.current = selectedThreadId;
+  }
+
+  const blockedProjectId = blockedProjectIdRef.current;
+  const blockedThreadId = blockedThreadIdRef.current;
+  const shouldBlockSelectedThread =
+    blockedThreadId !== null &&
+    blockedProjectId === normalizedProjectId &&
+    selectedThreadId === blockedThreadId;
+  const effectiveSelectedThreadId = shouldBlockSelectedThread ? null : selectedThreadId;
+
+  if (!shouldBlockSelectedThread && blockedProjectId !== null) {
+    blockedProjectIdRef.current = null;
+    blockedThreadIdRef.current = null;
+  }
+
+  previousProjectIdRef.current = normalizedProjectId;
 
   // Agent presence query
   const { data: agentPresence = {}, isLoading: agentPresenceLoading } = useQuery({
@@ -231,9 +258,9 @@ export function useChatQueries({
 
   // Messages query
   const { data: messagesData, refetch: refetchMessages } = useQuery({
-    queryKey: chatQueryKeys.messages(selectedThreadId, projectId),
-    queryFn: () => fetchMessages(selectedThreadId!, projectId!),
-    enabled: Boolean(selectedThreadId && projectId),
+    queryKey: chatQueryKeys.messages(effectiveSelectedThreadId, projectId),
+    queryFn: () => fetchMessages(effectiveSelectedThreadId!, projectId!),
+    enabled: Boolean(effectiveSelectedThreadId && projectId),
   });
 
   // ============================================

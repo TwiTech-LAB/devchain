@@ -84,6 +84,10 @@ export function useChatThreadUiState({
   const latestSelectedThreadRef = useRef<string | null>(null);
   const previousProjectIdRef = useRef<string | null>(null);
   const previousThreadIdRef = useRef<string | null>(null);
+  const normalizedProjectId = projectId ?? null;
+  const projectChanged =
+    previousProjectIdRef.current !== null && previousProjectIdRef.current !== normalizedProjectId;
+  const effectiveSelectedThreadId = projectChanged ? null : selectedThreadId;
 
   // Inline terminal state
   const [inlineTerminalsByThread, setInlineTerminalsByThread] = useState<
@@ -126,13 +130,13 @@ export function useChatThreadUiState({
 
   // Keep ref in sync
   useEffect(() => {
-    latestSelectedThreadRef.current = selectedThreadId;
-  }, [selectedThreadId]);
+    latestSelectedThreadRef.current = effectiveSelectedThreadId;
+  }, [effectiveSelectedThreadId]);
 
   // Current thread derived data
   const currentThread = useMemo(
-    () => allThreads.find((thread) => thread.id === selectedThreadId) ?? null,
-    [allThreads, selectedThreadId],
+    () => allThreads.find((thread) => thread.id === effectiveSelectedThreadId) ?? null,
+    [allThreads, effectiveSelectedThreadId],
   );
 
   const currentThreadMembers = useMemo(() => {
@@ -184,8 +188,8 @@ export function useChatThreadUiState({
   const isDirectMessage = Boolean(currentThread && !currentThread.isGroup);
 
   // Inline terminal derived state
-  const inlineTerminalState = selectedThreadId
-    ? (inlineTerminalsByThread[selectedThreadId] ?? null)
+  const inlineTerminalState = effectiveSelectedThreadId
+    ? (inlineTerminalsByThread[effectiveSelectedThreadId] ?? null)
     : null;
   const showInlineTerminal = Boolean(inlineTerminalState);
   const inlineTerminalSessionId = inlineTerminalState?.sessionId ?? null;
@@ -213,10 +217,10 @@ export function useChatThreadUiState({
 
   // Auto-enable inline terminal for newly selected DM threads
   useEffect(() => {
-    if (!selectedThreadId || !currentThread || currentThread.isGroup) {
+    if (!effectiveSelectedThreadId || !currentThread || currentThread.isGroup) {
       return;
     }
-    if (inlineTerminalsByThread[selectedThreadId]) {
+    if (inlineTerminalsByThread[effectiveSelectedThreadId]) {
       return;
     }
     const agentId = currentThread.members?.[0];
@@ -225,9 +229,9 @@ export function useChatThreadUiState({
     const sessionId = presence?.sessionId ?? null;
     setInlineTerminalsByThread((prev) => ({
       ...prev,
-      [selectedThreadId]: { agentId, sessionId },
+      [effectiveSelectedThreadId]: { agentId, sessionId },
     }));
-  }, [selectedThreadId, currentThread, agentPresence, inlineTerminalsByThread]);
+  }, [effectiveSelectedThreadId, currentThread, agentPresence, inlineTerminalsByThread]);
 
   // Reset inline unread when terminal hidden or thread changes
   useEffect(() => {
@@ -238,33 +242,34 @@ export function useChatThreadUiState({
 
   useEffect(() => {
     setInlineUnreadCount(0);
-  }, [selectedThreadId]);
+  }, [effectiveSelectedThreadId]);
 
   // Save draft when message changes
   useEffect(() => {
-    if (selectedThreadId) {
-      composerDraftsRef.current[selectedThreadId] = messageInput;
+    if (effectiveSelectedThreadId) {
+      composerDraftsRef.current[effectiveSelectedThreadId] = messageInput;
     }
-  }, [messageInput, selectedThreadId]);
+  }, [messageInput, effectiveSelectedThreadId]);
 
   // Restore draft when thread changes
   useEffect(() => {
-    const draft = selectedThreadId ? (composerDraftsRef.current[selectedThreadId] ?? '') : '';
+    const draft = effectiveSelectedThreadId
+      ? (composerDraftsRef.current[effectiveSelectedThreadId] ?? '')
+      : '';
     if (draft !== messageInput) {
       setMessageInput(draft);
     }
-    previousThreadIdRef.current = selectedThreadId;
-  }, [selectedThreadId, messageInput]);
+    previousThreadIdRef.current = effectiveSelectedThreadId;
+  }, [effectiveSelectedThreadId, messageInput]);
 
   // Close terminal menu when thread/agent changes
   useEffect(() => {
     setTerminalMenuOpen(false);
-  }, [selectedThreadId, selectedAgent?.id]);
+  }, [effectiveSelectedThreadId, selectedAgent?.id]);
 
   // Reset state when project changes
   useEffect(() => {
     const previousProjectId = previousProjectIdRef.current;
-    const normalizedProjectId = projectId ?? null;
 
     if (previousProjectId === normalizedProjectId) {
       return;
@@ -280,11 +285,11 @@ export function useChatThreadUiState({
     composerDraftsRef.current = {};
     previousThreadIdRef.current = null;
     setMessageInput('');
-  }, [projectId, handleSelectThread]);
+  }, [normalizedProjectId, handleSelectThread]);
 
   return {
     // Thread selection
-    selectedThreadId,
+    selectedThreadId: effectiveSelectedThreadId,
     handleSelectThread,
     latestSelectedThreadRef,
 

@@ -1,7 +1,10 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { NotFoundError } from '../../../../common/errors/error-types';
+import { STORAGE_SERVICE } from '../../../storage/interfaces/storage.interface';
 import { WorktreeMergePreviewDto, WorktreeResponseDto } from '../dtos/worktree.dto';
 import { OrchestratorDockerService } from '../../docker/services/docker.service';
+import { GitWorktreeService } from '../../git/services/git-worktree.service';
 import { WorktreesService } from '../services/worktrees.service';
 import { WorktreesController } from './worktrees.controller';
 
@@ -40,9 +43,16 @@ describe('WorktreesController', () => {
     rebaseWorktree: jest.Mock;
     getWorktreeLogs: jest.Mock;
   };
+  let gitService: {
+    listIgnoredFiles: jest.Mock;
+  };
+  let storage: {
+    getProject: jest.Mock;
+  };
   let dockerService: {
     ping: jest.Mock;
   };
+  const ownerProjectId = '550e8400-e29b-41d4-a716-446655440000';
 
   const sampleWorktree: WorktreeResponseDto = {
     id: 'wt-1',
@@ -90,11 +100,19 @@ describe('WorktreesController', () => {
     dockerService = {
       ping: jest.fn().mockResolvedValue(true),
     };
+    gitService = {
+      listIgnoredFiles: jest.fn(),
+    };
+    storage = {
+      getProject: jest.fn(),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [WorktreesController],
       providers: [
         { provide: WorktreesService, useValue: service },
+        { provide: GitWorktreeService, useValue: gitService },
+        { provide: STORAGE_SERVICE, useValue: storage },
         { provide: OrchestratorDockerService, useValue: dockerService },
       ],
     }).compile();
@@ -123,9 +141,56 @@ describe('WorktreesController', () => {
       baseBranch: 'main',
       templateSlug: '3-agent-dev',
       ownerProjectId: 'project-main',
+      includeIgnoredFiles: [],
       runtimeType: 'container',
     });
     expect(result.id).toBe('wt-1');
+  });
+
+  it('strips deprecated repoPath from create payload before calling service', async () => {
+    service.createWorktree.mockResolvedValue(sampleWorktree);
+
+    await controller.createWorktree({
+      name: 'feature-auth',
+      branchName: 'feature/auth',
+      baseBranch: 'main',
+      templateSlug: '3-agent-dev',
+      ownerProjectId: 'project-main',
+      repoPath: '/tmp/untrusted-client-path',
+    });
+
+    expect(service.createWorktree).toHaveBeenCalledWith(
+      expect.not.objectContaining({ repoPath: expect.anything() }),
+    );
+    expect(service.createWorktree).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'feature-auth',
+        branchName: 'feature/auth',
+        baseBranch: 'main',
+        templateSlug: '3-agent-dev',
+        ownerProjectId: 'project-main',
+        runtimeType: 'container',
+      }),
+    );
+  });
+
+  it('passes includeIgnoredFiles to service when provided', async () => {
+    service.createWorktree.mockResolvedValue(sampleWorktree);
+
+    await controller.createWorktree({
+      name: 'feature-auth',
+      branchName: 'feature/auth',
+      baseBranch: 'main',
+      templateSlug: '3-agent-dev',
+      ownerProjectId: 'project-main',
+      includeIgnoredFiles: ['.env.local', 'node_modules/'],
+    });
+
+    expect(service.createWorktree).toHaveBeenCalledWith(
+      expect.objectContaining({
+        includeIgnoredFiles: ['.env.local', 'node_modules/'],
+      }),
+    );
   });
 
   it('requires ownerProjectId in create payload', async () => {
@@ -386,6 +451,68 @@ describe('WorktreesController', () => {
     expect(result).toHaveLength(1);
     expect(result[0].worktree.id).toBe(sampleWorktree.id);
     expect(service.listWorktreeOverviews).toHaveBeenCalledWith(undefined);
+  });
+
+  it('lists ignored files by resolving project rootPath from ownerProjectId', async () => {
+    storage.getProject.mockResolvedValue({ id: ownerProjectId, rootPath: '/repo/path' });
+    gitService.listIgnoredFiles.mockResolvedValue([
+      { path: '.env', type: 'file', defaultIncluded: true },
+    ]);
+
+    const result = await controller.listIgnoredFiles({ ownerProjectId });
+
+    expect(storage.getProject).toHaveBeenCalledWith(ownerProjectId);
+    expect(gitService.listIgnoredFiles).toHaveBeenCalledWith('/repo/path');
+    expect(result).toEqual([{ path: '.env', type: 'file', defaultIncluded: true }]);
+  });
+
+  it('rejects invalid ownerProjectId query for ignored files endpoint', async () => {
+    await expect(controller.listIgnoredFiles({ ownerProjectId: 'not-a-uuid' })).rejects.toThrow(
+      BadRequestException,
+    );
+    expect(storage.getProject).not.toHaveBeenCalled();
+    expect(gitService.listIgnoredFiles).not.toHaveBeenCalled();
+  });
+
+  it('rejects missing ownerProjectId query for ignored files endpoint', async () => {
+    await expect(controller.listIgnoredFiles({})).rejects.toThrow(BadRequestException);
+    expect(storage.getProject).not.toHaveBeenCalled();
+    expect(gitService.listIgnoredFiles).not.toHaveBeenCalled();
+  });
+
+  it('returns NotFoundException when ownerProjectId is unknown for ignored files endpoint', async () => {
+    storage.getProject.mockRejectedValue(new NotFoundError('Project', ownerProjectId));
+
+    await expect(controller.listIgnoredFiles({ ownerProjectId })).rejects.toThrow(
+      NotFoundException,
+    );
+    expect(gitService.listIgnoredFiles).not.toHaveBeenCalled();
+  });
+
+  it('returns BadRequestException when project rootPath is blank for ignored files endpoint', async () => {
+    storage.getProject.mockResolvedValue({ id: ownerProjectId, rootPath: '   ' });
+
+    await expect(controller.listIgnoredFiles({ ownerProjectId })).rejects.toThrow(
+      BadRequestException,
+    );
+    expect(gitService.listIgnoredFiles).not.toHaveBeenCalled();
+  });
+
+  it('preserves legacy no-storage fallback for ignored files endpoint', async () => {
+    const moduleWithoutStorage: TestingModule = await Test.createTestingModule({
+      controllers: [WorktreesController],
+      providers: [
+        { provide: WorktreesService, useValue: service },
+        { provide: GitWorktreeService, useValue: gitService },
+        { provide: OrchestratorDockerService, useValue: dockerService },
+      ],
+    }).compile();
+    const controllerWithoutStorage = moduleWithoutStorage.get(WorktreesController);
+    gitService.listIgnoredFiles.mockResolvedValue([]);
+
+    await controllerWithoutStorage.listIgnoredFiles({ ownerProjectId });
+
+    expect(gitService.listIgnoredFiles).toHaveBeenCalledWith(undefined);
   });
 
   it('lists worktree overviews filtered by ownerProjectId when query is provided', async () => {

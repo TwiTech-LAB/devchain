@@ -269,10 +269,7 @@ function ModelOverrideSubmenu({
       : MODEL_OVERRIDE_NONE_SELECTED;
 
   return (
-    <ContextMenuSub
-      open={isOpen}
-      onOpenChange={setIsOpen}
-    >
+    <ContextMenuSub open={isOpen} onOpenChange={setIsOpen}>
       <ContextMenuSubTrigger
         disabled={isUpdating}
         onClick={(event) => {

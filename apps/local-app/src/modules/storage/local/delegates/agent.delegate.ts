@@ -177,16 +177,6 @@ export class AgentStorageDelegate extends BaseStorageDelegate {
     }
 
     const updatePayload: UpdateAgent = { ...data };
-    if (data.providerConfigId !== undefined) {
-      const current = currentAgent ?? (await this.dependencies.getAgent(id));
-      if (data.providerConfigId !== current.providerConfigId) {
-        // Preserve explicitly supplied override in atomic config+model updates.
-        // Only auto-clear stale override when caller did not provide modelOverride.
-        if (data.modelOverride === undefined) {
-          updatePayload.modelOverride = null;
-        }
-      }
-    }
 
     await this.db
       .update(agents)

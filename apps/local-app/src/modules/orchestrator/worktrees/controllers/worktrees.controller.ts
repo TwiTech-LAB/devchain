@@ -4,12 +4,20 @@ import {
   Controller,
   Delete,
   Get,
+  Inject,
+  NotFoundException,
   Optional,
   Param,
   Post,
   Query,
 } from '@nestjs/common';
+import { z } from 'zod';
+import { NotFoundError } from '../../../../common/errors/error-types';
 import { createLogger } from '../../../../common/logging/logger';
+import {
+  STORAGE_SERVICE,
+  type StorageService,
+} from '../../../storage/interfaces/storage.interface';
 import {
   CreateWorktreeSchema,
   DeleteWorktreeQuerySchema,
@@ -21,9 +29,13 @@ import {
 } from '../dtos/worktree.dto';
 import { WorktreesService } from '../services/worktrees.service';
 import { OrchestratorDockerService } from '../../docker/services/docker.service';
+import { GitWorktreeService, type IgnoredFileInfo } from '../../git/services/git-worktree.service';
 
 const logger = createLogger('OrchestratorWorktreesController');
 const DEFAULT_DOCKER_AVAILABILITY_TTL_MS = 60_000;
+const IgnoredFilesQuerySchema = z.object({
+  ownerProjectId: z.string().uuid(),
+});
 
 function resolveDockerAvailabilityTtlMs(rawValue: string | undefined): number {
   const parsed = Number(rawValue);
@@ -44,6 +56,8 @@ export class WorktreesController {
 
   constructor(
     private readonly worktreesService: WorktreesService,
+    private readonly gitWorktreeService: GitWorktreeService,
+    @Optional() @Inject(STORAGE_SERVICE) private readonly storage?: StorageService,
     @Optional() private readonly dockerService?: OrchestratorDockerService,
   ) {}
 
@@ -112,6 +126,43 @@ export class WorktreesController {
     }
 
     return this.worktreesService.listWorktreeOverviews(parsed.data.ownerProjectId);
+  }
+
+  @Get('ignored-files')
+  async listIgnoredFiles(
+    @Query() query: Record<string, string | string[] | undefined>,
+  ): Promise<IgnoredFileInfo[]> {
+    logger.info('GET /api/worktrees/ignored-files');
+    const parsed = IgnoredFilesQuerySchema.safeParse({
+      ownerProjectId: Array.isArray(query.ownerProjectId)
+        ? query.ownerProjectId[0]
+        : query.ownerProjectId,
+    });
+    if (!parsed.success) {
+      throw new BadRequestException({
+        message: 'Validation failed',
+        errors: parsed.error.errors,
+      });
+    }
+
+    if (!this.storage) {
+      return this.gitWorktreeService.listIgnoredFiles(undefined);
+    }
+
+    const { ownerProjectId } = parsed.data;
+    try {
+      const project = await this.storage.getProject(ownerProjectId);
+      const rootPath = project.rootPath?.trim();
+      if (!rootPath) {
+        throw new BadRequestException(`Project ${ownerProjectId} has no rootPath configured`);
+      }
+      return this.gitWorktreeService.listIgnoredFiles(rootPath);
+    } catch (error) {
+      if (error instanceof NotFoundError) {
+        throw new NotFoundException(`Project not found: ${ownerProjectId}`);
+      }
+      throw error;
+    }
   }
 
   @Get(':id')

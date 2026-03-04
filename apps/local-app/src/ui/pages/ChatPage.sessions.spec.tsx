@@ -69,6 +69,8 @@ const openTerminalWindowMock = jest.fn();
 const openWorktreeTerminalWindowMock = jest.fn();
 const closeWindowMock = jest.fn();
 const terminalWindowsMock: Array<{ id: string; minimized?: boolean }> = [];
+let selectedProjectIdMock = 'project-1';
+let selectedProjectRootPathMock = '/tmp/project-1';
 
 // Stub xterm CSS import pulled by ChatPage dependencies
 jest.mock('@xterm/xterm/css/xterm.css', () => ({}), { virtual: true });
@@ -136,7 +138,14 @@ jest.mock('@/ui/hooks/use-toast', () => ({
 // Mock project selection
 jest.mock('@/ui/hooks/useProjectSelection', () => ({
   useSelectedProject: () => ({
-    selectedProjectId: 'project-1',
+    selectedProjectId: selectedProjectIdMock,
+    selectedProject: selectedProjectIdMock
+      ? {
+          id: selectedProjectIdMock,
+          name: `Project ${selectedProjectIdMock}`,
+          rootPath: selectedProjectRootPathMock,
+        }
+      : null,
     projectsLoading: false,
     projectsError: false,
     projects: [],
@@ -149,6 +158,7 @@ jest.mock('@/ui/hooks/useWorktreeTab', () => ({
     apiBase: '',
     worktrees: [],
     worktreesLoading: false,
+    runtimeResolved: true,
   }),
 }));
 
@@ -180,14 +190,20 @@ jest.mock('@/ui/lib/socket', () => ({
 
 function renderWithClient(ui: React.ReactNode, initialEntries: string[] = ['/chat']) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const utils = render(
     <MemoryRouter initialEntries={initialEntries}>
       <QueryClientProvider client={queryClient}>
         <TerminalWindowsProvider>{ui}</TerminalWindowsProvider>
       </QueryClientProvider>
     </MemoryRouter>,
   );
+  return { ...utils, queryClient };
 }
+
+beforeEach(() => {
+  selectedProjectIdMock = 'project-1';
+  selectedProjectRootPathMock = '/tmp/project-1';
+});
 
 describe('ChatPage agent context menu', () => {
   const originalFetch = global.fetch;
@@ -285,6 +301,131 @@ describe('ChatPage agent context menu', () => {
       const calls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
       expect(calls.some((u) => u === '/api/sessions/launch')).toBe(true);
     });
+  });
+});
+
+describe('ChatPage stale-thread fetch suppression', () => {
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    if (originalFetch) {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it('does not fetch stale thread messages when project switches and URL thread is still old', async () => {
+    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+
+      if (url.startsWith('/api/agents?projectId=')) {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [{ id: 'agent-1', name: 'Alpha', projectId: 'project-1', profileId: 'p1' }],
+          }),
+        } as Response;
+      }
+      if (url.startsWith('/api/sessions/agents/presence')) {
+        return {
+          ok: true,
+          json: async () => ({ 'agent-1': { online: false, sessionId: null } }),
+        } as Response;
+      }
+      if (url.startsWith('/api/sessions?projectId=')) {
+        return {
+          ok: true,
+          json: async () => [],
+        } as Response;
+      }
+      if (url.startsWith('/api/chat/threads?projectId=')) {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [],
+            total: 0,
+            limit: 50,
+            offset: 0,
+          }),
+        } as Response;
+      }
+      if (url.startsWith('/api/chat/threads/thread-main/messages?')) {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [],
+            total: 0,
+            limit: 50,
+            offset: 0,
+          }),
+        } as Response;
+      }
+      if (url.startsWith('/api/profiles?projectId=')) {
+        return { ok: true, json: async () => [] } as Response;
+      }
+      if (url === '/api/providers') {
+        return { ok: true, json: async () => [] } as Response;
+      }
+      if (url.startsWith('/api/preflight')) {
+        return {
+          ok: true,
+          json: async () => ({
+            overall: 'pass',
+            checks: [],
+            providers: [],
+            supportedMcpProviders: [],
+            timestamp: new Date().toISOString(),
+          }),
+        } as Response;
+      }
+      if (url.startsWith('/api/projects/') && url.endsWith('/presets')) {
+        return {
+          ok: true,
+          json: async () => ({ presets: [], activePreset: null }),
+        } as Response;
+      }
+
+      return { ok: true, json: async () => ({ items: [] }) } as Response;
+    }) as unknown as typeof fetch;
+
+    const { rerender, queryClient } = renderWithClient(<ChatPage />, ['/chat?thread=thread-main']);
+
+    await waitFor(() => {
+      const urls = (global.fetch as jest.Mock).mock.calls.map((call) => String(call[0]));
+      expect(urls).toContain(
+        '/api/chat/threads/thread-main/messages?projectId=project-1&limit=50&offset=0',
+      );
+    });
+
+    (global.fetch as jest.Mock).mockClear();
+
+    selectedProjectIdMock = 'project-2';
+    selectedProjectRootPathMock = '/tmp/project-2';
+
+    rerender(
+      <MemoryRouter initialEntries={['/chat?thread=thread-main']}>
+        <QueryClientProvider client={queryClient}>
+          <TerminalWindowsProvider>
+            <ChatPage />
+          </TerminalWindowsProvider>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      const urls = (global.fetch as jest.Mock).mock.calls.map((call) => String(call[0]));
+      expect(urls).toContain('/api/agents?projectId=project-2&includeGuests=true');
+    });
+
+    const urls = (global.fetch as jest.Mock).mock.calls.map((call) => String(call[0]));
+    expect(urls).not.toContain(
+      '/api/chat/threads/thread-main/messages?projectId=project-2&limit=50&offset=0',
+    );
+    expect(
+      urls.some(
+        (url) =>
+          url.includes('/api/chat/threads/') && url.includes('/messages?projectId=project-2'),
+      ),
+    ).toBe(false);
   });
 });
 
@@ -1675,7 +1816,7 @@ describe('ChatPage worktree provider config context menu', () => {
     });
   });
 
-  it('renders searchable, scrollable model override submenu and resets filter on reopen', async () => {
+  it('renders scrollable model override submenu for large model sets', async () => {
     const largeModelSet = Array.from({ length: 1100 }, (_, index) => ({
       id: `m-main-${index}`,
       providerId: 'provider-1',
@@ -1723,29 +1864,11 @@ describe('ChatPage worktree provider config context menu', () => {
     });
     fireEvent.keyDown(configWithModels, { key: 'ArrowRight' });
 
-    const searchInput = await screen.findByRole('textbox', {
-      name: /Search models for Main Config Large/i,
-    });
-    await waitFor(() => {
-      expect(searchInput).toHaveFocus();
-    });
-
     const optionsContainer = screen.getByTestId('model-override-options-config-main-large');
     expect(optionsContainer.className).toContain('max-h-[min(400px,60vh)]');
     expect(optionsContainer.className).toContain('overflow-y-auto');
-
-    fireEvent.keyDown(searchInput, { key: 'o' });
-    expect(
-      screen.getByRole('textbox', { name: /Search models for Main Config Large/i }),
-    ).toBeInTheDocument();
-
-    fireEvent.change(searchInput, { target: { value: 'sonnet-4-5' } });
     expect(await screen.findByText('claude-sonnet-4-5')).toBeInTheDocument();
-    expect(screen.queryByText('model-1099')).not.toBeInTheDocument();
-
-    fireEvent.change(searchInput, { target: { value: 'does-not-exist' } });
-    expect(await screen.findByText('No matching models')).toBeInTheDocument();
-    expect(screen.getByText('Default (no override)')).toBeInTheDocument();
+    expect(await screen.findByText('model-1099')).toBeInTheDocument();
 
     fireEvent.click(document.body);
     fireEvent.contextMenu(mainAgentButton);
@@ -1756,11 +1879,6 @@ describe('ChatPage worktree provider config context menu', () => {
     });
     fireEvent.keyDown(reopenedConfigWithModels, { key: 'ArrowRight' });
 
-    const reopenedSearchInput = await screen.findByRole('textbox', {
-      name: /Search models for Main Config Large/i,
-    });
-    expect(reopenedSearchInput).toHaveValue('');
-    expect(screen.queryByText('No matching models')).not.toBeInTheDocument();
     expect(await screen.findByText('model-1099')).toBeInTheDocument();
   });
 

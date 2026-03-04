@@ -48,6 +48,12 @@ export interface CreateFromTemplateResponse {
   success: boolean;
   project?: { id: string; name: string };
   message?: string;
+  warnings?: Array<{
+    type: 'provider_mismatch';
+    originalProvider: string;
+    substituteProvider: string;
+    agentNames: string[];
+  }>;
   providerMappingRequired?: {
     missingProviders: string[];
     familyAlternatives: FamilyAlternative[];

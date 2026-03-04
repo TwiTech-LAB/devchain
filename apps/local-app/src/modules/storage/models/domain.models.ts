@@ -264,7 +264,10 @@ export interface CreateProvider extends Partial<ProviderMcpMetadata> {
   binPath?: string | null;
   autoCompactThreshold?: number | null;
 }
-export type CreateProviderModel = Omit<ProviderModel, 'id' | 'createdAt' | 'updatedAt' | 'position'> & {
+export type CreateProviderModel = Omit<
+  ProviderModel,
+  'id' | 'createdAt' | 'updatedAt' | 'position'
+> & {
   position?: number;
 };
 export type UpdateProvider = Partial<Omit<Provider, 'id' | 'createdAt' | 'updatedAt'>>;

@@ -3,6 +3,7 @@ import {
   listWorktreeOverviews,
   listWorktreeActivity,
   listBranches,
+  listIgnoredFiles,
   listTemplates,
   WorktreeApiError,
   previewMerge,
@@ -174,7 +175,7 @@ describe('orchestrator ui worktrees api', () => {
     });
   });
 
-  it('loads and sorts branches from /api/branches', async () => {
+  it('loads and sorts branches from /api/branches with ownerProjectId', async () => {
     fetchMock.mockResolvedValueOnce(
       mockResponse({
         ok: true,
@@ -183,12 +184,17 @@ describe('orchestrator ui worktrees api', () => {
       }),
     );
 
-    const result = await listBranches();
+    const result = await listBranches('project-1');
 
-    expect(fetchMock).toHaveBeenCalledWith('/api/branches', {
+    expect(fetchMock).toHaveBeenCalledWith('/api/branches?ownerProjectId=project-1', {
       headers: { accept: 'application/json' },
     });
     expect(result).toEqual(['feature/auth', 'main', 'release/1.0']);
+  });
+
+  it('returns empty branches when ownerProjectId is blank', async () => {
+    await expect(listBranches('   ')).resolves.toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('loads worktrees without ownerProjectId filter by default', async () => {
@@ -319,7 +325,7 @@ describe('orchestrator ui worktrees api', () => {
       }),
     );
 
-    await expect(listBranches()).rejects.toThrow('Failed to load branches: HTTP 503');
+    await expect(listBranches('project-1')).rejects.toThrow('Failed to load branches: HTTP 503');
   });
 
   it('throws on invalid branch payload shape', async () => {
@@ -331,7 +337,54 @@ describe('orchestrator ui worktrees api', () => {
       }),
     );
 
-    await expect(listBranches()).rejects.toThrow('Invalid branches response payload');
+    await expect(listBranches('project-1')).rejects.toThrow('Invalid branches response payload');
+  });
+
+  it('loads ignored files from /api/worktrees/ignored-files with ownerProjectId', async () => {
+    fetchMock.mockResolvedValueOnce(
+      mockResponse({
+        ok: true,
+        status: 200,
+        jsonBody: [
+          { path: '.env.local', type: 'file', defaultIncluded: true },
+          { path: 'node_modules/', type: 'directory', defaultIncluded: true },
+        ],
+      }),
+    );
+
+    await expect(listIgnoredFiles('project-1')).resolves.toEqual([
+      { path: '.env.local', type: 'file', defaultIncluded: true },
+      { path: 'node_modules/', type: 'directory', defaultIncluded: true },
+    ]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/worktrees/ignored-files?ownerProjectId=project-1',
+      {
+        headers: { accept: 'application/json' },
+      },
+    );
+  });
+
+  it('returns empty ignored files when ownerProjectId is blank', async () => {
+    await expect(listIgnoredFiles('   ')).resolves.toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('encodes ownerProjectId when loading ignored files', async () => {
+    fetchMock.mockResolvedValueOnce(
+      mockResponse({
+        ok: true,
+        status: 200,
+        jsonBody: [],
+      }),
+    );
+
+    await expect(listIgnoredFiles(' project id ')).resolves.toEqual([]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/worktrees/ignored-files?ownerProjectId=project+id',
+      {
+        headers: { accept: 'application/json' },
+      },
+    );
   });
 
   it('loads templates from /api/templates payload envelope', async () => {
@@ -473,5 +526,27 @@ describe('orchestrator ui worktrees api', () => {
 
     const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
     expect(body.presetName).toBeUndefined();
+  });
+
+  it('includes includeIgnoredFiles in createWorktree POST body when provided', async () => {
+    fetchMock.mockResolvedValueOnce(
+      mockResponse({
+        ok: true,
+        status: 201,
+        jsonBody: { id: 'wt-1', name: 'feature-auth', status: 'creating' },
+      }),
+    );
+
+    await createWorktree({
+      name: 'feature-auth',
+      branchName: 'feature-auth',
+      baseBranch: 'main',
+      templateSlug: '3-agent-dev',
+      ownerProjectId: 'project-1',
+      includeIgnoredFiles: ['.env.local', 'node_modules/'],
+    });
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+    expect(body.includeIgnoredFiles).toEqual(['.env.local', 'node_modules/']);
   });
 });

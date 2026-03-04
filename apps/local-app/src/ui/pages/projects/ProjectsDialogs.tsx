@@ -9,6 +9,7 @@ import { ImportSourceModal } from '@/ui/components/project/ImportSourceModal';
 import { ImportConfirmDialog } from '@/ui/components/project/ImportConfirmDialog';
 import { CreateProjectDialog } from '@/ui/components/project/CreateProjectDialog';
 import { ProviderMappingModal } from '@/ui/components/project/ProviderMappingModal';
+import { ProviderMismatchWarningModal } from '@/ui/components/project/ProviderMismatchWarningModal';
 import type { ProjectsPageController } from '@/ui/hooks/useProjectsPageController';
 
 interface ProjectsDialogsProps {
@@ -87,6 +88,9 @@ export function ProjectsDialogs({ controller }: ProjectsDialogsProps) {
     showProviderMappingModal,
     handleProviderMappingCancel,
     handleProviderMappingConfirm,
+    showProviderWarningModal,
+    providerWarnings,
+    handleWarningModalNavigate,
     importProviderMappingData,
     showImportProviderMappingModal,
     handleImportProviderMappingCancel,
@@ -250,6 +254,12 @@ export function ProjectsDialogs({ controller }: ProjectsDialogsProps) {
           loading={createFromTemplateMutation.isPending}
         />
       )}
+
+      <ProviderMismatchWarningModal
+        open={showProviderWarningModal}
+        warnings={providerWarnings ?? []}
+        onNavigate={handleWarningModalNavigate}
+      />
 
       {/* Provider Mapping Modal for import flow */}
       {importProviderMappingData && (
