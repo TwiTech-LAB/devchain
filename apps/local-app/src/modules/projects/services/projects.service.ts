@@ -26,6 +26,7 @@ import {
   getImportErrorMessage,
   normalizeProfileOptions,
 } from '../helpers/project-runtime.helpers';
+import { probe1mSupport } from '../../providers/utils/probe-1m';
 import {
   getTemplateManifestForProjectWithHelper,
   getBundledUpgradeVersionWithHelper,
@@ -109,6 +110,7 @@ export class ProjectsService {
         createWatchersFromPayloadWithHelper(projectId, watchers, maps, this.watchersService),
       createSubscribersFromPayload: (projectId, subscribers) =>
         createSubscribersFromPayloadWithHelper(projectId, subscribers, this.storage),
+      probe1m: probe1mSupport,
       applyPreset: (projectId, presetName, nameMaps) =>
         applyPresetWithHelper(
           projectId,
@@ -189,6 +191,7 @@ export class ProjectsService {
           this.settings,
         ),
       getImportErrorMessage,
+      probe1m: probe1mSupport,
     });
   }
 

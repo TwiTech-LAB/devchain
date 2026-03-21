@@ -66,17 +66,15 @@ function isSupportedModel(name: string): boolean {
  *
  * Each pattern matches the base model name (e.g. "claude-opus-4-6") and also
  * matches dated variants (e.g. "claude-opus-4-6-20260205") automatically.
- * A synthetic "[1m]" variant is created for each patched entry so users of the
- * extended-context mode get the correct value.
  */
 const CONTEXT_WINDOW_OVERRIDE_PATTERNS: { pattern: RegExp; defaultWindow: number }[] = [
   { pattern: /^claude-opus-4-6(-\d{8})?$/, defaultWindow: 200_000 },
+  { pattern: /^claude-sonnet-4-6(-\d{8})?$/, defaultWindow: 200_000 },
 ];
 
 /**
- * Apply context window overrides and create extended-context variant entries.
- * E.g. "claude-opus-4-6" gets patched to 200k and "claude-opus-4-6[1m]" is
- * created with the original 1M value.
+ * Apply context window overrides for base models.
+ * E.g. "claude-opus-4-6" gets patched from 1M to 200k default.
  */
 function applyContextWindowOverrides(models: Record<string, LiteLLMEntry>): void {
   for (const key of Object.keys(models)) {
@@ -86,17 +84,10 @@ function applyContextWindowOverrides(models: Record<string, LiteLLMEntry>): void
     const entry = models[key];
     if (!entry || entry.max_input_tokens == null) continue;
 
-    const originalWindow = entry.max_input_tokens;
-    if (originalWindow <= rule.defaultWindow) continue;
-
-    // Create extended-context variant with original value
-    const extendedKey = `${key}[1m]`;
-    if (!models[extendedKey]) {
-      models[extendedKey] = { ...entry, max_input_tokens: originalWindow };
+    // Patch base model to default context window if above threshold
+    if (entry.max_input_tokens > rule.defaultWindow) {
+      entry.max_input_tokens = rule.defaultWindow;
     }
-
-    // Patch base model to default context window
-    entry.max_input_tokens = rule.defaultWindow;
   }
 }
 

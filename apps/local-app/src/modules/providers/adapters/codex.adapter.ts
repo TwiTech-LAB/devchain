@@ -1,5 +1,10 @@
 import { Injectable } from '@nestjs/common';
-import { ProviderAdapter, AddMcpServerOptions, McpServerEntry } from './provider-adapter.interface';
+import {
+  ProviderAdapter,
+  AddMcpServerOptions,
+  McpServerEntry,
+  LaunchInitialPromptBehavior,
+} from './provider-adapter.interface';
 
 /**
  * Codex provider adapter
@@ -9,6 +14,10 @@ import { ProviderAdapter, AddMcpServerOptions, McpServerEntry } from './provider
 @Injectable()
 export class CodexAdapter implements ProviderAdapter {
   readonly providerName = 'codex';
+  readonly launchInitialPromptBehavior: LaunchInitialPromptBehavior = {
+    preKeys: ['Enter'],
+    preDelayMs: 2000,
+  };
 
   addMcpServer(options: AddMcpServerOptions): string[] {
     const alias = options.alias ?? this.providerName;

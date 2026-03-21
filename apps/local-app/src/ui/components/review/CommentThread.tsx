@@ -101,12 +101,12 @@ const COMMENT_TYPE_CONFIG: Record<
   issue: {
     icon: AlertCircle,
     label: 'Issue',
-    className: 'bg-orange-100 text-orange-700',
+    className: 'bg-orange-100 text-orange-700 dark:bg-orange-900/50 dark:text-orange-300',
   },
   approval: {
     icon: CheckCircle2,
     label: 'Approval',
-    className: 'bg-green-100 text-green-700',
+    className: 'bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300',
   },
 };
 

@@ -25,7 +25,18 @@ import {
   DialogDescription,
 } from '@/ui/components/ui/dialog';
 import { useToast } from '@/ui/hooks/use-toast';
-import { Plus, Server, AlertCircle, ChevronDown, ChevronRight, Trash2 } from 'lucide-react';
+import { Checkbox } from '@/ui/components/ui/checkbox';
+import {
+  Plus,
+  Server,
+  AlertCircle,
+  ChevronDown,
+  ChevronRight,
+  Trash2,
+  Loader2,
+  CheckCircle2,
+  XCircle,
+} from 'lucide-react';
 import { cn } from '@/ui/lib/utils';
 import { fetchPreflightChecks } from '@/ui/lib/preflight';
 import { providerModelQueryKeys } from '@/ui/lib/provider-model-query-keys';
@@ -46,6 +57,7 @@ interface Provider {
   name: string;
   binPath: string | null;
   autoCompactThreshold: number | null;
+  oneMillionContextEnabled: boolean;
   mcpConfigured: boolean;
   mcpEndpoint: string | null;
   mcpRegisteredAt: string | null;
@@ -87,6 +99,7 @@ async function createProvider(data: {
   name: string;
   binPath: string | null;
   autoCompactThreshold?: number;
+  oneMillionContextEnabled?: boolean;
 }) {
   const res = await fetch('/api/providers', {
     method: 'POST',
@@ -108,7 +121,11 @@ async function createProvider(data: {
 
 async function updateProvider(
   id: string,
-  data: { binPath?: string | null; autoCompactThreshold?: number | null },
+  data: {
+    binPath?: string | null;
+    autoCompactThreshold?: number | null;
+    oneMillionContextEnabled?: boolean;
+  },
 ) {
   const res = await fetch(`/api/providers/${id}`, {
     method: 'PUT',
@@ -148,6 +165,17 @@ async function ensureProviderMcp(id: string, projectPath?: string) {
   if (!res.ok) {
     const error = await res.json().catch(() => ({ message: 'Failed to ensure MCP configuration' }));
     throw new Error(error.message || 'Failed to ensure MCP configuration');
+  }
+  return res.json();
+}
+
+async function probeProvider1mContext(
+  id: string,
+): Promise<{ supported: boolean; status: string; capture?: string; detail?: string }> {
+  const res = await fetch(`/api/providers/${id}/1m-context/probe`, { method: 'POST' });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ message: 'Probe failed' }));
+    throw new Error(error.message || 'Failed to probe 1M context support');
   }
   return res.json();
 }
@@ -401,11 +429,18 @@ export function ProvidersPage() {
   const [showDialog, setShowDialog] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<Provider | null>(null);
-  const [formData, setFormData] = useState({ binPath: '', autoCompactThreshold: '' });
+  const [formData, setFormData] = useState({
+    binPath: '',
+    autoCompactThreshold: '',
+    oneMillionContextEnabled: false,
+  });
   const [formError, setFormError] = useState<string | null>(null);
   const [formErrorField, setFormErrorField] = useState<'binPath' | 'autoCompactThreshold' | null>(
     null,
   );
+  const [probeStatus, setProbeStatus] = useState<
+    'idle' | 'probing' | 'supported' | 'unsupported' | 'error'
+  >('idle');
   const [providerType, setProviderType] = useState<ProviderType>('codex');
   const [binPathTouched, setBinPathTouched] = useState(false);
 
@@ -453,9 +488,10 @@ export function ProvidersPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['providers'] });
       setShowDialog(false);
-      setFormData({ binPath: '', autoCompactThreshold: '' });
+      setFormData({ binPath: '', autoCompactThreshold: '', oneMillionContextEnabled: false });
       setFormError(null);
       setFormErrorField(null);
+      setProbeStatus('idle');
       toast({
         title: 'Success',
         description: 'Provider created successfully',
@@ -485,7 +521,11 @@ export function ProvidersPage() {
       data,
     }: {
       id: string;
-      data: { binPath?: string | null; autoCompactThreshold?: number | null };
+      data: {
+        binPath?: string | null;
+        autoCompactThreshold?: number | null;
+        oneMillionContextEnabled?: boolean;
+      };
     }) => updateProvider(id, data),
     onMutate: async ({ id, data }) => {
       await queryClient.cancelQueries({ queryKey: ['providers'] });
@@ -504,9 +544,10 @@ export function ProvidersPage() {
       queryClient.invalidateQueries({ queryKey: ['providers'] });
       setShowDialog(false);
       setEditingProvider(null);
-      setFormData({ binPath: '', autoCompactThreshold: '' });
+      setFormData({ binPath: '', autoCompactThreshold: '', oneMillionContextEnabled: false });
       setFormError(null);
       setFormErrorField(null);
+      setProbeStatus('idle');
       toast({
         title: 'Success',
         description: 'Provider updated successfully',
@@ -594,6 +635,48 @@ export function ProvidersPage() {
     },
   });
 
+  const handleProbe1mContext = async (providerId: string) => {
+    setProbeStatus('probing');
+    try {
+      const result = await probeProvider1mContext(providerId);
+      if (result.supported) {
+        setProbeStatus('supported');
+        setFormData((prev) => ({
+          ...prev,
+          oneMillionContextEnabled: true,
+          autoCompactThreshold: '50',
+        }));
+        toast({ title: '1M context supported', description: 'Threshold set to 50%.' });
+      } else {
+        if (result.status === 'unsupported') {
+          setProbeStatus('unsupported');
+          toast({
+            title: '1M context not supported',
+            description: result.detail ?? 'Binary does not support 1M.',
+            variant: 'destructive',
+          });
+        } else {
+          // launch_failure / timeout — retryable
+          setProbeStatus('error');
+          toast({
+            title: 'Probe failed',
+            description: result.detail ?? `Status: ${result.status}`,
+            variant: 'destructive',
+          });
+        }
+        setFormData((prev) => ({ ...prev, oneMillionContextEnabled: false }));
+      }
+    } catch (error) {
+      setProbeStatus('error');
+      setFormData((prev) => ({ ...prev, oneMillionContextEnabled: false }));
+      toast({
+        title: 'Probe failed',
+        description: error instanceof Error ? error.message : 'Failed to probe 1M context.',
+        variant: 'destructive',
+      });
+    }
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const binPath = formData.binPath.trim() === '' ? null : formData.binPath.trim();
@@ -613,14 +696,24 @@ export function ProvidersPage() {
       }
     }
 
+    const isClaude = (editingProvider?.name ?? providerType).toLowerCase() === 'claude';
+
     if (editingProvider) {
       const autoCompactThreshold: number | null = thresholdStr === '' ? null : Number(thresholdStr);
       updateMutation.mutate({
         id: editingProvider.id,
-        data: { binPath, autoCompactThreshold },
+        data: {
+          binPath,
+          autoCompactThreshold,
+          ...(isClaude ? { oneMillionContextEnabled: formData.oneMillionContextEnabled } : {}),
+        },
       });
     } else {
-      const payload: { name: string; binPath: string | null; autoCompactThreshold?: number } = {
+      const payload: {
+        name: string;
+        binPath: string | null;
+        autoCompactThreshold?: number;
+      } = {
         name: providerName,
         binPath,
       };
@@ -637,7 +730,9 @@ export function ProvidersPage() {
       binPath: provider.binPath || '',
       autoCompactThreshold:
         provider.autoCompactThreshold != null ? String(provider.autoCompactThreshold) : '',
+      oneMillionContextEnabled: provider.oneMillionContextEnabled ?? false,
     });
+    setProbeStatus(provider.oneMillionContextEnabled ? 'supported' : 'idle');
     // derive provider type from existing provider
     const t: ProviderType = (
       provider.name === 'codex'
@@ -682,11 +777,16 @@ export function ProvidersPage() {
   const handleOpenDialog = () => {
     setEditingProvider(null);
     const initialType = 'codex';
-    setFormData({ binPath: getDefaultBinPathForType(initialType), autoCompactThreshold: '' });
+    setFormData({
+      binPath: getDefaultBinPathForType(initialType),
+      autoCompactThreshold: '',
+      oneMillionContextEnabled: false,
+    });
     setProviderType(initialType);
     setBinPathTouched(false);
     setFormError(null);
     setFormErrorField(null);
+    setProbeStatus('idle');
     setShowDialog(true);
   };
 
@@ -749,12 +849,17 @@ export function ProvidersPage() {
                       </code>
                     </div>
                     {provider.name.toLowerCase() === 'claude' && (
-                      <div className="text-sm text-muted-foreground">
-                        Auto-compact:{' '}
-                        {provider.autoCompactThreshold != null
-                          ? `${provider.autoCompactThreshold}%`
-                          : 'disabled'}
-                      </div>
+                      <>
+                        <div className="text-sm text-muted-foreground">
+                          1M context: {provider.oneMillionContextEnabled ? 'enabled' : 'disabled'}
+                        </div>
+                        <div className="text-sm text-muted-foreground">
+                          Auto-compact:{' '}
+                          {provider.autoCompactThreshold != null
+                            ? `${provider.autoCompactThreshold}%`
+                            : 'disabled'}
+                        </div>
+                      </>
                     )}
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge variant="secondary" className={cn('text-xs', mcpBadgeClass)}>
@@ -803,9 +908,10 @@ export function ProvidersPage() {
           setShowDialog(open);
           if (!open) {
             setEditingProvider(null);
-            setFormData({ binPath: '', autoCompactThreshold: '' });
+            setFormData({ binPath: '', autoCompactThreshold: '', oneMillionContextEnabled: false });
             setFormError(null);
             setFormErrorField(null);
+            setProbeStatus('idle');
           }
         }}
       >
@@ -823,6 +929,7 @@ export function ProvidersPage() {
               <Label htmlFor="provider-type">Provider Type</Label>
               <Select
                 value={providerType}
+                disabled={!!editingProvider}
                 onValueChange={(value) => {
                   const prevDefault = getDefaultBinPathForType(providerType);
                   const nextType = value as ProviderType;
@@ -834,9 +941,10 @@ export function ProvidersPage() {
                     if (!binPathTouched || prev.binPath.trim() === prevDefault) {
                       updates.binPath = nextDefault;
                     }
-                    // Clear threshold when switching away from Claude
+                    // Clear Claude-specific fields when switching away from Claude
                     if (nextType !== 'claude') {
                       updates.autoCompactThreshold = '';
+                      updates.oneMillionContextEnabled = false;
                     }
                     return Object.keys(updates).length > 0 ? { ...prev, ...updates } : prev;
                   });
@@ -865,7 +973,19 @@ export function ProvidersPage() {
                 type="text"
                 value={formData.binPath}
                 onChange={(e) => {
-                  setFormData({ ...formData, binPath: e.target.value });
+                  const newBinPath = e.target.value;
+                  const isClaude = (editingProvider?.name ?? providerType) === 'claude';
+                  setFormData((prev) => ({
+                    ...prev,
+                    binPath: newBinPath,
+                    // Invalidate 1M state when Claude binPath changes
+                    ...(isClaude && prev.oneMillionContextEnabled
+                      ? { oneMillionContextEnabled: false, autoCompactThreshold: '95' }
+                      : {}),
+                  }));
+                  if (isClaude && probeStatus === 'supported') {
+                    setProbeStatus('idle');
+                  }
                   setBinPathTouched(true);
                   setFormError(null);
                   setFormErrorField(null);
@@ -883,6 +1003,86 @@ export function ProvidersPage() {
                 <p className="mt-2 text-sm text-destructive">{formError}</p>
               )}
             </div>
+
+            {(editingProvider?.name ?? providerType).toLowerCase() === 'claude' && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="provider-1m-context"
+                    checked={formData.oneMillionContextEnabled}
+                    disabled={
+                      probeStatus === 'probing' ||
+                      !editingProvider ||
+                      (editingProvider &&
+                        formData.binPath.trim() !== (editingProvider.binPath ?? ''))
+                    }
+                    onCheckedChange={(checked) => {
+                      if (checked) {
+                        // Run probe for existing providers only
+                        const providerId = editingProvider?.id;
+                        if (providerId) {
+                          handleProbe1mContext(providerId);
+                        }
+                      } else {
+                        setFormData((prev) => ({
+                          ...prev,
+                          oneMillionContextEnabled: false,
+                          autoCompactThreshold: '95',
+                        }));
+                        setProbeStatus('idle');
+                      }
+                    }}
+                  />
+                  <Label htmlFor="provider-1m-context" className="cursor-pointer">
+                    1M context
+                  </Label>
+                  {probeStatus === 'probing' && (
+                    <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      Checking support...
+                    </span>
+                  )}
+                  {probeStatus === 'supported' && (
+                    <span className="flex items-center gap-1 text-xs text-emerald-600">
+                      <CheckCircle2 className="h-3 w-3" />
+                      Supported
+                    </span>
+                  )}
+                  {probeStatus === 'unsupported' && (
+                    <span className="flex items-center gap-1 text-xs text-destructive">
+                      <XCircle className="h-3 w-3" />
+                      Not supported
+                    </span>
+                  )}
+                  {probeStatus === 'error' && (
+                    <span className="flex items-center gap-1 text-xs text-destructive">
+                      <XCircle className="h-3 w-3" />
+                      Probe failed
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-muted-foreground ml-6">
+                  Enable 1M token context window for Claude sessions. Requires Claude binary
+                  support.
+                </p>
+                {editingProvider && formData.binPath.trim() !== (editingProvider.binPath ?? '') && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400 ml-6">
+                    Save the new binary path first, then re-probe for 1M context support.
+                  </p>
+                )}
+                {formData.oneMillionContextEnabled &&
+                  formData.autoCompactThreshold !== '' &&
+                  Number(formData.autoCompactThreshold) > 50 && (
+                    <div className="ml-6 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-2 dark:border-amber-800 dark:bg-amber-950">
+                      <AlertCircle className="h-4 w-4 text-amber-600 dark:text-amber-500 mt-0.5 flex-shrink-0" />
+                      <p className="text-xs text-amber-800 dark:text-amber-200">
+                        Threshold above 50% with 1M context may degrade output quality. Consider
+                        lowering it to 50%.
+                      </p>
+                    </div>
+                  )}
+              </div>
+            )}
 
             {(editingProvider?.name ?? providerType).toLowerCase() === 'claude' && (
               <div>
@@ -929,11 +1129,13 @@ export function ProvidersPage() {
                   setFormData({
                     binPath: getDefaultBinPathForType(initialType),
                     autoCompactThreshold: '',
+                    oneMillionContextEnabled: false,
                   });
                   setProviderType(initialType);
                   setBinPathTouched(false);
                   setFormError(null);
                   setFormErrorField(null);
+                  setProbeStatus('idle');
                 }}
               >
                 Cancel

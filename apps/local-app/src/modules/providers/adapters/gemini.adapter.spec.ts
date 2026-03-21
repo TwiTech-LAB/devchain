@@ -13,6 +13,14 @@ describe('GeminiAdapter', () => {
     });
   });
 
+  describe('launchInitialPromptBehavior', () => {
+    it('exposes preKeys with Enter and preDelayMs of 5000', () => {
+      expect(adapter.launchInitialPromptBehavior).toBeDefined();
+      expect(adapter.launchInitialPromptBehavior.preKeys).toEqual(['Enter']);
+      expect(adapter.launchInitialPromptBehavior.preDelayMs).toBe(5000);
+    });
+  });
+
   describe('addMcpServer', () => {
     it('builds command with default alias', () => {
       const args = adapter.addMcpServer({

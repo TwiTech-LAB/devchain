@@ -21,6 +21,8 @@ import {
   type FamilyAlternativesResult,
   type ProjectSettingsTemplateInput,
 } from './profile-mapping.helpers';
+import type { ProbeOutcome } from '../../providers/utils/probe-1m';
+import { importProviderSettings } from './project-import';
 
 const logger = createLogger('TemplateLoader');
 
@@ -79,6 +81,7 @@ interface CreateFromTemplateDeps {
       configLookupMap: Map<string, string>;
     },
   ) => Promise<{ applied: number; warnings: string[] }>;
+  probe1m?: (binPath: string) => Promise<ProbeOutcome>;
 }
 
 type FamilyMappingResolution =
@@ -282,6 +285,8 @@ export async function createFromTemplateWithHelper(
     result.project.id,
     resolvedPayload.subscribers,
   );
+
+  await importProviderSettings(resolvedPayload, deps.storage, { probe1m: deps.probe1m });
 
   await applyTemplateMetadata(
     result.project.id,

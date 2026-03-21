@@ -552,7 +552,7 @@ export function getToolDefinitions() {
     {
       name: 'devchain_send_message',
       description:
-        'Send a chat message. Sender is derived from session agent. Provide threadId to reply in a thread, or recipientAgentNames to create a new agent-initiated group.',
+        'Send a chat message to other agents. Sender is derived from session agent. Provide threadId to reply in a thread, or recipientAgentNames to create a new agent-initiated group.',
       inputSchema: {
         type: 'object',
         required: ['sessionId', 'message'],
@@ -571,11 +571,6 @@ export function getToolDefinitions() {
             items: { type: 'string' },
             description:
               'Agent names (case-insensitive) to receive the message. Required only when creating a new thread (no threadId).',
-          },
-          recipient: {
-            type: 'string',
-            enum: ['user', 'agents'],
-            description: 'Set to "user" to DM the user without a threadId.',
           },
           message: { type: 'string', description: 'Message content to deliver.' },
         },

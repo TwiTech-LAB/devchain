@@ -210,6 +210,7 @@ export const ExportSchema = z
         z.object({
           name: z.string().min(1),
           autoCompactThreshold: z.number().int().min(1).max(100).nullable().optional(),
+          oneMillionContextEnabled: z.boolean().optional(),
         }),
       )
       .optional(),

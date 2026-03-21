@@ -11,6 +11,7 @@ import { StorageModule } from '../storage/storage.module';
 import { SettingsModule } from '../settings/settings.module';
 import { EventsDomainModule } from '../events/events-domain.module';
 import { HooksModule } from '../hooks/hooks.module';
+import { ProviderAdaptersModule } from '../providers/adapters/provider-adapters.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { HooksModule } from '../hooks/hooks.module';
     forwardRef(() => EventsDomainModule),
     forwardRef(() => SettingsModule),
     HooksModule,
+    ProviderAdaptersModule,
   ],
   providers: [
     SessionsService,

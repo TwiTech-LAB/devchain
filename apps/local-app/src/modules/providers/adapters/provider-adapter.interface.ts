@@ -16,6 +16,19 @@ export interface McpServerEntry {
 }
 
 /**
+ * Optional launch-time prompt handshake metadata.
+ * Providers that surface a startup confirmation or question before the first
+ * real prompt can declare pre-keys and an optional delay so the sessions
+ * service can dismiss the prompt before injecting user content.
+ */
+export interface LaunchInitialPromptBehavior {
+  /** Keys to send before the initial prompt (e.g., Enter to confirm a startup prompt). */
+  preKeys?: string[];
+  /** Milliseconds to wait after sending preKeys before injecting the prompt. */
+  preDelayMs?: number;
+}
+
+/**
  * Options for adding an MCP server
  */
 export interface AddMcpServerOptions {
@@ -43,6 +56,13 @@ export interface ProviderAdapter {
    * Defaults to 'cli' if not specified.
    */
   readonly mcpMode?: 'cli' | 'project_config';
+
+  /**
+   * Optional launch-time prompt handshake metadata.
+   * When set, the sessions service uses this to dismiss provider startup
+   * dialogs before injecting the initial prompt.
+   */
+  readonly launchInitialPromptBehavior?: LaunchInitialPromptBehavior;
 
   /**
    * Build command arguments for adding an MCP server

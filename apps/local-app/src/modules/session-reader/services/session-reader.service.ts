@@ -5,6 +5,7 @@ import { SessionsService } from '../../sessions/services/sessions.service';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
 import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
 import { buildChunks } from '../builders/chunk-builder';
+import { detectClaudeModelFamily } from '../../sessions/utils/profile-options';
 import type {
   UnifiedSession,
   UnifiedMetrics,
@@ -63,6 +64,9 @@ const LARGE_SESSION_MESSAGE_THRESHOLD = 1_000;
 
 /** Maximum number of cached transcript entries */
 const CACHE_MAX_ENTRIES = 20;
+
+/** Context window override for Claude providers with 1M context enabled */
+const CLAUDE_1M_CONTEXT_WINDOW_TOKENS = 1_000_000;
 
 interface TranscriptCacheEntry {
   session: UnifiedSession;
@@ -253,9 +257,21 @@ export class SessionReaderService {
       return cached.session;
     }
 
-    const { adapter, transcriptPath } = await this.resolveAdapter(sessionId);
+    const { adapter, transcriptPath, providerName, oneMillionContextEnabled } =
+      await this.resolveAdapter(sessionId);
     const session = await adapter.parseFullSession(transcriptPath);
+
     session.chunks = buildChunks(session.messages);
+
+    // Claude-only: override context window when 1M context is enabled and model is opus.
+    // Only opus is rewritten to [1m] at launch; sonnet/haiku run at default context.
+    if (
+      providerName === 'claude' &&
+      oneMillionContextEnabled &&
+      detectClaudeModelFamily(session.metrics.primaryModel) === 'opus'
+    ) {
+      session.metrics.contextWindowTokens = CLAUDE_1M_CONTEXT_WINDOW_TOKENS;
+    }
 
     // Evict oldest entry if at capacity
     if (this.transcriptCache.size >= CACHE_MAX_ENTRIES && !this.transcriptCache.has(sessionId)) {
@@ -396,6 +412,7 @@ export class SessionReaderService {
     adapter: ReturnType<SessionReaderAdapterFactory['getAdapter']> & object;
     transcriptPath: string;
     providerName: string;
+    oneMillionContextEnabled: boolean;
   }> {
     // 1. Look up session
     const session = this.sessionsService.getSession(sessionId);
@@ -414,6 +431,7 @@ export class SessionReaderService {
     }
 
     let providerName: string;
+    let oneMillionContextEnabled = false;
     try {
       const agent = await this.storage.getAgent(session.agentId);
       if (!agent.providerConfigId) {
@@ -424,6 +442,7 @@ export class SessionReaderService {
       const config = await this.storage.getProfileProviderConfig(agent.providerConfigId);
       const provider = await this.storage.getProvider(config.providerId);
       providerName = provider.name.toLowerCase();
+      oneMillionContextEnabled = !!provider.oneMillionContextEnabled;
     } catch (error) {
       if (error instanceof ValidationError) throw error;
       throw new ValidationError('Failed to resolve provider for session', {
@@ -452,6 +471,6 @@ export class SessionReaderService {
       'Resolved adapter for session transcript',
     );
 
-    return { adapter, transcriptPath: validatedPath, providerName };
+    return { adapter, transcriptPath: validatedPath, providerName, oneMillionContextEnabled };
   }
 }

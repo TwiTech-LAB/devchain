@@ -506,11 +506,26 @@ export class TmuxService implements OnModuleDestroy {
   async pasteAndSubmit(
     sessionName: string,
     text: string,
-    options?: { bracketed?: boolean; submitKeys?: string[]; delayMs?: number },
+    options?: {
+      bracketed?: boolean;
+      submitKeys?: string[];
+      delayMs?: number;
+      preKeys?: string[];
+      preDelayMs?: number;
+    },
   ): Promise<void> {
     const bracketed = options?.bracketed ?? true;
     const delayMs = options?.delayMs ?? 250;
     const submitKeys = options?.submitKeys ?? ['Enter'];
+
+    // Optional pre-key handshake: send keys before paste (e.g., Enter to confirm a startup prompt)
+    if (options?.preKeys?.length) {
+      await this.sendKeys(sessionName, options.preKeys);
+      const preDelay = options.preDelayMs ?? 0;
+      if (preDelay > 0) {
+        await new Promise((r) => setTimeout(r, preDelay));
+      }
+    }
 
     await this.pasteText(sessionName, text, { bracketed });
     await new Promise((r) => setTimeout(r, delayMs));

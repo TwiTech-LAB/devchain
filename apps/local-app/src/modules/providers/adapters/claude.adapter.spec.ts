@@ -13,6 +13,14 @@ describe('ClaudeAdapter', () => {
     });
   });
 
+  describe('launchInitialPromptBehavior', () => {
+    it('exposes preKeys with Enter and preDelayMs of 2000', () => {
+      expect(adapter.launchInitialPromptBehavior).toBeDefined();
+      expect(adapter.launchInitialPromptBehavior.preKeys).toEqual(['Enter']);
+      expect(adapter.launchInitialPromptBehavior.preDelayMs).toBe(2000);
+    });
+  });
+
   describe('addMcpServer', () => {
     it('builds command with default alias', () => {
       const args = adapter.addMcpServer({

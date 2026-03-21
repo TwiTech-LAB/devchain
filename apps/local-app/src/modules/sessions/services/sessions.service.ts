@@ -17,6 +17,7 @@ import {
   parseProfileOptions,
   ProfileOptionsError,
   injectModelOverride,
+  rewriteModelTo1m,
 } from '../utils/profile-options';
 import { buildSessionCommand, EnvBuilderError } from '../utils/env-builder';
 import { buildInitialPromptContext, renderInitialPromptTemplate } from '../utils/template-renderer';
@@ -25,6 +26,8 @@ import { EventsService } from '../../events/services/events.service';
 import { TerminalGateway } from '../../terminal/gateways/terminal.gateway';
 import { SessionCoordinatorService } from './session-coordinator.service';
 import { HooksConfigService } from '../../hooks/services/hooks-config.service';
+import { ProviderAdapterFactory } from '../../providers/adapters/provider-adapter.factory';
+import { LaunchInitialPromptBehavior } from '../../providers/adapters/provider-adapter.interface';
 import { getEnvConfig } from '../../../common/config/env.config';
 
 const logger = createLogger('SessionsService');
@@ -91,6 +94,7 @@ export class SessionsService {
     private readonly mcpEnsureService: ProviderMcpEnsureService,
     private readonly sessionCoordinator: SessionCoordinatorService,
     private readonly hooksConfigService: HooksConfigService,
+    private readonly providerAdapterFactory: ProviderAdapterFactory,
     private readonly moduleRef: ModuleRef,
   ) {
     // Extract raw sqlite instance
@@ -406,8 +410,18 @@ export class SessionsService {
           devchainEnv.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = String(provider.autoCompactThreshold);
         }
 
+        // 1M context: rewrite --model value to [1m] alias variant at launch time.
+        // This is a transient rewrite — stored modelOverride and transcripts use canonical names.
+        if (provider.oneMillionContextEnabled) {
+          optionArgs = rewriteModelTo1m(optionArgs);
+        }
+
         // Merge: existing provider env vars take precedence (no clobber)
         envVars = { ...devchainEnv, ...envVars };
+
+        // Sanitize stale CLAUDE_CODE_DISABLE_1M_CONTEXT from provider-config env leftovers.
+        // 1M context is now controlled via model alias rewriting, not env vars.
+        delete envVars.CLAUDE_CODE_DISABLE_1M_CONTEXT;
       }
 
       // Build command with env vars (if any) using env command prefix
@@ -550,6 +564,28 @@ export class SessionsService {
         await new Promise((resolve) => setTimeout(resolve, remaining));
       }
 
+      // Resolve provider adapter for launch handshake metadata
+      let launchHandshake: LaunchInitialPromptBehavior | undefined;
+      try {
+        const adapter = this.providerAdapterFactory.getAdapter(provider.name);
+        launchHandshake = adapter.launchInitialPromptBehavior;
+        logger.debug(
+          {
+            sessionId,
+            providerName: provider.name,
+            hasHandshake: !!launchHandshake,
+            preKeys: launchHandshake?.preKeys,
+            preDelayMs: launchHandshake?.preDelayMs,
+          },
+          'Resolved provider launch handshake metadata',
+        );
+      } catch (adapterError) {
+        logger.debug(
+          { sessionId, providerName: provider.name, error: String(adapterError) },
+          'No adapter found for provider, skipping launch handshake',
+        );
+      }
+
       // Render and inject initial.md (non-fatal — session is already running)
       try {
         await this.renderAndPasteInitialPrompt({
@@ -561,6 +597,7 @@ export class SessionsService {
           epic,
           profile,
           provider,
+          launchHandshake,
         });
       } catch (promptError) {
         logger.warn(
@@ -1024,8 +1061,19 @@ export class SessionsService {
     epic: { title: string | null } | null;
     profile: { name: string };
     provider: { name: string };
+    launchHandshake?: LaunchInitialPromptBehavior;
   }): Promise<void> {
-    const { sessionId, tmuxSessionName, agentId, project, agent, epic, profile, provider } = params;
+    const {
+      sessionId,
+      tmuxSessionName,
+      agentId,
+      project,
+      agent,
+      epic,
+      profile,
+      provider,
+      launchHandshake,
+    } = params;
 
     const context = buildInitialPromptContext({
       agent,
@@ -1115,9 +1163,18 @@ export class SessionsService {
       bracketed: true,
       submitKeys: ['Enter'],
       delayMs: 250,
+      preKeys: launchHandshake?.preKeys,
+      preDelayMs: launchHandshake?.preDelayMs,
     });
     logger.debug(
-      { sessionId, provider: provider.name, submitKeys: ['Enter'], bracketedPaste: true },
+      {
+        sessionId,
+        provider: provider.name,
+        submitKeys: ['Enter'],
+        bracketedPaste: true,
+        preKeys: launchHandshake?.preKeys,
+        preDelayMs: launchHandshake?.preDelayMs,
+      },
       'Submitted initial prompt',
     );
     logger.info({ sessionId, promptTitle }, 'Initial session prompt pasted');

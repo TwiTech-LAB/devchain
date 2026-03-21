@@ -32,6 +32,8 @@ import {
   disableClaudeAutoCompact,
   enableClaudeAutoCompact,
 } from '../../sessions/utils/claude-config';
+import { ProbeProofService } from '../services/probe-proof.service';
+import { probe1mSupport } from '../utils/probe-1m';
 
 const logger = createLogger('ProvidersController');
 const execFileAsync = promisify(execFile);
@@ -43,6 +45,7 @@ const CreateProviderSchema = z.object({
   mcpEndpoint: z.string().nullable().optional(),
   mcpRegisteredAt: z.string().nullable().optional(),
   autoCompactThreshold: z.number().int().min(1).max(100).nullable().optional(),
+  oneMillionContextEnabled: z.boolean().optional(),
 });
 
 const UpdateProviderSchema = z.object({
@@ -52,6 +55,7 @@ const UpdateProviderSchema = z.object({
   mcpEndpoint: z.string().nullable().optional(),
   mcpRegisteredAt: z.string().nullable().optional(),
   autoCompactThreshold: z.number().int().min(1).max(100).nullable().optional(),
+  oneMillionContextEnabled: z.boolean().optional(),
 });
 
 const ConfigureMcpSchema = z.object({
@@ -74,6 +78,7 @@ export class ProvidersController {
     private readonly preflight: PreflightService,
     private readonly adapterFactory: ProviderAdapterFactory,
     private readonly mcpEnsureService: ProviderMcpEnsureService,
+    private readonly probeProofService: ProbeProofService,
   ) {}
 
   @Get()
@@ -94,6 +99,13 @@ export class ProvidersController {
     const parsed = CreateProviderSchema.parse(body);
     const normalizedPath = await this.normalizeBinPath(parsed.binPath ?? null);
 
+    if (parsed.oneMillionContextEnabled) {
+      throw new BadRequestException({
+        message: 'Cannot enable 1M context on create — save the provider first, then run the probe',
+        field: 'oneMillionContextEnabled',
+      });
+    }
+
     const payload: CreateProvider = {
       name: parsed.name.toLowerCase(),
       binPath: normalizedPath,
@@ -101,6 +113,7 @@ export class ProvidersController {
       mcpEndpoint: parsed.mcpEndpoint ?? null,
       mcpRegisteredAt: null,
       autoCompactThreshold: parsed.autoCompactThreshold,
+      oneMillionContextEnabled: parsed.oneMillionContextEnabled,
     };
 
     // Do not auto-register on create; use Configure MCP action instead
@@ -119,6 +132,21 @@ export class ProvidersController {
     }
     if (parsed.binPath !== undefined) {
       payload.binPath = await this.normalizeBinPath(parsed.binPath);
+
+      // Auto-disable 1M when binPath changes on an already-enabled Claude provider
+      // unless the new binPath has valid proof
+      const existing = await this.storage.getProvider(id);
+      if (
+        existing.oneMillionContextEnabled &&
+        existing.name.toLowerCase() === 'claude' &&
+        payload.binPath !== existing.binPath &&
+        (!payload.binPath || !this.probeProofService.hasValidProof(id, payload.binPath))
+      ) {
+        payload.oneMillionContextEnabled = false;
+        payload.autoCompactThreshold = 95;
+        this.probeProofService.clearProof(id);
+        logger.info({ id }, 'Auto-disabled 1M context: binPath changed without valid proof');
+      }
     }
     if (parsed.mcpEndpoint !== undefined) {
       payload.mcpEndpoint = parsed.mcpEndpoint ?? null;
@@ -138,6 +166,33 @@ export class ProvidersController {
 
     if (parsed.autoCompactThreshold !== undefined) {
       payload.autoCompactThreshold = parsed.autoCompactThreshold;
+    }
+
+    if (parsed.oneMillionContextEnabled !== undefined) {
+      if (parsed.oneMillionContextEnabled) {
+        // Determine the effective binPath: updated value or existing from storage
+        const existing = await this.storage.getProvider(id);
+        const effectiveBinPath = payload.binPath !== undefined ? payload.binPath : existing.binPath;
+
+        if (!effectiveBinPath || !this.probeProofService.hasValidProof(id, effectiveBinPath)) {
+          throw new BadRequestException({
+            message:
+              'Cannot enable 1M context without a confirmed support probe for the current binary',
+            field: 'oneMillionContextEnabled',
+          });
+        }
+
+        // Default threshold to 50 (1M-optimized) when caller doesn't explicitly set one
+        if (parsed.autoCompactThreshold === undefined) {
+          payload.autoCompactThreshold = 50;
+        }
+      } else {
+        // Disabling 1M: default threshold to 95 (safe fallback) when caller doesn't explicitly set one
+        if (parsed.autoCompactThreshold === undefined) {
+          payload.autoCompactThreshold = 95;
+        }
+      }
+      payload.oneMillionContextEnabled = parsed.oneMillionContextEnabled;
     }
 
     const result = await this.storage.updateProvider(id, payload);
@@ -252,6 +307,29 @@ export class ProvidersController {
     }
 
     return { success: true };
+  }
+
+  @Post(':id/1m-context/probe')
+  async probe1mContext(@Param('id') id: string) {
+    logger.info({ id }, 'POST /api/providers/:id/1m-context/probe');
+    const provider = await this.storage.getProvider(id);
+
+    if (provider.name.toLowerCase() !== 'claude') {
+      throw new BadRequestException('1M context probe is only available for Claude providers');
+    }
+
+    if (!provider.binPath) {
+      throw new BadRequestException({
+        message: 'Claude binary path is required for 1M context probe',
+        field: 'binPath',
+      });
+    }
+
+    const outcome = await probe1mSupport(provider.binPath, 30_000);
+    if (outcome.supported) {
+      this.probeProofService.recordProof(id, provider.binPath);
+    }
+    return outcome;
   }
 
   @Post(':id/mcp')

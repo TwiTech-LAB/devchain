@@ -661,6 +661,16 @@ describe('ClaudeJsonlParser', () => {
         cleanup(filePath);
       }
     });
+
+    it('should use default 200k fallback when no pricing service is provided', async () => {
+      const filePath = writeTempJsonl([userEntry, assistantEntry]);
+      try {
+        const result = await parseClaudeJsonl(filePath);
+        expect(result.metrics.contextWindowTokens).toBe(200_000);
+      } finally {
+        cleanup(filePath);
+      }
+    });
   });
 
   describe('error handling', () => {

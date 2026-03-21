@@ -290,5 +290,10 @@ describe('PricingService', () => {
         return;
       }
     });
+
+    it('should return 200k default context window for base claude-opus-4-6', () => {
+      const contextWindow = service.getContextWindowSize('claude-opus-4-6');
+      expect(contextWindow).toBe(200_000);
+    });
   });
 });

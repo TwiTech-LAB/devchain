@@ -788,6 +788,123 @@ describe('SessionReaderService', () => {
     });
   });
 
+  describe('Claude 1M context override', () => {
+    it('should override contextWindowTokens to 1M when opus model and oneMillionContextEnabled', async () => {
+      setupResolveChain();
+      mockStorage.getProvider.mockResolvedValue({
+        id: 'provider-1',
+        name: 'claude',
+        oneMillionContextEnabled: true,
+      });
+      const session = makeSession();
+      session.metrics.primaryModel = 'claude-opus-4-6';
+      mockAdapter.parseFullSession.mockResolvedValue(session);
+
+      const result = await service.getTranscript('sess-1');
+
+      expect(result.metrics.contextWindowTokens).toBe(1_000_000);
+    });
+
+    it('should not override contextWindowTokens when Claude provider has oneMillionContextEnabled=false', async () => {
+      setupResolveChain();
+      mockStorage.getProvider.mockResolvedValue({
+        id: 'provider-1',
+        name: 'claude',
+        oneMillionContextEnabled: false,
+      });
+      const session = makeSession();
+      mockAdapter.parseFullSession.mockResolvedValue(session);
+
+      const result = await service.getTranscript('sess-1');
+
+      expect(result.metrics.contextWindowTokens).toBe(200_000);
+    });
+
+    it('should not override contextWindowTokens for non-Claude providers', async () => {
+      setupResolveChain();
+      mockStorage.getProvider.mockResolvedValue({
+        id: 'provider-1',
+        name: 'codex',
+        oneMillionContextEnabled: true,
+      });
+      (mockAdapterFactory.getAdapter as jest.Mock).mockReturnValue(mockAdapter);
+      const session = makeSession();
+      mockAdapter.parseFullSession.mockResolvedValue(session);
+
+      const result = await service.getTranscript('sess-1');
+
+      expect(result.metrics.contextWindowTokens).toBe(200_000);
+    });
+
+    it('should cache the overridden value so subsequent reads return 1M without re-parsing', async () => {
+      setupResolveChain();
+      mockStorage.getProvider.mockResolvedValue({
+        id: 'provider-1',
+        name: 'claude',
+        oneMillionContextEnabled: true,
+      });
+      const session = makeSession();
+      session.metrics.primaryModel = 'claude-opus-4-6';
+      mockAdapter.parseFullSession.mockResolvedValue(session);
+
+      const result1 = await service.getTranscript('sess-1');
+      const result2 = await service.getTranscript('sess-1');
+
+      expect(result1.metrics.contextWindowTokens).toBe(1_000_000);
+      expect(result2.metrics.contextWindowTokens).toBe(1_000_000);
+      expect(mockAdapter.parseFullSession).toHaveBeenCalledTimes(1);
+    });
+
+    it('should not override primaryModel even when 1M context is enabled', async () => {
+      setupResolveChain();
+      mockStorage.getProvider.mockResolvedValue({
+        id: 'provider-1',
+        name: 'claude',
+        oneMillionContextEnabled: true,
+      });
+      const session = makeSession();
+      session.metrics.primaryModel = 'claude-opus-4-6';
+      mockAdapter.parseFullSession.mockResolvedValue(session);
+
+      const result = await service.getTranscript('sess-1');
+
+      expect(result.metrics.primaryModel).toBe('claude-opus-4-6');
+      expect(result.metrics.contextWindowTokens).toBe(1_000_000);
+    });
+
+    it('should not override contextWindowTokens for sonnet model even with 1M enabled', async () => {
+      setupResolveChain();
+      mockStorage.getProvider.mockResolvedValue({
+        id: 'provider-1',
+        name: 'claude',
+        oneMillionContextEnabled: true,
+      });
+      const session = makeSession();
+      // default fixture is claude-sonnet-4-6
+      mockAdapter.parseFullSession.mockResolvedValue(session);
+
+      const result = await service.getTranscript('sess-1');
+
+      expect(result.metrics.contextWindowTokens).toBe(200_000);
+    });
+
+    it('should not override contextWindowTokens for haiku model even with 1M enabled', async () => {
+      setupResolveChain();
+      mockStorage.getProvider.mockResolvedValue({
+        id: 'provider-1',
+        name: 'claude',
+        oneMillionContextEnabled: true,
+      });
+      const session = makeSession();
+      session.metrics.primaryModel = 'claude-haiku-4-5';
+      mockAdapter.parseFullSession.mockResolvedValue(session);
+
+      const result = await service.getTranscript('sess-1');
+
+      expect(result.metrics.contextWindowTokens).toBe(200_000);
+    });
+  });
+
   describe('transcript cache', () => {
     it('should not re-parse on second call within TTL (cache hit)', async () => {
       setupResolveChain();

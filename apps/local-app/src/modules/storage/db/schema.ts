@@ -54,6 +54,9 @@ export const providers = sqliteTable('providers', {
   mcpEndpoint: text('mcp_endpoint'),
   mcpRegisteredAt: text('mcp_registered_at'),
   autoCompactThreshold: integer('auto_compact_threshold'), // CLAUDE_AUTOCOMPACT_PCT_OVERRIDE value (1-100), null = don't inject
+  oneMillionContextEnabled: integer('one_million_context_enabled', { mode: 'boolean' })
+    .notNull()
+    .default(false),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });

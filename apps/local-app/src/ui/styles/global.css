@@ -61,6 +61,19 @@
     --font-mono: 'Ubuntu Mono', 'JetBrains Mono', 'Fira Code', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'Liberation Mono', 'Courier New', monospace;
   }
 
+  /* react-diff-view dark mode — html.dark beats library :root specificity */
+  html.dark {
+    --diff-gutter-insert-background-color: rgba(46, 160, 67, 0.20);
+    --diff-gutter-delete-background-color: rgba(248, 81, 73, 0.20);
+    --diff-code-insert-background-color: rgba(46, 160, 67, 0.10);
+    --diff-code-delete-background-color: rgba(248, 81, 73, 0.10);
+    --diff-code-insert-edit-background-color: rgba(46, 160, 67, 0.35);
+    --diff-code-delete-edit-background-color: rgba(248, 81, 73, 0.35);
+    --diff-gutter-selected-background-color: rgba(180, 160, 40, 0.20);
+    --diff-code-selected-background-color: rgba(180, 160, 40, 0.10);
+    --diff-omit-gutter-line-color: rgba(248, 81, 73, 0.60);
+  }
+
   /* Ocean theme: calm, refined palette with depth */
   .theme-ocean {
     --background: 210 25% 95%; /* soft gray-blue, calm and easy on eyes */

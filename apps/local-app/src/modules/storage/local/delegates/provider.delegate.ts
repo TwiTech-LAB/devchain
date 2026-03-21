@@ -45,6 +45,7 @@ export class ProviderStorageDelegate extends BaseStorageDelegate {
       mcpEndpoint: data.mcpEndpoint ?? null,
       mcpRegisteredAt: data.mcpRegisteredAt ?? null,
       autoCompactThreshold,
+      oneMillionContextEnabled: data.oneMillionContextEnabled ?? false,
       createdAt: now,
       updatedAt: now,
     };
@@ -57,6 +58,7 @@ export class ProviderStorageDelegate extends BaseStorageDelegate {
       mcpEndpoint: provider.mcpEndpoint,
       mcpRegisteredAt: provider.mcpRegisteredAt,
       autoCompactThreshold: provider.autoCompactThreshold,
+      oneMillionContextEnabled: provider.oneMillionContextEnabled,
       createdAt: provider.createdAt,
       updatedAt: provider.updatedAt,
     });

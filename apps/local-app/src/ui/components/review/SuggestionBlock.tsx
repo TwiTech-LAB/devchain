@@ -113,7 +113,7 @@ export function SuggestionBlock({
       data-testid="suggestion-block"
     >
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-1.5 bg-blue-50 border-b">
+      <div className="flex items-center justify-between px-3 py-1.5 bg-blue-50 dark:bg-blue-950/30 border-b">
         <div className="flex items-center gap-2">
           <Badge variant="secondary" className="text-xs bg-blue-100 text-blue-700">
             Suggestion
@@ -145,22 +145,22 @@ export function SuggestionBlock({
       <div className="text-sm font-mono">
         {/* Original code (if provided) */}
         {originalCode && (
-          <div className="bg-red-50 border-l-4 border-red-300">
+          <div className="bg-red-50 dark:bg-red-950/30 border-l-4 border-red-300 dark:border-red-700">
             {originalCode.split('\n').map((line, i) => (
               <div key={`old-${i}`} className="px-3 py-0.5 flex">
-                <span className="text-red-500 mr-2 select-none">-</span>
-                <span className="text-red-700">{line || ' '}</span>
+                <span className="text-red-500 dark:text-red-400 mr-2 select-none">-</span>
+                <span className="text-red-700 dark:text-red-300">{line || ' '}</span>
               </div>
             ))}
           </div>
         )}
 
         {/* Suggested code */}
-        <div className="bg-green-50 border-l-4 border-green-300">
+        <div className="bg-green-50 dark:bg-green-950/30 border-l-4 border-green-300 dark:border-green-700">
           {suggestedCode.split('\n').map((line, i) => (
             <div key={`new-${i}`} className="px-3 py-0.5 flex">
-              <span className="text-green-500 mr-2 select-none">+</span>
-              <span className="text-green-700">{line || ' '}</span>
+              <span className="text-green-500 dark:text-green-400 mr-2 select-none">+</span>
+              <span className="text-green-700 dark:text-green-300">{line || ' '}</span>
             </div>
           ))}
         </div>
@@ -193,8 +193,8 @@ export function SuggestionBlock({
 
       {/* Applied indicator */}
       {isApplied && (
-        <div className="px-3 py-2 bg-green-50 border-t">
-          <span className="text-xs text-green-700 flex items-center gap-1">
+        <div className="px-3 py-2 bg-green-50 dark:bg-green-950/30 border-t">
+          <span className="text-xs text-green-700 dark:text-green-300 flex items-center gap-1">
             <Check className="h-3 w-3" />
             Suggestion applied
           </span>

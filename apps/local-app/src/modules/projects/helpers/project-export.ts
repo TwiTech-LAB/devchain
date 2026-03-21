@@ -390,13 +390,18 @@ function buildExportSubscribers(subscribersRes: ExportState['subscribersRes']) {
 function buildProviderSettings(
   providersMap: Map<string, Awaited<ReturnType<StorageService['listProvidersByIds']>>[number]>,
 ) {
-  const providerSettings: Array<{ name: string; autoCompactThreshold: number | null }> = [];
+  const providerSettings: Array<{
+    name: string;
+    autoCompactThreshold: number | null;
+    oneMillionContextEnabled?: boolean;
+  }> = [];
 
   for (const provider of providersMap.values()) {
-    if (provider.autoCompactThreshold != null) {
+    if (provider.autoCompactThreshold != null || provider.oneMillionContextEnabled) {
       providerSettings.push({
         name: provider.name,
-        autoCompactThreshold: provider.autoCompactThreshold,
+        autoCompactThreshold: provider.autoCompactThreshold ?? null,
+        ...(provider.oneMillionContextEnabled && { oneMillionContextEnabled: true }),
       });
     }
   }

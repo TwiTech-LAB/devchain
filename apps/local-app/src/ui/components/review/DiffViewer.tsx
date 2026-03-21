@@ -942,7 +942,9 @@ export function DiffViewer({
       return (
         <div className="flex items-center gap-0.5">
           {/* Line number */}
-          <span className={cn(isInSelection && 'bg-blue-100')}>{renderDefault()}</span>
+          <span className={cn(isInSelection && 'bg-blue-100 dark:bg-blue-900/40')}>
+            {renderDefault()}
+          </span>
 
           {/* Comment indicator or add button */}
           <div className="w-5 flex items-center justify-center">
@@ -1034,7 +1036,7 @@ export function DiffViewer({
       if (!lineNumber) return '';
 
       if (lineNumber >= lineSelection.lineStart && lineNumber <= lineSelection.lineEnd) {
-        return 'bg-blue-50';
+        return 'bg-blue-50 dark:bg-blue-900/30';
       }
 
       return '';
@@ -1084,14 +1086,14 @@ export function DiffViewer({
         <div className="flex items-center gap-1 ml-2" role="group" aria-label="File statistics">
           <Badge
             variant="secondary"
-            className="text-xs bg-green-100 text-green-700"
+            className="text-xs bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300"
             aria-label={`${additions} lines added`}
           >
             +{additions}
           </Badge>
           <Badge
             variant="secondary"
-            className="text-xs bg-red-100 text-red-700"
+            className="text-xs bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300"
             aria-label={`${deletions} lines removed`}
           >
             -{deletions}

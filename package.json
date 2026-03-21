@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.11.2",
+  "version": "0.11.3",
   "description": "AI driven development platform",
   "homepage": "https://devchain.twitechlab.com/",
   "repository": {
@@ -8,6 +8,13 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.11.3": [
+      "Claude 1M context support via model alias rewriting (Opus only) with auto-probe on import",
+      "GPT 5.4 support",
+      "Fixed code review diff in dark theme",
+      "Template updates",
+      "Updated session reader pricing data"
+    ],
     "0.11.2": [
       "Fix worktree project queries and selection gated on runtime resolution"
     ],

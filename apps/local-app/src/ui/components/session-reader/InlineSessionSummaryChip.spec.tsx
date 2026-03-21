@@ -523,6 +523,22 @@ describe('InlineSessionSummaryChip', () => {
     expect(progressBar).toHaveAttribute('aria-valuenow', '100');
   });
 
+  it('should render correct percentage with 1M context window', () => {
+    render(
+      <InlineSessionSummaryChip
+        {...defaultProps}
+        metrics={makeMetrics({ totalContextTokens: 100_000, contextWindowTokens: 1_000_000 })}
+      />,
+    );
+
+    const chip = screen.getByRole('button');
+    // 100k / 1M = 10%
+    expect(chip).toHaveAttribute('aria-label', expect.stringContaining('context window 10% used'));
+
+    const progressBar = screen.getByRole('progressbar');
+    expect(progressBar).toHaveAttribute('aria-valuenow', '10');
+  });
+
   it('should show tooltip on hover when context menu is closed', async () => {
     render(<InlineSessionSummaryChip {...defaultProps} />);
     const chip = screen.getByRole('button');

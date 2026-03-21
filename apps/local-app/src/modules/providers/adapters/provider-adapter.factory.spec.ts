@@ -50,6 +50,32 @@ describe('ProviderAdapterFactory', () => {
       expect(adapter.providerName).toBe('opencode');
     });
 
+    it('Claude adapter exposes launchInitialPromptBehavior with preKeys and preDelayMs', () => {
+      const adapter = factory.getAdapter('claude');
+      expect(adapter.launchInitialPromptBehavior).toBeDefined();
+      expect(adapter.launchInitialPromptBehavior!.preKeys).toEqual(['Enter']);
+      expect(adapter.launchInitialPromptBehavior!.preDelayMs).toBe(2000);
+    });
+
+    it('Codex adapter exposes launchInitialPromptBehavior with preKeys and preDelayMs', () => {
+      const adapter = factory.getAdapter('codex');
+      expect(adapter.launchInitialPromptBehavior).toBeDefined();
+      expect(adapter.launchInitialPromptBehavior!.preKeys).toEqual(['Enter']);
+      expect(adapter.launchInitialPromptBehavior!.preDelayMs).toBe(2000);
+    });
+
+    it('Gemini adapter exposes launchInitialPromptBehavior with preKeys and preDelayMs', () => {
+      const adapter = factory.getAdapter('gemini');
+      expect(adapter.launchInitialPromptBehavior).toBeDefined();
+      expect(adapter.launchInitialPromptBehavior!.preKeys).toEqual(['Enter']);
+      expect(adapter.launchInitialPromptBehavior!.preDelayMs).toBe(5000);
+    });
+
+    it('OpenCode adapter does not define launchInitialPromptBehavior', () => {
+      const adapter = factory.getAdapter('opencode');
+      expect(adapter.launchInitialPromptBehavior).toBeUndefined();
+    });
+
     it('returns the exact injected adapter instances (DI)', () => {
       expect(factory.getAdapter('claude')).toBe(claudeAdapter);
       expect(factory.getAdapter('codex')).toBe(codexAdapter);

@@ -175,6 +175,28 @@ describe('ExportSchema', () => {
       const result = ExportSchema.safeParse(template);
       expect(result.success).toBe(true);
     });
+
+    it('should accept providerSettings with oneMillionContextEnabled', () => {
+      const template = {
+        ...baseTemplate,
+        providerSettings: [
+          { name: 'claude', autoCompactThreshold: 50, oneMillionContextEnabled: true },
+        ],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(true);
+      expect(result.data!.providerSettings![0].oneMillionContextEnabled).toBe(true);
+    });
+
+    it('should accept providerSettings without oneMillionContextEnabled (backward compatible)', () => {
+      const template = {
+        ...baseTemplate,
+        providerSettings: [{ name: 'claude', autoCompactThreshold: 10 }],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(true);
+      expect(result.data!.providerSettings![0].oneMillionContextEnabled).toBeUndefined();
+    });
   });
 
   describe('agents.modelOverride', () => {

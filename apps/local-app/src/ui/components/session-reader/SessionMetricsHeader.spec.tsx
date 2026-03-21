@@ -326,4 +326,20 @@ describe('SessionMetricsHeader', () => {
     fireEvent.click(screen.getByTestId('phase-breakdown-trigger'));
     expect(screen.queryByTestId('phase-link-1')).not.toBeInTheDocument();
   });
+
+  it('uses 1M context window for percentage calculation when contextWindowTokens is 1000000', () => {
+    render(
+      <SessionMetricsHeader
+        metrics={makeMetrics({
+          totalContextTokens: 100_000,
+          contextWindowTokens: 1_000_000,
+        })}
+      />,
+    );
+
+    const progressBar = screen.getByRole('progressbar');
+    // 100k / 1M = 10%
+    expect(progressBar).toHaveAttribute('aria-label', 'Context window 10% used');
+    expect(progressBar).toHaveAttribute('aria-valuenow', '10');
+  });
 });

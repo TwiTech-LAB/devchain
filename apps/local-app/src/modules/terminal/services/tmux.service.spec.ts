@@ -400,6 +400,62 @@ describe('TmuxService', () => {
       await expect(promise).rejects.toThrow('sendKeys failed');
     });
 
+    it('sends preKeys before paste when preKeys are provided', async () => {
+      const promise = tmuxService.pasteAndSubmit('sess-1', 'hello', {
+        preKeys: ['Enter'],
+        preDelayMs: 100,
+      });
+      await jest.runAllTimersAsync();
+      await promise;
+
+      // preKeys sent first, then paste, then submit
+      const sendKeysOrder = sendKeysSpy.mock.invocationCallOrder;
+      const pasteOrder = pasteTextSpy.mock.invocationCallOrder;
+      expect(sendKeysSpy).toHaveBeenCalledWith('sess-1', ['Enter']);
+      expect(sendKeysOrder[0]).toBeLessThan(pasteOrder[0]);
+      expect(pasteTextSpy).toHaveBeenCalledWith('sess-1', 'hello', { bracketed: true });
+      // Final submit keys call
+      expect(sendKeysSpy).toHaveBeenCalledWith('sess-1', ['Enter']);
+    });
+
+    it('skips preKeys when not provided (backward-compatible)', async () => {
+      const promise = tmuxService.pasteAndSubmit('sess-1', 'hello');
+      await jest.runAllTimersAsync();
+      await promise;
+
+      // sendKeys called only once (for submit), not for preKeys
+      expect(sendKeysSpy).toHaveBeenCalledTimes(1);
+      expect(sendKeysSpy).toHaveBeenCalledWith('sess-1', ['Enter']);
+    });
+
+    it('sends preKeys without delay when preDelayMs is omitted', async () => {
+      const promise = tmuxService.pasteAndSubmit('sess-1', 'hello', {
+        preKeys: ['Enter'],
+      });
+      await jest.runAllTimersAsync();
+      await promise;
+
+      expect(sendKeysSpy).toHaveBeenCalledWith('sess-1', ['Enter']);
+      expect(pasteTextSpy).toHaveBeenCalledWith('sess-1', 'hello', { bracketed: true });
+    });
+
+    it('lets preKeys failure propagate without retry', async () => {
+      sendKeysSpy.mockRejectedValueOnce(new Error('preKeys failed'));
+
+      const promise = tmuxService.pasteAndSubmit('sess-1', 'hello', {
+        preKeys: ['Enter'],
+      });
+
+      for (let i = 0; i < 5; i++) {
+        jest.advanceTimersByTime(300);
+        await Promise.resolve();
+      }
+
+      await expect(promise).rejects.toThrow('preKeys failed');
+      // paste should not have been called since preKeys failed
+      expect(pasteTextSpy).not.toHaveBeenCalled();
+    });
+
     it('skips sendKeys when submitKeys is empty', async () => {
       const promise = tmuxService.pasteAndSubmit('sess-1', 'hello', { submitKeys: [] });
       await jest.runAllTimersAsync();

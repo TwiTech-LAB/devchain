@@ -650,14 +650,14 @@ export interface UpdateEpicResponse {
 // Allows:
 // - threadId (agent replies into existing thread; recipients optional for fan-out)
 // - recipientAgentNames (creates new agent-initiated injection if threadId omitted)
-// - recipient: "user" (agent DMs the user without threadId)
+// - recipient: internal-only, not exposed in tool schema
 export const SendMessageParamsSchema = z
   .object({
     sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
     threadId: z.string().uuid().optional(),
     recipientAgentNames: z.array(z.string().min(1)).optional(), // Target agents to message
     message: z.string().min(1),
-    // Allow agent-initiated DM to user without threadId
+    // Internal-only: kept for backward compatibility but not exposed in tool schema
     recipient: z.enum(['user', 'agents']).optional(),
   })
   .strict()
@@ -669,7 +669,7 @@ export const SendMessageParamsSchema = z
           v.recipient === 'user',
       ),
     {
-      message: 'Provide threadId, recipientAgentNames, or set { recipient: "user" } to DM the user',
+      message: 'Provide threadId or recipientAgentNames to send a message',
     },
   );
 

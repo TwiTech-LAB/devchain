@@ -156,6 +156,7 @@ describe('ProvidersPage - autoCompactThreshold display and edit', () => {
     name: 'claude',
     binPath: '/usr/local/bin/claude',
     autoCompactThreshold: 10,
+    oneMillionContextEnabled: false,
     mcpConfigured: true,
     mcpEndpoint: 'http://127.0.0.1:3000/mcp',
     mcpRegisteredAt: '2024-01-01',
@@ -168,6 +169,7 @@ describe('ProvidersPage - autoCompactThreshold display and edit', () => {
     name: 'codex',
     binPath: '/usr/local/bin/codex',
     autoCompactThreshold: null,
+    oneMillionContextEnabled: false,
     mcpConfigured: false,
     mcpEndpoint: null,
     mcpRegisteredAt: null,
@@ -556,12 +558,654 @@ describe('ProvidersPage - autoCompactThreshold display and edit', () => {
   );
 });
 
+describe('ProvidersPage - 1M context controls', () => {
+  const claudeProvider = {
+    id: 'p-claude',
+    name: 'claude',
+    binPath: '/usr/local/bin/claude',
+    autoCompactThreshold: 85,
+    oneMillionContextEnabled: false,
+    mcpConfigured: true,
+    mcpEndpoint: 'http://127.0.0.1:3000/mcp',
+    mcpRegisteredAt: '2024-01-01',
+    createdAt: '2024-01-01',
+    updatedAt: '2024-01-01',
+  };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function setupFetch(providers: any[], probeResult?: { supported: boolean; status: string }) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (global as unknown as { fetch: unknown }).fetch = jest.fn(
+      (url: string, options?: RequestInit) => {
+        if (url === '/api/providers' && (!options || !options.method)) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              items: providers,
+              total: providers.length,
+              limit: 100,
+              offset: 0,
+            }),
+          });
+        }
+        if (url === '/api/preflight') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              overall: 'pass',
+              checks: [],
+              providers: providers.map((p) => ({
+                id: p.id,
+                mcpStatus: p.mcpConfigured ? 'pass' : 'warn',
+              })),
+              supportedMcpProviders: ['claude', 'codex', 'gemini'],
+              timestamp: new Date().toISOString(),
+            }),
+          });
+        }
+        if (
+          url.match(/\/api\/providers\/[^/]+\/1m-context\/probe$/) &&
+          options?.method === 'POST'
+        ) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => probeResult ?? { supported: true, status: 'supported' },
+          });
+        }
+        if (url.match(/\/api\/providers\/[\w-]+$/) && options?.method === 'PUT') {
+          const body = JSON.parse(options.body as string);
+          const id = url.split('/').pop()!;
+          const existing = providers.find((p) => p.id === id);
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ ...existing, ...body, updatedAt: new Date().toISOString() }),
+          });
+        }
+        if (url.match(/\/api\/providers\/[^/]+\/models$/) && (!options || !options.method)) {
+          return Promise.resolve({ ok: true, json: async () => [] });
+        }
+        return Promise.resolve({ ok: false });
+      },
+    );
+  }
+
+  beforeEach(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (Element as unknown as { prototype: { scrollIntoView: unknown } }).prototype.scrollIntoView =
+      jest.fn();
+  });
+
+  it('shows 1M context checkbox in Claude edit dialog', async () => {
+    setupFetch([claudeProvider]);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('claude')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Edit'));
+
+    await waitFor(() => expect(screen.getByLabelText('1M context')).toBeInTheDocument());
+  });
+
+  it('hides 1M context checkbox for non-Claude providers', async () => {
+    setupFetch([
+      {
+        ...claudeProvider,
+        id: 'p-codex',
+        name: 'codex',
+        binPath: '/usr/local/bin/codex',
+      },
+    ]);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('codex')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Edit'));
+
+    await waitFor(() => expect(screen.getByText('Edit Provider')).toBeInTheDocument());
+    expect(screen.queryByLabelText('1M context')).not.toBeInTheDocument();
+  });
+
+  it('runs probe and sets supported status on checkbox toggle for existing provider', async () => {
+    setupFetch([claudeProvider], { supported: true, status: 'supported' });
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('claude')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Edit'));
+    await waitFor(() => expect(screen.getByLabelText('1M context')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText('1M context'));
+
+    await waitFor(() => expect(screen.getByText('Supported')).toBeInTheDocument());
+
+    // Threshold should be forced to 50
+    const thresholdInput = screen.getByLabelText('Auto-Compact Threshold (%)') as HTMLInputElement;
+    expect(thresholdInput.value).toBe('50');
+  });
+
+  it('includes oneMillionContextEnabled in update payload', async () => {
+    setupFetch([claudeProvider], { supported: true, status: 'supported' });
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('claude')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Edit'));
+    await waitFor(() => expect(screen.getByLabelText('1M context')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText('1M context'));
+    await waitFor(() => expect(screen.getByText('Supported')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Update'));
+
+    await waitFor(() => {
+      const fetchMock = (global as unknown as { fetch?: unknown }).fetch as jest.Mock;
+      const updateCalls = fetchMock.mock.calls.filter(
+        (call: [string, RequestInit?]) =>
+          call[0] === '/api/providers/p-claude' && call[1]?.method === 'PUT',
+      );
+      expect(updateCalls.length).toBeGreaterThan(0);
+      const body = JSON.parse(updateCalls[0][1].body as string);
+      expect(body.oneMillionContextEnabled).toBe(true);
+    });
+  });
+
+  it('restores autoCompactThreshold to 95 when 1M context is manually disabled', async () => {
+    setupFetch([{ ...claudeProvider, oneMillionContextEnabled: true, autoCompactThreshold: 50 }], {
+      supported: true,
+      status: 'supported',
+    });
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('claude')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Edit'));
+    await waitFor(() => expect(screen.getByLabelText('1M context')).toBeInTheDocument());
+
+    // Checkbox should be checked (1M enabled)
+    const checkbox = screen.getByLabelText('1M context');
+    expect(checkbox).toHaveAttribute('data-state', 'checked');
+
+    // Uncheck the checkbox to disable 1M context
+    fireEvent.click(checkbox);
+
+    // Threshold should be restored to 95
+    const thresholdInput = screen.getByLabelText('Auto-Compact Threshold (%)') as HTMLInputElement;
+    expect(thresholdInput.value).toBe('95');
+  });
+
+  it('displays 1M context status on provider card', async () => {
+    setupFetch([{ ...claudeProvider, oneMillionContextEnabled: true }]);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('claude')).toBeInTheDocument());
+    expect(screen.getByText(/1M context:.*enabled/)).toBeInTheDocument();
+  });
+
+  it('clears probe status and disables 1M when binPath changes on existing Claude provider', async () => {
+    setupFetch([{ ...claudeProvider, oneMillionContextEnabled: true, autoCompactThreshold: 50 }], {
+      supported: true,
+      status: 'supported',
+    });
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('claude')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Edit'));
+    await waitFor(() => expect(screen.getByLabelText('1M context')).toBeInTheDocument());
+
+    // 1M should be checked initially
+    const checkbox = screen.getByLabelText('1M context');
+    expect(checkbox).toHaveAttribute('data-state', 'checked');
+
+    // Change binPath
+    const binPathInput = screen.getByLabelText('Binary Path');
+    fireEvent.change(binPathInput, { target: { value: '/opt/new-claude/bin/claude' } });
+
+    // 1M should be unchecked and threshold restored to 95
+    expect(checkbox).toHaveAttribute('data-state', 'unchecked');
+    const thresholdInput = screen.getByLabelText('Auto-Compact Threshold (%)') as HTMLInputElement;
+    expect(thresholdInput.value).toBe('95');
+
+    // Supported badge should be gone
+    expect(screen.queryByText('Supported')).not.toBeInTheDocument();
+  });
+
+  it('disables 1M context checkbox for new Claude provider', async () => {
+    setupFetch([]);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getAllByText('Add Provider').length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getAllByText('Add Provider')[0]);
+
+    // Switch to Claude using the labeled select
+    fireEvent.click(screen.getByLabelText('Provider Type'));
+    const claudeOptions = await screen.findAllByText('Claude');
+    fireEvent.click(claudeOptions[claudeOptions.length - 1]);
+
+    // 1M checkbox should be disabled for new providers
+    const checkbox = screen.getByLabelText('1M context');
+    expect(checkbox).toBeDisabled();
+  });
+
+  it('disables 1M checkbox when binPath differs from persisted value (stale probe prevention)', async () => {
+    setupFetch([claudeProvider]);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('claude')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Edit'));
+    await waitFor(() => expect(screen.getByLabelText('1M context')).toBeInTheDocument());
+
+    // Checkbox should be enabled initially (binPath matches persisted)
+    const checkbox = screen.getByLabelText('1M context');
+    expect(checkbox).not.toBeDisabled();
+
+    // Change binPath to a different value
+    const binPathInput = screen.getByLabelText('Binary Path');
+    fireEvent.change(binPathInput, { target: { value: '/opt/new-claude' } });
+
+    // Checkbox should now be disabled
+    expect(checkbox).toBeDisabled();
+
+    // Hint message should appear
+    expect(screen.getByText(/Save the new binary path first, then re-probe/)).toBeInTheDocument();
+  });
+
+  it('re-enables 1M checkbox when binPath is restored to persisted value', async () => {
+    setupFetch([claudeProvider]);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('claude')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Edit'));
+    await waitFor(() => expect(screen.getByLabelText('1M context')).toBeInTheDocument());
+
+    const checkbox = screen.getByLabelText('1M context');
+    const binPathInput = screen.getByLabelText('Binary Path');
+
+    // Change binPath
+    fireEvent.change(binPathInput, { target: { value: '/opt/different' } });
+    expect(checkbox).toBeDisabled();
+
+    // Restore to original
+    fireEvent.change(binPathInput, { target: { value: '/usr/local/bin/claude' } });
+    expect(checkbox).not.toBeDisabled();
+
+    // Hint message should be gone
+    expect(
+      screen.queryByText(/Save the new binary path first, then re-probe/),
+    ).not.toBeInTheDocument();
+  });
+
+  it('does not call probe endpoint when binPath is dirty even if checkbox could be clicked', async () => {
+    setupFetch([claudeProvider], { supported: true, status: 'supported' });
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('claude')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Edit'));
+    await waitFor(() => expect(screen.getByLabelText('1M context')).toBeInTheDocument());
+
+    // Change binPath to make checkbox disabled
+    const binPathInput = screen.getByLabelText('Binary Path');
+    fireEvent.change(binPathInput, { target: { value: '/opt/new-claude' } });
+
+    // Attempt to click the disabled checkbox
+    const checkbox = screen.getByLabelText('1M context');
+    fireEvent.click(checkbox);
+
+    // Probe should NOT have been called
+    const fetchMock = (global as unknown as { fetch?: unknown }).fetch as jest.Mock;
+    const probeCalls = fetchMock.mock.calls.filter(
+      (call: [string, RequestInit?]) =>
+        typeof call[0] === 'string' &&
+        call[0].includes('/1m-context/probe') &&
+        call[1]?.method === 'POST',
+    );
+    expect(probeCalls).toHaveLength(0);
+  });
+
+  it('end-to-end: save changed binPath then reprobe succeeds for updated provider', async () => {
+    // Start with a Claude provider whose binPath will change
+    const updatedProvider = {
+      ...claudeProvider,
+      binPath: '/opt/new-claude',
+    };
+    setupFetch([claudeProvider], { supported: true, status: 'supported' });
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('claude')).toBeInTheDocument());
+
+    // Open edit dialog
+    fireEvent.click(screen.getByText('Edit'));
+    await waitFor(() => expect(screen.getByLabelText('1M context')).toBeInTheDocument());
+
+    // Change binPath — checkbox should be disabled
+    const binPathInput = screen.getByLabelText('Binary Path');
+    fireEvent.change(binPathInput, { target: { value: '/opt/new-claude' } });
+    expect(screen.getByLabelText('1M context')).toBeDisabled();
+
+    // Mock the PUT response to return the updated provider
+    const fetchMock = (global as unknown as { fetch?: unknown }).fetch as jest.Mock;
+    fetchMock.mockImplementation((url: string, options?: RequestInit) => {
+      if (url === '/api/providers' && (!options || !options.method)) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            items: [updatedProvider],
+            total: 1,
+            limit: 100,
+            offset: 0,
+          }),
+        });
+      }
+      if (url === '/api/preflight') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            overall: 'pass',
+            checks: [],
+            providers: [{ id: updatedProvider.id, mcpStatus: 'pass' }],
+            supportedMcpProviders: ['claude', 'codex', 'gemini'],
+            timestamp: new Date().toISOString(),
+          }),
+        });
+      }
+      if (url === `/api/providers/${claudeProvider.id}` && options?.method === 'PUT') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ ...updatedProvider, updatedAt: new Date().toISOString() }),
+        });
+      }
+      if (url.match(/\/api\/providers\/[^/]+\/1m-context\/probe$/) && options?.method === 'POST') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ supported: true, status: 'supported' }),
+        });
+      }
+      if (url.match(/\/api\/providers\/[^/]+\/models$/) && (!options || !options.method)) {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      return Promise.resolve({ ok: false });
+    });
+
+    // Save the updated binPath
+    fireEvent.click(screen.getByText('Update'));
+    await waitFor(() => expect(screen.queryByText('Edit Provider')).not.toBeInTheDocument());
+
+    // Re-open edit dialog — provider now has the new binPath
+    await waitFor(() => expect(screen.getByText('claude')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Edit'));
+    await waitFor(() => expect(screen.getByLabelText('1M context')).toBeInTheDocument());
+
+    // Checkbox should be enabled (binPath matches persisted)
+    const checkbox = screen.getByLabelText('1M context');
+    expect(checkbox).not.toBeDisabled();
+
+    // Click checkbox — should trigger probe
+    fireEvent.click(checkbox);
+    await waitFor(() => expect(screen.getByText('Supported')).toBeInTheDocument());
+
+    // Verify probe was called against the new persisted provider
+    const probeCalls = fetchMock.mock.calls.filter(
+      (call: [string, RequestInit?]) =>
+        typeof call[0] === 'string' &&
+        call[0].includes('/1m-context/probe') &&
+        call[1]?.method === 'POST',
+    );
+    expect(probeCalls.length).toBeGreaterThan(0);
+  });
+
+  it('does not include oneMillionContextEnabled in create payload', async () => {
+    // Override fetch to also handle POST /api/providers for create
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (global as unknown as { fetch: unknown }).fetch = jest.fn(
+      (url: string, options?: RequestInit) => {
+        if (url === '/api/providers' && (!options || !options.method)) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ items: [], total: 0, limit: 100, offset: 0 }),
+          });
+        }
+        if (url === '/api/preflight') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              overall: 'pass',
+              checks: [],
+              providers: [],
+              supportedMcpProviders: ['claude', 'codex', 'gemini'],
+              timestamp: new Date().toISOString(),
+            }),
+          });
+        }
+        if (url === '/api/providers' && options?.method === 'POST') {
+          const body = JSON.parse(options.body as string);
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              id: 'new-id',
+              ...body,
+              mcpConfigured: false,
+              mcpEndpoint: null,
+              mcpRegisteredAt: null,
+              oneMillionContextEnabled: false,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            }),
+          });
+        }
+        if (url.match(/\/api\/providers\/[^/]+\/models$/) && (!options || !options.method)) {
+          return Promise.resolve({ ok: true, json: async () => [] });
+        }
+        return Promise.resolve({ ok: false });
+      },
+    );
+
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getAllByText('Add Provider').length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getAllByText('Add Provider')[0]);
+
+    // Switch to Claude using the labeled select
+    fireEvent.click(screen.getByLabelText('Provider Type'));
+    const claudeOptions = await screen.findAllByText('Claude');
+    fireEvent.click(claudeOptions[claudeOptions.length - 1]);
+
+    // Submit the form
+    fireEvent.click(screen.getByText('Create'));
+
+    await waitFor(() => {
+      const fetchMock = (global as unknown as { fetch?: unknown }).fetch as jest.Mock;
+      const createCalls = fetchMock.mock.calls.filter(
+        (call: [string, RequestInit?]) =>
+          call[0] === '/api/providers' && call[1]?.method === 'POST',
+      );
+      expect(createCalls.length).toBeGreaterThan(0);
+      const body = JSON.parse(createCalls[0][1].body as string);
+      expect(body.oneMillionContextEnabled).toBeUndefined();
+    });
+  });
+
+  it('routes unsupported probe result to "Not supported" UI', async () => {
+    setupFetch([claudeProvider], { supported: false, status: 'unsupported' });
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('claude')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Edit'));
+    await waitFor(() => expect(screen.getByLabelText('1M context')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText('1M context'));
+
+    await waitFor(() => expect(screen.getByText('Not supported')).toBeInTheDocument());
+  });
+
+  it('routes launch_failure probe result to error/retry UI', async () => {
+    setupFetch([claudeProvider], { supported: false, status: 'launch_failure' });
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('claude')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Edit'));
+    await waitFor(() => expect(screen.getByLabelText('1M context')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText('1M context'));
+
+    await waitFor(() => expect(screen.getByText('Probe failed')).toBeInTheDocument());
+  });
+
+  it('routes timeout probe result to error/retry UI', async () => {
+    setupFetch([claudeProvider], { supported: false, status: 'timeout' });
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('claude')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Edit'));
+    await waitFor(() => expect(screen.getByLabelText('1M context')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText('1M context'));
+
+    await waitFor(() => expect(screen.getByText('Probe failed')).toBeInTheDocument());
+  });
+
+  it('routes supported probe result to supported UI (regression guard)', async () => {
+    setupFetch([claudeProvider], { supported: true, status: 'supported' });
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('claude')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Edit'));
+    await waitFor(() => expect(screen.getByLabelText('1M context')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText('1M context'));
+
+    await waitFor(() => expect(screen.getByText('Supported')).toBeInTheDocument());
+  });
+});
+
+describe('ProvidersPage - provider type select disabled in edit mode', () => {
+  const claudeProvider = {
+    id: 'p-claude',
+    name: 'claude',
+    binPath: '/usr/local/bin/claude',
+    autoCompactThreshold: 10,
+    oneMillionContextEnabled: false,
+    mcpConfigured: true,
+    mcpEndpoint: 'http://127.0.0.1:3000/mcp',
+    mcpRegisteredAt: '2024-01-01',
+    createdAt: '2024-01-01',
+    updatedAt: '2024-01-01',
+  };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function setupFetch(providers: any[]) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (global as unknown as { fetch: unknown }).fetch = jest.fn(
+      (url: string, options?: RequestInit) => {
+        if (url === '/api/providers' && (!options || !options.method)) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              items: providers,
+              total: providers.length,
+              limit: 100,
+              offset: 0,
+            }),
+          });
+        }
+        if (url === '/api/preflight') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              overall: 'pass',
+              checks: [],
+              providers: providers.map((p) => ({
+                id: p.id,
+                mcpStatus: p.mcpConfigured ? 'pass' : 'warn',
+              })),
+              supportedMcpProviders: ['claude', 'codex', 'gemini'],
+              timestamp: new Date().toISOString(),
+            }),
+          });
+        }
+        if (url.match(/\/api\/providers\/[\w-]+$/) && options?.method === 'PUT') {
+          const body = JSON.parse(options.body as string);
+          const id = url.split('/').pop()!;
+          const existing = providers.find((p) => p.id === id);
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ ...existing, ...body, updatedAt: new Date().toISOString() }),
+          });
+        }
+        if (url === '/api/providers' && options?.method === 'POST') {
+          const body = JSON.parse(options.body as string);
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              id: 'p-new',
+              ...body,
+              mcpConfigured: false,
+              mcpEndpoint: null,
+              mcpRegisteredAt: null,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            }),
+          });
+        }
+        if (url.match(/\/api\/providers\/[^/]+\/models$/) && (!options || !options.method)) {
+          return Promise.resolve({ ok: true, json: async () => [] });
+        }
+        return Promise.resolve({ ok: false });
+      },
+    );
+  }
+
+  beforeEach(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (Element as unknown as { prototype: { scrollIntoView: unknown } }).prototype.scrollIntoView =
+      jest.fn();
+  });
+
+  it('disables type select when editing an existing provider', async () => {
+    setupFetch([claudeProvider]);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('claude')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Edit'));
+
+    await waitFor(() => expect(screen.getByText('Edit Provider')).toBeInTheDocument());
+    const trigger = screen.getByLabelText('Provider Type');
+    expect(trigger).toHaveAttribute('data-disabled');
+  });
+
+  it('enables type select when adding a new provider', async () => {
+    setupFetch([]);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('Providers')).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByText('Add Provider')[0]);
+
+    const trigger = screen.getByLabelText('Provider Type');
+    expect(trigger).not.toHaveAttribute('data-disabled');
+  });
+
+  it('update mutation payload does not include name', async () => {
+    setupFetch([claudeProvider]);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('claude')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Edit'));
+
+    await waitFor(() => expect(screen.getByText('Edit Provider')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Update'));
+
+    await waitFor(() => {
+      const fetchMock = (global as unknown as { fetch?: unknown }).fetch as jest.Mock;
+      const updateCalls = fetchMock.mock.calls.filter(
+        (call: [string, RequestInit?]) =>
+          call[0] === '/api/providers/p-claude' && call[1]?.method === 'PUT',
+      );
+      expect(updateCalls.length).toBeGreaterThan(0);
+      const body = JSON.parse(updateCalls[0][1].body as string);
+      expect(body).not.toHaveProperty('name');
+    });
+  });
+});
+
 describe('ProvidersPage - provider models management', () => {
   const opencodeProvider = {
     id: 'p-opencode',
     name: 'opencode',
     binPath: '/usr/local/bin/opencode',
     autoCompactThreshold: null,
+    oneMillionContextEnabled: false,
     mcpConfigured: true,
     mcpEndpoint: 'http://127.0.0.1:3000/mcp',
     mcpRegisteredAt: '2024-01-01',
@@ -574,6 +1218,7 @@ describe('ProvidersPage - provider models management', () => {
     name: 'codex',
     binPath: '/usr/local/bin/codex',
     autoCompactThreshold: null,
+    oneMillionContextEnabled: false,
     mcpConfigured: true,
     mcpEndpoint: 'http://127.0.0.1:3000/mcp',
     mcpRegisteredAt: '2024-01-01',

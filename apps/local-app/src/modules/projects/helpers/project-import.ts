@@ -1,6 +1,7 @@
 import { ExportSchema } from '@devchain/shared';
 import { ConflictError, StorageError, ValidationError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
+import type { ProbeOutcome } from '../../providers/utils/probe-1m';
 import type { SettingsService } from '../../settings/services/settings.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import type { UnifiedTemplateService } from '../../registry/services/unified-template.service';
@@ -99,6 +100,7 @@ interface ImportProjectDeps {
     archiveStatusId: string | null,
   ) => Promise<{ initialPromptSet: boolean }>;
   getImportErrorMessage: (error: unknown) => string;
+  probe1m?: (binPath: string) => Promise<ProbeOutcome>;
 }
 
 export async function importProjectWithHelper(
@@ -192,7 +194,7 @@ export async function importProjectWithHelper(
 
     await updateTemplateMetadata(input.projectId, context.payload, deps);
     await replaceProjectPresets(input.projectId, context.payload, deps.settings);
-    await importProviderSettings(context.payload, deps.storage);
+    await importProviderSettings(context.payload, deps.storage, { probe1m: deps.probe1m });
     const providerModelsImportResult = await importProviderModels(context.payload, deps.storage);
     logger.info(
       {
@@ -922,12 +924,12 @@ async function replaceProjectPresets(
   logger.info({ projectId }, 'Presets cleared during import (template has none)');
 }
 
-async function importProviderSettings(payload: ParsedTemplatePayload, storage: StorageService) {
-  const importedProviderSettings = (
-    payload as {
-      providerSettings?: Array<{ name: string; autoCompactThreshold?: number | null }>;
-    }
-  ).providerSettings;
+export async function importProviderSettings(
+  payload: ParsedTemplatePayload,
+  storage: StorageService,
+  options?: { probe1m?: (binPath: string) => Promise<ProbeOutcome> },
+) {
+  const importedProviderSettings = payload.providerSettings;
 
   if (!importedProviderSettings || importedProviderSettings.length === 0) {
     return;
@@ -944,22 +946,53 @@ async function importProviderSettings(payload: ParsedTemplatePayload, storage: S
       continue;
     }
 
-    if (localProvider.autoCompactThreshold != null) {
-      logger.debug(
-        { providerName: setting.name, existing: localProvider.autoCompactThreshold },
-        'Skipping providerSettings import: local threshold already set',
-      );
-      continue;
-    }
+    const updates: Record<string, unknown> = {};
 
-    if (setting.autoCompactThreshold != null) {
-      await storage.updateProvider(localProvider.id, {
-        autoCompactThreshold: setting.autoCompactThreshold,
-      });
+    if (localProvider.autoCompactThreshold == null && setting.autoCompactThreshold != null) {
+      updates.autoCompactThreshold = setting.autoCompactThreshold;
       logger.info(
         { providerName: setting.name, threshold: setting.autoCompactThreshold },
         'Applied autoCompactThreshold from template import',
       );
+    } else if (localProvider.autoCompactThreshold != null) {
+      logger.debug(
+        { providerName: setting.name, existing: localProvider.autoCompactThreshold },
+        'Skipping providerSettings import: local threshold already set',
+      );
+    }
+
+    // Import oneMillionContextEnabled: auto-probe when callback is available,
+    // otherwise disable and set a safe threshold (95) to avoid degraded sessions.
+    if (setting.oneMillionContextEnabled) {
+      if (localProvider.binPath && options?.probe1m) {
+        const outcome = await options.probe1m(localProvider.binPath);
+        if (outcome.supported) {
+          updates.oneMillionContextEnabled = true;
+          updates.autoCompactThreshold = 50;
+          logger.info(
+            { providerName: setting.name },
+            'Template had 1M context enabled — auto-probe confirmed support',
+          );
+        } else {
+          updates.oneMillionContextEnabled = false;
+          updates.autoCompactThreshold = 95;
+          logger.info(
+            { providerName: setting.name, status: outcome.status },
+            'Template had 1M context enabled — auto-probe did not confirm support',
+          );
+        }
+      } else {
+        updates.oneMillionContextEnabled = false;
+        updates.autoCompactThreshold = 95;
+        logger.info(
+          { providerName: setting.name },
+          'Template had 1M context enabled — disabled during import (no binPath or probe unavailable)',
+        );
+      }
+    }
+
+    if (Object.keys(updates).length > 0) {
+      await storage.updateProvider(localProvider.id, updates);
     }
   }
 }
