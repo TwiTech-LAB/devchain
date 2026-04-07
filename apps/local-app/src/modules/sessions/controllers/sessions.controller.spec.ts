@@ -96,6 +96,14 @@ describe('SessionsController', () => {
       );
     });
 
+    it('should accept unconfirmed as a valid status filter', () => {
+      controller.getMessages(undefined, undefined, 'unconfirmed');
+
+      expect(mockMessagePoolService.getMessageLog).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'unconfirmed' }),
+      );
+    });
+
     it('should pass source filter to service', () => {
       controller.getMessages(undefined, undefined, undefined, 'epic.assigned');
 

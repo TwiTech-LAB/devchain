@@ -30,7 +30,7 @@ const logger = createLogger('SessionsController');
 const MessagesQuerySchema = z.object({
   projectId: z.string().uuid('projectId must be a valid UUID').optional(),
   agentId: z.string().uuid('agentId must be a valid UUID').optional(),
-  status: z.enum(['queued', 'delivered', 'failed']).optional(),
+  status: z.enum(['queued', 'delivered', 'failed', 'unconfirmed']).optional(),
   source: z.string().optional(),
   limit: z
     .string()
@@ -64,11 +64,15 @@ interface MessageLogPreview {
   preview: string;
   source: string;
   senderAgentId?: string;
-  status: 'queued' | 'delivered' | 'failed';
+  status: 'queued' | 'delivered' | 'failed' | 'unconfirmed';
   batchId?: string;
   deliveredAt?: number;
   error?: string;
   immediate: boolean;
+  nonce?: string;
+  confirmedAt?: number;
+  retryCount?: number;
+  failureCode?: string;
 }
 
 /** Response type for messages list endpoint */
@@ -212,6 +216,10 @@ export class SessionsController {
         deliveredAt: msg.deliveredAt,
         error: msg.error,
         immediate: msg.immediate,
+        nonce: msg.nonce,
+        confirmedAt: msg.confirmedAt,
+        retryCount: msg.retryCount,
+        failureCode: msg.failureCode,
       }));
 
       return {

@@ -74,6 +74,18 @@ export class TimeoutError extends AppError {
   }
 }
 
+export class PasteNotConfirmedError extends AppError {
+  constructor(
+    public readonly sessionName: string,
+    details?: Record<string, unknown>,
+  ) {
+    super(`Paste delivery not confirmed for session ${sessionName}`, 'paste_not_confirmed', 500, {
+      sessionName,
+      ...details,
+    });
+  }
+}
+
 export class UnsupportedProviderError extends AppError {
   constructor(
     public readonly providerName: string,

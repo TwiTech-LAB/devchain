@@ -3,6 +3,7 @@ import {
   ProfileOptionsError,
   injectModelOverride,
   rewriteModelTo1m,
+  extractModelFromArgs,
 } from './profile-options';
 
 describe('parseProfileOptions', () => {
@@ -198,5 +199,35 @@ describe('rewriteModelTo1m', () => {
 
     expect(args).toEqual(snapshot);
     expect(result).not.toBe(args);
+  });
+});
+
+describe('extractModelFromArgs', () => {
+  it('extracts model from --model X', () => {
+    expect(extractModelFromArgs(['--model', 'opus'])).toBe('opus');
+  });
+
+  it('extracts model from -m X', () => {
+    expect(extractModelFromArgs(['-m', 'sonnet'])).toBe('sonnet');
+  });
+
+  it('extracts model from --model=X', () => {
+    expect(extractModelFromArgs(['--model=haiku'])).toBe('haiku');
+  });
+
+  it('extracts model from -m=X', () => {
+    expect(extractModelFromArgs(['-m=opus[1m]'])).toBe('opus[1m]');
+  });
+
+  it('returns null when no model flag is present', () => {
+    expect(extractModelFromArgs(['--dangerously-skip-permissions'])).toBeNull();
+  });
+
+  it('returns null for empty args', () => {
+    expect(extractModelFromArgs([])).toBeNull();
+  });
+
+  it('returns null when --model flag has no value', () => {
+    expect(extractModelFromArgs(['--model'])).toBeNull();
   });
 });

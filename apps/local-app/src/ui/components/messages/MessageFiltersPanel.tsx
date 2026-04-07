@@ -85,6 +85,7 @@ export function MessageFiltersPanel({ projectId, filters, onChange }: MessageFil
           <SelectItem value="all">All Status</SelectItem>
           <SelectItem value="queued">Queued</SelectItem>
           <SelectItem value="delivered">Delivered</SelectItem>
+          <SelectItem value="unconfirmed">Unconfirmed</SelectItem>
           <SelectItem value="failed">Failed</SelectItem>
         </SelectContent>
       </Select>

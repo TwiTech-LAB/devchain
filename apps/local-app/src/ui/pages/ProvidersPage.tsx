@@ -57,6 +57,7 @@ interface Provider {
   name: string;
   binPath: string | null;
   autoCompactThreshold: number | null;
+  autoCompactThreshold1m: number | null;
   oneMillionContextEnabled: boolean;
   mcpConfigured: boolean;
   mcpEndpoint: string | null;
@@ -124,6 +125,7 @@ async function updateProvider(
   data: {
     binPath?: string | null;
     autoCompactThreshold?: number | null;
+    autoCompactThreshold1m?: number | null;
     oneMillionContextEnabled?: boolean;
   },
 ) {
@@ -432,6 +434,7 @@ export function ProvidersPage() {
   const [formData, setFormData] = useState({
     binPath: '',
     autoCompactThreshold: '',
+    autoCompactThreshold1m: '',
     oneMillionContextEnabled: false,
   });
   const [formError, setFormError] = useState<string | null>(null);
@@ -488,7 +491,12 @@ export function ProvidersPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['providers'] });
       setShowDialog(false);
-      setFormData({ binPath: '', autoCompactThreshold: '', oneMillionContextEnabled: false });
+      setFormData({
+        binPath: '',
+        autoCompactThreshold: '',
+        autoCompactThreshold1m: '',
+        oneMillionContextEnabled: false,
+      });
       setFormError(null);
       setFormErrorField(null);
       setProbeStatus('idle');
@@ -524,6 +532,7 @@ export function ProvidersPage() {
       data: {
         binPath?: string | null;
         autoCompactThreshold?: number | null;
+        autoCompactThreshold1m?: number | null;
         oneMillionContextEnabled?: boolean;
       };
     }) => updateProvider(id, data),
@@ -544,7 +553,12 @@ export function ProvidersPage() {
       queryClient.invalidateQueries({ queryKey: ['providers'] });
       setShowDialog(false);
       setEditingProvider(null);
-      setFormData({ binPath: '', autoCompactThreshold: '', oneMillionContextEnabled: false });
+      setFormData({
+        binPath: '',
+        autoCompactThreshold: '',
+        autoCompactThreshold1m: '',
+        oneMillionContextEnabled: false,
+      });
       setFormError(null);
       setFormErrorField(null);
       setProbeStatus('idle');
@@ -644,7 +658,8 @@ export function ProvidersPage() {
         setFormData((prev) => ({
           ...prev,
           oneMillionContextEnabled: true,
-          autoCompactThreshold: '50',
+          autoCompactThreshold1m: '50',
+          autoCompactThreshold: '95',
         }));
         toast({ title: '1M context supported', description: 'Threshold set to 50%.' });
       } else {
@@ -685,6 +700,7 @@ export function ProvidersPage() {
     setFormErrorField(null);
 
     const thresholdStr = formData.autoCompactThreshold.trim();
+    const threshold1mStr = formData.autoCompactThreshold1m.trim();
 
     // Validate autoCompactThreshold when non-empty
     if (thresholdStr !== '') {
@@ -698,14 +714,33 @@ export function ProvidersPage() {
 
     const isClaude = (editingProvider?.name ?? providerType).toLowerCase() === 'claude';
 
+    // Validate autoCompactThreshold1m when 1M is enabled and value is non-empty
+    if (isClaude && formData.oneMillionContextEnabled && threshold1mStr !== '') {
+      const parsed1m = Number(threshold1mStr);
+      if (isNaN(parsed1m) || !Number.isInteger(parsed1m) || parsed1m < 1 || parsed1m > 100) {
+        setFormError('1M threshold must be an integer between 1 and 100.');
+        setFormErrorField('autoCompactThreshold');
+        return;
+      }
+    }
+
     if (editingProvider) {
       const autoCompactThreshold: number | null = thresholdStr === '' ? null : Number(thresholdStr);
+      const autoCompactThreshold1m: number | null =
+        isClaude && formData.oneMillionContextEnabled && threshold1mStr !== ''
+          ? Number(threshold1mStr)
+          : null;
       updateMutation.mutate({
         id: editingProvider.id,
         data: {
           binPath,
           autoCompactThreshold,
-          ...(isClaude ? { oneMillionContextEnabled: formData.oneMillionContextEnabled } : {}),
+          ...(isClaude
+            ? {
+                oneMillionContextEnabled: formData.oneMillionContextEnabled,
+                autoCompactThreshold1m,
+              }
+            : {}),
         },
       });
     } else {
@@ -730,6 +765,7 @@ export function ProvidersPage() {
       binPath: provider.binPath || '',
       autoCompactThreshold:
         provider.autoCompactThreshold != null ? String(provider.autoCompactThreshold) : '',
+      autoCompactThreshold1m: provider.autoCompactThreshold1m?.toString() ?? '',
       oneMillionContextEnabled: provider.oneMillionContextEnabled ?? false,
     });
     setProbeStatus(provider.oneMillionContextEnabled ? 'supported' : 'idle');
@@ -780,6 +816,7 @@ export function ProvidersPage() {
     setFormData({
       binPath: getDefaultBinPathForType(initialType),
       autoCompactThreshold: '',
+      autoCompactThreshold1m: '',
       oneMillionContextEnabled: false,
     });
     setProviderType(initialType);
@@ -908,7 +945,12 @@ export function ProvidersPage() {
           setShowDialog(open);
           if (!open) {
             setEditingProvider(null);
-            setFormData({ binPath: '', autoCompactThreshold: '', oneMillionContextEnabled: false });
+            setFormData({
+              binPath: '',
+              autoCompactThreshold: '',
+              autoCompactThreshold1m: '',
+              oneMillionContextEnabled: false,
+            });
             setFormError(null);
             setFormErrorField(null);
             setProbeStatus('idle');
@@ -944,6 +986,7 @@ export function ProvidersPage() {
                     // Clear Claude-specific fields when switching away from Claude
                     if (nextType !== 'claude') {
                       updates.autoCompactThreshold = '';
+                      updates.autoCompactThreshold1m = '';
                       updates.oneMillionContextEnabled = false;
                     }
                     return Object.keys(updates).length > 0 ? { ...prev, ...updates } : prev;
@@ -980,7 +1023,11 @@ export function ProvidersPage() {
                     binPath: newBinPath,
                     // Invalidate 1M state when Claude binPath changes
                     ...(isClaude && prev.oneMillionContextEnabled
-                      ? { oneMillionContextEnabled: false, autoCompactThreshold: '95' }
+                      ? {
+                          oneMillionContextEnabled: false,
+                          autoCompactThreshold1m: '',
+                          autoCompactThreshold: '95',
+                        }
                       : {}),
                   }));
                   if (isClaude && probeStatus === 'supported') {
@@ -1027,6 +1074,7 @@ export function ProvidersPage() {
                         setFormData((prev) => ({
                           ...prev,
                           oneMillionContextEnabled: false,
+                          autoCompactThreshold1m: '',
                           autoCompactThreshold: '95',
                         }));
                         setProbeStatus('idle');
@@ -1071,13 +1119,13 @@ export function ProvidersPage() {
                   </p>
                 )}
                 {formData.oneMillionContextEnabled &&
-                  formData.autoCompactThreshold !== '' &&
-                  Number(formData.autoCompactThreshold) > 50 && (
+                  formData.autoCompactThreshold1m !== '' &&
+                  Number(formData.autoCompactThreshold1m) > 50 && (
                     <div className="ml-6 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-2 dark:border-amber-800 dark:bg-amber-950">
                       <AlertCircle className="h-4 w-4 text-amber-600 dark:text-amber-500 mt-0.5 flex-shrink-0" />
                       <p className="text-xs text-amber-800 dark:text-amber-200">
-                        Threshold above 50% with 1M context may degrade output quality. Consider
-                        lowering it to 50%.
+                        1M threshold above 50% may degrade output quality. Consider lowering it to
+                        50%.
                       </p>
                     </div>
                   )}
@@ -1085,31 +1133,88 @@ export function ProvidersPage() {
             )}
 
             {(editingProvider?.name ?? providerType).toLowerCase() === 'claude' && (
-              <div>
-                <Label htmlFor="provider-threshold">Auto-Compact Threshold (%)</Label>
-                <Input
-                  id="provider-threshold"
-                  type="number"
-                  min={1}
-                  max={100}
-                  value={formData.autoCompactThreshold}
-                  onChange={(e) => {
-                    setFormData({ ...formData, autoCompactThreshold: e.target.value });
-                    if (formErrorField === 'autoCompactThreshold') {
-                      setFormError(null);
-                      setFormErrorField(null);
-                    }
-                  }}
-                  className={cn(
-                    formErrorField === 'autoCompactThreshold' &&
-                      'border-destructive focus-visible:ring-destructive',
-                  )}
-                  placeholder="Default: 85"
-                />
-                <p className="text-xs text-muted-foreground mt-1">
-                  Context usage percentage (1-100) that triggers auto-compact. Leave empty to use
-                  default on create, or to disable on edit.
-                </p>
+              <div className="space-y-3">
+                {formData.oneMillionContextEnabled ? (
+                  <>
+                    <div>
+                      <Label htmlFor="provider-threshold-1m">Opus 1M Threshold (%)</Label>
+                      <Input
+                        id="provider-threshold-1m"
+                        type="number"
+                        min={1}
+                        max={100}
+                        value={formData.autoCompactThreshold1m}
+                        onChange={(e) => {
+                          setFormData({ ...formData, autoCompactThreshold1m: e.target.value });
+                          if (formErrorField === 'autoCompactThreshold') {
+                            setFormError(null);
+                            setFormErrorField(null);
+                          }
+                        }}
+                        className={cn(
+                          formErrorField === 'autoCompactThreshold' &&
+                            'border-destructive focus-visible:ring-destructive',
+                        )}
+                        placeholder="Default: 50"
+                      />
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Context usage percentage (1-100) for Opus with 1M context window.
+                      </p>
+                    </div>
+                    <div>
+                      <Label htmlFor="provider-threshold">Default Threshold (%)</Label>
+                      <Input
+                        id="provider-threshold"
+                        type="number"
+                        min={1}
+                        max={100}
+                        value={formData.autoCompactThreshold}
+                        onChange={(e) => {
+                          setFormData({ ...formData, autoCompactThreshold: e.target.value });
+                          if (formErrorField === 'autoCompactThreshold') {
+                            setFormError(null);
+                            setFormErrorField(null);
+                          }
+                        }}
+                        className={cn(
+                          formErrorField === 'autoCompactThreshold' &&
+                            'border-destructive focus-visible:ring-destructive',
+                        )}
+                        placeholder="Default: 95"
+                      />
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Context usage percentage (1-100) for standard models (sonnet/haiku).
+                      </p>
+                    </div>
+                  </>
+                ) : (
+                  <div>
+                    <Label htmlFor="provider-threshold">Auto-Compact Threshold (%)</Label>
+                    <Input
+                      id="provider-threshold"
+                      type="number"
+                      min={1}
+                      max={100}
+                      value={formData.autoCompactThreshold}
+                      onChange={(e) => {
+                        setFormData({ ...formData, autoCompactThreshold: e.target.value });
+                        if (formErrorField === 'autoCompactThreshold') {
+                          setFormError(null);
+                          setFormErrorField(null);
+                        }
+                      }}
+                      className={cn(
+                        formErrorField === 'autoCompactThreshold' &&
+                          'border-destructive focus-visible:ring-destructive',
+                      )}
+                      placeholder="Default: 85"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Context usage percentage (1-100) that triggers auto-compact. Leave empty to
+                      use default on create, or to disable on edit.
+                    </p>
+                  </div>
+                )}
                 {formError && formErrorField === 'autoCompactThreshold' && (
                   <p className="mt-2 text-sm text-destructive">{formError}</p>
                 )}
@@ -1129,6 +1234,7 @@ export function ProvidersPage() {
                   setFormData({
                     binPath: getDefaultBinPathForType(initialType),
                     autoCompactThreshold: '',
+                    autoCompactThreshold1m: '',
                     oneMillionContextEnabled: false,
                   });
                   setProviderType(initialType);

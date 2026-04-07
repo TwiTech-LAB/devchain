@@ -393,14 +393,22 @@ function buildProviderSettings(
   const providerSettings: Array<{
     name: string;
     autoCompactThreshold: number | null;
+    autoCompactThreshold1m?: number | null;
     oneMillionContextEnabled?: boolean;
   }> = [];
 
   for (const provider of providersMap.values()) {
-    if (provider.autoCompactThreshold != null || provider.oneMillionContextEnabled) {
+    if (
+      provider.autoCompactThreshold != null ||
+      provider.autoCompactThreshold1m != null ||
+      provider.oneMillionContextEnabled
+    ) {
       providerSettings.push({
         name: provider.name,
         autoCompactThreshold: provider.autoCompactThreshold ?? null,
+        ...(provider.autoCompactThreshold1m != null && {
+          autoCompactThreshold1m: provider.autoCompactThreshold1m,
+        }),
         ...(provider.oneMillionContextEnabled && { oneMillionContextEnabled: true }),
       });
     }

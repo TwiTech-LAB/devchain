@@ -55,6 +55,7 @@ const UpdateProviderSchema = z.object({
   mcpEndpoint: z.string().nullable().optional(),
   mcpRegisteredAt: z.string().nullable().optional(),
   autoCompactThreshold: z.number().int().min(1).max(100).nullable().optional(),
+  autoCompactThreshold1m: z.number().int().min(1).max(100).nullable().optional(),
   oneMillionContextEnabled: z.boolean().optional(),
 });
 
@@ -144,6 +145,7 @@ export class ProvidersController {
       ) {
         payload.oneMillionContextEnabled = false;
         payload.autoCompactThreshold = 95;
+        payload.autoCompactThreshold1m = null;
         this.probeProofService.clearProof(id);
         logger.info({ id }, 'Auto-disabled 1M context: binPath changed without valid proof');
       }
@@ -167,6 +169,9 @@ export class ProvidersController {
     if (parsed.autoCompactThreshold !== undefined) {
       payload.autoCompactThreshold = parsed.autoCompactThreshold;
     }
+    if (parsed.autoCompactThreshold1m !== undefined) {
+      payload.autoCompactThreshold1m = parsed.autoCompactThreshold1m;
+    }
 
     if (parsed.oneMillionContextEnabled !== undefined) {
       if (parsed.oneMillionContextEnabled) {
@@ -182,12 +187,17 @@ export class ProvidersController {
           });
         }
 
-        // Default threshold to 50 (1M-optimized) when caller doesn't explicitly set one
-        if (parsed.autoCompactThreshold === undefined) {
-          payload.autoCompactThreshold = 50;
+        // Default 1M threshold to 50 when caller doesn't explicitly set one
+        if (parsed.autoCompactThreshold1m === undefined) {
+          payload.autoCompactThreshold1m = 50;
+        }
+        // Default standard threshold to 95 only if not already set by user
+        if (parsed.autoCompactThreshold === undefined && existing.autoCompactThreshold == null) {
+          payload.autoCompactThreshold = 95;
         }
       } else {
-        // Disabling 1M: default threshold to 95 (safe fallback) when caller doesn't explicitly set one
+        // Disabling 1M: clear 1M threshold, default standard to 95 when not explicitly set
+        payload.autoCompactThreshold1m = null;
         if (parsed.autoCompactThreshold === undefined) {
           payload.autoCompactThreshold = 95;
         }

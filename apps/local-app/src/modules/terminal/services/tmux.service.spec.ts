@@ -1,5 +1,6 @@
 import { TmuxService } from './tmux.service';
 import { EventsService } from '../../events/services/events.service';
+import { PasteNotConfirmedError } from '../../../common/errors/error-types';
 
 // Mock child_process - need both exec (for listSessions/listAllSessionNames)
 // and execFile (for getSessionCwd which uses execFileAsync for security)
@@ -463,6 +464,329 @@ describe('TmuxService', () => {
 
       expect(pasteTextSpy).toHaveBeenCalledTimes(1);
       expect(sendKeysSpy).not.toHaveBeenCalled();
+    });
+
+    it('calls confirmPasteDelivery and sends Enter on confirmed', async () => {
+      jest
+        .spyOn(tmuxService, 'capturePaneStrict')
+        .mockResolvedValue({ ok: true, output: 'baseline' });
+      const confirmSpy = jest
+        .spyOn(tmuxService, 'confirmPasteDelivery')
+        .mockResolvedValue({ confirmed: true, elapsedMs: 50, method: 'nonce' });
+
+      const promise = tmuxService.pasteAndSubmit('sess-1', 'hello', {
+        confirm: true,
+        nonce: 'abc1234',
+      });
+      await jest.runAllTimersAsync();
+      await promise;
+
+      expect(pasteTextSpy).toHaveBeenCalledWith('sess-1', 'hello', { bracketed: true });
+      expect(confirmSpy).toHaveBeenCalledWith(
+        'sess-1',
+        'abc1234',
+        expect.objectContaining({ timeoutMs: 2000, baseline: 'baseline' }),
+      );
+      expect(sendKeysSpy).toHaveBeenCalledWith('sess-1', ['Enter']);
+    });
+
+    it('throws PasteNotConfirmedError when not confirmed and no captureError', async () => {
+      jest.spyOn(tmuxService, 'capturePaneStrict').mockResolvedValue({ ok: true, output: '' });
+      jest
+        .spyOn(tmuxService, 'confirmPasteDelivery')
+        .mockResolvedValue({ confirmed: false, elapsedMs: 2000 });
+
+      const promise = tmuxService.pasteAndSubmit('sess-1', 'hello', {
+        confirm: true,
+        nonce: 'abc1234',
+      });
+
+      const rejection = expect(promise).rejects.toBeInstanceOf(PasteNotConfirmedError);
+      await jest.runAllTimersAsync();
+      await rejection;
+      expect(sendKeysSpy).not.toHaveBeenCalled();
+    });
+
+    it('falls back to fixed delay on captureError', async () => {
+      jest.spyOn(tmuxService, 'capturePaneStrict').mockResolvedValue({ ok: true, output: '' });
+      jest
+        .spyOn(tmuxService, 'confirmPasteDelivery')
+        .mockResolvedValue({ confirmed: false, elapsedMs: 10, captureError: true });
+
+      const promise = tmuxService.pasteAndSubmit('sess-1', 'hello', {
+        confirm: true,
+        nonce: 'abc1234',
+        delayMs: 250,
+      });
+      await jest.runAllTimersAsync();
+      await promise;
+
+      expect(sendKeysSpy).toHaveBeenCalledWith('sess-1', ['Enter']);
+    });
+
+    it('uses legacy fixed delay when confirm is false', async () => {
+      const confirmSpy = jest.spyOn(tmuxService, 'confirmPasteDelivery');
+
+      const promise = tmuxService.pasteAndSubmit('sess-1', 'hello', { confirm: false });
+      await jest.runAllTimersAsync();
+      await promise;
+
+      expect(confirmSpy).not.toHaveBeenCalled();
+      expect(pasteTextSpy).toHaveBeenCalledTimes(1);
+      expect(sendKeysSpy).toHaveBeenCalledWith('sess-1', ['Enter']);
+    });
+  });
+
+  describe('capturePaneStrict', () => {
+    it('returns { ok: true, output } on success', async () => {
+      mockExecFile.mockImplementationOnce(
+        (
+          cmd: string,
+          args: string[],
+          callback: (error: Error | null, result: { stdout: string }) => void,
+        ) => {
+          expect(cmd).toBe('tmux');
+          expect(args).toEqual(['capture-pane', '-p', '-S', '-10', '-t', '=test-session:']);
+          callback(null, { stdout: 'some pane output\n' });
+        },
+      );
+
+      const result = await tmuxService.capturePaneStrict('test-session', 10);
+
+      expect(result).toEqual({ ok: true, output: 'some pane output\n' });
+    });
+
+    it('returns { ok: false, error } on exec failure', async () => {
+      mockExecFile.mockImplementationOnce(
+        (
+          cmd: string,
+          args: string[],
+          callback: (error: Error | null, result: { stdout: string }) => void,
+        ) => {
+          callback(new Error('session not found'), { stdout: '' });
+        },
+      );
+
+      const result = await tmuxService.capturePaneStrict('test-session', 10);
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toContain('session not found');
+      }
+    });
+
+    it("returns { ok: true, output: '' } on empty pane", async () => {
+      mockExecFile.mockImplementationOnce(
+        (
+          cmd: string,
+          args: string[],
+          callback: (error: Error | null, result: { stdout: string }) => void,
+        ) => {
+          callback(null, { stdout: '' });
+        },
+      );
+
+      const result = await tmuxService.capturePaneStrict('test-session', 10);
+
+      expect(result).toEqual({ ok: true, output: '' });
+    });
+  });
+
+  describe('confirmPasteDelivery', () => {
+    let capturePaneStrictSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+      capturePaneStrictSpy = jest.spyOn(tmuxService, 'capturePaneStrict');
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('returns confirmed when nonce found immediately', async () => {
+      capturePaneStrictSpy.mockResolvedValue({ ok: true, output: 'some text abc1234 more text' });
+
+      const result = await tmuxService.confirmPasteDelivery('sess-1', 'abc1234', {
+        timeoutMs: 2000,
+        pollIntervalMs: 150,
+        tailLines: 10,
+      });
+
+      expect(result.confirmed).toBe(true);
+      expect(result.captureError).toBeUndefined();
+      expect(capturePaneStrictSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns not confirmed when nonce never found (timeout)', async () => {
+      capturePaneStrictSpy.mockResolvedValue({ ok: true, output: 'no nonce here' });
+
+      const promise = tmuxService.confirmPasteDelivery('sess-1', 'abc1234', {
+        timeoutMs: 500,
+        pollIntervalMs: 150,
+        tailLines: 10,
+      });
+
+      // First capture runs synchronously before any timer advance.
+      // Advance timers to let subsequent poll intervals fire.
+      await jest.advanceTimersByTimeAsync(600);
+      const result = await promise;
+
+      expect(result.confirmed).toBe(false);
+      expect(result.captureError).toBeUndefined();
+      expect(result.elapsedMs).toBeGreaterThanOrEqual(500);
+    });
+
+    it('returns captureError when capture fails', async () => {
+      capturePaneStrictSpy.mockResolvedValue({ ok: false, error: 'tmux: session not found' });
+
+      const result = await tmuxService.confirmPasteDelivery('sess-1', 'abc1234', {
+        timeoutMs: 2000,
+        pollIntervalMs: 150,
+        tailLines: 10,
+      });
+
+      expect(result.confirmed).toBe(false);
+      expect(result.captureError).toBe(true);
+      // Should return immediately on first error without polling further
+      expect(capturePaneStrictSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('stops polling early once nonce is found', async () => {
+      capturePaneStrictSpy
+        .mockResolvedValueOnce({ ok: true, output: 'no nonce yet' })
+        .mockResolvedValueOnce({ ok: true, output: 'found abc1234 here' });
+
+      const promise = tmuxService.confirmPasteDelivery('sess-1', 'abc1234', {
+        timeoutMs: 2000,
+        pollIntervalMs: 150,
+        tailLines: 10,
+      });
+
+      // First capture happens before any timer advance (no nonce).
+      // Advance to let the first sleep fire and trigger second capture.
+      await jest.advanceTimersByTimeAsync(200);
+      const result = await promise;
+
+      expect(result.confirmed).toBe(true);
+      expect(capturePaneStrictSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('confirms via paste indicator fallback when nonce is hidden in collapsed TUI output', async () => {
+      const baseline = 'prompt> \nsome old output\n';
+      capturePaneStrictSpy.mockResolvedValue({
+        ok: true,
+        output: 'prompt> \nsome old output\n[Pasted text #11 +5 lines]\n',
+      });
+
+      const result = await tmuxService.confirmPasteDelivery('sess-1', 'hidden-nonce', {
+        timeoutMs: 2000,
+        pollIntervalMs: 150,
+        tailLines: 10,
+        baseline,
+      });
+
+      expect(result.confirmed).toBe(true);
+      expect(result.method).toBe('paste_indicator');
+    });
+
+    it('does not false-positive on pre-existing paste indicators in baseline', async () => {
+      const baseline = 'prompt> \n[Pasted text #10 +3 lines]\nold output\n';
+      capturePaneStrictSpy.mockResolvedValue({
+        ok: true,
+        output: 'prompt> \n[Pasted text #10 +3 lines]\nold output\n',
+      });
+
+      const promise = tmuxService.confirmPasteDelivery('sess-1', 'hidden-nonce', {
+        timeoutMs: 300,
+        pollIntervalMs: 100,
+        tailLines: 10,
+        baseline,
+      });
+
+      await jest.advanceTimersByTimeAsync(400);
+      const result = await promise;
+
+      expect(result.confirmed).toBe(false);
+    });
+
+    it('returns method nonce when nonce is found directly', async () => {
+      capturePaneStrictSpy.mockResolvedValue({
+        ok: true,
+        output: 'text with abc1234 nonce',
+      });
+
+      const result = await tmuxService.confirmPasteDelivery('sess-1', 'abc1234', {
+        timeoutMs: 2000,
+        baseline: 'old output',
+      });
+
+      expect(result.confirmed).toBe(true);
+      expect(result.method).toBe('nonce');
+    });
+
+    it('detects all known collapsed paste formats', async () => {
+      const formats = [
+        '[Pasted text #11 +5 lines]',
+        '[Pasted Content 7952 chars]',
+        '[Pasted Text: 33 lines]',
+        '[Pasted ~33 lines]',
+      ];
+
+      for (const format of formats) {
+        capturePaneStrictSpy.mockResolvedValue({
+          ok: true,
+          output: `prompt> \n${format}\n`,
+        });
+
+        const result = await tmuxService.confirmPasteDelivery('sess-1', 'no-match', {
+          timeoutMs: 2000,
+          baseline: 'prompt> \n',
+        });
+
+        expect(result.confirmed).toBe(true);
+        expect(result.method).toBe('paste_indicator');
+      }
+    });
+
+    it('Scenario A: detects paste when old indicator scrolled out and new one appeared (same count)', async () => {
+      // Baseline has one paste indicator from a previous attempt
+      const baseline = 'prompt> \n[Pasted text #10 +5 lines]\nold stuff\n';
+      // After retry, old indicator scrolled out, new identical one appeared with shifted content
+      capturePaneStrictSpy.mockResolvedValue({
+        ok: true,
+        output: 'old stuff\nnew line\n[Pasted text #10 +5 lines]\n',
+      });
+
+      const result = await tmuxService.confirmPasteDelivery('sess-1', 'hidden-nonce', {
+        timeoutMs: 2000,
+        baseline,
+      });
+
+      // Set comparison sees same string — Fallback A fails
+      // But content changed AND has paste indicator → Fallback B fires
+      expect(result.confirmed).toBe(true);
+      expect(result.method).toBe('paste_changed');
+    });
+
+    it('Scenario B: detects paste when identical collapsed text from multiple attempts', async () => {
+      // Baseline has two identical paste indicators from previous failed deliveries
+      const baseline = 'prompt> \n[Pasted text +5 lines]\nother output\n[Pasted text +5 lines]\n';
+      // New paste also produces identical indicator, but shifts tail content
+      capturePaneStrictSpy.mockResolvedValue({
+        ok: true,
+        output: 'other output\n[Pasted text +5 lines]\nnew output\n[Pasted text +5 lines]\n',
+      });
+
+      const result = await tmuxService.confirmPasteDelivery('sess-1', 'hidden-nonce', {
+        timeoutMs: 2000,
+        baseline,
+      });
+
+      // Set comparison sees same string "[Pasted text +5 lines]" — Fallback A fails
+      // But content changed AND has paste indicator → Fallback B fires
+      expect(result.confirmed).toBe(true);
+      expect(result.method).toBe('paste_changed');
     });
   });
 });

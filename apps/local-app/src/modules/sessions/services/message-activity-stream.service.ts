@@ -34,6 +34,13 @@ export class MessageActivityStreamService {
   }
 
   /**
+   * Broadcast when message delivery is unconfirmed (paste may have worked but can't verify).
+   */
+  broadcastUnconfirmed(batchId: string, entries: MessageLogEntry[]): void {
+    this.broadcast('messages/activity', 'unconfirmed', { batchId, entries });
+  }
+
+  /**
    * Broadcast when a message delivery fails.
    */
   broadcastFailed(entry: MessageLogEntry): void {

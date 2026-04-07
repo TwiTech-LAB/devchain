@@ -40,14 +40,15 @@ function formatTime(timestamp: number): string {
 }
 
 interface StatusBadgeProps {
-  status: 'queued' | 'delivered' | 'failed';
+  status: 'queued' | 'delivered' | 'failed' | 'unconfirmed';
 }
 
 function StatusBadge({ status }: StatusBadgeProps) {
-  const variants = {
+  const variants: Record<string, string> = {
     queued: 'bg-muted text-muted-foreground',
     delivered: 'bg-emerald-500/10 text-emerald-600 border-emerald-500/40',
     failed: 'bg-destructive/10 text-destructive border-destructive/40',
+    unconfirmed: 'bg-amber-500/10 text-amber-600 border-amber-500/40',
   };
 
   return (

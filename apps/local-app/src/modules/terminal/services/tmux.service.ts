@@ -2,7 +2,12 @@ import { Injectable, OnModuleDestroy, Inject, forwardRef } from '@nestjs/common'
 import { exec, spawn, execFile } from 'child_process';
 import { promisify } from 'util';
 import { createLogger } from '../../../common/logging/logger';
-import { IOError, NotFoundError, ValidationError } from '../../../common/errors/error-types';
+import {
+  IOError,
+  NotFoundError,
+  PasteNotConfirmedError,
+  ValidationError,
+} from '../../../common/errors/error-types';
 import { EventsService } from '../../events/services/events.service';
 
 // Create execAsync with larger maxBuffer for tmux captures
@@ -246,6 +251,124 @@ export class TmuxService implements OnModuleDestroy {
       }
       logger.warn({ sessionName, error: msg }, 'capture-pane failed');
       return '';
+    }
+  }
+
+  /**
+   * Strict variant of capturePane that distinguishes tmux errors from empty output.
+   * Uses execFileAsync (no shell) and returns a tri-state result.
+   * Captures last `tailLines` lines without escape sequences.
+   */
+  async capturePaneStrict(
+    sessionName: string,
+    tailLines: number,
+  ): Promise<{ ok: true; output: string } | { ok: false; error: string }> {
+    const start = `-${Math.max(0, Math.floor(tailLines))}`;
+    try {
+      validateSessionId(sessionName);
+      const { stdout } = await execFileAsync('tmux', [
+        'capture-pane',
+        '-p',
+        '-S',
+        start,
+        '-t',
+        `=${sessionName}:`,
+      ]);
+      return { ok: true, output: stdout ?? '' };
+    } catch (error) {
+      const msg = String(error ?? '');
+      logger.warn({ sessionName, error: msg }, 'capturePaneStrict failed');
+      return { ok: false, error: msg };
+    }
+  }
+
+  /**
+   * Extract trimmed lines matching /pasted/i as a Set.
+   * Used by confirmPasteDelivery for paste-indicator fallback detection.
+   */
+  private extractPasteIndicatorLines(text: string): Set<string> {
+    return new Set(
+      text
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => /pasted/i.test(line)),
+    );
+  }
+
+  /**
+   * Poll terminal output for a nonce substring to confirm paste delivery.
+   * Uses three-tier detection:
+   * 1. Primary: nonce substring search (works for short/verbatim messages)
+   * 2. Fallback A: new /pasted/i line in current Set not in baseline Set
+   * 3. Fallback B: tail content changed AND current has any /pasted/i line
+   *
+   * Returns confirmation status without throwing on capture errors.
+   */
+  async confirmPasteDelivery(
+    sessionName: string,
+    nonce: string,
+    options?: {
+      timeoutMs?: number;
+      pollIntervalMs?: number;
+      tailLines?: number;
+      baseline?: string;
+    },
+  ): Promise<{
+    confirmed: boolean;
+    elapsedMs: number;
+    captureError?: boolean;
+    method?: 'nonce' | 'paste_indicator' | 'paste_changed';
+  }> {
+    const timeoutMs = Math.max(1, Math.floor(options?.timeoutMs ?? 2000));
+    const pollIntervalMs = Math.max(1, Math.floor(options?.pollIntervalMs ?? 150));
+    const tailLines = Math.max(1, Math.floor(options?.tailLines ?? 10));
+    const baselinePasteLines =
+      options?.baseline != null ? this.extractPasteIndicatorLines(options.baseline) : null;
+    const startedAt = Date.now();
+
+    while (true) {
+      const result = await this.capturePaneStrict(sessionName, tailLines);
+
+      if (!result.ok) {
+        return { confirmed: false, elapsedMs: Date.now() - startedAt, captureError: true };
+      }
+
+      // 1. Primary: nonce substring search
+      if (result.output.includes(nonce)) {
+        return { confirmed: true, elapsedMs: Date.now() - startedAt, method: 'nonce' };
+      }
+
+      if (baselinePasteLines != null) {
+        const currentPasteLines = this.extractPasteIndicatorLines(result.output);
+
+        // 2. Fallback A: new paste indicator line not in baseline Set
+        const hasNewLine = [...currentPasteLines].some((l) => !baselinePasteLines.has(l));
+        if (hasNewLine) {
+          return {
+            confirmed: true,
+            elapsedMs: Date.now() - startedAt,
+            method: 'paste_indicator',
+          };
+        }
+
+        // 3. Fallback B: tail content changed AND has any paste indicator
+        if (result.output !== options!.baseline && currentPasteLines.size > 0) {
+          return {
+            confirmed: true,
+            elapsedMs: Date.now() - startedAt,
+            method: 'paste_changed',
+          };
+        }
+      }
+
+      const elapsed = Date.now() - startedAt;
+      if (elapsed >= timeoutMs) {
+        return { confirmed: false, elapsedMs: elapsed };
+      }
+
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, pollIntervalMs);
+      });
     }
   }
 
@@ -502,6 +625,10 @@ export class TmuxService implements OnModuleDestroy {
   /**
    * Paste text and submit with optional keys (default Enter).
    * Bracketed paste is enabled by default for better TUI compatibility.
+   *
+   * When `confirm: true` and `nonce` is provided, replaces the fixed delay with
+   * confirmation-gated Enter: polls terminal output for the nonce before sending
+   * submit keys. Falls back to fixed delay on capture error.
    */
   async pasteAndSubmit(
     sessionName: string,
@@ -512,6 +639,9 @@ export class TmuxService implements OnModuleDestroy {
       delayMs?: number;
       preKeys?: string[];
       preDelayMs?: number;
+      confirm?: boolean;
+      nonce?: string;
+      confirmTimeoutMs?: number;
     },
   ): Promise<void> {
     const bracketed = options?.bracketed ?? true;
@@ -527,8 +657,48 @@ export class TmuxService implements OnModuleDestroy {
       }
     }
 
+    // Capture baseline before paste for paste-indicator fallback detection
+    let baseline: string | undefined;
+    if (options?.confirm && options.nonce) {
+      const baselineResult = await this.capturePaneStrict(sessionName, 10);
+      if (baselineResult.ok) {
+        baseline = baselineResult.output;
+      }
+    }
+
     await this.pasteText(sessionName, text, { bracketed });
-    await new Promise((r) => setTimeout(r, delayMs));
+
+    // Confirmation-gated Enter: poll for nonce before submitting
+    if (options?.confirm && options.nonce) {
+      const confirmation = await this.confirmPasteDelivery(sessionName, options.nonce, {
+        timeoutMs: options.confirmTimeoutMs ?? 2000,
+        baseline,
+      });
+
+      if (confirmation.confirmed) {
+        logger.info(
+          { sessionName, elapsedMs: confirmation.elapsedMs, method: confirmation.method },
+          'Paste delivery confirmed, sending Enter',
+        );
+      } else if (confirmation.captureError) {
+        // Capture error: degrade to fixed delay (tmux may be temporarily unavailable)
+        logger.warn(
+          { sessionName, elapsedMs: confirmation.elapsedMs },
+          'Paste confirmation capture error, falling back to fixed delay',
+        );
+        await new Promise((r) => setTimeout(r, delayMs));
+      } else {
+        // Nonce not found within timeout and no capture error
+        throw new PasteNotConfirmedError(sessionName, {
+          nonce: options.nonce,
+          elapsedMs: confirmation.elapsedMs,
+        });
+      }
+    } else {
+      // Legacy path: fixed delay
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+
     if (submitKeys.length > 0) {
       try {
         await this.sendKeys(sessionName, submitKeys);

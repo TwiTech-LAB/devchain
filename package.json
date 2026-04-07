@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.11.3",
+  "version": "0.11.4",
   "description": "AI driven development platform",
   "homepage": "https://devchain.twitechlab.com/",
   "repository": {
@@ -8,6 +8,10 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.11.4": [
+      "Model-aware auto-compact threshold based on context window size",
+      "Confirmed terminal message delivery"
+    ],
     "0.11.3": [
       "Claude 1M context support via model alias rewriting (Opus only) with auto-probe on import",
       "GPT 5.4 support",

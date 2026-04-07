@@ -1245,6 +1245,252 @@ describe('SessionsService', () => {
     expect(matchingArgs).toHaveLength(0);
   });
 
+  describe('model-aware threshold resolution', () => {
+    it('injects 1M threshold when opus model with 1M enabled and autoCompactThreshold1m set', async () => {
+      jest.useFakeTimers();
+      storage.getAgent.mockResolvedValue({
+        id: 'agent-1',
+        name: 'Helper Agent',
+        projectId: 'project-1',
+        profileId: 'profile-1',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      });
+      storage.getProject.mockResolvedValue({
+        id: 'project-1',
+        name: 'My Project',
+        rootPath: '/workspace/project-1',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      });
+      storage.getAgentProfile.mockResolvedValue({
+        id: 'profile-1',
+        name: 'Helper Profile',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      });
+      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        {
+          id: 'config-1',
+          profileId: 'profile-1',
+          providerId: 'provider-1',
+          options: '--model opus --dangerously-skip-permissions',
+          env: null,
+          createdAt: '2024-01-01T00:00:00.000Z',
+          updatedAt: '2024-01-01T00:00:00.000Z',
+        },
+      ]);
+      storage.getProvider.mockResolvedValue({
+        id: 'provider-1',
+        name: 'claude',
+        binPath: '/usr/local/bin/claude',
+        mcpConfigured: true,
+        autoCompactThreshold: 95,
+        autoCompactThreshold1m: 50,
+        oneMillionContextEnabled: true,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      });
+
+      const launchPromise = service.launchSession({
+        projectId: 'project-1',
+        agentId: 'agent-1',
+      });
+      await jest.runAllTimersAsync();
+      await launchPromise;
+
+      const sendArgs = tmuxService.sendCommandArgs.mock.calls[0][1] as string[];
+      expect(sendArgs).toEqual(
+        expect.arrayContaining([expect.stringContaining('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50')]),
+      );
+    });
+
+    it('injects standard threshold when sonnet model with 1M enabled', async () => {
+      jest.useFakeTimers();
+      storage.getAgent.mockResolvedValue({
+        id: 'agent-1',
+        name: 'Helper Agent',
+        projectId: 'project-1',
+        profileId: 'profile-1',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      });
+      storage.getProject.mockResolvedValue({
+        id: 'project-1',
+        name: 'My Project',
+        rootPath: '/workspace/project-1',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      });
+      storage.getAgentProfile.mockResolvedValue({
+        id: 'profile-1',
+        name: 'Helper Profile',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      });
+      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        {
+          id: 'config-1',
+          profileId: 'profile-1',
+          providerId: 'provider-1',
+          options: '--model sonnet --dangerously-skip-permissions',
+          env: null,
+          createdAt: '2024-01-01T00:00:00.000Z',
+          updatedAt: '2024-01-01T00:00:00.000Z',
+        },
+      ]);
+      storage.getProvider.mockResolvedValue({
+        id: 'provider-1',
+        name: 'claude',
+        binPath: '/usr/local/bin/claude',
+        mcpConfigured: true,
+        autoCompactThreshold: 95,
+        autoCompactThreshold1m: 50,
+        oneMillionContextEnabled: true,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      });
+
+      const launchPromise = service.launchSession({
+        projectId: 'project-1',
+        agentId: 'agent-1',
+      });
+      await jest.runAllTimersAsync();
+      await launchPromise;
+
+      const sendArgs = tmuxService.sendCommandArgs.mock.calls[0][1] as string[];
+      expect(sendArgs).toEqual(
+        expect.arrayContaining([expect.stringContaining('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=95')]),
+      );
+      const matchingArgs = sendArgs.filter((a: string) =>
+        a.includes('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50'),
+      );
+      expect(matchingArgs).toHaveLength(0);
+    });
+
+    it('injects 1M threshold when no model flag with 1M enabled (rewritten to opus[1m])', async () => {
+      jest.useFakeTimers();
+      storage.getAgent.mockResolvedValue({
+        id: 'agent-1',
+        name: 'Helper Agent',
+        projectId: 'project-1',
+        profileId: 'profile-1',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      });
+      storage.getProject.mockResolvedValue({
+        id: 'project-1',
+        name: 'My Project',
+        rootPath: '/workspace/project-1',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      });
+      storage.getAgentProfile.mockResolvedValue({
+        id: 'profile-1',
+        name: 'Helper Profile',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      });
+      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        {
+          id: 'config-1',
+          profileId: 'profile-1',
+          providerId: 'provider-1',
+          options: '--dangerously-skip-permissions',
+          env: null,
+          createdAt: '2024-01-01T00:00:00.000Z',
+          updatedAt: '2024-01-01T00:00:00.000Z',
+        },
+      ]);
+      storage.getProvider.mockResolvedValue({
+        id: 'provider-1',
+        name: 'claude',
+        binPath: '/usr/local/bin/claude',
+        mcpConfigured: true,
+        autoCompactThreshold: 95,
+        autoCompactThreshold1m: 50,
+        oneMillionContextEnabled: true,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      });
+
+      const launchPromise = service.launchSession({
+        projectId: 'project-1',
+        agentId: 'agent-1',
+      });
+      await jest.runAllTimersAsync();
+      await launchPromise;
+
+      const sendArgs = tmuxService.sendCommandArgs.mock.calls[0][1] as string[];
+      // No model flag + 1M enabled: rewriteModelTo1m() adds opus[1m] → 1M threshold applies
+      expect(sendArgs.join(' ')).toContain('--model opus[1m]');
+      expect(sendArgs).toEqual(
+        expect.arrayContaining([expect.stringContaining('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50')]),
+      );
+    });
+
+    it('injects standard threshold when 1M is disabled regardless of model', async () => {
+      jest.useFakeTimers();
+      storage.getAgent.mockResolvedValue({
+        id: 'agent-1',
+        name: 'Helper Agent',
+        projectId: 'project-1',
+        profileId: 'profile-1',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      });
+      storage.getProject.mockResolvedValue({
+        id: 'project-1',
+        name: 'My Project',
+        rootPath: '/workspace/project-1',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      });
+      storage.getAgentProfile.mockResolvedValue({
+        id: 'profile-1',
+        name: 'Helper Profile',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      });
+      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        {
+          id: 'config-1',
+          profileId: 'profile-1',
+          providerId: 'provider-1',
+          options: '--model opus --dangerously-skip-permissions',
+          env: null,
+          createdAt: '2024-01-01T00:00:00.000Z',
+          updatedAt: '2024-01-01T00:00:00.000Z',
+        },
+      ]);
+      storage.getProvider.mockResolvedValue({
+        id: 'provider-1',
+        name: 'claude',
+        binPath: '/usr/local/bin/claude',
+        mcpConfigured: true,
+        autoCompactThreshold: 85,
+        autoCompactThreshold1m: null,
+        oneMillionContextEnabled: false,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      });
+
+      const launchPromise = service.launchSession({
+        projectId: 'project-1',
+        agentId: 'agent-1',
+      });
+      await jest.runAllTimersAsync();
+      await launchPromise;
+
+      const sendArgs = tmuxService.sendCommandArgs.mock.calls[0][1] as string[];
+      expect(sendArgs).toEqual(
+        expect.arrayContaining([expect.stringContaining('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=85')]),
+      );
+      // 1M disabled: model should not be rewritten
+      expect(sendArgs.join(' ')).not.toContain('opus[1m]');
+    });
+  });
+
   it('rewrites model to opus[1m] when Claude provider has 1M enabled and --model opus', async () => {
     jest.useFakeTimers();
     storage.getAgent.mockResolvedValue({

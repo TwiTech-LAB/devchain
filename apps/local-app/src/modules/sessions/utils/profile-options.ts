@@ -160,6 +160,27 @@ export function detectClaudeModelFamily(model: string): 'opus' | 'sonnet' | null
   return null;
 }
 
+/**
+ * Extract the model value from an argv array.
+ * Handles: --model X, -m X, --model=X, -m=X.
+ * Returns the model string or null if no model flag is present.
+ */
+export function extractModelFromArgs(args: string[]): string | null {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+
+    if ((arg === '--model' || arg === '-m') && i + 1 < args.length) {
+      return args[i + 1];
+    }
+
+    if (arg.startsWith('--model=') || arg.startsWith('-m=')) {
+      return arg.slice(arg.indexOf('=') + 1);
+    }
+  }
+
+  return null;
+}
+
 function rewriteValue(value: string): string {
   const family = detectClaudeModelFamily(value);
   if (family === 'opus') {

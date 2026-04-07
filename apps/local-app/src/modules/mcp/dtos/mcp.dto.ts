@@ -682,7 +682,7 @@ export type SendMessageResponse =
       queued: Array<{
         name: string;
         type: 'agent' | 'guest';
-        status: 'queued' | 'launched' | 'delivered' | 'failed';
+        status: 'queued' | 'launched' | 'delivered' | 'unconfirmed' | 'failed';
         error?: string;
       }>;
       estimatedDeliveryMs: number;
@@ -696,7 +696,7 @@ export type SendMessageResponse =
         agentName: string;
         agentId: string;
         sessionId: string;
-        status: 'delivered' | 'queued' | 'failed';
+        status: 'delivered' | 'queued' | 'unconfirmed' | 'failed';
         error?: string;
       }>;
     };

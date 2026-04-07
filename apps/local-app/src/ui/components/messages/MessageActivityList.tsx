@@ -18,7 +18,7 @@ export interface MessageLogPreview {
   preview: string;
   source: string;
   senderAgentId?: string;
-  status: 'queued' | 'delivered' | 'failed';
+  status: 'queued' | 'delivered' | 'failed' | 'unconfirmed';
   batchId?: string;
   deliveredAt?: number;
   error?: string;
@@ -37,7 +37,7 @@ interface MessagesResponse {
 }
 
 export interface MessageFilters {
-  status?: 'queued' | 'delivered' | 'failed';
+  status?: 'queued' | 'delivered' | 'failed' | 'unconfirmed';
   agentId?: string;
   source?: string;
 }
@@ -51,7 +51,7 @@ interface MessageActivityListProps {
 interface MessageGroup {
   batchId?: string;
   messages: MessageLogPreview[];
-  status: 'queued' | 'delivered' | 'failed';
+  status: 'queued' | 'delivered' | 'failed' | 'unconfirmed';
   timestamp: number;
   agentName: string;
 }
@@ -120,14 +120,15 @@ function groupByBatch(messages: MessageLogPreview[] = []): MessageGroup[] {
 }
 
 interface StatusBadgeProps {
-  status: 'queued' | 'delivered' | 'failed';
+  status: 'queued' | 'delivered' | 'failed' | 'unconfirmed';
 }
 
 function StatusBadge({ status }: StatusBadgeProps) {
-  const variants = {
+  const variants: Record<string, string> = {
     queued: 'bg-muted text-muted-foreground',
     delivered: 'bg-emerald-500/10 text-emerald-600 border-emerald-500/40',
     failed: 'bg-destructive/10 text-destructive border-destructive/40',
+    unconfirmed: 'bg-amber-500/10 text-amber-600 border-amber-500/40',
   };
 
   return (

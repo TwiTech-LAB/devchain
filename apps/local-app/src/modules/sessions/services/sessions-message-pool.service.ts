@@ -8,6 +8,7 @@ import { TmuxService } from '../../terminal/services/tmux.service';
 import { SettingsService } from '../../settings/services/settings.service';
 import { STORAGE_SERVICE, type AgentStorage } from '../../storage/interfaces/storage.interface';
 import { createLogger } from '../../../common/logging/logger';
+import { deliverWithConfirmation } from '../../terminal/services/confirmed-delivery.helper';
 
 const logger = createLogger('SessionsMessagePoolService');
 
@@ -89,7 +90,7 @@ export interface EnqueueOptions {
  */
 export interface EnqueueResult {
   /** Whether the message was queued or delivered immediately */
-  status: 'queued' | 'delivered' | 'failed';
+  status: 'queued' | 'delivered' | 'failed' | 'unconfirmed';
   /** Number of messages currently in the pool for this agent */
   poolSize?: number;
   /** Error message if status is 'failed' */
@@ -108,7 +109,16 @@ export interface FlushResult {
   discardedCount?: number;
   /** Reason for failure (if failed) */
   reason?: string;
+  /** Delivery outcome — distinguishes confirmed from unconfirmed */
+  outcome?: 'delivered' | 'unconfirmed';
 }
+
+/** Typed failure codes for delivery errors */
+export type DeliveryFailureCode =
+  | 'paste_not_confirmed'
+  | 'no_active_session'
+  | 'send_keys_failed'
+  | 'tmux_error';
 
 /**
  * Log entry for tracking message lifecycle.
@@ -132,7 +142,7 @@ export interface MessageLogEntry {
   /** Agent ID of the sender (if applicable) */
   senderAgentId?: string;
   /** Current status of the message */
-  status: 'queued' | 'delivered' | 'failed';
+  status: 'queued' | 'delivered' | 'failed' | 'unconfirmed';
   /** Batch ID (set at flush time when multiple messages are grouped) */
   batchId?: string;
   /** Timestamp when message was delivered */
@@ -141,6 +151,14 @@ export interface MessageLogEntry {
   error?: string;
   /** Whether message was delivered immediately (bypassed pool) */
   immediate: boolean;
+  /** Delivery nonce for confirmation tracking */
+  nonce?: string;
+  /** Timestamp when nonce was confirmed in terminal output */
+  confirmedAt?: number;
+  /** Number of retries (0 = first try succeeded, 1 = one retry) */
+  retryCount?: number;
+  /** Typed failure code for delivery errors */
+  failureCode?: DeliveryFailureCode;
 }
 
 /**
@@ -397,18 +415,39 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       this.addLogEntry(logEntry);
 
       try {
-        await this.deliverMessage(agentId, text, submitKeys);
-        this.updateLogEntry(logEntryId, { status: 'delivered', deliveredAt: Date.now() });
-        // Broadcast delivered (immediate messages have no batchId)
-        const deliveredEntry = this.getLogEntryById(logEntryId);
-        if (deliveredEntry) {
-          this.activityStream.broadcastDelivered(logEntryId, [deliveredEntry]);
+        const {
+          nonce: deliveredNonce,
+          unconfirmed,
+          retryCount,
+        } = await this.deliverMessage(agentId, text, submitKeys);
+        const status = unconfirmed ? 'unconfirmed' : 'delivered';
+        const deliveredAt = Date.now();
+        this.updateLogEntry(logEntryId, {
+          status,
+          deliveredAt,
+          nonce: deliveredNonce,
+          confirmedAt: unconfirmed ? undefined : deliveredAt,
+          retryCount,
+          failureCode: unconfirmed ? 'paste_not_confirmed' : undefined,
+        });
+        // Broadcast delivered or unconfirmed (immediate messages use logEntryId as batchId)
+        const updatedEntry = this.getLogEntryById(logEntryId);
+        if (updatedEntry) {
+          if (unconfirmed) {
+            this.activityStream.broadcastUnconfirmed(logEntryId, [updatedEntry]);
+          } else {
+            this.activityStream.broadcastDelivered(logEntryId, [updatedEntry]);
+          }
         }
-        return { status: 'delivered' };
+        return { status };
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         logger.error({ agentId, source, error: errorMsg }, 'Immediate delivery failed');
-        this.updateLogEntry(logEntryId, { status: 'failed', error: errorMsg });
+        this.updateLogEntry(logEntryId, {
+          status: 'failed',
+          error: errorMsg,
+          failureCode: 'tmux_error',
+        });
         // Broadcast failure
         const failedEntry = this.getLogEntryById(logEntryId);
         if (failedEntry) {
@@ -522,7 +561,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       if (!flushResult.success) {
         return { status: 'failed', error: flushResult.reason };
       }
-      return { status: 'delivered' };
+      return { status: flushResult.outcome === 'unconfirmed' ? 'unconfirmed' : 'delivered' };
     }
 
     // Reset debounce timer (using pool's project-specific delayMs)
@@ -802,6 +841,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
           status: 'failed',
           batchId,
           error: 'No active session',
+          failureCode: 'no_active_session',
         });
         const entry = this.getLogEntryById(msg.logEntryId);
         if (entry) {
@@ -817,46 +857,61 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     const tmuxSessionId = session.tmuxSessionId;
 
     // Concatenate messages with separator (using project-specific separator)
-    const combinedText = messages.map((m) => m.text).join(separator);
+    const baseText = messages.map((m) => m.text).join(separator);
 
     // Use last message's submit keys (or default)
     const submitKeys = messages[messages.length - 1]?.submitKeys ?? ['Enter'];
 
     try {
-      // Ensure gap before sending
-      await this.sendCoordinator.ensureAgentGap(agentId, 1000);
-
-      // Paste and submit
-      await this.tmux.pasteAndSubmit(tmuxSessionId, combinedText, {
-        bracketed: true,
+      const result = await deliverWithConfirmation(this.tmux, this.sendCoordinator, {
+        tmuxSessionId,
+        text: baseText,
         submitKeys,
+        agentId,
       });
 
-      // Update log entries with delivered status
       const deliveredAt = Date.now();
-      const deliveredEntries: MessageLogEntry[] = [];
+      const status = result.confirmed ? 'delivered' : 'unconfirmed';
+      const entries: MessageLogEntry[] = [];
       for (const msg of messages) {
         this.updateLogEntry(msg.logEntryId, {
-          status: 'delivered',
+          status,
           batchId,
           deliveredAt,
+          nonce: result.nonce,
+          confirmedAt: result.confirmed ? deliveredAt : undefined,
+          retryCount: result.retryCount,
+          failureCode: result.confirmed ? undefined : 'paste_not_confirmed',
         });
         const entry = this.getLogEntryById(msg.logEntryId);
         if (entry) {
-          deliveredEntries.push(entry);
+          entries.push(entry);
         }
       }
 
-      // Broadcast delivered batch and pool update
-      this.activityStream.broadcastDelivered(batchId, deliveredEntries);
+      if (result.confirmed) {
+        this.activityStream.broadcastDelivered(batchId, entries);
+      } else {
+        this.activityStream.broadcastUnconfirmed(batchId, entries);
+      }
       this.broadcastPoolsUpdate();
 
       logger.info(
-        { agentId, sessionId: session.id, messageCount: messages.length, batchId },
+        {
+          agentId,
+          sessionId: session.id,
+          messageCount: messages.length,
+          batchId,
+          confirmed: result.confirmed,
+        },
         'Batch delivered to agent session',
       );
 
-      return { success: true, deliveredCount: messages.length };
+      return {
+        success: true,
+        deliveredCount: messages.length,
+        outcome: result.confirmed ? 'delivered' : 'unconfirmed',
+      };
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       logger.error(
@@ -864,11 +919,15 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
         'Failed to deliver batch to agent session',
       );
       // Update log entries with failure status and broadcast
+      const failureCode: DeliveryFailureCode = errorMsg.includes('send keys')
+        ? 'send_keys_failed'
+        : 'tmux_error';
       for (const msg of messages) {
         this.updateLogEntry(msg.logEntryId, {
           status: 'failed',
           batchId,
           error: errorMsg,
+          failureCode,
         });
         const entry = this.getLogEntryById(msg.logEntryId);
         if (entry) {
@@ -885,7 +944,11 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
   /**
    * Deliver a single message immediately (for immediate mode).
    */
-  private async deliverMessage(agentId: string, text: string, submitKeys: string[]): Promise<void> {
+  private async deliverMessage(
+    agentId: string,
+    text: string,
+    submitKeys: string[],
+  ): Promise<{ nonce: string; unconfirmed?: boolean; retryCount: number }> {
     // Find active session for agent
     const activeSessions = await this.sessions.listActiveSessions();
     const session = activeSessions.find((s) => s.agentId === agentId);
@@ -894,18 +957,32 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       throw new Error(`No active session for agent ${agentId}`);
     }
 
-    const tmuxSessionId = session.tmuxSessionId;
+    let result: { nonce: string; unconfirmed?: boolean; retryCount: number } = {
+      nonce: '',
+      retryCount: 0,
+    };
 
     // Use agent lock for consistency
     await this.coordinator.withAgentLock(agentId, async () => {
-      await this.sendCoordinator.ensureAgentGap(agentId, 1000);
-      await this.tmux.pasteAndSubmit(tmuxSessionId, text, {
-        bracketed: true,
+      const delivery = await deliverWithConfirmation(this.tmux, this.sendCoordinator, {
+        tmuxSessionId: session.tmuxSessionId!,
+        text,
         submitKeys,
+        agentId,
       });
+      result = {
+        nonce: delivery.nonce,
+        unconfirmed: !delivery.confirmed,
+        retryCount: delivery.retryCount,
+      };
     });
 
-    logger.info({ agentId, sessionId: session.id }, 'Immediate message delivered');
+    logger.info(
+      { agentId, sessionId: session.id, unconfirmed: result.unconfirmed },
+      'Immediate message delivered',
+    );
+
+    return result;
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1016,7 +1093,19 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
    */
   private updateLogEntry(
     messageId: string,
-    updates: Partial<Pick<MessageLogEntry, 'status' | 'batchId' | 'deliveredAt' | 'error'>>,
+    updates: Partial<
+      Pick<
+        MessageLogEntry,
+        | 'status'
+        | 'batchId'
+        | 'deliveredAt'
+        | 'error'
+        | 'nonce'
+        | 'confirmedAt'
+        | 'retryCount'
+        | 'failureCode'
+      >
+    >,
   ): void {
     const index = this.logIndex.get(messageId);
     if (index === undefined || !this.messageLog[index]) {

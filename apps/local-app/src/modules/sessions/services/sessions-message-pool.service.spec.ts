@@ -6,13 +6,14 @@ import type { TerminalSendCoordinatorService } from '../../terminal/services/ter
 import type { TmuxService } from '../../terminal/services/tmux.service';
 import type { SettingsService } from '../../settings/services/settings.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
+import { PasteNotConfirmedError, IOError } from '../../../common/errors/error-types';
 
 describe('SessionsMessagePoolService', () => {
   let service: SessionsMessagePoolService;
   let mockSessionsService: jest.Mocked<Pick<SessionsService, 'listActiveSessions'>>;
   let mockCoordinator: jest.Mocked<Pick<SessionCoordinatorService, 'withAgentLock'>>;
   let mockSendCoordinator: jest.Mocked<Pick<TerminalSendCoordinatorService, 'ensureAgentGap'>>;
-  let mockTmux: jest.Mocked<Pick<TmuxService, 'pasteAndSubmit'>>;
+  let mockTmux: jest.Mocked<Pick<TmuxService, 'pasteAndSubmit' | 'sendKeys'>>;
   let mockSettings: jest.Mocked<
     Pick<SettingsService, 'getMessagePoolConfig' | 'getMessagePoolConfigForProject'>
   >;
@@ -58,6 +59,7 @@ describe('SessionsMessagePoolService', () => {
 
     mockTmux = {
       pasteAndSubmit: jest.fn().mockResolvedValue(undefined),
+      sendKeys: jest.fn().mockResolvedValue(undefined),
     };
 
     mockSettings = {
@@ -84,6 +86,7 @@ describe('SessionsMessagePoolService', () => {
     mockActivityStream = {
       broadcastEnqueued: jest.fn(),
       broadcastDelivered: jest.fn(),
+      broadcastUnconfirmed: jest.fn(),
       broadcastFailed: jest.fn(),
       broadcastPoolsUpdated: jest.fn(),
     } as unknown as jest.Mocked<MessageActivityStreamService>;
@@ -143,7 +146,7 @@ describe('SessionsMessagePoolService', () => {
       expect(mockTmux.pasteAndSubmit).toHaveBeenCalledTimes(1);
       expect(mockTmux.pasteAndSubmit).toHaveBeenCalledWith(
         'tmux-1',
-        'Single message',
+        expect.stringContaining('Single message'),
         expect.objectContaining({ bracketed: true }),
       );
     });
@@ -167,7 +170,7 @@ describe('SessionsMessagePoolService', () => {
       expect(mockTmux.pasteAndSubmit).toHaveBeenCalledTimes(1);
       expect(mockTmux.pasteAndSubmit).toHaveBeenCalledWith(
         'tmux-1',
-        'Urgent message',
+        expect.stringContaining('Urgent message'),
         expect.objectContaining({ bracketed: true }),
       );
     });
@@ -310,7 +313,7 @@ describe('SessionsMessagePoolService', () => {
 
       expect(mockTmux.pasteAndSubmit).toHaveBeenCalledTimes(1);
       const calledText = mockTmux.pasteAndSubmit.mock.calls[0][1];
-      expect(calledText).toBe('First\n---\nSecond\n---\nThird');
+      expect(calledText).toContain('First\n---\nSecond\n---\nThird');
     });
 
     it('should maintain independent pools for multiple agents', async () => {
@@ -327,12 +330,12 @@ describe('SessionsMessagePoolService', () => {
       expect(mockTmux.pasteAndSubmit).toHaveBeenCalledTimes(2);
       expect(mockTmux.pasteAndSubmit).toHaveBeenCalledWith(
         'tmux-1',
-        'Agent1 Message',
+        expect.stringContaining('Agent1 Message'),
         expect.any(Object),
       );
       expect(mockTmux.pasteAndSubmit).toHaveBeenCalledWith(
         'tmux-2',
-        'Agent2 Message',
+        expect.stringContaining('Agent2 Message'),
         expect.any(Object),
       );
     });
@@ -563,7 +566,7 @@ describe('SessionsMessagePoolService', () => {
 
       expect(mockTmux.pasteAndSubmit).toHaveBeenCalledWith(
         'tmux-1',
-        'Message',
+        expect.stringContaining('Message'),
         expect.objectContaining({ submitKeys: ['Tab', 'Enter'] }),
       );
     });
@@ -594,7 +597,7 @@ describe('SessionsMessagePoolService', () => {
 
       expect(mockTmux.pasteAndSubmit).toHaveBeenCalledWith(
         'tmux-1',
-        'Message',
+        expect.stringContaining('Message'),
         expect.objectContaining({ submitKeys: ['Enter'] }),
       );
     });
@@ -1378,7 +1381,7 @@ describe('SessionsMessagePoolService', () => {
       // Should use new separator
       expect(mockTmux.pasteAndSubmit).toHaveBeenCalledWith(
         'tmux-1',
-        'Message 1\n===\nMessage 2',
+        expect.stringContaining('Message 1\n===\nMessage 2'),
         expect.any(Object),
       );
     });
@@ -1489,7 +1492,7 @@ describe('SessionsMessagePoolService', () => {
       expect(mockTmux.pasteAndSubmit).toHaveBeenCalledTimes(1);
       expect(mockTmux.pasteAndSubmit).toHaveBeenCalledWith(
         'tmux-1',
-        'Message 1\n---\nMessage 2',
+        expect.stringContaining('Message 1\n---\nMessage 2'),
         expect.any(Object),
       );
       expect(service.getPoolStats()).toHaveLength(0);
@@ -1644,7 +1647,7 @@ describe('SessionsMessagePoolService', () => {
       // Verify custom separator was used
       expect(mockTmux.pasteAndSubmit).toHaveBeenCalledWith(
         'tmux-1',
-        'Message 1\n===CUSTOM===\nMessage 2',
+        expect.stringContaining('Message 1\n===CUSTOM===\nMessage 2'),
         expect.any(Object),
       );
     });
@@ -1698,6 +1701,140 @@ describe('SessionsMessagePoolService', () => {
       expect(mockSettings.getMessagePoolConfigForProject).toHaveBeenCalledWith(
         'resolved-project-id',
       );
+    });
+  });
+
+  describe('Confirmed delivery retry and status tracking', () => {
+    beforeEach(() => {
+      // Use real timers for retry tests (retry uses 200ms setTimeout)
+      jest.useRealTimers();
+
+      // Use immediate delivery (pooling disabled) for easier testing
+      mockSettings.getMessagePoolConfig.mockReturnValue({
+        enabled: false,
+        delayMs: 10000,
+        maxWaitMs: 30000,
+        maxMessages: 10,
+        separator: '\n---\n',
+      });
+      mockSettings.getMessagePoolConfigForProject.mockReturnValue({
+        enabled: false,
+        delayMs: 10000,
+        maxWaitMs: 30000,
+        maxMessages: 10,
+        separator: '\n---\n',
+      });
+    });
+
+    it('sets confirmedAt and retryCount on successful delivery', async () => {
+      const result = await service.enqueue('agent-1', 'Hello', { source: 'test' });
+
+      expect(result.status).toBe('delivered');
+      expect(mockTmux.pasteAndSubmit).toHaveBeenCalledTimes(1);
+
+      // Verify log entry has confirmedAt and retryCount
+      const log = service.getMessageLog();
+      expect(log[0].status).toBe('delivered');
+      expect(log[0].confirmedAt).toBeDefined();
+      expect(log[0].retryCount).toBe(0);
+      expect(log[0].nonce).toBeDefined();
+      expect(log[0].nonce).toMatch(/^[0-9a-f]{7}$/);
+    });
+
+    it('retries once on PasteNotConfirmedError with Escape key between attempts', async () => {
+      // First attempt fails, second succeeds
+      mockTmux.pasteAndSubmit
+        .mockRejectedValueOnce(new PasteNotConfirmedError('tmux-1'))
+        .mockResolvedValueOnce(undefined);
+
+      const result = await service.enqueue('agent-1', 'Hello', { source: 'test' });
+
+      expect(result.status).toBe('delivered');
+      // pasteAndSubmit called twice (first attempt + retry)
+      expect(mockTmux.pasteAndSubmit).toHaveBeenCalledTimes(2);
+      // Escape key sent between attempts
+      expect(mockTmux.sendKeys).toHaveBeenCalledWith('tmux-1', ['Escape']);
+      // ensureAgentGap called for each attempt
+      expect(mockSendCoordinator.ensureAgentGap).toHaveBeenCalledTimes(2);
+
+      const log = service.getMessageLog();
+      expect(log[0].status).toBe('delivered');
+      expect(log[0].retryCount).toBe(1);
+      expect(log[0].confirmedAt).toBeDefined();
+    });
+
+    it('sets unconfirmed status after max retries exhausted', async () => {
+      // Both attempts fail with PasteNotConfirmedError
+      mockTmux.pasteAndSubmit.mockRejectedValue(new PasteNotConfirmedError('tmux-1'));
+
+      const result = await service.enqueue('agent-1', 'Hello', { source: 'test' });
+
+      expect(result.status).toBe('unconfirmed');
+      expect(mockTmux.pasteAndSubmit).toHaveBeenCalledTimes(2);
+      expect(mockTmux.sendKeys).toHaveBeenCalledWith('tmux-1', ['Escape']);
+
+      const log = service.getMessageLog();
+      expect(log[0].status).toBe('unconfirmed');
+      expect(log[0].failureCode).toBe('paste_not_confirmed');
+      expect(log[0].retryCount).toBe(1);
+      expect(log[0].confirmedAt).toBeUndefined();
+
+      // broadcastUnconfirmed called (not broadcastDelivered)
+      expect(mockActivityStream.broadcastUnconfirmed).toHaveBeenCalled();
+    });
+
+    it('generates fresh nonce for retry attempt', async () => {
+      const nonces: string[] = [];
+      mockTmux.pasteAndSubmit.mockImplementation(async (_session, text) => {
+        const match = text.match(/\[MsgId:([0-9a-f]+)\]/);
+        if (match) nonces.push(match[1]);
+        if (nonces.length === 1) {
+          throw new PasteNotConfirmedError('tmux-1');
+        }
+      });
+
+      await service.enqueue('agent-1', 'Hello', { source: 'test' });
+
+      expect(nonces).toHaveLength(2);
+      expect(nonces[0]).not.toBe(nonces[1]);
+    });
+
+    it('does NOT retry on IOError — fails immediately', async () => {
+      mockTmux.pasteAndSubmit.mockRejectedValue(new IOError('tmux crashed'));
+
+      const result = await service.enqueue('agent-1', 'Hello', { source: 'test' });
+
+      expect(result.status).toBe('failed');
+      // Only one attempt — no retry
+      expect(mockTmux.pasteAndSubmit).toHaveBeenCalledTimes(1);
+      expect(mockTmux.sendKeys).not.toHaveBeenCalled();
+
+      const log = service.getMessageLog();
+      expect(log[0].status).toBe('failed');
+      expect(log[0].failureCode).toBe('tmux_error');
+    });
+
+    it('sets failureCode to no_active_session when no session exists', async () => {
+      jest.useFakeTimers();
+      mockSessionsService.listActiveSessions.mockResolvedValue([]);
+
+      // Use pooling enabled so deliverBatch runs
+      mockSettings.getMessagePoolConfigForProject.mockReturnValue({
+        enabled: true,
+        delayMs: 100,
+        maxWaitMs: 30000,
+        maxMessages: 10,
+        separator: '\n---\n',
+      });
+
+      await service.enqueue('agent-1', 'Hello', { source: 'test' });
+      await jest.advanceTimersByTimeAsync(200);
+
+      const log = service.getMessageLog();
+      expect(log[0].status).toBe('failed');
+      expect(log[0].failureCode).toBe('no_active_session');
+
+      jest.useRealTimers();
     });
   });
 });

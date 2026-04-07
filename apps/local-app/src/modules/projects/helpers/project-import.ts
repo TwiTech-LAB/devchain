@@ -961,21 +961,41 @@ export async function importProviderSettings(
       );
     }
 
+    // Import autoCompactThreshold1m if present in template
+    if (setting.autoCompactThreshold1m != null) {
+      updates.autoCompactThreshold1m = setting.autoCompactThreshold1m;
+    }
+
     // Import oneMillionContextEnabled: auto-probe when callback is available,
     // otherwise disable and set a safe threshold (95) to avoid degraded sessions.
     if (setting.oneMillionContextEnabled) {
+      // Legacy compat: if template has 1M enabled but no autoCompactThreshold1m,
+      // treat the old autoCompactThreshold as the 1M value
+      const isLegacyTemplate = setting.autoCompactThreshold1m == null;
+
       if (localProvider.binPath && options?.probe1m) {
         const outcome = await options.probe1m(localProvider.binPath);
         if (outcome.supported) {
           updates.oneMillionContextEnabled = true;
-          updates.autoCompactThreshold = 50;
+          updates.autoCompactThreshold1m = isLegacyTemplate
+            ? (setting.autoCompactThreshold ?? 50)
+            : (setting.autoCompactThreshold1m ?? 50);
+          // Only set standard threshold when local provider doesn't have one
+          if (localProvider.autoCompactThreshold == null) {
+            updates.autoCompactThreshold = isLegacyTemplate
+              ? 95
+              : (setting.autoCompactThreshold ?? 95);
+          }
           logger.info(
             { providerName: setting.name },
             'Template had 1M context enabled — auto-probe confirmed support',
           );
         } else {
           updates.oneMillionContextEnabled = false;
-          updates.autoCompactThreshold = 95;
+          if (localProvider.autoCompactThreshold == null) {
+            updates.autoCompactThreshold = 95;
+          }
+          updates.autoCompactThreshold1m = null;
           logger.info(
             { providerName: setting.name, status: outcome.status },
             'Template had 1M context enabled — auto-probe did not confirm support',
@@ -983,7 +1003,10 @@ export async function importProviderSettings(
         }
       } else {
         updates.oneMillionContextEnabled = false;
-        updates.autoCompactThreshold = 95;
+        if (localProvider.autoCompactThreshold == null) {
+          updates.autoCompactThreshold = 95;
+        }
+        updates.autoCompactThreshold1m = null;
         logger.info(
           { providerName: setting.name },
           'Template had 1M context enabled — disabled during import (no binPath or probe unavailable)',

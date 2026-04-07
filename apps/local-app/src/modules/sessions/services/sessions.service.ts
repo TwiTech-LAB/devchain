@@ -1,5 +1,6 @@
 import { Injectable, Inject, NotFoundException, forwardRef } from '@nestjs/common';
 import { ValidationError } from '../../../common/errors/error-types';
+import { deliverWithConfirmation } from '../../terminal/services/confirmed-delivery.helper';
 import { ModuleRef } from '@nestjs/core';
 import { randomUUID } from 'crypto';
 import { createLogger } from '../../../common/logging/logger';
@@ -18,6 +19,8 @@ import {
   ProfileOptionsError,
   injectModelOverride,
   rewriteModelTo1m,
+  extractModelFromArgs,
+  detectClaudeModelFamily,
 } from '../utils/profile-options';
 import { buildSessionCommand, EnvBuilderError } from '../utils/env-builder';
 import { buildInitialPromptContext, renderInitialPromptTemplate } from '../utils/template-renderer';
@@ -405,15 +408,25 @@ export class SessionsService {
           DEVCHAIN_TMUX_SESSION_NAME: tmuxSessionName,
         };
 
-        // Inject auto-compact threshold from provider settings (if configured)
-        if (provider.autoCompactThreshold != null) {
-          devchainEnv.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = String(provider.autoCompactThreshold);
-        }
-
         // 1M context: rewrite --model value to [1m] alias variant at launch time.
         // This is a transient rewrite — stored modelOverride and transcripts use canonical names.
         if (provider.oneMillionContextEnabled) {
           optionArgs = rewriteModelTo1m(optionArgs);
+        }
+
+        // Model-aware threshold resolution: pick threshold based on actual model being launched.
+        // Must run AFTER rewriteModelTo1m() so the model string reflects the final value.
+        const modelStr = extractModelFromArgs(optionArgs);
+        const family = modelStr ? detectClaudeModelFamily(modelStr) : null;
+
+        if (
+          provider.oneMillionContextEnabled &&
+          family === 'opus' &&
+          provider.autoCompactThreshold1m != null
+        ) {
+          devchainEnv.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = String(provider.autoCompactThreshold1m);
+        } else if (provider.autoCompactThreshold != null) {
+          devchainEnv.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = String(provider.autoCompactThreshold);
         }
 
         // Merge: existing provider env vars take precedence (no clobber)
@@ -1015,7 +1028,10 @@ export class SessionsService {
    * Uses bracketed paste + Enter to improve reliability across provider TUIs.
    * Throttles per agent to avoid overlapping pastes.
    */
-  async injectTextIntoSession(sessionId: string, text: string): Promise<void> {
+  async injectTextIntoSession(
+    sessionId: string,
+    text: string,
+  ): Promise<{ confirmed: boolean; method?: string }> {
     const session = this.getSession(sessionId);
     if (!session) {
       throw new NotFoundException(`Session not found: ${sessionId}`);
@@ -1036,17 +1052,15 @@ export class SessionsService {
 
     logger.info({ sessionId, tmuxSessionId: session.tmuxSessionId }, 'Injecting text into session');
 
-    // Throttle consecutive sends per agent to avoid race conditions
-    if (session.agentId) {
-      await this.sendCoordinator.ensureAgentGap(session.agentId, 1000);
-    }
-
-    // Use unified helper to paste and submit
-    await this.tmuxService.pasteAndSubmit(session.tmuxSessionId, text, {
-      bracketed: true,
+    // Use shared confirmed delivery helper (retry, Escape, Enter fallback)
+    const result = await deliverWithConfirmation(this.tmuxService, this.sendCoordinator, {
+      tmuxSessionId: session.tmuxSessionId,
+      text,
       submitKeys: ['Enter'],
-      delayMs: 250,
+      agentId: session.agentId ?? undefined,
     });
+
+    return { confirmed: result.confirmed, method: result.method };
   }
 
   /**

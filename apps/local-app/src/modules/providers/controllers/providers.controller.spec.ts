@@ -699,11 +699,15 @@ describe('ProvidersController', () => {
       expect(result.oneMillionContextEnabled).toBe(true);
       expect(storage.updateProvider).toHaveBeenCalledWith(
         'p1',
-        expect.objectContaining({ oneMillionContextEnabled: true, autoCompactThreshold: 50 }),
+        expect.objectContaining({
+          oneMillionContextEnabled: true,
+          autoCompactThreshold1m: 50,
+          autoCompactThreshold: 95,
+        }),
       );
     });
 
-    it('defaults autoCompactThreshold to 50 when enabling 1M via API without explicit threshold', async () => {
+    it('defaults autoCompactThreshold1m to 50 when enabling 1M via API without explicit threshold', async () => {
       const existingProvider = {
         id: 'p1',
         name: 'claude',
@@ -712,6 +716,7 @@ describe('ProvidersController', () => {
         mcpEndpoint: null,
         mcpRegisteredAt: null,
         oneMillionContextEnabled: false,
+        autoCompactThreshold: null,
         createdAt: '2024-01-01',
         updatedAt: '2024-01-01',
       };
@@ -732,7 +737,8 @@ describe('ProvidersController', () => {
         'p1',
         expect.objectContaining({
           oneMillionContextEnabled: true,
-          autoCompactThreshold: 50,
+          autoCompactThreshold1m: 50,
+          autoCompactThreshold: 95,
         }),
       );
     });
@@ -1361,6 +1367,151 @@ describe('ProvidersController', () => {
       const result = await controller.probe1mContext('p1');
 
       expect(result).toEqual(outcome);
+    });
+  });
+
+  describe('model-aware threshold on enable/disable 1M', () => {
+    const baseProvider = {
+      id: 'p1',
+      name: 'claude',
+      binPath: '/usr/local/bin/claude',
+      mcpConfigured: false,
+      mcpEndpoint: null,
+      mcpRegisteredAt: null,
+      oneMillionContextEnabled: false,
+      createdAt: '2024-01-01',
+      updatedAt: '2024-01-01',
+    };
+
+    it('enable 1M with no explicit thresholds and existing standard=null sets autoCompactThreshold1m=50 and autoCompactThreshold=95', async () => {
+      storage.getProvider.mockResolvedValue({
+        ...baseProvider,
+        autoCompactThreshold: null,
+      });
+      storage.updateProvider.mockImplementation(async (id, payload) => ({
+        ...baseProvider,
+        autoCompactThreshold: null,
+        ...payload,
+        id,
+      }));
+      probeProofService.recordProof('p1', '/usr/local/bin/claude');
+
+      await controller.updateProvider('p1', { oneMillionContextEnabled: true });
+
+      expect(storage.updateProvider).toHaveBeenCalledWith(
+        'p1',
+        expect.objectContaining({
+          oneMillionContextEnabled: true,
+          autoCompactThreshold1m: 50,
+          autoCompactThreshold: 95,
+        }),
+      );
+    });
+
+    it('enable 1M with no explicit thresholds and existing standard=85 sets autoCompactThreshold1m=50 and does NOT overwrite standard', async () => {
+      storage.getProvider.mockResolvedValue({
+        ...baseProvider,
+        autoCompactThreshold: 85,
+      });
+      storage.updateProvider.mockImplementation(async (id, payload) => ({
+        ...baseProvider,
+        autoCompactThreshold: 85,
+        ...payload,
+        id,
+      }));
+      probeProofService.recordProof('p1', '/usr/local/bin/claude');
+
+      await controller.updateProvider('p1', { oneMillionContextEnabled: true });
+
+      const call = storage.updateProvider.mock.calls[0][1] as Record<string, unknown>;
+      expect(call.autoCompactThreshold1m).toBe(50);
+      // Standard threshold must not be touched — autoCompactThreshold should be absent from payload
+      expect(call).not.toHaveProperty('autoCompactThreshold');
+    });
+
+    it('enable 1M with explicit autoCompactThreshold1m=60 respects the user value', async () => {
+      storage.getProvider.mockResolvedValue({
+        ...baseProvider,
+        autoCompactThreshold: null,
+      });
+      storage.updateProvider.mockImplementation(async (id, payload) => ({
+        ...baseProvider,
+        autoCompactThreshold: null,
+        ...payload,
+        id,
+      }));
+      probeProofService.recordProof('p1', '/usr/local/bin/claude');
+
+      await controller.updateProvider('p1', {
+        oneMillionContextEnabled: true,
+        autoCompactThreshold1m: 60,
+      });
+
+      expect(storage.updateProvider).toHaveBeenCalledWith(
+        'p1',
+        expect.objectContaining({
+          oneMillionContextEnabled: true,
+          autoCompactThreshold1m: 60,
+        }),
+      );
+    });
+
+    it('disable 1M sets autoCompactThreshold1m=null and autoCompactThreshold=95', async () => {
+      storage.getProvider.mockResolvedValue({
+        ...baseProvider,
+        oneMillionContextEnabled: true,
+        autoCompactThreshold: null,
+        autoCompactThreshold1m: 50,
+      });
+      storage.updateProvider.mockImplementation(async (id, payload) => ({
+        ...baseProvider,
+        oneMillionContextEnabled: false,
+        autoCompactThreshold: 95,
+        autoCompactThreshold1m: null,
+        ...payload,
+        id,
+      }));
+
+      await controller.updateProvider('p1', { oneMillionContextEnabled: false });
+
+      expect(storage.updateProvider).toHaveBeenCalledWith(
+        'p1',
+        expect.objectContaining({
+          oneMillionContextEnabled: false,
+          autoCompactThreshold1m: null,
+          autoCompactThreshold: 95,
+        }),
+      );
+    });
+
+    it('binPath change on 1M-enabled provider auto-disables and sets autoCompactThreshold1m=null and autoCompactThreshold=95', async () => {
+      storage.getProvider.mockResolvedValue({
+        ...baseProvider,
+        oneMillionContextEnabled: true,
+        autoCompactThreshold: null,
+        autoCompactThreshold1m: 50,
+      });
+      storage.updateProvider.mockImplementation(async (id, payload) => ({
+        ...baseProvider,
+        oneMillionContextEnabled: false,
+        autoCompactThreshold: 95,
+        autoCompactThreshold1m: null,
+        ...payload,
+        id,
+      }));
+      probeProofService.recordProof('p1', '/usr/local/bin/claude');
+
+      await controller.updateProvider('p1', { binPath: '/opt/new-claude/bin/claude' });
+
+      expect(storage.updateProvider).toHaveBeenCalledWith(
+        'p1',
+        expect.objectContaining({
+          binPath: '/opt/new-claude/bin/claude',
+          oneMillionContextEnabled: false,
+          autoCompactThreshold1m: null,
+          autoCompactThreshold: 95,
+        }),
+      );
     });
   });
 });

@@ -1,6 +1,7 @@
 import { NotFoundException } from '@nestjs/common';
 import { createLogger } from '../../../../common/logging/logger';
 import { NotFoundError } from '../../../../common/errors/error-types';
+import { deliverWithConfirmation } from '../../../terminal/services/confirmed-delivery.helper';
 import {
   McpResponse,
   SendMessageParamsSchema,
@@ -238,7 +239,7 @@ export async function handleSendMessage(
       const queued: Array<{
         name: string;
         type: 'agent' | 'guest';
-        status: 'queued' | 'launched' | 'delivered' | 'failed';
+        status: 'queued' | 'launched' | 'delivered' | 'unconfirmed' | 'failed';
         error?: string;
       }> = [];
       const poolConfig = ctx.settingsService.getMessagePoolConfigForProject(project.id);
@@ -297,11 +298,14 @@ export async function handleSendMessage(
             });
           } else if (ctx.tmuxService) {
             try {
-              await ctx.tmuxService.pasteAndSubmit(recipient.tmuxSessionId!, injectionText);
+              const delivery = await deliverWithConfirmation(ctx.tmuxService, null, {
+                tmuxSessionId: recipient.tmuxSessionId!,
+                text: injectionText,
+              });
               queued.push({
                 name: recipient.name,
                 type: 'guest',
-                status: 'delivered',
+                status: delivery.confirmed ? 'delivered' : 'unconfirmed',
               });
             } catch (error) {
               logger.warn(
@@ -387,7 +391,7 @@ export async function handleSendMessage(
       agentName: string;
       agentId: string;
       sessionId: string;
-      status: 'delivered' | 'queued';
+      status: 'delivered' | 'queued' | 'unconfirmed';
     }> = [];
 
     for (const agentId of targetAgentIds) {
@@ -416,13 +420,16 @@ export async function handleSendMessage(
 
       const injectionText = `\n[CHAT] From: ${senderName} • Thread: ${threadId}\n${validated.message}\n[ACK] tools/call { name: "devchain_chat_ack", arguments: { sessionId: "${session.id}", thread_id: "${threadId}", message_id: "${message.id}" } }\n`;
 
-      await ctx.sessionsService.injectTextIntoSession(session.id, injectionText);
+      const injectResult = await ctx.sessionsService.injectTextIntoSession(
+        session.id,
+        injectionText,
+      );
 
       delivered.push({
         agentId,
         agentName: agent.name,
         sessionId: session.id,
-        status: 'delivered',
+        status: injectResult.confirmed ? 'delivered' : 'unconfirmed',
       });
     }
 
