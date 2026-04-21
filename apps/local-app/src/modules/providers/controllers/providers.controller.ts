@@ -9,6 +9,7 @@ import {
   Inject,
   BadRequestException,
   InternalServerErrorException,
+  NotFoundException,
 } from '@nestjs/common';
 import { access, stat } from 'fs/promises';
 import { constants } from 'fs';
@@ -33,6 +34,11 @@ import {
   enableClaudeAutoCompact,
 } from '../../sessions/utils/claude-config';
 import { ProbeProofService } from '../services/probe-proof.service';
+import {
+  ProviderProjectSyncService,
+  type SyncResult,
+} from '../services/provider-project-sync.service';
+import { ProviderDiscoveryService } from '../services/provider-discovery.service';
 import { probe1mSupport } from '../utils/probe-1m';
 
 const logger = createLogger('ProvidersController');
@@ -80,12 +86,46 @@ export class ProvidersController {
     private readonly adapterFactory: ProviderAdapterFactory,
     private readonly mcpEnsureService: ProviderMcpEnsureService,
     private readonly probeProofService: ProbeProofService,
+    private readonly providerProjectSync: ProviderProjectSyncService,
+    private readonly providerDiscovery: ProviderDiscoveryService,
   ) {}
 
   @Get()
   async listProviders() {
     logger.info('GET /api/providers');
     return this.storage.listProviders();
+  }
+
+  @Post('rescan')
+  async rescanProviders() {
+    logger.info('POST /api/providers/rescan');
+    const discovery = await this.providerDiscovery.discoverInstalledBinaries();
+    const syncResults: SyncResult[] = [];
+
+    for (const binary of discovery.discovered) {
+      const provider = await this.storage.createProvider({
+        name: binary.name,
+        binPath: binary.binPath,
+        mcpConfigured: false,
+        mcpEndpoint: null,
+        mcpRegisteredAt: null,
+      });
+
+      try {
+        const sync = await this.providerProjectSync.syncProviderToAllProjects(provider.id);
+        syncResults.push(sync);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown sync error';
+        logger.warn({ providerId: provider.id, error: message }, 'Sync failed during rescan');
+      }
+    }
+
+    return {
+      discovered: discovery.discovered,
+      alreadyPresent: discovery.alreadyPresent,
+      notFound: discovery.notFound,
+      syncResults,
+    };
   }
 
   @Get(':id')
@@ -95,7 +135,9 @@ export class ProvidersController {
   }
 
   @Post()
-  async createProvider(@Body() body: unknown): Promise<Provider> {
+  async createProvider(
+    @Body() body: unknown,
+  ): Promise<{ provider: Provider; sync: SyncResult | null; syncError?: string }> {
     logger.info('POST /api/providers');
     const parsed = CreateProviderSchema.parse(body);
     const normalizedPath = await this.normalizeBinPath(parsed.binPath ?? null);
@@ -119,7 +161,27 @@ export class ProvidersController {
 
     // Do not auto-register on create; use Configure MCP action instead
 
-    return this.storage.createProvider(payload);
+    const provider = await this.storage.createProvider(payload);
+
+    try {
+      const sync = await this.providerProjectSync.syncProviderToAllProjects(provider.id);
+      return { provider, sync };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown sync error';
+      logger.warn({ providerId: provider.id, error: message }, 'Provider sync failed after create');
+      return { provider, sync: null, syncError: message };
+    }
+  }
+
+  @Post(':id/sync-to-projects')
+  async syncToProjects(@Param('id') id: string): Promise<SyncResult> {
+    logger.info({ id }, 'POST /api/providers/:id/sync-to-projects');
+    try {
+      await this.storage.getProvider(id);
+    } catch {
+      throw new NotFoundException(`Provider ${id} not found`);
+    }
+    return this.providerProjectSync.syncProviderToAllProjects(id);
   }
 
   @Put(':id')

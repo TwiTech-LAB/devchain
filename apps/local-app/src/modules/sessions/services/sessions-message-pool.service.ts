@@ -418,15 +418,16 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
         const {
           nonce: deliveredNonce,
           unconfirmed,
+          skipped,
           retryCount,
-        } = await this.deliverMessage(agentId, text, submitKeys);
+        } = await this.deliverMessage(agentId, text, submitKeys, { skipConfirmation: immediate });
         const status = unconfirmed ? 'unconfirmed' : 'delivered';
         const deliveredAt = Date.now();
         this.updateLogEntry(logEntryId, {
           status,
           deliveredAt,
-          nonce: deliveredNonce,
-          confirmedAt: unconfirmed ? undefined : deliveredAt,
+          nonce: skipped ? undefined : deliveredNonce,
+          confirmedAt: skipped || unconfirmed ? undefined : deliveredAt,
           retryCount,
           failureCode: unconfirmed ? 'paste_not_confirmed' : undefined,
         });
@@ -948,7 +949,8 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     agentId: string,
     text: string,
     submitKeys: string[],
-  ): Promise<{ nonce: string; unconfirmed?: boolean; retryCount: number }> {
+    opts?: { skipConfirmation?: boolean },
+  ): Promise<{ nonce: string; unconfirmed?: boolean; skipped?: boolean; retryCount: number }> {
     // Find active session for agent
     const activeSessions = await this.sessions.listActiveSessions();
     const session = activeSessions.find((s) => s.agentId === agentId);
@@ -957,7 +959,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       throw new Error(`No active session for agent ${agentId}`);
     }
 
-    let result: { nonce: string; unconfirmed?: boolean; retryCount: number } = {
+    let result: { nonce: string; unconfirmed?: boolean; skipped?: boolean; retryCount: number } = {
       nonce: '',
       retryCount: 0,
     };
@@ -969,12 +971,17 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
         text,
         submitKeys,
         agentId,
+        skipConfirmation: opts?.skipConfirmation,
       });
-      result = {
-        nonce: delivery.nonce,
-        unconfirmed: !delivery.confirmed,
-        retryCount: delivery.retryCount,
-      };
+      if (delivery.skipped) {
+        result = { nonce: '', skipped: true, retryCount: 0 };
+      } else {
+        result = {
+          nonce: delivery.nonce,
+          unconfirmed: !delivery.confirmed,
+          retryCount: delivery.retryCount,
+        };
+      }
     });
 
     logger.info(

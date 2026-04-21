@@ -16,6 +16,8 @@ import {
   PromptSummary,
   ListReviewsOptions,
   ListReviewCommentsOptions,
+  type CreateIfMissingInput,
+  type CreateIfMissingResult,
 } from '../interfaces/storage.interface';
 import {
   Project,
@@ -618,6 +620,10 @@ export class LocalStorageService implements StorageService {
     data: CreateProfileProviderConfig,
   ): Promise<ProfileProviderConfig> {
     return this.profileProviderConfigDelegate.createProfileProviderConfig(data);
+  }
+
+  async createIfMissing(input: CreateIfMissingInput): Promise<CreateIfMissingResult> {
+    return this.profileProviderConfigDelegate.createIfMissing(input);
   }
 
   async getProfileProviderConfig(id: string): Promise<ProfileProviderConfig> {

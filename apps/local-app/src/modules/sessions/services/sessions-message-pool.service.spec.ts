@@ -168,11 +168,22 @@ describe('SessionsMessagePoolService', () => {
 
       expect(result.status).toBe('delivered');
       expect(mockTmux.pasteAndSubmit).toHaveBeenCalledTimes(1);
-      expect(mockTmux.pasteAndSubmit).toHaveBeenCalledWith(
-        'tmux-1',
-        expect.stringContaining('Urgent message'),
-        expect.objectContaining({ bracketed: true }),
-      );
+
+      const [, calledText, calledOpts] = mockTmux.pasteAndSubmit.mock.calls[0];
+      expect(calledText).toContain('Urgent message');
+      expect(calledText).not.toMatch(/\[MsgId:/);
+      expect(calledOpts).not.toHaveProperty('confirm');
+      expect(calledOpts).not.toHaveProperty('nonce');
+      expect(calledOpts).toMatchObject({ bracketed: true });
+
+      const log = service.getMessageLog();
+      expect(log[0].status).toBe('delivered');
+      expect(log[0].deliveredAt).toBeDefined();
+      expect(log[0].failureCode).toBeUndefined();
+      expect(log[0].nonce).toBeUndefined();
+      expect(log[0].confirmedAt).toBeUndefined();
+      expect(log[0].retryCount).toBe(0);
+      expect(mockActivityStream.broadcastUnconfirmed).not.toHaveBeenCalled();
     });
 
     it('should add to pool when immediate: false (default)', async () => {
@@ -211,6 +222,39 @@ describe('SessionsMessagePoolService', () => {
 
       expect(result.status).toBe('failed');
       expect(result.error).toContain('No active session');
+    });
+
+    it('should still confirm with [MsgId] when pooling is disabled and immediate is false', async () => {
+      mockSettings.getMessagePoolConfigForProject.mockReturnValue({
+        enabled: false,
+        delayMs: 10000,
+        maxWaitMs: 30000,
+        maxMessages: 10,
+        separator: '\n---\n',
+      });
+
+      await service.enqueue('agent-1', 'Normal message', { source: 'test' });
+
+      expect(mockTmux.pasteAndSubmit).toHaveBeenCalledTimes(1);
+      const [, calledText, calledOpts] = mockTmux.pasteAndSubmit.mock.calls[0];
+      expect(calledText).toMatch(/\[MsgId:[0-9a-f]{7}\]$/);
+      expect(calledOpts).toMatchObject({ confirm: true });
+      expect(calledOpts).toHaveProperty('nonce');
+    });
+
+    it('should still append [MsgId] and confirm for pooled delivery via batch', async () => {
+      // Default config: enabled: true — message goes to pool, not immediate
+      await service.enqueue('agent-1', 'Pooled message', { source: 'test' });
+      expect(mockTmux.pasteAndSubmit).not.toHaveBeenCalled();
+
+      await service.flushNow('agent-1');
+
+      expect(mockTmux.pasteAndSubmit).toHaveBeenCalledTimes(1);
+      const [, calledText, calledOpts] = mockTmux.pasteAndSubmit.mock.calls[0];
+      expect(calledText).toContain('Pooled message');
+      expect(calledText).toMatch(/\[MsgId:[0-9a-f]{7}\]/);
+      expect(calledOpts).toMatchObject({ confirm: true });
+      expect(calledOpts).toHaveProperty('nonce');
     });
   });
 

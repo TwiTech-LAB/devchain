@@ -9,8 +9,18 @@ import {
   ValidationError,
 } from '../../../../common/errors/error-types';
 import { createLogger } from '../../../../common/logging/logger';
-import { parseProviderConfigEnv } from '../helpers/storage-helpers';
+import { isSqliteUniqueConstraint, parseProviderConfigEnv } from '../helpers/storage-helpers';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
+
+export type CreateIfMissingResult = {
+  inserted: boolean;
+  reason?:
+    | 'name_exists_same_provider'
+    | 'name_exists_other_provider'
+    | 'position_conflict'
+    | 'unknown_constraint';
+  existingRow?: ProfileProviderConfig;
+};
 
 const logger = createLogger('ProfileProviderConfigStorageDelegate');
 
@@ -73,6 +83,157 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
       'Created profile provider config',
     );
     return config;
+  }
+
+  async createIfMissing(input: {
+    profileId: string;
+    providerId: string;
+    name: string;
+    options?: string | null;
+    env?: Record<string, string>;
+  }): Promise<CreateIfMissingResult> {
+    const { randomUUID } = await import('crypto');
+    const { profileProviderConfigs } = await import('../../db/schema');
+    const { eq, and, sql } = await import('drizzle-orm');
+
+    const sqlite = this.rawClient;
+    if (!sqlite || typeof sqlite.exec !== 'function') {
+      throw new StorageError('Unable to access underlying SQLite client for transaction control');
+    }
+
+    sqlite.exec('BEGIN IMMEDIATE TRANSACTION');
+
+    try {
+      const existing = await this.db
+        .select()
+        .from(profileProviderConfigs)
+        .where(
+          and(
+            eq(profileProviderConfigs.profileId, input.profileId),
+            eq(profileProviderConfigs.name, input.name),
+          ),
+        )
+        .limit(1);
+
+      if (existing[0]) {
+        const row = existing[0];
+        const existingRow: ProfileProviderConfig = {
+          id: row.id,
+          profileId: row.profileId,
+          providerId: row.providerId,
+          name: row.name,
+          options: row.options,
+          env: parseProviderConfigEnv(row.env, row.id, row.profileId),
+          position: row.position,
+          createdAt: row.createdAt,
+          updatedAt: row.updatedAt,
+        };
+        sqlite.exec('COMMIT');
+        return {
+          inserted: false,
+          reason:
+            row.providerId === input.providerId
+              ? 'name_exists_same_provider'
+              : 'name_exists_other_provider',
+          existingRow,
+        };
+      }
+
+      const maxResult = await this.db
+        .select({ maxPos: sql<number>`COALESCE(MAX(${profileProviderConfigs.position}), -1)` })
+        .from(profileProviderConfigs)
+        .where(eq(profileProviderConfigs.profileId, input.profileId));
+      const nextPosition = (maxResult[0]?.maxPos ?? -1) + 1;
+
+      const now = new Date().toISOString();
+      const id = randomUUID();
+
+      try {
+        await this.db.insert(profileProviderConfigs).values({
+          id,
+          profileId: input.profileId,
+          providerId: input.providerId,
+          name: input.name,
+          options: input.options ?? null,
+          env: input.env ? JSON.stringify(input.env) : null,
+          position: nextPosition,
+          createdAt: now,
+          updatedAt: now,
+        });
+
+        sqlite.exec('COMMIT');
+        logger.info(
+          { configId: id, profileId: input.profileId, position: nextPosition },
+          'Created profile provider config (createIfMissing)',
+        );
+        return { inserted: true };
+      } catch (insertError) {
+        if (!isSqliteUniqueConstraint(insertError)) {
+          throw insertError;
+        }
+
+        const nameConflict = await this.db
+          .select()
+          .from(profileProviderConfigs)
+          .where(
+            and(
+              eq(profileProviderConfigs.profileId, input.profileId),
+              eq(profileProviderConfigs.name, input.name),
+            ),
+          )
+          .limit(1);
+
+        if (nameConflict[0]) {
+          const row = nameConflict[0];
+          const existingRow: ProfileProviderConfig = {
+            id: row.id,
+            profileId: row.profileId,
+            providerId: row.providerId,
+            name: row.name,
+            options: row.options,
+            env: parseProviderConfigEnv(row.env, row.id, row.profileId),
+            position: row.position,
+            createdAt: row.createdAt,
+            updatedAt: row.updatedAt,
+          };
+          sqlite.exec('COMMIT');
+          return {
+            inserted: false,
+            reason:
+              row.providerId === input.providerId
+                ? 'name_exists_same_provider'
+                : 'name_exists_other_provider',
+            existingRow,
+          };
+        }
+
+        const posConflict = await this.db
+          .select()
+          .from(profileProviderConfigs)
+          .where(
+            and(
+              eq(profileProviderConfigs.profileId, input.profileId),
+              eq(profileProviderConfigs.position, nextPosition),
+            ),
+          )
+          .limit(1);
+
+        if (posConflict[0]) {
+          sqlite.exec('COMMIT');
+          return { inserted: false, reason: 'position_conflict' };
+        }
+
+        sqlite.exec('COMMIT');
+        return { inserted: false, reason: 'unknown_constraint' };
+      }
+    } catch (error) {
+      try {
+        sqlite.exec('ROLLBACK');
+      } catch (rollbackError) {
+        logger.error({ rollbackError }, 'Failed to rollback createIfMissing transaction');
+      }
+      throw error;
+    }
   }
 
   async getProfileProviderConfig(id: string): Promise<ProfileProviderConfig> {

@@ -1,17 +1,14 @@
 import { Injectable, Inject, OnModuleDestroy } from '@nestjs/common';
-import { access, readFile, writeFile, rename } from 'fs/promises';
-import { constants } from 'fs';
-import { execFile, spawn } from 'child_process';
+import { readFile, writeFile, rename } from 'fs/promises';
+import { spawn } from 'child_process';
 import * as path from 'path';
-import { promisify } from 'util';
 import { Provider } from '../../storage/models/domain.models';
 import { createLogger } from '../../../common/logging/logger';
 import { ProviderAdapterFactory, McpServerEntry } from '../../providers/adapters';
 import { OpencodeAdapter } from '../../providers/adapters/opencode.adapter';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import { UnsupportedProviderError } from '../../../common/errors/error-types';
-
-const execFileAsync = promisify(execFile);
+import { resolveBinary } from '../../../common/resolve-binary';
 const logger = createLogger('McpProviderRegistrationService');
 
 export interface McpCommandResult {
@@ -151,32 +148,20 @@ export class McpProviderRegistrationService implements OnModuleDestroy {
       };
     }
 
-    // If absolute path, verify directly; if not, resolve via PATH first
-    if (path.isAbsolute(candidate)) {
-      return this.verifyBinary(candidate, 'configured');
-    }
-
-    try {
-      const whichCmd = process.platform === 'win32' ? 'where' : 'which';
-      const { stdout } = await execFileAsync(whichCmd, [candidate]);
-      const discovered = stdout.trim().split(/\r?\n/)[0] || '';
-      if (!discovered) {
-        return {
-          success: false,
-          message: `Unable to locate binary '${candidate}' using '${whichCmd}'.`,
-        };
-      }
-      return this.verifyBinary(discovered, 'which');
-    } catch (error) {
-      logger.warn({ provider: provider.name, candidate, error }, 'Binary discovery failed');
+    const resolved = await resolveBinary(candidate);
+    if (resolved) {
       return {
-        success: false,
-        message:
-          error instanceof Error
-            ? error.message
-            : `Unable to discover binary for provider ${provider.name}`,
+        success: true,
+        binaryPath: resolved,
+        source: path.isAbsolute(candidate) ? 'configured' : 'which',
       };
     }
+
+    logger.warn({ provider: provider.name, candidate }, 'Binary resolution failed');
+    return {
+      success: false,
+      message: `Unable to resolve binary '${candidate}' for provider ${provider.name}.`,
+    };
   }
 
   async registerProvider(
@@ -577,29 +562,6 @@ export class McpProviderRegistrationService implements OnModuleDestroy {
 
   private isNodeError(error: unknown): error is NodeJS.ErrnoException {
     return error instanceof Error && 'code' in error;
-  }
-
-  private async verifyBinary(
-    candidate: string,
-    source: 'configured' | 'which',
-  ): Promise<McpBinaryResolution> {
-    try {
-      await access(candidate, constants.X_OK);
-      return {
-        success: true,
-        binaryPath: candidate,
-        source,
-      };
-    } catch (error) {
-      logger.warn({ candidate, error }, 'Binary verification failed');
-      return {
-        success: false,
-        message:
-          error instanceof Error
-            ? error.message
-            : `Binary ${candidate} is not accessible or executable.`,
-      };
-    }
   }
 
   private runCommand(

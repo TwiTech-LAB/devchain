@@ -6,6 +6,8 @@ import { PreflightService } from '../../core/services/preflight.service';
 import { ProviderMcpEnsureService } from '../../core/services/provider-mcp-ensure.service';
 import { ProviderAdapterFactory } from '../adapters';
 import { ProbeProofService } from '../services/probe-proof.service';
+import { ProviderProjectSyncService } from '../services/provider-project-sync.service';
+import { ProviderDiscoveryService } from '../services/provider-discovery.service';
 import {
   BadRequestException,
   InternalServerErrorException,
@@ -79,6 +81,8 @@ describe('ProvidersController', () => {
     ensureMcp: jest.Mock;
   };
   let probeProofService: ProbeProofService;
+  let mockSyncService: { syncProviderToAllProjects: jest.Mock };
+  let mockDiscoveryService: { discoverInstalledBinaries: jest.Mock };
   let normalizeBinPathSpy: jest.SpyInstance;
 
   beforeEach(async () => {
@@ -111,6 +115,17 @@ describe('ProvidersController', () => {
     mockProbe1mSupport.mockReset();
     mockDisableClaudeAutoCompact.mockResolvedValue({ success: true });
 
+    mockSyncService = {
+      syncProviderToAllProjects: jest.fn().mockResolvedValue({
+        providerId: 'p1',
+        insertedCount: 0,
+        affectedProjectIds: [],
+        skippedExistingCount: 0,
+        skippedConflictCount: 0,
+        warnings: [],
+      }),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       controllers: [ProvidersController],
       providers: [
@@ -138,6 +153,23 @@ describe('ProvidersController', () => {
         {
           provide: ProviderMcpEnsureService,
           useValue: mcpEnsureService,
+        },
+        {
+          provide: ProviderProjectSyncService,
+          useValue: mockSyncService,
+        },
+        {
+          provide: ProviderDiscoveryService,
+          useFactory: () => {
+            mockDiscoveryService = {
+              discoverInstalledBinaries: jest.fn().mockResolvedValue({
+                discovered: [],
+                alreadyPresent: [],
+                notFound: [],
+              }),
+            };
+            return mockDiscoveryService;
+          },
         },
         ProbeProofService,
       ],
@@ -185,7 +217,8 @@ describe('ProvidersController', () => {
           mcpRegisteredAt: null,
         }),
       );
-      expect(result.mcpConfigured).toBe(false);
+      expect(result.provider.mcpConfigured).toBe(false);
+      expect(result.sync).toBeDefined();
     });
 
     it('passes autoCompactThreshold to storage on create', async () => {
@@ -208,7 +241,7 @@ describe('ProvidersController', () => {
           autoCompactThreshold: 10,
         }),
       );
-      expect(result.autoCompactThreshold).toBe(10);
+      expect(result.provider.autoCompactThreshold).toBe(10);
     });
 
     it('rejects oneMillionContextEnabled=true on create (no server proof possible)', async () => {
@@ -1512,6 +1545,180 @@ describe('ProvidersController', () => {
           autoCompactThreshold: 95,
         }),
       );
+    });
+  });
+
+  describe('createProvider - sync integration', () => {
+    it('invokes sync after provider creation and returns { provider, sync }', async () => {
+      const now = new Date('2024-01-01T00:00:00Z');
+      storage.createProvider.mockImplementation(async (payload) => ({
+        id: 'p1',
+        ...payload,
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+      }));
+
+      const syncResult = {
+        providerId: 'p1',
+        insertedCount: 3,
+        affectedProjectIds: ['proj-1'],
+        skippedExistingCount: 0,
+        skippedConflictCount: 0,
+        warnings: [],
+      };
+      mockSyncService.syncProviderToAllProjects.mockResolvedValue(syncResult);
+
+      const result = await controller.createProvider({
+        name: 'claude',
+        binPath: '/usr/local/bin/claude',
+      });
+
+      expect(result.provider.name).toBe('claude');
+      expect(result.sync).toEqual(syncResult);
+      expect(result.syncError).toBeUndefined();
+      expect(mockSyncService.syncProviderToAllProjects).toHaveBeenCalledWith('p1');
+    });
+
+    it('degrades gracefully when sync throws', async () => {
+      const now = new Date('2024-01-01T00:00:00Z');
+      storage.createProvider.mockImplementation(async (payload) => ({
+        id: 'p1',
+        ...payload,
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+      }));
+
+      mockSyncService.syncProviderToAllProjects.mockRejectedValue(new Error('storage failure'));
+
+      const result = await controller.createProvider({
+        name: 'claude',
+        binPath: '/usr/local/bin/claude',
+      });
+
+      expect(result.provider.name).toBe('claude');
+      expect(result.sync).toBeNull();
+      expect(result.syncError).toBe('storage failure');
+    });
+  });
+
+  describe('syncToProjects', () => {
+    it('returns SyncResult when provider exists', async () => {
+      storage.getProvider.mockResolvedValue({ id: 'p1', name: 'claude' });
+      const syncResult = {
+        providerId: 'p1',
+        insertedCount: 2,
+        affectedProjectIds: ['proj-1'],
+        skippedExistingCount: 1,
+        skippedConflictCount: 0,
+        warnings: [],
+      };
+      mockSyncService.syncProviderToAllProjects.mockResolvedValue(syncResult);
+
+      const result = await controller.syncToProjects('p1');
+
+      expect(result).toEqual(syncResult);
+      expect(mockSyncService.syncProviderToAllProjects).toHaveBeenCalledWith('p1');
+    });
+
+    it('throws NotFoundException when provider does not exist', async () => {
+      storage.getProvider.mockRejectedValue(new NotFoundException('Provider not found'));
+
+      await expect(controller.syncToProjects('no-such-id')).rejects.toThrow(NotFoundException);
+      expect(mockSyncService.syncProviderToAllProjects).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('rescanProviders', () => {
+    it('returns discovery result with syncResults for each discovered provider', async () => {
+      mockDiscoveryService.discoverInstalledBinaries.mockResolvedValue({
+        discovered: [
+          { name: 'claude', binPath: '/usr/bin/claude' },
+          { name: 'codex', binPath: '/usr/bin/codex' },
+        ],
+        alreadyPresent: ['gemini'],
+        notFound: ['opencode'],
+      });
+
+      storage.createProvider
+        .mockResolvedValueOnce({ id: 'new-1', name: 'claude' })
+        .mockResolvedValueOnce({ id: 'new-2', name: 'codex' });
+
+      const syncResult1 = {
+        providerId: 'new-1',
+        insertedCount: 2,
+        affectedProjectIds: ['p1'],
+        skippedExistingCount: 0,
+        skippedConflictCount: 0,
+        warnings: [],
+      };
+      const syncResult2 = {
+        providerId: 'new-2',
+        insertedCount: 1,
+        affectedProjectIds: ['p1'],
+        skippedExistingCount: 0,
+        skippedConflictCount: 0,
+        warnings: [],
+      };
+      mockSyncService.syncProviderToAllProjects
+        .mockResolvedValueOnce(syncResult1)
+        .mockResolvedValueOnce(syncResult2);
+
+      const result = await controller.rescanProviders();
+
+      expect(result.discovered).toHaveLength(2);
+      expect(result.alreadyPresent).toEqual(['gemini']);
+      expect(result.notFound).toEqual(['opencode']);
+      expect(result.syncResults).toEqual([syncResult1, syncResult2]);
+      expect(storage.createProvider).toHaveBeenCalledTimes(2);
+      expect(mockSyncService.syncProviderToAllProjects).toHaveBeenCalledWith('new-1');
+      expect(mockSyncService.syncProviderToAllProjects).toHaveBeenCalledWith('new-2');
+    });
+
+    it('returns empty discovered when nothing new found', async () => {
+      mockDiscoveryService.discoverInstalledBinaries.mockResolvedValue({
+        discovered: [],
+        alreadyPresent: ['claude', 'codex'],
+        notFound: ['gemini'],
+      });
+
+      const result = await controller.rescanProviders();
+
+      expect(result.discovered).toEqual([]);
+      expect(result.syncResults).toEqual([]);
+      expect(storage.createProvider).not.toHaveBeenCalled();
+    });
+
+    it('continues creating other providers when sync fails for one', async () => {
+      mockDiscoveryService.discoverInstalledBinaries.mockResolvedValue({
+        discovered: [
+          { name: 'claude', binPath: '/usr/bin/claude' },
+          { name: 'codex', binPath: '/usr/bin/codex' },
+        ],
+        alreadyPresent: [],
+        notFound: [],
+      });
+
+      storage.createProvider
+        .mockResolvedValueOnce({ id: 'new-1', name: 'claude' })
+        .mockResolvedValueOnce({ id: 'new-2', name: 'codex' });
+
+      const syncResult2 = {
+        providerId: 'new-2',
+        insertedCount: 1,
+        affectedProjectIds: [],
+        skippedExistingCount: 0,
+        skippedConflictCount: 0,
+        warnings: [],
+      };
+      mockSyncService.syncProviderToAllProjects
+        .mockRejectedValueOnce(new Error('sync failed'))
+        .mockResolvedValueOnce(syncResult2);
+
+      const result = await controller.rescanProviders();
+
+      expect(result.discovered).toHaveLength(2);
+      expect(result.syncResults).toEqual([syncResult2]);
+      expect(storage.createProvider).toHaveBeenCalledTimes(2);
     });
   });
 });

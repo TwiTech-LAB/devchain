@@ -643,6 +643,7 @@ export interface AddEpicCommentResponse {
 
 export interface UpdateEpicResponse {
   epic: EpicSummary;
+  hint?: string;
 }
 
 // devchain_send_message

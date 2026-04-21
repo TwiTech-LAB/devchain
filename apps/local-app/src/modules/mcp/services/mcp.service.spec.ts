@@ -3476,6 +3476,230 @@ describe('McpService', () => {
         expect(response.success).toBe(false);
         expect(response.error?.code).toBe('SESSION_NOT_FOUND');
       });
+
+      describe('self-assignment hint', () => {
+        const STATUS_B_ID = '11111111-1111-1111-1111-11111111bbbb';
+        const CALLER_ID = TEST_AGENT.id;
+        const CALLER_NAME = TEST_AGENT.name;
+
+        it('emits hint when status changes and epic stays self-assigned with no assignment field', async () => {
+          const project = makeProject();
+          const statusB = makeStatus({ id: STATUS_B_ID, label: 'In Review' });
+          const epic = makeEpic({ agentId: CALLER_ID, version: 1 });
+          const updatedEpic = makeEpic({
+            agentId: CALLER_ID,
+            statusId: statusB.id,
+            version: 2,
+          });
+
+          storage.findProjectByPath.mockResolvedValue(project);
+          storage.getEpic.mockResolvedValue(epic);
+          storage.findStatusByName.mockResolvedValue(statusB);
+          epicsService.updateEpic.mockResolvedValue(updatedEpic);
+
+          const response = await service.handleToolCall('devchain_update_epic', {
+            sessionId: TEST_SESSION_ID,
+            id: epic.id,
+            version: 1,
+            statusName: 'In Review',
+          });
+
+          expect(response.success).toBe(true);
+          const payload = response.data as { epic: unknown; hint?: string };
+          expect(typeof payload.hint).toBe('string');
+          expect(payload.hint!.length).toBeGreaterThan(0);
+          expect(payload.hint).toContain(CALLER_NAME);
+          expect(payload.hint).toContain('assignment: { agentName');
+        });
+
+        it('does not emit hint when caller hands off to a different agent', async () => {
+          const project = makeProject();
+          const statusB = makeStatus({ id: STATUS_B_ID, label: 'In Review' });
+          const otherAgent = makeAgent({ id: 'agent-2', name: 'OtherAgent' });
+          const epic = makeEpic({ agentId: CALLER_ID, version: 1 });
+          const updatedEpic = makeEpic({
+            agentId: otherAgent.id,
+            statusId: statusB.id,
+            version: 2,
+          });
+
+          storage.findProjectByPath.mockResolvedValue(project);
+          storage.getEpic.mockResolvedValue(epic);
+          storage.findStatusByName.mockResolvedValue(statusB);
+          storage.getAgentByName.mockResolvedValue(otherAgent);
+          epicsService.updateEpic.mockResolvedValue(updatedEpic);
+
+          const response = await service.handleToolCall('devchain_update_epic', {
+            sessionId: TEST_SESSION_ID,
+            id: epic.id,
+            version: 1,
+            statusName: 'In Review',
+            assignment: { agentName: otherAgent.name },
+          });
+
+          expect(response.success).toBe(true);
+          expect((response.data as { hint?: string }).hint).toBeUndefined();
+        });
+
+        it('does not emit hint for guest sessions', async () => {
+          // Guest context mirrors the setup in the `guest restrictions` describe
+          // block (~line 4165): sessionId does not match an active agent session,
+          // so `resolveSessionContext` falls through to guest resolution.
+          const GUEST_ID = 'guest-00000000-0000-0000-0000-000000000001';
+          const guestRecord = {
+            id: GUEST_ID,
+            projectId: 'project-1',
+            name: 'GuestBot',
+            tmuxSessionId: 'guest-tmux-session',
+            lastSeenAt: '2024-01-01T00:00:00Z',
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          };
+          const project = makeProject();
+          const statusB = makeStatus({ id: STATUS_B_ID, label: 'In Review' });
+          const epic = makeEpic({ agentId: null, version: 1 });
+          const updatedEpic = makeEpic({
+            agentId: null,
+            statusId: statusB.id,
+            version: 2,
+          });
+
+          (storage as unknown as { getGuest: jest.Mock }).getGuest = jest
+            .fn()
+            .mockResolvedValue(guestRecord);
+          (storage as unknown as { getGuestsByIdPrefix: jest.Mock }).getGuestsByIdPrefix = jest
+            .fn()
+            .mockResolvedValue([guestRecord]);
+          (storage as unknown as { getProject: jest.Mock }).getProject.mockResolvedValue(project);
+          (tmuxService as { hasSession: jest.Mock }).hasSession.mockResolvedValue(true);
+
+          storage.getEpic.mockResolvedValue(epic);
+          storage.findStatusByName.mockResolvedValue(statusB);
+          epicsService.updateEpic.mockResolvedValue(updatedEpic);
+
+          const response = await service.handleToolCall('devchain_update_epic', {
+            sessionId: GUEST_ID,
+            id: epic.id,
+            version: 1,
+            statusName: 'In Review',
+          });
+
+          // Whether the guest path succeeds or is rejected upstream, no hint
+          // must surface on either branch.
+          if (response.success) {
+            expect((response.data as { hint?: string }).hint).toBeUndefined();
+          } else {
+            expect(response.data).toBeUndefined();
+          }
+        });
+
+        it('does not emit hint when status is unchanged (title-only edit)', async () => {
+          const project = makeProject();
+          const epic = makeEpic({ agentId: CALLER_ID, version: 1 });
+          const updatedEpic = makeEpic({
+            agentId: CALLER_ID,
+            title: 'New title',
+            version: 2,
+          });
+
+          storage.findProjectByPath.mockResolvedValue(project);
+          storage.getEpic.mockResolvedValue(epic);
+          epicsService.updateEpic.mockResolvedValue(updatedEpic);
+
+          const response = await service.handleToolCall('devchain_update_epic', {
+            sessionId: TEST_SESSION_ID,
+            id: epic.id,
+            version: 1,
+            title: 'New title',
+          });
+
+          expect(response.success).toBe(true);
+          expect((response.data as { hint?: string }).hint).toBeUndefined();
+        });
+
+        it('does not emit hint when status changes but epic is unassigned via clear: true', async () => {
+          const project = makeProject();
+          const statusB = makeStatus({ id: STATUS_B_ID, label: 'In Review' });
+          const epic = makeEpic({ agentId: CALLER_ID, version: 1 });
+          const updatedEpic = makeEpic({
+            agentId: null,
+            statusId: statusB.id,
+            version: 2,
+          });
+
+          storage.findProjectByPath.mockResolvedValue(project);
+          storage.getEpic.mockResolvedValue(epic);
+          storage.findStatusByName.mockResolvedValue(statusB);
+          epicsService.updateEpic.mockResolvedValue(updatedEpic);
+
+          const response = await service.handleToolCall('devchain_update_epic', {
+            sessionId: TEST_SESSION_ID,
+            id: epic.id,
+            version: 1,
+            statusName: 'In Review',
+            assignment: { clear: true },
+          });
+
+          expect(response.success).toBe(true);
+          expect((response.data as { hint?: string }).hint).toBeUndefined();
+        });
+
+        it('does not emit hint when caller explicitly self-assigns via assignment.agentName', async () => {
+          const project = makeProject();
+          const statusB = makeStatus({ id: STATUS_B_ID, label: 'In Review' });
+          const epic = makeEpic({ agentId: CALLER_ID, version: 1 });
+          const updatedEpic = makeEpic({
+            agentId: CALLER_ID,
+            statusId: statusB.id,
+            version: 2,
+          });
+
+          storage.findProjectByPath.mockResolvedValue(project);
+          storage.getEpic.mockResolvedValue(epic);
+          storage.findStatusByName.mockResolvedValue(statusB);
+          storage.getAgentByName.mockResolvedValue(TEST_AGENT);
+          epicsService.updateEpic.mockResolvedValue(updatedEpic);
+
+          const response = await service.handleToolCall('devchain_update_epic', {
+            sessionId: TEST_SESSION_ID,
+            id: epic.id,
+            version: 1,
+            statusName: 'In Review',
+            assignment: { agentName: CALLER_NAME },
+          });
+
+          expect(response.success).toBe(true);
+          expect((response.data as { hint?: string }).hint).toBeUndefined();
+        });
+
+        it('does not emit hint when caller self-assigns a previously unassigned epic on status change', async () => {
+          const project = makeProject();
+          const statusB = makeStatus({ id: STATUS_B_ID, label: 'In Review' });
+          const epic = makeEpic({ agentId: null, version: 1 });
+          const updatedEpic = makeEpic({
+            agentId: CALLER_ID,
+            statusId: statusB.id,
+            version: 2,
+          });
+
+          storage.findProjectByPath.mockResolvedValue(project);
+          storage.getEpic.mockResolvedValue(epic);
+          storage.findStatusByName.mockResolvedValue(statusB);
+          storage.getAgentByName.mockResolvedValue(TEST_AGENT);
+          epicsService.updateEpic.mockResolvedValue(updatedEpic);
+
+          const response = await service.handleToolCall('devchain_update_epic', {
+            sessionId: TEST_SESSION_ID,
+            id: epic.id,
+            version: 1,
+            statusName: 'In Review',
+            assignment: { agentName: CALLER_NAME },
+          });
+
+          expect(response.success).toBe(true);
+          expect((response.data as { hint?: string }).hint).toBeUndefined();
+        });
+      });
     });
 
     describe('epic ID prefix resolution', () => {

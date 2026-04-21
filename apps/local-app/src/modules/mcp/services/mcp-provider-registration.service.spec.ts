@@ -130,7 +130,7 @@ describe('McpProviderRegistrationService', () => {
       const result = await service.resolveBinary(provider);
 
       expect(result.success).toBe(false);
-      expect(result.message).toContain('not found');
+      expect(result.message).toContain('Unable to resolve binary');
     });
   });
 

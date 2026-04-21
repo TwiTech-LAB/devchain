@@ -675,8 +675,8 @@ describe('ProvidersPage - 1M context controls', () => {
 
     await waitFor(() => expect(screen.getByText('Supported')).toBeInTheDocument());
 
-    // Threshold should be forced to 50
-    const thresholdInput = screen.getByLabelText('Auto-Compact Threshold (%)') as HTMLInputElement;
+    // 1M threshold should be forced to 50 (UI switches to dual-threshold layout when 1M is enabled)
+    const thresholdInput = screen.getByLabelText('Opus 1M Threshold (%)') as HTMLInputElement;
     expect(thresholdInput.value).toBe('50');
   });
 
@@ -1536,5 +1536,238 @@ describe('ProvidersPage - provider models management', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     await waitFor(() => expect(screen.getByText('Edit Provider')).toBeInTheDocument());
     expect(screen.getByLabelText('Provider Type')).toHaveTextContent('OpenCode');
+  });
+});
+
+// ============================================
+// Sync to Projects tests
+// ============================================
+
+describe('ProvidersPage - create provider auto-propagation', () => {
+  it('create-provider sends POST and receives { provider, sync } response', async () => {
+    const mockProvider = {
+      id: 'p1',
+      name: 'claude',
+      binPath: '/usr/local/bin/claude',
+      autoCompactThreshold: null,
+      autoCompactThreshold1m: null,
+      oneMillionContextEnabled: false,
+      mcpConfigured: false,
+      mcpEndpoint: null,
+      mcpRegisteredAt: null,
+      createdAt: '2024-01-01',
+      updatedAt: '2024-01-01',
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (global as unknown as { fetch: unknown }).fetch = jest.fn(
+      (url: string, options?: RequestInit) => {
+        if (url === '/api/providers' && (!options || !options.method || options.method === 'GET')) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ items: [], total: 0, limit: 100, offset: 0 }),
+          });
+        }
+        if (url === '/api/preflight') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              overall: 'pass',
+              checks: [],
+              providers: [],
+              supportedMcpProviders: ['claude', 'codex', 'gemini'],
+              timestamp: new Date().toISOString(),
+            }),
+          });
+        }
+        if (url === '/api/providers' && options?.method === 'POST') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              provider: { ...mockProvider, id: 'new-p' },
+              sync: {
+                providerId: 'new-p',
+                insertedCount: 3,
+                affectedProjectIds: ['proj-1'],
+                skippedExistingCount: 0,
+                skippedConflictCount: 0,
+                warnings: [],
+              },
+            }),
+          });
+        }
+        return Promise.resolve({ ok: true, json: async () => ({}) });
+      },
+    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (Element as unknown as { prototype: { scrollIntoView: unknown } }).prototype.scrollIntoView =
+      jest.fn();
+
+    renderWithQuery(<ProvidersPage />);
+
+    await waitFor(() => expect(screen.getByText('Providers')).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByText('Add Provider')[0]);
+    await waitFor(() =>
+      expect(screen.getByText('Add Provider', { selector: 'h2' })).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => {
+      const fetchMock = (global as unknown as { fetch?: unknown }).fetch as jest.Mock;
+      const createCalls = fetchMock.mock.calls.filter(
+        (call) => call[0] === '/api/providers' && call[1]?.method === 'POST',
+      );
+      expect(createCalls.length).toBeGreaterThan(0);
+    });
+  });
+});
+
+// ============================================
+// Rescan button tests
+// ============================================
+
+describe('ProvidersPage - Rescan', () => {
+  function setupRescanFetch(rescanResult?: {
+    discovered: Array<{ name: string; binPath: string }>;
+    alreadyPresent: string[];
+    notFound: string[];
+    syncResults: Array<{ providerId: string; insertedCount: number }>;
+  }) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (global as unknown as { fetch: unknown }).fetch = jest.fn(
+      (url: string, options?: RequestInit) => {
+        if (url === '/api/providers' && (!options || !options.method || options.method === 'GET')) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ items: [], total: 0, limit: 100, offset: 0 }),
+          });
+        }
+        if (url === '/api/preflight') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              overall: 'pass',
+              checks: [],
+              providers: [],
+              supportedMcpProviders: ['claude', 'codex', 'gemini'],
+              timestamp: new Date().toISOString(),
+            }),
+          });
+        }
+        if (url === '/api/providers/rescan' && options?.method === 'POST') {
+          return Promise.resolve({
+            ok: true,
+            json: async () =>
+              rescanResult ?? {
+                discovered: [{ name: 'claude', binPath: '/usr/bin/claude' }],
+                alreadyPresent: ['codex'],
+                notFound: ['gemini'],
+                syncResults: [{ providerId: 'p1', insertedCount: 3 }],
+              },
+          });
+        }
+        return Promise.resolve({ ok: true, json: async () => ({}) });
+      },
+    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (Element as unknown as { prototype: { scrollIntoView: unknown } }).prototype.scrollIntoView =
+      jest.fn();
+  }
+
+  it('renders Rescan button in page header', async () => {
+    setupRescanFetch();
+    renderWithQuery(<ProvidersPage />);
+
+    await waitFor(() => expect(screen.getByText('Providers')).toBeInTheDocument());
+
+    expect(screen.getByRole('button', { name: /rescan/i })).toBeInTheDocument();
+  });
+
+  it('fires POST /api/providers/rescan on click', async () => {
+    setupRescanFetch();
+    renderWithQuery(<ProvidersPage />);
+
+    await waitFor(() => expect(screen.getByText('Providers')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /rescan/i }));
+
+    await waitFor(() => {
+      const fetchMock = (global as unknown as { fetch?: unknown }).fetch as jest.Mock;
+      const rescanCalls = fetchMock.mock.calls.filter(
+        (call) => call[0] === '/api/providers/rescan' && call[1]?.method === 'POST',
+      );
+      expect(rescanCalls.length).toBeGreaterThan(0);
+    });
+  });
+
+  it('invalidates queries after successful rescan', async () => {
+    setupRescanFetch();
+    const qc = createQueryClient();
+    const invalidateSpy = jest.spyOn(qc, 'invalidateQueries');
+    renderWithQuery(<ProvidersPage />, qc);
+
+    await waitFor(() => expect(screen.getByText('Providers')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /rescan/i }));
+
+    await waitFor(() => {
+      const predicateCalls = invalidateSpy.mock.calls.filter(
+        (call) => call[0] && typeof (call[0] as { predicate?: unknown }).predicate === 'function',
+      );
+      expect(predicateCalls.length).toBeGreaterThan(0);
+    });
+  });
+
+  it('handles rescan error without crashing', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (global as unknown as { fetch: unknown }).fetch = jest.fn(
+      (url: string, options?: RequestInit) => {
+        if (url === '/api/providers' && (!options || !options.method || options.method === 'GET')) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ items: [], total: 0, limit: 100, offset: 0 }),
+          });
+        }
+        if (url === '/api/preflight') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              overall: 'pass',
+              checks: [],
+              providers: [],
+              supportedMcpProviders: [],
+              timestamp: new Date().toISOString(),
+            }),
+          });
+        }
+        if (url === '/api/providers/rescan' && options?.method === 'POST') {
+          return Promise.resolve({
+            ok: false,
+            json: async () => ({ message: 'Rescan failed: internal error' }),
+          });
+        }
+        return Promise.resolve({ ok: true, json: async () => ({}) });
+      },
+    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (Element as unknown as { prototype: { scrollIntoView: unknown } }).prototype.scrollIntoView =
+      jest.fn();
+
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('Providers')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /rescan/i }));
+
+    await waitFor(() => {
+      const fetchMock = (global as unknown as { fetch?: unknown }).fetch as jest.Mock;
+      const rescanCalls = fetchMock.mock.calls.filter(
+        (call) => call[0] === '/api/providers/rescan' && call[1]?.method === 'POST',
+      );
+      expect(rescanCalls.length).toBeGreaterThan(0);
+    });
+
+    expect(screen.getByText('Providers')).toBeInTheDocument();
   });
 });

@@ -832,7 +832,8 @@ export async function handleUpdateEpic(ctx: McpToolContext, params: unknown): Pr
 
   const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
   if (!sessionCtxResult.success) return sessionCtxResult;
-  const { project } = sessionCtxResult.data as SessionContext;
+  const sessionCtx = sessionCtxResult.data as SessionContext;
+  const { project } = sessionCtx;
 
   if (!project) {
     return {
@@ -1017,7 +1018,6 @@ export async function handleUpdateEpic(ctx: McpToolContext, params: unknown): Pr
 
   let updatedEpic: Epic;
   try {
-    const sessionCtx = sessionCtxResult.data as SessionContext;
     const actor =
       sessionCtx.type === 'agent'
         ? { type: 'agent' as const, id: (sessionCtx as AgentSessionContext).agent!.id }
@@ -1059,6 +1059,19 @@ export async function handleUpdateEpic(ctx: McpToolContext, params: unknown): Pr
   const response: UpdateEpicResponse = {
     epic: mapEpicSummary(updatedEpic, agentNameById),
   };
+
+  const statusChanged = updateData.statusId !== undefined && updateData.statusId !== epic.statusId;
+
+  if (
+    sessionCtx.type === 'agent' &&
+    sessionCtx.agent?.id &&
+    statusChanged &&
+    validated.assignment === undefined &&
+    updatedEpic.agentId === sessionCtx.agent.id
+  ) {
+    const hintAgentName = agentNameById?.get(updatedEpic.agentId) ?? sessionCtx.agent.name;
+    response.hint = `Status changed while this epic remains assigned to ${hintAgentName}. If you intend a handoff, call devchain_update_epic with assignment: { agentName: "Target Agent" }.`;
+  }
 
   return { success: true, data: response };
 }

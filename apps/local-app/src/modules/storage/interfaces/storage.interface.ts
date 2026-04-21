@@ -403,8 +403,27 @@ export interface AgentProfileStorage {
   >;
 }
 
+export interface CreateIfMissingInput {
+  profileId: string;
+  providerId: string;
+  name: string;
+  options?: string | null;
+  env?: Record<string, string>;
+}
+
+export interface CreateIfMissingResult {
+  inserted: boolean;
+  reason?:
+    | 'name_exists_same_provider'
+    | 'name_exists_other_provider'
+    | 'position_conflict'
+    | 'unknown_constraint';
+  existingRow?: ProfileProviderConfig;
+}
+
 export interface ProfileProviderConfigStorage {
   createProfileProviderConfig(data: CreateProfileProviderConfig): Promise<ProfileProviderConfig>;
+  createIfMissing(input: CreateIfMissingInput): Promise<CreateIfMissingResult>;
   getProfileProviderConfig(id: string): Promise<ProfileProviderConfig>;
   listProfileProviderConfigsByProfile(profileId: string): Promise<ProfileProviderConfig[]>;
   listProfileProviderConfigsByIds(ids: string[]): Promise<ProfileProviderConfig[]>;

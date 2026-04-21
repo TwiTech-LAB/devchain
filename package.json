@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.11.4",
+  "version": "0.11.5",
   "description": "AI driven development platform",
   "homepage": "https://devchain.twitechlab.com/",
   "repository": {
@@ -8,6 +8,12 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.11.5": [
+      "Auto-propagate new providers to existing projects with binary rescan",
+      "Add self-assignment hint to devchain_update_epic MCP response",
+      "GLM config set to 5.1",
+      "Template updates"
+    ],
     "0.11.4": [
       "Model-aware auto-compact threshold based on context window size",
       "Confirmed terminal message delivery"

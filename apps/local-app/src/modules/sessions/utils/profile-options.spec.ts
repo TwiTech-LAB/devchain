@@ -183,6 +183,36 @@ describe('rewriteModelTo1m', () => {
       args: ['--verbose', '--model', 'opus', '--flag'],
       expected: ['--verbose', '--model', 'opus[1m]', '--flag'],
     },
+    {
+      desc: 'preserves claude-opus-4-6[1m] full ID verbatim',
+      args: ['--model', 'claude-opus-4-6[1m]'],
+      expected: ['--model', 'claude-opus-4-6[1m]'],
+    },
+    {
+      desc: 'preserves claude-opus-4-7[1m] full ID verbatim',
+      args: ['--model', 'claude-opus-4-7[1m]'],
+      expected: ['--model', 'claude-opus-4-7[1m]'],
+    },
+    {
+      desc: 'preserves claude-sonnet-4-6[1m] full ID verbatim',
+      args: ['--model', 'claude-sonnet-4-6[1m]'],
+      expected: ['--model', 'claude-sonnet-4-6[1m]'],
+    },
+    {
+      desc: 'preserves claude-opus-4-6[1m] via --model= equals form',
+      args: ['--model=claude-opus-4-6[1m]'],
+      expected: ['--model', 'claude-opus-4-6[1m]'],
+    },
+    {
+      desc: 'preserves claude-opus-4-6[1m] via -m= equals form',
+      args: ['-m=claude-opus-4-6[1m]'],
+      expected: ['--model', 'claude-opus-4-6[1m]'],
+    },
+    {
+      desc: 'uppercase [1M] falls through to normalization (not preserved)',
+      args: ['--model', 'CLAUDE-OPUS-4-6[1M]'],
+      expected: ['--model', 'opus[1m]'],
+    },
   ])('$desc: $args', ({ args, expected }) => {
     expect(rewriteModelTo1m(args)).toEqual(expected);
   });

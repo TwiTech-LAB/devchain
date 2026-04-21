@@ -182,6 +182,9 @@ export function extractModelFromArgs(args: string[]): string | null {
 }
 
 function rewriteValue(value: string): string {
+  if (value.endsWith('[1m]')) {
+    return value;
+  }
   const family = detectClaudeModelFamily(value);
   if (family === 'opus') {
     return 'opus[1m]';

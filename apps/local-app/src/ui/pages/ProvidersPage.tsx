@@ -36,6 +36,7 @@ import {
   Loader2,
   CheckCircle2,
   XCircle,
+  Search,
 } from 'lucide-react';
 import { cn } from '@/ui/lib/utils';
 import { fetchPreflightChecks } from '@/ui/lib/preflight';
@@ -221,6 +222,46 @@ async function discoverProviderModels(
     throw new Error(error.message || 'Failed to auto-discover models');
   }
   return res.json();
+}
+
+interface SyncResult {
+  providerId: string;
+  insertedCount: number;
+  affectedProjectIds: string[];
+  skippedExistingCount: number;
+  skippedConflictCount: number;
+  warnings: Array<{ projectId: string; profileId?: string; configName?: string; reason: string }>;
+}
+
+interface RescanResult {
+  discovered: Array<{ name: string; binPath: string }>;
+  alreadyPresent: string[];
+  notFound: string[];
+  syncResults: SyncResult[];
+}
+
+async function rescanProviders(): Promise<RescanResult> {
+  const res = await fetch('/api/providers/rescan', { method: 'POST' });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ message: 'Rescan failed' }));
+    throw new Error(error.message || 'Failed to rescan providers');
+  }
+  return res.json();
+}
+
+function invalidateProviderConfigQueries(queryClient: ReturnType<typeof useQueryClient>) {
+  queryClient.invalidateQueries({
+    predicate: (q) => {
+      const k = q.queryKey[0];
+      return (
+        k === 'providers' ||
+        k === 'provider-configs' ||
+        k === 'profile-provider-configs' ||
+        k === 'provider-configs-by-profile' ||
+        k === 'worktree-profile-provider-configs'
+      );
+    },
+  });
 }
 
 function ProviderModelsSection({ provider }: { provider: Provider }) {
@@ -488,8 +529,8 @@ export function ProvidersPage() {
 
       return { previousData };
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['providers'] });
+    onSuccess: (data: { provider: Provider; sync: SyncResult | null; syncError?: string }) => {
+      invalidateProviderConfigQueries(queryClient);
       setShowDialog(false);
       setFormData({
         binPath: '',
@@ -500,10 +541,22 @@ export function ProvidersPage() {
       setFormError(null);
       setFormErrorField(null);
       setProbeStatus('idle');
-      toast({
-        title: 'Success',
-        description: 'Provider created successfully',
-      });
+
+      if (data.sync) {
+        const desc =
+          data.sync.insertedCount > 0
+            ? `Propagated ${data.sync.insertedCount} config(s) across ${data.sync.affectedProjectIds.length} project(s)${data.sync.warnings.length > 0 ? ` with ${data.sync.warnings.length} warning(s)` : ''}`
+            : 'No new configs needed';
+        toast({ title: `Provider ${data.provider.name} created`, description: desc });
+      } else if (data.syncError) {
+        toast({
+          title: `Provider ${data.provider.name} created`,
+          description: `Propagation failed: ${data.syncError}`,
+          variant: 'destructive',
+        });
+      } else {
+        toast({ title: 'Success', description: 'Provider created successfully' });
+      }
     },
     onError: (error, variables, context) => {
       if (context?.previousData) {
@@ -644,6 +697,30 @@ export function ProvidersPage() {
       toast({
         title: 'MCP configuration failed',
         description: error instanceof Error ? error.message : 'Failed to configure MCP.',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const rescanMutation = useMutation({
+    mutationFn: rescanProviders,
+    onSuccess: (result) => {
+      invalidateProviderConfigQueries(queryClient);
+      queryClient.invalidateQueries({ queryKey: ['preflight'] });
+      const totalPropagated = result.syncResults.reduce((sum, s) => sum + s.insertedCount, 0);
+      let desc = `${result.discovered.length} new, ${result.alreadyPresent.length} already registered, ${result.notFound.length} not found`;
+      if (result.discovered.length > 0) {
+        const names = result.discovered.map((d) => d.name).join(', ');
+        desc +=
+          `\nDiscovered: ${names}` +
+          (totalPropagated > 0 ? ` (${totalPropagated} configs propagated)` : '');
+      }
+      toast({ title: 'Rescan complete', description: desc });
+    },
+    onError: (error) => {
+      toast({
+        title: 'Rescan failed',
+        description: error instanceof Error ? error.message : 'Failed to rescan providers.',
         variant: 'destructive',
       });
     },
@@ -836,10 +913,24 @@ export function ProvidersPage() {
             Manage AI provider configurations for agent profiles
           </p>
         </div>
-        <Button onClick={handleOpenDialog}>
-          <Plus className="h-4 w-4 mr-2" />
-          Add Provider
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            onClick={() => rescanMutation.mutate()}
+            disabled={rescanMutation.isPending}
+          >
+            {rescanMutation.isPending ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <Search className="h-4 w-4 mr-2" />
+            )}
+            Rescan
+          </Button>
+          <Button onClick={handleOpenDialog}>
+            <Plus className="h-4 w-4 mr-2" />
+            Add Provider
+          </Button>
+        </div>
       </div>
 
       {isLoading && <p className="text-muted-foreground">Loading providers...</p>}

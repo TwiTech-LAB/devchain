@@ -12,6 +12,7 @@ export interface ConfirmedDeliveryResult {
   confirmed: boolean;
   nonce: string;
   retryCount: number;
+  skipped?: boolean;
   method?: 'nonce' | 'paste_indicator' | 'paste_changed';
 }
 
@@ -34,10 +35,19 @@ export async function deliverWithConfirmation(
     text: string;
     submitKeys?: string[];
     agentId?: string;
+    skipConfirmation?: boolean;
   },
 ): Promise<ConfirmedDeliveryResult> {
-  const { tmuxSessionId, text, agentId } = params;
+  const { tmuxSessionId, text, agentId, skipConfirmation } = params;
   const submitKeys = params.submitKeys ?? ['Enter'];
+
+  if (skipConfirmation) {
+    if (agentId && sendCoordinator) {
+      await sendCoordinator.ensureAgentGap(agentId, 1000);
+    }
+    await tmux.pasteAndSubmit(tmuxSessionId, text, { submitKeys, bracketed: true });
+    return { skipped: true, confirmed: true, nonce: '', retryCount: 0 };
+  }
 
   let lastNonce = '';
 

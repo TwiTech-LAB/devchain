@@ -1603,6 +1603,72 @@ describe('SessionsService', () => {
     expect(sendArgs.join(' ')).toContain('--model opus[1m]');
   });
 
+  it('preserves claude-opus-4-6[1m] full ID and still applies 1M auto-compact threshold', async () => {
+    jest.useFakeTimers();
+    storage.getAgent.mockResolvedValue({
+      id: 'agent-1',
+      name: 'Helper Agent',
+      projectId: 'project-1',
+      profileId: 'profile-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProject.mockResolvedValue({
+      id: 'project-1',
+      name: 'My Project',
+      rootPath: '/workspace/project-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getAgentProfile.mockResolvedValue({
+      id: 'profile-1',
+      name: 'Helper Profile',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+      {
+        id: 'config-1',
+        profileId: 'profile-1',
+        providerId: 'provider-1',
+        options: '--model claude-opus-4-6[1m] --dangerously-skip-permissions',
+        env: null,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      },
+    ]);
+    storage.getProvider.mockResolvedValue({
+      id: 'provider-1',
+      name: 'claude',
+      binPath: '/usr/local/bin/claude',
+      mcpConfigured: true,
+      autoCompactThreshold: 95,
+      autoCompactThreshold1m: 50,
+      oneMillionContextEnabled: true,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+
+    const launchPromise = service.launchSession({
+      projectId: 'project-1',
+      agentId: 'agent-1',
+    });
+    await jest.runAllTimersAsync();
+    await launchPromise;
+
+    const sendArgs = tmuxService.sendCommandArgs.mock.calls[0][1] as string[];
+    const sendArgsJoined = sendArgs.join(' ');
+    // Full-ID [1m] pin preserved verbatim; NOT collapsed to the short alias.
+    expect(sendArgsJoined).toContain('--model claude-opus-4-6[1m]');
+    expect(sendArgsJoined).not.toContain('--model opus[1m]');
+    // Invariant: detectClaudeModelFamily still matches "opus" in the preserved
+    // full ID, so the 1M auto-compact threshold is still routed correctly.
+    expect(sendArgs).toEqual(
+      expect.arrayContaining([expect.stringContaining('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50')]),
+    );
+    expect(sendArgsJoined).not.toContain('CLAUDE_CODE_DISABLE_1M_CONTEXT');
+  });
+
   it('does not rewrite sonnet model when Claude provider has 1M enabled', async () => {
     jest.useFakeTimers();
     storage.getAgent.mockResolvedValue({
