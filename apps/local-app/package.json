@@ -5,8 +5,9 @@
   "description": "Devchain Local App - NestJS + Vite SSR + React (internal workspace, not published)",
   "main": "dist/main.js",
   "scripts": {
-    "prebuild": "rimraf dist && ts-node --compiler-options '{\"module\":\"commonjs\"}' scripts/fetch-pricing-data.ts",
+    "prebuild": "pnpm check:journal && rimraf dist && ts-node --compiler-options '{\"module\":\"commonjs\"}' scripts/fetch-pricing-data.ts",
     "build": "nest build && vite build && cp -r templates dist/templates",
+    "check:journal": "ts-node --compiler-options '{\"module\":\"commonjs\"}' scripts/validate-journal.ts",
     "build:ui": "vite build",
     "format": "prettier --write \"src/**/*.ts\" \"src/**/*.tsx\"",
     "start": "node dist/main",
