@@ -1,0 +1,1 @@
+ALTER TABLE `teams` ADD `allow_team_lead_create_agents` integer DEFAULT false NOT NULL;

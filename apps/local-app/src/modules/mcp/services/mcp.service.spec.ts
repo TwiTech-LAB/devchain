@@ -52,6 +52,8 @@ describe('McpService', () => {
   let settingsService: jest.Mocked<unknown>;
   let guestsService: jest.Mocked<unknown>;
   let skillsService: jest.Mocked<unknown>;
+  let reviewsService: jest.Mocked<unknown>;
+  let teamsService: jest.Mocked<unknown>;
 
   beforeEach(() => {
     storage = {
@@ -113,7 +115,7 @@ describe('McpService', () => {
           updatedAt: '2024-01-01T00:00:00Z',
         },
       ]),
-      injectTextIntoSession: jest.fn(),
+      injectTextIntoSession: jest.fn().mockResolvedValue({ confirmed: true }),
       launchSession: jest.fn(),
       getAgentPresence: jest.fn().mockResolvedValue(new Map()),
     };
@@ -164,6 +166,15 @@ describe('McpService', () => {
       logUsage: jest.fn(),
     };
 
+    reviewsService = {};
+
+    teamsService = {
+      listTeams: jest.fn(),
+      findTeamByExactName: jest.fn(),
+      getTeam: jest.fn(),
+      listTeamsByAgent: jest.fn().mockResolvedValue([]),
+    };
+
     service = new McpService(
       storage,
       chatService as never,
@@ -175,6 +186,8 @@ describe('McpService', () => {
       settingsService as never,
       guestsService as never,
       skillsService as never,
+      reviewsService as never,
+      teamsService as never,
     );
   });
 
@@ -475,6 +488,733 @@ describe('McpService', () => {
           senderAgentId: 'agent-1',
         }),
       );
+    });
+
+    it('send_message routes teamName to the team lead when present', async () => {
+      const project = {
+        id: 'project-1',
+        name: 'Demo',
+        description: 'Demo project',
+        rootPath: '/tmp/demo-project',
+        isPrivate: false,
+        ownerUserId: null,
+        isTemplate: false,
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      } as Project;
+      storage.findProjectByPath.mockResolvedValue(project);
+
+      (teamsService as { findTeamByExactName: jest.Mock }).findTeamByExactName.mockResolvedValue({
+        id: 'team-1',
+        projectId: project.id,
+        name: 'Platform',
+        description: null,
+        teamLeadAgentId: 'agent-2',
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      });
+      (teamsService as { getTeam: jest.Mock }).getTeam.mockResolvedValue({
+        id: 'team-1',
+        projectId: project.id,
+        name: 'Platform',
+        description: null,
+        teamLeadAgentId: 'agent-2',
+        members: [
+          { teamId: 'team-1', agentId: 'agent-1', createdAt: '2024-01-01T00:00:00Z' },
+          { teamId: 'team-1', agentId: 'agent-2', createdAt: '2024-01-01T00:00:00Z' },
+        ],
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      });
+
+      storage.getAgent.mockImplementation(async (agentId: string) => {
+        if (agentId === 'agent-1') return makeAgent('agent-1', 'Alpha');
+        if (agentId === 'agent-2') return makeAgent('agent-2', 'Beta');
+        throw new NotFoundError('Agent', agentId);
+      });
+      (sessionsService as { listActiveSessions: jest.Mock }).listActiveSessions.mockResolvedValue([
+        {
+          id: TEST_SESSION_ID,
+          agentId: 'agent-1',
+          status: 'running',
+          startedAt: '2024-01-01T00:00:00Z',
+          endedAt: null,
+          epicId: null,
+          createdAt: '2024-01-01T00:00:00Z',
+          updatedAt: '2024-01-01T00:00:00Z',
+        },
+        {
+          id: 'session-2',
+          agentId: 'agent-2',
+          status: 'running',
+          startedAt: '2024-01-01T00:00:00Z',
+          endedAt: null,
+          epicId: null,
+          createdAt: '2024-01-01T00:00:00Z',
+          updatedAt: '2024-01-01T00:00:00Z',
+        },
+      ]);
+
+      const result = await service.handleToolCall('devchain_send_message', {
+        sessionId: TEST_SESSION_ID,
+        teamName: 'platform',
+        message: 'hello team',
+      });
+
+      expect(result.success).toBe(true);
+      const data = (
+        result as {
+          success: true;
+          data: {
+            mode: string;
+            queued: unknown[];
+            queuedCount: number;
+            teamDelivery?: {
+              teamName: string;
+              recipientCount: number;
+              routedToLead: boolean;
+              summary: string;
+            };
+          };
+        }
+      ).data;
+      expect(data.mode).toBe('pooled');
+      expect(data.queued).toEqual([{ name: 'Beta', type: 'agent', status: 'queued' }]);
+      expect(data.queuedCount).toBe(1);
+      expect(data.teamDelivery).toEqual({
+        teamName: 'Platform',
+        recipientCount: 1,
+        routedToLead: true,
+        summary: 'Delivered to 1 agent (team lead)',
+      });
+      expect((messagePoolService as { enqueue: jest.Mock }).enqueue).toHaveBeenCalledWith(
+        'agent-2',
+        expect.any(String),
+        expect.objectContaining({ senderAgentId: 'agent-1' }),
+      );
+    });
+
+    it('send_message routes teamName to the other members when the sender is the team lead', async () => {
+      const project = {
+        id: 'project-1',
+        name: 'Demo',
+        description: 'Demo project',
+        rootPath: '/tmp/demo-project',
+        isPrivate: false,
+        ownerUserId: null,
+        isTemplate: false,
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      } as Project;
+      storage.findProjectByPath.mockResolvedValue(project);
+
+      (teamsService as { findTeamByExactName: jest.Mock }).findTeamByExactName.mockResolvedValue({
+        id: 'team-1',
+        projectId: project.id,
+        name: 'Platform',
+        description: null,
+        teamLeadAgentId: 'agent-1',
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      });
+      (teamsService as { getTeam: jest.Mock }).getTeam.mockResolvedValue({
+        id: 'team-1',
+        projectId: project.id,
+        name: 'Platform',
+        description: null,
+        teamLeadAgentId: 'agent-1',
+        members: [
+          { teamId: 'team-1', agentId: 'agent-1', createdAt: '2024-01-01T00:00:00Z' },
+          { teamId: 'team-1', agentId: 'agent-2', createdAt: '2024-01-01T00:00:00Z' },
+          { teamId: 'team-1', agentId: 'agent-3', createdAt: '2024-01-01T00:00:00Z' },
+        ],
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      });
+
+      storage.getAgent.mockImplementation(async (agentId: string) => {
+        if (agentId === 'agent-1') return makeAgent('agent-1', 'Alpha');
+        if (agentId === 'agent-2') return makeAgent('agent-2', 'Beta');
+        if (agentId === 'agent-3') return makeAgent('agent-3', 'Gamma');
+        throw new NotFoundError('Agent', agentId);
+      });
+      (sessionsService as { listActiveSessions: jest.Mock }).listActiveSessions.mockResolvedValue([
+        {
+          id: TEST_SESSION_ID,
+          agentId: 'agent-1',
+          status: 'running',
+          startedAt: '2024-01-01T00:00:00Z',
+          endedAt: null,
+          epicId: null,
+          createdAt: '2024-01-01T00:00:00Z',
+          updatedAt: '2024-01-01T00:00:00Z',
+        },
+        {
+          id: 'session-2',
+          agentId: 'agent-2',
+          status: 'running',
+          startedAt: '2024-01-01T00:00:00Z',
+          endedAt: null,
+          epicId: null,
+          createdAt: '2024-01-01T00:00:00Z',
+          updatedAt: '2024-01-01T00:00:00Z',
+        },
+        {
+          id: 'session-3',
+          agentId: 'agent-3',
+          status: 'running',
+          startedAt: '2024-01-01T00:00:00Z',
+          endedAt: null,
+          epicId: null,
+          createdAt: '2024-01-01T00:00:00Z',
+          updatedAt: '2024-01-01T00:00:00Z',
+        },
+      ]);
+
+      const result = await service.handleToolCall('devchain_send_message', {
+        sessionId: TEST_SESSION_ID,
+        teamName: 'Platform',
+        message: 'hello team',
+      });
+
+      expect(result.success).toBe(true);
+      const data = (
+        result as {
+          success: true;
+          data: {
+            queued: Array<{ name: string }>;
+            queuedCount: number;
+            teamDelivery?: {
+              teamName: string;
+              recipientCount: number;
+              routedToLead: boolean;
+              summary: string;
+            };
+          };
+        }
+      ).data;
+      expect(data.queued).toEqual([
+        { name: 'Beta', type: 'agent', status: 'queued' },
+        { name: 'Gamma', type: 'agent', status: 'queued' },
+      ]);
+      expect(data.queuedCount).toBe(2);
+      expect(data.teamDelivery).toEqual({
+        teamName: 'Platform',
+        recipientCount: 2,
+        routedToLead: false,
+        summary: 'Delivered to 2 agent(s) (team lead excluded)',
+      });
+    });
+
+    it('send_message routes teamName to all members when no lead is assigned', async () => {
+      const project = {
+        id: 'project-1',
+        name: 'Demo',
+        description: 'Demo project',
+        rootPath: '/tmp/demo-project',
+        isPrivate: false,
+        ownerUserId: null,
+        isTemplate: false,
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      } as Project;
+      storage.findProjectByPath.mockResolvedValue(project);
+
+      (teamsService as { findTeamByExactName: jest.Mock }).findTeamByExactName.mockResolvedValue({
+        id: 'team-1',
+        projectId: project.id,
+        name: 'Platform',
+        description: null,
+        teamLeadAgentId: null,
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      });
+      (teamsService as { getTeam: jest.Mock }).getTeam.mockResolvedValue({
+        id: 'team-1',
+        projectId: project.id,
+        name: 'Platform',
+        description: null,
+        teamLeadAgentId: null,
+        members: [
+          { teamId: 'team-1', agentId: 'agent-1', createdAt: '2024-01-01T00:00:00Z' },
+          { teamId: 'team-1', agentId: 'agent-2', createdAt: '2024-01-01T00:00:00Z' },
+          { teamId: 'team-1', agentId: 'agent-3', createdAt: '2024-01-01T00:00:00Z' },
+        ],
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      });
+
+      storage.getAgent.mockImplementation(async (agentId: string) => {
+        if (agentId === 'agent-1') return makeAgent('agent-1', 'Alpha');
+        if (agentId === 'agent-2') return makeAgent('agent-2', 'Beta');
+        if (agentId === 'agent-3') return makeAgent('agent-3', 'Gamma');
+        throw new NotFoundError('Agent', agentId);
+      });
+      (sessionsService as { listActiveSessions: jest.Mock }).listActiveSessions.mockResolvedValue([
+        {
+          id: TEST_SESSION_ID,
+          agentId: 'agent-1',
+          status: 'running',
+          startedAt: '2024-01-01T00:00:00Z',
+          endedAt: null,
+          epicId: null,
+          createdAt: '2024-01-01T00:00:00Z',
+          updatedAt: '2024-01-01T00:00:00Z',
+        },
+        {
+          id: 'session-2',
+          agentId: 'agent-2',
+          status: 'running',
+          startedAt: '2024-01-01T00:00:00Z',
+          endedAt: null,
+          epicId: null,
+          createdAt: '2024-01-01T00:00:00Z',
+          updatedAt: '2024-01-01T00:00:00Z',
+        },
+        {
+          id: 'session-3',
+          agentId: 'agent-3',
+          status: 'running',
+          startedAt: '2024-01-01T00:00:00Z',
+          endedAt: null,
+          epicId: null,
+          createdAt: '2024-01-01T00:00:00Z',
+          updatedAt: '2024-01-01T00:00:00Z',
+        },
+      ]);
+
+      const result = await service.handleToolCall('devchain_send_message', {
+        sessionId: TEST_SESSION_ID,
+        teamName: 'Platform',
+        message: 'hello team',
+      });
+
+      expect(result.success).toBe(true);
+      const data = (
+        result as {
+          success: true;
+          data: {
+            queued: Array<{ name: string }>;
+            queuedCount: number;
+            teamDelivery?: {
+              teamName: string;
+              recipientCount: number;
+              routedToLead: boolean;
+              summary: string;
+            };
+          };
+        }
+      ).data;
+      expect(data.queued).toEqual([
+        { name: 'Beta', type: 'agent', status: 'queued' },
+        { name: 'Gamma', type: 'agent', status: 'queued' },
+      ]);
+      expect(data.queuedCount).toBe(2);
+      expect(data.teamDelivery).toEqual({
+        teamName: 'Platform',
+        recipientCount: 2,
+        routedToLead: false,
+        summary: 'Delivered to 2 agent(s) (no lead assigned)',
+      });
+      expect((messagePoolService as { enqueue: jest.Mock }).enqueue).toHaveBeenCalledTimes(2);
+    });
+
+    it('send_message returns TEAM_NOT_FOUND when no exact project-scoped team name exists', async () => {
+      const project = {
+        id: 'project-1',
+        name: 'Demo',
+        description: 'Demo project',
+        rootPath: '/tmp/demo-project',
+        isPrivate: false,
+        ownerUserId: null,
+        isTemplate: false,
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      } as Project;
+      storage.findProjectByPath.mockResolvedValue(project);
+
+      (teamsService as { findTeamByExactName: jest.Mock }).findTeamByExactName.mockResolvedValue(
+        null,
+      );
+
+      const result = await service.handleToolCall('devchain_send_message', {
+        sessionId: TEST_SESSION_ID,
+        teamName: 'Missing Team',
+        message: 'hello',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('TEAM_NOT_FOUND');
+      expect(result.error?.message).toContain('Team "Missing Team" not found in project');
+    });
+
+    it('send_message resolves teamName through exact lookup instead of fuzzy first-page results', async () => {
+      const project = {
+        id: 'project-1',
+        name: 'Demo',
+        description: 'Demo project',
+        rootPath: '/tmp/demo-project',
+        isPrivate: false,
+        ownerUserId: null,
+        isTemplate: false,
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      } as Project;
+      storage.findProjectByPath.mockResolvedValue(project);
+
+      (teamsService as { listTeams: jest.Mock }).listTeams.mockResolvedValue({
+        items: [
+          {
+            id: 'team-a',
+            name: 'Alpha Team',
+            description: null,
+            teamLeadAgentId: 'agent-3',
+            teamLeadAgentName: 'Gamma',
+            memberCount: 1,
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          },
+        ],
+        total: 3,
+        limit: 1,
+        offset: 0,
+      });
+      (teamsService as { findTeamByExactName: jest.Mock }).findTeamByExactName.mockResolvedValue({
+        id: 'team-platform',
+        projectId: project.id,
+        name: 'Platform',
+        description: null,
+        teamLeadAgentId: 'agent-2',
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      });
+      (teamsService as { getTeam: jest.Mock }).getTeam.mockResolvedValue({
+        id: 'team-platform',
+        projectId: project.id,
+        name: 'Platform',
+        description: null,
+        teamLeadAgentId: 'agent-2',
+        members: [
+          { teamId: 'team-platform', agentId: 'agent-1', createdAt: '2024-01-01T00:00:00Z' },
+          { teamId: 'team-platform', agentId: 'agent-2', createdAt: '2024-01-01T00:00:00Z' },
+        ],
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      });
+
+      storage.getAgent.mockImplementation(async (agentId: string) => {
+        if (agentId === 'agent-1') return makeAgent('agent-1', 'Alpha');
+        if (agentId === 'agent-2') return makeAgent('agent-2', 'Beta');
+        throw new NotFoundError('Agent', agentId);
+      });
+      (sessionsService as { listActiveSessions: jest.Mock }).listActiveSessions.mockResolvedValue([
+        {
+          id: TEST_SESSION_ID,
+          agentId: 'agent-1',
+          status: 'running',
+          startedAt: '2024-01-01T00:00:00Z',
+          endedAt: null,
+          epicId: null,
+          createdAt: '2024-01-01T00:00:00Z',
+          updatedAt: '2024-01-01T00:00:00Z',
+        },
+        {
+          id: 'session-2',
+          agentId: 'agent-2',
+          status: 'running',
+          startedAt: '2024-01-01T00:00:00Z',
+          endedAt: null,
+          epicId: null,
+          createdAt: '2024-01-01T00:00:00Z',
+          updatedAt: '2024-01-01T00:00:00Z',
+        },
+      ]);
+
+      const result = await service.handleToolCall('devchain_send_message', {
+        sessionId: TEST_SESSION_ID,
+        teamName: 'Platform',
+        message: 'hello platform',
+      });
+
+      expect(result.success).toBe(true);
+      expect(
+        (teamsService as { findTeamByExactName: jest.Mock }).findTeamByExactName,
+      ).toHaveBeenCalledWith(project.id, 'Platform');
+      expect((teamsService as { listTeams: jest.Mock }).listTeams).not.toHaveBeenCalled();
+      expect((messagePoolService as { enqueue: jest.Mock }).enqueue).toHaveBeenCalledWith(
+        'agent-2',
+        expect.any(String),
+        expect.objectContaining({ senderAgentId: 'agent-1' }),
+      );
+    });
+
+    it('send_message returns NO_RECIPIENTS when sender is the only team member or lead', async () => {
+      const project = {
+        id: 'project-1',
+        name: 'Demo',
+        description: 'Demo project',
+        rootPath: '/tmp/demo-project',
+        isPrivate: false,
+        ownerUserId: null,
+        isTemplate: false,
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      } as Project;
+      storage.findProjectByPath.mockResolvedValue(project);
+
+      (teamsService as { findTeamByExactName: jest.Mock }).findTeamByExactName.mockResolvedValue({
+        id: 'team-1',
+        projectId: project.id,
+        name: 'Platform',
+        description: null,
+        teamLeadAgentId: 'agent-1',
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      });
+      (teamsService as { getTeam: jest.Mock }).getTeam.mockResolvedValue({
+        id: 'team-1',
+        projectId: project.id,
+        name: 'Platform',
+        description: null,
+        teamLeadAgentId: 'agent-1',
+        members: [{ teamId: 'team-1', agentId: 'agent-1', createdAt: '2024-01-01T00:00:00Z' }],
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      });
+
+      const result = await service.handleToolCall('devchain_send_message', {
+        sessionId: TEST_SESSION_ID,
+        teamName: 'Platform',
+        message: 'hello',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('NO_RECIPIENTS');
+      expect(result.error?.message).toBe('No recipients — sender is the only team member/lead');
+    });
+
+    it('send_message returns NO_RECIPIENTS when sender is the only team member and no lead is assigned', async () => {
+      const project = {
+        id: 'project-1',
+        name: 'Demo',
+        description: 'Demo project',
+        rootPath: '/tmp/demo-project',
+        isPrivate: false,
+        ownerUserId: null,
+        isTemplate: false,
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      } as Project;
+      storage.findProjectByPath.mockResolvedValue(project);
+
+      (teamsService as { findTeamByExactName: jest.Mock }).findTeamByExactName.mockResolvedValue({
+        id: 'team-1',
+        projectId: project.id,
+        name: 'Platform',
+        description: null,
+        teamLeadAgentId: null,
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      });
+      (teamsService as { getTeam: jest.Mock }).getTeam.mockResolvedValue({
+        id: 'team-1',
+        projectId: project.id,
+        name: 'Platform',
+        description: null,
+        teamLeadAgentId: null,
+        members: [{ teamId: 'team-1', agentId: 'agent-1', createdAt: '2024-01-01T00:00:00Z' }],
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      });
+
+      const result = await service.handleToolCall('devchain_send_message', {
+        sessionId: TEST_SESSION_ID,
+        teamName: 'Platform',
+        message: 'hello',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('NO_RECIPIENTS');
+      expect(result.error?.message).toBe('No recipients — sender is the only team member/lead');
+    });
+
+    it('self-team fallback: teamless sender returns NO_SELF_TEAM', async () => {
+      (teamsService as { listTeamsByAgent: jest.Mock }).listTeamsByAgent.mockResolvedValue([]);
+
+      const result = await service.handleToolCall('devchain_send_message', {
+        sessionId: TEST_SESSION_ID,
+        message: 'Hello team',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toMatchObject({ code: 'NO_SELF_TEAM' });
+    });
+
+    it('self-team fallback: sender in 2 teams returns AMBIGUOUS_SELF_TEAM', async () => {
+      (teamsService as { listTeamsByAgent: jest.Mock }).listTeamsByAgent.mockResolvedValue([
+        { id: 't1', name: 'Team A', teamLeadAgentId: TEST_AGENT.id },
+        { id: 't2', name: 'Team B', teamLeadAgentId: 'other' },
+      ]);
+
+      const result = await service.handleToolCall('devchain_send_message', {
+        sessionId: TEST_SESSION_ID,
+        message: 'Hello team',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toMatchObject({ code: 'AMBIGUOUS_SELF_TEAM' });
+    });
+
+    it('self-team fallback: single-team sender resolves effectiveTeamName', async () => {
+      (teamsService as { listTeamsByAgent: jest.Mock }).listTeamsByAgent.mockResolvedValue([
+        { id: 'team-1', name: 'Platform', teamLeadAgentId: TEST_AGENT.id },
+      ]);
+
+      (teamsService as { findTeamByExactName: jest.Mock }).findTeamByExactName.mockResolvedValue({
+        id: 'team-1',
+        projectId: 'project-1',
+        name: 'Platform',
+        description: null,
+        teamLeadAgentId: TEST_AGENT.id,
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      });
+      (teamsService as { getTeam: jest.Mock }).getTeam.mockResolvedValue({
+        id: 'team-1',
+        projectId: 'project-1',
+        name: 'Platform',
+        description: null,
+        teamLeadAgentId: TEST_AGENT.id,
+        members: [{ teamId: 'team-1', agentId: TEST_AGENT.id, createdAt: '2024-01-01T00:00:00Z' }],
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      });
+
+      const result = await service.handleToolCall('devchain_send_message', {
+        sessionId: TEST_SESSION_ID,
+        message: 'Hello team',
+      });
+
+      // Single member (self) → NO_RECIPIENTS (sender excluded), but team was resolved
+      expect(result.success).toBe(false);
+      expect(result.error).toMatchObject({ code: 'NO_RECIPIENTS' });
+      // Verify self-team resolution triggered the team lookup
+      expect(
+        (teamsService as { listTeamsByAgent: jest.Mock }).listTeamsByAgent,
+      ).toHaveBeenCalledWith(TEST_AGENT.id);
+      expect(
+        (teamsService as { findTeamByExactName: jest.Mock }).findTeamByExactName,
+      ).toHaveBeenCalledWith('project-1', 'Platform');
+    });
+
+    it('self-team fallback: empty recipientAgentNames rejected at schema layer', async () => {
+      const result = await service.handleToolCall('devchain_send_message', {
+        sessionId: TEST_SESSION_ID,
+        recipientAgentNames: [],
+        message: 'Hello',
+      });
+
+      expect(result.success).toBe(false);
+    });
+
+    it('self-team fallback: non-lead member routes to lead', async () => {
+      (teamsService as { listTeamsByAgent: jest.Mock }).listTeamsByAgent.mockResolvedValue([
+        { id: 'team-1', name: 'Platform', teamLeadAgentId: 'agent-lead' },
+      ]);
+
+      (teamsService as { findTeamByExactName: jest.Mock }).findTeamByExactName.mockResolvedValue({
+        id: 'team-1',
+        projectId: 'project-1',
+        name: 'Platform',
+        description: null,
+        teamLeadAgentId: 'agent-lead',
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      });
+      (teamsService as { getTeam: jest.Mock }).getTeam.mockResolvedValue({
+        id: 'team-1',
+        projectId: 'project-1',
+        name: 'Platform',
+        description: null,
+        teamLeadAgentId: 'agent-lead',
+        members: [
+          { teamId: 'team-1', agentId: TEST_AGENT.id, createdAt: '2024-01-01T00:00:00Z' },
+          { teamId: 'team-1', agentId: 'agent-lead', createdAt: '2024-01-01T00:00:00Z' },
+        ],
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      });
+
+      storage.getAgent.mockImplementation(async (agentId: string) => {
+        if (agentId === TEST_AGENT.id) return TEST_AGENT;
+        if (agentId === 'agent-lead') return makeAgent('agent-lead', 'Lead Agent');
+        throw new NotFoundError('Agent', agentId);
+      });
+
+      const result = await service.handleToolCall('devchain_send_message', {
+        sessionId: TEST_SESSION_ID,
+        message: 'Hello lead',
+      });
+
+      expect(result.success).toBe(true);
+      const data = result.data as {
+        queued: Array<{ name: string }>;
+        teamDelivery?: { teamName: string; routedToLead: boolean };
+      };
+      expect(data.queued).toHaveLength(1);
+      expect(data.queued[0].name).toBe('Lead Agent');
+      expect(data.teamDelivery?.routedToLead).toBe(true);
+    });
+
+    it('self-team fallback: lead sender resolves team and routes to members', async () => {
+      (teamsService as { listTeamsByAgent: jest.Mock }).listTeamsByAgent.mockResolvedValue([
+        { id: 'team-1', name: 'Platform', teamLeadAgentId: TEST_AGENT.id },
+      ]);
+
+      (teamsService as { findTeamByExactName: jest.Mock }).findTeamByExactName.mockResolvedValue({
+        id: 'team-1',
+        projectId: 'project-1',
+        name: 'Platform',
+        description: null,
+        teamLeadAgentId: TEST_AGENT.id,
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      });
+      (teamsService as { getTeam: jest.Mock }).getTeam.mockResolvedValue({
+        id: 'team-1',
+        projectId: 'project-1',
+        name: 'Platform',
+        description: null,
+        teamLeadAgentId: TEST_AGENT.id,
+        members: [
+          { teamId: 'team-1', agentId: TEST_AGENT.id, createdAt: '2024-01-01T00:00:00Z' },
+          { teamId: 'team-1', agentId: 'agent-2', createdAt: '2024-01-01T00:00:00Z' },
+        ],
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      });
+
+      storage.getAgent.mockImplementation(async (agentId: string) => {
+        if (agentId === TEST_AGENT.id) return TEST_AGENT;
+        if (agentId === 'agent-2') return makeAgent('agent-2', 'Beta');
+        throw new NotFoundError('Agent', agentId);
+      });
+
+      await service.handleToolCall('devchain_send_message', {
+        sessionId: TEST_SESSION_ID,
+        message: 'Hello team',
+      });
+
+      // Verify self-team resolution path was taken
+      expect(
+        (teamsService as { listTeamsByAgent: jest.Mock }).listTeamsByAgent,
+      ).toHaveBeenCalledWith(TEST_AGENT.id);
+      expect(
+        (teamsService as { findTeamByExactName: jest.Mock }).findTeamByExactName,
+      ).toHaveBeenCalledWith('project-1', 'Platform');
+      expect((teamsService as { getTeam: jest.Mock }).getTeam).toHaveBeenCalledWith('team-1');
+      // Agent-2 was resolved as recipient (sender excluded)
+      expect(storage.getAgent).toHaveBeenCalledWith('agent-2');
     });
 
     it('send_message pooled mode auto-launches offline recipient agents when NODE_ENV is not test', async () => {
@@ -974,6 +1714,7 @@ describe('McpService', () => {
       expect((tmuxService as { pasteAndSubmit: jest.Mock }).pasteAndSubmit).toHaveBeenCalledWith(
         'guest-tmux-session',
         expect.stringContaining('Hello guest!'),
+        expect.objectContaining({ bracketed: true, confirm: true }),
       );
     });
 
@@ -4441,6 +5182,16 @@ describe('McpService', () => {
       expect(response.success).toBe(false);
       expect(response.error?.code).toBe('GUEST_USER_DM_NOT_ALLOWED');
       expect(response.error?.message).toContain('Guests cannot send direct messages to users');
+    });
+
+    it('self-team fallback: guest sender returns NO_SELF_TEAM', async () => {
+      const response = await service.handleToolCall('devchain_send_message', {
+        sessionId: GUEST_ID,
+        message: 'Hello team',
+      });
+
+      expect(response.success).toBe(false);
+      expect(response.error?.code).toBe('NO_SELF_TEAM');
     });
 
     it('blocks guest from using devchain_activity_start', async () => {

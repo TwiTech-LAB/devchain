@@ -407,6 +407,7 @@ export interface CreateIfMissingInput {
   profileId: string;
   providerId: string;
   name: string;
+  description?: string | null;
   options?: string | null;
   env?: Record<string, string>;
 }

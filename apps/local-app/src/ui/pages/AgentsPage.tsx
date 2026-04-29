@@ -1,5 +1,8 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { WsEnvelope } from '@/ui/lib/socket';
+import { useAppSocket } from '@/ui/hooks/useAppSocket';
+import type { Socket } from 'socket.io-client';
 import { Button } from '@/ui/components/ui/button';
 import {
   Dialog,
@@ -204,6 +207,46 @@ export function AgentsPage() {
     projectId: selectedProjectId ?? null,
     refetchPreflight,
   });
+
+  // ---- Live-update via events socket ----
+  const handleAgentEventEnvelope = useCallback(
+    (envelope: WsEnvelope) => {
+      if (!envelope) return;
+      const { topic, type, payload } = envelope;
+      if (
+        topic === 'events/logs' &&
+        type === 'event_created' &&
+        payload &&
+        typeof payload === 'object' &&
+        (payload as Record<string, unknown>).name === 'agent.created' &&
+        ((payload as Record<string, unknown>).payload as Record<string, unknown>)?.projectId ===
+          selectedProjectId
+      ) {
+        queryClient.invalidateQueries({
+          queryKey: agentsPageQueryKeys.agents(selectedProjectId!),
+        });
+      }
+    },
+    [selectedProjectId, queryClient],
+  );
+
+  const eventsSocketRef = useRef<Socket | null>(null);
+  const agentEventsSocket = useAppSocket(
+    {
+      connect: () => {
+        eventsSocketRef.current?.emit('events:subscribe');
+      },
+      message: handleAgentEventEnvelope,
+    },
+    [handleAgentEventEnvelope],
+  );
+  eventsSocketRef.current = agentEventsSocket;
+
+  useEffect(() => {
+    if (agentEventsSocket?.connected) {
+      agentEventsSocket.emit('events:subscribe');
+    }
+  }, [agentEventsSocket]);
 
   // ---- Derived data ----
   const providersById = useMemo(() => {

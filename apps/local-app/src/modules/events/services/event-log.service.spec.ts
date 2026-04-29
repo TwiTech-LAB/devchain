@@ -214,6 +214,94 @@ describe('EventLogService', () => {
     expect(filtered.items[0]?.id).toBe('evt-valid-activity-filter');
   });
 
+  it('filters events by actorId from payload', async () => {
+    await service.recordPublished({
+      id: 'evt-actor-a',
+      name: 'agent.created',
+      payload: {
+        agentId: 'new-1',
+        agentName: 'Bot A',
+        projectId: 'project-1',
+        profileId: 'profile-1',
+        providerConfigId: 'config-1',
+        actor: { type: 'agent', id: 'lead-agent-1' },
+      },
+    });
+    await service.recordPublished({
+      id: 'evt-actor-b',
+      name: 'agent.created',
+      payload: {
+        agentId: 'new-2',
+        agentName: 'Bot B',
+        projectId: 'project-1',
+        profileId: 'profile-1',
+        providerConfigId: 'config-1',
+        actor: { type: 'agent', id: 'lead-agent-2' },
+      },
+    });
+    await service.recordPublished({
+      id: 'evt-no-actor',
+      name: 'agent.created',
+      payload: {
+        agentId: 'new-3',
+        agentName: 'Bot C',
+        projectId: 'project-1',
+        profileId: 'profile-1',
+        providerConfigId: 'config-1',
+        actor: null,
+      },
+    });
+
+    const filtered = await service.listEvents({
+      actorId: 'lead-agent-1',
+      limit: 20,
+      offset: 0,
+    });
+
+    expect(filtered.total).toBe(1);
+    expect(filtered.items[0]?.id).toBe('evt-actor-a');
+  });
+
+  it('does not throw on malformed payload_json when filtering by actorId', async () => {
+    sqlite
+      .prepare(
+        `
+          INSERT INTO events (id, name, payload_json, request_id, published_at)
+          VALUES (?, ?, ?, ?, ?)
+        `,
+      )
+      .run(
+        'evt-invalid-actor-filter',
+        'agent.created',
+        'not-json',
+        null,
+        '2026-02-18T00:00:00.000Z',
+      );
+
+    await service.recordPublished({
+      id: 'evt-valid-actor-filter',
+      name: 'agent.created',
+      payload: {
+        agentId: 'new-1',
+        agentName: 'Bot',
+        projectId: 'p1',
+        profileId: 'pr1',
+        providerConfigId: 'c1',
+        actor: { type: 'agent', id: 'lead-safe' },
+      },
+      publishedAt: '2026-02-18T00:00:01.000Z',
+    });
+
+    const filtered = await service.listEvents({
+      actorId: 'lead-safe',
+      limit: 20,
+      offset: 0,
+    });
+
+    expect(filtered.total).toBe(1);
+    expect(filtered.items[0]?.id).toBe('evt-valid-actor-filter');
+  });
+
   it('cleans only old worktree activity events based on retention', async () => {
     const now = Date.now();
     const days = 86_400_000;

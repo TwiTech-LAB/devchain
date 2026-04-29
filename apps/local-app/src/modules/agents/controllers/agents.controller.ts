@@ -11,12 +11,14 @@ import {
   Inject,
   BadRequestException,
   forwardRef,
+  Optional,
 } from '@nestjs/common';
 import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { CreateAgent, UpdateAgent, Agent } from '../../storage/models/domain.models';
 import { SessionsService } from '../../sessions/services/sessions.service';
 import { SessionCoordinatorService } from '../../sessions/services/session-coordinator.service';
 import { SessionDto } from '../../sessions/dtos/sessions.dto';
+import { EventsService } from '../../events/services/events.service';
 import { z } from 'zod';
 import { createLogger } from '../../../common/logging/logger';
 
@@ -75,6 +77,7 @@ const CreateAgentSchema = z.object({
   name: z.string().min(1, 'name is required'),
   description: z.string().nullable().optional(),
   providerConfigId: z.string().min(1, 'providerConfigId is required'),
+  modelOverride: z.string().trim().min(1).nullable().optional(),
 });
 
 const UpdateAgentSchema = z.object({
@@ -93,6 +96,7 @@ export class AgentsController {
     @Inject(forwardRef(() => SessionsService)) private readonly sessionsService: SessionsService,
     @Inject(forwardRef(() => SessionCoordinatorService))
     private readonly sessionCoordinator: SessionCoordinatorService,
+    @Optional() private readonly eventsService?: EventsService,
   ) {}
 
   /**
@@ -249,7 +253,23 @@ export class AgentsController {
     // Validate providerConfigId belongs to the selected profile
     await this.validateConfigOwnership(data.providerConfigId, data.profileId);
 
-    return this.storage.createAgent(data as CreateAgent);
+    const agent = await this.storage.createAgent(data as CreateAgent);
+    try {
+      await this.eventsService?.publish('agent.created', {
+        agentId: agent.id,
+        agentName: agent.name,
+        projectId: agent.projectId,
+        profileId: agent.profileId,
+        providerConfigId: agent.providerConfigId,
+        actor: null,
+      });
+    } catch (error) {
+      logger.error(
+        { agentId: agent.id, projectId: agent.projectId, error },
+        'Failed to publish agent.created event',
+      );
+    }
+    return agent;
   }
 
   @Put(':id')
@@ -284,7 +304,23 @@ export class AgentsController {
   @Delete(':id')
   async deleteAgent(@Param('id') id: string): Promise<void> {
     logger.info({ id }, 'DELETE /api/agents/:id');
+    const agent = await this.storage.getAgent(id);
     await this.storage.deleteAgent(id);
+    try {
+      await this.eventsService?.publish('agent.deleted', {
+        agentId: id,
+        agentName: agent.name,
+        projectId: agent.projectId,
+        actor: null,
+        teamId: null,
+        teamName: null,
+      });
+    } catch (error) {
+      logger.error(
+        { agentId: id, projectId: agent.projectId, error },
+        'Failed to publish agent.deleted event',
+      );
+    }
   }
 
   /**

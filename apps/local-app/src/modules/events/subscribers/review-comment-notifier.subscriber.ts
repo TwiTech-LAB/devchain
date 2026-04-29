@@ -7,6 +7,9 @@ import { SessionsService } from '../../sessions/services/sessions.service';
 import { SessionCoordinatorService } from '../../sessions/services/session-coordinator.service';
 import { SessionsMessagePoolService } from '../../sessions/services/sessions-message-pool.service';
 import { STORAGE_SERVICE, type AgentStorage } from '../../storage/interfaces/storage.interface';
+import { TeamsService } from '../../teams/services/teams.service';
+import { renderTemplate } from '../../../common/template/handlebars-renderer';
+import { loadAgentRecipientContext } from '../../../common/template/agent-recipient-context';
 import type { ReviewCommentCreatedEventPayload } from '../catalog/review.comment.created';
 
 const DEFAULT_TEMPLATE = `[Review Comment]
@@ -22,10 +25,26 @@ Actions:
   (Fetch comment first with devchain_get_review_comments to get current version)
 • View review: devchain_get_review(sessionId="<your-session-id>", reviewId="{review_id}")`;
 
+const LEGACY_VARIABLES = [
+  'comment_type',
+  'review_title',
+  'author_name',
+  'file_path',
+  'line_info',
+  'context_info',
+  'content',
+  'review_id',
+  'comment_id',
+  'team_name',
+  'team_names',
+  'is_team_lead',
+];
+
 @Injectable()
 export class ReviewCommentNotifierSubscriber {
   private readonly logger = new Logger(ReviewCommentNotifierSubscriber.name);
   private sessionsServiceRef?: SessionsService;
+  private teamsServiceRef?: TeamsService;
 
   constructor(
     private readonly eventLogService: EventLogService,
@@ -150,17 +169,24 @@ export class ReviewCommentNotifierSubscriber {
       contextInfo = 'unknown';
     }
 
-    const message = this.renderTemplate(DEFAULT_TEMPLATE, {
-      comment_type: payload.commentType,
-      review_title: payload.reviewTitle ?? payload.reviewId,
-      author_name: authorName,
-      file_path: payload.filePath ?? '(general)',
-      line_info: lineInfo,
-      context_info: contextInfo,
-      content: this.truncateContent(payload.content, 500),
-      review_id: payload.reviewId,
-      comment_id: payload.commentId,
-    });
+    const teamCtx = await loadAgentRecipientContext(this.getTeamsService(), agentId);
+
+    const message = renderTemplate(
+      DEFAULT_TEMPLATE,
+      {
+        comment_type: payload.commentType,
+        review_title: payload.reviewTitle ?? payload.reviewId,
+        author_name: authorName,
+        file_path: payload.filePath ?? '(general)',
+        line_info: lineInfo,
+        context_info: contextInfo,
+        content: this.truncateContent(payload.content, 500),
+        review_id: payload.reviewId,
+        comment_id: payload.commentId,
+        ...teamCtx,
+      },
+      LEGACY_VARIABLES,
+    );
 
     // Ensure agent has an active session (launch if needed)
     // Note: ensureAgentSession calls launchSession() which has internal withAgentLock.
@@ -178,13 +204,6 @@ export class ReviewCommentNotifierSubscriber {
       { agentId, sessionId, launched, status: result.status },
       'ReviewCommentNotifier: message enqueued to pool',
     );
-  }
-
-  private renderTemplate(template: string, context: Record<string, string>): string {
-    return Object.entries(context).reduce((acc, [key, value]) => {
-      const placeholder = `{${key}}`;
-      return acc.split(placeholder).join(value);
-    }, template);
   }
 
   private truncateContent(content: string, maxLength: number): string {
@@ -239,6 +258,16 @@ export class ReviewCommentNotifierSubscriber {
       }
     }
     return this.sessionsServiceRef;
+  }
+
+  private getTeamsService(): TeamsService {
+    if (!this.teamsServiceRef) {
+      this.teamsServiceRef = this.moduleRef.get(TeamsService, { strict: false });
+      if (!this.teamsServiceRef) {
+        throw new Error('TeamsService is not available in the current module context');
+      }
+    }
+    return this.teamsServiceRef;
   }
 
   private formatLineRange(lineStart: number | null, lineEnd: number | null): string {

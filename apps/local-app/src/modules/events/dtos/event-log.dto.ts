@@ -22,6 +22,7 @@ export interface EventLogDto {
 export interface EventLogListFilters {
   name?: string;
   ownerProjectId?: string;
+  actorId?: string;
   handler?: string;
   status?: EventHandlerStatus;
   from?: string;

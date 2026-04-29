@@ -21,6 +21,19 @@ import {
 
 const logger = createLogger('ProjectImport');
 
+/**
+ * Preserve env entries from an imported template, including redacted ones
+ * (value === '***'). Keeping redacted keys lets the user see which secrets the
+ * config expects so they can fill in real values after import — stripping them
+ * silently was confusing because the var would just disappear from the UI.
+ */
+export function preserveImportedEnv(
+  env: Record<string, string> | null | undefined,
+): Record<string, string> | null {
+  if (!env) return null;
+  return Object.keys(env).length > 0 ? env : null;
+}
+
 type ParsedTemplatePayload = ReturnType<typeof ExportSchema.parse>;
 type SelectedProfilesByFamily = ReturnType<
   typeof selectProfilesForFamilies<ParsedTemplatePayload['profiles'][number]>
@@ -52,6 +65,14 @@ export interface ImportProjectInputLike {
   dryRun?: boolean;
   statusMappings?: Record<string, string>;
   familyProviderMappings?: Record<string, string>;
+  teamOverrides?: Array<{
+    teamName: string;
+    allowTeamLeadCreateAgents?: boolean;
+    maxMembers?: number;
+    maxConcurrentTasks?: number;
+    profileNames?: string[];
+    profileSelections?: Array<{ profileName: string; configNames: string[] }>;
+  }>;
 }
 
 interface ImportProjectDeps {
@@ -65,6 +86,7 @@ interface ImportProjectDeps {
       projectId: string,
     ) => Array<{ id: string; agentId: string | null }>;
   };
+  cleanupTeamsForProject?: (projectId: string) => Promise<void>;
   unifiedTemplateService: Pick<UnifiedTemplateService, 'getBundledTemplate'>;
   computeFamilyAlternatives: (
     templateProfiles: ParsedTemplatePayload['profiles'],
@@ -101,6 +123,21 @@ interface ImportProjectDeps {
   ) => Promise<{ initialPromptSet: boolean }>;
   getImportErrorMessage: (error: unknown) => string;
   probe1m?: (binPath: string) => Promise<ProbeOutcome>;
+  teamsService?: {
+    createTeam: (data: {
+      projectId: string;
+      name: string;
+      description?: string | null;
+      teamLeadAgentId?: string | null;
+      maxMembers?: number;
+      maxConcurrentTasks?: number;
+      memberAgentIds: string[];
+      profileIds?: string[];
+      profileConfigSelections?: Array<{ profileId: string; configIds: string[] }>;
+    }) => Promise<{ id: string }>;
+    deleteTeamsByProject: (projectId: string) => Promise<void>;
+    deleteTeamsByIds: (ids: string[]) => Promise<void>;
+  };
 }
 
 export async function importProjectWithHelper(
@@ -177,6 +214,17 @@ export async function importProjectWithHelper(
       deps,
     );
 
+    // Import teams (after agents and profiles are created)
+    let teamsImported = 0;
+    if (deps.teamsService && context.payload.teams && context.payload.teams.length > 0) {
+      const teamsToImport = applyTeamOverrides(
+        context.payload.teams,
+        input.teamOverrides,
+        context.selectedProfilesByFamily.profileNameRemapMap,
+      );
+      teamsImported = await createImportedTeams(input.projectId, teamsToImport, deps);
+    }
+
     const epicResult = await remapEpicAgentAssignments(
       input.projectId,
       oldAgentIdToName,
@@ -218,6 +266,7 @@ export async function importProjectWithHelper(
       epicsTotal: epicResult.epicsTotal,
       epicsRemapped: epicResult.epicsRemapped,
       epicsCleared: epicResult.epicsCleared,
+      teamsImported,
     });
   } catch (error) {
     logger.error({ error, projectId: input.projectId }, 'Import failed');
@@ -444,6 +493,14 @@ async function clearExistingProjectData(
   existing: ExistingProjectData,
   deps: ImportProjectDeps,
 ) {
+  // Clean up teams before deleting agents to avoid FK RESTRICT errors on team leads
+  if (deps.cleanupTeamsForProject) {
+    await deps.cleanupTeamsForProject(projectId);
+  }
+
+  // Bulk template-import cleanup intentionally does NOT emit agent.deleted — this is internal
+  // data replacement, not a user action. Per-agent broadcasts here would spam the UI during
+  // import. If a user-visible reset event is ever needed, emit a single project-level event instead.
   for (const agent of existing.agents.items) {
     await deps.storage.deleteAgent(agent.id);
   }
@@ -627,6 +684,7 @@ async function createImportedProviderConfigs(
         providerConfigs?: Array<{
           name: string;
           providerName: string;
+          description?: string | null;
           options?: string | null;
           env?: Record<string, string> | null;
         }>;
@@ -648,8 +706,9 @@ async function createImportedProviderConfigs(
           profileId: newProfileId,
           providerId,
           name: config.name,
+          description: config.description ?? null,
           options: config.options ?? null,
-          env: config.env ?? null,
+          env: preserveImportedEnv(config.env),
         });
 
         const lookupKey = buildProviderConfigLookupKey(newProfileId, config.name);
@@ -1014,6 +1073,38 @@ export async function importProviderSettings(
       }
     }
 
+    const importedEnv = preserveImportedEnv(setting.env);
+    if (importedEnv) {
+      if (localProvider.env == null) {
+        updates.env = importedEnv;
+        logger.info(
+          { providerName: setting.name, keyCount: Object.keys(importedEnv).length },
+          'Applied provider env from template import (no local env existed)',
+        );
+      } else {
+        const merged = { ...localProvider.env };
+        let addedCount = 0;
+        for (const [key, value] of Object.entries(importedEnv)) {
+          if (!(key in merged)) {
+            merged[key] = value;
+            addedCount++;
+          }
+        }
+        if (addedCount > 0) {
+          updates.env = merged;
+          logger.info(
+            { providerName: setting.name, addedCount },
+            'Merged provider env from template import (local wins on conflicts)',
+          );
+        } else {
+          logger.debug(
+            { providerName: setting.name },
+            'Skipping provider env import: all template keys already exist locally',
+          );
+        }
+      }
+    }
+
     if (Object.keys(updates).length > 0) {
       await storage.updateProvider(localProvider.id, updates);
     }
@@ -1063,6 +1154,222 @@ async function importProviderModels(payload: ParsedTemplatePayload, storage: Sto
   return { added: totalAdded, existing: totalExisting, providersSkipped };
 }
 
+export function applyTeamOverrides(
+  teams: Array<{
+    name: string;
+    description?: string | null;
+    teamLeadAgentName?: string | null;
+    memberAgentNames: string[];
+    maxMembers?: number;
+    maxConcurrentTasks?: number;
+    allowTeamLeadCreateAgents?: boolean;
+    profileNames?: string[];
+    profileSelections?: Array<{ profileName: string; configNames: string[] }>;
+  }>,
+  overrides?: ImportProjectInputLike['teamOverrides'],
+  profileNameRemapMap?: Map<string, string>,
+): typeof teams {
+  const hasOverrides = overrides && overrides.length > 0;
+  if (!hasOverrides && !profileNameRemapMap) return teams;
+
+  const remapName = (name: string): string =>
+    profileNameRemapMap?.get(name.trim().toLowerCase()) ?? name;
+
+  const overrideMap = new Map<
+    string,
+    NonNullable<ImportProjectInputLike['teamOverrides']>[number]
+  >();
+  if (hasOverrides) {
+    for (const ov of overrides!) {
+      overrideMap.set(ov.teamName.trim().toLowerCase(), ov);
+    }
+    for (const ov of overrides!) {
+      if (!teams.some((t) => t.name.trim().toLowerCase() === ov.teamName.trim().toLowerCase())) {
+        logger.warn({ teamName: ov.teamName }, 'teamOverrides references unknown team; skipping');
+      }
+    }
+  }
+
+  return teams.map((team) => {
+    const override = overrideMap.get(team.name.trim().toLowerCase());
+
+    // Mirror template-loader.ts: remap profile names from override when provided, otherwise
+    // remap the template team's own names — both reference pre-substitution profile names.
+    const finalProfileNames =
+      override?.profileNames !== undefined
+        ? override.profileNames.map(remapName)
+        : team.profileNames?.map(remapName);
+
+    const finalProfileSelections =
+      override?.profileSelections !== undefined
+        ? override.profileSelections.map((sel) => ({
+            ...sel,
+            profileName: remapName(sel.profileName),
+          }))
+        : team.profileSelections?.map((sel) => ({
+            ...sel,
+            profileName: remapName(sel.profileName),
+          }));
+
+    return {
+      ...team,
+      ...(override?.maxMembers !== undefined ? { maxMembers: override.maxMembers } : {}),
+      ...(override?.maxConcurrentTasks !== undefined
+        ? { maxConcurrentTasks: override.maxConcurrentTasks }
+        : {}),
+      ...(override?.allowTeamLeadCreateAgents !== undefined
+        ? { allowTeamLeadCreateAgents: override.allowTeamLeadCreateAgents }
+        : {}),
+      ...(finalProfileNames !== undefined ? { profileNames: finalProfileNames } : {}),
+      ...(finalProfileSelections !== undefined
+        ? { profileSelections: finalProfileSelections }
+        : {}),
+    };
+  });
+}
+
+export async function createImportedTeams(
+  projectId: string,
+  exportedTeams: Array<{
+    name: string;
+    description?: string | null;
+    teamLeadAgentName?: string | null;
+    memberAgentNames: string[];
+    maxMembers?: number;
+    maxConcurrentTasks?: number;
+    allowTeamLeadCreateAgents?: boolean;
+    profileNames?: string[];
+    profileSelections?: Array<{ profileName: string; configNames: string[] }>;
+  }>,
+  deps: ImportProjectDeps,
+): Promise<number> {
+  if (!deps.teamsService) return 0;
+
+  // Build name→ID maps from the project's current agents and profiles
+  const { items: agents } = await deps.storage.listAgents(projectId, { limit: 10000 });
+  const agentNameToId = new Map<string, string>();
+  for (const agent of agents) {
+    agentNameToId.set(agent.name.trim().toLowerCase(), agent.id);
+  }
+
+  const { items: profiles } = await deps.storage.listAgentProfiles({ projectId });
+  const profileNameToId = new Map<string, string>();
+  for (const profile of profiles) {
+    profileNameToId.set(profile.name.trim().toLowerCase(), profile.id);
+  }
+
+  const createdTeamIds: string[] = [];
+
+  try {
+    for (const exportedTeam of exportedTeams) {
+      // Resolve member agent IDs
+      const memberAgentIds: string[] = [];
+      for (const memberName of exportedTeam.memberAgentNames) {
+        const agentId = agentNameToId.get(memberName.trim().toLowerCase());
+        if (!agentId) {
+          throw new Error(
+            `Team "${exportedTeam.name}" references agent "${memberName}" which was not found in the project`,
+          );
+        }
+        memberAgentIds.push(agentId);
+      }
+
+      // Resolve team lead agent ID
+      let teamLeadAgentId: string | null = null;
+      if (exportedTeam.teamLeadAgentName) {
+        teamLeadAgentId =
+          agentNameToId.get(exportedTeam.teamLeadAgentName.trim().toLowerCase()) ?? null;
+        if (!teamLeadAgentId) {
+          throw new Error(
+            `Team "${exportedTeam.name}" references team lead "${exportedTeam.teamLeadAgentName}" which was not found in the project`,
+          );
+        }
+      }
+
+      // Resolve profile IDs
+      const profileIds: string[] = [];
+      if (exportedTeam.profileNames) {
+        for (const profileName of exportedTeam.profileNames) {
+          const profileId = profileNameToId.get(profileName.trim().toLowerCase());
+          if (!profileId) {
+            throw new Error(
+              `Team "${exportedTeam.name}" references profile "${profileName}" which was not found in the project`,
+            );
+          }
+          profileIds.push(profileId);
+        }
+      }
+
+      // Resolve profileSelections → profileConfigSelections (ID-based)
+      let profileConfigSelections: Array<{ profileId: string; configIds: string[] }> | undefined;
+      if (exportedTeam.profileSelections && exportedTeam.profileSelections.length > 0) {
+        profileConfigSelections = [];
+        for (const sel of exportedTeam.profileSelections) {
+          const profileId = profileNameToId.get(sel.profileName.trim().toLowerCase());
+          if (!profileId) {
+            throw new Error(
+              `Team "${exportedTeam.name}" references profile "${sel.profileName}" in profileSelections which was not found in the project`,
+            );
+          }
+          const configs = await deps.storage.listProfileProviderConfigsByProfile(profileId);
+          const configNameToId = new Map<string, string>();
+          for (const c of configs) {
+            configNameToId.set(c.name.trim().toLowerCase(), c.id);
+          }
+          const configIds: string[] = [];
+          for (const configName of sel.configNames) {
+            const configId = configNameToId.get(configName.trim().toLowerCase());
+            if (!configId) {
+              throw new Error(
+                `Team "${exportedTeam.name}" references config "${configName}" for profile "${sel.profileName}" which was not found`,
+              );
+            }
+            configIds.push(configId);
+          }
+          if (configIds.length > 0) {
+            profileConfigSelections.push({ profileId, configIds });
+          }
+        }
+      }
+
+      const created = await deps.teamsService!.createTeam({
+        projectId,
+        name: exportedTeam.name,
+        description: exportedTeam.description ?? null,
+        teamLeadAgentId,
+        memberAgentIds,
+        ...(exportedTeam.maxMembers !== undefined ? { maxMembers: exportedTeam.maxMembers } : {}),
+        ...(exportedTeam.maxConcurrentTasks !== undefined
+          ? { maxConcurrentTasks: exportedTeam.maxConcurrentTasks }
+          : {}),
+        ...(exportedTeam.allowTeamLeadCreateAgents !== undefined
+          ? { allowTeamLeadCreateAgents: exportedTeam.allowTeamLeadCreateAgents }
+          : {}),
+        profileIds,
+        ...(profileConfigSelections ? { profileConfigSelections } : {}),
+      });
+
+      createdTeamIds.push(created.id);
+    }
+
+    return createdTeamIds.length;
+  } catch (error) {
+    // Team-scoped cleanup: delete any teams created in this run
+    if (createdTeamIds.length > 0) {
+      logger.warn(
+        { createdTeamIds, error },
+        'Teams import failed; cleaning up partially created teams',
+      );
+      try {
+        await deps.teamsService!.deleteTeamsByIds(createdTeamIds);
+      } catch (cleanupError) {
+        logger.error({ cleanupError }, 'Failed to clean up partially imported teams');
+      }
+    }
+    throw error;
+  }
+}
+
 function buildImportSuccessResponse(args: {
   payload: ParsedTemplatePayload;
   existing: ExistingProjectData;
@@ -1076,6 +1383,7 @@ function buildImportSuccessResponse(args: {
   epicsTotal: number;
   epicsRemapped: number;
   epicsCleared: number;
+  teamsImported?: number;
 }) {
   return {
     success: true,
@@ -1090,6 +1398,7 @@ function buildImportSuccessResponse(args: {
         statuses: args.payload.statuses.length,
         watchers: args.payload.watchers.length,
         subscribers: args.payload.subscribers.length,
+        teams: args.teamsImported ?? 0,
       },
       deleted: {
         prompts: args.existing.prompts.total,

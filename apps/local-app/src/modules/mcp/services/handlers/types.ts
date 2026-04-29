@@ -9,6 +9,7 @@ import type { SettingsService } from '../../../settings/services/settings.servic
 import type { GuestsService } from '../../../guests/services/guests.service';
 import type { ReviewsService } from '../../../reviews/services/reviews.service';
 import type { SkillsService } from '../../../skills/services/skills.service';
+import type { TeamsService } from '../../../teams/services/teams.service';
 import type { InstructionsResolver } from '../instructions-resolver';
 import type { FeatureFlagConfig } from '../../../../common/config/feature-flags';
 import type { McpResponse, SessionContext } from '../../dtos/mcp.dto';
@@ -29,6 +30,7 @@ export interface McpToolContext {
   guestsService?: GuestsService;
   skillsService?: SkillsService;
   reviewsService?: ReviewsService;
+  teamsService?: TeamsService;
   sessionContext?: SessionContext;
   instructionsResolver?: InstructionsResolver;
   featureFlags?: FeatureFlagConfig;

@@ -1029,6 +1029,39 @@ describe('ProjectsController', () => {
         'Provide either (slug or templateId) OR templatePath, but not both or neither',
       );
     });
+
+    it('accepts valid teamOverrides and passes to service', async () => {
+      const mockResult = {
+        success: true,
+        project: makeProject({ id: 'p1', name: 'New' }),
+        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
+      };
+      (projectsService.createFromTemplate as jest.Mock).mockResolvedValue(mockResult);
+
+      await controller.createProjectFromTemplate({
+        name: 'New',
+        rootPath: '/tmp/new',
+        slug: 'my-template',
+        teamOverrides: [{ teamName: 'Dev Team', allowTeamLeadCreateAgents: true, maxMembers: 8 }],
+      });
+
+      expect(projectsService.createFromTemplate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          teamOverrides: [{ teamName: 'Dev Team', allowTeamLeadCreateAgents: true, maxMembers: 8 }],
+        }),
+      );
+    });
+
+    it('rejects duplicate teamName in teamOverrides', async () => {
+      await expect(
+        controller.createProjectFromTemplate({
+          name: 'New',
+          rootPath: '/tmp/new',
+          slug: 'my-template',
+          teamOverrides: [{ teamName: 'Dev Team' }, { teamName: 'dev team' }],
+        }),
+      ).rejects.toThrow('Duplicate teamName in teamOverrides');
+    });
   });
 
   describe('POST /api/projects/:id/export', () => {
@@ -1228,6 +1261,47 @@ describe('ProjectsController', () => {
           familyProviderMappings: { coder: 123 } as unknown as Record<string, string>,
         }),
       ).rejects.toThrow('Invalid familyProviderMappings');
+    });
+
+    it('accepts valid teamOverrides and passes to service', async () => {
+      const mockResult = { success: true, counts: { imported: {}, deleted: {} } };
+      (projectsService.importProject as jest.Mock).mockResolvedValue(mockResult);
+
+      await controller.importProject('p1', undefined, {
+        teamOverrides: [{ teamName: 'Dev Team', allowTeamLeadCreateAgents: true, maxMembers: 8 }],
+      });
+
+      expect(projectsService.importProject).toHaveBeenCalledWith(
+        expect.objectContaining({
+          teamOverrides: [{ teamName: 'Dev Team', allowTeamLeadCreateAgents: true, maxMembers: 8 }],
+        }),
+      );
+    });
+
+    it('rejects teamOverrides with out-of-range maxMembers', async () => {
+      await expect(
+        controller.importProject('p1', undefined, {
+          teamOverrides: [{ teamName: 'Dev Team', maxMembers: 100 }],
+        }),
+      ).rejects.toThrow('Invalid teamOverrides');
+    });
+
+    it('rejects duplicate teamName in teamOverrides', async () => {
+      await expect(
+        controller.importProject('p1', undefined, {
+          teamOverrides: [{ teamName: 'Dev Team' }, { teamName: 'dev team' }],
+        }),
+      ).rejects.toThrow('Duplicate teamName in teamOverrides');
+    });
+
+    it('passes no teamOverrides when field is absent', async () => {
+      const mockResult = { success: true, counts: { imported: {}, deleted: {} } };
+      (projectsService.importProject as jest.Mock).mockResolvedValue(mockResult);
+
+      await controller.importProject('p1', undefined, {});
+
+      const call = (projectsService.importProject as jest.Mock).mock.calls[0][0];
+      expect(call.teamOverrides).toBeUndefined();
     });
   });
 

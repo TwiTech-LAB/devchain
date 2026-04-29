@@ -1,19 +1,22 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { HelpButton } from '@/ui/components/shared';
 import { Button } from '@/ui/components/ui/button';
 import { Badge } from '@/ui/components/ui/badge';
 import { ScrollArea } from '@/ui/components/ui/scroll-area';
 import { Separator } from '@/ui/components/ui/separator';
 import { Skeleton } from '@/ui/components/ui/skeleton';
+import { Tabs, TabsList, TabsTrigger } from '@/ui/components/ui/tabs';
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from '@/ui/components/ui/tooltip';
+import { useToast } from '@/ui/hooks/use-toast';
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { PresetPopover } from './PresetPopover';
 import { WorktreePresetButton } from './WorktreePresetButton';
+import { AgentRow } from './AgentRow';
 import { restartKeyForMain, restartKeyForWorktree } from '@/ui/lib/restart-keys';
 import {
   ContextMenu,
@@ -36,6 +39,7 @@ import {
   ChevronDown,
   ChevronRight,
   GitBranch,
+  UsersRound,
   Users,
   User,
   MessageSquare,
@@ -62,6 +66,9 @@ import type { PresetAvailability } from '@/ui/lib/preset-validation';
 import { getProviderIconDataUri } from '@/ui/lib/providers';
 import { providerModelQueryKeys } from '@/ui/lib/provider-model-query-keys';
 import { shortModelName } from '@/ui/lib/model-utils';
+import { Link } from 'react-router-dom';
+import { fetchTeamDetail, fetchTeams, teamsQueryKeys, type TeamDetail } from '@/ui/lib/teams';
+import { TeamQuickAddButton } from './TeamQuickAddButton';
 
 // ============================================
 // Feature Flags
@@ -75,6 +82,7 @@ const CHAT_THREADS_ENABLED = false;
 
 export interface ChatSidebarProps {
   // Data
+  projectId: string | null;
   agents: AgentOrGuest[];
   guests: AgentOrGuest[];
   worktreeAgentGroups: WorktreeAgentGroup[];
@@ -157,9 +165,34 @@ export interface ChatSidebarProps {
   ) => void;
   updatingWorktreeConfigKey: string | null;
 
+  // Clone
+  onCloneAgent?: (
+    agent: AgentOrGuest,
+    context?: { teamId: string; teamName: string; isTeamLead: boolean },
+  ) => void;
+
+  // Delete
+  onDeleteAgent?: (agent: AgentOrGuest) => void;
+  pendingDeleteAgentId?: string | null;
+
+  // Quick-add
+  onAddTeamAgent?: (payload: import('./TeamQuickAddButton').QuickAddPayload) => void;
+  projectProfiles?: Array<{ id: string; name: string }>;
+
+  // Edit team
+  onEditTeam?: (payload: {
+    teamId: string;
+    teamName: string;
+    maxMembers: number;
+    maxConcurrentTasks: number;
+    allowTeamLeadCreateAgents: boolean;
+  }) => void;
+
   // Mutation states
   createGroupPending: boolean;
 }
+
+type AgentGroupMode = 'all' | 'teams';
 
 // ============================================
 // Component
@@ -486,6 +519,7 @@ function ProviderConfigSubmenu({
 // ============================================
 
 export function ChatSidebar({
+  projectId,
   agents,
   guests,
   worktreeAgentGroups,
@@ -533,8 +567,15 @@ export function ChatSidebar({
   updatingConfigAgentIds,
   onSwitchWorktreeConfig,
   updatingWorktreeConfigKey,
+  onCloneAgent,
+  onDeleteAgent,
+  pendingDeleteAgentId,
+  onAddTeamAgent,
+  projectProfiles,
+  onEditTeam,
   createGroupPending,
 }: ChatSidebarProps) {
+  const { toast } = useToast();
   const groups = userThreads
     .filter((t) => t.isGroup)
     .map((g) => ({
@@ -547,6 +588,7 @@ export function ChatSidebar({
     const stored = window.localStorage.getItem('devchain:chatSidebar:mainExpanded');
     return stored !== 'false';
   });
+  const [agentGroupMode, setAgentGroupMode] = useState<AgentGroupMode>('all');
   const [collapsedWorktreeGroups, setCollapsedWorktreeGroups] = useState<Record<string, boolean>>(
     () => {
       if (typeof window === 'undefined') return {};
@@ -558,6 +600,15 @@ export function ChatSidebar({
       }
     },
   );
+  const [collapsedTeamGroups, setCollapsedTeamGroups] = useState<Record<string, boolean>>(() => {
+    if (typeof window === 'undefined') return {};
+    try {
+      const stored = window.localStorage.getItem('devchain:chatSidebar:teamGroups');
+      return stored ? (JSON.parse(stored) as Record<string, boolean>) : {};
+    } catch {
+      return {};
+    }
+  });
 
   useEffect(() => {
     setCollapsedWorktreeGroups((previous) => {
@@ -574,6 +625,44 @@ export function ChatSidebar({
     });
   }, [worktreeAgentGroups]);
 
+  const shouldFetchTeams = Boolean(projectId);
+  const {
+    data: teamsResponse,
+    isLoading: teamsListLoading,
+    isError: teamsListError,
+    error: teamsListErrorValue,
+  } = useQuery({
+    queryKey: projectId ? teamsQueryKeys.teams(projectId) : ['teams', 'no-project'],
+    queryFn: () => fetchTeams(projectId!),
+    enabled: shouldFetchTeams,
+    refetchOnWindowFocus: true,
+  });
+  const teams = teamsResponse?.items ?? [];
+
+  useEffect(() => {
+    setCollapsedTeamGroups((previous) => {
+      const next = { ...previous };
+      let changed = false;
+      for (const team of teams) {
+        if (!(team.id in next)) {
+          next[team.id] = true;
+          changed = true;
+        }
+      }
+      return changed ? next : previous;
+    });
+  }, [teams]);
+
+  const teamDetailQueries = useQueries({
+    queries: shouldFetchTeams
+      ? teams.map((team) => ({
+          queryKey: teamsQueryKeys.detail(team.id),
+          queryFn: () => fetchTeamDetail(team.id),
+          refetchOnWindowFocus: true,
+        }))
+      : [],
+  });
+
   // Persist collapsed states to localStorage
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -584,12 +673,41 @@ export function ChatSidebar({
   }, [mainExpanded]);
 
   useEffect(() => {
+    if (!projectId || teamsListLoading) return;
+    const key = `devchain:chat:agentTab:${projectId}`;
+    const stored = typeof window !== 'undefined' ? window.localStorage.getItem(key) : null;
+    if (stored === 'all' || stored === 'teams') {
+      setAgentGroupMode(stored);
+    } else {
+      setAgentGroupMode(teams.length > 0 ? 'teams' : 'all');
+    }
+  }, [projectId, teamsListLoading, teams.length]);
+
+  const handleAgentGroupModeChange = useCallback(
+    (value: AgentGroupMode) => {
+      setAgentGroupMode(value);
+      if (projectId && typeof window !== 'undefined') {
+        window.localStorage.setItem(`devchain:chat:agentTab:${projectId}`, value);
+      }
+    },
+    [projectId],
+  );
+
+  useEffect(() => {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(
       'devchain:chatSidebar:worktreeGroups',
       JSON.stringify(collapsedWorktreeGroups),
     );
   }, [collapsedWorktreeGroups]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(
+      'devchain:chatSidebar:teamGroups',
+      JSON.stringify(collapsedTeamGroups),
+    );
+  }, [collapsedTeamGroups]);
 
   // Per-agent context bar hidden set (persisted to localStorage)
   const [contextBarHidden, setContextBarHidden] = useState<Set<string>>(() => {
@@ -633,6 +751,13 @@ export function ChatSidebar({
     setCollapsedWorktreeGroups((previous) => ({
       ...previous,
       [key]: !previous[key],
+    }));
+  }, []);
+
+  const toggleTeamGroup = useCallback((teamId: string) => {
+    setCollapsedTeamGroups((previous) => ({
+      ...previous,
+      [teamId]: !previous[teamId],
     }));
   }, []);
 
@@ -716,6 +841,219 @@ export function ChatSidebar({
   }, [agents, agentPresence, worktreeAgentGroups]);
 
   const contextMetrics = useAgentSessionMetrics(agentSessionEntries);
+  const teamViewLoading =
+    shouldFetchTeams && (teamsListLoading || teamDetailQueries.some((query) => query.isLoading));
+  const teamDetailError = teamDetailQueries.find((query) => query.isError)?.error;
+  const teamsViewError = teamsListError || Boolean(teamDetailError);
+  const teamsViewErrorHandledRef = useRef(false);
+
+  useEffect(() => {
+    if (agentGroupMode !== 'teams' || !teamsViewError) {
+      teamsViewErrorHandledRef.current = false;
+      return;
+    }
+    if (teamsViewErrorHandledRef.current) {
+      return;
+    }
+    teamsViewErrorHandledRef.current = true;
+    const message =
+      teamsListErrorValue instanceof Error
+        ? teamsListErrorValue.message
+        : teamDetailError instanceof Error
+          ? teamDetailError.message
+          : 'Teams could not be loaded.';
+    toast({
+      title: 'Unable to load teams view',
+      description: `${message} Falling back to All agents.`,
+      variant: 'destructive',
+    });
+    setAgentGroupMode('all');
+  }, [
+    agentGroupMode,
+    teamDetailError,
+    teamsListError,
+    teamsListErrorValue,
+    teamsViewError,
+    toast,
+    teamsViewErrorHandledRef,
+  ]);
+
+  const teamDetailsById = useMemo(() => {
+    const map = new Map<string, TeamDetail>();
+    teams.forEach((team, index) => {
+      const detail = teamDetailQueries[index]?.data;
+      if (detail) {
+        map.set(team.id, detail);
+      }
+    });
+    return map;
+  }, [teamDetailQueries, teams]);
+
+  const directThreadsByAgentId = useMemo(() => {
+    const map = new Map<string, Thread>();
+    for (const thread of userThreads) {
+      if (!thread.isGroup && thread.members?.length === 1) {
+        map.set(thread.members[0], thread);
+      }
+    }
+    return map;
+  }, [userThreads]);
+
+  const agentsById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
+
+  const teamSections = useMemo(() => {
+    const teamMembership = new Set<string>();
+    const items = teams
+      .map((team) => {
+        const detail = teamDetailsById.get(team.id);
+        if (!detail || detail.members.length === 0) {
+          return null;
+        }
+        const sectionAgents = detail.members
+          .map((member) => agentsById.get(member.agentId))
+          .filter((agent): agent is AgentOrGuest => Boolean(agent));
+        if (sectionAgents.length === 0) {
+          return null;
+        }
+        sectionAgents.forEach((agent) => {
+          teamMembership.add(agent.id);
+        });
+        return { team, detail, agents: sectionAgents };
+      })
+      .filter(
+        (
+          section,
+        ): section is {
+          team: (typeof teams)[number];
+          detail: TeamDetail;
+          agents: AgentOrGuest[];
+        } => Boolean(section),
+      );
+
+    return {
+      items,
+      noTeamAgents: agents.filter((agent) => !teamMembership.has(agent.id)),
+    };
+  }, [agents, agentsById, teamDetailsById, teams]);
+
+  const profilesById = useMemo(() => {
+    const map = new Map<string, { id: string; name: string }>();
+    for (const p of projectProfiles ?? []) {
+      map.set(p.id, { id: p.id, name: p.name });
+    }
+    return map;
+  }, [projectProfiles]);
+
+  function renderMainAgentRow(
+    agent: AgentOrGuest,
+    options?: {
+      isTeamLead?: boolean;
+      keyPrefix?: string;
+      canDelete?: boolean;
+      teamId?: string;
+      teamName?: string;
+      maxMembers?: number;
+      maxConcurrentTasks?: number;
+      allowTeamLeadCreateAgents?: boolean;
+    },
+  ) {
+    const isOnline = agentPresence[agent.id]?.online ?? false;
+    const activityState = agentPresence[agent.id]?.activityState ?? null;
+    const existingThread = directThreadsByAgentId.get(agent.id);
+    const isSelected = existingThread ? selectedThreadId === existingThread.id : false;
+    const agentProviderName = getProviderForAgent(agent.id);
+    const agentProviderIcon = agentProviderName ? getProviderIconDataUri(agentProviderName) : null;
+    const hasSession = Boolean(isOnline && agentPresence[agent.id]?.sessionId);
+    const sessionId = agentPresence[agent.id]?.sessionId ?? null;
+    const isLaunching = Boolean(launchingAgentIds[agent.id]);
+    const isRestarting = restartingAgentId === agent.id;
+    const anyBusy = isLaunching || isRestarting;
+    const mainContextMenuVersion = mainContextMenuVersionByAgentId[agent.id] ?? 0;
+    const metricsKey = getMetricsKey(agent.id);
+    const keyPrefix = options?.keyPrefix ?? 'all';
+
+    return (
+      <AgentRow
+        key={`${keyPrefix}:${agent.id}:${mainContextMenuVersion}`}
+        agent={agent}
+        isSelected={isSelected}
+        isOnline={isOnline}
+        activityState={activityState}
+        currentActivityTitle={agentPresence[agent.id]?.currentActivityTitle ?? null}
+        sessionMetrics={contextMetrics.get(metricsKey)}
+        pendingRestart={pendingRestartAgentIds.has(restartKeyForMain(agent.id))}
+        providerIconUri={agentProviderIcon}
+        providerName={agentProviderName}
+        configDisplayName={getAgentConfigDisplayName(agent)}
+        contextTrackingEnabled={!contextBarHidden.has(metricsKey)}
+        hasSelectedProject={hasSelectedProject}
+        hasSession={hasSession}
+        sessionId={sessionId}
+        isLaunching={isLaunching}
+        isRestarting={isRestarting}
+        isLaunchingChat={isLaunchingChat}
+        activityBadge={renderActivityBadge(agent.id)}
+        isTeamLead={options?.isTeamLead ?? false}
+        providerConfigSubmenu={
+          <ProviderConfigSubmenu
+            agent={agent}
+            hasSelectedProject={hasSelectedProject}
+            isBusy={anyBusy}
+            onSwitchConfig={onSwitchConfig}
+            onRequestCloseMenu={() => {
+              setMainContextMenuVersionByAgentId((previous) => ({
+                ...previous,
+                [agent.id]: (previous[agent.id] ?? 0) + 1,
+              }));
+            }}
+            fetchProviderConfigsForProfile={fetchProviderConfigsForProfile}
+            updatingConfigAgentIds={updatingConfigAgentIds}
+          />
+        }
+        canClone={agent.type !== 'guest' && Boolean(onCloneAgent)}
+        onClone={
+          onCloneAgent
+            ? () =>
+                onCloneAgent(
+                  agent,
+                  options?.teamId
+                    ? {
+                        teamId: options.teamId,
+                        teamName: options.teamName ?? '',
+                        isTeamLead: options.isTeamLead ?? false,
+                      }
+                    : undefined,
+                )
+            : undefined
+        }
+        canEditTeam={options?.isTeamLead === true && !!options?.teamId}
+        onEditTeam={
+          onEditTeam && options?.teamId
+            ? () =>
+                onEditTeam({
+                  teamId: options.teamId!,
+                  teamName: options.teamName ?? '',
+                  maxMembers: options.maxMembers ?? 5,
+                  maxConcurrentTasks: options.maxConcurrentTasks ?? 5,
+                  allowTeamLeadCreateAgents: options.allowTeamLeadCreateAgents ?? false,
+                })
+            : undefined
+        }
+        canDelete={options?.canDelete ?? false}
+        onDelete={onDeleteAgent ? () => onDeleteAgent(agent) : undefined}
+        pendingDelete={pendingDeleteAgentId === agent.id}
+        onClick={() => onLaunchChat([agent.id])}
+        onRestart={() => onRestartSession(agent.id)}
+        onLaunch={() => onLaunchSession(agent.id, { attach: false })}
+        onTerminate={() => {
+          if (sessionId) {
+            onTerminateConfirm(agent.id, sessionId);
+          }
+        }}
+        onToggleContextTracking={() => handleToggleContextBar(metricsKey)}
+      />
+    );
+  }
 
   return (
     <div className="flex w-80 flex-col border-r bg-card">
@@ -761,21 +1099,42 @@ export function ChatSidebar({
       <ScrollArea className="flex-1">
         {/* Agents Section */}
         <div className="px-4 py-4">
-          <div className="mb-2 flex w-full items-center gap-1 rounded-md px-1 py-1">
+          <div className="mb-2 flex w-full items-center gap-2 rounded-md px-1 py-1">
             <button
               type="button"
-              className="flex flex-1 items-center justify-between text-left hover:bg-muted/40 rounded-md px-0 py-0"
+              className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1 text-left hover:bg-muted/40"
               onClick={() => setMainExpanded((previous) => !previous)}
               aria-expanded={mainExpanded}
               aria-controls="chat-main-agents"
             >
-              <span className="text-sm font-semibold text-muted-foreground">MAIN AGENTS</span>
               {mainExpanded ? (
-                <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
               ) : (
-                <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
               )}
+              <span className="text-sm font-semibold text-muted-foreground">MAIN AGENTS</span>
             </button>
+            <Tabs
+              value={agentGroupMode}
+              onValueChange={(value) => {
+                if (value === 'all' || value === 'teams') {
+                  handleAgentGroupModeChange(value);
+                }
+              }}
+              className="shrink-0"
+            >
+              <TabsList
+                aria-label="Agent grouping mode"
+                className="h-8 rounded-md bg-muted/70 p-0.5"
+              >
+                <TabsTrigger value="all" className="h-7 px-2.5 text-xs">
+                  All
+                </TabsTrigger>
+                <TabsTrigger value="teams" className="h-7 px-2.5 text-xs">
+                  Teams
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
             <PresetPopover
               presets={validatedPresets}
               activePreset={activePreset}
@@ -788,181 +1147,224 @@ export function ChatSidebar({
             <div
               id="chat-main-agents"
               className="space-y-1"
-              role="list"
-              aria-label="Direct messages"
+              role={agentGroupMode === 'all' ? 'list' : undefined}
+              aria-label={agentGroupMode === 'all' ? 'Direct messages' : undefined}
             >
-              {agentsLoading ? (
-                <div className="space-y-2" aria-hidden>
-                  {Array.from({ length: 3 }).map((_, index) => (
-                    <Skeleton key={index} className="h-8 w-full" />
-                  ))}
-                </div>
-              ) : agentsError ? (
-                <p className="text-xs text-destructive">Failed to load agents. Please try again.</p>
-              ) : agents.length === 0 ? (
-                <p className="text-xs text-muted-foreground">No agents yet.</p>
-              ) : (
-                agents.map((agent) => {
-                  const isOnline = agentPresence[agent.id]?.online ?? false;
-                  const activityState = agentPresence[agent.id]?.activityState ?? null;
-                  const existingThread = userThreads.find(
-                    (t) => !t.isGroup && t.members?.length === 1 && t.members[0] === agent.id,
-                  );
-                  const isSelected = existingThread
-                    ? selectedThreadId === existingThread.id
-                    : false;
-
-                  const agentProviderName = getProviderForAgent(agent.id);
-                  const agentProviderIcon = agentProviderName
-                    ? getProviderIconDataUri(agentProviderName)
-                    : null;
-
-                  const hasSession = Boolean(isOnline && agentPresence[agent.id]?.sessionId);
-                  const sessionId = agentPresence[agent.id]?.sessionId ?? null;
-                  const isLaunching = Boolean(launchingAgentIds[agent.id]);
-                  const isRestarting = restartingAgentId === agent.id;
-                  const anyBusy = isLaunching || isRestarting;
-                  const mainContextMenuVersion = mainContextMenuVersionByAgentId[agent.id] ?? 0;
-
-                  return (
-                    <ContextMenu key={`${agent.id}:${mainContextMenuVersion}`}>
-                      <ContextMenuTrigger asChild>
-                        <button
-                          onClick={() => onLaunchChat([agent.id])}
-                          disabled={isLaunchingChat}
-                          className={cn(
-                            'flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-muted',
-                            isSelected && 'bg-secondary',
-                            isLaunchingChat && 'cursor-not-allowed opacity-50',
-                          )}
-                          role="listitem"
-                          aria-label={`Chat with ${agent.name}${isOnline ? ' (online)' : ' (offline)'}`}
-                          aria-current={isSelected ? 'true' : undefined}
-                        >
-                          <Circle
-                            className={cn(
-                              'h-2 w-2 fill-current',
-                              isOnline ? 'text-green-500' : 'text-muted-foreground',
+              {agentGroupMode === 'teams' ? (
+                <>
+                  {teamViewLoading ? (
+                    <div className="space-y-2" aria-hidden>
+                      {Array.from({ length: 3 }).map((_, index) => (
+                        <Skeleton key={index} className="h-10 w-full" />
+                      ))}
+                    </div>
+                  ) : teams.length === 0 ? (
+                    <>
+                      <div className="rounded-md border border-dashed border-border/70 bg-muted/20 px-3 py-4">
+                        <p className="text-xs text-muted-foreground">
+                          No teams configured.{' '}
+                          <Link
+                            to="/teams"
+                            className="font-medium text-foreground underline underline-offset-2"
+                          >
+                            Open Teams
+                          </Link>
+                        </p>
+                      </div>
+                      {teamSections.noTeamAgents.length > 0 && (
+                        <div className="pt-2">
+                          <p className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                            No Team
+                          </p>
+                          <div className="space-y-1" role="list" aria-label="Agents with no team">
+                            {teamSections.noTeamAgents.map((agent) =>
+                              renderMainAgentRow(agent, { keyPrefix: 'no-team' }),
                             )}
-                            aria-hidden="true"
-                          />
-                          {agentProviderIcon && (
-                            <img
-                              src={agentProviderIcon}
-                              className="h-4 w-4 flex-shrink-0"
-                              aria-hidden="true"
-                              title={`Provider: ${agentProviderName}`}
-                              alt=""
-                            />
-                          )}
-                          <div className="min-w-0 flex-1 overflow-hidden text-left">
-                            <div className="truncate">
-                              {agent.name}
-                              {getAgentConfigDisplayName(agent) && (
-                                <span className="text-muted-foreground">
-                                  {' '}
-                                  ({getAgentConfigDisplayName(agent)})
-                                </span>
-                              )}
-                            </div>
-                            {isOnline &&
-                              activityState === 'busy' &&
-                              agentPresence[agent.id]?.currentActivityTitle && (
-                                <div
-                                  className="truncate text-xs text-muted-foreground"
-                                  title={agentPresence[agent.id]?.currentActivityTitle || undefined}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      {teamSections.items.map(({ team, detail, agents: teamAgents }) => {
+                        const leadAgent = detail.teamLeadAgentId
+                          ? teamAgents.find((a) => a.id === detail.teamLeadAgentId)
+                          : null;
+                        const otherMembers = leadAgent
+                          ? teamAgents.filter((a) => a.id !== detail.teamLeadAgentId)
+                          : teamAgents;
+                        const isExpanded = !collapsedTeamGroups[team.id];
+                        const hasExpandable = otherMembers.length > 0;
+
+                        if (!leadAgent) {
+                          return (
+                            <div
+                              key={team.id}
+                              className="overflow-hidden rounded-md border border-border/80 bg-background/60"
+                            >
+                              <div className="flex w-full items-center gap-2 px-3 py-2 text-xs">
+                                <button
+                                  type="button"
+                                  onClick={() => toggleTeamGroup(team.id)}
+                                  className="flex min-w-0 flex-1 items-center gap-2 rounded text-left hover:bg-muted/40"
+                                  aria-expanded={isExpanded}
+                                  aria-controls={`chat-team-group-${team.id}`}
+                                  aria-label={`Toggle ${team.name} members`}
                                 >
-                                  {agentPresence[agent.id]?.currentActivityTitle}
+                                  {isExpanded ? (
+                                    <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                                  ) : (
+                                    <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                                  )}
+                                  <UsersRound className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                  <span className="min-w-0 flex-1 truncate font-medium text-foreground">
+                                    {team.name}
+                                  </span>
+                                </button>
+                                {onAddTeamAgent && (
+                                  <TeamQuickAddButton
+                                    teamId={team.id}
+                                    teamName={team.name}
+                                    teamLeadAgentId={detail.teamLeadAgentId}
+                                    profileIds={detail.profileIds ?? []}
+                                    profilesById={profilesById}
+                                    agents={agents}
+                                    onAddAgent={onAddTeamAgent}
+                                  />
+                                )}
+                              </div>
+                              {isExpanded && (
+                                <div
+                                  id={`chat-team-group-${team.id}`}
+                                  className="space-y-1 px-2 pb-2"
+                                  role="list"
+                                  aria-label={`${team.name} agents`}
+                                >
+                                  {teamAgents.map((agent) =>
+                                    renderMainAgentRow(agent, {
+                                      keyPrefix: team.id,
+                                      canDelete: Boolean(onDeleteAgent),
+                                      teamId: team.id,
+                                      teamName: team.name,
+                                    }),
+                                  )}
                                 </div>
                               )}
-                          </div>
-                          {renderActivityBadge(agent.id)}
-                          {pendingRestartAgentIds.has(restartKeyForMain(agent.id)) && isOnline && (
-                            <TooltipProvider>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <AlertTriangle className="ml-1 h-4 w-4 flex-shrink-0 text-yellow-500" />
-                                </TooltipTrigger>
-                                <TooltipContent>Restart to apply config changes</TooltipContent>
-                              </Tooltip>
-                            </TooltipProvider>
-                          )}
-                        </button>
-                      </ContextMenuTrigger>
-                      {contextMetrics.has(getMetricsKey(agent.id)) &&
-                        !contextBarHidden.has(getMetricsKey(agent.id)) && (
-                          <div className="px-3 -mt-0.5 pb-1">
-                            <AgentContextBar {...contextMetrics.get(getMetricsKey(agent.id))!} />
-                          </div>
-                        )}
-                      <ContextMenuContent className="w-56">
-                        <ProviderConfigSubmenu
-                          agent={agent}
-                          hasSelectedProject={hasSelectedProject}
-                          isBusy={anyBusy}
-                          onSwitchConfig={onSwitchConfig}
-                          onRequestCloseMenu={() => {
-                            setMainContextMenuVersionByAgentId((previous) => ({
-                              ...previous,
-                              [agent.id]: (previous[agent.id] ?? 0) + 1,
-                            }));
-                          }}
-                          fetchProviderConfigsForProfile={fetchProviderConfigsForProfile}
-                          updatingConfigAgentIds={updatingConfigAgentIds}
-                        />
-                        <ContextMenuSeparator />
-                        <ContextMenuCheckboxItem
-                          checked={!contextBarHidden.has(getMetricsKey(agent.id))}
-                          onCheckedChange={() => handleToggleContextBar(getMetricsKey(agent.id))}
-                        >
-                          Context tracking
-                        </ContextMenuCheckboxItem>
-                        <ContextMenuSeparator />
-                        <ContextMenuItem
-                          onSelect={async (e) => {
-                            e.preventDefault();
-                            await onRestartSession(agent.id);
-                          }}
-                          disabled={anyBusy || !hasSelectedProject}
-                        >
-                          {isRestarting ? (
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          ) : (
-                            <RotateCcw className="mr-2 h-4 w-4" />
-                          )}
-                          Restart session
-                        </ContextMenuItem>
-                        {!hasSession && (
-                          <ContextMenuItem
-                            onSelect={async (e) => {
-                              e.preventDefault();
-                              await onLaunchSession(agent.id, { attach: false });
-                            }}
-                            disabled={isLaunching || !hasSelectedProject}
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <div
+                            key={team.id}
+                            className="rounded-md border border-border/80 bg-background/60"
                           >
-                            {isLaunching && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                            Launch session
-                          </ContextMenuItem>
+                            <div className="flex items-center">
+                              <div className="min-w-0 flex-1">
+                                {renderMainAgentRow(leadAgent, {
+                                  isTeamLead: true,
+                                  keyPrefix: team.id,
+                                  teamId: team.id,
+                                  teamName: team.name,
+                                  maxMembers: detail.maxMembers,
+                                  maxConcurrentTasks: detail.maxConcurrentTasks,
+                                  allowTeamLeadCreateAgents: detail.allowTeamLeadCreateAgents,
+                                })}
+                                <p className="truncate px-3 pb-1 text-[10px] text-muted-foreground">
+                                  {team.name}
+                                  {otherMembers.length > 0
+                                    ? ` · ${otherMembers.length} member${otherMembers.length !== 1 ? 's' : ''}`
+                                    : ''}
+                                </p>
+                              </div>
+                              {onAddTeamAgent && (
+                                <TeamQuickAddButton
+                                  teamId={team.id}
+                                  teamName={team.name}
+                                  teamLeadAgentId={detail.teamLeadAgentId}
+                                  profileIds={detail.profileIds ?? []}
+                                  profilesById={profilesById}
+                                  agents={agents}
+                                  onAddAgent={onAddTeamAgent}
+                                />
+                              )}
+                              {hasExpandable && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    toggleTeamGroup(team.id);
+                                  }}
+                                  className="mr-1 shrink-0 rounded p-1 hover:bg-muted/40"
+                                  aria-expanded={isExpanded}
+                                  aria-controls={`chat-team-group-${team.id}`}
+                                  aria-label={`Toggle ${team.name} members`}
+                                >
+                                  {isExpanded ? (
+                                    <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                                  ) : (
+                                    <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                                  )}
+                                </button>
+                              )}
+                            </div>
+                            {hasExpandable && isExpanded && (
+                              <div
+                                id={`chat-team-group-${team.id}`}
+                                className="space-y-1 pb-2 pl-4 pr-2"
+                                role="list"
+                                aria-label={`${team.name} members`}
+                              >
+                                {otherMembers.map((agent) =>
+                                  renderMainAgentRow(agent, {
+                                    keyPrefix: team.id,
+                                    canDelete: Boolean(onDeleteAgent),
+                                    teamId: team.id,
+                                    teamName: team.name,
+                                  }),
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                      {teamSections.noTeamAgents.length > 0 && (
+                        <div className="pt-2">
+                          <p className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                            No Team
+                          </p>
+                          <div className="space-y-1" role="list" aria-label="Agents with no team">
+                            {teamSections.noTeamAgents.map((agent) =>
+                              renderMainAgentRow(agent, { keyPrefix: 'no-team' }),
+                            )}
+                          </div>
+                        </div>
+                      )}
+                      {teamSections.items.length === 0 &&
+                        teamSections.noTeamAgents.length === 0 && (
+                          <p className="text-xs text-muted-foreground">No agents yet.</p>
                         )}
-                        {hasSession && sessionId && (
-                          <>
-                            <ContextMenuSeparator />
-                            <ContextMenuItem
-                              onSelect={(e) => {
-                                e.preventDefault();
-                                onTerminateConfirm(agent.id, sessionId);
-                              }}
-                              disabled={anyBusy || !hasSelectedProject}
-                            >
-                              <Power className="mr-2 h-4 w-4" />
-                              Terminate session
-                            </ContextMenuItem>
-                          </>
-                        )}
-                      </ContextMenuContent>
-                    </ContextMenu>
-                  );
-                })
+                    </>
+                  )}
+                </>
+              ) : (
+                <>
+                  {agentsLoading ? (
+                    <div className="space-y-2" aria-hidden>
+                      {Array.from({ length: 3 }).map((_, index) => (
+                        <Skeleton key={index} className="h-8 w-full" />
+                      ))}
+                    </div>
+                  ) : agentsError ? (
+                    <p className="text-xs text-destructive">
+                      Failed to load agents. Please try again.
+                    </p>
+                  ) : agents.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No agents yet.</p>
+                  ) : (
+                    agents.map((agent) => renderMainAgentRow(agent))
+                  )}
+                </>
               )}
             </div>
           )}

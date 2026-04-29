@@ -22,6 +22,7 @@ describe('ProviderConfigsController', () => {
     profileId: 'profile-1',
     providerId: 'provider-1',
     name: 'test-config',
+    description: null,
     options: '--model test',
     env: { API_KEY: 'test-key' },
     position: 0,

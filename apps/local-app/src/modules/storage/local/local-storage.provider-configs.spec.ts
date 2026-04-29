@@ -12,6 +12,7 @@ describe('LocalStorageService - ProfileProviderConfigs', () => {
   beforeEach(async () => {
     const mockChain = {
       from: jest.fn().mockReturnThis(),
+      leftJoin: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
       limit: jest.fn().mockReturnThis(),
       offset: jest.fn().mockReturnThis(),
@@ -360,31 +361,39 @@ describe('LocalStorageService - ProfileProviderConfigs', () => {
     it('should return configs for a profile', async () => {
       const mockRows = [
         {
-          id: 'config-1',
-          profileId: 'profile-1',
-          providerId: 'provider-1',
-          name: 'claude-config',
-          options: '{"model": "claude-3"}',
-          env: '{"KEY":"value1"}',
-          createdAt: '2024-01-01T00:00:00Z',
-          updatedAt: '2024-01-01T00:00:00Z',
+          config: {
+            id: 'config-1',
+            profileId: 'profile-1',
+            providerId: 'provider-1',
+            name: 'claude-config',
+            options: '{"model": "claude-3"}',
+            env: '{"KEY":"value1"}',
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          },
+          providerName: 'Provider One',
         },
         {
-          id: 'config-2',
-          profileId: 'profile-1',
-          providerId: 'provider-2',
-          name: 'other-config',
-          options: null,
-          env: '{"KEY":"value2"}',
-          createdAt: '2024-01-02T00:00:00Z',
-          updatedAt: '2024-01-02T00:00:00Z',
+          config: {
+            id: 'config-2',
+            profileId: 'profile-1',
+            providerId: 'provider-2',
+            name: 'other-config',
+            options: null,
+            env: '{"KEY":"value2"}',
+            createdAt: '2024-01-02T00:00:00Z',
+            updatedAt: '2024-01-02T00:00:00Z',
+          },
+          providerName: 'Provider Two',
         },
       ];
 
       const selectChain = {
         from: jest.fn().mockReturnValue({
-          where: jest.fn().mockReturnValue({
-            orderBy: jest.fn().mockResolvedValue(mockRows),
+          leftJoin: jest.fn().mockReturnValue({
+            where: jest.fn().mockReturnValue({
+              orderBy: jest.fn().mockResolvedValue(mockRows),
+            }),
           }),
         }),
       };
@@ -401,8 +410,10 @@ describe('LocalStorageService - ProfileProviderConfigs', () => {
     it('should return empty array when no configs exist', async () => {
       const selectChain = {
         from: jest.fn().mockReturnValue({
-          where: jest.fn().mockReturnValue({
-            orderBy: jest.fn().mockResolvedValue([]),
+          leftJoin: jest.fn().mockReturnValue({
+            where: jest.fn().mockReturnValue({
+              orderBy: jest.fn().mockResolvedValue([]),
+            }),
           }),
         }),
       };
@@ -417,31 +428,39 @@ describe('LocalStorageService - ProfileProviderConfigs', () => {
     it('should throw ValidationError when any config has corrupt env JSON', async () => {
       const mockRows = [
         {
-          id: 'config-1',
-          profileId: 'profile-1',
-          providerId: 'provider-1',
-          name: 'valid-config',
-          options: null,
-          env: '{"KEY":"valid"}',
-          createdAt: '2024-01-01T00:00:00Z',
-          updatedAt: '2024-01-01T00:00:00Z',
+          config: {
+            id: 'config-1',
+            profileId: 'profile-1',
+            providerId: 'provider-1',
+            name: 'valid-config',
+            options: null,
+            env: '{"KEY":"valid"}',
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          },
+          providerName: 'Provider One',
         },
         {
-          id: 'config-2',
-          profileId: 'profile-1',
-          providerId: 'provider-2',
-          name: 'corrupt-config',
-          options: null,
-          env: '{corrupt json',
-          createdAt: '2024-01-02T00:00:00Z',
-          updatedAt: '2024-01-02T00:00:00Z',
+          config: {
+            id: 'config-2',
+            profileId: 'profile-1',
+            providerId: 'provider-2',
+            name: 'corrupt-config',
+            options: null,
+            env: '{corrupt json',
+            createdAt: '2024-01-02T00:00:00Z',
+            updatedAt: '2024-01-02T00:00:00Z',
+          },
+          providerName: 'Provider Two',
         },
       ];
 
       const selectChain = {
         from: jest.fn().mockReturnValue({
-          where: jest.fn().mockReturnValue({
-            orderBy: jest.fn().mockResolvedValue(mockRows),
+          leftJoin: jest.fn().mockReturnValue({
+            where: jest.fn().mockReturnValue({
+              orderBy: jest.fn().mockResolvedValue(mockRows),
+            }),
           }),
         }),
       };
@@ -459,26 +478,32 @@ describe('LocalStorageService - ProfileProviderConfigs', () => {
     it('should return configs ordered by position ASC, id ASC', async () => {
       const mockRows = [
         {
-          id: 'config-1',
-          profileId: 'profile-1',
-          providerId: 'provider-1',
-          name: 'first-config',
-          options: null,
-          env: '{}',
-          position: 0,
-          createdAt: '2024-01-01T00:00:00Z',
-          updatedAt: '2024-01-01T00:00:00Z',
+          config: {
+            id: 'config-1',
+            profileId: 'profile-1',
+            providerId: 'provider-1',
+            name: 'first-config',
+            options: null,
+            env: '{}',
+            position: 0,
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          },
+          providerName: 'Provider One',
         },
         {
-          id: 'config-2',
-          profileId: 'profile-1',
-          providerId: 'provider-1',
-          name: 'second-config',
-          options: null,
-          env: '{}',
-          position: 1,
-          createdAt: '2024-01-02T00:00:00Z',
-          updatedAt: '2024-01-02T00:00:00Z',
+          config: {
+            id: 'config-2',
+            profileId: 'profile-1',
+            providerId: 'provider-1',
+            name: 'second-config',
+            options: null,
+            env: '{}',
+            position: 1,
+            createdAt: '2024-01-02T00:00:00Z',
+            updatedAt: '2024-01-02T00:00:00Z',
+          },
+          providerName: 'Provider One',
         },
       ];
 
@@ -487,8 +512,10 @@ describe('LocalStorageService - ProfileProviderConfigs', () => {
 
       const selectChain = {
         from: jest.fn().mockReturnValue({
-          where: jest.fn().mockReturnValue({
-            orderBy: mockOrderBy,
+          leftJoin: jest.fn().mockReturnValue({
+            where: jest.fn().mockReturnValue({
+              orderBy: mockOrderBy,
+            }),
           }),
         }),
       };

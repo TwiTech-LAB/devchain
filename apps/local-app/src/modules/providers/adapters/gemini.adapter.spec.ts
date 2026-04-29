@@ -191,6 +191,18 @@ Configured MCP servers:
       expect(entries[1].alias).toBe('other');
     });
 
+    it('parses entry without transport parenthetical — transport is undefined', () => {
+      const stdout = `Configured MCP servers:
+
+✓ devchain: http://127.0.0.1:3000/mcp`;
+      const entries = adapter.parseListOutput(stdout);
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0].alias).toBe('devchain');
+      expect(entries[0].endpoint).toBe('http://127.0.0.1:3000/mcp');
+      expect(entries[0].transport).toBeUndefined();
+    });
+
     it('falls back to stderr when stdout is empty', () => {
       const stdout = '';
       const stderr = `Loaded cached credentials.\nConfigured MCP servers:\n\n\x1b[32m✓\x1b[0m devchain: http://127.0.0.1:3000/mcp (http) - Connected\n`;

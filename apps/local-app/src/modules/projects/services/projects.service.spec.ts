@@ -6,6 +6,7 @@ import { SettingsService } from '../../settings/services/settings.service';
 import { WatchersService } from '../../watchers/services/watchers.service';
 import { WatcherRunnerService } from '../../watchers/services/watcher-runner.service';
 import { UnifiedTemplateService } from '../../registry/services/unified-template.service';
+import { TeamsService } from '../../teams/services/teams.service';
 import { ValidationError, NotFoundError, StorageError } from '../../../common/errors/error-types';
 import * as fs from 'fs';
 import * as envConfig from '../../../common/config/env.config';
@@ -68,6 +69,9 @@ describe('ProjectsService', () => {
     listProfileProviderConfigsByProfile: jest.Mock;
     createProfileProviderConfig: jest.Mock;
     deleteProfileProviderConfig: jest.Mock;
+    getAgent: jest.Mock;
+    getAgentProfile: jest.Mock;
+    getProfileProviderConfig: jest.Mock;
   };
   let sessions: {
     listActiveSessions: jest.Mock;
@@ -97,6 +101,12 @@ describe('ProjectsService', () => {
     listTemplates: jest.Mock;
     hasTemplate: jest.Mock;
     getTemplateFromFilePath: jest.Mock;
+  };
+  let teamsServiceMock: {
+    deleteTeamsByProject: jest.Mock;
+    listTeams: jest.Mock;
+    getTeam: jest.Mock;
+    createTeam: jest.Mock;
   };
 
   beforeEach(async () => {
@@ -148,6 +158,9 @@ describe('ProjectsService', () => {
         updatedAt: new Date().toISOString(),
       })),
       deleteProfileProviderConfig: jest.fn().mockResolvedValue(undefined),
+      getAgent: jest.fn(),
+      getAgentProfile: jest.fn(),
+      getProfileProviderConfig: jest.fn(),
     };
 
     sessions = {
@@ -210,6 +223,18 @@ describe('ProjectsService', () => {
         {
           provide: UnifiedTemplateService,
           useValue: unifiedTemplateService,
+        },
+        {
+          provide: TeamsService,
+          useValue: (teamsServiceMock = {
+            deleteTeamsByProject: jest.fn().mockResolvedValue(undefined),
+            listTeams: jest.fn().mockResolvedValue({ items: [] }),
+            getTeam: jest.fn().mockResolvedValue(null),
+            createTeam: jest.fn().mockImplementation(async (data: Record<string, unknown>) => ({
+              id: `team-${Date.now()}`,
+              ...data,
+            })),
+          }),
         },
       ],
     }).compile();
@@ -1139,6 +1164,7 @@ describe('ProjectsService', () => {
       // No binPath → should disable 1M and set safe fallback threshold of 95
       expect(storage.updateProvider).toHaveBeenCalledWith(providerId, {
         autoCompactThreshold: 95,
+        autoCompactThreshold1m: null,
         oneMillionContextEnabled: false,
       });
       expect(mockProbe1mSupport).not.toHaveBeenCalled();
@@ -1225,7 +1251,8 @@ describe('ProjectsService', () => {
 
       expect(mockProbe1mSupport).toHaveBeenCalledWith('/usr/bin/claude');
       expect(storage.updateProvider).toHaveBeenCalledWith(providerId, {
-        autoCompactThreshold: 50,
+        autoCompactThreshold: 95,
+        autoCompactThreshold1m: 50,
         oneMillionContextEnabled: true,
       });
 
@@ -1312,10 +1339,918 @@ describe('ProjectsService', () => {
       expect(mockProbe1mSupport).toHaveBeenCalledWith('/usr/bin/claude');
       expect(storage.updateProvider).toHaveBeenCalledWith(providerId, {
         autoCompactThreshold: 95,
+        autoCompactThreshold1m: null,
         oneMillionContextEnabled: false,
       });
 
       jest.restoreAllMocks();
+    });
+
+    describe('team seeding', () => {
+      const tProfileId = '22222222-2222-2222-2222-222222222222';
+      const tProviderId = '33333333-3333-3333-3333-333333333333';
+      const tAgentA = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+      const tAgentB = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+
+      function makeTemplateWithTeams(
+        teams: Array<{
+          name: string;
+          description?: string | null;
+          teamLeadAgentName?: string | null;
+          memberAgentNames: string[];
+          maxMembers?: number;
+          maxConcurrentTasks?: number;
+          profileNames?: string[];
+          profileSelections?: Array<{ profileName: string; configNames: string[] }>;
+        }>,
+      ) {
+        return {
+          version: 1,
+          prompts: [],
+          profiles: [
+            {
+              id: tProfileId,
+              name: 'Default Profile',
+              provider: { name: 'claude' },
+              options: null,
+              instructions: null,
+              temperature: null,
+              maxTokens: null,
+              providerConfigs: [
+                {
+                  name: 'local',
+                  providerName: 'claude',
+                  description: null,
+                  options: null,
+                  env: null,
+                },
+              ],
+            },
+          ],
+          agents: [
+            { id: tAgentA, name: 'Lead Agent', profileId: tProfileId, description: null },
+            { id: tAgentB, name: 'Worker Agent', profileId: tProfileId, description: null },
+          ],
+          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+          teams,
+        };
+      }
+
+      function setupTeamSeedMocks() {
+        const newProfileId = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+        const newAgentA = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+        const newAgentB = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
+
+        storage.listProviders.mockResolvedValue({
+          items: [{ id: tProviderId, name: 'claude', binPath: null }],
+          total: 1,
+          limit: 100,
+          offset: 0,
+        });
+        storage.createProjectWithTemplate.mockResolvedValue({
+          project: { id: 'new-proj-1', name: 'Test' },
+          imported: { prompts: 0, profiles: 1, agents: 2, statuses: 1 },
+          mappings: {
+            promptIdMap: {},
+            profileIdMap: { [tProfileId]: newProfileId },
+            agentIdMap: { [tAgentA]: newAgentA, [tAgentB]: newAgentB },
+            statusIdMap: {},
+          },
+        });
+        storage.listAgents.mockResolvedValue({
+          items: [
+            { id: newAgentA, name: 'Lead Agent', profileId: newProfileId },
+            { id: newAgentB, name: 'Worker Agent', profileId: newProfileId },
+          ],
+          total: 2,
+          limit: 10000,
+          offset: 0,
+        });
+        storage.listAgentProfiles.mockResolvedValue({
+          items: [{ id: newProfileId, name: 'Default Profile' }],
+          total: 1,
+          limit: 1000,
+          offset: 0,
+        });
+        storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+          {
+            id: 'config-local-1',
+            name: 'local',
+            profileId: newProfileId,
+            providerId: tProviderId,
+            options: null,
+            env: null,
+          },
+        ]);
+        storage.createProfileProviderConfig.mockImplementation(
+          async (data: Record<string, unknown>) => ({
+            id: `config-${Date.now()}`,
+            ...data,
+          }),
+        );
+      }
+
+      function mockParsedTemplate(
+        teams: Array<{
+          name: string;
+          description?: string | null;
+          teamLeadAgentName?: string | null;
+          memberAgentNames: string[];
+          maxMembers?: number;
+          maxConcurrentTasks?: number;
+          profileNames?: string[];
+          profileSelections?: Array<{ profileName: string; configNames: string[] }>;
+        }>,
+      ) {
+        const template = makeTemplateWithTeams(teams);
+        const parsed = {
+          ...template,
+          prompts: [],
+          profiles: template.profiles.map((p) => ({
+            ...p,
+            familySlug: null,
+          })),
+          agents: template.agents.map((a) => ({
+            ...a,
+            modelOverride: null,
+          })),
+          watchers: [],
+          subscribers: [],
+          teams,
+          presets: [],
+          providerModels: [],
+          exportedAt: undefined,
+          initialPrompt: undefined,
+          projectSettings: undefined,
+        } as ReturnType<typeof devchainShared.ExportSchema.parse>;
+
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(parsed);
+        unifiedTemplateService.getTemplate.mockResolvedValue({
+          content: template,
+          source: 'bundled',
+          version: null,
+        });
+      }
+
+      afterEach(() => {
+        jest.restoreAllMocks();
+      });
+
+      it('should seed one team from template', async () => {
+        mockParsedTemplate([
+          {
+            name: 'Dev Team',
+            description: 'Main dev team',
+            teamLeadAgentName: 'Lead Agent',
+            memberAgentNames: ['Lead Agent', 'Worker Agent'],
+            profileNames: ['Default Profile'],
+            profileSelections: [{ profileName: 'Default Profile', configNames: ['local'] }],
+          },
+        ]);
+        setupTeamSeedMocks();
+
+        await service.createFromTemplate({
+          name: 'Test Project',
+          rootPath: '/test',
+          slug: 'team-seed-test',
+        });
+
+        expect(teamsServiceMock.createTeam).toHaveBeenCalledTimes(1);
+        expect(teamsServiceMock.createTeam).toHaveBeenCalledWith(
+          expect.objectContaining({
+            projectId: 'new-proj-1',
+            name: 'Dev Team',
+            description: 'Main dev team',
+          }),
+        );
+      });
+
+      it('should seed two teams from template', async () => {
+        mockParsedTemplate([
+          {
+            name: 'Team Alpha',
+            teamLeadAgentName: 'Lead Agent',
+            memberAgentNames: ['Lead Agent', 'Worker Agent'],
+          },
+          {
+            name: 'Team Beta',
+            teamLeadAgentName: 'Worker Agent',
+            memberAgentNames: ['Worker Agent'],
+          },
+        ]);
+        setupTeamSeedMocks();
+
+        await service.createFromTemplate({
+          name: 'Test Project',
+          rootPath: '/test',
+          slug: 'two-teams-test',
+        });
+
+        expect(teamsServiceMock.createTeam).toHaveBeenCalledTimes(2);
+        expect(teamsServiceMock.createTeam).toHaveBeenCalledWith(
+          expect.objectContaining({ name: 'Team Alpha' }),
+        );
+        expect(teamsServiceMock.createTeam).toHaveBeenCalledWith(
+          expect.objectContaining({ name: 'Team Beta' }),
+        );
+      });
+
+      it('should skip team when lead agent is missing (non-fatal)', async () => {
+        mockParsedTemplate([
+          {
+            name: 'Bad Team',
+            teamLeadAgentName: 'Nonexistent Agent',
+            memberAgentNames: ['Nonexistent Agent'],
+          },
+        ]);
+        setupTeamSeedMocks();
+
+        const result = await service.createFromTemplate({
+          name: 'Test Project',
+          rootPath: '/test',
+          slug: 'missing-lead-test',
+        });
+
+        expect(result).toBeDefined();
+        expect(teamsServiceMock.createTeam).not.toHaveBeenCalled();
+      });
+
+      it('should create project normally when template has zero teams', async () => {
+        mockParsedTemplate([]);
+        setupTeamSeedMocks();
+
+        const result = await service.createFromTemplate({
+          name: 'Test Project',
+          rootPath: '/test',
+          slug: 'no-teams-test',
+        });
+
+        expect(result).toBeDefined();
+        expect(teamsServiceMock.createTeam).not.toHaveBeenCalled();
+      });
+
+      it('should preserve allow-all sentinel when no profileSelections provided', async () => {
+        mockParsedTemplate([
+          {
+            name: 'AllowAll Team',
+            teamLeadAgentName: 'Lead Agent',
+            memberAgentNames: ['Lead Agent'],
+            profileNames: ['Default Profile'],
+          },
+        ]);
+        setupTeamSeedMocks();
+
+        await service.createFromTemplate({
+          name: 'Test Project',
+          rootPath: '/test',
+          slug: 'allow-all-test',
+        });
+
+        expect(teamsServiceMock.createTeam).toHaveBeenCalledTimes(1);
+        const callArgs = teamsServiceMock.createTeam.mock.calls[0][0];
+        expect(callArgs.profileConfigSelections).toBeUndefined();
+      });
+
+      it('should pass maxMembers and maxConcurrentTasks to createTeam', async () => {
+        mockParsedTemplate([
+          {
+            name: 'Capped Team',
+            teamLeadAgentName: 'Lead Agent',
+            memberAgentNames: ['Lead Agent'],
+            maxMembers: 8,
+            maxConcurrentTasks: 3,
+          },
+        ]);
+        setupTeamSeedMocks();
+
+        await service.createFromTemplate({
+          name: 'Test Project',
+          rootPath: '/test',
+          slug: 'capacity-test',
+        });
+
+        expect(teamsServiceMock.createTeam).toHaveBeenCalledWith(
+          expect.objectContaining({
+            maxMembers: 8,
+            maxConcurrentTasks: 3,
+          }),
+        );
+      });
+
+      it('should remap team profileNames via profileNameRemapMap for family-mapped templates', async () => {
+        const codexProfileId = 'aaaaaaaa-aaaa-aaaa-aaaa-111111111111';
+        const claudeProfileId = 'aaaaaaaa-aaaa-aaaa-aaaa-222222222222';
+        const fmAgentId = 'aaaaaaaa-aaaa-aaaa-aaaa-333333333333';
+        const fmProviderId = 'aaaaaaaa-aaaa-aaaa-aaaa-444444444444';
+
+        const templateWithFamily = {
+          version: 1,
+          prompts: [],
+          profiles: [
+            {
+              id: codexProfileId,
+              name: 'Coder Codex',
+              provider: { name: 'codex' },
+              familySlug: 'coder',
+              options: null,
+              instructions: null,
+              temperature: null,
+              maxTokens: null,
+            },
+            {
+              id: claudeProfileId,
+              name: 'Coder Claude',
+              provider: { name: 'claude' },
+              familySlug: 'coder',
+              options: null,
+              instructions: null,
+              temperature: null,
+              maxTokens: null,
+            },
+          ],
+          agents: [
+            {
+              id: fmAgentId,
+              name: 'Coder',
+              profileId: codexProfileId,
+              description: null,
+              modelOverride: null,
+            },
+          ],
+          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+          teams: [
+            {
+              name: 'Dev Team',
+              teamLeadAgentName: 'Coder',
+              memberAgentNames: ['Coder'],
+              profileNames: ['Coder Codex'],
+            },
+          ],
+          watchers: [],
+          subscribers: [],
+          presets: [],
+          providerModels: [],
+          exportedAt: undefined,
+          initialPrompt: undefined,
+          projectSettings: undefined,
+        };
+
+        jest
+          .spyOn(devchainShared.ExportSchema, 'parse')
+          .mockReturnValue(
+            templateWithFamily as ReturnType<typeof devchainShared.ExportSchema.parse>,
+          );
+
+        unifiedTemplateService.getTemplate.mockResolvedValue({
+          content: templateWithFamily,
+          source: 'bundled',
+          version: null,
+        });
+
+        storage.listProviders.mockResolvedValue({
+          items: [{ id: fmProviderId, name: 'claude' }],
+          total: 1,
+          limit: 100,
+          offset: 0,
+        });
+
+        const newProfileId = 'aaaaaaaa-aaaa-aaaa-aaaa-555555555555';
+        const newAgentId = 'aaaaaaaa-aaaa-aaaa-aaaa-666666666666';
+
+        storage.createProjectWithTemplate.mockResolvedValue({
+          project: { id: 'new-proj-fm', name: 'Family Test' },
+          imported: { prompts: 0, profiles: 1, agents: 1, statuses: 1 },
+          mappings: {
+            promptIdMap: {},
+            profileIdMap: { [claudeProfileId]: newProfileId },
+            agentIdMap: { [fmAgentId]: newAgentId },
+            statusIdMap: {},
+          },
+        });
+
+        storage.listAgents.mockResolvedValue({
+          items: [{ id: newAgentId, name: 'Coder', profileId: newProfileId }],
+          total: 1,
+          limit: 10000,
+          offset: 0,
+        });
+        storage.listAgentProfiles.mockResolvedValue({
+          items: [{ id: newProfileId, name: 'Coder Claude' }],
+          total: 1,
+          limit: 1000,
+          offset: 0,
+        });
+        storage.listProfileProviderConfigsByProfile.mockResolvedValue([]);
+        storage.createProfileProviderConfig.mockImplementation(
+          async (data: Record<string, unknown>) => ({
+            id: `config-${Date.now()}`,
+            ...data,
+          }),
+        );
+
+        await service.createFromTemplate({
+          name: 'Family Test',
+          rootPath: '/test',
+          slug: 'family-test',
+          familyProviderMappings: { coder: 'claude' },
+        });
+
+        expect(teamsServiceMock.createTeam).toHaveBeenCalledTimes(1);
+        const callArgs = teamsServiceMock.createTeam.mock.calls[0][0];
+        expect(callArgs.profileIds).toBeDefined();
+        expect(callArgs.profileIds).toContain(newProfileId);
+      });
+
+      it('should roundtrip capacity values through export and import', async () => {
+        const projectId = 'project-123';
+
+        storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+        storage.listAgentProfiles.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 1000,
+          offset: 0,
+        });
+        storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+        storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+        storage.getInitialSessionPrompt.mockResolvedValue(null);
+        storage.listWatchers.mockResolvedValue([]);
+        storage.listSubscribers.mockResolvedValue([]);
+        storage.listProfileProviderConfigsByProfile.mockResolvedValue([]);
+
+        const teamId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+        const leadAgentId = 'aaaaaaaa-bbbb-cccc-dddd-ffffffffffff';
+        teamsServiceMock.listTeams.mockResolvedValue({
+          items: [
+            {
+              id: teamId,
+              name: 'Capped Team',
+              description: null,
+              teamLeadAgentId: leadAgentId,
+              memberCount: 1,
+            },
+          ],
+        });
+        teamsServiceMock.getTeam.mockResolvedValue({
+          id: teamId,
+          name: 'Capped Team',
+          description: null,
+          teamLeadAgentId: leadAgentId,
+          maxMembers: 6,
+          maxConcurrentTasks: 2,
+          members: [{ agentId: leadAgentId }],
+          profileIds: [],
+          profileConfigSelections: [],
+        });
+        storage.getAgent.mockResolvedValue({ id: leadAgentId, name: 'Lead Agent' });
+
+        const exported = await service.exportProject(projectId);
+
+        expect(exported.teams).toBeDefined();
+        expect(exported.teams).toHaveLength(1);
+        expect(exported.teams![0].maxMembers).toBe(6);
+        expect(exported.teams![0].maxConcurrentTasks).toBe(2);
+
+        // Now import and verify capacity is passed through
+        storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+        storage.listEpics.mockResolvedValue({ items: [], total: 0, limit: 100000, offset: 0 });
+        // Import creates agents/profiles; listAgents called by createImportedTeams
+        storage.listAgents.mockResolvedValue({
+          items: [{ id: leadAgentId, name: 'Lead Agent', profileId: 'prof-1' }],
+          total: 1,
+          limit: 10000,
+          offset: 0,
+        });
+        storage.listAgentProfiles.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 1000,
+          offset: 0,
+        });
+        storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        storage.listWatchers.mockResolvedValue([]);
+        storage.listSubscribers.mockResolvedValue([]);
+
+        const { _manifest: _omitted, ...importPayload } = exported;
+        void _omitted;
+        jest
+          .spyOn(devchainShared.ExportSchema, 'parse')
+          .mockReturnValue(importPayload as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+        await service.importProject({
+          projectId,
+          payload: importPayload,
+          dryRun: false,
+        });
+
+        expect(teamsServiceMock.createTeam).toHaveBeenCalledWith(
+          expect.objectContaining({
+            maxMembers: 6,
+            maxConcurrentTasks: 2,
+          }),
+        );
+      });
+
+      it('should roundtrip allowTeamLeadCreateAgents through export and import', async () => {
+        const projectId = 'project-123';
+
+        storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+        storage.listAgentProfiles.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 1000,
+          offset: 0,
+        });
+        storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+        storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+        storage.getInitialSessionPrompt.mockResolvedValue(null);
+        storage.listWatchers.mockResolvedValue([]);
+        storage.listSubscribers.mockResolvedValue([]);
+        storage.listProfileProviderConfigsByProfile.mockResolvedValue([]);
+
+        const teamId = 'aaaaaaaa-bbbb-cccc-dddd-111111111111';
+        const leadAgentId = 'aaaaaaaa-bbbb-cccc-dddd-222222222222';
+        teamsServiceMock.listTeams.mockResolvedValue({
+          items: [
+            {
+              id: teamId,
+              name: 'Flagged Team',
+              description: null,
+              teamLeadAgentId: leadAgentId,
+              memberCount: 1,
+            },
+          ],
+        });
+        teamsServiceMock.getTeam.mockResolvedValue({
+          id: teamId,
+          name: 'Flagged Team',
+          description: null,
+          teamLeadAgentId: leadAgentId,
+          maxMembers: 5,
+          maxConcurrentTasks: 5,
+          allowTeamLeadCreateAgents: true,
+          members: [{ agentId: leadAgentId }],
+          profileIds: [],
+          profileConfigSelections: [],
+        });
+        storage.getAgent.mockResolvedValue({ id: leadAgentId, name: 'Lead' });
+
+        const exported = await service.exportProject(projectId);
+
+        expect(exported.teams).toHaveLength(1);
+        expect(exported.teams![0].allowTeamLeadCreateAgents).toBe(true);
+
+        // Import without the field → should default to false
+        storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+        storage.listEpics.mockResolvedValue({ items: [], total: 0, limit: 100000, offset: 0 });
+        storage.listAgents.mockResolvedValue({
+          items: [{ id: leadAgentId, name: 'Lead', profileId: 'prof-1' }],
+          total: 1,
+          limit: 10000,
+          offset: 0,
+        });
+        storage.listAgentProfiles.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 1000,
+          offset: 0,
+        });
+        storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        storage.listWatchers.mockResolvedValue([]);
+        storage.listSubscribers.mockResolvedValue([]);
+
+        // Import WITH the field set
+        const { _manifest: _omit, ...importPayload } = exported;
+        void _omit;
+        jest
+          .spyOn(devchainShared.ExportSchema, 'parse')
+          .mockReturnValue(importPayload as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+        await service.importProject({
+          projectId,
+          payload: importPayload,
+          dryRun: false,
+        });
+
+        expect(teamsServiceMock.createTeam).toHaveBeenCalledWith(
+          expect.objectContaining({
+            allowTeamLeadCreateAgents: true,
+          }),
+        );
+      });
+
+      it('should apply teamOverrides with correct precedence (override > template)', async () => {
+        mockParsedTemplate([
+          {
+            name: 'Dev Team',
+            teamLeadAgentName: 'Lead Agent',
+            memberAgentNames: ['Lead Agent'],
+            maxMembers: 5,
+          },
+        ]);
+        setupTeamSeedMocks();
+
+        await service.createFromTemplate({
+          name: 'Override Test',
+          rootPath: '/test',
+          slug: 'override-test',
+          teamOverrides: [{ teamName: 'Dev Team', maxMembers: 8, allowTeamLeadCreateAgents: true }],
+        });
+
+        expect(teamsServiceMock.createTeam).toHaveBeenCalledTimes(1);
+        expect(teamsServiceMock.createTeam).toHaveBeenCalledWith(
+          expect.objectContaining({
+            maxMembers: 8,
+            allowTeamLeadCreateAgents: true,
+          }),
+        );
+      });
+
+      it('should ignore unknown teamName in teamOverrides without error', async () => {
+        mockParsedTemplate([
+          {
+            name: 'Real Team',
+            teamLeadAgentName: 'Lead Agent',
+            memberAgentNames: ['Lead Agent'],
+          },
+        ]);
+        setupTeamSeedMocks();
+
+        const result = await service.createFromTemplate({
+          name: 'Unknown Override Test',
+          rootPath: '/test',
+          slug: 'unknown-override',
+          teamOverrides: [{ teamName: 'Nonexistent Team', maxMembers: 9 }],
+        });
+
+        expect(result).toBeDefined();
+        expect(teamsServiceMock.createTeam).toHaveBeenCalledTimes(1);
+        expect(teamsServiceMock.createTeam).toHaveBeenCalledWith(
+          expect.objectContaining({ name: 'Real Team' }),
+        );
+      });
+
+      it('should use override profileNames to remove a profile from the team (Rule 3 regression)', async () => {
+        const newProfileIdA = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+        const newProfileIdB = 'cccccccc-cccc-cccc-cccc-dddddddddddd';
+        const newAgentA = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+
+        mockParsedTemplate([
+          {
+            name: 'Dev Team',
+            teamLeadAgentName: 'Lead Agent',
+            memberAgentNames: ['Lead Agent'],
+            profileNames: ['ProfileA', 'ProfileB'],
+          },
+        ]);
+
+        storage.listProviders.mockResolvedValue({
+          items: [{ id: tProviderId, name: 'claude', binPath: null }],
+          total: 1,
+          limit: 100,
+          offset: 0,
+        });
+        storage.createProjectWithTemplate.mockResolvedValue({
+          project: { id: 'new-proj-1', name: 'Test' },
+          imported: { prompts: 0, profiles: 2, agents: 1, statuses: 1 },
+          mappings: {
+            promptIdMap: {},
+            profileIdMap: { [tProfileId]: newProfileIdA },
+            agentIdMap: { [tAgentA]: newAgentA },
+            statusIdMap: {},
+          },
+        });
+        storage.listAgents.mockResolvedValue({
+          items: [{ id: newAgentA, name: 'Lead Agent', profileId: newProfileIdA }],
+          total: 1,
+          limit: 10000,
+          offset: 0,
+        });
+        storage.listAgentProfiles.mockResolvedValue({
+          items: [
+            { id: newProfileIdA, name: 'ProfileA' },
+            { id: newProfileIdB, name: 'ProfileB' },
+          ],
+          total: 2,
+          limit: 1000,
+          offset: 0,
+        });
+        storage.listProfileProviderConfigsByProfile.mockResolvedValue([]);
+        storage.createProfileProviderConfig.mockImplementation(
+          async (data: Record<string, unknown>) => ({
+            id: `config-${Date.now()}`,
+            ...data,
+          }),
+        );
+
+        await service.createFromTemplate({
+          name: 'Rule3 Test',
+          rootPath: '/test',
+          slug: 'rule3-test',
+          teamOverrides: [
+            {
+              teamName: 'Dev Team',
+              profileNames: ['ProfileB'],
+            },
+          ],
+        });
+
+        expect(teamsServiceMock.createTeam).toHaveBeenCalledTimes(1);
+        const callArgs = teamsServiceMock.createTeam.mock.calls[0][0];
+        expect(callArgs.profileIds).toEqual([newProfileIdB]);
+      });
+
+      it('should preserve template profileNames when override profileNames is undefined', async () => {
+        mockParsedTemplate([
+          {
+            name: 'Dev Team',
+            teamLeadAgentName: 'Lead Agent',
+            memberAgentNames: ['Lead Agent'],
+            profileNames: ['Default Profile'],
+          },
+        ]);
+        setupTeamSeedMocks();
+
+        await service.createFromTemplate({
+          name: 'No Override Test',
+          rootPath: '/test',
+          slug: 'no-override-test',
+          teamOverrides: [{ teamName: 'Dev Team', maxMembers: 8 }],
+        });
+
+        expect(teamsServiceMock.createTeam).toHaveBeenCalledTimes(1);
+        const callArgs = teamsServiceMock.createTeam.mock.calls[0][0];
+        expect(callArgs.profileIds).toBeDefined();
+        expect(callArgs.profileIds!.length).toBe(1);
+      });
+
+      it('should apply profileNameRemapMap to override profileSelections', async () => {
+        const codexProfileId = 'aaaaaaaa-aaaa-aaaa-aaaa-111111111111';
+        const claudeProfileId = 'aaaaaaaa-aaaa-aaaa-aaaa-222222222222';
+        const fmAgentId = 'aaaaaaaa-aaaa-aaaa-aaaa-333333333333';
+        const fmProviderId = 'aaaaaaaa-aaaa-aaaa-aaaa-444444444444';
+
+        const templateWithFamily = {
+          version: 1,
+          prompts: [],
+          profiles: [
+            {
+              id: codexProfileId,
+              name: 'Coder Codex',
+              provider: { name: 'codex' },
+              familySlug: 'coder',
+              options: null,
+              instructions: null,
+              temperature: null,
+              maxTokens: null,
+            },
+            {
+              id: claudeProfileId,
+              name: 'Coder Claude',
+              provider: { name: 'claude' },
+              familySlug: 'coder',
+              options: null,
+              instructions: null,
+              temperature: null,
+              maxTokens: null,
+            },
+          ],
+          agents: [
+            {
+              id: fmAgentId,
+              name: 'Coder',
+              profileId: codexProfileId,
+              description: null,
+              modelOverride: null,
+            },
+          ],
+          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+          teams: [
+            {
+              name: 'Dev Team',
+              teamLeadAgentName: 'Coder',
+              memberAgentNames: ['Coder'],
+              profileNames: ['Coder Codex'],
+            },
+          ],
+          watchers: [],
+          subscribers: [],
+          presets: [],
+          providerModels: [],
+          exportedAt: undefined,
+          initialPrompt: undefined,
+          projectSettings: undefined,
+        };
+
+        jest
+          .spyOn(devchainShared.ExportSchema, 'parse')
+          .mockReturnValue(
+            templateWithFamily as ReturnType<typeof devchainShared.ExportSchema.parse>,
+          );
+
+        unifiedTemplateService.getTemplate.mockResolvedValue({
+          content: templateWithFamily,
+          source: 'bundled',
+          version: null,
+        });
+
+        storage.listProviders.mockResolvedValue({
+          items: [{ id: fmProviderId, name: 'claude' }],
+          total: 1,
+          limit: 100,
+          offset: 0,
+        });
+
+        const newProfileId = 'aaaaaaaa-aaaa-aaaa-aaaa-555555555555';
+        const newAgentId = 'aaaaaaaa-aaaa-aaaa-aaaa-666666666666';
+
+        storage.createProjectWithTemplate.mockResolvedValue({
+          project: { id: 'new-proj-fm2', name: 'Family Override Test' },
+          imported: { prompts: 0, profiles: 1, agents: 1, statuses: 1 },
+          mappings: {
+            promptIdMap: {},
+            profileIdMap: { [claudeProfileId]: newProfileId },
+            agentIdMap: { [fmAgentId]: newAgentId },
+            statusIdMap: {},
+          },
+        });
+
+        storage.listAgents.mockResolvedValue({
+          items: [{ id: newAgentId, name: 'Coder', profileId: newProfileId }],
+          total: 1,
+          limit: 10000,
+          offset: 0,
+        });
+        storage.listAgentProfiles.mockResolvedValue({
+          items: [{ id: newProfileId, name: 'Coder Claude' }],
+          total: 1,
+          limit: 1000,
+          offset: 0,
+        });
+        storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+          {
+            id: 'config-claude-1',
+            name: 'claude-local',
+            profileId: newProfileId,
+            providerId: fmProviderId,
+            options: null,
+            env: null,
+          },
+        ]);
+        storage.createProfileProviderConfig.mockImplementation(
+          async (data: Record<string, unknown>) => ({
+            id: `config-${Date.now()}`,
+            ...data,
+          }),
+        );
+
+        await service.createFromTemplate({
+          name: 'Family Override Test',
+          rootPath: '/test',
+          slug: 'family-override',
+          familyProviderMappings: { coder: 'claude' },
+          teamOverrides: [
+            {
+              teamName: 'Dev Team',
+              profileSelections: [{ profileName: 'Coder Codex', configNames: ['claude-local'] }],
+            },
+          ],
+        });
+
+        expect(teamsServiceMock.createTeam).toHaveBeenCalledTimes(1);
+        const callArgs = teamsServiceMock.createTeam.mock.calls[0][0];
+        expect(callArgs.profileIds).toContain(newProfileId);
+      });
+
+      it('should preserve allow-all when override has empty configNames', async () => {
+        mockParsedTemplate([
+          {
+            name: 'AllowAll Override',
+            teamLeadAgentName: 'Lead Agent',
+            memberAgentNames: ['Lead Agent'],
+            profileNames: ['Default Profile'],
+            profileSelections: [{ profileName: 'Default Profile', configNames: ['local'] }],
+          },
+        ]);
+        setupTeamSeedMocks();
+
+        await service.createFromTemplate({
+          name: 'AllowAll Override Test',
+          rootPath: '/test',
+          slug: 'allowall-override',
+          teamOverrides: [
+            {
+              teamName: 'AllowAll Override',
+              profileSelections: [{ profileName: 'Default Profile', configNames: [] }],
+            },
+          ],
+        });
+
+        expect(teamsServiceMock.createTeam).toHaveBeenCalledTimes(1);
+        const callArgs = teamsServiceMock.createTeam.mock.calls[0][0];
+        const selections = callArgs.profileConfigSelections;
+        expect(!selections || selections.length === 0).toBe(true);
+      });
     });
   });
 
@@ -2442,6 +3377,7 @@ describe('ProjectsService', () => {
           profileId: 'new-profile-1',
           providerId,
           name: 'claude',
+          description: null,
           options: '--model claude-3',
           env: { ANTHROPIC_API_KEY: 'sk-xxx' },
         });
@@ -3160,18 +4096,22 @@ describe('ProjectsService', () => {
       expect(result.profiles).toHaveLength(1);
       expect(result.profiles[0].providerConfigs).toBeDefined();
       expect(result.profiles[0].providerConfigs).toHaveLength(2);
-      expect(result.profiles[0].providerConfigs[0]).toEqual({
-        name: 'claude',
-        providerName: 'claude',
-        options: '--model claude-3',
-        env: { ANTHROPIC_API_KEY: 'sk-xxx' },
-      });
-      expect(result.profiles[0].providerConfigs[1]).toEqual({
-        name: 'gemini',
-        providerName: 'gemini',
-        options: '--model gemini-pro',
-        env: { GOOGLE_API_KEY: 'xxx' },
-      });
+      expect(result.profiles[0].providerConfigs[0]).toEqual(
+        expect.objectContaining({
+          name: 'claude',
+          providerName: 'claude',
+          options: '--model claude-3',
+          env: { ANTHROPIC_API_KEY: '***' },
+        }),
+      );
+      expect(result.profiles[0].providerConfigs[1]).toEqual(
+        expect.objectContaining({
+          name: 'gemini',
+          providerName: 'gemini',
+          options: '--model gemini-pro',
+          env: { GOOGLE_API_KEY: '***' },
+        }),
+      );
 
       // Agent should have providerConfigName
       expect(result.agents).toHaveLength(1);
@@ -3772,6 +4712,7 @@ describe('ProjectsService', () => {
       // Should disable 1M and set safe fallback threshold of 95
       expect(storage.updateProvider).toHaveBeenCalledWith('prov-1', {
         autoCompactThreshold: 95,
+        autoCompactThreshold1m: null,
         oneMillionContextEnabled: false,
       });
 
@@ -3798,6 +4739,7 @@ describe('ProjectsService', () => {
       // since 1M is disabled (no binPath/probe), threshold must be forced to 95
       expect(storage.updateProvider).toHaveBeenCalledWith('prov-1', {
         autoCompactThreshold: 95,
+        autoCompactThreshold1m: null,
         oneMillionContextEnabled: false,
       });
 
@@ -3818,9 +4760,9 @@ describe('ProjectsService', () => {
 
       await service.importProject({ projectId, payload, dryRun: false });
 
-      // Should disable 1M and force threshold to 95 (safe fallback)
+      // Should disable 1M; local threshold 80 preserved (not overwritten)
       expect(storage.updateProvider).toHaveBeenCalledWith('prov-1', {
-        autoCompactThreshold: 95,
+        autoCompactThreshold1m: null,
         oneMillionContextEnabled: false,
       });
 
@@ -3847,7 +4789,8 @@ describe('ProjectsService', () => {
 
       expect(mockProbe1mSupport).toHaveBeenCalledWith('/usr/bin/claude');
       expect(storage.updateProvider).toHaveBeenCalledWith('prov-1', {
-        autoCompactThreshold: 50,
+        autoCompactThreshold: 95,
+        autoCompactThreshold1m: 50,
         oneMillionContextEnabled: true,
       });
 
@@ -3875,6 +4818,7 @@ describe('ProjectsService', () => {
       expect(mockProbe1mSupport).toHaveBeenCalledWith('/usr/bin/claude');
       expect(storage.updateProvider).toHaveBeenCalledWith('prov-1', {
         autoCompactThreshold: 95,
+        autoCompactThreshold1m: null,
         oneMillionContextEnabled: false,
       });
 
@@ -3898,6 +4842,7 @@ describe('ProjectsService', () => {
       expect(mockProbe1mSupport).not.toHaveBeenCalled();
       expect(storage.updateProvider).toHaveBeenCalledWith('prov-1', {
         autoCompactThreshold: 95,
+        autoCompactThreshold1m: null,
         oneMillionContextEnabled: false,
       });
 
@@ -3927,6 +4872,7 @@ describe('ProjectsService', () => {
       // Template threshold 50 is overridden to 95 because 1M probe failed
       expect(storage.updateProvider).toHaveBeenCalledWith('prov-1', {
         autoCompactThreshold: 95,
+        autoCompactThreshold1m: null,
         oneMillionContextEnabled: false,
       });
 
@@ -3953,9 +4899,10 @@ describe('ProjectsService', () => {
 
       await service.importProject({ projectId, payload, dryRun: false });
 
-      // Template threshold 50 is preserved because 1M probe succeeded
+      // Legacy template: standard threshold forced to 95; 1M threshold gets template value (50)
       expect(storage.updateProvider).toHaveBeenCalledWith('prov-1', {
-        autoCompactThreshold: 50,
+        autoCompactThreshold: 95,
+        autoCompactThreshold1m: 50,
         oneMillionContextEnabled: true,
       });
 
@@ -3981,10 +4928,9 @@ describe('ProjectsService', () => {
       await service.importProject({ projectId, payload, dryRun: false });
 
       expect(mockProbe1mSupport).toHaveBeenCalledWith('/usr/bin/claude');
-      // Local provider had threshold 95 from non-1M setup, but probe succeeded
-      // and enabled 1M — threshold must be unconditionally forced to 50
+      // Local provider had threshold 95 — preserved (not overwritten); 1M threshold = 50
       expect(storage.updateProvider).toHaveBeenCalledWith('prov-1', {
-        autoCompactThreshold: 50,
+        autoCompactThreshold1m: 50,
         oneMillionContextEnabled: true,
       });
 

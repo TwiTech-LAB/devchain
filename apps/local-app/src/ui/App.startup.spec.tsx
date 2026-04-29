@@ -114,6 +114,10 @@ jest.mock('./pages/ChatPage', () => ({
   ChatPage: () => <h1>Chat Page</h1>,
 }));
 
+jest.mock('./pages/CodebaseOverviewDisabledPage', () => ({
+  CodebaseOverviewDisabledPage: () => <h1>Overview Disabled Page</h1>,
+}));
+
 jest.mock('./pages/ReviewsPage.lazy', () => ({
   ReviewsPageWithSuspense: () => <h1>Reviews Page</h1>,
 }));
@@ -380,6 +384,20 @@ describe('App startup routing', () => {
 
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: 'Review Detail Page' })).toBeInTheDocument();
+    });
+  });
+
+  it('should render /overview route with the Overview page', async () => {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/overview']}>
+          <App />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Overview Disabled Page' })).toBeInTheDocument();
     });
   });
 

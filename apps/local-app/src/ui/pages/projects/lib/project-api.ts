@@ -142,6 +142,17 @@ export async function createProjectFromTemplate(data: {
   version?: string;
   familyProviderMappings?: Record<string, string>;
   presetName?: string;
+  teamOverrides?: Array<{
+    teamName: string;
+    allowTeamLeadCreateAgents?: boolean;
+    maxMembers?: number;
+    maxConcurrentTasks?: number;
+    profileNames?: string[];
+    profileSelections?: Array<{
+      profileName: string;
+      configNames: string[];
+    }>;
+  }>;
 }): Promise<CreateFromTemplateResponse> {
   const payload = {
     ...data,

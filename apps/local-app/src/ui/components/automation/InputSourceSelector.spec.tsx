@@ -478,4 +478,105 @@ describe('InputSourceSelector', () => {
       expect(screen.queryByText('*')).not.toBeInTheDocument();
     });
   });
+
+  describe('scoped editor capabilities', () => {
+    const textInputDef: ActionInputDef = {
+      name: 'text',
+      label: 'Text',
+      description: 'Enter text',
+      type: 'textarea',
+      required: true,
+    };
+
+    it('shows Agent context group and Insert conditional for send_agent_message.text', async () => {
+      render(
+        <InputSourceSelector
+          inputDef={textInputDef}
+          value={{ source: 'custom', customValue: '' }}
+          onChange={jest.fn()}
+          availableEventFields={mockEventFields}
+          editorCapabilities={{ agentContext: true, conditionals: true }}
+        />,
+      );
+
+      // Insert conditional button is always visible when capabilities are set
+      expect(screen.getByRole('button', { name: 'Insert conditional' })).toBeInTheDocument();
+
+      // Open the select dropdown to verify group labels
+      fireEvent.click(screen.getByText('Select variable...'));
+      expect(await screen.findByText('Agent context')).toBeInTheDocument();
+      expect(screen.getByText('Event fields')).toBeInTheDocument();
+    });
+
+    it('hides Agent context and Insert conditional without capabilities', () => {
+      const agentNameInputDef: ActionInputDef = {
+        name: 'agentName',
+        label: 'Agent Name',
+        description: 'Agent name override',
+        type: 'string',
+        required: false,
+      };
+      render(
+        <InputSourceSelector
+          inputDef={agentNameInputDef}
+          value={{ source: 'custom', customValue: '' }}
+          onChange={jest.fn()}
+          availableEventFields={mockEventFields}
+          editorCapabilities={{ agentContext: false, conditionals: false }}
+        />,
+      );
+
+      expect(screen.queryByRole('button', { name: 'Insert conditional' })).not.toBeInTheDocument();
+    });
+
+    it('inserts conditional at cursor position with empty selection', async () => {
+      const onChange = jest.fn();
+      render(
+        <InputSourceSelector
+          inputDef={textInputDef}
+          value={{ source: 'custom', customValue: 'Hello' }}
+          onChange={onChange}
+          availableEventFields={mockEventFields}
+          editorCapabilities={{ agentContext: true, conditionals: true }}
+        />,
+      );
+
+      // Set cursor at end of "Hello" (position 5)
+      const textarea = screen.getByRole('textbox');
+      fireEvent.select(textarea, { target: { selectionStart: 5, selectionEnd: 5 } });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Insert conditional' }));
+
+      expect(onChange).toHaveBeenCalledWith({
+        source: 'custom',
+        customValue: 'Hello{{#if is_team_lead}}{{/if}}',
+        eventField: undefined,
+      });
+    });
+
+    it('inserts conditional wrapping existing text selection', async () => {
+      const onChange = jest.fn();
+      render(
+        <InputSourceSelector
+          inputDef={textInputDef}
+          value={{ source: 'custom', customValue: 'prefix SELECTED suffix' }}
+          onChange={onChange}
+          availableEventFields={mockEventFields}
+          editorCapabilities={{ agentContext: true, conditionals: true }}
+        />,
+      );
+
+      // Simulate selection of "SELECTED" by setting selectionStart/End on the textarea
+      const textarea = screen.getByRole('textbox');
+      fireEvent.select(textarea, { target: { selectionStart: 7, selectionEnd: 15 } });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Insert conditional' }));
+
+      expect(onChange).toHaveBeenCalledWith({
+        source: 'custom',
+        customValue: 'prefix {{#if is_team_lead}}SELECTED{{/if}} suffix',
+        eventField: undefined,
+      });
+    });
+  });
 });

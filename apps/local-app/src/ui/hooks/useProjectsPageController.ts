@@ -192,6 +192,11 @@ export function useProjectsPageController() {
     handleImportTemplateChange,
     handleImportProviderMappingConfirm,
     handleImportProviderMappingCancel,
+    preconfigOpen: importPreconfigOpen,
+    preconfigTeams: importPreconfigTeams,
+    preconfigProfiles: importPreconfigProfiles,
+    handlePreconfigConfirm: handleImportPreconfigConfirm,
+    handlePreconfigCancel: handleImportPreconfigCancel,
   } = useProjectImport({
     templates,
     setShowImportModal,
@@ -648,6 +653,11 @@ export function useProjectsPageController() {
     showImportProviderMappingModal,
     handleImportProviderMappingCancel,
     handleImportProviderMappingConfirm,
+    importPreconfigOpen,
+    importPreconfigTeams,
+    importPreconfigProfiles,
+    handleImportPreconfigConfirm,
+    handleImportPreconfigCancel,
   };
 }
 

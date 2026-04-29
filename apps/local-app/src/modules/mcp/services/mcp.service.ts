@@ -10,6 +10,7 @@ import { SettingsService } from '../../settings/services/settings.service';
 import { GuestsService } from '../../guests/services/guests.service';
 import { ReviewsService } from '../../reviews/services/reviews.service';
 import { SkillsService } from '../../skills/services/skills.service';
+import { TeamsService } from '../../teams/services/teams.service';
 import { createLogger } from '../../../common/logging/logger';
 import type { McpResponse } from '../dtos/mcp.dto';
 import { InstructionsResolver } from './instructions-resolver';
@@ -60,6 +61,14 @@ import {
   handleResolveComment,
   handleApplySuggestion,
 } from './handlers/review-tools';
+import {
+  handleTeamsList,
+  handleTeamsMembersList,
+  handleTeamsConfigsList,
+  handleTeamsCreateAgent,
+  handleTeamsDeleteAgent,
+  handleDevchainTeam,
+} from './handlers/teams-tools';
 import { suggestNestedPath } from '../utils/param-suggestion';
 import { SessionContextResolver } from './utils/session-context-resolver';
 import { ResourceResolver } from './utils/resource-resolver';
@@ -112,6 +121,12 @@ const TOOL_HANDLER_ENTRIES: Array<[string, McpToolHandler]> = [
   ['devchain_activity_finish', handleActivityFinish],
   ['devchain_list_sessions', handleListSessions],
   ['devchain_register_guest', handleRegisterGuest],
+  ['devchain_teams_list', handleTeamsList],
+  ['devchain_teams_members_list', handleTeamsMembersList],
+  ['devchain_teams_configs_list', handleTeamsConfigsList],
+  ['devchain_teams_create_agent', handleTeamsCreateAgent],
+  ['devchain_teams_delete_agent', handleTeamsDeleteAgent],
+  ['devchain_team', handleDevchainTeam],
   ['devchain_list_reviews', handleListReviews],
   ['devchain_get_review', handleGetReview],
   ['devchain_get_review_comments', handleGetReviewComments],
@@ -142,6 +157,7 @@ export class McpService {
     @Inject(forwardRef(() => GuestsService)) private readonly guestsService?: GuestsService,
     @Inject(forwardRef(() => SkillsService)) private readonly skillsService?: SkillsService,
     @Inject(forwardRef(() => ReviewsService)) private readonly reviewsService?: ReviewsService,
+    @Inject(forwardRef(() => TeamsService)) private readonly teamsService?: TeamsService,
   ) {
     logger.info('McpService initialized');
     this.featureFlags = this.storage.getFeatureFlags();
@@ -149,7 +165,6 @@ export class McpService {
       this.storage,
       (document, cache, maxDepth, maxBytes) =>
         buildInlineResolution(this.storage, document, cache, maxDepth, maxBytes),
-      this.featureFlags,
     );
     this.sessionContextResolver = new SessionContextResolver(
       this.storage,
@@ -174,6 +189,7 @@ export class McpService {
       guestsService: this.guestsService,
       skillsService: this.skillsService,
       reviewsService: this.reviewsService,
+      teamsService: this.teamsService,
       instructionsResolver: this.instructionsResolver,
       featureFlags: this.featureFlags,
       defaultInlineMaxBytes: this.DEFAULT_INLINE_MAX_BYTES,

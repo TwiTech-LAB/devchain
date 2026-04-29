@@ -3,8 +3,10 @@ import { AgentsController } from './agents.controller';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { BadRequestException } from '@nestjs/common';
 import { Agent, Provider, ProfileProviderConfig } from '../../storage/models/domain.models';
+import { NotFoundError } from '../../../common/errors/error-types';
 import { SessionsService } from '../../sessions/services/sessions.service';
 import { SessionCoordinatorService } from '../../sessions/services/session-coordinator.service';
+import { EventsService } from '../../events/services/events.service';
 
 jest.mock('../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
@@ -32,6 +34,9 @@ describe('AgentsController', () => {
   };
   let sessionCoordinator: {
     withAgentLock: jest.Mock;
+  };
+  let eventsService: {
+    publish: jest.Mock;
   };
 
   const mockAgent: Agent = {
@@ -76,8 +81,10 @@ describe('AgentsController', () => {
     profileId: 'profile-1',
     providerId: 'provider-1',
     name: 'default',
+    description: null,
     options: '--model opus',
     env: { API_KEY: 'test-key' },
+    position: 0,
     createdAt: '2024-01-01T00:00:00.000Z',
     updatedAt: '2024-01-01T00:00:00.000Z',
   };
@@ -109,6 +116,10 @@ describe('AgentsController', () => {
       withAgentLock: jest.fn().mockImplementation((_agentId, fn) => fn()),
     };
 
+    eventsService = {
+      publish: jest.fn().mockResolvedValue('event-id-1'),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       controllers: [AgentsController],
       providers: [
@@ -123,6 +134,10 @@ describe('AgentsController', () => {
         {
           provide: SessionCoordinatorService,
           useValue: sessionCoordinator,
+        },
+        {
+          provide: EventsService,
+          useValue: eventsService,
         },
       ],
     }).compile();
@@ -343,6 +358,95 @@ describe('AgentsController', () => {
         }),
       ).rejects.toThrow(BadRequestException);
     });
+
+    it('publishes agent.created event after successful create', async () => {
+      const createData = {
+        projectId: 'project-1',
+        profileId: 'profile-1',
+        name: 'New Agent',
+        providerConfigId: 'config-1',
+      };
+      storage.getProfileProviderConfig.mockResolvedValue(mockConfig);
+      storage.createAgent.mockResolvedValue({ ...mockAgent, ...createData });
+
+      await controller.createAgent(createData);
+
+      expect(eventsService.publish).toHaveBeenCalledWith('agent.created', {
+        agentId: mockAgent.id,
+        agentName: 'New Agent',
+        projectId: 'project-1',
+        profileId: 'profile-1',
+        providerConfigId: 'config-1',
+        actor: null,
+      });
+    });
+
+    it('accepts optional modelOverride and trims it', async () => {
+      const createData = {
+        projectId: 'project-1',
+        profileId: 'profile-1',
+        name: 'New Agent',
+        providerConfigId: 'config-1',
+        modelOverride: '  anthropic/claude-sonnet-4-5  ',
+      };
+      storage.getProfileProviderConfig.mockResolvedValue(mockConfig);
+      storage.createAgent.mockResolvedValue({
+        ...mockAgent,
+        ...createData,
+        modelOverride: 'anthropic/claude-sonnet-4-5',
+      });
+
+      const result = await controller.createAgent(createData);
+
+      expect(storage.createAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ modelOverride: 'anthropic/claude-sonnet-4-5' }),
+      );
+      expect(result).toBeDefined();
+    });
+
+    it('creates without modelOverride (backward compat)', async () => {
+      const createData = {
+        projectId: 'project-1',
+        profileId: 'profile-1',
+        name: 'New Agent',
+        providerConfigId: 'config-1',
+      };
+      storage.getProfileProviderConfig.mockResolvedValue(mockConfig);
+      storage.createAgent.mockResolvedValue({ ...mockAgent, ...createData });
+
+      const result = await controller.createAgent(createData);
+
+      expect(result.name).toBe('New Agent');
+    });
+
+    it('rejects whitespace-only modelOverride', async () => {
+      const createData = {
+        projectId: 'project-1',
+        profileId: 'profile-1',
+        name: 'New Agent',
+        providerConfigId: 'config-1',
+        modelOverride: '   ',
+      };
+
+      await expect(controller.createAgent(createData)).rejects.toThrow();
+    });
+
+    it('swallows publish failure — agent still created', async () => {
+      const createData = {
+        projectId: 'project-1',
+        profileId: 'profile-1',
+        name: 'New Agent',
+        providerConfigId: 'config-1',
+      };
+      storage.getProfileProviderConfig.mockResolvedValue(mockConfig);
+      storage.createAgent.mockResolvedValue({ ...mockAgent, ...createData });
+      eventsService.publish.mockRejectedValueOnce(new Error('publish failed'));
+
+      const result = await controller.createAgent(createData);
+
+      expect(result.name).toBe('New Agent');
+      expect(eventsService.publish).toHaveBeenCalled();
+    });
   });
 
   describe('PUT /api/agents/:id', () => {
@@ -442,12 +546,40 @@ describe('AgentsController', () => {
   });
 
   describe('DELETE /api/agents/:id', () => {
-    it('deletes an agent', async () => {
+    it('deletes an agent and publishes agent.deleted event', async () => {
+      storage.getAgent.mockResolvedValue(mockAgent);
       storage.deleteAgent.mockResolvedValue(undefined);
 
       await controller.deleteAgent('agent-1');
 
+      expect(storage.getAgent).toHaveBeenCalledWith('agent-1');
       expect(storage.deleteAgent).toHaveBeenCalledWith('agent-1');
+      expect(eventsService.publish).toHaveBeenCalledWith('agent.deleted', {
+        agentId: 'agent-1',
+        agentName: 'Test Agent',
+        projectId: 'project-1',
+        actor: null,
+        teamId: null,
+        teamName: null,
+      });
+    });
+
+    it('throws NotFoundError when agent does not exist', async () => {
+      storage.getAgent.mockRejectedValue(new NotFoundError('Agent', 'missing'));
+
+      await expect(controller.deleteAgent('missing')).rejects.toThrow(NotFoundError);
+      expect(storage.deleteAgent).not.toHaveBeenCalled();
+    });
+
+    it('still deletes when event publish fails (best-effort)', async () => {
+      storage.getAgent.mockResolvedValue(mockAgent);
+      storage.deleteAgent.mockResolvedValue(undefined);
+      eventsService.publish.mockRejectedValueOnce(new Error('publish failed'));
+
+      await controller.deleteAgent('agent-1');
+
+      expect(storage.deleteAgent).toHaveBeenCalledWith('agent-1');
+      expect(eventsService.publish).toHaveBeenCalled();
     });
   });
 

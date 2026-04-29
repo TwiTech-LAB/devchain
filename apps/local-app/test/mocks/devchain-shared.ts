@@ -4,6 +4,7 @@
 // can't import without additional ESM configuration. For tests, we re-export the same
 // implementations directly from the workspace TypeScript sources.
 
+export { EnvVarsSchema } from '../../../../packages/shared/src/schemas/env-vars';
 export { ExportSchema, ManifestSchema } from '../../../../packages/shared/src/schemas/export-schema';
 
 export {

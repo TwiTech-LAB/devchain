@@ -355,15 +355,71 @@
     {
       "idx": 50,
       "version": "6",
-      "when": 1774000000000,
-      "tag": "0050_providers_one_million_context",
+      "when": 1772754138187,
+      "tag": "0050_teams",
       "breakpoints": true
     },
     {
       "idx": 51,
       "version": "6",
+      "when": 1772967575988,
+      "tag": "0051_teams_optional_lead",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "6",
+      "when": 1774000000000,
+      "tag": "0052_providers_one_million_context",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "6",
       "when": 1775200000000,
-      "tag": "0051_providers_auto_compact_threshold_1m",
+      "tag": "0053_providers_auto_compact_threshold_1m",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "6",
+      "when": 1776871990873,
+      "tag": "0054_provider_config_description",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "6",
+      "when": 1776873456305,
+      "tag": "0055_team_profiles",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "6",
+      "when": 1776881820856,
+      "tag": "0056_team_profile_configs",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "6",
+      "when": 1776951773945,
+      "tag": "0057_white_lester",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "6",
+      "when": 1776980079417,
+      "tag": "0058_fluffy_wolverine",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "6",
+      "when": 1777105319598,
+      "tag": "0059_loving_daimon_hellstrom",
       "breakpoints": true
     }
   ]

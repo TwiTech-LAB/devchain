@@ -5,6 +5,12 @@ import { Input } from '@/ui/components/ui/input';
 import { Label } from '@/ui/components/ui/label';
 import { Badge } from '@/ui/components/ui/badge';
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/ui/components/ui/tooltip';
+import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
@@ -39,6 +45,7 @@ import {
   Search,
 } from 'lucide-react';
 import { cn } from '@/ui/lib/utils';
+import { EnvEditor } from '@/ui/components/EnvEditor';
 import { fetchPreflightChecks } from '@/ui/lib/preflight';
 import { providerModelQueryKeys } from '@/ui/lib/provider-model-query-keys';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
@@ -60,6 +67,7 @@ interface Provider {
   autoCompactThreshold: number | null;
   autoCompactThreshold1m: number | null;
   oneMillionContextEnabled: boolean;
+  env: Record<string, string> | null;
   mcpConfigured: boolean;
   mcpEndpoint: string | null;
   mcpRegisteredAt: string | null;
@@ -102,6 +110,7 @@ async function createProvider(data: {
   binPath: string | null;
   autoCompactThreshold?: number;
   oneMillionContextEnabled?: boolean;
+  env?: Record<string, string> | null;
 }) {
   const res = await fetch('/api/providers', {
     method: 'POST',
@@ -128,6 +137,7 @@ async function updateProvider(
     autoCompactThreshold?: number | null;
     autoCompactThreshold1m?: number | null;
     oneMillionContextEnabled?: boolean;
+    env?: Record<string, string> | null;
   },
 ) {
   const res = await fetch(`/api/providers/${id}`, {
@@ -262,6 +272,8 @@ function invalidateProviderConfigQueries(queryClient: ReturnType<typeof useQuery
       );
     },
   });
+  // Also refresh the providers-page preflight badge
+  queryClient.invalidateQueries({ queryKey: ['preflight', 'providers-page'] });
 }
 
 function ProviderModelsSection({ provider }: { provider: Provider }) {
@@ -477,6 +489,7 @@ export function ProvidersPage() {
     autoCompactThreshold: '',
     autoCompactThreshold1m: '',
     oneMillionContextEnabled: false,
+    env: {} as Record<string, string>,
   });
   const [formError, setFormError] = useState<string | null>(null);
   const [formErrorField, setFormErrorField] = useState<'binPath' | 'autoCompactThreshold' | null>(
@@ -493,11 +506,15 @@ export function ProvidersPage() {
     queryFn: fetchProviders,
   });
 
-  const { data: preflightResult } = useQuery({
+  const {
+    data: preflightResult,
+    isLoading: isPreflightLoading,
+    isError: isPreflightError,
+  } = useQuery({
     queryKey: ['preflight', 'providers-page', selectedProject?.rootPath ?? 'global'],
-    queryFn: () => fetchPreflightChecks(selectedProject?.rootPath),
-    staleTime: 30000,
-    refetchInterval: 60000,
+    queryFn: () => fetchPreflightChecks(selectedProject?.rootPath, { includeAllProviders: true }),
+    staleTime: 60000,
+    refetchInterval: false,
   });
 
   const supportedProviders = useMemo(
@@ -517,6 +534,7 @@ export function ProvidersPage() {
           {
             id: 'temp-' + Date.now(),
             ...newProvider,
+            env: newProvider.env ?? null,
             mcpConfigured: false,
             mcpEndpoint: null,
             mcpRegisteredAt: null,
@@ -537,6 +555,7 @@ export function ProvidersPage() {
         autoCompactThreshold: '',
         autoCompactThreshold1m: '',
         oneMillionContextEnabled: false,
+        env: {},
       });
       setFormError(null);
       setFormErrorField(null);
@@ -587,6 +606,7 @@ export function ProvidersPage() {
         autoCompactThreshold?: number | null;
         autoCompactThreshold1m?: number | null;
         oneMillionContextEnabled?: boolean;
+        env?: Record<string, string> | null;
       };
     }) => updateProvider(id, data),
     onMutate: async ({ id, data }) => {
@@ -604,6 +624,7 @@ export function ProvidersPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['providers'] });
+      queryClient.invalidateQueries({ queryKey: ['preflight', 'providers-page'] });
       setShowDialog(false);
       setEditingProvider(null);
       setFormData({
@@ -611,6 +632,7 @@ export function ProvidersPage() {
         autoCompactThreshold: '',
         autoCompactThreshold1m: '',
         oneMillionContextEnabled: false,
+        env: {},
       });
       setFormError(null);
       setFormErrorField(null);
@@ -653,6 +675,7 @@ export function ProvidersPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['providers'] });
+      queryClient.invalidateQueries({ queryKey: ['preflight', 'providers-page'] });
       setDeleteConfirm(null);
       toast({
         title: 'Success',
@@ -812,6 +835,7 @@ export function ProvidersPage() {
         data: {
           binPath,
           autoCompactThreshold,
+          env: Object.keys(formData.env).length > 0 ? formData.env : null,
           ...(isClaude
             ? {
                 oneMillionContextEnabled: formData.oneMillionContextEnabled,
@@ -825,9 +849,11 @@ export function ProvidersPage() {
         name: string;
         binPath: string | null;
         autoCompactThreshold?: number;
+        env?: Record<string, string> | null;
       } = {
         name: providerName,
         binPath,
+        env: Object.keys(formData.env).length > 0 ? formData.env : null,
       };
       if (thresholdStr !== '' && providerType === 'claude') {
         payload.autoCompactThreshold = Number(thresholdStr);
@@ -844,6 +870,7 @@ export function ProvidersPage() {
         provider.autoCompactThreshold != null ? String(provider.autoCompactThreshold) : '',
       autoCompactThreshold1m: provider.autoCompactThreshold1m?.toString() ?? '',
       oneMillionContextEnabled: provider.oneMillionContextEnabled ?? false,
+      env: provider.env ?? {},
     });
     setProbeStatus(provider.oneMillionContextEnabled ? 'supported' : 'idle');
     // derive provider type from existing provider
@@ -895,6 +922,7 @@ export function ProvidersPage() {
       autoCompactThreshold: '',
       autoCompactThreshold1m: '',
       oneMillionContextEnabled: false,
+      env: {},
     });
     setProviderType(initialType);
     setBinPathTouched(false);
@@ -955,12 +983,102 @@ export function ProvidersPage() {
             const isSupported = supportedProviders.includes(provider.name);
             const pf = preflightResult?.providers?.find((p) => p.id === provider.id);
             const mcpStatus = pf?.mcpStatus;
-            const mcpBadgeClass =
-              mcpStatus === 'pass'
-                ? 'border border-emerald-500/40 bg-emerald-500/10 text-emerald-600'
-                : mcpStatus === 'fail'
-                  ? 'border border-destructive bg-destructive/10 text-destructive'
-                  : 'border border-amber-500/40 bg-amber-500/10 text-amber-600';
+
+            let mcpBadge: React.ReactNode;
+            if (isPreflightLoading && !preflightResult) {
+              mcpBadge = (
+                <Badge
+                  variant="secondary"
+                  className="text-xs border border-muted-foreground/30 text-muted-foreground"
+                >
+                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                  Checking…
+                </Badge>
+              );
+            } else if (isPreflightError) {
+              mcpBadge = (
+                <Badge
+                  variant="secondary"
+                  className="text-xs border border-destructive bg-destructive/10 text-destructive"
+                >
+                  MCP Check failed
+                </Badge>
+              );
+            } else if (mcpStatus === 'pass') {
+              mcpBadge = (
+                <Badge
+                  variant="secondary"
+                  className="text-xs border border-emerald-500/40 bg-emerald-500/10 text-emerald-600"
+                >
+                  MCP OK
+                </Badge>
+              );
+            } else if (mcpStatus === 'fail') {
+              mcpBadge = (
+                <Badge
+                  variant="secondary"
+                  className="text-xs border border-destructive bg-destructive/10 text-destructive"
+                >
+                  MCP FAIL
+                </Badge>
+              );
+            } else if (
+              mcpStatus === 'warn' &&
+              pf?.requiresProjectContext === true &&
+              !selectedProject
+            ) {
+              mcpBadge = (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Badge
+                        variant="secondary"
+                        className="text-xs border border-amber-500/40 bg-amber-500/10 text-amber-600"
+                      >
+                        MCP WARN
+                      </Badge>
+                    </TooltipTrigger>
+                    <TooltipContent>Select a project to verify</TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              );
+            } else if (mcpStatus === 'warn') {
+              const warnBadge = (
+                <Badge
+                  variant="secondary"
+                  className="text-xs border border-amber-500/40 bg-amber-500/10 text-amber-600"
+                >
+                  MCP WARN
+                </Badge>
+              );
+              mcpBadge = pf?.mcpMessage ? (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>{warnBadge}</TooltipTrigger>
+                    <TooltipContent>{pf.mcpMessage}</TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              ) : (
+                warnBadge
+              );
+            } else if (pf?.status === 'fail') {
+              // Defensive: allSettled rejection set status:'fail' but mcpStatus was not populated.
+              // Render FAIL badge so this anomaly is never silently dropped to neutral "—".
+              mcpBadge = (
+                <Badge
+                  variant="secondary"
+                  className="text-xs border border-destructive bg-destructive/10 text-destructive"
+                >
+                  MCP FAIL
+                </Badge>
+              );
+            } else {
+              mcpBadge = (
+                <Badge variant="outline" className="text-xs text-muted-foreground">
+                  MCP —
+                </Badge>
+              );
+            }
 
             return (
               <div key={provider.id} className="border rounded-lg p-4 bg-card">
@@ -989,10 +1107,14 @@ export function ProvidersPage() {
                         </div>
                       </>
                     )}
+                    {provider.env && Object.keys(provider.env).length > 0 && (
+                      <div className="text-sm">
+                        <span className="text-muted-foreground">Env:</span>{' '}
+                        <span className="font-mono">{Object.keys(provider.env).join(', ')}</span>
+                      </div>
+                    )}
                     <div className="flex flex-wrap items-center gap-2">
-                      <Badge variant="secondary" className={cn('text-xs', mcpBadgeClass)}>
-                        MCP {(mcpStatus ?? 'warn').toUpperCase()}
-                      </Badge>
+                      {mcpBadge}
                       {provider.mcpRegisteredAt && (
                         <span className="text-xs text-muted-foreground">
                           Registered {new Date(provider.mcpRegisteredAt).toLocaleString()}
@@ -1004,16 +1126,37 @@ export function ProvidersPage() {
                     </p>
                   </div>
                   <div className="flex flex-col gap-2 sm:flex-row">
-                    {isSupported && mcpStatus !== 'pass' && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleConfigure(provider)}
-                        disabled={configureMutation.isPending}
-                      >
-                        Configure MCP
-                      </Button>
-                    )}
+                    {isSupported &&
+                      pf &&
+                      (pf.mcpStatus === 'warn' || pf.mcpStatus === 'fail') &&
+                      (pf.requiresProjectContext === true && !selectedProject ? (
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  disabled
+                                  style={{ pointerEvents: 'none' }}
+                                >
+                                  Configure MCP
+                                </Button>
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent>Select a project first</TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleConfigure(provider)}
+                          disabled={configureMutation.isPending}
+                        >
+                          Configure MCP
+                        </Button>
+                      ))}
                     <Button variant="outline" size="sm" onClick={() => handleEdit(provider)}>
                       Edit
                     </Button>
@@ -1041,6 +1184,7 @@ export function ProvidersPage() {
               autoCompactThreshold: '',
               autoCompactThreshold1m: '',
               oneMillionContextEnabled: false,
+              env: {},
             });
             setFormError(null);
             setFormErrorField(null);
@@ -1312,6 +1456,17 @@ export function ProvidersPage() {
               </div>
             )}
 
+            <div>
+              <Label>Environment Variables</Label>
+              <p className="text-xs text-muted-foreground mt-1 mb-2">
+                This env is shared across all projects using this provider.
+              </p>
+              <EnvEditor
+                env={formData.env}
+                onChange={(env) => setFormData((prev) => ({ ...prev, env }))}
+              />
+            </div>
+
             {/* MCP endpoint is auto-configured: ${window.location.origin}/mcp */}
 
             <DialogFooter>
@@ -1327,6 +1482,7 @@ export function ProvidersPage() {
                     autoCompactThreshold: '',
                     autoCompactThreshold1m: '',
                     oneMillionContextEnabled: false,
+                    env: {},
                   });
                   setProviderType(initialType);
                   setBinPathTouched(false);

@@ -63,4 +63,57 @@ describe('EventsService', () => {
     expect(eventEmitter.emit).not.toHaveBeenCalled();
     expect(eventLogService.recordPublished).not.toHaveBeenCalled();
   });
+
+  describe('agent.created schema', () => {
+    it('publishes valid agent.created payload', async () => {
+      const payload = {
+        agentId: 'agent-new',
+        agentName: 'New Bot',
+        projectId: 'project-1',
+        profileId: 'profile-1',
+        providerConfigId: 'config-1',
+        actor: null,
+      };
+
+      await service.publish('agent.created', payload);
+
+      expect(eventLogService.recordPublished).toHaveBeenCalledWith({
+        name: 'agent.created',
+        payload,
+        requestId: null,
+      });
+      expect(eventEmitter.emit).toHaveBeenCalledWith('agent.created', payload);
+    });
+
+    it('publishes agent.created with actor', async () => {
+      const payload = {
+        agentId: 'agent-new',
+        agentName: 'Team Bot',
+        projectId: 'project-1',
+        profileId: 'profile-1',
+        providerConfigId: 'config-1',
+        actor: { type: 'agent' as const, id: 'lead-agent-1' },
+      };
+
+      await service.publish('agent.created', payload);
+
+      expect(eventLogService.recordPublished).toHaveBeenCalledWith({
+        name: 'agent.created',
+        payload,
+        requestId: null,
+      });
+    });
+
+    it('rejects agent.created with missing required fields', async () => {
+      const publish = service.publish.bind(service) as unknown as (
+        name: string,
+        payload: unknown,
+      ) => Promise<string>;
+
+      await expect(publish('agent.created', { agentId: 'agent-1' })).rejects.toBeInstanceOf(
+        ZodError,
+      );
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+    });
+  });
 });

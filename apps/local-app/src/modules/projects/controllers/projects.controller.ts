@@ -27,7 +27,7 @@ import {
   SEMVER_PATTERN,
   VALIDATION_MESSAGES,
 } from '../../../common/validation/template-validation';
-import { ProjectsService } from '../services/projects.service';
+import { ProjectsService, type ImportProjectInput } from '../services/projects.service';
 import { SettingsService } from '../../settings/services/settings.service';
 import {
   RegistryTemplateMetadataDto,
@@ -371,7 +371,32 @@ export class ProjectsController {
         ), // Legacy: alias for slug
         templatePath: z.preprocess(normalizeOptionalStringField, z.string().min(1).optional()), // File-based template path
         familyProviderMappings: FamilyProviderMappingsSchema,
-        presetName: z.string().min(1).optional(), // Optional preset to apply after creation
+        presetName: z.string().min(1).optional(),
+        teamOverrides: z
+          .array(
+            z
+              .object({
+                teamName: z.string().min(1),
+                allowTeamLeadCreateAgents: z.boolean().optional(),
+                maxMembers: z.number().int().min(2).max(10).optional(),
+                maxConcurrentTasks: z.number().int().min(1).max(10).optional(),
+                profileNames: z.array(z.string().min(1)).optional(),
+                profileSelections: z
+                  .array(
+                    z.object({
+                      profileName: z.string().min(1),
+                      configNames: z.array(z.string().min(1)),
+                    }),
+                  )
+                  .optional(),
+              })
+              .strict(),
+          )
+          .optional()
+          .refine(
+            (arr) => !arr || new Set(arr.map((o) => o.teamName.toLowerCase())).size === arr.length,
+            { message: 'Duplicate teamName in teamOverrides' },
+          ),
       })
       .refine(
         (data) => {
@@ -410,16 +435,18 @@ export class ProjectsController {
           templatePath: parsed.templatePath,
           familyProviderMappings: normalizeFamilyProviderMappings(parsed.familyProviderMappings),
           presetName: parsed.presetName,
+          ...(parsed.teamOverrides ? { teamOverrides: parsed.teamOverrides } : {}),
         }
       : {
           name: parsed.name,
           description: parsed.description,
           rootPath: parsed.rootPath,
           ...(parsed.projectId ? { projectId: parsed.projectId } : {}),
-          slug: parsed.slug ?? parsed.templateId!, // Use slug if provided, else templateId
+          slug: parsed.slug ?? parsed.templateId!,
           version: parsed.version ?? null,
           familyProviderMappings: normalizeFamilyProviderMappings(parsed.familyProviderMappings),
           presetName: parsed.presetName,
+          ...(parsed.teamOverrides ? { teamOverrides: parsed.teamOverrides } : {}),
         };
     return this.projects.createFromTemplate(input);
   }
@@ -475,12 +502,18 @@ export class ProjectsController {
     body?: {
       statusMappings?: Record<string, string>;
       familyProviderMappings?: Record<string, string>;
+      teamOverrides?: unknown;
       [key: string]: unknown;
     },
   ) {
     logger.info({ projectId: id, dryRun }, 'POST /api/projects/:id/import');
     const isDryRun = (dryRun ?? '').toString().toLowerCase() === 'true';
-    const { statusMappings, familyProviderMappings: rawMappings, ...payload } = body ?? {};
+    const {
+      statusMappings,
+      familyProviderMappings: rawMappings,
+      teamOverrides: rawTeamOverrides,
+      ...payload
+    } = body ?? {};
 
     // Validate familyProviderMappings if provided
     let familyProviderMappings: Record<string, string> | undefined;
@@ -495,12 +528,49 @@ export class ProjectsController {
       familyProviderMappings = normalizeFamilyProviderMappings(parseResult.data);
     }
 
+    // Validate teamOverrides if provided
+    let teamOverrides: ImportProjectInput['teamOverrides'];
+    if (rawTeamOverrides !== undefined) {
+      const TeamOverridesSchema = z
+        .array(
+          z
+            .object({
+              teamName: z.string().min(1),
+              allowTeamLeadCreateAgents: z.boolean().optional(),
+              maxMembers: z.number().int().min(2).max(10).optional(),
+              maxConcurrentTasks: z.number().int().min(1).max(10).optional(),
+              profileNames: z.array(z.string().min(1)).optional(),
+              profileSelections: z
+                .array(
+                  z.object({
+                    profileName: z.string().min(1),
+                    configNames: z.array(z.string().min(1)),
+                  }),
+                )
+                .optional(),
+            })
+            .strict(),
+        )
+        .refine((arr) => new Set(arr.map((o) => o.teamName.toLowerCase())).size === arr.length, {
+          message: 'Duplicate teamName in teamOverrides',
+        });
+      const parseResult = TeamOverridesSchema.safeParse(rawTeamOverrides);
+      if (!parseResult.success) {
+        const errors = parseResult.error.errors
+          .map((e) => `${e.path.join('.')}: ${e.message}`)
+          .join('; ');
+        throw new BadRequestException(`Invalid teamOverrides: ${errors}`);
+      }
+      teamOverrides = parseResult.data;
+    }
+
     return this.projects.importProject({
       projectId: id,
       payload,
       dryRun: isDryRun,
       statusMappings,
       familyProviderMappings,
+      ...(teamOverrides ? { teamOverrides } : {}),
     });
   }
 

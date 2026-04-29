@@ -13,6 +13,7 @@ import { seedPreseedJeffallanClaudeSkillsSeeder } from '../seeders/0003_seed_pre
 import { seedDisableMicrosoftSourceDefaultSeeder } from '../seeders/0004_seed_disable_microsoft_source_default';
 import { seedRenewInstructionsSubscriberSeeder } from '../seeders/0005_seed_renew_instructions_subscriber';
 import { seedRenameTemplateSlugsSeeder } from '../seeders/0006_seed_rename_template_slugs';
+import { seedClaudeNoFlickerEnvSeeder } from '../seeders/0007_seed_claude_no_flicker_env';
 
 export const DATA_SEEDERS = 'DATA_SEEDERS';
 const JOURNAL_KEY = 'seeders.journal';
@@ -37,6 +38,7 @@ export const REGISTERED_DATA_SEEDERS: DataSeeder[] = [
   seedDisableMicrosoftSourceDefaultSeeder,
   seedRenewInstructionsSubscriberSeeder,
   seedRenameTemplateSlugsSeeder,
+  seedClaudeNoFlickerEnvSeeder,
 ];
 
 interface SeederJournalEntry {

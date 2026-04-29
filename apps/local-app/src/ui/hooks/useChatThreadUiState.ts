@@ -38,6 +38,7 @@ export interface UseChatThreadUiStateResult {
   setInlineTerminalsByThread: React.Dispatch<
     React.SetStateAction<Record<string, InlineTerminalEntry>>
   >;
+  attachInlineTerminalForSelectedThread: (agentId: string, sessionId: string | null) => boolean;
   inlineTerminalState: InlineTerminalEntry | null;
   showInlineTerminal: boolean;
   inlineTerminalSessionId: string | null;
@@ -198,12 +199,43 @@ export function useChatThreadUiState({
     setInlineUnreadCount((count) => count + 1);
   }, []);
 
+  const attachInlineTerminalForSelectedThread = useCallback(
+    (agentId: string, sessionId: string | null): boolean => {
+      const threadId = effectiveSelectedThreadId;
+      if (!threadId) return false;
+
+      const thread = allThreads.find((t) => t.id === threadId);
+      if (!thread || thread.isGroup || thread.members?.[0] !== agentId) {
+        console.warn('Rejected inline terminal bind: agent not selected thread DM member', {
+          agentId,
+          threadId,
+          expectedAgentId: thread?.members?.[0],
+        });
+        return false;
+      }
+
+      setInlineTerminalsByThread((prev) => ({
+        ...prev,
+        [threadId]: { agentId, sessionId },
+      }));
+      setTerminalMenuOpen(false);
+      setInlineUnreadCount(0);
+      return true;
+    },
+    [effectiveSelectedThreadId, allThreads],
+  );
+
   // Sync inline terminal session IDs when presence updates
   useEffect(() => {
     setInlineTerminalsByThread((prev) => {
       let changed = false;
       const next = { ...prev };
       for (const [threadId, entry] of Object.entries(prev)) {
+        const thread = allThreads.find((t) => t.id === threadId);
+        // reason: thread may be absent during loading/refetch — preserve entry to avoid data loss
+        if (!thread) continue;
+        if (thread.isGroup || thread.members?.[0] !== entry.agentId) continue;
+
         const presence = agentPresence[entry.agentId];
         const sessionId = presence?.sessionId ?? null;
         if (sessionId !== entry.sessionId) {
@@ -213,7 +245,7 @@ export function useChatThreadUiState({
       }
       return changed ? next : prev;
     });
-  }, [agentPresence]);
+  }, [agentPresence, allThreads]);
 
   // Auto-enable inline terminal for newly selected DM threads
   useEffect(() => {
@@ -303,6 +335,7 @@ export function useChatThreadUiState({
     // Inline terminal state
     inlineTerminalsByThread,
     setInlineTerminalsByThread,
+    attachInlineTerminalForSelectedThread,
     inlineTerminalState,
     showInlineTerminal,
     inlineTerminalSessionId,

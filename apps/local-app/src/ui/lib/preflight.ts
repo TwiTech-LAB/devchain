@@ -22,6 +22,8 @@ export interface ProviderCheck {
   mcpMessage?: string;
   mcpDetails?: string;
   mcpEndpoint?: string | null;
+  usedByAgents?: string[];
+  requiresProjectContext?: boolean;
 }
 
 export interface PreflightResult {
@@ -32,8 +34,14 @@ export interface PreflightResult {
   timestamp: string;
 }
 
-export async function fetchPreflightChecks(projectPath?: string): Promise<PreflightResult> {
-  const query = projectPath ? `?projectPath=${encodeURIComponent(projectPath)}` : '';
+export async function fetchPreflightChecks(
+  projectPath?: string,
+  opts?: { includeAllProviders?: boolean },
+): Promise<PreflightResult> {
+  const params = new URLSearchParams();
+  if (projectPath) params.set('projectPath', projectPath);
+  if (opts?.includeAllProviders === true) params.set('all', '1');
+  const query = params.size > 0 ? `?${params.toString()}` : '';
   const res = await fetch(`/api/preflight${query}`);
   if (!res.ok) {
     throw new Error('Failed to fetch preflight checks');

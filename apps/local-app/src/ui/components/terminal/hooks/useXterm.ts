@@ -3,6 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import type { Socket } from 'socket.io-client';
 import { termLog } from '@/ui/lib/debug';
+import { toast } from '@/ui/hooks/use-toast';
 import { isTerminalInternalSequence, supportsWheelMouseTracking } from '../xterm-utils';
 import {
   DEFAULT_TERMINAL_SCROLLBACK,
@@ -138,6 +139,39 @@ export function useXterm(
     terminal.loadAddon(fitAddon);
 
     terminal.open(terminalRef.current);
+
+    // OSC 52 clipboard relay. Inner apps (e.g. Claude TUI) emit ESC]52;c;<base64>BEL
+    // to set the system clipboard. tmux is configured with `set-clipboard external`,
+    // so it forwards these unchanged to xterm.js. Register a handler that decodes
+    // and writes to the browser clipboard via the async Clipboard API.
+    terminal.parser.registerOscHandler(52, (data: string) => {
+      const semi = data.indexOf(';');
+      if (semi < 0) return false;
+      const payload = data.slice(semi + 1);
+      // "?" is a clipboard read query — refuse silently for security.
+      if (payload === '?') return true;
+      try {
+        const text =
+          typeof atob === 'function'
+            ? atob(payload)
+            : Buffer.from(payload, 'base64').toString('utf-8');
+        if (text && navigator.clipboard?.writeText) {
+          void navigator.clipboard
+            .writeText(text)
+            .then(() => {
+              toast({
+                title: 'Copied to clipboard',
+                description: `${text.length} character${text.length === 1 ? '' : 's'} from the terminal`,
+              });
+            })
+            .catch(() => {});
+        }
+      } catch {
+        // malformed base64 — ignore
+      }
+      return true;
+    });
+
     // Attach a custom wheel handler that respects TUI mouse tracking and dampens scrolling
     terminal.attachCustomWheelEventHandler((event) => {
       // When the TUI has mouse-tracking enabled, let xterm.js forward the wheel event

@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { ModuleRef } from '@nestjs/core';
 import {
   SubscriberExecutorService,
   type SubscriberExecutionResult,
@@ -35,6 +36,8 @@ describe('SubscriberExecutorService', () => {
   >;
   let mockEventEmitter: jest.Mocked<Pick<EventEmitter2, 'onAny' | 'offAny'>>;
   let mockScheduler: jest.Mocked<Pick<AutomationSchedulerService, 'schedule'>>;
+  let mockTeamsService: { listTeamsByAgent: jest.Mock };
+  let mockModuleRef: { get: jest.Mock };
 
   const createMockPayload = (
     overrides: Partial<TerminalWatcherTriggeredEventPayload> = {},
@@ -145,6 +148,14 @@ describe('SubscriberExecutorService', () => {
       recordHandledFail: jest.fn().mockResolvedValue({ id: 'handler-2' }),
     };
 
+    mockTeamsService = {
+      listTeamsByAgent: jest.fn().mockResolvedValue([]),
+    };
+
+    mockModuleRef = {
+      get: jest.fn().mockReturnValue(mockTeamsService),
+    };
+
     // Mock getEventMetadata to return null by default (no eventId)
     jest.spyOn(eventsService, 'getEventMetadata').mockReturnValue(null);
 
@@ -186,6 +197,10 @@ describe('SubscriberExecutorService', () => {
         {
           provide: AutomationSchedulerService,
           useValue: mockScheduler,
+        },
+        {
+          provide: ModuleRef,
+          useValue: mockModuleRef,
         },
       ],
     }).compile();
@@ -1388,6 +1403,7 @@ describe('SubscriberExecutorService', () => {
         mockEventLogService as unknown as EventLogService,
         mockEventEmitter as unknown as EventEmitter2,
         realScheduler,
+        mockModuleRef as unknown as ModuleRef,
       );
 
       const mockExecute = jest.fn().mockResolvedValue({ success: true });
@@ -1495,18 +1511,24 @@ describe('SubscriberExecutorService', () => {
 
   describe('resolveInputs', () => {
     describe('event_field source', () => {
-      it('should extract top-level field from payload', () => {
+      it('should extract top-level field from payload', async () => {
         const inputMappings: Record<string, ActionInput> = {
           text: { source: 'event_field', eventField: 'agentName' },
         };
         const payload = createMockPayload({ agentName: 'Test Agent' });
 
-        const result = service.resolveInputs(inputMappings, payload);
+        const result = await service.resolveInputs(
+          inputMappings,
+          payload,
+          undefined,
+          'other_action',
+          'sub-1',
+        );
 
         expect(result.text).toBe('Test Agent');
       });
 
-      it('should extract nested field using dot notation', () => {
+      it('should extract nested field using dot notation', async () => {
         const inputMappings: Record<string, ActionInput> = {
           message: { source: 'event_field', eventField: 'nested.value' },
         };
@@ -1515,104 +1537,158 @@ describe('SubscriberExecutorService', () => {
         };
         (payload as Record<string, unknown>).nested = { value: 'nested-message' };
 
-        const result = service.resolveInputs(inputMappings, payload);
+        const result = await service.resolveInputs(
+          inputMappings,
+          payload,
+          undefined,
+          'other_action',
+          'sub-1',
+        );
 
         expect(result.message).toBe('nested-message');
       });
 
-      it('should return undefined for missing field', () => {
+      it('should return undefined for missing field', async () => {
         const inputMappings: Record<string, ActionInput> = {
           text: { source: 'event_field', eventField: 'nonExistent' },
         };
         const payload = createMockPayload();
 
-        const result = service.resolveInputs(inputMappings, payload);
+        const result = await service.resolveInputs(
+          inputMappings,
+          payload,
+          undefined,
+          'other_action',
+          'sub-1',
+        );
 
         expect(result.text).toBeUndefined();
       });
 
-      it('should return undefined when eventField is not specified', () => {
+      it('should return undefined when eventField is not specified', async () => {
         const inputMappings: Record<string, ActionInput> = {
           text: { source: 'event_field' },
         };
         const payload = createMockPayload();
 
-        const result = service.resolveInputs(inputMappings, payload);
+        const result = await service.resolveInputs(
+          inputMappings,
+          payload,
+          undefined,
+          'other_action',
+          'sub-1',
+        );
 
         expect(result.text).toBeUndefined();
       });
 
-      it('should extract numeric values', () => {
+      it('should extract numeric values', async () => {
         const inputMappings: Record<string, ActionInput> = {
           count: { source: 'event_field', eventField: 'triggerCount' },
         };
         const payload = createMockPayload({ triggerCount: 42 });
 
-        const result = service.resolveInputs(inputMappings, payload);
+        const result = await service.resolveInputs(
+          inputMappings,
+          payload,
+          undefined,
+          'other_action',
+          'sub-1',
+        );
 
         expect(result.count).toBe(42);
       });
 
-      it('should handle null field values', () => {
+      it('should handle null field values', async () => {
         const inputMappings: Record<string, ActionInput> = {
           agent: { source: 'event_field', eventField: 'agentName' },
         };
         const payload = createMockPayload({ agentName: null });
 
-        const result = service.resolveInputs(inputMappings, payload);
+        const result = await service.resolveInputs(
+          inputMappings,
+          payload,
+          undefined,
+          'other_action',
+          'sub-1',
+        );
 
         expect(result.agent).toBeNull();
       });
     });
 
     describe('custom source', () => {
-      it('should use customValue directly', () => {
+      it('should use customValue directly', async () => {
         const inputMappings: Record<string, ActionInput> = {
           text: { source: 'custom', customValue: 'Hello World' },
         };
         const payload = createMockPayload();
 
-        const result = service.resolveInputs(inputMappings, payload);
+        const result = await service.resolveInputs(
+          inputMappings,
+          payload,
+          undefined,
+          'other_action',
+          'sub-1',
+        );
 
         expect(result.text).toBe('Hello World');
       });
 
-      it('should return undefined when customValue is not specified', () => {
+      it('should return undefined when customValue is not specified', async () => {
         const inputMappings: Record<string, ActionInput> = {
           text: { source: 'custom' },
         };
         const payload = createMockPayload();
 
-        const result = service.resolveInputs(inputMappings, payload);
+        const result = await service.resolveInputs(
+          inputMappings,
+          payload,
+          undefined,
+          'other_action',
+          'sub-1',
+        );
 
         expect(result.text).toBeUndefined();
       });
 
-      it('should handle empty string customValue', () => {
+      it('should handle empty string customValue', async () => {
         const inputMappings: Record<string, ActionInput> = {
           text: { source: 'custom', customValue: '' },
         };
         const payload = createMockPayload();
 
-        const result = service.resolveInputs(inputMappings, payload);
+        const result = await service.resolveInputs(
+          inputMappings,
+          payload,
+          undefined,
+          'other_action',
+          'sub-1',
+        );
 
         expect(result.text).toBe('');
       });
     });
 
     describe('template interpolation', () => {
-      it('should replace {{field}} with payload value', () => {
+      it('should replace {{field}} with payload value', async () => {
         const inputMappings: Record<string, ActionInput> = {
           text: { source: 'custom', customValue: 'Hello {{agentName}}!' },
         };
         const payload = createMockPayload({ agentName: 'CoderAgent' });
 
-        const result = service.resolveInputs(inputMappings, payload);
+        const result = await service.resolveInputs(
+          inputMappings,
+          payload,
+          undefined,
+          'other_action',
+          'sub-1',
+        );
 
         expect(result.text).toBe('Hello CoderAgent!');
       });
 
-      it('should handle multiple variables in one string', () => {
+      it('should handle multiple variables in one string', async () => {
         const inputMappings: Record<string, ActionInput> = {
           text: {
             source: 'custom',
@@ -1624,68 +1700,115 @@ describe('SubscriberExecutorService', () => {
           sessionId: 'sess-123',
         });
 
-        const result = service.resolveInputs(inputMappings, payload);
+        const result = await service.resolveInputs(
+          inputMappings,
+          payload,
+          undefined,
+          'other_action',
+          'sub-1',
+        );
 
         expect(result.text).toBe('Agent TestAgent in session sess-123');
       });
 
-      it('should access nested fields via dot notation', () => {
+      it('should access nested fields via dot notation', async () => {
         const inputMappings: Record<string, ActionInput> = {
           text: { source: 'custom', customValue: 'Value: {{nested.value}}' },
         };
         const payload = createMockPayload();
         (payload as Record<string, unknown>).nested = { value: 'deep' };
 
-        const result = service.resolveInputs(inputMappings, payload);
+        const result = await service.resolveInputs(
+          inputMappings,
+          payload,
+          undefined,
+          'other_action',
+          'sub-1',
+        );
 
         expect(result.text).toBe('Value: deep');
       });
 
-      it('should keep unknown variables as-is', () => {
+      it('should keep unknown variables as-is', async () => {
         const inputMappings: Record<string, ActionInput> = {
           text: { source: 'custom', customValue: 'Hello {{unknownField}}!' },
         };
         const payload = createMockPayload();
 
-        const result = service.resolveInputs(inputMappings, payload);
+        const result = await service.resolveInputs(
+          inputMappings,
+          payload,
+          undefined,
+          'other_action',
+          'sub-1',
+        );
 
         expect(result.text).toBe('Hello {{unknownField}}!');
       });
 
-      it('should convert null values to empty string', () => {
+      it('should render unknown variables as empty string on send_agent_message.text (Handlebars path)', async () => {
+        const result = await service.resolveInputs(
+          { text: { source: 'custom', customValue: 'Hello {{unknownField}}!' } },
+          createMockPayload(),
+          undefined,
+          'send_agent_message',
+          'sub-1',
+        );
+        expect(result.text).toBe('Hello !');
+      });
+
+      it('should convert null values to empty string', async () => {
         const inputMappings: Record<string, ActionInput> = {
           text: { source: 'custom', customValue: 'Value: {{agentName}}' },
         };
         const payload = createMockPayload({ agentName: null });
 
-        const result = service.resolveInputs(inputMappings, payload);
+        const result = await service.resolveInputs(
+          inputMappings,
+          payload,
+          undefined,
+          'other_action',
+          'sub-1',
+        );
 
         expect(result.text).toBe('Value: ');
       });
 
-      it('should stringify numeric values', () => {
+      it('should stringify numeric values', async () => {
         const inputMappings: Record<string, ActionInput> = {
           text: { source: 'custom', customValue: 'Count: {{triggerCount}}' },
         };
         const payload = createMockPayload({ triggerCount: 42 });
 
-        const result = service.resolveInputs(inputMappings, payload);
+        const result = await service.resolveInputs(
+          inputMappings,
+          payload,
+          undefined,
+          'other_action',
+          'sub-1',
+        );
 
         expect(result.text).toBe('Count: 42');
       });
 
-      it('should handle string with no template variables', () => {
+      it('should handle string with no template variables', async () => {
         const inputMappings: Record<string, ActionInput> = {
           text: { source: 'custom', customValue: 'Static text only' },
         };
         const payload = createMockPayload();
 
-        const result = service.resolveInputs(inputMappings, payload);
+        const result = await service.resolveInputs(
+          inputMappings,
+          payload,
+          undefined,
+          'other_action',
+          'sub-1',
+        );
 
         expect(result.text).toBe('Static text only');
       });
 
-      it('should allow interpolation from merged templateVars (payload + envelope fields)', () => {
+      it('should allow interpolation from merged templateVars (payload + envelope fields)', async () => {
         const inputMappings: Record<string, ActionInput> = {
           text: { source: 'custom', customValue: 'P={{projectId}} E={{eventName}}' },
           proj: { source: 'event_field', eventField: 'projectId' },
@@ -1693,7 +1816,13 @@ describe('SubscriberExecutorService', () => {
         const payload = { agentName: 'Test Agent' } as unknown as SubscribableEventPayload;
         const templateVars = { ...payload, projectId: 'proj-1', eventName: 'evt-1' };
 
-        const result = service.resolveInputs(inputMappings, payload, templateVars);
+        const result = await service.resolveInputs(
+          inputMappings,
+          payload,
+          templateVars,
+          'other_action',
+          'sub-1',
+        );
 
         expect(result.text).toBe('P=proj-1 E=evt-1');
         expect(result.proj).toBe('proj-1');
@@ -1701,7 +1830,7 @@ describe('SubscriberExecutorService', () => {
     });
 
     describe('mixed sources', () => {
-      it('should resolve multiple inputs with different sources', () => {
+      it('should resolve multiple inputs with different sources', async () => {
         const inputMappings: Record<string, ActionInput> = {
           agentName: { source: 'event_field', eventField: 'agentName' },
           customMessage: { source: 'custom', customValue: 'Static message' },
@@ -1712,25 +1841,37 @@ describe('SubscriberExecutorService', () => {
           sessionId: 'session-123',
         });
 
-        const result = service.resolveInputs(inputMappings, payload);
+        const result = await service.resolveInputs(
+          inputMappings,
+          payload,
+          undefined,
+          'other_action',
+          'sub-1',
+        );
 
         expect(result.agentName).toBe('Test Agent');
         expect(result.customMessage).toBe('Static message');
         expect(result.sessionId).toBe('session-123');
       });
 
-      it('should handle empty input mappings', () => {
+      it('should handle empty input mappings', async () => {
         const inputMappings: Record<string, ActionInput> = {};
         const payload = createMockPayload();
 
-        const result = service.resolveInputs(inputMappings, payload);
+        const result = await service.resolveInputs(
+          inputMappings,
+          payload,
+          undefined,
+          'other_action',
+          'sub-1',
+        );
 
         expect(result).toEqual({});
       });
     });
 
     describe('real subscriber scenario', () => {
-      it('should resolve inputs matching actual subscriber actionInputs structure', () => {
+      it('should resolve inputs matching actual subscriber actionInputs structure', async () => {
         // Simulate a real subscriber's actionInputs for SendAgentMessage
         const subscriber = createMockSubscriber({
           actionInputs: {
@@ -1741,14 +1882,20 @@ describe('SubscriberExecutorService', () => {
         });
         const payload = createMockPayload({ triggerCount: 1000 });
 
-        const result = service.resolveInputs(subscriber.actionInputs, payload);
+        const result = await service.resolveInputs(
+          subscriber.actionInputs,
+          payload,
+          undefined,
+          'other_action',
+          'sub-1',
+        );
 
         expect(result.text).toBe('/compact');
         expect(result.submitKey).toBe('Enter');
         expect(result.delayMs).toBe(1000);
       });
 
-      it('should resolve viewport snippet for dynamic messages', () => {
+      it('should resolve viewport snippet for dynamic messages', async () => {
         const inputMappings: Record<string, ActionInput> = {
           text: { source: 'event_field', eventField: 'viewportSnippet' },
         };
@@ -1756,9 +1903,198 @@ describe('SubscriberExecutorService', () => {
           viewportSnippet: 'Error: Context window full. Please compact.',
         });
 
-        const result = service.resolveInputs(inputMappings, payload);
+        const result = await service.resolveInputs(
+          inputMappings,
+          payload,
+          undefined,
+          'other_action',
+          'sub-1',
+        );
 
         expect(result.text).toBe('Error: Context window full. Please compact.');
+      });
+    });
+
+    describe('scoped Handlebars rendering (send_agent_message.text)', () => {
+      const resolveMessage = (
+        template: string,
+        payloadOverrides: Record<string, unknown> = {},
+        teams: Array<{ name: string; teamLeadAgentId: string | null }> = [],
+      ) => {
+        const inputMappings: Record<string, ActionInput> = {
+          text: { source: 'custom', customValue: template },
+        };
+        const payload = createMockPayload(payloadOverrides);
+        const templateVars = {
+          ...(payload as Record<string, unknown>),
+          eventName: 'test.event',
+          projectId: 'project-789',
+          agentId: payload.agentId ?? null,
+          sessionId: payload.sessionId,
+          sessionIdShort: payload.sessionId?.slice(0, 8) ?? '',
+          occurredAt: '2025-01-01T00:00:00.000Z',
+          eventId: undefined,
+        };
+        mockTeamsService.listTeamsByAgent.mockResolvedValue(
+          teams.map((t) => ({
+            id: `team-${t.name}`,
+            name: t.name,
+            teamLeadAgentId: t.teamLeadAgentId,
+            projectId: 'project-789',
+            description: null,
+            createdAt: '2025-01-01T00:00:00.000Z',
+            updatedAt: '2025-01-01T00:00:00.000Z',
+          })),
+        );
+        return service.resolveInputs(
+          inputMappings,
+          payload,
+          templateVars,
+          'send_agent_message',
+          'sub-1',
+        );
+      };
+
+      it('{{#if is_team_lead}} renders content when agent is team lead', async () => {
+        const result = await resolveMessage(
+          '{{#if is_team_lead}}lead-only line{{/if}}',
+          { agentId: 'agent-456' },
+          [{ name: 'Alpha', teamLeadAgentId: 'agent-456' }],
+        );
+        expect(result.text).toBe('lead-only line');
+      });
+
+      it('{{#if is_team_lead}} renders empty when agent is not team lead', async () => {
+        const result = await resolveMessage(
+          '{{#if is_team_lead}}lead-only line{{/if}}',
+          { agentId: 'agent-456' },
+          [{ name: 'Alpha', teamLeadAgentId: 'other-agent' }],
+        );
+        expect(result.text).toBe('');
+      });
+
+      it('{{#unless is_team_lead}} renders inverse correctly', async () => {
+        const result = await resolveMessage(
+          '{{#unless is_team_lead}}member-only{{/unless}}',
+          { agentId: 'agent-456' },
+          [{ name: 'Alpha', teamLeadAgentId: 'agent-456' }],
+        );
+        expect(result.text).toBe('');
+      });
+
+      it('{{team_name}} renders empty with 0 teams', async () => {
+        const result = await resolveMessage('Team: {{team_name}}', { agentId: 'agent-456' }, []);
+        expect(result.text).toBe('Team: ');
+      });
+
+      it('{{team_name}} renders single team name', async () => {
+        const result = await resolveMessage('Team: {{team_name}}', { agentId: 'agent-456' }, [
+          { name: 'Alpha', teamLeadAgentId: null },
+        ]);
+        expect(result.text).toBe('Team: Alpha');
+      });
+
+      it('{{team_name}} renders empty with 2+ teams (ambiguous)', async () => {
+        const result = await resolveMessage('Team: {{team_name}}', { agentId: 'agent-456' }, [
+          { name: 'Alpha', teamLeadAgentId: null },
+          { name: 'Beta', teamLeadAgentId: null },
+        ]);
+        expect(result.text).toBe('Team: ');
+      });
+
+      it('{{team_names}} renders comma-joined sorted team names', async () => {
+        const result = await resolveMessage('Teams: {{team_names}}', { agentId: 'agent-456' }, [
+          { name: 'Beta', teamLeadAgentId: null },
+          { name: 'Alpha', teamLeadAgentId: null },
+        ]);
+        expect(result.text).toBe('Teams: Alpha, Beta');
+      });
+
+      it('legacy single-brace {team_name} rewrites to double-brace', async () => {
+        const result = await resolveMessage('Team: {team_name}', { agentId: 'agent-456' }, [
+          { name: 'Alpha', teamLeadAgentId: null },
+        ]);
+        expect(result.text).toBe('Team: Alpha');
+      });
+
+      it('existing camelCase tokens render through Handlebars path', async () => {
+        const result = await resolveMessage('{{sessionIdShort}} {{projectId}} {{eventName}}', {
+          agentId: 'agent-456',
+        });
+        expect(result.text).toBe('session- project-789 test.event');
+      });
+
+      it('Handlebars and regex produce identical output for simple templates', async () => {
+        const template = 'Agent {{agentName}} in session {{sessionId}}';
+        const payload = createMockPayload({ agentName: 'TestAgent', sessionId: 'sess-123' });
+        const templateVars = {
+          ...(payload as Record<string, unknown>),
+          eventName: 'test.event',
+          projectId: 'project-789',
+        };
+        const handlebarsResult = await service.resolveInputs(
+          { text: { source: 'custom', customValue: template } },
+          payload,
+          templateVars,
+          'send_agent_message',
+          'sub-1',
+        );
+        const regexResult = await service.resolveInputs(
+          { text: { source: 'custom', customValue: template } },
+          payload,
+          templateVars,
+          'other_action',
+          'sub-1',
+        );
+        expect(handlebarsResult.text).toBe(regexResult.text);
+      });
+
+      it('restart_agent.agentName is NOT processed by Handlebars', async () => {
+        const inputMappings: Record<string, ActionInput> = {
+          agentName: { source: 'custom', customValue: '{{#if foo}}broken{{/if}}' },
+        };
+        const payload = createMockPayload();
+
+        const result = await service.resolveInputs(
+          inputMappings,
+          payload,
+          undefined,
+          'restart_agent',
+          'sub-1',
+        );
+
+        expect(result.agentName).toBe('{{#if foo}}broken{{/if}}');
+      });
+
+      it('malformed Handlebars template on send_agent_message.text aborts with error', async () => {
+        const subscriber = createMockSubscriber({
+          actionType: 'send_agent_message',
+          actionInputs: {
+            text: { source: 'custom', customValue: '{{#if foo}}no-close' },
+          },
+        });
+        const payload = createMockPayload();
+        mockStorage.getSubscriber.mockResolvedValue(subscriber);
+        mockStorage.getAgent.mockResolvedValue({
+          id: 'agent-456',
+          projectId: 'project-789',
+          profileId: 'profile-1',
+          name: 'Test Agent',
+          description: null,
+          createdAt: '2025-01-01T00:00:00.000Z',
+          updatedAt: '2025-01-01T00:00:00.000Z',
+        });
+
+        const result = await service.executeSubscriber(subscriber, 'test.event', payload);
+
+        expect(result.success).toBe(false);
+        expect(result.error).toBeDefined();
+        expect(mockMessagePoolService.enqueue).not.toHaveBeenCalled();
+      });
+
+      it('send_agent_message.text without agentId renders without team context', async () => {
+        const result = await resolveMessage('{{sessionIdShort}} {{team_name}}', { agentId: null });
+        expect(result.text).toBe('session- ');
       });
     });
   });

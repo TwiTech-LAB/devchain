@@ -1,4 +1,5 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Inject, forwardRef } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { createLogger } from '../../../common/logging/logger';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
@@ -15,6 +16,11 @@ import { isSubscribableEvent, getSubscribableEvents } from '../events/event-fiel
 import { EventLogService } from '../../events/services/event-log.service';
 import { getEventMetadata } from '../../events/services/events.service';
 import { AutomationSchedulerService, type ScheduledTask } from './automation-scheduler.service';
+import { renderTemplate } from '../../../common/template/handlebars-renderer';
+import { loadAgentRecipientContext } from '../../../common/template/agent-recipient-context';
+import { TeamsService } from '../../teams/services/teams.service';
+
+const LEGACY_VARS = ['team_name', 'team_names', 'is_team_lead'];
 
 /**
  * Result of a single subscriber execution.
@@ -96,6 +102,8 @@ export class SubscriberExecutorService implements OnModuleInit, OnModuleDestroy 
   /** Event handler reference for cleanup */
   private eventHandler: ((eventName: string | string[], ...args: unknown[]) => void) | null = null;
 
+  private teamsServiceRef?: TeamsService;
+
   constructor(
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
     private readonly tmuxService: TmuxService,
@@ -107,7 +115,18 @@ export class SubscriberExecutorService implements OnModuleInit, OnModuleDestroy 
     private readonly eventLogService: EventLogService,
     private readonly eventEmitter: EventEmitter2,
     private readonly scheduler: AutomationSchedulerService,
+    private readonly moduleRef: ModuleRef,
   ) {}
+
+  private getTeamsService(): TeamsService {
+    if (!this.teamsServiceRef) {
+      this.teamsServiceRef = this.moduleRef.get(TeamsService, { strict: false });
+      if (!this.teamsServiceRef) {
+        throw new Error('TeamsService is not available in the current module context');
+      }
+    }
+    return this.teamsServiceRef;
+  }
 
   async onModuleInit(): Promise<void> {
     // Register onAny listener to capture all events with their names
@@ -630,33 +649,55 @@ export class SubscriberExecutorService implements OnModuleInit, OnModuleDestroy 
    * Resolve action inputs from subscriber input mappings.
    * Maps subscriber input configurations to actual values from the event payload.
    *
-   * For `source='custom'` string values, template variables like `{{field}}`
-   * are interpolated using values from the payload.
+   * For `send_agent_message.text` with `source='custom'`, uses Handlebars rendering
+   * with team context (block helpers like {{#if is_team_lead}}).
+   * For all other custom string inputs, uses regex-based interpolation.
    *
    * @param inputMappings - The subscriber's action input mappings
    * @param payload - The event payload to extract values from
-   * @param templateVars - Optional merged view for event_field + template interpolation
+   * @param templateVars - Merged view for event_field + template interpolation
+   * @param actionType - The subscriber's action type (routes Handlebars vs regex)
+   * @param subscriberId - The subscriber ID (for error logging)
    * @returns Resolved input values ready for action execution
    */
-  resolveInputs(
+  async resolveInputs(
     inputMappings: Record<string, ActionInput>,
     payload: SubscribableEventPayload,
-    templateVars?: Record<string, unknown>,
-  ): Record<string, unknown> {
+    templateVars: Record<string, unknown> | undefined,
+    actionType: string,
+    subscriberId: string,
+  ): Promise<Record<string, unknown>> {
     const resolved: Record<string, unknown> = {};
     const context = templateVars ?? (payload as Record<string, unknown>);
 
     for (const [inputName, mapping] of Object.entries(inputMappings)) {
       if (mapping.source === 'event_field') {
-        // Get value from event payload using the eventField path
         resolved[inputName] = mapping.eventField
           ? this.getNestedValue(context, mapping.eventField)
           : undefined;
       } else {
-        // Use custom value - interpolate template variables for strings
         const customValue = mapping.customValue;
         if (typeof customValue === 'string') {
-          resolved[inputName] = this.interpolateTemplate(customValue, context);
+          if (actionType === 'send_agent_message' && inputName === 'text') {
+            try {
+              let teamContext: Record<string, unknown> = {};
+              if (payload.agentId) {
+                teamContext = {
+                  ...(await loadAgentRecipientContext(this.getTeamsService(), payload.agentId)),
+                };
+              }
+              const renderContext = { ...context, ...teamContext };
+              resolved[inputName] = renderTemplate(customValue, renderContext, [...LEGACY_VARS]);
+            } catch (error) {
+              this.logger.error(
+                { subscriberId, actionType, inputName, error: String(error) },
+                'Handlebars template rendering failed; aborting subscriber action',
+              );
+              throw error;
+            }
+          } else {
+            resolved[inputName] = this.interpolateTemplate(customValue, context);
+          }
         } else {
           resolved[inputName] = customValue;
         }
@@ -776,7 +817,25 @@ export class SubscriberExecutorService implements OnModuleInit, OnModuleDestroy 
     };
 
     // 4. Resolve action inputs from subscriber mappings (use merged templateVars)
-    const resolvedInputs = this.resolveInputs(subscriber.actionInputs, payload, templateVars);
+    let resolvedInputs: Record<string, unknown>;
+    try {
+      resolvedInputs = await this.resolveInputs(
+        subscriber.actionInputs,
+        payload,
+        templateVars,
+        subscriber.actionType,
+        subscriber.id,
+      );
+    } catch (error) {
+      return {
+        subscriberId: subscriber.id,
+        subscriberName: subscriber.name,
+        actionType: subscriber.actionType,
+        success: false,
+        error: String(error),
+        durationMs: Date.now() - startTime,
+      };
+    }
     if (subscriber.actionType === 'restart_agent' && 'agentId' in resolvedInputs) {
       delete resolvedInputs.agentId;
       this.logger.debug(

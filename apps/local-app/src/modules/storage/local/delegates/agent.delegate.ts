@@ -187,39 +187,71 @@ export class AgentStorageDelegate extends BaseStorageDelegate {
   }
 
   async deleteAgent(id: string): Promise<void> {
-    const { agents, sessions } = await import('../../db/schema');
-    const { eq } = await import('drizzle-orm');
+    const { agents, sessions, teamMembers, teams } = await import('../../db/schema');
+    const { eq, inArray, sql } = await import('drizzle-orm');
 
-    // Check for related sessions
-    const relatedSessions = await this.db.select().from(sessions).where(eq(sessions.agentId, id));
+    await this.db.transaction(async (tx) => {
+      const relatedSessions = await tx.select().from(sessions).where(eq(sessions.agentId, id));
+      const runningSessions = relatedSessions.filter((s) => s.status === 'running');
 
-    // Check if there are any running sessions
-    const runningSessions = relatedSessions.filter((s) => s.status === 'running');
-
-    if (runningSessions.length > 0) {
-      throw new ConflictError(
-        `Cannot delete agent: ${runningSessions.length} active session(s) are still running. Please terminate the active sessions first.`,
-      );
-    }
-
-    // Automatically delete stopped/failed sessions
-    const completedSessions = relatedSessions.filter(
-      (s) => s.status === 'stopped' || s.status === 'failed',
-    );
-
-    if (completedSessions.length > 0) {
-      logger.info(
-        { agentId: id, count: completedSessions.length },
-        'Auto-deleting completed sessions for agent',
-      );
-
-      for (const session of completedSessions) {
-        await this.db.delete(sessions).where(eq(sessions.id, session.id));
+      if (runningSessions.length > 0) {
+        throw new ConflictError(
+          `Cannot delete agent: ${runningSessions.length} active session(s) are still running. Please terminate the active sessions first.`,
+        );
       }
-    }
 
-    await this.db.delete(agents).where(eq(agents.id, id));
-    logger.info({ agentId: id, deletedSessions: completedSessions.length }, 'Deleted agent');
+      const memberTeams = await tx
+        .select({ teamId: teamMembers.teamId })
+        .from(teamMembers)
+        .where(eq(teamMembers.agentId, id));
+
+      const teamIdsToDisband: string[] = [];
+
+      for (const memberTeam of memberTeams) {
+        const countResult = await tx
+          .select({ count: sql<number>`count(*)` })
+          .from(teamMembers)
+          .where(eq(teamMembers.teamId, memberTeam.teamId));
+
+        if (Number(countResult[0]?.count ?? 0) <= 1) {
+          teamIdsToDisband.push(memberTeam.teamId);
+        }
+      }
+
+      const uniqueTeamIdsToDisband = [...new Set(teamIdsToDisband)];
+      if (uniqueTeamIdsToDisband.length > 0) {
+        logger.info(
+          { agentId: id, teamIds: uniqueTeamIdsToDisband },
+          'Disbanding teams that would become empty after agent deletion',
+        );
+        await tx.delete(teams).where(inArray(teams.id, uniqueTeamIdsToDisband));
+      }
+
+      const completedSessions = relatedSessions.filter(
+        (s) => s.status === 'stopped' || s.status === 'failed',
+      );
+
+      if (completedSessions.length > 0) {
+        logger.info(
+          { agentId: id, count: completedSessions.length },
+          'Auto-deleting completed sessions for agent',
+        );
+
+        for (const session of completedSessions) {
+          await tx.delete(sessions).where(eq(sessions.id, session.id));
+        }
+      }
+
+      await tx.delete(agents).where(eq(agents.id, id));
+      logger.info(
+        {
+          agentId: id,
+          deletedSessions: completedSessions.length,
+          disbandedTeams: uniqueTeamIdsToDisband.length,
+        },
+        'Deleted agent',
+      );
+    });
   }
 
   private mapAgentRow(row: {

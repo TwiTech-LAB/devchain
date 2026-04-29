@@ -34,6 +34,7 @@ jest.mock('@xterm/xterm', () => {
         attachCustomWheelEventHandler: jest.fn(),
         onScroll: jest.fn().mockReturnValue({ dispose: jest.fn() }),
         onData: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+        parser: { registerOscHandler: jest.fn() },
         options: { scrollback: 10000 },
         modes: { mouseTrackingMode: 'none' },
         buffer: {
@@ -548,5 +549,13 @@ describe('ChatTerminal', () => {
     });
 
     jest.useRealTimers();
+  });
+
+  it('registers OSC 52 clipboard handler on terminal mount', async () => {
+    await renderTerminal();
+
+    const { Terminal: TerminalMock } = jest.requireMock('@xterm/xterm');
+    const instance = (TerminalMock as jest.Mock).mock.results[0].value;
+    expect(instance.parser.registerOscHandler).toHaveBeenCalledWith(52, expect.any(Function));
   });
 });

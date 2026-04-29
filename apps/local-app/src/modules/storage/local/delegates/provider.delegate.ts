@@ -8,6 +8,7 @@ import type {
 } from '../../models/domain.models';
 import { NotFoundError } from '../../../../common/errors/error-types';
 import { createLogger } from '../../../../common/logging/logger';
+import { normalizeEnvForStorage, parseProviderEnv } from '../helpers/storage-helpers';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 
 const logger = createLogger('ProviderStorageDelegate');
@@ -37,6 +38,17 @@ export class ProviderStorageDelegate extends BaseStorageDelegate {
           ? 85
           : null;
 
+    let env: Record<string, string> | null =
+      data.env && Object.keys(data.env).length > 0 ? data.env : null;
+
+    // Default CLAUDE_CODE_NO_FLICKER='1' for Claude providers if not explicitly set
+    if (
+      data.name.toLowerCase() === 'claude' &&
+      (env === null || !('CLAUDE_CODE_NO_FLICKER' in env))
+    ) {
+      env = { ...(env ?? {}), CLAUDE_CODE_NO_FLICKER: '1' };
+    }
+
     const provider: Provider = {
       id: randomUUID(),
       name: data.name,
@@ -47,6 +59,7 @@ export class ProviderStorageDelegate extends BaseStorageDelegate {
       autoCompactThreshold,
       autoCompactThreshold1m: data.autoCompactThreshold1m ?? null,
       oneMillionContextEnabled: data.oneMillionContextEnabled ?? false,
+      env,
       createdAt: now,
       updatedAt: now,
     };
@@ -61,6 +74,7 @@ export class ProviderStorageDelegate extends BaseStorageDelegate {
       autoCompactThreshold: provider.autoCompactThreshold,
       autoCompactThreshold1m: provider.autoCompactThreshold1m,
       oneMillionContextEnabled: provider.oneMillionContextEnabled,
+      env: normalizeEnvForStorage(provider.env),
       createdAt: provider.createdAt,
       updatedAt: provider.updatedAt,
     });
@@ -76,7 +90,8 @@ export class ProviderStorageDelegate extends BaseStorageDelegate {
     if (!result[0]) {
       throw new NotFoundError('Provider', id);
     }
-    return result[0] as Provider;
+    const row = result[0];
+    return { ...row, env: parseProviderEnv(row.env, row.id) } as Provider;
   }
 
   async listProviders(options: ListOptions = {}): Promise<ListResult<Provider>> {
@@ -84,10 +99,14 @@ export class ProviderStorageDelegate extends BaseStorageDelegate {
     const limit = options.limit || 100;
     const offset = options.offset || 0;
 
-    const items = await this.db.select().from(providers).limit(limit).offset(offset);
+    const rows = await this.db.select().from(providers).limit(limit).offset(offset);
+    const items = rows.map((row) => ({
+      ...row,
+      env: parseProviderEnv(row.env, row.id),
+    })) as Provider[];
 
     return {
-      items: items as Provider[],
+      items,
       total: items.length,
       limit,
       offset,
@@ -102,9 +121,9 @@ export class ProviderStorageDelegate extends BaseStorageDelegate {
     const { providers } = await import('../../db/schema');
     const { inArray } = await import('drizzle-orm');
 
-    const results = await this.db.select().from(providers).where(inArray(providers.id, ids));
+    const rows = await this.db.select().from(providers).where(inArray(providers.id, ids));
 
-    return results as Provider[];
+    return rows.map((row) => ({ ...row, env: parseProviderEnv(row.env, row.id) })) as Provider[];
   }
 
   async updateProvider(id: string, data: UpdateProvider): Promise<Provider> {
@@ -112,14 +131,21 @@ export class ProviderStorageDelegate extends BaseStorageDelegate {
     const { eq } = await import('drizzle-orm');
     const now = new Date().toISOString();
 
-    const payload = Object.fromEntries(
-      Object.entries({
-        ...data,
-        updatedAt: now,
-      }).filter(([, value]) => value !== undefined),
-    );
+    const updateData: Record<string, unknown> = { updatedAt: now };
+    if (data.name !== undefined) updateData.name = data.name;
+    if (data.binPath !== undefined) updateData.binPath = data.binPath;
+    if (data.mcpConfigured !== undefined) updateData.mcpConfigured = data.mcpConfigured;
+    if (data.mcpEndpoint !== undefined) updateData.mcpEndpoint = data.mcpEndpoint;
+    if (data.mcpRegisteredAt !== undefined) updateData.mcpRegisteredAt = data.mcpRegisteredAt;
+    if (data.autoCompactThreshold !== undefined)
+      updateData.autoCompactThreshold = data.autoCompactThreshold;
+    if (data.autoCompactThreshold1m !== undefined)
+      updateData.autoCompactThreshold1m = data.autoCompactThreshold1m;
+    if (data.oneMillionContextEnabled !== undefined)
+      updateData.oneMillionContextEnabled = data.oneMillionContextEnabled;
+    if (data.env !== undefined) updateData.env = normalizeEnvForStorage(data.env);
 
-    await this.db.update(providers).set(payload).where(eq(providers.id, id));
+    await this.db.update(providers).set(updateData).where(eq(providers.id, id));
 
     logger.info({ providerId: id }, 'Updated provider');
     return this.getProvider(id);

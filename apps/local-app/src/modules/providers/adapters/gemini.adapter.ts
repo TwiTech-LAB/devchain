@@ -66,13 +66,14 @@ export class GeminiAdapter implements ProviderAdapter {
       }
 
       // Parse format: "✓ alias: endpoint (transport) - status" or "✗ alias: ..."
-      const match = line.match(/[✓✗]?\s*(\S+):\s+(\S+)\s+\(([^)]+)\)/);
+      // Transport group is optional — Gemini CLI may omit it on some versions.
+      const match = line.match(/[✓✗]?\s*(\S+):\s+(\S+)(?:\s+\(([^)]+)\))?/);
       if (match) {
         const [, alias, endpoint, transport] = match;
         entries.push({
           alias,
           endpoint,
-          transport: transport.toUpperCase(),
+          transport: transport ? transport.toUpperCase() : undefined,
         });
       }
     }

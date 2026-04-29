@@ -59,6 +59,7 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
       profileId: data.profileId,
       providerId: data.providerId,
       name: data.name,
+      description: data.description ?? null,
       options: data.options ?? null,
       env: data.env ?? null,
       position,
@@ -71,6 +72,7 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
       profileId: config.profileId,
       providerId: config.providerId,
       name: config.name,
+      description: config.description,
       options: config.options,
       env: config.env ? JSON.stringify(config.env) : null,
       position: config.position,
@@ -89,6 +91,7 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
     profileId: string;
     providerId: string;
     name: string;
+    description?: string | null;
     options?: string | null;
     env?: Record<string, string>;
   }): Promise<CreateIfMissingResult> {
@@ -122,6 +125,7 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
           profileId: row.profileId,
           providerId: row.providerId,
           name: row.name,
+          description: row.description,
           options: row.options,
           env: parseProviderConfigEnv(row.env, row.id, row.profileId),
           position: row.position,
@@ -154,6 +158,7 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
           profileId: input.profileId,
           providerId: input.providerId,
           name: input.name,
+          description: input.description ?? null,
           options: input.options ?? null,
           env: input.env ? JSON.stringify(input.env) : null,
           position: nextPosition,
@@ -190,6 +195,7 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
             profileId: row.profileId,
             providerId: row.providerId,
             name: row.name,
+            description: row.description,
             options: row.options,
             env: parseProviderConfigEnv(row.env, row.id, row.profileId),
             position: row.position,
@@ -255,6 +261,7 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
       profileId: row.profileId,
       providerId: row.providerId,
       name: row.name,
+      description: row.description,
       options: row.options,
       env: parseProviderConfigEnv(row.env, row.id, row.profileId),
       position: row.position,
@@ -264,25 +271,31 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
   }
 
   async listProfileProviderConfigsByProfile(profileId: string): Promise<ProfileProviderConfig[]> {
-    const { profileProviderConfigs } = await import('../../db/schema');
+    const { profileProviderConfigs, providers } = await import('../../db/schema');
     const { eq, asc } = await import('drizzle-orm');
 
     const results = await this.db
-      .select()
+      .select({
+        config: profileProviderConfigs,
+        providerName: providers.name,
+      })
       .from(profileProviderConfigs)
+      .leftJoin(providers, eq(profileProviderConfigs.providerId, providers.id))
       .where(eq(profileProviderConfigs.profileId, profileId))
       .orderBy(asc(profileProviderConfigs.position), asc(profileProviderConfigs.id));
 
     return results.map((row) => ({
-      id: row.id,
-      profileId: row.profileId,
-      providerId: row.providerId,
-      name: row.name,
-      options: row.options,
-      env: parseProviderConfigEnv(row.env, row.id, row.profileId),
-      position: row.position,
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
+      id: row.config.id,
+      profileId: row.config.profileId,
+      providerId: row.config.providerId,
+      providerName: row.providerName ?? row.config.providerId,
+      name: row.config.name,
+      description: row.config.description,
+      options: row.config.options,
+      env: parseProviderConfigEnv(row.config.env, row.config.id, row.config.profileId),
+      position: row.config.position,
+      createdAt: row.config.createdAt,
+      updatedAt: row.config.updatedAt,
     }));
   }
 
@@ -304,6 +317,7 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
       profileId: row.profileId,
       providerId: row.providerId,
       name: row.name,
+      description: row.description,
       options: row.options,
       env: parseProviderConfigEnv(row.env, row.id, row.profileId),
       position: row.position,
@@ -322,6 +336,7 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
       profileId: row.profileId,
       providerId: row.providerId,
       name: row.name,
+      description: row.description,
       options: row.options,
       env: parseProviderConfigEnv(row.env, row.id, row.profileId),
       position: row.position,
@@ -345,6 +360,9 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
     }
     if (data.name !== undefined) {
       updateData.name = data.name;
+    }
+    if (data.description !== undefined) {
+      updateData.description = data.description;
     }
     if (data.options !== undefined) {
       updateData.options = data.options;

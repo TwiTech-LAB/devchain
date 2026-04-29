@@ -3,10 +3,14 @@ import { render, screen, fireEvent, waitFor, within } from '@testing-library/rea
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ProvidersPage } from './ProvidersPage';
 
+// Mutable so individual tests can override per-test project context
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let mockSelectedProject: { id: string; rootPath?: string } | null = null;
+
 jest.mock('@/ui/hooks/useProjectSelection', () => ({
   useSelectedProject: () => ({
-    selectedProjectId: null,
-    selectedProject: null,
+    selectedProjectId: mockSelectedProject?.id ?? null,
+    selectedProject: mockSelectedProject,
     projects: [],
     projectsLoading: false,
     projectsError: false,
@@ -99,13 +103,25 @@ describe('ProvidersPage - Provider Type presets and command previews', () => {
             json: async () => ({ items: [mockProvider], total: 1, limit: 100, offset: 0 }),
           });
         }
-        if (url === '/api/preflight') {
+        if (url.startsWith('/api/preflight')) {
           return Promise.resolve({
             ok: true,
             json: async () => ({
-              overall: 'pass',
+              overall: 'warn',
               checks: [],
-              providers: [],
+              providers: [
+                {
+                  id: 'p1',
+                  name: 'claude',
+                  status: 'warn',
+                  message: 'MCP not configured',
+                  binPath: null,
+                  binaryStatus: 'pass',
+                  binaryMessage: 'OK',
+                  mcpStatus: 'warn',
+                  mcpMessage: 'MCP not configured',
+                },
+              ],
               supportedMcpProviders: ['claude', 'codex', 'gemini'],
               timestamp: new Date().toISOString(),
             }),
@@ -193,7 +209,7 @@ describe('ProvidersPage - autoCompactThreshold display and edit', () => {
             }),
           });
         }
-        if (url === '/api/preflight') {
+        if (url.startsWith('/api/preflight')) {
           return Promise.resolve({
             ok: true,
             json: async () => ({
@@ -465,7 +481,7 @@ describe('ProvidersPage - autoCompactThreshold display and edit', () => {
             json: async () => ({ items: [], total: 0, limit: 100, offset: 0 }),
           });
         }
-        if (url === '/api/preflight') {
+        if (url.startsWith('/api/preflight')) {
           return Promise.resolve({
             ok: true,
             json: async () => ({
@@ -588,7 +604,7 @@ describe('ProvidersPage - 1M context controls', () => {
             }),
           });
         }
-        if (url === '/api/preflight') {
+        if (url.startsWith('/api/preflight')) {
           return Promise.resolve({
             ok: true,
             json: async () => ({
@@ -956,7 +972,7 @@ describe('ProvidersPage - 1M context controls', () => {
             json: async () => ({ items: [], total: 0, limit: 100, offset: 0 }),
           });
         }
-        if (url === '/api/preflight') {
+        if (url.startsWith('/api/preflight')) {
           return Promise.resolve({
             ok: true,
             json: async () => ({
@@ -1099,7 +1115,7 @@ describe('ProvidersPage - provider type select disabled in edit mode', () => {
             }),
           });
         }
-        if (url === '/api/preflight') {
+        if (url.startsWith('/api/preflight')) {
           return Promise.resolve({
             ok: true,
             json: async () => ({
@@ -1253,7 +1269,7 @@ describe('ProvidersPage - provider models management', () => {
             }),
           });
         }
-        if (url === '/api/preflight') {
+        if (url.startsWith('/api/preflight')) {
           return Promise.resolve({
             ok: true,
             json: async () => ({
@@ -1476,7 +1492,7 @@ describe('ProvidersPage - provider models management', () => {
             json: async () => ({ items: [opencodeProvider], total: 1, limit: 100, offset: 0 }),
           });
         }
-        if (url === '/api/preflight') {
+        if (url.startsWith('/api/preflight')) {
           return Promise.resolve({
             ok: true,
             json: async () => ({
@@ -1568,7 +1584,7 @@ describe('ProvidersPage - create provider auto-propagation', () => {
             json: async () => ({ items: [], total: 0, limit: 100, offset: 0 }),
           });
         }
-        if (url === '/api/preflight') {
+        if (url.startsWith('/api/preflight')) {
           return Promise.resolve({
             ok: true,
             json: async () => ({
@@ -1592,6 +1608,8 @@ describe('ProvidersPage - create provider auto-propagation', () => {
                 skippedExistingCount: 0,
                 skippedConflictCount: 0,
                 warnings: [],
+                excludedAuthorCount: 0,
+                scopeConfigHash: 'test',
               },
             }),
           });
@@ -1644,7 +1662,7 @@ describe('ProvidersPage - Rescan', () => {
             json: async () => ({ items: [], total: 0, limit: 100, offset: 0 }),
           });
         }
-        if (url === '/api/preflight') {
+        if (url.startsWith('/api/preflight')) {
           return Promise.resolve({
             ok: true,
             json: async () => ({
@@ -1730,7 +1748,7 @@ describe('ProvidersPage - Rescan', () => {
             json: async () => ({ items: [], total: 0, limit: 100, offset: 0 }),
           });
         }
-        if (url === '/api/preflight') {
+        if (url.startsWith('/api/preflight')) {
           return Promise.resolve({
             ok: true,
             json: async () => ({
@@ -1769,5 +1787,457 @@ describe('ProvidersPage - Rescan', () => {
     });
 
     expect(screen.getByText('Providers')).toBeInTheDocument();
+  });
+});
+
+// ============================================
+// MCP badge + Configure button state coverage
+// ============================================
+
+describe('ProvidersPage - MCP badge and Configure MCP button states', () => {
+  const baseProvider = {
+    id: 'p-badge',
+    name: 'codex',
+    binPath: '/usr/local/bin/codex',
+    autoCompactThreshold: null,
+    autoCompactThreshold1m: null,
+    oneMillionContextEnabled: false,
+    mcpConfigured: false,
+    mcpEndpoint: null,
+    mcpRegisteredAt: null,
+    createdAt: '2024-01-01',
+    updatedAt: '2024-01-01',
+  };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function setupFetch(preflightProviders: any[], preflightOk = true, neverResolve = false) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (global as unknown as { fetch: unknown }).fetch = jest.fn(
+      (url: string, options?: RequestInit) => {
+        if (url === '/api/providers' && (!options || !options.method)) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ items: [baseProvider], total: 1, limit: 100, offset: 0 }),
+          });
+        }
+        if (url.startsWith('/api/preflight')) {
+          if (neverResolve) return new Promise(() => {});
+          return Promise.resolve({
+            ok: preflightOk,
+            json: async () => ({
+              overall: 'pass',
+              checks: [],
+              providers: preflightProviders,
+              supportedMcpProviders: ['codex', 'claude', 'gemini'],
+              timestamp: new Date().toISOString(),
+            }),
+          });
+        }
+        return Promise.resolve({ ok: false });
+      },
+    );
+  }
+
+  beforeEach(() => {
+    mockSelectedProject = null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (Element as unknown as { prototype: { scrollIntoView: unknown } }).prototype.scrollIntoView =
+      jest.fn();
+  });
+
+  it('shows MCP OK badge and hides Configure button when mcpStatus is pass (unused provider)', async () => {
+    mockSelectedProject = { id: 'proj-1', rootPath: '/proj-1' };
+    setupFetch([
+      {
+        id: 'p-badge',
+        name: 'codex',
+        status: 'pass',
+        message: 'OK',
+        binPath: null,
+        binaryStatus: 'pass',
+        binaryMessage: 'OK',
+        mcpStatus: 'pass',
+        usedByAgents: [],
+      },
+    ]);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('codex')).toBeInTheDocument());
+    expect(screen.getByText('MCP OK')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /configure mcp/i })).not.toBeInTheDocument();
+  });
+
+  it('shows MCP WARN badge and enabled Configure button when mcpStatus is warn (unused provider)', async () => {
+    mockSelectedProject = { id: 'proj-1', rootPath: '/proj-1' };
+    setupFetch([
+      {
+        id: 'p-badge',
+        name: 'codex',
+        status: 'warn',
+        message: 'Not configured',
+        binPath: null,
+        binaryStatus: 'pass',
+        binaryMessage: 'OK',
+        mcpStatus: 'warn',
+        mcpMessage: 'Not configured',
+        usedByAgents: [],
+      },
+    ]);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('codex')).toBeInTheDocument());
+    expect(screen.getByText('MCP WARN')).toBeInTheDocument();
+    const configBtn = screen.getByRole('button', { name: /configure mcp/i });
+    expect(configBtn).toBeInTheDocument();
+    expect(configBtn).not.toBeDisabled();
+  });
+
+  it('shows MCP OK badge and hides Configure button for used provider with MCP registered', async () => {
+    mockSelectedProject = { id: 'proj-1', rootPath: '/proj-1' };
+    setupFetch([
+      {
+        id: 'p-badge',
+        name: 'codex',
+        status: 'pass',
+        message: 'OK',
+        binPath: null,
+        binaryStatus: 'pass',
+        binaryMessage: 'OK',
+        mcpStatus: 'pass',
+        usedByAgents: ['Agent A', 'Agent B'],
+      },
+    ]);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('codex')).toBeInTheDocument());
+    expect(screen.getByText('MCP OK')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /configure mcp/i })).not.toBeInTheDocument();
+  });
+
+  it('shows amber MCP WARN badge and disabled Configure button when requiresProjectContext and no project selected', async () => {
+    mockSelectedProject = null;
+    setupFetch([
+      {
+        id: 'p-badge',
+        name: 'codex',
+        status: 'warn',
+        message: 'Requires project context',
+        binPath: null,
+        binaryStatus: 'pass',
+        binaryMessage: 'OK',
+        mcpStatus: 'warn',
+        requiresProjectContext: true,
+      },
+    ]);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('codex')).toBeInTheDocument());
+    expect(screen.getByText('MCP WARN')).toBeInTheDocument();
+    const configBtn = screen.getByRole('button', { name: /configure mcp/i });
+    expect(configBtn).toBeDisabled();
+  });
+
+  it('shows Checking… badge and hides Configure button while preflight is loading', async () => {
+    setupFetch([], true, true);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('codex')).toBeInTheDocument());
+    expect(screen.getByText(/Checking/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /configure mcp/i })).not.toBeInTheDocument();
+  });
+
+  it('shows MCP Check failed badge and hides Configure button when preflight query errors', async () => {
+    setupFetch([], false);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('codex')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Check failed/)).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /configure mcp/i })).not.toBeInTheDocument();
+  });
+
+  it('shows neutral MCP — badge and hides Configure button when provider has no preflight entry', async () => {
+    setupFetch([]);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('codex')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('MCP —')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /configure mcp/i })).not.toBeInTheDocument();
+  });
+});
+
+// ============================================
+// Mutation → preflight invalidation
+// ============================================
+
+describe('ProvidersPage - CRUD mutations invalidate preflight query', () => {
+  const provider = {
+    id: 'p-mut',
+    name: 'codex',
+    binPath: '/usr/local/bin/codex',
+    autoCompactThreshold: null,
+    autoCompactThreshold1m: null,
+    oneMillionContextEnabled: false,
+    mcpConfigured: false,
+    mcpEndpoint: null,
+    mcpRegisteredAt: null,
+    createdAt: '2024-01-01',
+    updatedAt: '2024-01-01',
+  };
+
+  beforeEach(() => {
+    mockSelectedProject = null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (Element as unknown as { prototype: { scrollIntoView: unknown } }).prototype.scrollIntoView =
+      jest.fn();
+  });
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function setupFetch(providers: any[]) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (global as unknown as { fetch: unknown }).fetch = jest.fn(
+      (url: string, options?: RequestInit) => {
+        if (url === '/api/providers' && (!options || !options.method)) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              items: providers,
+              total: providers.length,
+              limit: 100,
+              offset: 0,
+            }),
+          });
+        }
+        if (url.startsWith('/api/preflight')) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              overall: 'pass',
+              checks: [],
+              providers: providers.map((p) => ({
+                id: p.id,
+                name: p.name,
+                status: 'pass',
+                message: 'OK',
+                binPath: null,
+                binaryStatus: 'pass',
+                binaryMessage: 'OK',
+                mcpStatus: p.mcpConfigured ? ('pass' as const) : ('warn' as const),
+              })),
+              supportedMcpProviders: ['codex', 'claude', 'gemini'],
+              timestamp: new Date().toISOString(),
+            }),
+          });
+        }
+        if (url === '/api/providers' && options?.method === 'POST') {
+          const body = JSON.parse(options.body as string);
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              provider: {
+                id: 'p-new',
+                ...body,
+                mcpConfigured: false,
+                mcpEndpoint: null,
+                mcpRegisteredAt: null,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+              },
+              sync: null,
+            }),
+          });
+        }
+        if (url.match(/\/api\/providers\/[\w-]+$/) && options?.method === 'PUT') {
+          const body = JSON.parse(options.body as string);
+          const id = url.split('/').pop()!;
+          const existing = providers.find((p) => p.id === id);
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ ...existing, ...body, updatedAt: new Date().toISOString() }),
+          });
+        }
+        if (url.match(/\/api\/providers\/[\w-]+$/) && options?.method === 'DELETE') {
+          return Promise.resolve({ ok: true, json: async () => ({ success: true }) });
+        }
+        return Promise.resolve({ ok: false });
+      },
+    );
+  }
+
+  it('create mutation invalidates preflight providers-page query on success', async () => {
+    setupFetch([]);
+    const qc = createQueryClient();
+    const invalidateSpy = jest.spyOn(qc, 'invalidateQueries');
+    renderWithQuery(<ProvidersPage />, qc);
+    await waitFor(() => expect(screen.getByText('Providers')).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByText('Add Provider')[0]);
+    await waitFor(() =>
+      expect(screen.getByText('Add Provider', { selector: 'h2' })).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => {
+      const preflightPageInvalidated = invalidateSpy.mock.calls.some(([arg]) => {
+        const key = (arg as { queryKey?: unknown[] })?.queryKey;
+        return Array.isArray(key) && key[0] === 'preflight' && key[1] === 'providers-page';
+      });
+      expect(preflightPageInvalidated).toBe(true);
+    });
+  });
+
+  it('delete mutation invalidates preflight providers-page query on success', async () => {
+    setupFetch([provider]);
+    const qc = createQueryClient();
+    const invalidateSpy = jest.spyOn(qc, 'invalidateQueries');
+    renderWithQuery(<ProvidersPage />, qc);
+    await waitFor(() => expect(screen.getByText('codex')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
+    await waitFor(() => expect(screen.getByText('Delete Provider')).toBeInTheDocument());
+    const dialog = screen.getByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: /^delete$/i }));
+
+    await waitFor(() => {
+      const preflightPageInvalidated = invalidateSpy.mock.calls.some(([arg]) => {
+        const key = (arg as { queryKey?: unknown[] })?.queryKey;
+        return Array.isArray(key) && key[0] === 'preflight' && key[1] === 'providers-page';
+      });
+      expect(preflightPageInvalidated).toBe(true);
+    });
+  });
+
+  it('update mutation invalidates preflight providers-page query on success', async () => {
+    setupFetch([provider]);
+    const qc = createQueryClient();
+    const invalidateSpy = jest.spyOn(qc, 'invalidateQueries');
+    renderWithQuery(<ProvidersPage />, qc);
+    await waitFor(() => expect(screen.getByText('codex')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }));
+    await waitFor(() => expect(screen.getByText('Edit Provider')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /^update$/i }));
+
+    await waitFor(() => {
+      const preflightPageInvalidated = invalidateSpy.mock.calls.some(([arg]) => {
+        const key = (arg as { queryKey?: unknown[] })?.queryKey;
+        return Array.isArray(key) && key[0] === 'preflight' && key[1] === 'providers-page';
+      });
+      expect(preflightPageInvalidated).toBe(true);
+    });
+  });
+});
+
+// ============================================
+// Aggregate-fail guard: mcpStatus:'fail' rendering
+// ============================================
+
+describe('ProvidersPage - aggregate-fail MCP badge guard', () => {
+  const baseProvider = {
+    id: 'p-fail',
+    name: 'codex',
+    binPath: '/usr/local/bin/codex',
+    autoCompactThreshold: null,
+    autoCompactThreshold1m: null,
+    oneMillionContextEnabled: false,
+    mcpConfigured: false,
+    mcpEndpoint: null,
+    mcpRegisteredAt: null,
+    createdAt: '2024-01-01',
+    updatedAt: '2024-01-01',
+  };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function setupFetch(preflightProviders: any[]) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (global as unknown as { fetch: unknown }).fetch = jest.fn(
+      (url: string, options?: RequestInit) => {
+        if (url === '/api/providers' && (!options || !options.method)) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ items: [baseProvider], total: 1, limit: 100, offset: 0 }),
+          });
+        }
+        if (url.startsWith('/api/preflight')) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              overall: 'fail',
+              checks: [],
+              providers: preflightProviders,
+              supportedMcpProviders: ['codex', 'claude', 'gemini'],
+              timestamp: new Date().toISOString(),
+            }),
+          });
+        }
+        return Promise.resolve({ ok: false });
+      },
+    );
+  }
+
+  beforeEach(() => {
+    mockSelectedProject = { id: 'proj-1', rootPath: '/proj-1' };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (Element as unknown as { prototype: { scrollIntoView: unknown } }).prototype.scrollIntoView =
+      jest.fn();
+  });
+
+  it('shows red MCP FAIL badge and enabled Configure button when mcpStatus is fail', async () => {
+    setupFetch([
+      {
+        id: 'p-fail',
+        name: 'codex',
+        status: 'fail',
+        message: 'MCP check failed',
+        binPath: null,
+        binaryStatus: 'pass',
+        binaryMessage: 'OK',
+        mcpStatus: 'fail',
+        mcpMessage: 'boom',
+      },
+    ]);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('codex')).toBeInTheDocument());
+    expect(screen.getByText('MCP FAIL')).toBeInTheDocument();
+    const configBtn = screen.getByRole('button', { name: /configure mcp/i });
+    expect(configBtn).toBeInTheDocument();
+    expect(configBtn).not.toBeDisabled();
+  });
+
+  it('shows MCP FAIL badge and disabled Configure button when mcpStatus is fail + requiresProjectContext + no project', async () => {
+    mockSelectedProject = null;
+    setupFetch([
+      {
+        id: 'p-fail',
+        name: 'codex',
+        status: 'fail',
+        message: 'MCP check failed',
+        binPath: null,
+        binaryStatus: 'pass',
+        binaryMessage: 'OK',
+        mcpStatus: 'fail',
+        mcpMessage: 'boom',
+        requiresProjectContext: true,
+      },
+    ]);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('codex')).toBeInTheDocument());
+    expect(screen.getByText('MCP FAIL')).toBeInTheDocument();
+    const configBtn = screen.getByRole('button', { name: /configure mcp/i });
+    expect(configBtn).toBeDisabled();
+  });
+
+  // Guard: aggregate status:'fail' with mcpStatus absent must NOT render the neutral "—" badge.
+  // The UI defensively derives MCP FAIL from pf.status when mcpStatus is missing, preventing
+  // silent regression if the backend rejection fallback ever omits mcpStatus again.
+  it('renders MCP FAIL (not neutral —) when aggregate status is fail but mcpStatus is absent', async () => {
+    setupFetch([
+      {
+        id: 'p-fail',
+        name: 'codex',
+        status: 'fail',
+        message: 'unexpected error',
+        binPath: null,
+        binaryStatus: 'warn',
+        binaryMessage: 'unknown',
+        // mcpStatus deliberately omitted to simulate allSettled rejection without populated mcpStatus
+      },
+    ]);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('codex')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('MCP FAIL')).toBeInTheDocument());
+    expect(screen.queryByText('MCP —')).not.toBeInTheDocument();
   });
 });

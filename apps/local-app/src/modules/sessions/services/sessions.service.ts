@@ -31,6 +31,8 @@ import { SessionCoordinatorService } from './session-coordinator.service';
 import { HooksConfigService } from '../../hooks/services/hooks-config.service';
 import { ProviderAdapterFactory } from '../../providers/adapters/provider-adapter.factory';
 import { LaunchInitialPromptBehavior } from '../../providers/adapters/provider-adapter.interface';
+import { TeamsService } from '../../teams/services/teams.service';
+import type { Team } from '../../storage/models/domain.models';
 import { getEnvConfig } from '../../../common/config/env.config';
 
 const logger = createLogger('SessionsService');
@@ -218,14 +220,14 @@ export class SessionsService {
       // Resolve provider and options via provider config (if available) or fallback to profile
       let provider;
       let options: string | null;
-      let envVars: Record<string, string> | null = null;
+      let configEnv: Record<string, string> | null = null;
 
       if (agent.providerConfigId) {
         // Use provider config for provider resolution and env vars
         const config = await this.storage.getProfileProviderConfig(agent.providerConfigId);
         provider = await this.storage.getProvider(config.providerId);
         options = config.options;
-        envVars = config.env;
+        configEnv = config.env;
         logger.info(
           { agentId, configId: config.id, providerId: provider.id },
           'Resolved provider via config',
@@ -240,7 +242,7 @@ export class SessionsService {
           const firstConfig = configs[0];
           provider = await this.storage.getProvider(firstConfig.providerId);
           options = firstConfig.options;
-          envVars = firstConfig.env;
+          configEnv = firstConfig.env;
           logger.info(
             { agentId, profileId: profile.id, configId: firstConfig.id, providerId: provider.id },
             'Resolved provider via first profile config (no providerConfigId set on agent)',
@@ -397,6 +399,13 @@ export class SessionsService {
         optionArgs = injectModelOverride(optionArgs, agent.modelOverride);
       }
 
+      // Merge provider-level and config-level env vars (provider already fetched above — no extra DB call)
+      const providerEnv = provider.env ?? {};
+      // Non-Claude precedence: providerEnv < configEnv
+      const mergedBaseEnv = { ...providerEnv, ...(configEnv ?? {}) };
+      let envVars: Record<string, string> | null =
+        Object.keys(mergedBaseEnv).length > 0 ? mergedBaseEnv : null;
+
       // Inject DEVCHAIN_* env vars for Claude provider (relay script reads these)
       if (provider.name.toLowerCase() === 'claude') {
         const env = getEnvConfig();
@@ -429,8 +438,8 @@ export class SessionsService {
           devchainEnv.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = String(provider.autoCompactThreshold);
         }
 
-        // Merge: existing provider env vars take precedence (no clobber)
-        envVars = { ...devchainEnv, ...envVars };
+        // Claude precedence: devchainEnv < providerEnv < configEnv
+        envVars = { ...devchainEnv, ...providerEnv, ...(configEnv ?? {}) };
 
         // Sanitize stale CLAUDE_CODE_DISABLE_1M_CONTEXT from provider-config env leftovers.
         // 1M context is now controlled via model alias rewriting, not env vars.
@@ -1089,13 +1098,16 @@ export class SessionsService {
       launchHandshake,
     } = params;
 
+    const teams = await this.loadTeamsForAgentOrEmpty(agentId);
+
     const context = buildInitialPromptContext({
-      agent,
+      agent: { name: agent.name, id: agentId },
       project,
       epic,
       profile,
       provider,
       sessionId,
+      teams,
     });
 
     const defaultRendered = this.normalizeInitialPromptContent(
@@ -1235,5 +1247,22 @@ export class SessionsService {
       }
     }
     return this.eventsServiceRef;
+  }
+
+  private async loadTeamsForAgentOrEmpty(agentId: string | undefined): Promise<Team[]> {
+    if (!agentId) return [];
+    try {
+      const teamsService = this.moduleRef.get(TeamsService, { strict: false });
+      if (!teamsService || typeof teamsService.listTeamsByAgent !== 'function') {
+        return [];
+      }
+      return await teamsService.listTeamsByAgent(agentId);
+    } catch (error) {
+      logger.warn(
+        { error, agentId },
+        'Failed to load teams for initial prompt; defaulting to teamless context',
+      );
+      return [];
+    }
   }
 }

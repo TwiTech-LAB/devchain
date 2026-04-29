@@ -212,6 +212,9 @@ export class EventLogService implements OnModuleInit, OnModuleDestroy {
         safeJsonFieldEquals(events.payloadJson, '$.ownerProjectId', filters.ownerProjectId),
       );
     }
+    if (filters.actorId) {
+      eventConditions.push(safeJsonFieldEquals(events.payloadJson, '$.actor.id', filters.actorId));
+    }
     if (filters.from) {
       eventConditions.push(gte(events.publishedAt, filters.from));
     }

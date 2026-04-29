@@ -2,6 +2,7 @@ import type { EpicOperationContext } from '../../../epics/services/epics.service
 import type { Status, Epic } from '../../../storage/models/domain.models';
 import { createLogger } from '../../../../common/logging/logger';
 import { NotFoundError, ValidationError } from '../../../../common/errors/error-types';
+import { loadAgentRecipientContext } from '../../../../common/template/agent-recipient-context';
 import {
   McpResponse,
   ListAgentsParamsSchema,
@@ -222,15 +223,27 @@ export async function handleGetAgentByName(
   }
 
   const profile = agentWithProfile.profile;
+  const sessionContext = sessionCtxResult.data as SessionContext;
+  const callerAgentId = sessionContext.type === 'agent' ? sessionContext.agent?.id : undefined;
+  const teamCtx =
+    callerAgentId && ctx.teamsService
+      ? await loadAgentRecipientContext(ctx.teamsService, callerAgentId)
+      : { team_name: '', team_names: '', is_team_lead: false };
+  const renderVars: Record<string, unknown> = {
+    agent_name: sessionContext.type === 'agent' ? (sessionContext.agent?.name ?? '') : '',
+    project_name: project.name,
+    ...teamCtx,
+  };
+
   const resolvedInstructions = profile
     ? await ctx.instructionsResolver.resolve(project.id, profile.instructions ?? null, {
         maxBytes: ctx.defaultInlineMaxBytes ?? 64 * 1024,
+        render: {
+          vars: renderVars,
+          legacyVariables: Object.keys(renderVars),
+        },
       })
     : null;
-
-  if (profile && ctx.featureFlags?.enableProfileInstructionTemplates) {
-    // Placeholder: profile instructions will support template variables behind this flag.
-  }
 
   const response: GetAgentByNameResponse = {
     agent: {
@@ -1070,7 +1083,7 @@ export async function handleUpdateEpic(ctx: McpToolContext, params: unknown): Pr
     updatedEpic.agentId === sessionCtx.agent.id
   ) {
     const hintAgentName = agentNameById?.get(updatedEpic.agentId) ?? sessionCtx.agent.name;
-    response.hint = `Status changed while this epic remains assigned to ${hintAgentName}. If you intend a handoff, call devchain_update_epic with assignment: { agentName: "Target Agent" }.`;
+    response.hint = `CHECK REQUIRED: Epic moved to a new status while still assigned to ${hintAgentName}. Answer this before continuing — is this a handoff to another agent? If YES, call devchain_update_epic with assignment: { agentName: "Target Agent" } now. If NO, the current assignee remains and you may proceed. Do not skip this check.`;
   }
 
   return { success: true, data: response };

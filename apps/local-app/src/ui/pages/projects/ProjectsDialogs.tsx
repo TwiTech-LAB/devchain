@@ -10,6 +10,8 @@ import { ImportConfirmDialog } from '@/ui/components/project/ImportConfirmDialog
 import { CreateProjectDialog } from '@/ui/components/project/CreateProjectDialog';
 import { ProviderMappingModal } from '@/ui/components/project/ProviderMappingModal';
 import { ProviderMismatchWarningModal } from '@/ui/components/project/ProviderMismatchWarningModal';
+import { ProjectTeamPreconfigDialog } from '@/ui/components/project/ProjectTeamPreconfigDialog';
+import { useProjectPreconfigFlow } from '@/ui/hooks/useProjectPreconfigFlow';
 import type { ProjectsPageController } from '@/ui/hooks/useProjectsPageController';
 
 interface ProjectsDialogsProps {
@@ -95,7 +97,21 @@ export function ProjectsDialogs({ controller }: ProjectsDialogsProps) {
     showImportProviderMappingModal,
     handleImportProviderMappingCancel,
     handleImportProviderMappingConfirm,
+    importPreconfigOpen,
+    importPreconfigTeams,
+    importPreconfigProfiles,
+    handleImportPreconfigConfirm,
+    handleImportPreconfigCancel,
   } = controller;
+
+  const {
+    preconfigOpen,
+    preconfigTeams,
+    preconfigProfiles,
+    handleCreateWithPreconfig,
+    handlePreconfigConfirm,
+    handlePreconfigCancel,
+  } = useProjectPreconfigFlow(createFromTemplateMutation);
 
   return (
     <>
@@ -180,7 +196,7 @@ export function ProjectsDialogs({ controller }: ProjectsDialogsProps) {
         open={showTemplateDialog}
         onOpenChange={setShowTemplateDialog}
         onSubmit={(event) =>
-          handleTemplateSubmit(event, (payload) => createFromTemplateMutation.mutate(payload))
+          handleTemplateSubmit(event, (payload) => handleCreateWithPreconfig(payload))
         }
         templateSourceTab={templateSourceTab}
         onTemplateSourceTabChange={setTemplateSourceTab}
@@ -202,6 +218,15 @@ export function ProjectsDialogs({ controller }: ProjectsDialogsProps) {
           resetTemplateForm();
         }}
         isSubmitting={createFromTemplateMutation.isPending}
+      />
+
+      {/* Team Pre-configuration Dialog */}
+      <ProjectTeamPreconfigDialog
+        open={preconfigOpen}
+        teams={preconfigTeams}
+        profiles={preconfigProfiles}
+        onConfirm={handlePreconfigConfirm}
+        onCancel={handlePreconfigCancel}
       />
 
       {/* Upgrade Dialog */}
@@ -277,6 +302,15 @@ export function ProjectsDialogs({ controller }: ProjectsDialogsProps) {
           loading={!!importingProjectId}
         />
       )}
+
+      {/* Team Pre-configuration Dialog for import flow */}
+      <ProjectTeamPreconfigDialog
+        open={importPreconfigOpen}
+        teams={importPreconfigTeams}
+        profiles={importPreconfigProfiles}
+        onConfirm={handleImportPreconfigConfirm}
+        onCancel={handleImportPreconfigCancel}
+      />
     </>
   );
 }

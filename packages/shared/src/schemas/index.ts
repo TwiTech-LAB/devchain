@@ -1,3 +1,5 @@
+export { EnvVarsSchema } from './env-vars.js';
+
 export {
   ExportSchema,
   type ExportData,

@@ -27,6 +27,7 @@ import { RegistryModule } from './modules/registry/registry.module';
 import { GuestsModule } from './modules/guests/guests.module';
 import { HooksModule } from './modules/hooks/hooks.module';
 import { SessionReaderModule } from './modules/session-reader/session-reader.module';
+import { TeamsModule } from './modules/teams/teams.module';
 import { DataSeederModule } from './modules/seeders/seeders.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { EventsInfraModule } from './modules/events/events-infra.module';
@@ -39,6 +40,7 @@ import { OrchestratorGitModule } from './modules/orchestrator/git/git.module';
 import { OrchestratorWorktreesModule } from './modules/orchestrator/worktrees/worktrees.module';
 import { OrchestratorSyncModule } from './modules/orchestrator/sync/sync.module';
 import { OrchestratorProxyModule } from './modules/orchestrator/proxy/orchestrator-proxy.module';
+import { CodebaseOverviewAnalyzerModule } from './modules/codebase-overview-analyzer/codebase-overview-analyzer.module';
 
 @Module({
   imports: [
@@ -72,12 +74,14 @@ import { OrchestratorProxyModule } from './modules/orchestrator/proxy/orchestrat
     GuestsModule,
     HooksModule,
     SessionReaderModule,
+    TeamsModule,
     OrchestratorStorageModule,
     OrchestratorDockerModule,
     OrchestratorGitModule,
     OrchestratorWorktreesModule,
     OrchestratorSyncModule,
     OrchestratorProxyModule,
+    CodebaseOverviewAnalyzerModule,
   ],
   controllers: [],
   providers: [

@@ -123,6 +123,8 @@ describe('ProvidersController', () => {
         skippedExistingCount: 0,
         skippedConflictCount: 0,
         warnings: [],
+        excludedAuthorCount: 0,
+        scopeConfigHash: 'test',
       }),
     };
 
@@ -278,6 +280,78 @@ describe('ProvidersController', () => {
       );
     });
 
+    it('creates provider with valid env', async () => {
+      const now = new Date('2024-01-01T00:00:00Z');
+      storage.createProvider.mockImplementation(async (payload) => ({
+        id: 'p1',
+        ...payload,
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+      }));
+
+      const result = await controller.createProvider({
+        name: 'claude',
+        binPath: '/usr/local/bin/claude',
+        env: { API_BASE: 'https://api.example.com', LOG_LEVEL: 'debug' },
+      });
+
+      expect(storage.createProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          env: { API_BASE: 'https://api.example.com', LOG_LEVEL: 'debug' },
+        }),
+      );
+      expect(result.provider.env).toEqual({
+        API_BASE: 'https://api.example.com',
+        LOG_LEVEL: 'debug',
+      });
+    });
+
+    it('rejects create with invalid env key (regex violation)', async () => {
+      await expect(
+        controller.createProvider({
+          name: 'claude',
+          binPath: '/usr/local/bin/claude',
+          env: { 'invalid-key': 'value' },
+        }),
+      ).rejects.toThrow();
+
+      expect(storage.createProvider).not.toHaveBeenCalled();
+    });
+
+    it('rejects create with control char in env value', async () => {
+      await expect(
+        controller.createProvider({
+          name: 'claude',
+          binPath: '/usr/local/bin/claude',
+          env: { GOOD_KEY: 'value\x00bad' },
+        }),
+      ).rejects.toThrow();
+
+      expect(storage.createProvider).not.toHaveBeenCalled();
+    });
+
+    it('passes empty env {} to storage (storage delegate normalizes to null)', async () => {
+      const now = new Date('2024-01-01T00:00:00Z');
+      storage.createProvider.mockImplementation(async (payload) => ({
+        id: 'p1',
+        ...payload,
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+      }));
+
+      await controller.createProvider({
+        name: 'claude',
+        binPath: '/usr/local/bin/claude',
+        env: {},
+      });
+
+      expect(storage.createProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          env: {},
+        }),
+      );
+    });
+
     it('defaults oneMillionContextEnabled to undefined when omitted on create', async () => {
       const now = new Date('2024-01-01T00:00:00Z');
       storage.createProvider.mockImplementation(async (payload) => ({
@@ -405,6 +479,79 @@ describe('ProvidersController', () => {
         }),
       );
       expect(result.autoCompactThreshold).toBeNull();
+    });
+
+    it('updates provider env with valid keys', async () => {
+      storage.getProvider.mockResolvedValue({
+        id: 'p1',
+        name: 'claude',
+        binPath: '/usr/local/bin/claude',
+        mcpConfigured: false,
+        env: null,
+      });
+      storage.updateProvider.mockImplementation(async (id, payload) => ({
+        id,
+        name: 'claude',
+        binPath: '/usr/local/bin/claude',
+        mcpConfigured: false,
+        createdAt: '2024-01-01',
+        updatedAt: '2024-01-01',
+        ...payload,
+      }));
+
+      const result = await controller.updateProvider('p1', {
+        env: { NEW_VAR: 'value' },
+      });
+
+      expect(storage.updateProvider).toHaveBeenCalledWith(
+        'p1',
+        expect.objectContaining({
+          env: { NEW_VAR: 'value' },
+        }),
+      );
+      expect(result.env).toEqual({ NEW_VAR: 'value' });
+    });
+
+    it('clears env with explicit null on update', async () => {
+      storage.getProvider.mockResolvedValue({
+        id: 'p1',
+        name: 'claude',
+        binPath: '/usr/local/bin/claude',
+        mcpConfigured: false,
+        env: { OLD: 'value' },
+      });
+      storage.updateProvider.mockImplementation(async (id, payload) => ({
+        id,
+        name: 'claude',
+        binPath: '/usr/local/bin/claude',
+        mcpConfigured: false,
+        env: null,
+        createdAt: '2024-01-01',
+        updatedAt: '2024-01-01',
+        ...payload,
+      }));
+
+      const result = await controller.updateProvider('p1', {
+        env: null,
+      });
+
+      expect(storage.updateProvider).toHaveBeenCalledWith(
+        'p1',
+        expect.objectContaining({
+          env: null,
+        }),
+      );
+      expect(result.env).toBeNull();
+    });
+
+    it('rejects update with invalid env key', async () => {
+      await expect(
+        controller.updateProvider('p1', {
+          env: { '123bad': 'val' },
+        }),
+      ).rejects.toThrow();
+
+      expect(storage.updateProvider).not.toHaveBeenCalled();
     });
 
     it('allows oneMillionContextEnabled=true with valid server probe proof', async () => {
@@ -1565,6 +1712,8 @@ describe('ProvidersController', () => {
         skippedExistingCount: 0,
         skippedConflictCount: 0,
         warnings: [],
+        excludedAuthorCount: 0,
+        scopeConfigHash: 'test',
       };
       mockSyncService.syncProviderToAllProjects.mockResolvedValue(syncResult);
 
@@ -1611,6 +1760,8 @@ describe('ProvidersController', () => {
         skippedExistingCount: 1,
         skippedConflictCount: 0,
         warnings: [],
+        excludedAuthorCount: 0,
+        scopeConfigHash: 'test',
       };
       mockSyncService.syncProviderToAllProjects.mockResolvedValue(syncResult);
 
@@ -1650,6 +1801,8 @@ describe('ProvidersController', () => {
         skippedExistingCount: 0,
         skippedConflictCount: 0,
         warnings: [],
+        excludedAuthorCount: 0,
+        scopeConfigHash: 'test',
       };
       const syncResult2 = {
         providerId: 'new-2',
@@ -1658,6 +1811,8 @@ describe('ProvidersController', () => {
         skippedExistingCount: 0,
         skippedConflictCount: 0,
         warnings: [],
+        excludedAuthorCount: 0,
+        scopeConfigHash: 'test',
       };
       mockSyncService.syncProviderToAllProjects
         .mockResolvedValueOnce(syncResult1)
@@ -1709,6 +1864,8 @@ describe('ProvidersController', () => {
         skippedExistingCount: 0,
         skippedConflictCount: 0,
         warnings: [],
+        excludedAuthorCount: 0,
+        scopeConfigHash: 'test',
       };
       mockSyncService.syncProviderToAllProjects
         .mockRejectedValueOnce(new Error('sync failed'))

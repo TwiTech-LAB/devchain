@@ -165,6 +165,12 @@
     "max_input_tokens": 1000000,
     "max_output_tokens": 128000
   },
+  "anthropic.claude-mythos-preview": {
+    "input_cost_per_token": 0,
+    "output_cost_per_token": 0,
+    "max_input_tokens": 1000000,
+    "max_output_tokens": 128000
+  },
   "global.anthropic.claude-opus-4-7": {
     "input_cost_per_token": 0.000005,
     "output_cost_per_token": 0.000025,
@@ -1109,6 +1115,34 @@
     "max_input_tokens": 1050000,
     "max_output_tokens": 128000
   },
+  "azure/gpt-5.5": {
+    "input_cost_per_token": 0.000005,
+    "output_cost_per_token": 0.00003,
+    "cache_read_input_token_cost": 5e-7,
+    "max_input_tokens": 1050000,
+    "max_output_tokens": 128000
+  },
+  "azure/gpt-5.5-2026-04-23": {
+    "input_cost_per_token": 0.000005,
+    "output_cost_per_token": 0.00003,
+    "cache_read_input_token_cost": 5e-7,
+    "max_input_tokens": 1050000,
+    "max_output_tokens": 128000
+  },
+  "azure/gpt-5.5-pro": {
+    "input_cost_per_token": 0.00003,
+    "output_cost_per_token": 0.00018,
+    "cache_read_input_token_cost": 0.000003,
+    "max_input_tokens": 1050000,
+    "max_output_tokens": 128000
+  },
+  "azure/gpt-5.5-pro-2026-04-23": {
+    "input_cost_per_token": 0.00003,
+    "output_cost_per_token": 0.00018,
+    "cache_read_input_token_cost": 0.000003,
+    "max_input_tokens": 1050000,
+    "max_output_tokens": 128000
+  },
   "azure/gpt-5.4-mini": {
     "input_cost_per_token": 7.5e-7,
     "output_cost_per_token": 0.0000045,
@@ -1116,7 +1150,21 @@
     "max_input_tokens": 1050000,
     "max_output_tokens": 128000
   },
+  "azure/gpt-5.4-mini-2026-03-17": {
+    "input_cost_per_token": 7.5e-7,
+    "output_cost_per_token": 0.0000045,
+    "cache_read_input_token_cost": 7.5e-8,
+    "max_input_tokens": 1050000,
+    "max_output_tokens": 128000
+  },
   "azure/gpt-5.4-nano": {
+    "input_cost_per_token": 2e-7,
+    "output_cost_per_token": 0.00000125,
+    "cache_read_input_token_cost": 2e-8,
+    "max_input_tokens": 1050000,
+    "max_output_tokens": 128000
+  },
+  "azure/gpt-5.4-nano-2026-03-17": {
     "input_cost_per_token": 2e-7,
     "output_cost_per_token": 0.00000125,
     "cache_read_input_token_cost": 2e-8,
@@ -2225,7 +2273,17 @@
     "output_cost_per_token": 0,
     "max_input_tokens": 8192
   },
+  "gemini-embedding-2": {
+    "input_cost_per_token": 2e-7,
+    "output_cost_per_token": 0,
+    "max_input_tokens": 8192
+  },
   "vertex_ai/gemini-embedding-2-preview": {
+    "input_cost_per_token": 1.5e-7,
+    "output_cost_per_token": 0,
+    "max_input_tokens": 8192
+  },
+  "vertex_ai/gemini-embedding-2": {
     "input_cost_per_token": 2e-7,
     "output_cost_per_token": 0,
     "max_input_tokens": 8192
@@ -2242,6 +2300,11 @@
     "max_input_tokens": 2048
   },
   "gemini/gemini-embedding-2-preview": {
+    "input_cost_per_token": 2e-7,
+    "output_cost_per_token": 0,
+    "max_input_tokens": 8192
+  },
+  "gemini/gemini-embedding-2": {
     "input_cost_per_token": 2e-7,
     "output_cost_per_token": 0,
     "max_input_tokens": 8192
@@ -2967,6 +3030,34 @@
     "max_input_tokens": 272000,
     "max_output_tokens": 128000
   },
+  "gpt-5.5": {
+    "input_cost_per_token": 0.000005,
+    "output_cost_per_token": 0.00003,
+    "cache_read_input_token_cost": 5e-7,
+    "max_input_tokens": 1050000,
+    "max_output_tokens": 128000
+  },
+  "gpt-5.5-2026-04-23": {
+    "input_cost_per_token": 0.000005,
+    "output_cost_per_token": 0.00003,
+    "cache_read_input_token_cost": 5e-7,
+    "max_input_tokens": 1050000,
+    "max_output_tokens": 128000
+  },
+  "gpt-5.5-pro": {
+    "input_cost_per_token": 0.00003,
+    "output_cost_per_token": 0.00018,
+    "cache_read_input_token_cost": 0.000003,
+    "max_input_tokens": 1050000,
+    "max_output_tokens": 128000
+  },
+  "gpt-5.5-pro-2026-04-23": {
+    "input_cost_per_token": 0.00003,
+    "output_cost_per_token": 0.00018,
+    "cache_read_input_token_cost": 0.000003,
+    "max_input_tokens": 1050000,
+    "max_output_tokens": 128000
+  },
   "gpt-5.4": {
     "input_cost_per_token": 0.0000025,
     "output_cost_per_token": 0.000015,
@@ -3002,7 +3093,21 @@
     "max_input_tokens": 272000,
     "max_output_tokens": 128000
   },
+  "gpt-5.4-mini-2026-03-17": {
+    "input_cost_per_token": 7.5e-7,
+    "output_cost_per_token": 0.0000045,
+    "cache_read_input_token_cost": 7.5e-8,
+    "max_input_tokens": 272000,
+    "max_output_tokens": 128000
+  },
   "gpt-5.4-nano": {
+    "input_cost_per_token": 2e-7,
+    "output_cost_per_token": 0.00000125,
+    "cache_read_input_token_cost": 2e-8,
+    "max_input_tokens": 272000,
+    "max_output_tokens": 128000
+  },
+  "gpt-5.4-nano-2026-03-17": {
     "input_cost_per_token": 2e-7,
     "output_cost_per_token": 0.00000125,
     "cache_read_input_token_cost": 2e-8,
@@ -3141,19 +3246,27 @@
   },
   "gradient_ai/anthropic-claude-3-opus": {
     "input_cost_per_token": 0.000015,
-    "output_cost_per_token": 0.000075
+    "output_cost_per_token": 0.000075,
+    "max_input_tokens": 200000,
+    "max_output_tokens": 1024
   },
   "gradient_ai/anthropic-claude-3.5-haiku": {
     "input_cost_per_token": 8e-7,
-    "output_cost_per_token": 0.000004
+    "output_cost_per_token": 0.000004,
+    "max_input_tokens": 200000,
+    "max_output_tokens": 1024
   },
   "gradient_ai/anthropic-claude-3.5-sonnet": {
     "input_cost_per_token": 0.000003,
-    "output_cost_per_token": 0.000015
+    "output_cost_per_token": 0.000015,
+    "max_input_tokens": 200000,
+    "max_output_tokens": 1024
   },
   "gradient_ai/anthropic-claude-3.7-sonnet": {
     "input_cost_per_token": 0.000003,
-    "output_cost_per_token": 0.000015
+    "output_cost_per_token": 0.000015,
+    "max_input_tokens": 200000,
+    "max_output_tokens": 1024
   },
   "lemonade/gpt-oss-20b-mxfp4-GGUF": {
     "input_cost_per_token": 0,
@@ -3354,7 +3467,9 @@
   },
   "openrouter/anthropic/claude-3-haiku": {
     "input_cost_per_token": 2.5e-7,
-    "output_cost_per_token": 0.00000125
+    "output_cost_per_token": 0.00000125,
+    "max_input_tokens": 200000,
+    "max_output_tokens": 4096
   },
   "openrouter/anthropic/claude-3.5-sonnet": {
     "input_cost_per_token": 0.000003,
@@ -3444,6 +3559,14 @@
     "max_input_tokens": 200000,
     "max_output_tokens": 200000
   },
+  "openrouter/anthropic/claude-opus-4.7": {
+    "input_cost_per_token": 0.000005,
+    "output_cost_per_token": 0.000025,
+    "cache_read_input_token_cost": 5e-7,
+    "cache_creation_input_token_cost": 0.00000625,
+    "max_input_tokens": 1000000,
+    "max_output_tokens": 128000
+  },
   "openrouter/google/gemini-2.0-flash-001": {
     "input_cost_per_token": 1e-7,
     "output_cost_per_token": 4e-7,
@@ -3500,15 +3623,21 @@
   },
   "openrouter/openai/gpt-3.5-turbo": {
     "input_cost_per_token": 0.0000015,
-    "output_cost_per_token": 0.000002
+    "output_cost_per_token": 0.000002,
+    "max_input_tokens": 16385,
+    "max_output_tokens": 4096
   },
   "openrouter/openai/gpt-3.5-turbo-16k": {
     "input_cost_per_token": 0.000003,
-    "output_cost_per_token": 0.000004
+    "output_cost_per_token": 0.000004,
+    "max_input_tokens": 16385,
+    "max_output_tokens": 4096
   },
   "openrouter/openai/gpt-4": {
     "input_cost_per_token": 0.00003,
-    "output_cost_per_token": 0.00006
+    "output_cost_per_token": 0.00006,
+    "max_input_tokens": 8191,
+    "max_output_tokens": 4096
   },
   "openrouter/openai/gpt-4.1": {
     "input_cost_per_token": 0.000002,

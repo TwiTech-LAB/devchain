@@ -2,6 +2,7 @@
 
 // Schemas
 export {
+  EnvVarsSchema,
   ExportSchema,
   type ExportData,
   type ExportDataInput,

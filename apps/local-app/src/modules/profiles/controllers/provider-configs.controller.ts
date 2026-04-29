@@ -43,6 +43,7 @@ export class ProviderConfigsController {
     const updateData: {
       providerId?: string;
       name?: string;
+      description?: string | null;
       options?: string | null;
       env?: Record<string, string> | null;
     } = {};
@@ -52,6 +53,9 @@ export class ProviderConfigsController {
     }
     if (data.name !== undefined) {
       updateData.name = data.name;
+    }
+    if (data.description !== undefined) {
+      updateData.description = data.description;
     }
     if (data.options !== undefined) {
       updateData.options = data.options;

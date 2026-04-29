@@ -54,6 +54,7 @@ import {
   Sparkles,
   GitCompareArrows,
   GitBranch,
+  UsersRound,
 } from 'lucide-react';
 import { ThemeSelect, type ThemeValue, getStoredTheme } from '@/ui/components/ThemeSelect';
 import { Popover, PopoverContent, PopoverTrigger } from '@/ui/components/ui/popover';
@@ -118,6 +119,7 @@ const navSections: NavSection[] = [
     collapsible: true,
     items: [
       { label: 'Agents', path: '/agents', icon: Bot },
+      { label: 'Teams', path: '/teams', icon: UsersRound },
       { label: 'Profiles', path: '/profiles', icon: Users },
       { label: 'Prompts', path: '/prompts', icon: FileText },
       { label: 'Statuses', path: '/statuses', icon: Layers },
@@ -143,6 +145,7 @@ const SHORTCUTS: KeyboardShortcut[] = [
   { keys: 'g c', description: 'Go to Chat' },
   { keys: 'g b', description: 'Go to Board' },
   { keys: 'g r', description: 'Go to Reviews' },
+  { keys: 'g t', description: 'Go to Teams' },
   { keys: 't', description: 'Toggle terminal dock', hideInMainMode: true },
   { keys: 'Alt+Shift+X', description: 'Toggle all terminal windows', hideInMainMode: true },
   { keys: 'Alt + `', description: 'Cycle terminal windows', hideInMainMode: true },
@@ -748,6 +751,21 @@ function LayoutShell({ children, isMainMode }: LayoutProps & { isMainMode: boole
             announceShortcut('nav-reviews', 'Navigated to Reviews (shortcut g r)');
           }
         }
+        lastKeyRef.current = null;
+        return;
+      }
+
+      if (
+        event.key === 't' &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        lastKeyRef.current?.key === 'g' &&
+        now - lastKeyRef.current.timestamp < 1000
+      ) {
+        event.preventDefault();
+        navigate('/teams');
+        announceShortcut('nav-teams', 'Navigated to Teams (shortcut g t)');
         lastKeyRef.current = null;
         return;
       }

@@ -1,0 +1,1 @@
+ALTER TABLE `profile_provider_configs` ADD `description` text;

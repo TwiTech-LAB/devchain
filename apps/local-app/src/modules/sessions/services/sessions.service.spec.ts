@@ -1898,6 +1898,172 @@ describe('SessionsService', () => {
     expect(sendArgs.join(' ')).not.toContain('[1m]');
   });
 
+  describe('provider-level env merge at session launch', () => {
+    const agentBase = {
+      id: 'agent-1',
+      name: 'Helper Agent',
+      projectId: 'project-1',
+      profileId: 'profile-1',
+      providerConfigId: 'config-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    };
+    const projectBase = {
+      id: 'project-1',
+      name: 'My Project',
+      rootPath: '/workspace/project-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    };
+    const profileBase = {
+      id: 'profile-1',
+      name: 'Helper Profile',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    };
+
+    it('Claude: merges { ...devchainEnv, ...providerEnv, ...configEnv } — config wins on collision', async () => {
+      jest.useFakeTimers();
+      storage.getAgent.mockResolvedValue(agentBase);
+      storage.getProject.mockResolvedValue(projectBase);
+      storage.getAgentProfile.mockResolvedValue(profileBase);
+      storage.getProfileProviderConfig.mockResolvedValue({
+        id: 'config-1',
+        profileId: 'profile-1',
+        providerId: 'provider-1',
+        options: '--model opus',
+        env: { SHARED: 'from-config', CONFIG_ONLY: 'cval' },
+      });
+      storage.getProvider.mockResolvedValue({
+        id: 'provider-1',
+        name: 'claude',
+        binPath: '/usr/local/bin/claude',
+        mcpConfigured: true,
+        env: { SHARED: 'from-provider', PROVIDER_ONLY: 'pval' },
+      });
+
+      const launchPromise = service.launchSession({ projectId: 'project-1', agentId: 'agent-1' });
+      await jest.runAllTimersAsync();
+      await launchPromise;
+
+      const sendArgs = tmuxService.sendCommandArgs.mock.calls[0][1] as string[];
+      const joined = sendArgs.join(' ');
+      // Config wins on collision
+      expect(joined).toContain('SHARED=from-config');
+      expect(joined).not.toContain('SHARED=from-provider');
+      // Provider-only key present
+      expect(joined).toContain('PROVIDER_ONLY=pval');
+      // Config-only key present
+      expect(joined).toContain('CONFIG_ONLY=cval');
+      // Devchain env keys present (bottom of precedence)
+      expect(joined).toContain('DEVCHAIN_API_URL=');
+      expect(joined).toContain('DEVCHAIN_PROJECT_ID=project-1');
+      expect(joined).toContain('DEVCHAIN_AGENT_ID=agent-1');
+    });
+
+    it('non-Claude: merges { ...providerEnv, ...configEnv } — no devchain keys', async () => {
+      jest.useFakeTimers();
+      storage.getAgent.mockResolvedValue(agentBase);
+      storage.getProject.mockResolvedValue(projectBase);
+      storage.getAgentProfile.mockResolvedValue(profileBase);
+      storage.getProfileProviderConfig.mockResolvedValue({
+        id: 'config-1',
+        profileId: 'profile-1',
+        providerId: 'provider-1',
+        options: null,
+        env: { SHARED: 'from-config', CONFIG_ONLY: 'cval' },
+      });
+      storage.getProvider.mockResolvedValue({
+        id: 'provider-1',
+        name: 'opencode',
+        binPath: '/usr/local/bin/opencode',
+        mcpConfigured: true,
+        env: { SHARED: 'from-provider', PROVIDER_ONLY: 'pval' },
+      });
+      providerAdapterFactory.getAdapter.mockReturnValue({
+        providerName: 'opencode',
+        launchInitialPromptBehavior: undefined,
+      });
+
+      const launchPromise = service.launchSession({ projectId: 'project-1', agentId: 'agent-1' });
+      await jest.runAllTimersAsync();
+      await launchPromise;
+
+      const sendArgs = tmuxService.sendCommandArgs.mock.calls[0][1] as string[];
+      const joined = sendArgs.join(' ');
+      // Config wins on collision
+      expect(joined).toContain('SHARED=from-config');
+      expect(joined).not.toContain('SHARED=from-provider');
+      // Provider-only and config-only keys present
+      expect(joined).toContain('PROVIDER_ONLY=pval');
+      expect(joined).toContain('CONFIG_ONLY=cval');
+      // No devchain env keys for non-Claude
+      expect(joined).not.toContain('DEVCHAIN_API_URL');
+      expect(joined).not.toContain('DEVCHAIN_PROJECT_ID');
+    });
+
+    it('provider.env = null behaves identically to before (no extra env)', async () => {
+      jest.useFakeTimers();
+      storage.getAgent.mockResolvedValue(agentBase);
+      storage.getProject.mockResolvedValue(projectBase);
+      storage.getAgentProfile.mockResolvedValue(profileBase);
+      storage.getProfileProviderConfig.mockResolvedValue({
+        id: 'config-1',
+        profileId: 'profile-1',
+        providerId: 'provider-1',
+        options: '--model opus',
+        env: { MY_VAR: 'val' },
+      });
+      storage.getProvider.mockResolvedValue({
+        id: 'provider-1',
+        name: 'claude',
+        binPath: '/usr/local/bin/claude',
+        mcpConfigured: true,
+        env: null,
+      });
+
+      const launchPromise = service.launchSession({ projectId: 'project-1', agentId: 'agent-1' });
+      await jest.runAllTimersAsync();
+      await launchPromise;
+
+      const sendArgs = tmuxService.sendCommandArgs.mock.calls[0][1] as string[];
+      const joined = sendArgs.join(' ');
+      // Config env present
+      expect(joined).toContain('MY_VAR=val');
+      // Devchain env present
+      expect(joined).toContain('DEVCHAIN_API_URL=');
+    });
+
+    it('CLAUDE_CODE_DISABLE_1M_CONTEXT is deleted from merged result even if in provider env', async () => {
+      jest.useFakeTimers();
+      storage.getAgent.mockResolvedValue(agentBase);
+      storage.getProject.mockResolvedValue(projectBase);
+      storage.getAgentProfile.mockResolvedValue(profileBase);
+      storage.getProfileProviderConfig.mockResolvedValue({
+        id: 'config-1',
+        profileId: 'profile-1',
+        providerId: 'provider-1',
+        options: '--model opus',
+        env: null,
+      });
+      storage.getProvider.mockResolvedValue({
+        id: 'provider-1',
+        name: 'claude',
+        binPath: '/usr/local/bin/claude',
+        mcpConfigured: true,
+        oneMillionContextEnabled: true,
+        env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: '1' },
+      });
+
+      const launchPromise = service.launchSession({ projectId: 'project-1', agentId: 'agent-1' });
+      await jest.runAllTimersAsync();
+      await launchPromise;
+
+      const sendArgs = tmuxService.sendCommandArgs.mock.calls[0][1] as string[];
+      expect(sendArgs.join(' ')).not.toContain('CLAUDE_CODE_DISABLE_1M_CONTEXT');
+    });
+  });
+
   it('strips stale CLAUDE_CODE_DISABLE_1M_CONTEXT from provider-config env', async () => {
     jest.useFakeTimers();
     storage.getAgent.mockResolvedValue({
@@ -2430,6 +2596,209 @@ describe('SessionsService', () => {
         preDelayMs: undefined,
       }),
     );
+  });
+
+  it('includes team context in initial prompt when TeamsService is available', async () => {
+    jest.useFakeTimers();
+    storage.getAgent.mockResolvedValue({
+      id: 'agent-1',
+      name: 'Helper Agent',
+      projectId: 'project-1',
+      profileId: 'profile-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProject.mockResolvedValue({
+      id: 'project-1',
+      name: 'My Project',
+      rootPath: '/workspace/project-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getAgentProfile.mockResolvedValue({
+      id: 'profile-1',
+      name: 'Helper Profile',
+      options: '--model claude-3',
+      providerId: 'provider-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProvider.mockResolvedValue({
+      id: 'provider-1',
+      name: 'claude',
+      binPath: '/usr/local/bin/claude',
+      mcpConfigured: true,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+      {
+        id: 'config-1',
+        profileId: 'profile-1',
+        providerId: 'provider-1',
+        options: '--model claude-3',
+        env: null,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      },
+    ]);
+    storage.getInitialSessionPrompt.mockResolvedValue({
+      id: 'prompt-1',
+      title: 'Init',
+      content: '{{#if team_name}}Team: {{team_name}}{{/if}}',
+    });
+
+    const teamsServiceMock = {
+      listTeamsByAgent: jest.fn().mockResolvedValue([
+        {
+          id: 't1',
+          name: 'Backend',
+          teamLeadAgentId: 'agent-1',
+          projectId: 'project-1',
+          description: null,
+          maxMembers: 10,
+          maxConcurrentTasks: 3,
+          allowTeamLeadCreateAgents: false,
+          createdAt: '',
+          updatedAt: '',
+        },
+      ]),
+    };
+
+    const dbMock = {
+      session: {
+        client: {
+          prepare: sqlitePrepare,
+        },
+      },
+    } as unknown as BetterSQLite3Database;
+
+    const moduleRefWithTeams = {
+      get: jest.fn().mockImplementation((token: unknown) => {
+        const tokenName = (token as { name?: string })?.name;
+        if (tokenName === 'TerminalGateway') return terminalGateway;
+        if (tokenName === 'EventsService') return eventsService;
+        if (tokenName === 'TeamsService') return teamsServiceMock;
+        return null;
+      }),
+    };
+
+    const serviceWithTeams = new SessionsService(
+      dbMock,
+      storage as never,
+      tmuxService as never,
+      sendCoordinator,
+      ptyService as never,
+      preflightService as never,
+      mcpEnsureService as never,
+      sessionCoordinator as never,
+      { getHooksConfig: jest.fn().mockReturnValue(null) } as never,
+      providerAdapterFactory as never,
+      moduleRefWithTeams as never,
+    );
+
+    const launchPromise = serviceWithTeams.launchSession({
+      projectId: 'project-1',
+      agentId: 'agent-1',
+    });
+
+    await jest.runAllTimersAsync();
+    await launchPromise;
+
+    expect(teamsServiceMock.listTeamsByAgent).toHaveBeenCalledWith('agent-1');
+    const rendered = (tmuxService.pasteAndSubmit as jest.Mock).mock.calls[0][1] as string;
+    expect(rendered).toContain('Team: Backend');
+
+    jest.useRealTimers();
+  });
+
+  it('delivers initial prompt with teamless context when moduleRef.get throws', async () => {
+    jest.useFakeTimers();
+    storage.getAgent.mockResolvedValue({
+      id: 'agent-1',
+      name: 'Helper Agent',
+      projectId: 'project-1',
+      profileId: 'profile-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProject.mockResolvedValue({
+      id: 'project-1',
+      name: 'My Project',
+      rootPath: '/workspace/project-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getAgentProfile.mockResolvedValue({
+      id: 'profile-1',
+      name: 'Helper Profile',
+      options: '--model claude-3',
+      providerId: 'provider-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.getProvider.mockResolvedValue({
+      id: 'provider-1',
+      name: 'claude',
+      binPath: '/usr/local/bin/claude',
+      mcpConfigured: true,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+      {
+        id: 'config-1',
+        profileId: 'profile-1',
+        providerId: 'provider-1',
+        options: '--model claude-3',
+        env: null,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      },
+    ]);
+
+    const dbMock = {
+      session: {
+        client: {
+          prepare: sqlitePrepare,
+        },
+      },
+    } as unknown as BetterSQLite3Database;
+
+    const moduleRefThrows = {
+      get: jest.fn().mockImplementation((token: unknown) => {
+        const tokenName = (token as { name?: string })?.name;
+        if (tokenName === 'TerminalGateway') return terminalGateway;
+        if (tokenName === 'EventsService') return eventsService;
+        if (tokenName === 'TeamsService') throw new Error('Provider not found');
+        return null;
+      }),
+    };
+
+    const serviceThrows = new SessionsService(
+      dbMock,
+      storage as never,
+      tmuxService as never,
+      sendCoordinator,
+      ptyService as never,
+      preflightService as never,
+      mcpEnsureService as never,
+      sessionCoordinator as never,
+      { getHooksConfig: jest.fn().mockReturnValue(null) } as never,
+      providerAdapterFactory as never,
+      moduleRefThrows as never,
+    );
+
+    const launchPromise = serviceThrows.launchSession({
+      projectId: 'project-1',
+      agentId: 'agent-1',
+    });
+
+    await jest.runAllTimersAsync();
+    const result = await launchPromise;
+
+    expect(result.id).toBeDefined();
+    expect(tmuxService.pasteAndSubmit).toHaveBeenCalledTimes(1);
+
+    jest.useRealTimers();
   });
 
   it('returns existing session when agent already has active session (idempotent)', async () => {

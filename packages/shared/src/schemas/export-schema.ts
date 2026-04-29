@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { isValidSemVer } from '../utils/semver.js';
+import { EnvVarsSchema } from './env-vars.js';
 
 /**
  * Semver string schema with validation
@@ -84,8 +85,9 @@ export const ExportSchema = z
               z.object({
                 name: z.string().min(1), // Unique name within profile for stable references
                 providerName: z.string().min(1), // Provider name (resolved to ID on import)
+                description: z.string().nullable().optional(),
                 options: z.string().nullable().optional(), // Provider-specific options (CLI flags)
-                env: z.record(z.string(), z.string()).nullable().optional(), // Environment variables
+                env: EnvVarsSchema,
               }),
             )
             .optional(),
@@ -204,6 +206,32 @@ export const ExportSchema = z
       )
       .optional()
       .default([]),
+    // Teams (references agents and profiles by name for portability)
+    teams: z
+      .array(
+        z.object({
+          name: z.string().min(1),
+          description: z.string().nullable().optional(),
+          teamLeadAgentName: z.string().nullable().optional(),
+          memberAgentNames: z.array(z.string().min(1)),
+          maxMembers: z.number().int().min(2).max(10).optional(),
+          maxConcurrentTasks: z.number().int().min(1).max(10).optional(),
+          allowTeamLeadCreateAgents: z.boolean().optional().default(false),
+          profileNames: z.array(z.string().min(1)).optional().default([]),
+          profileSelections: z
+            .array(
+              z
+                .object({
+                  profileName: z.string().min(1),
+                  configNames: z.array(z.string().min(1)).min(1),
+                })
+                .strict(),
+            )
+            .optional(),
+        }),
+      )
+      .optional()
+      .default([]),
     // Provider-level settings (carries threshold and future settings across templates)
     providerSettings: z
       .array(
@@ -212,6 +240,7 @@ export const ExportSchema = z
           autoCompactThreshold: z.number().int().min(1).max(100).nullable().optional(),
           autoCompactThreshold1m: z.number().int().min(1).max(100).nullable().optional(),
           oneMillionContextEnabled: z.boolean().optional(),
+          env: EnvVarsSchema,
         }),
       )
       .optional(),

@@ -1925,17 +1925,21 @@ describe('LocalStorageService', () => {
             startedAt: '2024-01-01T00:00:00Z',
           },
         ];
-
-        mockDb.select = jest.fn().mockReturnValue({
-          from: jest.fn().mockReturnValue({
-            where: jest.fn().mockResolvedValue(runningSessions),
+        const tx = {
+          select: jest.fn().mockReturnValue({
+            from: jest.fn().mockReturnValue({
+              where: jest.fn().mockResolvedValue(runningSessions),
+            }),
           }),
-        });
+          delete: jest.fn(),
+        };
+        mockDb.transaction = jest.fn().mockImplementation(async (callback) => callback(tx));
 
         await expect(service.deleteAgent('agent-1')).rejects.toThrow(ConflictError);
         await expect(service.deleteAgent('agent-1')).rejects.toThrow(
           'Cannot delete agent: 1 active session(s) are still running',
         );
+        expect(tx.delete).not.toHaveBeenCalled();
       });
 
       it('should delete agent and auto-delete completed sessions', async () => {
@@ -1953,20 +1957,59 @@ describe('LocalStorageService', () => {
             startedAt: '2024-01-01T00:00:00Z',
           },
         ];
-
-        mockDb.select = jest.fn().mockReturnValue({
-          from: jest.fn().mockReturnValue({
-            where: jest.fn().mockResolvedValue(completedSessions),
-          }),
-        });
-
-        mockDb.delete = jest.fn().mockReturnValue({
+        const txDelete = jest.fn().mockReturnValue({
           where: jest.fn().mockResolvedValue(undefined),
         });
+        const tx = {
+          select: jest
+            .fn()
+            .mockReturnValueOnce({
+              from: jest.fn().mockReturnValue({
+                where: jest.fn().mockResolvedValue(completedSessions),
+              }),
+            })
+            .mockReturnValueOnce({
+              from: jest.fn().mockReturnValue({
+                where: jest.fn().mockResolvedValue([]),
+              }),
+            }),
+          delete: txDelete,
+        };
+        mockDb.transaction = jest.fn().mockImplementation(async (callback) => callback(tx));
 
         await expect(service.deleteAgent('agent-1')).resolves.toBeUndefined();
         // Should delete sessions + agent
-        expect(mockDb.delete).toHaveBeenCalledTimes(3);
+        expect(txDelete).toHaveBeenCalledTimes(3);
+      });
+
+      it('should disband teams that would lose their final member during deletion', async () => {
+        const txDelete = jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue(undefined),
+        });
+        const tx = {
+          select: jest
+            .fn()
+            .mockReturnValueOnce({
+              from: jest.fn().mockReturnValue({
+                where: jest.fn().mockResolvedValue([]),
+              }),
+            })
+            .mockReturnValueOnce({
+              from: jest.fn().mockReturnValue({
+                where: jest.fn().mockResolvedValue([{ teamId: 'team-1' }]),
+              }),
+            })
+            .mockReturnValueOnce({
+              from: jest.fn().mockReturnValue({
+                where: jest.fn().mockResolvedValue([{ count: 1 }]),
+              }),
+            }),
+          delete: txDelete,
+        };
+        mockDb.transaction = jest.fn().mockImplementation(async (callback) => callback(tx));
+
+        await expect(service.deleteAgent('agent-1')).resolves.toBeUndefined();
+        expect(txDelete).toHaveBeenCalledTimes(2);
       });
     });
   });
@@ -2151,13 +2194,14 @@ describe('LocalStorageService', () => {
 
     describe('getProvider', () => {
       it('should return a provider when found', async () => {
-        const mockProvider = {
+        const mockProviderRow = {
           id: 'provider-1',
           name: 'claude',
           binPath: '/usr/local/bin/claude',
           mcpConfigured: false,
           mcpEndpoint: null,
           mcpRegisteredAt: null,
+          env: null,
           createdAt: '2024-01-01T00:00:00Z',
           updatedAt: '2024-01-01T00:00:00Z',
         };
@@ -2165,14 +2209,14 @@ describe('LocalStorageService', () => {
         mockDb.select = jest.fn().mockReturnValue({
           from: jest.fn().mockReturnValue({
             where: jest.fn().mockReturnValue({
-              limit: jest.fn().mockResolvedValue([mockProvider]),
+              limit: jest.fn().mockResolvedValue([mockProviderRow]),
             }),
           }),
         });
 
         const result = await service.getProvider('provider-1');
 
-        expect(result).toEqual(mockProvider);
+        expect(result).toEqual(mockProviderRow);
       });
 
       it('should throw NotFoundError when provider not found', async () => {

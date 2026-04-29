@@ -1,15 +1,20 @@
 import {
   Controller,
   Get,
+  Post,
   Delete,
   Param,
+  Body,
   BadRequestException,
+  ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiParam } from '@nestjs/swagger';
 import { UnifiedTemplateService, UnifiedTemplateInfo } from '../services/unified-template.service';
 import { TemplateCacheService } from '../services/template-cache.service';
-import { ValidationError, NotFoundError } from '../../../common/errors/error-types';
+import { ValidationError, NotFoundError, ForbiddenError } from '../../../common/errors/error-types';
+import { ExportSchema } from '@devchain/shared';
+import { z } from 'zod';
 import {
   isValidSlug,
   isValidVersion,
@@ -84,6 +89,58 @@ export class TemplatesController {
       templates,
       total: templates.length,
     };
+  }
+
+  @Post('preview')
+  @ApiOperation({ summary: 'Preview a parsed template without creating a project' })
+  @ApiResponse({ status: 200, description: 'Parsed template payload' })
+  @ApiResponse({ status: 400, description: 'Invalid template or input' })
+  @ApiResponse({ status: 403, description: 'Path traversal rejected' })
+  @ApiResponse({ status: 404, description: 'Template not found' })
+  async previewTemplate(@Body() body: unknown) {
+    const PreviewSchema = z
+      .object({
+        slug: z.string().min(1).optional(),
+        version: z.string().optional(),
+        templatePath: z.string().min(1).optional(),
+      })
+      .refine((d) => !!d.slug !== !!d.templatePath, {
+        message: 'Provide either slug OR templatePath, but not both or neither',
+      });
+
+    try {
+      const parsed = PreviewSchema.parse(body);
+
+      let content: Record<string, unknown>;
+      if (parsed.templatePath) {
+        const result = this.unifiedTemplateService.getTemplateFromFilePath(parsed.templatePath);
+        content = result.content as Record<string, unknown>;
+      } else {
+        const result = await this.unifiedTemplateService.getTemplate(
+          parsed.slug!,
+          parsed.version ?? undefined,
+        );
+        content = result.content as Record<string, unknown>;
+      }
+      return ExportSchema.parse(content);
+    } catch (error) {
+      if (error instanceof ValidationError) {
+        throw new BadRequestException(error.message);
+      }
+      if (error instanceof NotFoundError) {
+        throw new NotFoundException(error.message);
+      }
+      if (error instanceof ForbiddenError) {
+        throw new ForbiddenException(error.message);
+      }
+      if (error instanceof z.ZodError) {
+        throw new BadRequestException({
+          message: 'Invalid template format',
+          errors: error.errors,
+        });
+      }
+      throw error;
+    }
   }
 
   /**

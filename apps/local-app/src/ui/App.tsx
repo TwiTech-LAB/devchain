@@ -5,6 +5,7 @@ import { PromptsPage } from './pages/PromptsPage';
 import { ProfilesPage } from './pages/ProfilesPage';
 import { ProvidersPage } from './pages/ProvidersPage';
 import { AgentsPage } from './pages/AgentsPage';
+import { TeamsPage } from './pages/TeamsPage';
 import { StatusesPage } from './pages/StatusesPage';
 import { BoardPage } from './pages/BoardPage';
 import { EpicDetailPage } from './pages/EpicDetailPage';
@@ -22,6 +23,7 @@ import { RecordsDisabledPage } from './pages/RecordsDisabledPage';
 import { RegistryPage } from './pages/RegistryPage';
 import { SkillsPage } from './pages/SkillsPage';
 import { WorktreesPage } from './pages/WorktreesPage';
+import { CodebaseOverviewDisabledPage } from './pages/CodebaseOverviewDisabledPage';
 import { RuntimeProvider, useRuntime } from './hooks/useRuntime';
 
 export function App() {
@@ -46,6 +48,7 @@ function AppRoutes() {
               <Routes>
                 <Route path="/" element={<Navigate to="/projects" replace />} />
                 <Route path="/projects" element={<ProjectsPage />} />
+                <Route path="/overview" element={<CodebaseOverviewDisabledPage />} />
                 <Route path="/registry" element={<RegistryPage />} />
                 <Route path="/skills" element={<SkillsPage />} />
                 <Route path="/documents" element={<DocumentsDisabledPage />} />
@@ -53,6 +56,7 @@ function AppRoutes() {
                 <Route path="/profiles" element={<ProfilesPage />} />
                 <Route path="/providers" element={<ProvidersPage />} />
                 <Route path="/agents" element={<AgentsPage />} />
+                <Route path="/teams" element={<TeamsPage />} />
                 <Route path="/statuses" element={<StatusesPage />} />
                 <Route path="/board" element={<BoardPage />} />
                 <Route

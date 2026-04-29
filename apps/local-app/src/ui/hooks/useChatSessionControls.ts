@@ -28,6 +28,7 @@ export interface UseChatSessionControlsOptions {
   agentPresence: AgentPresenceMap;
   agents: AgentOrGuest[];
   presenceReady: boolean;
+  canAttachInlineTerminal?: (agentId: string) => boolean;
   onInlineTerminalAttach?: (agentId: string, sessionId: string | null) => void;
   onTerminalMenuClose?: () => void;
 }
@@ -78,6 +79,7 @@ export function useChatSessionControls({
   agentPresence,
   agents,
   presenceReady,
+  canAttachInlineTerminal,
   onInlineTerminalAttach,
   onTerminalMenuClose,
 }: UseChatSessionControlsOptions): UseChatSessionControlsResult {
@@ -161,7 +163,7 @@ export function useChatSessionControls({
           });
         }
 
-        if (attach && selectedThreadId) {
+        if (attach && canAttachInlineTerminal?.(agentId)) {
           onInlineTerminalAttach?.(session.agentId ?? agentId, session.id);
           onTerminalMenuClose?.();
         }
@@ -213,7 +215,15 @@ export function useChatSessionControls({
         });
       }
     },
-    [projectId, selectedThreadId, toast, queryClient, onInlineTerminalAttach, onTerminalMenuClose],
+    [
+      projectId,
+      selectedThreadId,
+      canAttachInlineTerminal,
+      toast,
+      queryClient,
+      onInlineTerminalAttach,
+      onTerminalMenuClose,
+    ],
   );
 
   // Restart session handler
@@ -258,7 +268,7 @@ export function useChatSessionControls({
         queryClient.invalidateQueries({ queryKey: chatQueryKeys.agentPresence(projectId) });
         queryClient.invalidateQueries({ queryKey: chatQueryKeys.activeSessions(projectId) });
 
-        if (selectedThreadId) {
+        if (canAttachInlineTerminal?.(agentId)) {
           onInlineTerminalAttach?.(agentId, session?.id ?? null);
         }
       } catch (error) {
@@ -271,7 +281,7 @@ export function useChatSessionControls({
         setRestartingAgentId(null);
       }
     },
-    [agentPresence, projectId, queryClient, selectedThreadId, onInlineTerminalAttach, toast],
+    [agentPresence, projectId, queryClient, canAttachInlineTerminal, onInlineTerminalAttach, toast],
   );
 
   // Terminate session handler

@@ -651,28 +651,51 @@ export interface UpdateEpicResponse {
 // Allows:
 // - threadId (agent replies into existing thread; recipients optional for fan-out)
 // - recipientAgentNames (creates new agent-initiated injection if threadId omitted)
+// - teamName (pooled team routing; handler logic resolved separately)
 // - recipient: internal-only, not exposed in tool schema
 export const SendMessageParamsSchema = z
   .object({
     sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
     threadId: z.string().uuid().optional(),
-    recipientAgentNames: z.array(z.string().min(1)).optional(), // Target agents to message
+    recipientAgentNames: z.array(z.string().min(1)).min(1).optional(), // Target agents to message
+    teamName: z.string().min(1).optional(),
     message: z.string().min(1),
     // Internal-only: kept for backward compatibility but not exposed in tool schema
     recipient: z.enum(['user', 'agents']).optional(),
   })
   .strict()
-  .refine(
-    (v) =>
-      Boolean(
-        v.threadId ||
-          (v.recipientAgentNames && v.recipientAgentNames.length > 0) ||
-          v.recipient === 'user',
-      ),
-    {
-      message: 'Provide threadId or recipientAgentNames to send a message',
-    },
-  );
+  .superRefine((v, ctx) => {
+    const hasRecipientAgentNames = Boolean(
+      v.recipientAgentNames && v.recipientAgentNames.length > 0,
+    );
+
+    if (v.teamName && hasRecipientAgentNames) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['teamName'],
+        message: 'teamName and recipientAgentNames are mutually exclusive',
+      });
+    }
+
+    if (v.teamName && v.threadId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['teamName'],
+        message: 'teamName cannot be combined with threadId in v1',
+      });
+    }
+
+    if (v.teamName && v.recipient === 'user') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['teamName'],
+        message: 'teamName cannot be combined with recipient: "user"',
+      });
+    }
+
+    // All three recipient fields absent is allowed (self-team fallback in handler)
+    // unless recipient is explicitly 'user' — which is handled separately
+  });
 
 export type SendMessageParams = z.infer<typeof SendMessageParamsSchema>;
 
@@ -687,6 +710,12 @@ export type SendMessageResponse =
         error?: string;
       }>;
       estimatedDeliveryMs: number;
+      teamDelivery?: {
+        teamName: string;
+        recipientCount: number;
+        routedToLead: boolean;
+        summary: string;
+      };
     }
   | {
       mode: 'thread';
@@ -930,6 +959,162 @@ export interface LegacySessionContext {
     name: string;
     rootPath: string;
   } | null;
+}
+
+// ============================================
+// Team MCP Tools
+// ============================================
+
+// devchain_teams_list
+export const TeamsListParamsSchema = z
+  .object({
+    sessionId: z.string().min(8),
+    q: z.string().optional(),
+    limit: z.number().int().positive().optional(),
+    offset: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
+export type TeamsListParams = z.infer<typeof TeamsListParamsSchema>;
+
+export interface TeamSummary {
+  id: string;
+  name: string;
+  description: string | null;
+  teamLeadAgentId: string | null;
+  teamLeadName: string | null;
+  memberCount: number;
+}
+
+export interface ListTeamsResponse {
+  teams: TeamSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+// devchain_teams_members_list
+export const TeamsMembersListParamsSchema = z
+  .object({
+    sessionId: z.string().min(8),
+    teamId: z.string().uuid().optional(),
+  })
+  .strict();
+
+export type TeamsMembersListParams = z.infer<typeof TeamsMembersListParamsSchema>;
+
+export interface TeamMemberSummary {
+  agentId: string;
+  agentName: string;
+  isTeamLead: boolean;
+}
+
+export interface TeamMembersEntry {
+  teamId: string;
+  teamName: string;
+  members: TeamMemberSummary[];
+}
+
+export interface ListTeamMembersResponse {
+  teams: TeamMembersEntry[];
+}
+
+// devchain_teams_configs_list
+export const TeamsConfigsListParamsSchema = z
+  .object({
+    sessionId: z.string().min(8),
+  })
+  .strict();
+
+export type TeamsConfigsListParams = z.infer<typeof TeamsConfigsListParamsSchema>;
+
+export interface TeamsConfigsListEntry {
+  configName: string;
+  description: string | null;
+  profileName: string;
+  teamName: string;
+}
+
+export interface TeamsConfigsListResponse {
+  configs: TeamsConfigsListEntry[];
+}
+
+// devchain_teams_create_agent
+export const TeamsCreateAgentParamsSchema = z
+  .object({
+    sessionId: z.string().min(8),
+    name: z.string().trim().min(1, 'Name is required and must not be whitespace-only'),
+    description: z.string().trim().min(1, 'Description must not be whitespace-only').optional(),
+    configName: z.string().trim().min(1, 'configName is required and must not be whitespace-only'),
+    profileName: z.string().trim().min(1, 'profileName must not be whitespace-only').optional(),
+    teamName: z.string().trim().min(1, 'teamName must not be whitespace-only').optional(),
+  })
+  .strict();
+
+export type TeamsCreateAgentParams = z.infer<typeof TeamsCreateAgentParamsSchema>;
+
+export const TeamsDeleteAgentParamsSchema = z
+  .object({
+    sessionId: z.string().min(8),
+    name: z.string().trim().min(1, 'Name is required and must not be whitespace-only'),
+    teamName: z.string().trim().min(1, 'teamName must not be whitespace-only').optional(),
+  })
+  .strict();
+
+export type TeamsDeleteAgentParams = z.infer<typeof TeamsDeleteAgentParamsSchema>;
+
+export interface TeamsDeleteAgentResponse {
+  deletedAgentId: string;
+  deletedAgentName: string;
+  teamName: string;
+}
+
+export const DevchainTeamParamsSchema = z
+  .object({
+    sessionId: z.string().min(8),
+    teamName: z.string().optional(),
+  })
+  .strict();
+
+export type DevchainTeamParams = z.infer<typeof DevchainTeamParamsSchema>;
+
+export interface DevchainTeamMemberProjection {
+  agentId: string;
+  agentName: string;
+  isLead: boolean;
+  profileId: string | null;
+  profileName: string | null;
+  providerConfigId: string | null;
+  providerConfigName: string | null;
+}
+
+export interface DevchainTeamResponse {
+  id: string;
+  name: string;
+  description: string | null;
+  teamLeadAgentId: string | null;
+  teamLeadAgentName: string | null;
+  members: DevchainTeamMemberProjection[];
+  maxMembers: number;
+  maxConcurrentTasks: number;
+  allowTeamLeadCreateAgents: boolean;
+  currentMemberCount: number;
+  busyMembersCount: number;
+  freeSeats: number;
+  freeConcurrentSlots: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TeamsCreateAgentResponse {
+  agent: {
+    id: string;
+    name: string;
+    description: string | null;
+    profileName: string;
+    configName: string;
+  };
+  teamName: string;
 }
 
 // ============================================

@@ -17,8 +17,8 @@ function unwrapZodSchema(schema: ZodSchema): ZodSchema {
 describe('tool-definitions', () => {
   const tools = getToolDefinitions();
 
-  it('exports exactly 36 tool definitions', () => {
-    expect(tools.length).toBe(36);
+  it('exports exactly 42 tool definitions', () => {
+    expect(tools.length).toBe(42);
   });
 
   it('all tools have required shape (name, description, inputSchema)', () => {
@@ -42,6 +42,13 @@ describe('tool-definitions', () => {
     const names = tools.map((t) => t.name);
     const uniqueNames = new Set(names);
     expect(uniqueNames.size).toBe(names.length);
+  });
+
+  it('includes devchain_teams_delete_agent with strict schema', () => {
+    const tool = tools.find((t) => t.name === 'devchain_teams_delete_agent');
+    expect(tool).toBeDefined();
+    const schema = tool!.inputSchema as { additionalProperties?: boolean };
+    expect(schema.additionalProperties).toBe(false);
   });
 
   it('all inputSchema objects have additionalProperties: false', () => {
@@ -87,11 +94,21 @@ describe('tool-definitions', () => {
       expect(schema?.properties).toHaveProperty('threadId');
     });
 
-    it('includes recipientAgentNames in schema properties', () => {
+    it('includes recipientAgentNames with minItems: 1 in schema properties', () => {
       const schema = sendMessage?.inputSchema as {
-        properties?: Record<string, unknown>;
+        properties?: Record<string, { minItems?: number }>;
       };
       expect(schema?.properties).toHaveProperty('recipientAgentNames');
+      expect(schema?.properties?.recipientAgentNames?.minItems).toBe(1);
+    });
+
+    it('includes teamName in schema properties with self-team hint', () => {
+      const schema = sendMessage?.inputSchema as {
+        properties?: Record<string, { description?: string }>;
+      };
+      expect(schema?.properties).toHaveProperty('teamName');
+      expect(schema?.properties?.teamName?.description).toContain('Routes to team lead');
+      expect(schema?.properties?.teamName?.description).toContain('Omit all recipient fields');
     });
   });
 

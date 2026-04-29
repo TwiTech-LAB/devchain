@@ -172,7 +172,7 @@ export async function handleSendMessage(
         },
       };
     }
-    if (validated.recipient === 'user') {
+    if (validated.recipient === 'user' && !validated.teamName) {
       return {
         success: false,
         error: {
@@ -189,10 +189,124 @@ export async function handleSendMessage(
     const senderId = sender.id;
     const senderName = sender.name;
     const senderType = sessionCtx.type;
-    const recipientType = validated.recipient ?? 'agents';
+
+    let effectiveTeamName = validated.teamName;
+
+    if (
+      !validated.teamName &&
+      !validated.recipientAgentNames &&
+      !validated.threadId &&
+      validated.recipient !== 'user'
+    ) {
+      const senderAgentId = sessionCtx.type === 'agent' ? sessionCtx.agent?.id : undefined;
+      if (!senderAgentId || !ctx.teamsService) {
+        return {
+          success: false,
+          error: {
+            code: 'NO_SELF_TEAM',
+            message: 'Sender has no agent context; cannot resolve self-team.',
+          },
+        };
+      }
+      const teams = await ctx.teamsService.listTeamsByAgent(senderAgentId);
+      if (teams.length === 0) {
+        return {
+          success: false,
+          error: {
+            code: 'NO_SELF_TEAM',
+            message:
+              'Sender is not in any team; provide teamName, recipientAgentNames, or threadId explicitly.',
+          },
+        };
+      }
+      if (teams.length > 1) {
+        return {
+          success: false,
+          error: {
+            code: 'AMBIGUOUS_SELF_TEAM',
+            message: 'Sender is in multiple teams; provide teamName explicitly.',
+          },
+        };
+      }
+      effectiveTeamName = teams[0].name;
+    }
+
+    const recipientType = effectiveTeamName ? 'agents' : (validated.recipient ?? 'agents');
 
     const resolvedRecipients: ResolvedRecipient[] = [];
-    if (validated.recipientAgentNames && validated.recipientAgentNames.length > 0) {
+    let teamDelivery:
+      | {
+          teamName: string;
+          recipientCount: number;
+          routedToLead: boolean;
+          summary: string;
+        }
+      | undefined;
+    let teamDeliveryMode: 'lead' | 'lead_excluded' | 'no_lead' | undefined;
+
+    if (effectiveTeamName) {
+      if (!ctx.teamsService) {
+        return {
+          success: false,
+          error: {
+            code: 'SERVICE_UNAVAILABLE',
+            message:
+              'Team routing requires full app context (not available in standalone MCP mode)',
+          },
+        };
+      }
+
+      const matchedTeam = await ctx.teamsService.findTeamByExactName(project.id, effectiveTeamName);
+
+      if (!matchedTeam) {
+        return {
+          success: false,
+          error: {
+            code: 'TEAM_NOT_FOUND',
+            message: `Team "${effectiveTeamName}" not found in project`,
+          },
+        };
+      }
+
+      const fullTeam = await ctx.teamsService.getTeam(matchedTeam.id);
+      if (!fullTeam) {
+        return {
+          success: false,
+          error: {
+            code: 'TEAM_NOT_FOUND',
+            message: `Team "${matchedTeam.name}" not found in project`,
+          },
+        };
+      }
+
+      const teamLeadAgentId = fullTeam.teamLeadAgentId;
+      const teamHasLead = teamLeadAgentId !== null;
+      const routedToLead = teamHasLead && teamLeadAgentId !== senderId;
+      const recipientAgentIds = routedToLead
+        ? [teamLeadAgentId]
+        : fullTeam.members.map((member) => member.agentId);
+
+      for (const agentId of recipientAgentIds) {
+        if (agentId === senderId) {
+          continue;
+        }
+
+        const agent = await ctx.storage.getAgent(agentId);
+        resolvedRecipients.push({
+          type: 'agent',
+          id: agent.id,
+          name: agent.name,
+        });
+      }
+
+      teamDelivery = {
+        teamName: fullTeam.name,
+        recipientCount: 0,
+        routedToLead,
+        summary: '',
+      };
+      teamDeliveryMode = routedToLead ? 'lead' : teamHasLead ? 'lead_excluded' : 'no_lead';
+    } else if (validated.recipientAgentNames && validated.recipientAgentNames.length > 0) {
       for (const name of validated.recipientAgentNames) {
         const recipient = await resolveRecipientByName(ctx, project.id, name);
         if (!recipient) {
@@ -213,6 +327,29 @@ export async function handleSendMessage(
     const uniqueRecipients = resolvedRecipients.filter(
       (r, i, arr) => arr.findIndex((x) => x.id === r.id) === i,
     );
+
+    if (effectiveTeamName && uniqueRecipients.length === 0) {
+      return {
+        success: false,
+        error: {
+          code: 'NO_RECIPIENTS',
+          message: 'No recipients — sender is the only team member/lead',
+        },
+      };
+    }
+
+    if (teamDelivery) {
+      teamDelivery = {
+        ...teamDelivery,
+        recipientCount: uniqueRecipients.length,
+        summary:
+          teamDeliveryMode === 'lead'
+            ? 'Delivered to 1 agent (team lead)'
+            : teamDeliveryMode === 'lead_excluded'
+              ? `Delivered to ${uniqueRecipients.length} agent(s) (team lead excluded)`
+              : `Delivered to ${uniqueRecipients.length} agent(s) (no lead assigned)`,
+      };
+    }
 
     if (!validated.threadId && senderId && recipientType !== 'user') {
       if (!ctx.messagePoolService || !ctx.settingsService) {
@@ -335,6 +472,7 @@ export async function handleSendMessage(
         queuedCount: queued.length,
         queued,
         estimatedDeliveryMs: poolConfig.delayMs,
+        ...(teamDelivery ? { teamDelivery } : {}),
       };
 
       return { success: true, data: response };

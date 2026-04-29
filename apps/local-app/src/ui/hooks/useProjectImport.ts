@@ -1,6 +1,12 @@
 import { useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { FamilyAlternative } from '@/ui/components/project/ProviderMappingModal';
+import type {
+  ParsedTemplateTeam,
+  ParsedTemplateProfile,
+  TeamOverrideOutput,
+} from '@/ui/components/project/ProjectTeamPreconfigDialog';
+import { filterConfigurableTeams } from '@/ui/lib/teams';
 
 type ToastFn = (args: { title: string; description: string; variant?: 'destructive' }) => void;
 
@@ -74,6 +80,11 @@ interface UseProjectImportResult {
   handleImportTemplateChange: (slug: string) => void;
   handleImportProviderMappingConfirm: (mappings: Record<string, string>) => void;
   handleImportProviderMappingCancel: () => void;
+  preconfigOpen: boolean;
+  preconfigTeams: ParsedTemplateTeam[];
+  preconfigProfiles: ParsedTemplateProfile[];
+  handlePreconfigConfirm: (overrides: TeamOverrideOutput[]) => Promise<void>;
+  handlePreconfigCancel: () => void;
 }
 
 export function useProjectImport({
@@ -101,6 +112,11 @@ export function useProjectImport({
     string,
     string
   > | null>(null);
+  const [preconfigOpen, setPreconfigOpen] = useState(false);
+  const [preconfigTeams, setPreconfigTeams] = useState<ParsedTemplateTeam[]>([]);
+  const [preconfigProfiles, setPreconfigProfiles] = useState<ParsedTemplateProfile[]>([]);
+  const pendingImportRef = useRef<unknown | null>(null);
+  const [importTeamOverrides, setImportTeamOverrides] = useState<TeamOverrideOutput[] | null>(null);
 
   const selectedImportTemplate = useMemo(() => {
     return templates?.find((t) => t.slug === selectedTemplateId);
@@ -137,6 +153,11 @@ export function useProjectImport({
     setShowImportProviderMappingModal(false);
     setShowImportConfirm(false);
     setShowMissingProviders(false);
+    setPreconfigOpen(false);
+    setPreconfigTeams([]);
+    setPreconfigProfiles([]);
+    pendingImportRef.current = null;
+    setImportTeamOverrides(null);
     setShowImportModal(true);
   };
 
@@ -159,10 +180,28 @@ export function useProjectImport({
     }
   };
 
+  // Returns true when the template has at least one configurable team, opens the
+  // preconfig dialog, and stores the pending content. Caller should bail out on true
+  // and let handlePreconfigConfirm resume the dry-run after user input.
+  const tryOpenPreconfig = (content: { teams?: unknown; profiles?: unknown }): boolean => {
+    if (
+      Array.isArray(content.teams) &&
+      filterConfigurableTeams(content.teams as ParsedTemplateTeam[]).length > 0
+    ) {
+      pendingImportRef.current = content;
+      setPreconfigTeams(content.teams as ParsedTemplateTeam[]);
+      setPreconfigProfiles(((content.profiles as unknown[]) ?? []) as ParsedTemplateProfile[]);
+      setPreconfigOpen(true);
+      return true;
+    }
+    return false;
+  };
+
   const handleImportFromTemplate = async () => {
     if (!selectedTemplateId || !importTarget) return;
     try {
       setImportingProjectId(importTarget.id);
+      setImportTeamOverrides(null);
       setShowImportModal(false);
       const templateUrl =
         selectedImportTemplate?.source === 'registry' && selectedImportVersion
@@ -173,7 +212,10 @@ export function useProjectImport({
         throw new Error('Failed to fetch template');
       }
       const json = await res.json();
-      const content = json.content;
+      const content = json.content as { teams?: unknown[]; profiles?: unknown[] };
+
+      if (tryOpenPreconfig(content)) return;
+
       setImportPayload(content);
       const dryRes = await fetch(`/api/projects/${importTarget.id}/import?dryRun=true`, {
         method: 'POST',
@@ -199,14 +241,59 @@ export function useProjectImport({
     }
   };
 
+  const handlePreconfigConfirm = async (overrides: TeamOverrideOutput[]) => {
+    setPreconfigOpen(false);
+    const templateContent = pendingImportRef.current;
+    if (!templateContent || !importTarget) return;
+    pendingImportRef.current = null;
+    setImportTeamOverrides(overrides);
+    setImportPayload(templateContent);
+    try {
+      setImportingProjectId(importTarget.id);
+      const dryRes = await fetch(`/api/projects/${importTarget.id}/import?dryRun=true`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...(templateContent as object), teamOverrides: overrides }),
+      });
+      if (!dryRes.ok) {
+        const error = await dryRes.json().catch(() => ({}));
+        throw new Error(error.message || 'Precheck failed');
+      }
+      const body = await dryRes.json();
+      applyDryRunResponse(body);
+    } catch (error) {
+      toast({
+        title: 'Import precheck failed',
+        description: error instanceof Error ? error.message : 'Unable to load template',
+        variant: 'destructive',
+      });
+      setImportTarget(null);
+      setImportPayload(null);
+      setImportTeamOverrides(null);
+    } finally {
+      setImportingProjectId(null);
+    }
+  };
+
+  const handlePreconfigCancel = () => {
+    setPreconfigOpen(false);
+    pendingImportRef.current = null;
+    setPreconfigTeams([]);
+    setPreconfigProfiles([]);
+  };
+
   const onFileSelected: React.ChangeEventHandler<HTMLInputElement> = async (event) => {
     const file = event.target.files?.[0];
     if (!file || !importTarget) return;
     try {
       setShowImportModal(false);
       setImportingProjectId(importTarget.id);
+      setImportTeamOverrides(null);
       const text = await file.text();
       const json = JSON.parse(text);
+
+      if (tryOpenPreconfig(json)) return;
+
       setImportPayload(json);
       const res = await fetch(`/api/projects/${importTarget.id}/import?dryRun=true`, {
         method: 'POST',
@@ -237,13 +324,18 @@ export function useProjectImport({
     try {
       setImportingProjectId(importTarget.id);
       let requestBody = importPayload;
-      if (Object.keys(statusMappings).length > 0 || importFamilyProviderMappings) {
+      if (
+        Object.keys(statusMappings).length > 0 ||
+        importFamilyProviderMappings ||
+        importTeamOverrides
+      ) {
         requestBody = {
           ...(importPayload as object),
           ...(Object.keys(statusMappings).length > 0 && { statusMappings }),
           ...(importFamilyProviderMappings && {
             familyProviderMappings: importFamilyProviderMappings,
           }),
+          ...(importTeamOverrides && { teamOverrides: importTeamOverrides }),
         };
       }
       const res = await fetch(`/api/projects/${importTarget.id}/import`, {
@@ -269,12 +361,14 @@ export function useProjectImport({
       setShowImportResult(true);
       setStatusMappings({});
       setImportFamilyProviderMappings(null);
+      setImportTeamOverrides(null);
       toast({ title: 'Import complete', description: body.message || 'Project replaced.' });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
     } catch (error) {
       setShowImportConfirm(false);
       setStatusMappings({});
       setImportFamilyProviderMappings(null);
+      setImportTeamOverrides(null);
       toast({
         title: 'Import failed',
         description: error instanceof Error ? error.message : 'Unable to import project',
@@ -328,5 +422,10 @@ export function useProjectImport({
     handleImportTemplateChange,
     handleImportProviderMappingConfirm,
     handleImportProviderMappingCancel,
+    preconfigOpen,
+    preconfigTeams,
+    preconfigProfiles,
+    handlePreconfigConfirm,
+    handlePreconfigCancel,
   };
 }

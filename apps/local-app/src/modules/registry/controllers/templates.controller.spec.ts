@@ -1,9 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { TemplatesController } from './templates.controller';
 import { UnifiedTemplateService, UnifiedTemplateInfo } from '../services/unified-template.service';
 import { TemplateCacheService } from '../services/template-cache.service';
-import { ValidationError, NotFoundError } from '../../../common/errors/error-types';
+import { ValidationError, NotFoundError, ForbiddenError } from '../../../common/errors/error-types';
 
 describe('TemplatesController', () => {
   let controller: TemplatesController;
@@ -33,6 +33,7 @@ describe('TemplatesController', () => {
     mockUnifiedTemplateService = {
       listTemplates: jest.fn(),
       getTemplate: jest.fn(),
+      getTemplateFromFilePath: jest.fn(),
       hasTemplate: jest.fn(),
       hasVersion: jest.fn(),
     } as unknown as jest.Mocked<UnifiedTemplateService>;
@@ -231,6 +232,82 @@ describe('TemplatesController', () => {
 
       await expect(controller.deleteTemplateVersion('my-template', '1.0.0')).rejects.toThrow(
         NotFoundException,
+      );
+    });
+  });
+
+  describe('POST /preview', () => {
+    const validContent = {
+      version: 1,
+      exportedAt: '2024-01-01T00:00:00Z',
+      statuses: [{ label: 'New', color: '#000', position: 0 }],
+      profiles: [],
+      agents: [],
+      prompts: [],
+    };
+
+    it('returns parsed payload for slug-based template', async () => {
+      mockUnifiedTemplateService.getTemplate.mockResolvedValue({
+        content: validContent,
+        source: 'bundled',
+      });
+
+      const result = await controller.previewTemplate({ slug: 'teams-dev' });
+      expect(result).toHaveProperty('statuses');
+      expect(mockUnifiedTemplateService.getTemplate).toHaveBeenCalledWith('teams-dev', undefined);
+    });
+
+    it('returns parsed payload for templatePath-based template', async () => {
+      mockUnifiedTemplateService.getTemplateFromFilePath.mockReturnValue({
+        content: validContent,
+        source: 'file',
+      });
+
+      const result = await controller.previewTemplate({ templatePath: '/tmp/test.json' });
+      expect(result).toHaveProperty('statuses');
+      expect(mockUnifiedTemplateService.getTemplateFromFilePath).toHaveBeenCalledWith(
+        '/tmp/test.json',
+      );
+    });
+
+    it('throws 400 when invalid template content', async () => {
+      mockUnifiedTemplateService.getTemplate.mockResolvedValue({
+        content: { invalid: true },
+        source: 'bundled',
+      });
+
+      await expect(controller.previewTemplate({ slug: 'bad' })).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('throws 400 when both slug and templatePath provided', async () => {
+      await expect(
+        controller.previewTemplate({ slug: 'x', templatePath: '/tmp/y.json' }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('throws 400 when neither slug nor templatePath provided', async () => {
+      await expect(controller.previewTemplate({})).rejects.toThrow(BadRequestException);
+    });
+
+    it('throws 404 when template file not found', async () => {
+      mockUnifiedTemplateService.getTemplateFromFilePath.mockImplementation(() => {
+        throw new NotFoundError('Template file', '/missing');
+      });
+
+      await expect(
+        controller.previewTemplate({ templatePath: '/missing/file.json' }),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('throws 403 for path traversal attempt', async () => {
+      mockUnifiedTemplateService.getTemplateFromFilePath.mockImplementation(() => {
+        throw new ForbiddenError('Path traversal rejected');
+      });
+
+      await expect(controller.previewTemplate({ templatePath: '/etc/../secrets' })).rejects.toThrow(
+        ForbiddenException,
       );
     });
   });

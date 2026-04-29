@@ -48,6 +48,7 @@ describe('ProfilesController', () => {
     profileId: 'profile-1',
     providerId: 'provider-1',
     name: 'test-config',
+    description: null,
     options: '--model test',
     env: { API_KEY: 'test-key' },
     position: 0,
@@ -256,6 +257,18 @@ describe('ProfilesController', () => {
       expect(result[0].env).toEqual({ API_KEY: 'test-key' });
     });
 
+    it('GET /api/profiles/:id/provider-configs includes providerName when present', async () => {
+      storage.getAgentProfile.mockResolvedValue(baseProfile);
+      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        { ...baseProviderConfig, providerName: 'Anthropic' },
+      ]);
+
+      const result = await controller.listProviderConfigs('profile-1');
+
+      expect(result).toHaveLength(1);
+      expect(result[0].providerName).toBe('Anthropic');
+    });
+
     it('GET /api/profiles/:id/provider-configs returns empty array when no configs', async () => {
       storage.getAgentProfile.mockResolvedValue(baseProfile);
       storage.listProfileProviderConfigsByProfile.mockResolvedValue([]);
@@ -286,6 +299,7 @@ describe('ProfilesController', () => {
         profileId: 'profile-1',
         providerId: 'provider-1',
         name: 'test-config',
+        description: null,
         options: '--model test',
         env: { API_KEY: 'test-key' },
       });
@@ -306,6 +320,7 @@ describe('ProfilesController', () => {
         profileId: 'profile-1',
         providerId: 'provider-1',
         name: 'simple-config',
+        description: null,
         options: null,
         env: null,
       });

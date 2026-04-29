@@ -37,7 +37,20 @@ import { useSessionTranscript } from '@/ui/hooks/useSessionTranscript';
 import { SessionViewerPanel } from '@/ui/components/session-reader/SessionViewerPanel';
 
 // Extracted hooks
-import { useChatQueries } from '@/ui/hooks/useChatQueries';
+import { useChatQueries, chatQueryKeys } from '@/ui/hooks/useChatQueries';
+import type { AgentOrGuest } from '@/ui/hooks/useChatQueries';
+import { teamsQueryKeys, updateTeam } from '@/ui/lib/teams';
+import { Checkbox } from '@/ui/components/ui/checkbox';
+import { Slider } from '@/ui/components/ui/slider';
+import { Label } from '@/ui/components/ui/label';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/ui/components/ui/dialog';
 import { useChatSocket } from '@/ui/hooks/useChatSocket';
 import { useChatSessionControls } from '@/ui/hooks/useChatSessionControls';
 import { useChatThreadUiState } from '@/ui/hooks/useChatThreadUiState';
@@ -190,16 +203,20 @@ export function ChatPage() {
   // Inline terminal attach handler
   const handleInlineTerminalAttach = useCallback(
     (agentId: string, sessionId: string | null) => {
-      if (threadUiState.selectedThreadId) {
-        threadUiState.setInlineTerminalsByThread((prev) => ({
-          ...prev,
-          [threadUiState.selectedThreadId!]: { agentId, sessionId },
-        }));
-        threadUiState.setTerminalMenuOpen(false);
-        threadUiState.setInlineUnreadCount(0);
-      }
+      threadUiState.attachInlineTerminalForSelectedThread(agentId, sessionId);
     },
     [threadUiState],
+  );
+
+  // Caller-side predicate for useChatSessionControls
+  const canAttachInlineTerminal = useCallback(
+    (agentId: string): boolean => {
+      const threadId = threadUiState.selectedThreadId;
+      if (!threadId) return false;
+      const thread = queries.allThreads.find((t) => t.id === threadId);
+      return Boolean(thread && !thread.isGroup && thread.members?.[0] === agentId);
+    },
+    [threadUiState.selectedThreadId, queries.allThreads],
   );
 
   // Session controls
@@ -209,6 +226,7 @@ export function ChatPage() {
     agentPresence: queries.agentPresence,
     agents: queries.agents,
     presenceReady: queries.presenceReady,
+    canAttachInlineTerminal,
     onInlineTerminalAttach: handleInlineTerminalAttach,
     onTerminalMenuClose: () => threadUiState.setTerminalMenuOpen(false),
   });
@@ -549,6 +567,301 @@ export function ChatPage() {
     },
     onSettled: () => {
       setUpdatingWorktreeConfigKey(null);
+    },
+  });
+
+  // ── Clone agent ──
+  const [pendingCloneAgent, setPendingCloneAgent] = useState<{
+    agent: AgentOrGuest;
+    teamId?: string;
+    teamName?: string;
+    isTeamLead?: boolean;
+  } | null>(null);
+
+  function computeCloneName(baseName: string): string {
+    const existingNames = new Set(queries.agents.map((a) => a.name.toLowerCase()));
+    for (let n = 1; ; n++) {
+      const candidate = `${baseName} (${n})`;
+      if (!existingNames.has(candidate.toLowerCase())) return candidate;
+    }
+  }
+
+  const cloneAgentMutation = useMutation({
+    mutationFn: async (payload: {
+      projectId: string;
+      profileId: string;
+      name: string;
+      description?: string | null;
+      providerConfigId: string;
+      modelOverride?: string | null;
+      targetTeamId?: string | null;
+    }) => {
+      const res = await fetch('/api/agents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectId: payload.projectId,
+          profileId: payload.profileId,
+          name: payload.name,
+          description: payload.description,
+          providerConfigId: payload.providerConfigId,
+          modelOverride: payload.modelOverride,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.message ?? 'Failed to clone agent');
+      }
+      const created = await res.json();
+
+      if (payload.targetTeamId) {
+        try {
+          const teamDetailRes = await fetch(`/api/teams/${payload.targetTeamId}`);
+          if (!teamDetailRes.ok) {
+            return { ...created, teamAddFailed: true };
+          }
+          const teamDetail = await teamDetailRes.json();
+          const currentMemberIds = (teamDetail.members ?? []).map(
+            (m: { agentId: string }) => m.agentId,
+          );
+          const putRes = await fetch(`/api/teams/${payload.targetTeamId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              memberAgentIds: [...currentMemberIds, created.id],
+            }),
+          });
+          if (!putRes.ok) {
+            return { ...created, teamAddFailed: true };
+          }
+        } catch {
+          return { ...created, teamAddFailed: true };
+        }
+      }
+
+      return created;
+    },
+    onSuccess: (result) => {
+      const targetTeamName = cloneTargetTeam?.teamName;
+      const sourceAgentName = pendingCloneAgent?.agent.name ?? '';
+      setPendingCloneAgent(null);
+      if (result?.teamAddFailed && targetTeamName) {
+        toast({
+          title: `Cloned ${pendingCloneName}`,
+          description: `Couldn't add it to ${targetTeamName}. Add it manually via Teams page.`,
+          variant: 'destructive',
+        });
+      } else if (targetTeamName) {
+        toast({ title: `Cloned ${sourceAgentName} into ${targetTeamName}` });
+      } else {
+        toast({ title: 'Cloned agent' });
+      }
+      queryClient.invalidateQueries({ queryKey: chatQueryKeys.agents(projectId) });
+      queryClient.invalidateQueries({ queryKey: chatQueryKeys.agentPresence(projectId) });
+      queryClient.invalidateQueries({ queryKey: chatQueryKeys.activeSessions(projectId) });
+      if (projectId) {
+        queryClient.invalidateQueries({ queryKey: teamsQueryKeys.teams(projectId) });
+      }
+      queryClient.invalidateQueries({ queryKey: ['teams', 'detail'] });
+    },
+    onError: (error) => {
+      toast({
+        title: 'Failed to clone agent',
+        description: error instanceof Error ? error.message : 'Unknown error',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const pendingCloneName = pendingCloneAgent ? computeCloneName(pendingCloneAgent.agent.name) : '';
+  const cloneTargetTeam =
+    pendingCloneAgent?.teamId && !pendingCloneAgent?.isTeamLead
+      ? { teamId: pendingCloneAgent.teamId, teamName: pendingCloneAgent.teamName ?? '' }
+      : null;
+
+  function handleConfirmClone() {
+    if (!pendingCloneAgent || !projectId) return;
+    const src = pendingCloneAgent.agent;
+    cloneAgentMutation.mutate({
+      projectId,
+      profileId: src.profileId ?? '',
+      name: pendingCloneName,
+      description: src.description ?? null,
+      providerConfigId: src.providerConfigId ?? '',
+      modelOverride: src.modelOverride ?? null,
+      targetTeamId: cloneTargetTeam?.teamId ?? null,
+    });
+  }
+
+  // ── Delete agent ──
+  const [pendingDeleteAgent, setPendingDeleteAgent] = useState<AgentOrGuest | null>(null);
+  const [pendingDeleteAgentId, setPendingDeleteAgentId] = useState<string | null>(null);
+
+  const pendingDeleteHasSession = useMemo(() => {
+    if (!pendingDeleteAgent) return false;
+    return queries.activeSessions.some(
+      (s) => s.agentId === pendingDeleteAgent.id && s.status === 'running',
+    );
+  }, [pendingDeleteAgent, queries.activeSessions]);
+
+  const deleteAgentMutation = useMutation({
+    mutationFn: async (agentId: string) => {
+      const agentSessions = queries.activeSessions.filter(
+        (s) => s.agentId === agentId && s.status === 'running',
+      );
+      if (agentSessions.length > 0) {
+        await Promise.all(agentSessions.map((s) => terminateSession(s.id)));
+      }
+      const res = await fetch(`/api/agents/${agentId}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 409) {
+          throw new Error("Can't delete — agent is currently running. Try again in a moment.");
+        }
+        throw new Error(body.message ?? 'Failed to delete agent');
+      }
+    },
+    onMutate: (agentId) => {
+      setPendingDeleteAgentId(agentId);
+    },
+    onSuccess: () => {
+      setPendingDeleteAgent(null);
+      toast({ title: 'Agent deleted' });
+      queryClient.invalidateQueries({ queryKey: chatQueryKeys.agents(projectId) });
+      queryClient.invalidateQueries({ queryKey: chatQueryKeys.agentPresence(projectId) });
+      queryClient.invalidateQueries({ queryKey: chatQueryKeys.activeSessions(projectId) });
+      if (projectId) {
+        queryClient.invalidateQueries({ queryKey: teamsQueryKeys.teams(projectId) });
+      }
+      queryClient.invalidateQueries({ queryKey: ['teams', 'detail'] });
+    },
+    onError: (error) => {
+      toast({
+        title: 'Failed to delete agent',
+        description: error instanceof Error ? error.message : 'Unknown error',
+        variant: 'destructive',
+      });
+    },
+    onSettled: () => {
+      setPendingDeleteAgentId(null);
+    },
+  });
+
+  function handleConfirmDelete() {
+    if (!pendingDeleteAgent) return;
+    deleteAgentMutation.mutate(pendingDeleteAgent.id);
+  }
+
+  // ── Quick-add team agent ──
+  const createTeamAgentMutation = useMutation({
+    mutationFn: async (payload: {
+      teamId: string;
+      teamName: string;
+      providerConfigId: string;
+      name: string;
+    }) => {
+      const res = await fetch(`/api/teams/${payload.teamId}/agents`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          providerConfigId: payload.providerConfigId,
+          name: payload.name,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.message ?? 'Failed to add agent');
+      }
+      return { agent: await res.json(), teamName: payload.teamName };
+    },
+    onSuccess: ({ agent, teamName }) => {
+      toast({ title: `Added ${agent.name} to ${teamName}` });
+      queryClient.invalidateQueries({ queryKey: chatQueryKeys.agents(projectId) });
+      queryClient.invalidateQueries({ queryKey: chatQueryKeys.agentPresence(projectId) });
+      queryClient.invalidateQueries({ queryKey: chatQueryKeys.activeSessions(projectId) });
+      if (projectId) {
+        queryClient.invalidateQueries({ queryKey: teamsQueryKeys.teams(projectId) });
+      }
+      queryClient.invalidateQueries({ queryKey: ['teams', 'detail'] });
+    },
+    onError: (error) => {
+      toast({
+        title: 'Failed to add agent',
+        description: error instanceof Error ? error.message : 'Unknown error',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  function handleAddTeamAgent(
+    payload: import('@/ui/components/chat/TeamQuickAddButton').QuickAddPayload,
+  ) {
+    createTeamAgentMutation.mutate({
+      teamId: payload.teamId,
+      teamName: payload.teamName,
+      providerConfigId: payload.providerConfigId,
+      name: payload.computedName,
+    });
+  }
+
+  // ── Quick-edit team modal ──
+  const [quickEditTeam, setQuickEditTeam] = useState<{
+    teamId: string;
+    teamName: string;
+    maxMembers: number;
+    maxConcurrentTasks: number;
+    allowTeamLeadCreateAgents: boolean;
+  } | null>(null);
+  const [qeMaxMembers, setQeMaxMembers] = useState(5);
+  const [qeMaxConcurrentTasks, setQeMaxConcurrentTasks] = useState(5);
+  const [qeAllowTeamLeadCreateAgents, setQeAllowTeamLeadCreateAgents] = useState(false);
+
+  function handleOpenEditTeam(payload: {
+    teamId: string;
+    teamName: string;
+    maxMembers: number;
+    maxConcurrentTasks: number;
+    allowTeamLeadCreateAgents: boolean;
+  }) {
+    setQuickEditTeam(payload);
+    setQeMaxMembers(payload.maxMembers);
+    setQeMaxConcurrentTasks(payload.maxConcurrentTasks);
+    setQeAllowTeamLeadCreateAgents(payload.allowTeamLeadCreateAgents);
+  }
+
+  const quickEditTeamMutation = useMutation({
+    mutationFn: (payload: {
+      teamId: string;
+      maxMembers: number;
+      maxConcurrentTasks: number;
+      allowTeamLeadCreateAgents: boolean;
+    }) =>
+      updateTeam(payload.teamId, {
+        maxMembers: payload.maxMembers,
+        maxConcurrentTasks: payload.maxConcurrentTasks,
+        allowTeamLeadCreateAgents: payload.allowTeamLeadCreateAgents,
+      }),
+    onSuccess: () => {
+      const teamName = quickEditTeam?.teamName ?? '';
+      const teamId = quickEditTeam?.teamId;
+      setQuickEditTeam(null);
+      toast({ title: `Team '${teamName}' updated` });
+      if (projectId) {
+        queryClient.invalidateQueries({ queryKey: chatQueryKeys.agents(projectId) });
+        queryClient.invalidateQueries({ queryKey: chatQueryKeys.agentPresence(projectId) });
+        queryClient.invalidateQueries({ queryKey: chatQueryKeys.activeSessions(projectId) });
+        queryClient.invalidateQueries({ queryKey: teamsQueryKeys.teams(projectId) });
+      }
+      if (teamId) {
+        queryClient.invalidateQueries({ queryKey: teamsQueryKeys.detail(teamId) });
+      }
+    },
+    onError: (error) => {
+      toast({
+        title: 'Failed to update team',
+        description: error instanceof Error ? error.message : 'Unknown error',
+        variant: 'destructive',
+      });
     },
   });
 
@@ -1116,11 +1429,7 @@ export function ChatPage() {
       if (!threadUiState.selectedThreadId) return;
 
       if (!presence?.online || !presence.sessionId) {
-        threadUiState.setInlineTerminalsByThread((prev) => ({
-          ...prev,
-          [threadUiState.selectedThreadId!]: { agentId, sessionId: null },
-        }));
-        threadUiState.setTerminalMenuOpen(false);
+        threadUiState.attachInlineTerminalForSelectedThread(agentId, null);
         return;
       }
 
@@ -1149,15 +1458,7 @@ export function ChatPage() {
         }
       }
 
-      threadUiState.setInlineTerminalsByThread((prev) => ({
-        ...prev,
-        [threadUiState.selectedThreadId!]: {
-          agentId,
-          sessionId: session ? session.id : null,
-        },
-      }));
-      threadUiState.setTerminalMenuOpen(false);
-      threadUiState.setInlineUnreadCount(0);
+      threadUiState.attachInlineTerminalForSelectedThread(agentId, session ? session.id : null);
     },
     [queries.agentPresence, queries.activeSessions, threadUiState, closeWindow],
   );
@@ -1336,6 +1637,7 @@ export function ChatPage() {
     <div className="flex h-full gap-4">
       {/* Left Sidebar */}
       <ChatSidebar
+        projectId={projectId}
         agents={queries.agents}
         guests={queries.guests}
         agentPresence={queries.agentPresence}
@@ -1392,6 +1694,19 @@ export function ChatPage() {
         updatingConfigAgentIds={updatingConfigAgentIds}
         onSwitchWorktreeConfig={handleSwitchWorktreeConfig}
         updatingWorktreeConfigKey={updatingWorktreeConfigKey}
+        onCloneAgent={(agent, ctx) =>
+          setPendingCloneAgent({
+            agent,
+            teamId: ctx?.teamId,
+            teamName: ctx?.teamName,
+            isTeamLead: ctx?.isTeamLead,
+          })
+        }
+        onDeleteAgent={setPendingDeleteAgent}
+        pendingDeleteAgentId={pendingDeleteAgentId}
+        onAddTeamAgent={handleAddTeamAgent}
+        projectProfiles={queries.profiles}
+        onEditTeam={handleOpenEditTeam}
         createGroupPending={queries.createGroupMutation.isPending}
       />
 
@@ -1587,6 +1902,177 @@ export function ChatPage() {
         invitePending={queries.inviteMembersMutation.isPending}
         terminatingAll={sessionControls.terminatingAll}
       />
+
+      {/* Clone agent confirmation */}
+      <Dialog
+        open={!!pendingCloneAgent}
+        onOpenChange={(open) => {
+          if (!open) setPendingCloneAgent(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Clone agent</DialogTitle>
+            <DialogDescription>
+              {cloneTargetTeam ? (
+                <>
+                  A copy of &ldquo;{pendingCloneAgent?.agent.name}&rdquo; will be created as &ldquo;
+                  {pendingCloneName}&rdquo; in team &ldquo;{cloneTargetTeam.teamName}&rdquo;.
+                  Continue?
+                </>
+              ) : (
+                <>
+                  A fresh copy of &ldquo;{pendingCloneAgent?.agent.name}&rdquo; will be created as
+                  &ldquo;{pendingCloneName}&rdquo;. It won&apos;t belong to any team. Continue?
+                </>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPendingCloneAgent(null)}>
+              Cancel
+            </Button>
+            <Button onClick={handleConfirmClone} disabled={cloneAgentMutation.isPending}>
+              {cloneAgentMutation.isPending ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Cloning...
+                </>
+              ) : (
+                'Clone'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete agent confirmation */}
+      <Dialog
+        open={!!pendingDeleteAgent}
+        onOpenChange={(open) => {
+          if (!open) setPendingDeleteAgent(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete agent</DialogTitle>
+            <DialogDescription>
+              {pendingDeleteHasSession
+                ? `"${pendingDeleteAgent?.name}" has an active session. Confirming will stop the session and then permanently delete the agent. Continue?`
+                : `Delete "${pendingDeleteAgent?.name}" from this team? This permanently removes the agent.`}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPendingDeleteAgent(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleConfirmDelete}
+              disabled={deleteAgentMutation.isPending}
+            >
+              {deleteAgentMutation.isPending ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                'Delete'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Quick-edit team */}
+      <Dialog
+        open={!!quickEditTeam}
+        onOpenChange={(open) => {
+          if (!open) setQuickEditTeam(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit team &quot;{quickEditTeam?.teamName}&quot;</DialogTitle>
+            <DialogDescription>Adjust team capacity settings.</DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-4 py-2">
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <Label>Max team members</Label>
+                <span className="text-xs text-muted-foreground">{qeMaxMembers}</span>
+              </div>
+              <Slider
+                min={2}
+                max={10}
+                step={1}
+                value={[qeMaxMembers]}
+                onValueChange={([v]) => {
+                  setQeMaxMembers(v);
+                  if (qeMaxConcurrentTasks > v) {
+                    setQeMaxConcurrentTasks(v);
+                  }
+                }}
+              />
+            </div>
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <Label>Max concurrent tasks</Label>
+                <span className="text-xs text-muted-foreground">{qeMaxConcurrentTasks}</span>
+              </div>
+              <Slider
+                min={1}
+                max={qeMaxMembers}
+                step={1}
+                value={[qeMaxConcurrentTasks]}
+                onValueChange={([v]) => setQeMaxConcurrentTasks(v)}
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="qe-allow-lead-create"
+                  checked={qeAllowTeamLeadCreateAgents}
+                  onCheckedChange={(checked) => setQeAllowTeamLeadCreateAgents(checked === true)}
+                />
+                <Label htmlFor="qe-allow-lead-create" className="text-sm font-normal">
+                  Allow team lead to autonomously create team agents
+                </Label>
+              </div>
+              <p className="text-xs text-muted-foreground pl-6">
+                Controls only the autonomous AI agent. Humans can always add agents via the chat
+                sidebar.
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setQuickEditTeam(null)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                if (!quickEditTeam) return;
+                quickEditTeamMutation.mutate({
+                  teamId: quickEditTeam.teamId,
+                  maxMembers: qeMaxMembers,
+                  maxConcurrentTasks: qeMaxConcurrentTasks,
+                  allowTeamLeadCreateAgents: qeAllowTeamLeadCreateAgents,
+                });
+              }}
+              disabled={quickEditTeamMutation.isPending}
+            >
+              {quickEditTeamMutation.isPending ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                'Save'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

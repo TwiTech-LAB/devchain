@@ -5,7 +5,8 @@ import { type WsEnvelope } from '@/ui/lib/socket';
 import { useAppSocket } from '@/ui/hooks/useAppSocket';
 import { useToast } from '@/ui/hooks/use-toast';
 import type { Message } from '@/ui/lib/chat';
-import type { AgentOrGuest } from './useChatQueries';
+import { chatQueryKeys, type AgentOrGuest } from './useChatQueries';
+import { teamsQueryKeys } from '@/ui/lib/teams';
 
 // ============================================
 // Types
@@ -66,6 +67,45 @@ export function useChatSocket({
       message: (envelope: WsEnvelope) => {
         const { topic, type, payload } = envelope;
 
+        // Project state updates (agent/team changes)
+        if (projectId && topic === `project/${projectId}/state`) {
+          if (type === 'agent.created') {
+            queryClient.invalidateQueries({ queryKey: chatQueryKeys.agents(projectId) });
+            queryClient.invalidateQueries({
+              queryKey: chatQueryKeys.activeSessions(projectId),
+            });
+          }
+          if (type === 'team.member.added' || type === 'team.member.removed') {
+            queryClient.invalidateQueries({ queryKey: chatQueryKeys.agents(projectId) });
+            queryClient.invalidateQueries({ queryKey: teamsQueryKeys.teams(projectId) });
+            const teamId = (payload as { teamId?: string })?.teamId;
+            if (teamId) {
+              queryClient.invalidateQueries({ queryKey: teamsQueryKeys.detail(teamId) });
+            }
+          }
+          if (type === 'agent.deleted') {
+            queryClient.invalidateQueries({ queryKey: chatQueryKeys.agents(projectId) });
+            queryClient.invalidateQueries({
+              queryKey: chatQueryKeys.agentPresence(projectId),
+            });
+            queryClient.invalidateQueries({
+              queryKey: chatQueryKeys.activeSessions(projectId),
+            });
+            queryClient.invalidateQueries({ queryKey: teamsQueryKeys.teams(projectId) });
+            queryClient.invalidateQueries({ queryKey: ['teams', 'detail'] });
+            queryClient.invalidateQueries({ queryKey: chatQueryKeys.userThreads(projectId) });
+            queryClient.invalidateQueries({ queryKey: chatQueryKeys.agentThreads(projectId) });
+          }
+          if (type === 'team.config.updated') {
+            queryClient.invalidateQueries({ queryKey: teamsQueryKeys.teams(projectId) });
+            const teamId = (payload as { teamId?: string })?.teamId;
+            if (teamId) {
+              queryClient.invalidateQueries({ queryKey: teamsQueryKeys.detail(teamId) });
+            }
+          }
+          return;
+        }
+
         // Handle message.created events for chat threads
         if (topic.startsWith('chat/') && type === 'message.created') {
           const threadId = topic.split('/')[1];
@@ -103,7 +143,15 @@ export function useChatSocket({
         }
       },
     },
-    [agents, queryClient, toast, getLatestSelectedThreadId, isInlineActive, onInlineUnread],
+    [
+      projectId,
+      agents,
+      queryClient,
+      toast,
+      getLatestSelectedThreadId,
+      isInlineActive,
+      onInlineUnread,
+    ],
   );
 
   // Keep socketRef in sync with the selected socket

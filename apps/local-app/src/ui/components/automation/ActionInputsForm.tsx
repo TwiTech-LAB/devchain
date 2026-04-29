@@ -1,7 +1,7 @@
 import { Badge } from '@/ui/components/ui/badge';
 import type { ActionMetadata, EventFieldDefinition } from '@/ui/lib/actions';
 import type { ActionInput as SubscriberActionInput } from '@/ui/lib/subscribers';
-import { InputSourceSelector } from './InputSourceSelector';
+import { InputSourceSelector, type EditorCapabilities } from './InputSourceSelector';
 
 interface ActionInputsFormProps {
   action: ActionMetadata | null;
@@ -10,6 +10,14 @@ interface ActionInputsFormProps {
   /** Event-specific fields based on selected event (not hardcoded action fields) */
   availableEventFields?: EventFieldDefinition[];
   errors?: Record<string, string>;
+}
+
+function getEditorCapabilities(
+  actionType: string | undefined,
+  inputName: string,
+): EditorCapabilities {
+  const scoped = actionType === 'send_agent_message' && inputName === 'text';
+  return { agentContext: scoped, conditionals: scoped };
 }
 
 export function ActionInputsForm({
@@ -53,6 +61,7 @@ export function ActionInputsForm({
           value={getInputValue(inputDef.name)}
           onChange={(value) => handleInputChange(inputDef.name, value)}
           availableEventFields={availableEventFields}
+          editorCapabilities={getEditorCapabilities(action?.type, inputDef.name)}
           error={errors?.[inputDef.name]}
         />
       ))}

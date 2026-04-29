@@ -1,7 +1,7 @@
-import type { FeatureFlagConfig } from '../../../common/config/feature-flags';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import type { Document, Prompt } from '../../storage/models/domain.models';
 import type { DocumentInlineResolution, InstructionsResolved } from '../dtos/mcp.dto';
+import { renderTemplate } from '../../../common/template/handlebars-renderer';
 import { createLogger } from '../../../common/logging/logger';
 
 const logger = createLogger('InstructionsResolver');
@@ -10,6 +10,16 @@ export interface InstructionsResolverOptions {
   maxDepth?: number;
   maxBytes?: number;
   maxDocuments?: number;
+  render?: {
+    vars: Record<string, unknown>;
+    legacyVariables?: string[];
+  };
+}
+
+interface ResolveConfig {
+  maxDepth: number;
+  maxBytes: number;
+  maxDocuments: number;
 }
 
 type InlineResolver = (
@@ -31,51 +41,75 @@ interface Reference {
 }
 
 export class InstructionsResolver {
-  private readonly featureFlags: FeatureFlagConfig;
-
   constructor(
     private readonly storage: StorageService,
     private readonly inlineResolver: InlineResolver,
-    featureFlags?: FeatureFlagConfig,
-  ) {
-    this.featureFlags = featureFlags ?? this.storage.getFeatureFlags();
-  }
+  ) {}
 
   async resolve(
     projectId: string,
     instructions: string | null | undefined,
     options: InstructionsResolverOptions = {},
   ): Promise<InstructionsResolved | null> {
-    if (!instructions || !instructions.includes('[[')) {
+    if (!instructions || !instructions.trim()) {
       return null;
     }
 
-    if (this.featureFlags.enableDocumentTemplateVariables) {
-      // Placeholder: template engine integration for document references will be gated here.
-    }
-
-    const references = this.extractReferences(instructions);
-    if (references.length === 0) {
-      return null;
-    }
-
-    const config = {
+    const config: ResolveConfig = {
       maxDepth: options.maxDepth ?? DEFAULT_MAX_DEPTH,
       maxBytes: options.maxBytes ?? DEFAULT_MAX_BYTES,
       maxDocuments: options.maxDocuments ?? DEFAULT_MAX_DOCUMENTS,
     };
 
-    const cache = new Map<string, Document | null>();
     const docs = new Map<string, { id: string; slug: string; title: string }>();
     const prompts = new Map<string, { id: string; title: string }>();
+    let refContent = '';
+    let truncated = false;
+
+    if (instructions.includes('[[')) {
+      const references = this.extractReferences(instructions);
+      if (references.length > 0) {
+        const result = await this.resolveReferences(projectId, references, config, docs, prompts);
+        refContent = result.content;
+        truncated = result.truncated;
+      }
+    }
+
+    let contentMd = refContent.trim() ? refContent : instructions;
+
+    if (options.render) {
+      contentMd = renderTemplate(contentMd, options.render.vars, options.render.legacyVariables);
+    }
+
+    let finalBytes = Buffer.byteLength(contentMd, 'utf8');
+    if (finalBytes > config.maxBytes) {
+      contentMd = InstructionsResolver.truncateUtf8(contentMd, config.maxBytes);
+      finalBytes = Buffer.byteLength(contentMd, 'utf8');
+      truncated = true;
+    }
+
+    return {
+      contentMd,
+      bytes: finalBytes,
+      truncated,
+      docs: Array.from(docs.values()),
+      prompts: Array.from(prompts.values()),
+    };
+  }
+
+  private async resolveReferences(
+    projectId: string,
+    references: Reference[],
+    config: ResolveConfig,
+    docs: Map<string, { id: string; slug: string; title: string }>,
+    prompts: Map<string, { id: string; title: string }>,
+  ): Promise<{ content: string; truncated: boolean }> {
     const processedSlugs = new Set<string>();
     const processedKeys = new Set<string>();
     const processedPromptTitles = new Set<string>();
-
     let content = '';
     let truncated = false;
 
-    // Count total resolved items (docs + prompts) against maxDocuments limit
     const totalResolvedCount = () => docs.size + prompts.size;
 
     for (const reference of references) {
@@ -94,7 +128,7 @@ export class InstructionsResolver {
           projectId,
           reference.value,
           config,
-          cache,
+          new Map(),
           docs,
         );
         if (!expansion) {
@@ -145,7 +179,7 @@ export class InstructionsResolver {
           projectId,
           reference.value,
           config,
-          cache,
+          new Map(),
           docs,
         );
 
@@ -170,18 +204,7 @@ export class InstructionsResolver {
       }
     }
 
-    if (!content.trim()) {
-      return null;
-    }
-
-    const bytes = Buffer.byteLength(content, 'utf8');
-    return {
-      contentMd: content,
-      bytes: Math.min(bytes, config.maxBytes),
-      truncated,
-      docs: Array.from(docs.values()),
-      prompts: Array.from(prompts.values()),
-    };
+    return { content, truncated };
   }
 
   private extractReferences(instructions: string): Reference[] {
@@ -215,7 +238,7 @@ export class InstructionsResolver {
   private async expandSlugReference(
     projectId: string,
     slug: string,
-    config: Required<InstructionsResolverOptions>,
+    config: ResolveConfig,
     cache: Map<string, Document | null>,
     docs: Map<string, { id: string; slug: string; title: string }>,
   ): Promise<{ snippet: string | null; truncated: boolean } | null> {
@@ -246,7 +269,7 @@ export class InstructionsResolver {
   private async expandTagReference(
     projectId: string,
     key: string,
-    config: Required<InstructionsResolverOptions>,
+    config: ResolveConfig,
     cache: Map<string, Document | null>,
     docs: Map<string, { id: string; slug: string; title: string }>,
   ): Promise<{ snippets: string[]; truncated: boolean }> {
@@ -373,9 +396,7 @@ export class InstructionsResolver {
       return { content: combined, truncated: false };
     }
 
-    const buffer = Buffer.from(combined, 'utf8');
-    const truncatedBuffer = buffer.subarray(0, maxBytes);
-    return { content: truncatedBuffer.toString('utf8'), truncated: true };
+    return { content: InstructionsResolver.truncateUtf8(combined, maxBytes), truncated: true };
   }
 
   private async loadDocument(
@@ -402,5 +423,19 @@ export class InstructionsResolver {
         return null;
       }
     }
+  }
+
+  // Iterates by code point (handles surrogate pairs) to avoid splitting multi-byte UTF-8 chars.
+  private static truncateUtf8(input: string, maxBytes: number): string {
+    if (maxBytes <= 0) return '';
+    let bytes = 0;
+    let output = '';
+    for (const ch of input) {
+      const chBytes = Buffer.byteLength(ch, 'utf8');
+      if (bytes + chBytes > maxBytes) break;
+      bytes += chBytes;
+      output += ch;
+    }
+    return output;
   }
 }

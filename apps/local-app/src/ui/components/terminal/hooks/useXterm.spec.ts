@@ -31,6 +31,7 @@ jest.mock('@xterm/xterm', () => {
       scrollLines: jest.fn(),
       onData: jest.fn().mockReturnValue({ dispose: jest.fn() }),
       onScroll: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+      parser: { registerOscHandler: jest.fn().mockReturnValue({ dispose: jest.fn() }) },
       buffer: { active: { viewportY: 0, baseY: 0, cursorY: 0, length: 24 } },
       options: { scrollback: 10000 },
       modes: { mouseTrackingMode: 'none' },

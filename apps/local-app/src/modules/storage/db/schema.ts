@@ -7,6 +7,7 @@ import {
   uniqueIndex,
   index,
   foreignKey,
+  primaryKey,
 } from 'drizzle-orm/sqlite-core';
 
 // Projects
@@ -58,6 +59,7 @@ export const providers = sqliteTable('providers', {
   oneMillionContextEnabled: integer('one_million_context_enabled', { mode: 'boolean' })
     .notNull()
     .default(false),
+  env: text('env'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
@@ -130,6 +132,7 @@ export const profileProviderConfigs = sqliteTable(
       .notNull()
       .references(() => providers.id),
     name: text('name').notNull(), // User-friendly name to distinguish configs
+    description: text('description'),
     options: text('options'), // JSON string for provider-specific options
     env: text('env'), // JSON string for environment variables
     position: integer('position').notNull().default(0), // Order within profile
@@ -846,6 +849,98 @@ export const guests = sqliteTable(
     tmuxSessionIdUnique: uniqueIndex('guests_tmux_session_id_unique').on(table.tmuxSessionId),
     // Index for listing by project
     projectIdIdx: index('guests_project_id_idx').on(table.projectId),
+  }),
+);
+
+// ============================================
+// TEAMS - Agent team organization
+// ============================================
+
+export const teams = sqliteTable(
+  'teams',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    description: text('description'),
+    teamLeadAgentId: text('team_lead_agent_id').references(() => agents.id, {
+      onDelete: 'set null',
+    }),
+    maxMembers: integer('max_members').notNull().default(5),
+    maxConcurrentTasks: integer('max_concurrent_tasks').notNull().default(5),
+    allowTeamLeadCreateAgents: integer('allow_team_lead_create_agents', { mode: 'boolean' })
+      .notNull()
+      .default(false),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    // Case-insensitive unique index on (project_id, name)
+    // Uses COLLATE NOCASE for SQLite case-insensitive comparison
+    projectNameUnique: uniqueIndex('teams_project_name_unique').on(
+      table.projectId,
+      sql`${table.name} COLLATE NOCASE`,
+    ),
+    projectIdIdx: index('teams_project_id_idx').on(table.projectId),
+  }),
+);
+
+export const teamMembers = sqliteTable(
+  'team_members',
+  {
+    teamId: text('team_id')
+      .notNull()
+      .references(() => teams.id, { onDelete: 'cascade' }),
+    agentId: text('agent_id')
+      .notNull()
+      .references(() => agents.id, { onDelete: 'cascade' }),
+    createdAt: text('created_at').notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.teamId, table.agentId] }),
+    agentIdIdx: index('team_members_agent_id_idx').on(table.agentId),
+  }),
+);
+
+export const teamProfiles = sqliteTable(
+  'team_profiles',
+  {
+    teamId: text('team_id')
+      .notNull()
+      .references(() => teams.id, { onDelete: 'cascade' }),
+    profileId: text('profile_id')
+      .notNull()
+      .references(() => agentProfiles.id, { onDelete: 'cascade' }),
+    createdAt: text('created_at').notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.teamId, table.profileId] }),
+    profileIdIdx: index('team_profiles_profile_id_idx').on(table.profileId),
+  }),
+);
+
+export const teamProfileConfigs = sqliteTable(
+  'team_profile_configs',
+  {
+    teamId: text('team_id').notNull(),
+    profileId: text('profile_id').notNull(),
+    providerConfigId: text('provider_config_id')
+      .notNull()
+      .references(() => profileProviderConfigs.id, { onDelete: 'cascade' }),
+    createdAt: text('created_at').notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.teamId, table.profileId, table.providerConfigId] }),
+    teamProfileFk: foreignKey({
+      columns: [table.teamId, table.profileId],
+      foreignColumns: [teamProfiles.teamId, teamProfiles.profileId],
+      name: 'team_profile_configs_team_profile_fk',
+    }).onDelete('cascade'),
+    providerConfigIdIdx: index('team_profile_configs_provider_config_id_idx').on(
+      table.providerConfigId,
+    ),
   }),
 );
 

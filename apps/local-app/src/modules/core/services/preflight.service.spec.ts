@@ -896,6 +896,115 @@ describe('PreflightService', () => {
       expect(result.providers[0].configEnvMessage).toContain('INVALID-KEY');
     });
 
+    it('validates provider-level env and reports errors for invalid key', async () => {
+      const providerWithBadEnv = {
+        ...mockProvider,
+        env: { 'INVALID-PROVIDER-KEY': 'value' },
+      };
+      mockStorage.findProjectByPath.mockResolvedValue({
+        id: 'project-1',
+        name: 'Test',
+        rootPath: '/test',
+        isTemplate: false,
+        description: null,
+        createdAt: '',
+        updatedAt: '',
+      });
+      mockStorage.listAgents.mockResolvedValue({
+        items: [mockAgent],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      mockStorage.listProfileProviderConfigsByIds.mockResolvedValue([mockConfig]);
+      mockStorage.listProvidersByIds.mockResolvedValue([providerWithBadEnv]);
+      mockAccess.mockResolvedValue(undefined);
+      mockMcpRegistration.listRegistrations.mockResolvedValue({
+        success: true,
+        message: 'OK',
+        entries: [{ alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp' }],
+      });
+
+      const result = await service.runChecks('/test/project');
+
+      expect(result.providers[0].providerEnvStatus).toBe('fail');
+      expect(result.providers[0].providerEnvMessage).toContain('INVALID-PROVIDER-KEY');
+    });
+
+    it('validates provider-level env and reports errors for control chars in value', async () => {
+      const providerWithControlChar = {
+        ...mockProvider,
+        env: { GOOD_KEY: 'value\x01bad' },
+      };
+      mockStorage.findProjectByPath.mockResolvedValue({
+        id: 'project-1',
+        name: 'Test',
+        rootPath: '/test',
+        isTemplate: false,
+        description: null,
+        createdAt: '',
+        updatedAt: '',
+      });
+      mockStorage.listAgents.mockResolvedValue({
+        items: [mockAgent],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      mockStorage.listProfileProviderConfigsByIds.mockResolvedValue([mockConfig]);
+      mockStorage.listProvidersByIds.mockResolvedValue([providerWithControlChar]);
+      mockAccess.mockResolvedValue(undefined);
+      mockMcpRegistration.listRegistrations.mockResolvedValue({
+        success: true,
+        message: 'OK',
+        entries: [{ alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp' }],
+      });
+
+      const result = await service.runChecks('/test/project');
+
+      expect(result.providers[0].providerEnvStatus).toBe('fail');
+      expect(result.providers[0].providerEnvMessage).toContain('GOOD_KEY');
+    });
+
+    it('passes preflight when provider env and config env are both valid with overlapping keys', async () => {
+      const providerWithEnv = {
+        ...mockProvider,
+        env: { SHARED_KEY: 'provider-value', PROVIDER_ONLY: 'pval' },
+      };
+      const configWithEnv = {
+        ...mockConfig,
+        env: { SHARED_KEY: 'config-value', CONFIG_ONLY: 'cval' },
+      };
+      mockStorage.findProjectByPath.mockResolvedValue({
+        id: 'project-1',
+        name: 'Test',
+        rootPath: '/test',
+        isTemplate: false,
+        description: null,
+        createdAt: '',
+        updatedAt: '',
+      });
+      mockStorage.listAgents.mockResolvedValue({
+        items: [mockAgent],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      mockStorage.listProfileProviderConfigsByIds.mockResolvedValue([configWithEnv]);
+      mockStorage.listProvidersByIds.mockResolvedValue([providerWithEnv]);
+      mockAccess.mockResolvedValue(undefined);
+      mockMcpRegistration.listRegistrations.mockResolvedValue({
+        success: true,
+        message: 'OK',
+        entries: [{ alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp' }],
+      });
+
+      const result = await service.runChecks('/test/project');
+
+      expect(result.providers[0].providerEnvStatus).toBe('pass');
+      expect(result.providers[0].configEnvStatus).toBe('pass');
+    });
+
     it('validates all providers when no project path', async () => {
       mockStorage.listProviders.mockResolvedValue({
         items: [mockProvider],
@@ -1023,6 +1132,516 @@ describe('PreflightService', () => {
       expect(mockMcpRegistration.listRegistrations).toHaveBeenCalledWith(opencodeProvider, {
         cwd: '/test/project',
       });
+    });
+  });
+
+  describe('requiresProjectContext', () => {
+    const setupExec = () => {
+      mockExec.mockImplementation(
+        (
+          cmd: string,
+          optionsOrCallback?: unknown,
+          maybeCallback?: unknown,
+        ): ReturnType<typeof mockExec> => {
+          const callback = (
+            typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback
+          ) as ExecCallback;
+          if (cmd === 'tmux -V' && callback) {
+            callback(null, 'tmux 3.2', '');
+          }
+          return {} as ReturnType<typeof mockExec>;
+        },
+      );
+    };
+
+    it('sets requiresProjectContext true for project_config provider (opencode)', async () => {
+      setupExec();
+      mockStorage.listProviders.mockResolvedValue({
+        items: [
+          {
+            id: 'p-oc',
+            name: 'opencode',
+            binPath: '/usr/local/bin/opencode',
+            mcpConfigured: false,
+            mcpEndpoint: null,
+            mcpRegisteredAt: null,
+            createdAt: '',
+            updatedAt: '',
+          },
+        ],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      mockStorage.listAllProfileProviderConfigs.mockResolvedValue([]);
+      mockAccess.mockResolvedValue(undefined);
+
+      const result = await service.runChecks();
+
+      expect(result.providers).toHaveLength(1);
+      expect(result.providers[0].name).toBe('opencode');
+      expect(result.providers[0].requiresProjectContext).toBe(true);
+    });
+
+    it('omits requiresProjectContext for cli-mode provider (claude)', async () => {
+      setupExec();
+      mockStorage.listProviders.mockResolvedValue({
+        items: [
+          {
+            id: 'p-cl',
+            name: 'claude',
+            binPath: '/usr/local/bin/claude',
+            mcpConfigured: true,
+            mcpEndpoint: 'http://127.0.0.1:3000/mcp',
+            mcpRegisteredAt: '2024-01-01',
+            createdAt: '',
+            updatedAt: '',
+          },
+        ],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      mockStorage.listAllProfileProviderConfigs.mockResolvedValue([]);
+      mockAccess.mockResolvedValue(undefined);
+      mockMcpRegistration.listRegistrations.mockResolvedValue({
+        success: true,
+        message: 'OK',
+        entries: [{ alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp' }],
+      });
+
+      const result = await service.runChecks();
+
+      expect(result.providers).toHaveLength(1);
+      expect(result.providers[0].name).toBe('claude');
+      expect(result.providers[0].requiresProjectContext).toBeUndefined();
+    });
+  });
+
+  describe('includeAllProviders mode', () => {
+    const mockProject = {
+      id: 'project-1',
+      name: 'Test',
+      rootPath: '/test',
+      isTemplate: false,
+      description: null,
+      createdAt: '',
+      updatedAt: '',
+    };
+
+    const claudeProvider = {
+      id: 'p-cl',
+      name: 'claude',
+      binPath: '/usr/local/bin/claude',
+      mcpConfigured: true,
+      mcpEndpoint: 'http://127.0.0.1:3000/mcp',
+      mcpRegisteredAt: '2024-01-01',
+      createdAt: '',
+      updatedAt: '',
+    };
+
+    const codexProvider = {
+      id: 'p-cx',
+      name: 'codex',
+      binPath: '/usr/local/bin/codex',
+      mcpConfigured: true,
+      mcpEndpoint: null,
+      mcpRegisteredAt: null,
+      createdAt: '',
+      updatedAt: '',
+    };
+
+    const claudeAgent = {
+      id: 'agent-1',
+      projectId: 'project-1',
+      profileId: 'profile-1',
+      providerConfigId: 'config-cl',
+      name: 'Claude Agent',
+      description: null,
+      createdAt: '',
+      updatedAt: '',
+    };
+
+    const claudeConfig = {
+      id: 'config-cl',
+      profileId: 'profile-1',
+      providerId: 'p-cl',
+      options: null,
+      env: null,
+      createdAt: '',
+      updatedAt: '',
+    };
+
+    const okMcpResult = {
+      success: true,
+      message: 'OK',
+      entries: [{ alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp' }],
+    };
+
+    it('returns all registered providers regardless of agent usage', async () => {
+      mockStorage.findProjectByPath.mockResolvedValue(mockProject);
+      mockStorage.listProviders.mockResolvedValue({
+        items: [claudeProvider, codexProvider],
+        total: 2,
+        limit: 100,
+        offset: 0,
+      });
+      mockStorage.listAgents.mockResolvedValue({
+        items: [claudeAgent],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      mockStorage.listProfileProviderConfigsByIds.mockResolvedValue([claudeConfig]);
+      mockAccess.mockResolvedValue(undefined);
+      mockMcpRegistration.listRegistrations.mockResolvedValue(okMcpResult);
+      mockMcpRegistration.resolveBinary.mockResolvedValue({
+        success: true,
+        binaryPath: '/usr/bin/codex',
+      });
+
+      const result = await service.runChecks('/test', { includeAllProviders: true });
+
+      expect(result.providers).toHaveLength(2);
+      expect(result.providers.map((p) => p.name)).toContain('claude');
+      expect(result.providers.map((p) => p.name)).toContain('codex');
+    });
+
+    it('does not call listAllProfileProviderConfigs (no cross-project leakage)', async () => {
+      mockStorage.findProjectByPath.mockResolvedValue(mockProject);
+      mockStorage.listProviders.mockResolvedValue({
+        items: [claudeProvider],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      mockStorage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      mockStorage.listProfileProviderConfigsByIds.mockResolvedValue([]);
+      mockAccess.mockResolvedValue(undefined);
+      mockMcpRegistration.listRegistrations.mockResolvedValue(okMcpResult);
+
+      await service.runChecks('/test', { includeAllProviders: true });
+
+      expect(mockStorage.listAllProfileProviderConfigs).not.toHaveBeenCalled();
+    });
+
+    it('checks[] does not contain tmux or .devchain access entries', async () => {
+      mockStorage.findProjectByPath.mockResolvedValue(mockProject);
+      mockStorage.listProviders.mockResolvedValue({
+        items: [claudeProvider],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      mockStorage.listAgents.mockResolvedValue({
+        items: [claudeAgent],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      mockStorage.listProfileProviderConfigsByIds.mockResolvedValue([claudeConfig]);
+      mockAccess.mockResolvedValue(undefined);
+      mockMcpRegistration.listRegistrations.mockResolvedValue(okMcpResult);
+
+      const result = await service.runChecks('/test', { includeAllProviders: true });
+
+      expect(result.checks).toHaveLength(0);
+      expect(result.checks.some((c) => c.name === 'tmux')).toBe(false);
+      expect(result.checks.some((c) => c.name === '.devchain access')).toBe(false);
+    });
+
+    it('populates usedByAgents from project agents; unused provider gets undefined', async () => {
+      mockStorage.findProjectByPath.mockResolvedValue(mockProject);
+      mockStorage.listProviders.mockResolvedValue({
+        items: [claudeProvider, codexProvider],
+        total: 2,
+        limit: 100,
+        offset: 0,
+      });
+      // Only claude agent exists for this project
+      mockStorage.listAgents.mockResolvedValue({
+        items: [claudeAgent],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      mockStorage.listProfileProviderConfigsByIds.mockResolvedValue([claudeConfig]);
+      mockAccess.mockResolvedValue(undefined);
+      mockMcpRegistration.listRegistrations.mockResolvedValue(okMcpResult);
+      mockMcpRegistration.resolveBinary.mockResolvedValue({
+        success: true,
+        binaryPath: '/usr/bin/codex',
+      });
+
+      const result = await service.runChecks('/test', { includeAllProviders: true });
+
+      const claudeCheck = result.providers.find((p) => p.name === 'claude');
+      const codexCheck = result.providers.find((p) => p.name === 'codex');
+      expect(claudeCheck?.usedByAgents).toEqual(['Claude Agent']);
+      expect(codexCheck?.usedByAgents).toBeUndefined();
+    });
+
+    it('failing provider surfaces status:fail; other providers succeed (Promise.allSettled)', async () => {
+      mockStorage.findProjectByPath.mockResolvedValue(mockProject);
+      mockStorage.listProviders.mockResolvedValue({
+        items: [claudeProvider, codexProvider],
+        total: 2,
+        limit: 100,
+        offset: 0,
+      });
+      mockStorage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      mockStorage.listProfileProviderConfigsByIds.mockResolvedValue([]);
+      mockAccess.mockResolvedValue(undefined);
+      // listRegistrations throws for codex; succeeds for claude
+      mockMcpRegistration.listRegistrations.mockImplementation(
+        async (provider: { name: string }) => {
+          if (provider.name === 'codex') throw new Error('connection timeout');
+          return okMcpResult;
+        },
+      );
+
+      const result = await service.runChecks('/test', { includeAllProviders: true });
+
+      expect(result.providers).toHaveLength(2);
+      const claudeCheck = result.providers.find((p) => p.name === 'claude');
+      const codexCheck = result.providers.find((p) => p.name === 'codex');
+      expect(claudeCheck?.status).toBe('pass');
+      // Rejected provider: aggregate fail + full MCP fail fields + warn binary
+      expect(codexCheck?.status).toBe('fail');
+      expect(codexCheck?.message).toContain('connection timeout');
+      expect(codexCheck?.mcpStatus).toBe('fail');
+      expect(codexCheck?.mcpMessage).toContain('connection timeout');
+      expect(codexCheck?.binaryStatus).toBe('warn');
+      expect(codexCheck?.binaryMessage).toContain('Could not verify');
+    });
+
+    it('honors ENABLED_PROVIDERS filter in includeAllProviders mode', async () => {
+      process.env.ENABLED_PROVIDERS = 'claude';
+      mockStorage.findProjectByPath.mockResolvedValue(mockProject);
+      mockStorage.listProviders.mockResolvedValue({
+        items: [claudeProvider, codexProvider],
+        total: 2,
+        limit: 100,
+        offset: 0,
+      });
+      mockStorage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      mockStorage.listProfileProviderConfigsByIds.mockResolvedValue([]);
+      mockAccess.mockResolvedValue(undefined);
+      mockMcpRegistration.listRegistrations.mockResolvedValue(okMcpResult);
+
+      const result = await service.runChecks('/test', { includeAllProviders: true });
+
+      expect(result.providers).toHaveLength(1);
+      expect(result.providers[0].name).toBe('claude');
+    });
+
+    it('returns all providers with empty metadata when project path does not resolve', async () => {
+      mockStorage.findProjectByPath.mockResolvedValue(null);
+      mockStorage.listProviders.mockResolvedValue({
+        items: [claudeProvider, codexProvider],
+        total: 2,
+        limit: 100,
+        offset: 0,
+      });
+      mockAccess.mockResolvedValue(undefined);
+      mockMcpRegistration.listRegistrations.mockResolvedValue(okMcpResult);
+      mockMcpRegistration.resolveBinary.mockResolvedValue({
+        success: true,
+        binaryPath: '/usr/bin/codex',
+      });
+
+      const result = await service.runChecks('/test', { includeAllProviders: true });
+
+      expect(result.providers).toHaveLength(2);
+      result.providers.forEach((p) => expect(p.usedByAgents).toBeUndefined());
+    });
+
+    it('default path regression guard: checks[] still includes tmux and devchain access', async () => {
+      mockExec.mockImplementation(
+        (
+          cmd: string,
+          optionsOrCallback?: unknown,
+          maybeCallback?: unknown,
+        ): ReturnType<typeof mockExec> => {
+          const callback = (
+            typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback
+          ) as ExecCallback;
+          if (cmd === 'tmux -V' && callback) callback(null, 'tmux 3.2', '');
+          return {} as ReturnType<typeof mockExec>;
+        },
+      );
+      mockStorage.findProjectByPath.mockResolvedValue(mockProject);
+      mockStorage.listAgents.mockResolvedValue({
+        items: [claudeAgent],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      mockStorage.listProfileProviderConfigsByIds.mockResolvedValue([claudeConfig]);
+      mockStorage.listProvidersByIds.mockResolvedValue([claudeProvider]);
+      mockAccess.mockResolvedValue(undefined);
+      mockMcpRegistration.listRegistrations.mockResolvedValue(okMcpResult);
+
+      const result = await service.runChecks('/test'); // no opts
+
+      expect(result.checks.some((c) => c.name === 'tmux')).toBe(true);
+      expect(result.checks.some((c) => c.name === '.devchain access')).toBe(true);
+    });
+  });
+
+  describe('allSettled rejection fallback contract', () => {
+    const mockProject = {
+      id: 'project-1',
+      name: 'Test',
+      rootPath: '/test',
+      isTemplate: false,
+      description: null,
+      createdAt: '',
+      updatedAt: '',
+    };
+
+    const claudeProvider = {
+      id: 'p-cl',
+      name: 'claude',
+      binPath: '/usr/local/bin/claude',
+      mcpConfigured: true,
+      mcpEndpoint: 'http://127.0.0.1:3000/mcp',
+      mcpRegisteredAt: '2024-01-01',
+      createdAt: '',
+      updatedAt: '',
+    };
+
+    const codexProvider = {
+      id: 'p-cx',
+      name: 'codex',
+      binPath: '/usr/local/bin/codex',
+      mcpConfigured: true,
+      mcpEndpoint: null,
+      mcpRegisteredAt: null,
+      createdAt: '',
+      updatedAt: '',
+    };
+
+    const opencodeProvider = {
+      id: 'p-oc',
+      name: 'opencode',
+      binPath: '/usr/local/bin/opencode',
+      mcpConfigured: false,
+      mcpEndpoint: null,
+      mcpRegisteredAt: null,
+      createdAt: '',
+      updatedAt: '',
+    };
+
+    const okMcpResult = {
+      success: true,
+      message: 'OK',
+      entries: [{ alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp' }],
+    };
+
+    beforeEach(() => {
+      mockStorage.findProjectByPath.mockResolvedValue(mockProject);
+      mockStorage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      mockStorage.listProfileProviderConfigsByIds.mockResolvedValue([]);
+      mockAccess.mockResolvedValue(undefined);
+    });
+
+    it('case 1: rejected provider gets mcpStatus:fail, non-empty mcpMessage, binaryStatus:warn, aggregate status:fail', async () => {
+      mockStorage.listProviders.mockResolvedValue({
+        items: [claudeProvider],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      mockMcpRegistration.listRegistrations.mockRejectedValue(new Error('connection refused'));
+
+      const result = await service.runChecks('/test', { includeAllProviders: true });
+
+      const check = result.providers[0];
+      expect(result.providers).toHaveLength(1);
+      expect(check.status).toBe('fail');
+      expect(check.mcpStatus).toBe('fail');
+      expect(check.mcpMessage).toBeTruthy();
+      expect(check.mcpMessage).toContain('connection refused');
+      expect(check.binaryStatus).toBe('warn');
+      expect(result.overall).toBe('fail');
+    });
+
+    it('case 2: rejected project_config provider (opencode) returns requiresProjectContext:true', async () => {
+      mockStorage.listProviders.mockResolvedValue({
+        items: [opencodeProvider],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      mockMcpRegistration.listRegistrations.mockRejectedValue(new Error('mcp registration failed'));
+
+      const result = await service.runChecks('/test', { includeAllProviders: true });
+
+      expect(result.providers).toHaveLength(1);
+      expect(result.providers[0].requiresProjectContext).toBe(true);
+    });
+
+    it('case 3: rejected cli-mode provider (claude) returns requiresProjectContext:undefined', async () => {
+      mockStorage.listProviders.mockResolvedValue({
+        items: [claudeProvider],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      mockMcpRegistration.listRegistrations.mockRejectedValue(new Error('mcp registration failed'));
+
+      const result = await service.runChecks('/test', { includeAllProviders: true });
+
+      expect(result.providers).toHaveLength(1);
+      expect(result.providers[0].requiresProjectContext).toBeUndefined();
+    });
+
+    it('case 4: adapter lookup failure inside rejection fallback does not re-throw', async () => {
+      mockStorage.listProviders.mockResolvedValue({
+        items: [claudeProvider],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      mockMcpRegistration.listRegistrations.mockRejectedValue(new Error('primary failure'));
+      // First getAdapter call (inside evaluateMcpStatus) succeeds;
+      // second call (inside the allSettled rejection fallback) throws — must be caught, not re-thrown
+      mockAdapterFactory.getAdapter
+        .mockImplementationOnce(() => ({ providerName: 'claude' }))
+        .mockImplementation(() => {
+          throw new Error('adapter registry unavailable');
+        });
+
+      const result = await service.runChecks('/test', { includeAllProviders: true });
+
+      expect(result.providers).toHaveLength(1);
+      expect(result.providers[0].status).toBe('fail');
+      expect(result.providers[0].requiresProjectContext).toBeUndefined();
+    });
+
+    it('case 5: non-throwing providers return correct mcpStatus alongside the failed one', async () => {
+      mockStorage.listProviders.mockResolvedValue({
+        items: [claudeProvider, codexProvider],
+        total: 2,
+        limit: 100,
+        offset: 0,
+      });
+      mockMcpRegistration.listRegistrations.mockImplementation(
+        async (provider: { name: string }) => {
+          if (provider.name === 'codex') throw new Error('codex exploded');
+          return okMcpResult;
+        },
+      );
+
+      const result = await service.runChecks('/test', { includeAllProviders: true });
+
+      expect(result.providers).toHaveLength(2);
+      const claudeCheck = result.providers.find((p) => p.name === 'claude');
+      const codexCheck = result.providers.find((p) => p.name === 'codex');
+      expect(claudeCheck?.mcpStatus).toBe('pass');
+      expect(codexCheck?.mcpStatus).toBe('fail');
+      expect(codexCheck?.mcpMessage).toContain('codex exploded');
     });
   });
 });

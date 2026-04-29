@@ -90,6 +90,8 @@ const providerConfigsPayload = [
 const applySuccessPayload = {
   applied: 2,
   warnings: [],
+  excludedAuthorCount: 0,
+  scopeConfigHash: 'test',
   agents: [
     { id: 'agent-1', name: 'Coder', providerConfigId: 'config-new' },
     { id: 'agent-2', name: 'Reviewer', providerConfigId: 'config-new-2' },

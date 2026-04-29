@@ -30,6 +30,18 @@ export interface TemplateFilePathValidation extends TemplatePathValidation {
   error?: string;
 }
 
+export interface TeamOverridePayload {
+  teamName: string;
+  allowTeamLeadCreateAgents?: boolean;
+  maxMembers?: number;
+  maxConcurrentTasks?: number;
+  profileNames?: string[];
+  profileSelections?: Array<{
+    profileName: string;
+    configNames: string[];
+  }>;
+}
+
 export interface CreateFromTemplatePayload {
   name: string;
   description?: string;
@@ -38,6 +50,7 @@ export interface CreateFromTemplatePayload {
   templatePath?: string;
   version?: string;
   presetName?: string;
+  teamOverrides?: TeamOverridePayload[];
 }
 
 interface UseTemplateFormArgs {
@@ -164,14 +177,24 @@ export function useTemplateForm({
 
         if (res.ok) {
           const stat = await res.json();
-          const isFile = stat.type === 'file';
-          setTemplateFilePathValidation((prev) => ({
-            ...prev,
-            exists: true,
-            checked: true,
-            isFile,
-            error: isFile ? undefined : 'Path must be a file, not a directory',
-          }));
+          if (!stat.exists) {
+            setTemplateFilePathValidation((prev) => ({
+              ...prev,
+              exists: false,
+              checked: true,
+              isFile: false,
+              error: 'File does not exist',
+            }));
+          } else {
+            const isFile = stat.isFile === true;
+            setTemplateFilePathValidation((prev) => ({
+              ...prev,
+              exists: true,
+              checked: true,
+              isFile,
+              error: isFile ? undefined : 'Path must be a file, not a directory',
+            }));
+          }
         } else {
           setTemplateFilePathValidation((prev) => ({
             ...prev,

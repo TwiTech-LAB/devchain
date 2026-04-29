@@ -133,9 +133,10 @@ export function seedTestData(): TestFixtures {
       )
       .run(statusId, projectId, 'To Do', '#3b82f6', 0, now, now);
 
-    // Create a test agent profile
+    // Create a test agent profile (post-migration-0031 schema: provider_id + options moved to profile_provider_configs)
     const providerId = '33333333-3333-4333-8333-333333333333';
     const agentProfileId = '44444444-4444-4444-8444-444444444444';
+    const profileProviderConfigId = '55555555-5555-4555-8555-555555555555';
     sqlite
       .prepare(
         `INSERT INTO providers (id, name, bin_path, created_at, updated_at)
@@ -145,10 +146,17 @@ export function seedTestData(): TestFixtures {
 
     sqlite
       .prepare(
-        `INSERT INTO agent_profiles (id, name, provider_id, options, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO agent_profiles (id, project_id, name, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)`,
       )
-      .run(agentProfileId, 'Test Agent', providerId, '--model claude-3-5-sonnet', now, now);
+      .run(agentProfileId, projectId, 'Test Agent', now, now);
+
+    sqlite
+      .prepare(
+        `INSERT INTO profile_provider_configs (id, profile_id, provider_id, name, options, position, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(profileProviderConfigId, agentProfileId, providerId, 'claude', '--model claude-3-5-sonnet', 0, now, now);
 
     return { projectId, statusId, agentProfileId, providerId };
   } finally {

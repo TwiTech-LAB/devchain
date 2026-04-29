@@ -48,6 +48,13 @@ import {
   ActivityFinishParamsSchema,
   // Session/Guest tools
   RegisterGuestParamsSchema,
+  // Team tools
+  TeamsListParamsSchema,
+  TeamsMembersListParamsSchema,
+  TeamsConfigsListParamsSchema,
+  TeamsCreateAgentParamsSchema,
+  TeamsDeleteAgentParamsSchema,
+  DevchainTeamParamsSchema,
   // Review tools
   ListReviewsParamsSchema,
   GetReviewParamsSchema,
@@ -116,6 +123,14 @@ export const toolSchemaRegistry: ReadonlyMap<string, ZodSchema> = new Map<string
   // Activity tools
   ['devchain_activity_start', ActivityStartParamsSchema],
   ['devchain_activity_finish', ActivityFinishParamsSchema],
+
+  // Team tools
+  ['devchain_teams_list', TeamsListParamsSchema],
+  ['devchain_teams_members_list', TeamsMembersListParamsSchema],
+  ['devchain_teams_configs_list', TeamsConfigsListParamsSchema],
+  ['devchain_teams_create_agent', TeamsCreateAgentParamsSchema],
+  ['devchain_teams_delete_agent', TeamsDeleteAgentParamsSchema],
+  ['devchain_team', DevchainTeamParamsSchema],
 
   // Code Review tools
   ['devchain_list_reviews', ListReviewsParamsSchema],

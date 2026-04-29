@@ -1,0 +1,14 @@
+export { ArchitectureSection } from './ArchitectureSection';
+export type { ArchitectureSectionProps } from './ArchitectureSection';
+export { StructureSection } from './StructureSection';
+export type { StructureSectionProps } from './StructureSection';
+export { TestabilitySection } from './TestabilitySection/TestabilitySection';
+export type { TestabilitySectionProps } from './TestabilitySection/TestabilitySection';
+export { SummarySection } from './SummarySection';
+export type { SummarySectionProps } from './SummarySection';
+export { OwnershipSection } from './OwnershipSection';
+export type { OwnershipSectionProps } from './OwnershipSection';
+export { ChangeSection } from './ChangeSection/ChangeSection';
+export type { ChangeSectionProps } from './ChangeSection/ChangeSection';
+export { ScopeSection } from './ScopeSection';
+export type { ScopeSectionProps } from './ScopeSection';

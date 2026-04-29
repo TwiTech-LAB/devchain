@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { agentCreatedEvent } from './agent.created';
+import { agentDeletedEvent } from './agent.deleted';
 import { epicCreatedEvent } from './epic.created';
 import { epicUpdatedEvent } from './epic.updated';
 import { sessionStartedEvent } from './session.started';
@@ -18,11 +20,16 @@ import { claudeHooksSessionStartedEvent } from './claude.hooks.session.started';
 import { sessionTranscriptDiscoveredEvent } from './session.transcript.discovered';
 import { sessionTranscriptUpdatedEvent } from './session.transcript.updated';
 import { sessionTranscriptEndedEvent } from './session.transcript.ended';
+import { teamConfigUpdatedEvent } from './team.config.updated';
+import { teamMemberAddedEvent } from './team.member.added';
+import { teamMemberRemovedEvent } from './team.member.removed';
 
 // Re-export individual event definitions for direct import
 export { settingsTerminalChangedEvent } from './settings.terminal.changed';
 
 export const eventCatalog = {
+  [agentCreatedEvent.name]: agentCreatedEvent.schema,
+  [agentDeletedEvent.name]: agentDeletedEvent.schema,
   [epicCreatedEvent.name]: epicCreatedEvent.schema,
   [epicUpdatedEvent.name]: epicUpdatedEvent.schema,
   [sessionStartedEvent.name]: sessionStartedEvent.schema,
@@ -42,6 +49,9 @@ export const eventCatalog = {
   [sessionTranscriptDiscoveredEvent.name]: sessionTranscriptDiscoveredEvent.schema,
   [sessionTranscriptUpdatedEvent.name]: sessionTranscriptUpdatedEvent.schema,
   [sessionTranscriptEndedEvent.name]: sessionTranscriptEndedEvent.schema,
+  [teamConfigUpdatedEvent.name]: teamConfigUpdatedEvent.schema,
+  [teamMemberAddedEvent.name]: teamMemberAddedEvent.schema,
+  [teamMemberRemovedEvent.name]: teamMemberRemovedEvent.schema,
 } as const;
 
 export type EventName = keyof typeof eventCatalog;

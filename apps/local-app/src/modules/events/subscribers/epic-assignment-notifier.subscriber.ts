@@ -8,6 +8,9 @@ import { SessionsService } from '../../sessions/services/sessions.service';
 import { SessionCoordinatorService } from '../../sessions/services/session-coordinator.service';
 import { SessionsMessagePoolService } from '../../sessions/services/sessions-message-pool.service';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import { TeamsService } from '../../teams/services/teams.service';
+import { renderTemplate } from '../../../common/template/handlebars-renderer';
+import { loadAgentRecipientContext } from '../../../common/template/agent-recipient-context';
 import type { EpicUpdatedEventPayload } from '../catalog/epic.updated';
 import type { EpicCreatedEventPayload } from '../catalog/epic.created';
 
@@ -15,10 +18,22 @@ const TEMPLATE_SETTING_KEY = 'events.epicAssigned.template';
 const DEFAULT_TEMPLATE =
   '[Epic Assignment]\n{epic_title} is now assigned to {agent_name} in {project_name}. (Epic ID: {epic_id})';
 
+const LEGACY_VARIABLES = [
+  'epic_id',
+  'agent_name',
+  'epic_title',
+  'project_name',
+  'assigner_name',
+  'team_name',
+  'team_names',
+  'is_team_lead',
+];
+
 @Injectable()
 export class EpicAssignmentNotifierSubscriber {
   private readonly logger = new Logger(EpicAssignmentNotifierSubscriber.name);
   private sessionsServiceRef?: SessionsService;
+  private teamsServiceRef?: TeamsService;
 
   constructor(
     private readonly eventLogService: EventLogService,
@@ -56,14 +71,21 @@ export class EpicAssignmentNotifierSubscriber {
       // Resolve actor (assigner) name for template placeholder
       const assignerName = await this.resolveActorName(payload.actor);
 
+      const teamCtx = await loadAgentRecipientContext(this.getTeamsService(), payload.agentId);
+
       const template = this.resolveTemplate();
-      const message = this.renderTemplate(template, {
-        epic_id: payload.epicId,
-        agent_name: payload.agentName ?? payload.agentId,
-        epic_title: payload.title,
-        project_name: payload.projectName ?? payload.projectId,
-        assigner_name: assignerName ?? 'System',
-      });
+      const message = renderTemplate(
+        template,
+        {
+          epic_id: payload.epicId,
+          agent_name: payload.agentName ?? payload.agentId,
+          epic_title: payload.title,
+          project_name: payload.projectName ?? payload.projectId,
+          assigner_name: assignerName ?? 'System',
+          ...teamCtx,
+        },
+        LEGACY_VARIABLES,
+      );
 
       // Ensure agent has an active session (launch if needed)
       // Note: ensureAgentSession calls launchSession() which has internal withAgentLock.
@@ -154,14 +176,21 @@ export class EpicAssignmentNotifierSubscriber {
       // Resolve actor (assigner) name for template placeholder
       const assignerName = await this.resolveActorName(payload.actor);
 
+      const teamCtx = await loadAgentRecipientContext(this.getTeamsService(), newAgentId);
+
       const template = this.resolveTemplate();
-      const message = this.renderTemplate(template, {
-        epic_id: payload.epicId,
-        agent_name: agentName ?? newAgentId,
-        epic_title: epicTitle ?? payload.epicId,
-        project_name: projectName ?? payload.projectId,
-        assigner_name: assignerName ?? 'System',
-      });
+      const message = renderTemplate(
+        template,
+        {
+          epic_id: payload.epicId,
+          agent_name: agentName ?? newAgentId,
+          epic_title: epicTitle ?? payload.epicId,
+          project_name: projectName ?? payload.projectId,
+          assigner_name: assignerName ?? 'System',
+          ...teamCtx,
+        },
+        LEGACY_VARIABLES,
+      );
 
       // Ensure agent has an active session (launch if needed)
       // Note: ensureAgentSession calls launchSession() which has internal withAgentLock.
@@ -239,19 +268,6 @@ export class EpicAssignmentNotifierSubscriber {
     }
 
     return trimmed;
-  }
-
-  private renderTemplate(
-    template: string,
-    context: Record<
-      'epic_id' | 'agent_name' | 'epic_title' | 'project_name' | 'assigner_name',
-      string
-    >,
-  ): string {
-    return Object.entries(context).reduce((acc, [key, value]) => {
-      const placeholder = `{${key}}`;
-      return acc.split(placeholder).join(value);
-    }, template);
   }
 
   private async resolveNames(
@@ -406,5 +422,15 @@ export class EpicAssignmentNotifierSubscriber {
       }
     }
     return this.sessionsServiceRef;
+  }
+
+  private getTeamsService(): TeamsService {
+    if (!this.teamsServiceRef) {
+      this.teamsServiceRef = this.moduleRef.get(TeamsService, { strict: false });
+      if (!this.teamsServiceRef) {
+        throw new Error('TeamsService is not available in the current module context');
+      }
+    }
+    return this.teamsServiceRef;
   }
 }

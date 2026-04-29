@@ -14,6 +14,22 @@ jest.mock('@/ui/hooks/useProjectSelection', () => ({
   useSelectedProject: () => useSelectedProjectMock(),
 }));
 
+let capturedSocketHandlers: Record<string, (...args: unknown[]) => void> = {};
+const mockSocketEmit = jest.fn();
+const mockSocket = {
+  connected: false,
+  emit: mockSocketEmit,
+  on: jest.fn(),
+  off: jest.fn(),
+};
+
+jest.mock('@/ui/hooks/useAppSocket', () => ({
+  useAppSocket: (handlers: Record<string, (...args: unknown[]) => void>) => {
+    capturedSocketHandlers = handlers;
+    return mockSocket;
+  },
+}));
+
 jest.mock('@/ui/terminal-windows', () => ({
   useTerminalWindowManager: () => openTerminalWindowSpy,
 }));
@@ -203,6 +219,9 @@ describe('AgentsPage', () => {
   beforeEach(() => {
     toastSpy.mockClear();
     openTerminalWindowSpy.mockClear();
+    mockSocketEmit.mockClear();
+    mockSocket.connected = false;
+    capturedSocketHandlers = {};
     useSelectedProjectMock.mockReturnValue(projectSelectionValue);
   });
 
@@ -382,6 +401,104 @@ describe('AgentsPage', () => {
       jest.useRealTimers();
       queryClient.clear();
     }
+  });
+
+  it('emits events:subscribe immediately when socket is already connected', async () => {
+    mockSocket.connected = true;
+    const fetchMock = buildFetchMock();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const { Wrapper, queryClient } = createWrapper();
+    render(<AgentsPage />, { wrapper: Wrapper });
+
+    await screen.findByText('Agent One');
+
+    expect(mockSocketEmit).toHaveBeenCalledWith('events:subscribe');
+
+    queryClient.clear();
+  });
+
+  it('invalidates agents query on matching agent.created event', async () => {
+    const fetchMock = buildFetchMock();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const { Wrapper, queryClient } = createWrapper();
+    const invalidateSpy = jest.spyOn(queryClient, 'invalidateQueries');
+    render(<AgentsPage />, { wrapper: Wrapper });
+
+    await screen.findByText('Agent One');
+
+    act(() => {
+      capturedSocketHandlers.message?.({
+        topic: 'events/logs',
+        type: 'event_created',
+        payload: {
+          name: 'agent.created',
+          payload: { projectId: 'project-1', agentId: 'agent-new', agentName: 'New Agent' },
+        },
+      });
+    });
+
+    expect(invalidateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ queryKey: ['agents', 'project-1'] }),
+    );
+
+    invalidateSpy.mockRestore();
+    queryClient.clear();
+  });
+
+  it('does NOT invalidate agents query on cross-project or unrelated events', async () => {
+    const fetchMock = buildFetchMock();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const { Wrapper, queryClient } = createWrapper();
+    const invalidateSpy = jest.spyOn(queryClient, 'invalidateQueries');
+    render(<AgentsPage />, { wrapper: Wrapper });
+
+    await screen.findByText('Agent One');
+    invalidateSpy.mockClear();
+
+    // Cross-project agent.created
+    act(() => {
+      capturedSocketHandlers.message?.({
+        topic: 'events/logs',
+        type: 'event_created',
+        payload: {
+          name: 'agent.created',
+          payload: { projectId: 'other-project', agentId: 'agent-x', agentName: 'X' },
+        },
+      });
+    });
+    expect(invalidateSpy).not.toHaveBeenCalled();
+
+    // Different event name
+    act(() => {
+      capturedSocketHandlers.message?.({
+        topic: 'events/logs',
+        type: 'event_created',
+        payload: {
+          name: 'epic.created',
+          payload: { projectId: 'project-1' },
+        },
+      });
+    });
+    expect(invalidateSpy).not.toHaveBeenCalled();
+
+    // Wrong type
+    act(() => {
+      capturedSocketHandlers.message?.({
+        topic: 'events/logs',
+        type: 'handler_recorded',
+        payload: {
+          name: 'agent.created',
+          payload: { projectId: 'project-1' },
+        },
+      });
+    });
+    expect(invalidateSpy).not.toHaveBeenCalled();
+
+    invalidateSpy.mockRestore();
+    queryClient.clear();
   });
 
   it('exposes accessible avatar labels on the agents list', async () => {

@@ -6,6 +6,7 @@ import { SettingsService } from '../../settings/services/settings.service';
 import { WatchersService } from '../../watchers/services/watchers.service';
 import { WatcherRunnerService } from '../../watchers/services/watcher-runner.service';
 import { UnifiedTemplateService } from '../../registry/services/unified-template.service';
+import { TeamsService } from '../../teams/services/teams.service';
 import { importProjectWithHelper } from '../helpers/project-import';
 import { exportProjectWithHelper } from '../helpers/project-export';
 import { createFromTemplateWithHelper } from '../helpers/template-loader';
@@ -54,6 +55,16 @@ export interface CreateFromTemplateInput {
   templatePath?: string;
   familyProviderMappings?: Record<string, string>;
   presetName?: string;
+  teamOverrides?: Array<{
+    teamName: string;
+    allowTeamLeadCreateAgents?: boolean;
+    maxMembers?: number;
+    maxConcurrentTasks?: number;
+    profileSelections?: Array<{
+      profileName: string;
+      configNames: string[];
+    }>;
+  }>;
 }
 
 export interface ProviderMappingRequired {
@@ -68,6 +79,14 @@ export interface ImportProjectInput {
   dryRun?: boolean;
   statusMappings?: Record<string, string>;
   familyProviderMappings?: Record<string, string>;
+  teamOverrides?: Array<{
+    teamName: string;
+    allowTeamLeadCreateAgents?: boolean;
+    maxMembers?: number;
+    maxConcurrentTasks?: number;
+    profileNames?: string[];
+    profileSelections?: Array<{ profileName: string; configNames: string[] }>;
+  }>;
 }
 
 @Injectable()
@@ -79,6 +98,7 @@ export class ProjectsService {
     private readonly watchersService: WatchersService,
     private readonly watcherRunner: WatcherRunnerService,
     private readonly unifiedTemplateService: UnifiedTemplateService,
+    private readonly teamsService: TeamsService,
   ) {}
 
   async listTemplates(): Promise<TemplateInfo[]> {
@@ -111,6 +131,7 @@ export class ProjectsService {
       createSubscribersFromPayload: (projectId, subscribers) =>
         createSubscribersFromPayloadWithHelper(projectId, subscribers, this.storage),
       probe1m: probe1mSupport,
+      teamsService: this.teamsService,
       applyPreset: (projectId, presetName, nameMaps) =>
         applyPresetWithHelper(
           projectId,
@@ -140,6 +161,7 @@ export class ProjectsService {
       storage: this.storage,
       settings: this.settings,
       slugify,
+      teamsService: this.teamsService,
     });
   }
 
@@ -176,6 +198,7 @@ export class ProjectsService {
       watchersService: this.watchersService,
       sessions: this.sessions,
       unifiedTemplateService: this.unifiedTemplateService,
+      cleanupTeamsForProject: (projectId) => this.teamsService.deleteTeamsByProject(projectId),
       computeFamilyAlternatives: (templateProfiles, templateAgents) =>
         this.computeFamilyAlternatives(templateProfiles, templateAgents),
       createWatchersFromPayload: (projectId, watchers, maps) =>
@@ -192,6 +215,7 @@ export class ProjectsService {
         ),
       getImportErrorMessage,
       probe1m: probe1mSupport,
+      teamsService: this.teamsService,
     });
   }
 

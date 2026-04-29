@@ -127,6 +127,7 @@ export interface Provider {
   autoCompactThreshold: number | null; // CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (1-100), null = don't inject
   autoCompactThreshold1m: number | null; // Threshold for 1M context sessions (opus), null = use standard
   oneMillionContextEnabled: boolean; // Claude 1M context; when true, rewrite opus --model to [1m] alias at launch time (opus only)
+  env: Record<string, string> | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -165,7 +166,9 @@ export interface ProfileProviderConfig {
   id: string;
   profileId: string; // FK to agent_profiles.id
   providerId: string; // FK to providers.id
+  providerName?: string; // Resolved from providers.name via JOIN
   name: string; // User-friendly name to distinguish configs (unique per profile)
+  description: string | null;
   options: string | null; // JSON string for provider-specific options
   env: Record<string, string> | null; // Environment variables (stored as JSON)
   position: number; // Order within profile (0, 1, 2, ...)
@@ -267,6 +270,7 @@ export interface CreateProvider extends Partial<ProviderMcpMetadata> {
   autoCompactThreshold?: number | null;
   autoCompactThreshold1m?: number | null;
   oneMillionContextEnabled?: boolean;
+  env?: Record<string, string> | null;
 }
 export type CreateProviderModel = Omit<
   ProviderModel,
@@ -290,6 +294,7 @@ export type CreateProfileProviderConfig = {
   profileId: string;
   providerId: string;
   name: string;
+  description?: string | null;
   options: string | null;
   env: Record<string, string> | null;
   position?: number; // Optional - defaults to max(position)+1 in storage service
@@ -416,6 +421,67 @@ export type CreateSubscriber = Omit<Subscriber, 'id' | 'createdAt' | 'updatedAt'
 export type UpdateSubscriber = Partial<
   Omit<Subscriber, 'id' | 'projectId' | 'createdAt' | 'updatedAt'>
 >;
+
+// ============================================
+// TEAMS - Agent team organization
+// ============================================
+
+export interface Team {
+  id: string;
+  projectId: string;
+  name: string;
+  description: string | null;
+  teamLeadAgentId: string | null;
+  maxMembers: number;
+  maxConcurrentTasks: number;
+  allowTeamLeadCreateAgents: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TeamMember {
+  teamId: string;
+  agentId: string;
+  createdAt: string;
+}
+
+export interface TeamProfile {
+  teamId: string;
+  profileId: string;
+  createdAt: string;
+}
+
+export interface TeamProfileConfig {
+  teamId: string;
+  profileId: string;
+  providerConfigId: string;
+  createdAt: string;
+}
+
+export type CreateTeam = {
+  projectId: string;
+  name: string;
+  description?: string | null;
+  teamLeadAgentId?: string | null;
+  maxMembers?: number;
+  maxConcurrentTasks?: number;
+  allowTeamLeadCreateAgents?: boolean;
+  memberAgentIds: string[];
+  profileIds?: string[];
+  profileConfigSelections?: Array<{ profileId: string; configIds: string[] }>;
+};
+
+export type UpdateTeam = {
+  name?: string;
+  description?: string | null;
+  teamLeadAgentId?: string | null;
+  maxMembers?: number;
+  maxConcurrentTasks?: number;
+  allowTeamLeadCreateAgents?: boolean;
+  memberAgentIds?: string[];
+  profileIds?: string[];
+  profileConfigSelections?: Array<{ profileId: string; configIds: string[] }>;
+};
 
 // ============================================
 // CODE REVIEWS

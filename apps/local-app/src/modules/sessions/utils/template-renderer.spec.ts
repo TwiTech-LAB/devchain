@@ -1,4 +1,20 @@
 import { buildInitialPromptContext, renderInitialPromptTemplate } from './template-renderer';
+import type { Team } from '@/modules/storage/models/domain.models';
+
+function makeTeam(overrides: Partial<Team> & { name: string }): Team {
+  return {
+    id: overrides.id ?? 'team-1',
+    projectId: 'proj-1',
+    name: overrides.name,
+    description: null,
+    teamLeadAgentId: overrides.teamLeadAgentId ?? null,
+    maxMembers: 10,
+    maxConcurrentTasks: 3,
+    allowTeamLeadCreateAgents: false,
+    createdAt: '2026-01-01',
+    updatedAt: '2026-01-01',
+  };
+}
 
 describe('renderInitialPromptTemplate', () => {
   const context = {
@@ -109,5 +125,67 @@ describe('renderInitialPromptTemplate', () => {
     );
 
     expect(rendered).toBe('Short: ');
+  });
+
+  describe('team variables', () => {
+    const AGENT_ID = 'agent-aaa';
+    const teamContext = {
+      ...context,
+      agent: { name: 'Claude', id: AGENT_ID },
+    };
+
+    it('{team_name} legacy syntax works after preprocessor', () => {
+      const ctx = buildInitialPromptContext({
+        ...teamContext,
+        teams: [makeTeam({ name: 'Backend', teamLeadAgentId: AGENT_ID })],
+      });
+      expect(renderInitialPromptTemplate('Team: {team_name}', ctx)).toBe('Team: Backend');
+    });
+
+    it('{{team_name}} native syntax works', () => {
+      const ctx = buildInitialPromptContext({
+        ...teamContext,
+        teams: [makeTeam({ name: 'Backend', teamLeadAgentId: AGENT_ID })],
+      });
+      expect(renderInitialPromptTemplate('Team: {{team_name}}', ctx)).toBe('Team: Backend');
+    });
+
+    it('{{#if team_name}} renders when team present, omits when absent', () => {
+      const tpl = '{{#if team_name}}Team: {{team_name}}{{/if}}';
+
+      const withTeam = buildInitialPromptContext({
+        ...teamContext,
+        teams: [makeTeam({ name: 'Backend' })],
+      });
+      expect(renderInitialPromptTemplate(tpl, withTeam)).toBe('Team: Backend');
+
+      const noTeam = buildInitialPromptContext({ ...teamContext, teams: [] });
+      expect(renderInitialPromptTemplate(tpl, noTeam)).toBe('');
+    });
+
+    it('{{#if is_team_lead}} works for both true and false', () => {
+      const tpl = '{{#if is_team_lead}}LEAD{{else}}MEMBER{{/if}}';
+
+      const asLead = buildInitialPromptContext({
+        ...teamContext,
+        teams: [makeTeam({ name: 'Backend', teamLeadAgentId: AGENT_ID })],
+      });
+      expect(renderInitialPromptTemplate(tpl, asLead)).toBe('LEAD');
+
+      const asMember = buildInitialPromptContext({
+        ...teamContext,
+        teams: [makeTeam({ name: 'Backend', teamLeadAgentId: 'other' })],
+      });
+      expect(renderInitialPromptTemplate(tpl, asMember)).toBe('MEMBER');
+    });
+
+    it('multi-team: team_name empty, team_names comma-joined sorted', () => {
+      const ctx = buildInitialPromptContext({
+        ...teamContext,
+        teams: [makeTeam({ id: 't2', name: 'Zebra' }), makeTeam({ id: 't1', name: 'Alpha' })],
+      });
+      expect(renderInitialPromptTemplate('{{team_name}}', ctx)).toBe('');
+      expect(renderInitialPromptTemplate('{{team_names}}', ctx)).toBe('Alpha, Zebra');
+    });
   });
 });

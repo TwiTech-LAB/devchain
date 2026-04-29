@@ -1,4 +1,5 @@
 import { EpicAssignmentNotifierSubscriber } from './epic-assignment-notifier.subscriber';
+import { TeamsService } from '../../teams/services/teams.service';
 import type { EventLogService } from '../services/event-log.service';
 import type { SettingsService } from '../../settings/services/settings.service';
 import type { SessionsService } from '../../sessions/services/sessions.service';
@@ -22,6 +23,8 @@ describe('EpicAssignmentNotifierSubscriber', () => {
   let listActiveSessionsMock: jest.Mock;
   let launchSessionMock: jest.Mock;
   let sessionsService: SessionsService;
+  let listTeamsByAgentMock: jest.Mock;
+  let teamsServiceMock: { listTeamsByAgent: jest.Mock };
   let moduleRef: ModuleRef;
   let enqueueMock: jest.Mock;
   let messagePoolService: SessionsMessagePoolService;
@@ -66,8 +69,15 @@ describe('EpicAssignmentNotifierSubscriber', () => {
       listActiveSessions: listActiveSessionsMock,
       launchSession: launchSessionMock,
     } as unknown as SessionsService;
+
+    listTeamsByAgentMock = jest.fn().mockResolvedValue([]);
+    teamsServiceMock = { listTeamsByAgent: listTeamsByAgentMock };
+
     moduleRef = {
-      get: jest.fn().mockReturnValue(sessionsService),
+      get: jest.fn().mockImplementation((token: unknown) => {
+        if (token === TeamsService) return teamsServiceMock;
+        return sessionsService;
+      }),
     } as unknown as ModuleRef;
 
     enqueueMock = jest.fn().mockResolvedValue({ status: 'queued', poolSize: 1 });
@@ -429,6 +439,115 @@ describe('EpicAssignmentNotifierSubscriber', () => {
           }),
         );
       });
+    });
+  });
+
+  describe('team variables', () => {
+    it('default template renders without stray team text for teamless agent', async () => {
+      settingsService.getSetting.mockReturnValue(null);
+      listTeamsByAgentMock.mockResolvedValue([]);
+
+      await subscriber.handleEpicUpdated(basePayload);
+
+      const message = enqueueMock.mock.calls[0][1] as string;
+      expect(message).toBe(
+        '[Epic Assignment]\nAdd Feature is now assigned to Helper Agent in Demo Project. (Epic ID: epic-1)',
+      );
+    });
+
+    it('custom template with {team_name} resolves for 1-team agent', async () => {
+      settingsService.getSetting.mockReturnValue('{agent_name} ({team_name}): {epic_title}');
+      listTeamsByAgentMock.mockResolvedValue([
+        {
+          id: 't1',
+          name: 'Backend',
+          teamLeadAgentId: 'agent-1',
+          projectId: 'p1',
+          description: null,
+          maxMembers: 10,
+          maxConcurrentTasks: 3,
+          allowTeamLeadCreateAgents: false,
+          createdAt: '',
+          updatedAt: '',
+        },
+      ]);
+
+      await subscriber.handleEpicUpdated(basePayload);
+
+      const message = enqueueMock.mock.calls[0][1] as string;
+      expect(message).toBe('Helper Agent (Backend): Add Feature');
+    });
+
+    it('custom template with {{#if is_team_lead}} renders for lead and non-lead', async () => {
+      settingsService.getSetting.mockReturnValue(
+        '{{#if is_team_lead}}LEAD{{else}}MEMBER{{/if}}: {epic_title}',
+      );
+
+      listTeamsByAgentMock.mockResolvedValue([
+        {
+          id: 't1',
+          name: 'Backend',
+          teamLeadAgentId: 'agent-1',
+          projectId: 'p1',
+          description: null,
+          maxMembers: 10,
+          maxConcurrentTasks: 3,
+          allowTeamLeadCreateAgents: false,
+          createdAt: '',
+          updatedAt: '',
+        },
+      ]);
+
+      await subscriber.handleEpicUpdated(basePayload);
+      expect(enqueueMock.mock.calls[0][1]).toBe('LEAD: Add Feature');
+
+      // Reset for non-lead test
+      enqueueMock.mockClear();
+      listTeamsByAgentMock.mockResolvedValue([
+        {
+          id: 't1',
+          name: 'Backend',
+          teamLeadAgentId: 'other-agent',
+          projectId: 'p1',
+          description: null,
+          maxMembers: 10,
+          maxConcurrentTasks: 3,
+          allowTeamLeadCreateAgents: false,
+          createdAt: '',
+          updatedAt: '',
+        },
+      ]);
+
+      // Need a fresh subscriber to clear the cached teamsServiceRef
+      subscriber = new EpicAssignmentNotifierSubscriber(
+        eventLogService as unknown as EventLogService,
+        settingsService as unknown as SettingsService,
+        moduleRef,
+        sessionCoordinator,
+        messagePoolService,
+        storageService,
+      );
+
+      await subscriber.handleEpicUpdated(basePayload);
+      expect(enqueueMock.mock.calls[0][1]).toBe('MEMBER: Add Feature');
+    });
+
+    it('unknown literal tokens preserved', async () => {
+      settingsService.getSetting.mockReturnValue('{some_literal} {agent_name}');
+
+      await subscriber.handleEpicUpdated(basePayload);
+
+      const message = enqueueMock.mock.calls[0][1] as string;
+      expect(message).toBe('{some_literal} Helper Agent');
+    });
+
+    it('legacy {var} and native {{var}} both work in same template', async () => {
+      settingsService.getSetting.mockReturnValue('{agent_name} / {{epic_title}}');
+
+      await subscriber.handleEpicUpdated(basePayload);
+
+      const message = enqueueMock.mock.calls[0][1] as string;
+      expect(message).toBe('Helper Agent / Add Feature');
     });
   });
 });

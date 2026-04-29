@@ -78,7 +78,7 @@ export interface UseChatQueriesResult {
   agentsError: boolean;
 
   // Profiles and providers
-  profiles: Array<{ id: string; providerId: string }>;
+  profiles: Array<{ id: string; name: string; providerId: string }>;
   providers: Array<{ id: string; name: string }>;
 
   // Provider lookups
@@ -409,12 +409,14 @@ export function useChatQueries({
   const guests = allAgentsAndGuests.filter((item) => item.type === 'guest');
 
   // Normalize profiles response
-  const profiles: Array<{ id: string; providerId: string }> = (() => {
+  const profiles: Array<{ id: string; name: string; providerId: string }> = (() => {
     if (Array.isArray(profilesResponse)) {
-      return profilesResponse as Array<{ id: string; providerId: string }>;
+      return profilesResponse as Array<{ id: string; name: string; providerId: string }>;
     }
     if (profilesResponse && Array.isArray((profilesResponse as { items?: unknown[] }).items)) {
-      return (profilesResponse as { items: Array<{ id: string; providerId: string }> }).items;
+      return (
+        profilesResponse as { items: Array<{ id: string; name: string; providerId: string }> }
+      ).items;
     }
     return [];
   })();

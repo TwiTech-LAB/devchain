@@ -16,6 +16,7 @@ RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json .npmrc ./
 COPY apps/local-app/package.json ./apps/local-app/
 COPY packages/shared/package.json ./packages/shared/
+COPY packages/codebase-overview/package.json ./packages/codebase-overview/
 
 # Install only the dependency graph required by local-app.
 # Ignore scripts here because the root postinstall script is not needed in this image.
@@ -24,9 +25,11 @@ RUN pnpm install --frozen-lockfile --ignore-scripts --filter local-app...
 # Ensure native modules are built in the Debian/glibc image
 RUN pnpm --filter local-app... rebuild better-sqlite3 node-pty
 
-# Source files required to build local-app and workspace dependency
+# Source files required to build local-app and workspace dependencies
 COPY packages/shared/tsconfig.json ./packages/shared/
 COPY packages/shared/src ./packages/shared/src
+COPY packages/codebase-overview/tsconfig.json ./packages/codebase-overview/
+COPY packages/codebase-overview/src ./packages/codebase-overview/src
 
 COPY apps/local-app/nest-cli.json ./apps/local-app/
 COPY apps/local-app/tsconfig.json ./apps/local-app/
@@ -42,6 +45,7 @@ COPY apps/local-app/templates ./apps/local-app/templates
 COPY apps/local-app/drizzle ./apps/local-app/drizzle
 
 RUN pnpm --filter @devchain/shared build
+RUN pnpm --filter @devchain/codebase-overview build
 RUN pnpm --filter local-app build
 
 # Prepare production bundle with resolved workspace dependencies
@@ -50,9 +54,9 @@ RUN pnpm --filter local-app deploy --prod /app/deploy
 FROM node:20-slim AS production
 
 WORKDIR /app/apps/local-app
-ARG CLAUDE_CODE_VERSION=2.1.92
-ARG CODEX_VERSION=0.118.0
-ARG GEMINI_CLI_VERSION=0.36.0
+ARG CLAUDE_CODE_VERSION=2.1.118
+ARG CODEX_VERSION=0.125.0
+ARG GEMINI_CLI_VERSION=0.39.1
 
 # Runtime system dependencies required by local-app
 RUN apt-get update \

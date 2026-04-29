@@ -31,6 +31,7 @@ export interface SyncResult {
 interface TemplateProfileConfig {
   name: string;
   providerName: string;
+  description: string | null;
   options: string | null;
   env: Record<string, string> | null;
 }
@@ -89,6 +90,7 @@ export class ProviderProjectSyncService {
             profileId: profile.id,
             providerId,
             name: candidate.name,
+            description: candidate.description ?? null,
             options: candidate.options ?? null,
             env: candidate.env ?? undefined,
           });
@@ -140,10 +142,15 @@ export class ProviderProjectSyncService {
     providerOriginalName: string,
     projectId: string,
     warnings: SyncWarning[],
-  ): Array<{ name: string; options: string | null; env: Record<string, string> | null }> {
+  ): Array<{
+    name: string;
+    description: string | null;
+    options: string | null;
+    env: Record<string, string> | null;
+  }> {
     if (!templateProfiles) {
       warnings.push({ projectId, reason: 'no_template' });
-      return [{ name: providerOriginalName, options: null, env: null }];
+      return [{ name: providerOriginalName, description: null, options: null, env: null }];
     }
 
     const profileNameLower = profileName.trim().toLowerCase();
@@ -153,7 +160,7 @@ export class ProviderProjectSyncService {
 
     if (!manifestProfile || !manifestProfile.providerConfigs?.length) {
       warnings.push({ projectId, reason: 'no_manifest_match' });
-      return [{ name: providerOriginalName, options: null, env: null }];
+      return [{ name: providerOriginalName, description: null, options: null, env: null }];
     }
 
     const matchingConfigs = manifestProfile.providerConfigs.filter(
@@ -162,11 +169,12 @@ export class ProviderProjectSyncService {
 
     if (matchingConfigs.length === 0) {
       warnings.push({ projectId, reason: 'no_manifest_match' });
-      return [{ name: providerOriginalName, options: null, env: null }];
+      return [{ name: providerOriginalName, description: null, options: null, env: null }];
     }
 
     return matchingConfigs.map((c) => ({
       name: c.name,
+      description: c.description ?? null,
       options: c.options ?? null,
       env: c.env ?? null,
     }));

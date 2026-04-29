@@ -117,6 +117,47 @@ export function parseProviderConfigEnv(
   }
 }
 
+export function parseProviderEnv(
+  envJson: string | null | undefined,
+  providerId: string,
+): Record<string, string> | null {
+  if (!envJson) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(envJson);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new Error('env must be an object');
+    }
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value !== 'string') {
+        throw new Error(`env["${key}"] must be a string, got ${typeof value}`);
+      }
+    }
+    return parsed as Record<string, string>;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn({ providerId, error: message }, 'Failed to parse provider env JSON');
+    throw new ValidationError(`Invalid JSON in provider env field: ${message}`, {
+      providerId,
+      rawValue: envJson.slice(0, 100) + (envJson.length > 100 ? '...' : ''),
+    });
+  }
+}
+
+export function normalizeEnvForStorage(
+  env: Record<string, string> | null | undefined,
+): string | null {
+  if (env === null || env === undefined) {
+    return null;
+  }
+  if (Object.keys(env).length === 0) {
+    return null;
+  }
+  return JSON.stringify(env);
+}
+
 export function parseSkillsRequired(raw: unknown): string[] | null {
   if (raw === null || raw === undefined) {
     return null;

@@ -7,12 +7,27 @@ import { Button } from '@/ui/components/ui/button';
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from '@/ui/components/ui/select';
 import type { ActionInput as ActionInputDef, EventFieldDefinition } from '@/ui/lib/actions';
 import type { ActionInput as SubscriberActionInput } from '@/ui/lib/subscribers';
+
+export interface EditorCapabilities {
+  agentContext: boolean;
+  conditionals: boolean;
+}
+
+const AGENT_CONTEXT_FIELDS: Array<{ field: string; label: string; type: string }> = [
+  { field: 'is_team_lead', label: 'Is Team Lead', type: 'boolean' },
+  { field: 'team_name', label: 'Team Name', type: 'string' },
+  { field: 'team_names', label: 'Team Names', type: 'string' },
+];
+
+const BOOLEAN_AGENT_FIELDS = AGENT_CONTEXT_FIELDS.filter((f) => f.type === 'boolean');
 
 export type InputSource = 'custom' | 'event_field';
 
@@ -41,6 +56,7 @@ interface InputSourceSelectorProps {
   value: SubscriberActionInput;
   onChange: (value: SubscriberActionInput) => void;
   availableEventFields: EventFieldDefinition[];
+  editorCapabilities?: EditorCapabilities;
   error?: string;
 }
 
@@ -49,6 +65,7 @@ export function InputSourceSelector({
   value,
   onChange,
   availableEventFields,
+  editorCapabilities,
   error,
 }: InputSourceSelectorProps) {
   const source = value.source || 'custom';
@@ -93,6 +110,7 @@ export function InputSourceSelector({
           value={value.customValue || ''}
           onChange={handleCustomValueChange}
           availableEventFields={availableEventFields}
+          editorCapabilities={editorCapabilities}
           error={error}
         />
         {error && <p className="text-sm text-destructive">{error}</p>}
@@ -183,12 +201,15 @@ export function InputSourceSelector({
 /**
  * Template editor for string/textarea inputs.
  * Allows users to type free text and insert {{field}} variables from the event payload.
+ * When editorCapabilities.agentContext is true, also shows agent context variables
+ * and an "Insert conditional" affordance for {{#if}} blocks.
  */
 interface TemplateEditorProps {
   inputDef: ActionInputDef;
   value: string;
   onChange: (value: string) => void;
   availableEventFields: EventFieldDefinition[];
+  editorCapabilities?: EditorCapabilities;
   error?: string;
 }
 
@@ -197,15 +218,20 @@ function TemplateEditor({
   value,
   onChange,
   availableEventFields,
+  editorCapabilities,
   error,
 }: TemplateEditorProps) {
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
   const [selectedField, setSelectedField] = useState<string>('');
+  const [selectedConditionalVar, setSelectedConditionalVar] = useState<string>(
+    BOOLEAN_AGENT_FIELDS[0]?.field ?? '',
+  );
+
+  const capabilities = editorCapabilities ?? { agentContext: false, conditionals: false };
 
   const placeholder =
     inputDef.defaultValue?.toString() || `Enter ${inputDef.label.toLowerCase()}...`;
 
-  // Determine if we should use textarea (for message/text/content fields or textarea type)
   const useTextarea =
     inputDef.type === 'textarea' ||
     inputDef.name.toLowerCase().includes('message') ||
@@ -223,7 +249,6 @@ function TemplateEditor({
     const newValue = value.slice(0, start) + variable + value.slice(end);
     onChange(newValue);
 
-    // Reset selection and refocus
     setTimeout(() => {
       if (inputRef.current) {
         const newPosition = start + variable.length;
@@ -232,6 +257,40 @@ function TemplateEditor({
       }
     }, 0);
   };
+
+  const insertConditional = () => {
+    if (!selectedConditionalVar || !inputRef.current) return;
+
+    const input = inputRef.current;
+    const start = input.selectionStart ?? value.length;
+    const end = input.selectionEnd ?? value.length;
+    const selectedText = value.slice(start, end);
+
+    const prefix = `{{#if ${selectedConditionalVar}}}`;
+    const suffix = '{{/if}}';
+
+    let newValue: string;
+    let caretPosition: number;
+
+    if (start !== end) {
+      newValue = value.slice(0, start) + prefix + selectedText + suffix + value.slice(end);
+      caretPosition = start + prefix.length + selectedText.length + suffix.length;
+    } else {
+      newValue = value.slice(0, start) + prefix + suffix + value.slice(end);
+      caretPosition = start + prefix.length;
+    }
+
+    onChange(newValue);
+
+    setTimeout(() => {
+      if (inputRef.current) {
+        inputRef.current.setSelectionRange(caretPosition, caretPosition);
+        inputRef.current.focus();
+      }
+    }, 0);
+  };
+
+  const showToolbar = availableEventFields.length > 0 || capabilities.agentContext;
 
   return (
     <div className="space-y-2">
@@ -255,19 +314,33 @@ function TemplateEditor({
         />
       )}
 
-      {availableEventFields.length > 0 && (
+      {showToolbar && (
         <div className="flex items-center gap-2">
           <Select value={selectedField} onValueChange={setSelectedField}>
             <SelectTrigger className="flex-1 h-8 text-xs">
               <SelectValue placeholder="Select variable..." />
             </SelectTrigger>
             <SelectContent>
-              {availableEventFields.map((fieldDef) => (
-                <SelectItem key={fieldDef.field} value={fieldDef.field}>
-                  <span className="font-mono text-xs">{`{{${fieldDef.field}}}`}</span>
-                  <span className="ml-2 text-muted-foreground">{fieldDef.label}</span>
-                </SelectItem>
-              ))}
+              <SelectGroup>
+                <SelectLabel>Event fields</SelectLabel>
+                {availableEventFields.map((fieldDef) => (
+                  <SelectItem key={fieldDef.field} value={fieldDef.field}>
+                    <span className="font-mono text-xs">{`{{${fieldDef.field}}}`}</span>
+                    <span className="ml-2 text-muted-foreground">{fieldDef.label}</span>
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+              {capabilities.agentContext && (
+                <SelectGroup>
+                  <SelectLabel>Agent context</SelectLabel>
+                  {AGENT_CONTEXT_FIELDS.map((fieldDef) => (
+                    <SelectItem key={fieldDef.field} value={fieldDef.field}>
+                      <span className="font-mono text-xs">{`{{${fieldDef.field}}}`}</span>
+                      <span className="ml-2 text-muted-foreground">{fieldDef.label}</span>
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              )}
             </SelectContent>
           </Select>
           <Button
@@ -280,13 +353,45 @@ function TemplateEditor({
           >
             Insert
           </Button>
+          {capabilities.conditionals && BOOLEAN_AGENT_FIELDS.length > 0 && (
+            <>
+              <Select value={selectedConditionalVar} onValueChange={setSelectedConditionalVar}>
+                <SelectTrigger className="w-36 h-8 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {BOOLEAN_AGENT_FIELDS.map((f) => (
+                    <SelectItem key={f.field} value={f.field}>
+                      <span className="font-mono text-xs">{f.field}</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={insertConditional}
+                className="h-8 text-xs"
+              >
+                Insert conditional
+              </Button>
+            </>
+          )}
         </div>
       )}
 
-      {availableEventFields.length > 0 && (
+      {showToolbar && (
         <p className="text-xs text-muted-foreground">
           Use <code className="bg-muted px-1 rounded">{`{{field}}`}</code> syntax to insert event
           values
+          {capabilities.agentContext && (
+            <>
+              {' '}
+              and <code className="bg-muted px-1 rounded">{`{{#if var}}...{{/if}}`}</code> for
+              conditionals
+            </>
+          )}
         </p>
       )}
     </div>

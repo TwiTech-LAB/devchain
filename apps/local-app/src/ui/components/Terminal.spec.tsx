@@ -26,6 +26,7 @@ jest.mock('@xterm/xterm', () => ({
     attachCustomWheelEventHandler: jest.fn(),
     onScroll: jest.fn().mockReturnValue({ dispose: jest.fn() }),
     scrollLines: jest.fn(),
+    parser: { registerOscHandler: jest.fn() },
     element: null,
     options: { scrollback: 10000 },
     modes: { mouseTrackingMode: 'none' },

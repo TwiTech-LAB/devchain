@@ -28,6 +28,7 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { cn } from '@/ui/lib/utils';
+import { EnvEditor } from '@/ui/components/EnvEditor';
 import { MarkdownReferenceInput } from '@/ui/components/shared';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 
@@ -66,6 +67,7 @@ interface ProviderConfig {
   profileId: string;
   providerId: string;
   name: string;
+  description: string | null;
   options: string | null;
   env: Record<string, string> | null;
   createdAt: string;
@@ -160,6 +162,7 @@ async function createProviderConfig(
   data: {
     providerId: string;
     name?: string;
+    description?: string | null;
     options?: string | null;
     env?: Record<string, string> | null;
   },
@@ -178,7 +181,12 @@ async function createProviderConfig(
 
 async function updateProviderConfig(
   id: string,
-  data: { name?: string; options?: string | null; env?: Record<string, string> | null },
+  data: {
+    name?: string;
+    description?: string | null;
+    options?: string | null;
+    env?: Record<string, string> | null;
+  },
 ): Promise<ProviderConfig> {
   const res = await fetch(`/api/provider-configs/${id}`, {
     method: 'PUT',
@@ -324,122 +332,6 @@ function PromptOrderList({
   );
 }
 
-// Environment Variables Editor Component
-function EnvEditor({
-  env,
-  onChange,
-}: {
-  env: Record<string, string>;
-  onChange: (env: Record<string, string>) => void;
-}) {
-  const [newKey, setNewKey] = useState('');
-  const [newValue, setNewValue] = useState('');
-  const [keyError, setKeyError] = useState<string | null>(null);
-
-  const entries = Object.entries(env);
-
-  const validateKey = (key: string): boolean => {
-    // Env keys must be alphanumeric + underscore, start with letter or underscore
-    const pattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
-    return pattern.test(key);
-  };
-
-  const handleAddEntry = () => {
-    const trimmedKey = newKey.trim();
-    if (!trimmedKey) {
-      setKeyError('Key is required');
-      return;
-    }
-    if (!validateKey(trimmedKey)) {
-      setKeyError(
-        'Key must be alphanumeric with underscores, starting with a letter or underscore',
-      );
-      return;
-    }
-    if (env[trimmedKey] !== undefined) {
-      setKeyError('Key already exists');
-      return;
-    }
-    setKeyError(null);
-    onChange({ ...env, [trimmedKey]: newValue });
-    setNewKey('');
-    setNewValue('');
-  };
-
-  const handleRemoveEntry = (key: string) => {
-    const newEnv = { ...env };
-    delete newEnv[key];
-    onChange(newEnv);
-  };
-
-  const handleUpdateValue = (key: string, value: string) => {
-    onChange({ ...env, [key]: value });
-  };
-
-  return (
-    <div className="space-y-3">
-      {entries.length > 0 && (
-        <div className="space-y-2">
-          {entries.map(([key, value]) => (
-            <div key={key} className="flex items-center gap-2">
-              <Input value={key} readOnly className="w-1/3 font-mono text-sm bg-muted" />
-              <Input
-                value={value}
-                onChange={(e) => handleUpdateValue(key, e.target.value)}
-                className="flex-1 font-mono text-sm"
-                placeholder="Value"
-              />
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => handleRemoveEntry(key)}
-                aria-label="Remove"
-              >
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-          ))}
-        </div>
-      )}
-      <div className="flex items-start gap-2">
-        <div className="w-1/3">
-          <Input
-            value={newKey}
-            onChange={(e) => {
-              setNewKey(e.target.value);
-              setKeyError(null);
-            }}
-            className="font-mono text-sm"
-            placeholder="NEW_KEY"
-          />
-          {keyError && <p className="text-xs text-destructive mt-1">{keyError}</p>}
-        </div>
-        <Input
-          value={newValue}
-          onChange={(e) => setNewValue(e.target.value)}
-          className="flex-1 font-mono text-sm"
-          placeholder="value"
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              handleAddEntry();
-            }
-          }}
-        />
-        <Button type="button" variant="outline" size="sm" onClick={handleAddEntry}>
-          <Plus className="h-4 w-4" />
-        </Button>
-      </div>
-      {entries.length === 0 && (
-        <p className="text-sm text-muted-foreground">
-          No environment variables. Add key-value pairs that will be set when launching sessions.
-        </p>
-      )}
-    </div>
-  );
-}
-
 // Provider Configs Section for a Profile
 function ProviderConfigsSection({
   profileId,
@@ -462,6 +354,7 @@ function ProviderConfigsSection({
   const [formData, setFormData] = useState({
     providerId: '',
     name: '',
+    description: '',
     options: '',
     env: {} as Record<string, string>,
   });
@@ -483,6 +376,7 @@ function ProviderConfigsSection({
     mutationFn: (data: {
       providerId: string;
       name?: string;
+      description?: string | null;
       options?: string | null;
       env?: Record<string, string> | null;
     }) => createProviderConfig(profileId, data),
@@ -508,7 +402,12 @@ function ProviderConfigsSection({
       data,
     }: {
       id: string;
-      data: { name?: string; options?: string | null; env?: Record<string, string> | null };
+      data: {
+        name?: string;
+        description?: string | null;
+        options?: string | null;
+        env?: Record<string, string> | null;
+      };
     }) => updateProviderConfig(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['provider-configs', profileId] });
@@ -574,7 +473,7 @@ function ProviderConfigsSection({
   });
 
   const resetForm = () => {
-    setFormData({ providerId: '', name: '', options: '', env: {} });
+    setFormData({ providerId: '', name: '', description: '', options: '', env: {} });
   };
 
   const handleCreate = () => {
@@ -595,6 +494,7 @@ function ProviderConfigsSection({
     createMutation.mutate({
       providerId: formData.providerId,
       name: trimmedName || undefined, // API will auto-generate if not provided
+      description: formData.description.trim() || null,
       options: formData.options.trim() || null,
       env: Object.keys(formData.env).length > 0 ? formData.env : null,
     });
@@ -615,6 +515,7 @@ function ProviderConfigsSection({
       id: configId,
       data: {
         name: trimmedName || undefined,
+        description: formData.description.trim() || null,
         options: formData.options.trim() || null,
         env: Object.keys(formData.env).length > 0 ? formData.env : null,
       },
@@ -632,6 +533,7 @@ function ProviderConfigsSection({
     setFormData({
       providerId: config.providerId,
       name: config.name || '',
+      description: config.description || '',
       options: config.options || '',
       env: config.env || {},
     });
@@ -746,6 +648,16 @@ function ProviderConfigsSection({
                     />
                   </div>
                   <div>
+                    <Label className="text-xs">Description</Label>
+                    <Textarea
+                      value={formData.description}
+                      onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                      placeholder="What this configuration is used for"
+                      rows={2}
+                      className="text-sm"
+                    />
+                  </div>
+                  <div>
                     <Label className="text-xs">Options</Label>
                     <Textarea
                       value={formData.options}
@@ -833,6 +745,9 @@ function ProviderConfigsSection({
                       </div>
                     </div>
                   </div>
+                  {config.description && (
+                    <div className="text-sm text-muted-foreground">{config.description}</div>
+                  )}
                   {config.options && (
                     <div className="text-sm">
                       <span className="text-muted-foreground">Options:</span>{' '}
@@ -885,6 +800,16 @@ function ProviderConfigsSection({
                 <p className="text-xs text-muted-foreground mt-1">
                   Unique name for this configuration. Leave empty to auto-generate.
                 </p>
+              </div>
+              <div>
+                <Label className="text-xs">Description</Label>
+                <Textarea
+                  value={formData.description}
+                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                  placeholder="What this configuration is used for"
+                  rows={2}
+                  className="text-sm"
+                />
               </div>
               <div>
                 <Label className="text-xs">Options</Label>

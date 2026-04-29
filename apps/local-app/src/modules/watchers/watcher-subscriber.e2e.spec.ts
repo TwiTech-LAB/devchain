@@ -11,6 +11,7 @@ import { SessionsService } from '../sessions/services/sessions.service';
 import { SessionCoordinatorService } from '../sessions/services/session-coordinator.service';
 import { TerminalSendCoordinatorService } from '../terminal/services/terminal-send-coordinator.service';
 import { SessionsMessagePoolService } from '../sessions/services/sessions-message-pool.service';
+import { TeamsService } from '../teams/services/teams.service';
 import type { Watcher, Subscriber, Agent } from '../storage/models/domain.models';
 import type { SessionDto } from '../sessions/dtos/sessions.dto';
 
@@ -235,6 +236,12 @@ describe('Watcher → Subscriber E2E Flow', () => {
               ),
             getMessageLog: jest.fn().mockReturnValue([]),
           }),
+        },
+        {
+          provide: TeamsService,
+          useValue: {
+            listTeamsByAgent: jest.fn().mockResolvedValue([]),
+          },
         },
       ],
     }).compile();

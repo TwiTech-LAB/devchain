@@ -86,6 +86,15 @@ export class PasteNotConfirmedError extends AppError {
   }
 }
 
+export class TeamMemberCapReachedError extends AppError {
+  constructor(maxMembers: number, currentNonLeadCount: number) {
+    super('Team is at member cap', 'team_member_cap_reached', 409, {
+      maxMembers,
+      currentNonLeadCount,
+    });
+  }
+}
+
 export class UnsupportedProviderError extends AppError {
   constructor(
     public readonly providerName: string,

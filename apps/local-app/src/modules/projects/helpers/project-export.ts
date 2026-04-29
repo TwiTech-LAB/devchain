@@ -23,6 +23,32 @@ interface ExportProjectDeps {
   storage: StorageService;
   settings: SettingsService;
   slugify: (name: string) => string;
+  teamsService?: {
+    listTeams: (
+      projectId: string,
+      options?: { limit?: number },
+    ) => Promise<{
+      items: Array<{
+        id: string;
+        name: string;
+        description: string | null;
+        teamLeadAgentId: string | null;
+        memberCount: number;
+      }>;
+    }>;
+    getTeam: (id: string) => Promise<{
+      id: string;
+      name: string;
+      description: string | null;
+      teamLeadAgentId: string | null;
+      maxMembers: number;
+      maxConcurrentTasks: number;
+      allowTeamLeadCreateAgents: boolean;
+      members: Array<{ agentId: string }>;
+      profileIds: string[];
+      profileConfigSelections: Array<{ profileId: string; configIds: string[] }>;
+    } | null>;
+  };
 }
 
 type ExportState = Awaited<ReturnType<typeof loadExportState>>;
@@ -50,10 +76,6 @@ export async function exportProjectWithHelper(
   const { manifestOverrides, presets: presetsOverride } = opts ?? {};
   const state = await loadExportState(projectId, deps);
 
-  // Reserved for future use to sanitize sensitive data in exports
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const _sanitize = createSecretSanitizer();
-
   const prompts = await loadExportPrompts(state.promptsRes, deps.storage);
   const profileContext = await loadProfileExportContext(state.profilesRes, deps.storage);
 
@@ -65,6 +87,7 @@ export async function exportProjectWithHelper(
   const subscribers = buildExportSubscribers(state.subscribersRes);
   const providerSettings = buildProviderSettings(profileContext.providersMap);
   const providerModels = await buildProviderModels(profileContext.providersMap, deps.storage);
+  const teams = deps.teamsService ? await buildExportTeams(state.project, deps) : [];
 
   const manifest = buildManifest(
     state.project,
@@ -93,6 +116,7 @@ export async function exportProjectWithHelper(
     providerModels,
     watchers,
     subscribers,
+    ...(teams.length > 0 && { teams }),
     ...(exportPresets !== undefined ? { presets: exportPresets } : {}),
   };
 }
@@ -133,45 +157,50 @@ async function loadExportState(projectId: string, deps: ExportProjectDeps) {
   };
 }
 
-function createSecretSanitizer() {
-  const secretKeys = new Set([
-    'apikey',
-    'api_key',
-    'api-key',
-    'api_key_id',
-    'api-secret',
-    'api_secret',
-    'token',
-    'access_token',
-    'access-token',
-    'refresh_token',
-    'refresh-token',
-    'secret',
-    'client_secret',
-    'clientsecret',
-    'password',
-    'openaiapikey',
-    'anthropicapikey',
-    'azureapikey',
-    'googleapikey',
-    'geminiapikey',
-  ]);
+// Canonical secret-key tokens for env-map sanitization (source of truth).
+// Most tokens use case-insensitive substring matching.
+// "pat" uses boundary-aware matching (must be a whole segment between _ or
+// start/end) to avoid false-positives on PATH, PATTERN, DISPATCH, etc.
+// Bare "auth" is intentionally excluded — it false-positives on
+// AUTHOR_NAME, AUTHENTICATOR, etc.
+const SECRET_ENV_TOKENS = [
+  'api_key',
+  'apikey',
+  'token',
+  'secret',
+  'password',
+  'passwd',
+  'private_key',
+  'client_secret',
+  'access_key',
+  'bearer',
+  'credential',
+  'credentials',
+  'service_account',
+  'ssh_key',
+  'connection_string',
+  'database_url',
+  'dsn',
+  'webhook_secret',
+  'signing_key',
+  'encryption_key',
+];
 
-  const sanitize = (value: unknown): unknown => {
-    if (Array.isArray(value)) {
-      return value.map((entry) => sanitize(entry));
-    }
-    if (value && typeof value === 'object') {
-      const out: Record<string, unknown> = {};
-      for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-        out[key] = secretKeys.has(key.toLowerCase()) ? '***' : sanitize(entry);
-      }
-      return out;
-    }
-    return value;
-  };
+// Boundary-aware: matches "pat" only as a whole underscore-delimited segment
+const PAT_BOUNDARY_RE = /(^|_)pat(_|$)/i;
 
-  return sanitize;
+export function sanitizeEnvMap(
+  env: Record<string, string> | null | undefined,
+): Record<string, string> | null {
+  if (!env) return null;
+
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    const lower = key.toLowerCase();
+    const isSecret = SECRET_ENV_TOKENS.some((t) => lower.includes(t)) || PAT_BOUNDARY_RE.test(key);
+    result[key] = isSecret ? '***' : value;
+  }
+  return result;
 }
 
 async function loadExportPrompts(
@@ -240,8 +269,9 @@ function buildExportProfiles(
       return {
         name: config.name,
         providerName: provider?.name || 'unknown',
+        description: config.description,
         options: config.options,
-        env: config.env,
+        env: sanitizeEnvMap(config.env),
         position: config.position,
       };
     });
@@ -395,13 +425,16 @@ function buildProviderSettings(
     autoCompactThreshold: number | null;
     autoCompactThreshold1m?: number | null;
     oneMillionContextEnabled?: boolean;
+    env?: Record<string, string> | null;
   }> = [];
 
   for (const provider of providersMap.values()) {
+    const hasEnv = provider.env && Object.keys(provider.env).length > 0;
     if (
       provider.autoCompactThreshold != null ||
       provider.autoCompactThreshold1m != null ||
-      provider.oneMillionContextEnabled
+      provider.oneMillionContextEnabled ||
+      hasEnv
     ) {
       providerSettings.push({
         name: provider.name,
@@ -410,6 +443,7 @@ function buildProviderSettings(
           autoCompactThreshold1m: provider.autoCompactThreshold1m,
         }),
         ...(provider.oneMillionContextEnabled && { oneMillionContextEnabled: true }),
+        ...(hasEnv && { env: sanitizeEnvMap(provider.env) }),
       });
     }
   }
@@ -441,6 +475,98 @@ async function buildProviderModels(
     if (models && models.length > 0) {
       result.push({ providerName: provider.name, models });
     }
+  }
+
+  return result;
+}
+
+async function buildExportTeams(project: { id: string }, deps: ExportProjectDeps) {
+  if (!deps.teamsService) return [];
+  const { items: teamList } = await deps.teamsService.listTeams(project.id, { limit: 10000 });
+  const result: Array<{
+    name: string;
+    description: string | null;
+    teamLeadAgentName: string | null;
+    memberAgentNames: string[];
+    maxMembers?: number;
+    maxConcurrentTasks?: number;
+    allowTeamLeadCreateAgents?: boolean;
+    profileNames: string[];
+    profileSelections?: Array<{ profileName: string; configNames: string[] }>;
+  }> = [];
+
+  for (const teamSummary of teamList) {
+    const team = await deps.teamsService.getTeam(teamSummary.id);
+    if (!team) continue;
+
+    // Resolve member agent names
+    const memberAgentNames: string[] = [];
+    let teamLeadAgentName: string | null = null;
+    for (const member of team.members) {
+      try {
+        const agent = await deps.storage.getAgent(member.agentId);
+        memberAgentNames.push(agent.name);
+        if (member.agentId === team.teamLeadAgentId) {
+          teamLeadAgentName = agent.name;
+        }
+      } catch {
+        // Agent may have been deleted; skip
+      }
+    }
+
+    // Resolve profile names
+    const profileNames: string[] = [];
+    for (const profileId of team.profileIds) {
+      try {
+        const profile = await deps.storage.getAgentProfile(profileId);
+        profileNames.push(profile.name);
+      } catch {
+        // Profile may have been deleted; skip
+      }
+    }
+
+    // Resolve profileConfigSelections → profileSelections (name-based)
+    const profileSelections: Array<{ profileName: string; configNames: string[] }> = [];
+    if (team.profileConfigSelections && team.profileConfigSelections.length > 0) {
+      const profileIdToName = new Map<string, string>();
+      for (let i = 0; i < team.profileIds.length; i++) {
+        try {
+          const profile = await deps.storage.getAgentProfile(team.profileIds[i]);
+          profileIdToName.set(profile.id, profile.name);
+        } catch {
+          // already resolved above; skip deleted profiles
+        }
+      }
+
+      for (const sel of team.profileConfigSelections) {
+        const pName = profileIdToName.get(sel.profileId);
+        if (!pName) continue;
+        const configNames: string[] = [];
+        for (const configId of sel.configIds) {
+          try {
+            const config = await deps.storage.getProfileProviderConfig(configId);
+            configNames.push(config.name);
+          } catch {
+            // config may have been deleted; skip
+          }
+        }
+        if (configNames.length > 0) {
+          profileSelections.push({ profileName: pName, configNames });
+        }
+      }
+    }
+
+    result.push({
+      name: team.name,
+      description: team.description,
+      teamLeadAgentName,
+      memberAgentNames,
+      ...(team.maxMembers !== 5 ? { maxMembers: team.maxMembers } : {}),
+      ...(team.maxConcurrentTasks !== 5 ? { maxConcurrentTasks: team.maxConcurrentTasks } : {}),
+      ...(team.allowTeamLeadCreateAgents ? { allowTeamLeadCreateAgents: true } : {}),
+      profileNames,
+      ...(profileSelections.length > 0 ? { profileSelections } : {}),
+    });
   }
 
   return result;

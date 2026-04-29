@@ -1,9 +1,5 @@
-export interface FeatureFlagConfig {
-  enableProfileInstructionTemplates: boolean;
-  enableDocumentTemplateVariables: boolean;
-}
+// Retained for future flag additions — currently empty after template flag cleanup.
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface FeatureFlagConfig {}
 
-export const DEFAULT_FEATURE_FLAGS: FeatureFlagConfig = {
-  enableProfileInstructionTemplates: false,
-  enableDocumentTemplateVariables: false,
-};
+export const DEFAULT_FEATURE_FLAGS: FeatureFlagConfig = {};

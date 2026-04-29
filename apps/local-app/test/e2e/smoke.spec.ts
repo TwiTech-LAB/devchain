@@ -18,8 +18,8 @@ test.describe('Local App - Smoke Tests', () => {
   });
 
   test('should have working API health endpoint', async ({ page }) => {
-    // Access the API health endpoint through the UI's proxy
-    const response = await page.request.get('/api/health');
+    // Access the health endpoint through the UI's /health proxy (no path rewrite on /api proxy)
+    const response = await page.request.get('/health');
 
     // Verify API is responding
     expect(response.ok()).toBeTruthy();

@@ -6,9 +6,10 @@ import { StorageModule } from '../storage/storage.module';
 import { SessionsModule } from '../sessions/sessions.module';
 import { SettingsModule } from '../settings/settings.module';
 import { WatchersModule } from '../watchers/watchers.module';
+import { TeamsModule } from '../teams/teams.module';
 
 @Module({
-  imports: [StorageModule, SessionsModule, SettingsModule, WatchersModule],
+  imports: [StorageModule, SessionsModule, SettingsModule, WatchersModule, TeamsModule],
   controllers: [ProjectsController],
   providers: [ProjectsService, MainProjectBootstrapService],
   exports: [ProjectsService, MainProjectBootstrapService],

@@ -230,6 +230,7 @@ export class ProfilesController {
       profileId,
       providerId: data.providerId,
       name: data.name,
+      description: data.description ?? null,
       options: data.options ?? null,
       env: data.env ?? null,
     });

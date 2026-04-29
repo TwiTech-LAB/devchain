@@ -15,6 +15,7 @@ import { GuestsModule } from '../guests/guests.module';
 import { ReviewsModule } from '../reviews/reviews.module';
 import { ProviderAdaptersModule } from '../providers/adapters';
 import { SkillsModule } from '../skills/skills.module';
+import { TeamsModule } from '../teams/teams.module';
 import { McpHttpController } from './controllers/mcp-http.controller';
 import { McpSdkController } from './controllers/mcp-sdk.controller';
 import { McpTestController } from './controllers/mcp-test.controller';
@@ -31,6 +32,7 @@ import { McpTestController } from './controllers/mcp-test.controller';
     forwardRef(() => GuestsModule),
     forwardRef(() => ReviewsModule),
     SkillsModule,
+    forwardRef(() => TeamsModule),
     ProviderAdaptersModule,
   ],
   controllers: [McpHttpController, McpSdkController, McpTestController],

@@ -198,6 +198,81 @@ describe('ProfileProviderConfigStorageDelegate.createIfMissing', () => {
       expect(insertedValues).not.toBeNull();
       expect(insertedValues!.options).toBeNull();
     });
+
+    it('persists description when provided', async () => {
+      let selectCallCount = 0;
+      const selectImpl = jest.fn().mockImplementation(() => {
+        selectCallCount++;
+        if (selectCallCount === 1) {
+          return {
+            from: jest.fn().mockReturnValue({
+              where: jest.fn().mockReturnValue({
+                limit: jest.fn().mockResolvedValue([]),
+              }),
+            }),
+          };
+        }
+        return {
+          from: jest.fn().mockReturnValue({
+            where: jest.fn().mockResolvedValue([{ maxPos: -1 }]),
+          }),
+        };
+      });
+
+      let insertedValues: Record<string, unknown> | null = null;
+      const insertImpl = jest.fn().mockReturnValue({
+        values: jest.fn().mockImplementation((data: Record<string, unknown>) => {
+          insertedValues = data;
+          return Promise.resolve(undefined);
+        }),
+      });
+
+      const { delegate } = createDelegate({ selectImpl, insertImpl });
+
+      await delegate.createIfMissing({
+        ...baseInput,
+        description: 'High-effort opus config',
+      });
+
+      expect(insertedValues).not.toBeNull();
+      expect(insertedValues!.description).toBe('High-effort opus config');
+    });
+
+    it('persists null description when omitted', async () => {
+      let selectCallCount = 0;
+      const selectImpl = jest.fn().mockImplementation(() => {
+        selectCallCount++;
+        if (selectCallCount === 1) {
+          return {
+            from: jest.fn().mockReturnValue({
+              where: jest.fn().mockReturnValue({
+                limit: jest.fn().mockResolvedValue([]),
+              }),
+            }),
+          };
+        }
+        return {
+          from: jest.fn().mockReturnValue({
+            where: jest.fn().mockResolvedValue([{ maxPos: -1 }]),
+          }),
+        };
+      });
+
+      let insertedValues: Record<string, unknown> | null = null;
+      const insertImpl = jest.fn().mockReturnValue({
+        values: jest.fn().mockImplementation((data: Record<string, unknown>) => {
+          insertedValues = data;
+          return Promise.resolve(undefined);
+        }),
+      });
+
+      const { delegate } = createDelegate({ selectImpl, insertImpl });
+
+      await delegate.createIfMissing(baseInput);
+
+      expect(insertedValues).not.toBeNull();
+      expect(insertedValues!.description).toBeNull();
+    });
   });
 
   describe('pre-check: name exists same provider', () => {
@@ -207,6 +282,7 @@ describe('ProfileProviderConfigStorageDelegate.createIfMissing', () => {
         profileId: 'profile-1',
         providerId: 'provider-1',
         name: 'claude',
+        description: null,
         options: null,
         env: null,
         position: 0,
@@ -243,6 +319,7 @@ describe('ProfileProviderConfigStorageDelegate.createIfMissing', () => {
         profileId: 'profile-1',
         providerId: 'provider-OTHER',
         name: 'claude',
+        description: null,
         options: null,
         env: null,
         position: 0,
@@ -275,6 +352,7 @@ describe('ProfileProviderConfigStorageDelegate.createIfMissing', () => {
         profileId: 'profile-1',
         providerId: 'provider-1',
         name: 'claude',
+        description: null,
         options: null,
         env: null,
         position: 0,
@@ -333,6 +411,7 @@ describe('ProfileProviderConfigStorageDelegate.createIfMissing', () => {
         profileId: 'profile-1',
         providerId: 'provider-OTHER',
         name: 'claude',
+        description: null,
         options: null,
         env: null,
         position: 0,
@@ -559,6 +638,7 @@ describe('ProfileProviderConfigStorageDelegate.createIfMissing', () => {
         profileId: 'profile-1',
         providerId: 'provider-1',
         name: 'claude',
+        description: null,
         options: null,
         env: null,
         position: 0,
@@ -590,6 +670,7 @@ describe('ProfileProviderConfigStorageDelegate.createIfMissing', () => {
         profileId: 'profile-1',
         providerId: 'provider-1',
         name: 'claude',
+        description: null,
         options: null,
         env: null,
         position: 0,

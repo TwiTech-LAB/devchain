@@ -5,13 +5,16 @@
 [![npm version](https://img.shields.io/npm/v/devchain-cli)](https://www.npmjs.com/package/devchain-cli)
 [![License: Elastic-2.0](https://img.shields.io/badge/license-Elastic--2.0-blue)](LICENSE)
 
-**[Homepage](https://devchain.twitechlab.com/)** · **[Quick Start Guide (PDF)](https://devchain.twitechlab.com/docs/devchain-quick-start-guide.pdf)** · **[What's New in v0.11.0](https://devchain.twitechlab.com/releases/0.11.0/)**
+**[Homepage](https://devchain.twitechlab.com/)** · **[Quick Start Guides](https://devchain.twitechlab.com/docs/quick-start-guide/)** · **[What's New in v0.12.0](https://devchain.twitechlab.com/releases/0.12.0/)**
 
-Devchain runs your AI coding agents as a coordinated team — each with their own terminal session, task queue, and chat. Assign epics, track progress on a visual board, and let agents collaborate through a structured workflow. Supports Claude Code, Codex, Gemini CLI, and OpenCode out of the box.
+Devchain runs your AI coding agents as coordinated teams — each with their own terminal session, task queue, and chat. Group agents under team leads, assign epics, track progress on a visual board, and let teams scale themselves to match the workload. Supports Claude Code, Codex, Gemini CLI, and OpenCode out of the box.
 
 ---
 
 ## Features
+
+### Agent Teams
+Group agents into named teams with team leads that do real management. The **Builders** team grows itself with the workload and picks the right model for each task — cheaper models for routine changes, top-tier models for harder work. The **Planning** team supports parallel planning: add multiple Architects on different models and the Brainstormer gathers independent framings from each before drafting the master plan. Choose your allowed providers per team when you create the project.
 
 ### Session Reader
 Full transcript viewer for active agent sessions, built into the Chat page. See every tool call, thinking block, and response with real-time token usage, cost tracking, and compaction events. Supports Claude Code and Codex transcripts with AI turn grouping, collapsible cards, IQR-based token hotspot detection, and keyboard navigation.
@@ -90,11 +93,12 @@ devchain start --foreground
 devchain stop
 ```
 
-On first run, import a template from the project page to provision your agent team. Two templates are included:
+On first run, import a template from the project page to provision your agent team. Three templates are included:
 
 | Template | Agents | Best for |
 |----------|--------|----------|
-| `5-agents-dev` | Brainstormer, Epic Manager, SubBSM, Coder, Code Reviewer | Complex projects with full planning |
+| `teams-dev` **(recommended)** | Planning team (Brainstormer + Architect), Builders team (Epic Manager + Coders), Code Reviewer | New projects — auto-scaling Builders, parallel planning, tier-aware routing |
+| `5-agents-dev` | Brainstormer, Epic Manager, SubBSM, Coder, Code Reviewer | The classic flat workflow (still bundled and supported) |
 | `3-agents-dev` | Brainstormer, SubBSM, Coder | Faster iteration with lower token overhead |
 
 ---

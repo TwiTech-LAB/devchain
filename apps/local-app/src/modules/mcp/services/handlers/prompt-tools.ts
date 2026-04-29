@@ -8,6 +8,8 @@ import {
   SessionContext,
 } from '../../dtos/mcp.dto';
 import { mapPromptSummary, mapPromptDetail } from '../mappers/dto-mappers';
+import { renderTemplate } from '../../../../common/template/handlebars-renderer';
+import { loadAgentRecipientContext } from '../../../../common/template/agent-recipient-context';
 import type { McpToolContext } from './types';
 
 function missingSessionResolver(): McpResponse {
@@ -26,6 +28,31 @@ async function resolveSessionContext(ctx: McpToolContext, sessionId: string): Pr
     return missingSessionResolver();
   }
   return ctx.resolveSessionContext(sessionId);
+}
+
+async function buildRenderVars(
+  ctx: McpToolContext,
+  sessionContext: SessionContext,
+): Promise<{ vars: Record<string, unknown>; legacyVariables: string[] }> {
+  const agentId = sessionContext.type === 'agent' ? sessionContext.agent?.id : undefined;
+  const teamCtx =
+    agentId && ctx.teamsService
+      ? await loadAgentRecipientContext(ctx.teamsService, agentId)
+      : { team_name: '', team_names: '', is_team_lead: false };
+  const vars: Record<string, unknown> = {
+    agent_name: sessionContext.type === 'agent' ? (sessionContext.agent?.name ?? '') : '',
+    project_name: sessionContext.project?.name ?? '',
+    ...teamCtx,
+  };
+  return { vars, legacyVariables: Object.keys(vars) };
+}
+
+function renderPromptContent(
+  content: string,
+  vars: Record<string, unknown>,
+  legacyVariables: string[],
+): string {
+  return renderTemplate(content, vars, legacyVariables);
 }
 
 export async function handleListPrompts(
@@ -71,9 +98,16 @@ export async function handleListPrompts(
 export async function handleGetPrompt(ctx: McpToolContext, params: unknown): Promise<McpResponse> {
   const validated = GetPromptParamsSchema.parse(params);
   let prompt: Prompt | undefined;
+  let sessionContext: SessionContext | undefined;
 
   if (validated.id) {
     prompt = await ctx.storage.getPrompt(validated.id);
+
+    if (prompt && validated.sessionId) {
+      const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
+      if (!sessionCtxResult.success) return sessionCtxResult;
+      sessionContext = sessionCtxResult.data as SessionContext;
+    }
   } else if (validated.name) {
     if (!validated.sessionId) {
       return {
@@ -87,7 +121,8 @@ export async function handleGetPrompt(ctx: McpToolContext, params: unknown): Pro
 
     const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
     if (!sessionCtxResult.success) return sessionCtxResult;
-    const { project } = sessionCtxResult.data as SessionContext;
+    sessionContext = sessionCtxResult.data as SessionContext;
+    const { project } = sessionContext;
 
     if (!project) {
       return {
@@ -123,6 +158,14 @@ export async function handleGetPrompt(ctx: McpToolContext, params: unknown): Pro
           ? `Prompt with id "${validated.id}" not found`
           : `Prompt "${validated.name}"${validated.version ? ` version ${validated.version}` : ''} not found`,
       },
+    };
+  }
+
+  if (sessionContext) {
+    const { vars, legacyVariables } = await buildRenderVars(ctx, sessionContext);
+    prompt = {
+      ...prompt,
+      content: renderPromptContent(prompt.content, vars, legacyVariables),
     };
   }
 

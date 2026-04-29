@@ -5,6 +5,8 @@ import {
   ChatListMembersParamsSchema,
   CreateEpicParamsSchema,
   GetEpicByIdParamsSchema,
+  SendMessageParamsSchema,
+  SendMessageResponse,
   TmuxSessionIdSchema,
   RegisterGuestParamsSchema,
   UpdateEpicParamsSchema,
@@ -117,6 +119,84 @@ describe('RegisterGuestParamsSchema - uses secure tmuxSessionId validation', () 
 });
 
 describe('MCP chat DTO schemas', () => {
+  it('accepts teamName as a send_message routing target', () => {
+    expect(() =>
+      SendMessageParamsSchema.parse({
+        sessionId: 'abcd1234',
+        teamName: 'Platform',
+        message: 'hello',
+      }),
+    ).not.toThrow();
+  });
+
+  it('rejects teamName with recipientAgentNames for send_message', () => {
+    expect(() =>
+      SendMessageParamsSchema.parse({
+        sessionId: 'abcd1234',
+        teamName: 'Platform',
+        recipientAgentNames: ['Beta'],
+        message: 'hello',
+      }),
+    ).toThrow('teamName and recipientAgentNames are mutually exclusive');
+  });
+
+  it('rejects teamName with threadId for send_message', () => {
+    expect(() =>
+      SendMessageParamsSchema.parse({
+        sessionId: 'abcd1234',
+        teamName: 'Platform',
+        threadId: '00000000-0000-0000-0000-000000000000',
+        message: 'hello',
+      }),
+    ).toThrow('teamName cannot be combined with threadId in v1');
+  });
+
+  it('rejects teamName with recipient user for send_message', () => {
+    const result = SendMessageParamsSchema.safeParse({
+      sessionId: 'abcd1234',
+      teamName: 'Platform',
+      recipient: 'user',
+      message: 'hello',
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            message: 'teamName cannot be combined with recipient: "user"',
+          }),
+        ]),
+      );
+    }
+  });
+
+  it('accepts send_message with no routing target (self-team fallback)', () => {
+    const result = SendMessageParamsSchema.safeParse({
+      sessionId: 'abcd1234',
+      message: 'hello',
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('allows pooled send_message responses to include optional teamDelivery metadata', () => {
+    const response: SendMessageResponse = {
+      mode: 'pooled',
+      queuedCount: 1,
+      queued: [{ name: 'Beta', type: 'agent', status: 'queued' }],
+      estimatedDeliveryMs: 50,
+      teamDelivery: {
+        teamName: 'Platform',
+        recipientCount: 1,
+        routedToLead: true,
+        summary: 'Delivered to 1 agent (team lead)',
+      },
+    };
+
+    expect(response.teamDelivery?.routedToLead).toBe(true);
+  });
+
   it('requires thread_id for list members tool', () => {
     expect(() => ChatListMembersParamsSchema.parse({})).toThrow(ZodError);
     expect(() =>

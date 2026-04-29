@@ -24,6 +24,7 @@ import {
   UpdateProviderMcpMetadata,
 } from '../../storage/models/domain.models';
 import { z } from 'zod';
+import { EnvVarsSchema } from '@devchain/shared';
 import { createLogger } from '../../../common/logging/logger';
 import { McpProviderRegistrationService } from '../../mcp/services/mcp-provider-registration.service';
 import { PreflightService } from '../../core/services/preflight.service';
@@ -52,6 +53,7 @@ const CreateProviderSchema = z.object({
   mcpRegisteredAt: z.string().nullable().optional(),
   autoCompactThreshold: z.number().int().min(1).max(100).nullable().optional(),
   oneMillionContextEnabled: z.boolean().optional(),
+  env: EnvVarsSchema.transform((v) => (v === undefined ? null : v)),
 });
 
 const UpdateProviderSchema = z.object({
@@ -63,6 +65,7 @@ const UpdateProviderSchema = z.object({
   autoCompactThreshold: z.number().int().min(1).max(100).nullable().optional(),
   autoCompactThreshold1m: z.number().int().min(1).max(100).nullable().optional(),
   oneMillionContextEnabled: z.boolean().optional(),
+  env: EnvVarsSchema,
 });
 
 const ConfigureMcpSchema = z.object({
@@ -157,6 +160,7 @@ export class ProvidersController {
       mcpRegisteredAt: null,
       autoCompactThreshold: parsed.autoCompactThreshold,
       oneMillionContextEnabled: parsed.oneMillionContextEnabled,
+      env: parsed.env,
     };
 
     // Do not auto-register on create; use Configure MCP action instead
@@ -233,6 +237,10 @@ export class ProvidersController {
     }
     if (parsed.autoCompactThreshold1m !== undefined) {
       payload.autoCompactThreshold1m = parsed.autoCompactThreshold1m;
+    }
+
+    if (parsed.env !== undefined) {
+      payload.env = parsed.env;
     }
 
     if (parsed.oneMillionContextEnabled !== undefined) {

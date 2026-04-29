@@ -772,6 +772,19 @@ export class ProjectStorageDelegate extends BaseStorageDelegate {
       await this.db.delete(prompts).where(inArray(prompts.id, promptIds));
     }
 
+    // 9b. Teams — team_members then teams (must be BEFORE agents due to FK constraints)
+    const { teamMembers, teams } = await import('../../db/schema');
+    const projectTeams = await this.db
+      .select({ id: teams.id })
+      .from(teams)
+      .where(eq(teams.projectId, id));
+    const teamIds = projectTeams.map((t) => t.id);
+
+    if (teamIds.length > 0) {
+      await this.db.delete(teamMembers).where(inArray(teamMembers.teamId, teamIds));
+      await this.db.delete(teams).where(inArray(teams.id, teamIds));
+    }
+
     // 10. Agents (must be BEFORE agent profiles since agents.profileId references agentProfiles.id)
     if (agentIds.length > 0) {
       await this.db.delete(agents).where(inArray(agents.id, agentIds));

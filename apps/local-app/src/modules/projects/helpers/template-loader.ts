@@ -22,7 +22,8 @@ import {
   type ProjectSettingsTemplateInput,
 } from './profile-mapping.helpers';
 import type { ProbeOutcome } from '../../providers/utils/probe-1m';
-import { importProviderSettings } from './project-import';
+import { importProviderSettings, createImportedTeams, preserveImportedEnv } from './project-import';
+import type { TeamsService } from '../../teams/services/teams.service';
 
 const logger = createLogger('TemplateLoader');
 
@@ -36,6 +37,17 @@ export interface CreateFromTemplateInputLike {
   templatePath?: string;
   familyProviderMappings?: Record<string, string>;
   presetName?: string;
+  teamOverrides?: Array<{
+    teamName: string;
+    allowTeamLeadCreateAgents?: boolean;
+    maxMembers?: number;
+    maxConcurrentTasks?: number;
+    profileNames?: string[];
+    profileSelections?: Array<{
+      profileName: string;
+      configNames: string[];
+    }>;
+  }>;
 }
 
 type ParsedTemplatePayload = ReturnType<typeof ExportSchema.parse>;
@@ -82,6 +94,7 @@ interface CreateFromTemplateDeps {
     },
   ) => Promise<{ applied: number; warnings: string[] }>;
   probe1m?: (binPath: string) => Promise<ProbeOutcome>;
+  teamsService?: TeamsService;
 }
 
 type FamilyMappingResolution =
@@ -247,6 +260,80 @@ export async function createFromTemplateWithHelper(
     result.mappings,
     deps.storage,
   );
+
+  // Seed teams from template (after agents + configs exist)
+  if (deps.teamsService && resolvedPayload.teams && resolvedPayload.teams.length > 0) {
+    const overrideMap = new Map<
+      string,
+      NonNullable<CreateFromTemplateInputLike['teamOverrides']>[number]
+    >();
+    if (input.teamOverrides) {
+      for (const ov of input.teamOverrides) {
+        overrideMap.set(ov.teamName.trim().toLowerCase(), ov);
+      }
+    }
+
+    const remapProfileName = (pn: string): string => {
+      const remapped = selectedProfilesByFamily.profileNameRemapMap.get(pn.trim().toLowerCase());
+      return remapped
+        ? (resolvedPayload.profiles.find((p) => p.name.trim().toLowerCase() === remapped)?.name ??
+            pn)
+        : pn;
+    };
+
+    const remappedTeams = resolvedPayload.teams.map((team) => {
+      const override = overrideMap.get(team.name.trim().toLowerCase());
+
+      const mergedProfileSelections = override?.profileSelections
+        ? override.profileSelections.map((sel) => ({
+            ...sel,
+            profileName: remapProfileName(sel.profileName),
+          }))
+        : team.profileSelections?.map((sel) => ({
+            ...sel,
+            profileName: remapProfileName(sel.profileName),
+          }));
+
+      const finalProfileNames =
+        override?.profileNames !== undefined
+          ? override.profileNames.map(remapProfileName)
+          : team.profileNames?.map(remapProfileName);
+
+      return {
+        ...team,
+        ...(override?.maxMembers !== undefined ? { maxMembers: override.maxMembers } : {}),
+        ...(override?.maxConcurrentTasks !== undefined
+          ? { maxConcurrentTasks: override.maxConcurrentTasks }
+          : {}),
+        ...(override?.allowTeamLeadCreateAgents !== undefined
+          ? { allowTeamLeadCreateAgents: override.allowTeamLeadCreateAgents }
+          : {}),
+        profileNames: finalProfileNames,
+        profileSelections: mergedProfileSelections,
+      };
+    });
+
+    if (input.teamOverrides) {
+      for (const ov of input.teamOverrides) {
+        if (
+          !resolvedPayload.teams.some(
+            (t) => t.name.trim().toLowerCase() === ov.teamName.trim().toLowerCase(),
+          )
+        ) {
+          logger.warn({ teamName: ov.teamName }, 'teamOverrides references unknown team; skipping');
+        }
+      }
+    }
+
+    try {
+      await createImportedTeams(result.project.id, remappedTeams, {
+        storage: deps.storage,
+        teamsService: deps.teamsService,
+      } as unknown as Parameters<typeof createImportedTeams>[2]);
+    } catch (error) {
+      logger.error({ error }, 'Failed to seed teams from template (non-fatal)');
+    }
+  }
 
   const mergedSettings = mergeProjectSettingsWithInitialPrompt(
     resolvedPayload.prompts,
@@ -561,6 +648,7 @@ async function createProviderConfigsAndAgentAssignments(
         providerConfigs?: Array<{
           name: string;
           providerName: string;
+          description?: string | null;
           options?: string | null;
           env?: Record<string, string> | null;
         }>;
@@ -583,8 +671,9 @@ async function createProviderConfigsAndAgentAssignments(
         profileId: newProfileId,
         providerId: configProviderId,
         name: config.name,
+        description: config.description ?? null,
         options: config.options ?? null,
-        env: config.env ?? null,
+        env: preserveImportedEnv(config.env),
       });
 
       const lookupKey = buildProviderConfigLookupKey(newProfileId, config.name);
