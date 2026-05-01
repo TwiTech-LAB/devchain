@@ -556,7 +556,9 @@ export const sessions = sqliteTable(
     activityState: text('activity_state'), // 'idle' | 'busy'
     busySince: text('busy_since'),
     transcriptPath: text('transcript_path'),
-    claudeSessionId: text('claude_session_id'),
+    providerSessionId: text('provider_session_id'),
+    providerNameAtLaunch: text('provider_name_at_launch'),
+    sizeBytes: integer('size_bytes'),
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
   },
@@ -567,6 +569,11 @@ export const sessions = sqliteTable(
     agentRunningUnique: uniqueIndex('idx_sessions_agent_running')
       .on(table.agentId)
       .where(sql`status = 'running' AND agent_id IS NOT NULL`),
+    agentHistoryIdx: index('idx_sessions_agent_history').on(
+      table.agentId,
+      table.status,
+      table.lastActivityAt,
+    ),
   }),
 );
 

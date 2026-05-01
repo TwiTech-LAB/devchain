@@ -1,4 +1,13 @@
-import { Injectable, Inject, NotFoundException, forwardRef } from '@nestjs/common';
+import {
+  Injectable,
+  Inject,
+  NotFoundException,
+  ForbiddenException,
+  ConflictException,
+  InternalServerErrorException,
+  forwardRef,
+} from '@nestjs/common';
+import { stat } from 'fs/promises';
 import { ValidationError } from '../../../common/errors/error-types';
 import { deliverWithConfirmation } from '../../terminal/services/confirmed-delivery.helper';
 import { ModuleRef } from '@nestjs/core';
@@ -10,7 +19,13 @@ import { PtyService } from '../../terminal/services/pty.service';
 import { PreflightService } from '../../core/services/preflight.service';
 import { ProviderMcpEnsureService } from '../../core/services/provider-mcp-ensure.service';
 import { STORAGE_SERVICE, StorageService } from '../../storage/interfaces/storage.interface';
-import { SessionDto, SessionDetailDto, LaunchSessionDto } from '../dtos/sessions.dto';
+import {
+  SessionDto,
+  SessionDetailDto,
+  LaunchSessionDto,
+  SessionHistoryItemDto,
+  SessionHistoryResponseDto,
+} from '../dtos/sessions.dto';
 import { DB_CONNECTION } from '../../storage/db/db.provider';
 import { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import Database from 'better-sqlite3';
@@ -32,8 +47,35 @@ import { HooksConfigService } from '../../hooks/services/hooks-config.service';
 import { ProviderAdapterFactory } from '../../providers/adapters/provider-adapter.factory';
 import { LaunchInitialPromptBehavior } from '../../providers/adapters/provider-adapter.interface';
 import { TeamsService } from '../../teams/services/teams.service';
-import type { Team } from '../../storage/models/domain.models';
+import type {
+  Team,
+  Agent,
+  Project,
+  Epic,
+  AgentProfile,
+  Provider,
+} from '../../storage/models/domain.models';
+import type { PreflightResult } from '../../core/services/preflight.service';
 import { getEnvConfig } from '../../../common/config/env.config';
+
+// ---------------------------------------------------------------------------
+// Launch helper types (used by launchSession + future restoreSession)
+// ---------------------------------------------------------------------------
+
+export interface LaunchTarget {
+  agent: Agent;
+  project: Project;
+  epic: Epic | null;
+  profile: AgentProfile;
+  provider: Provider;
+  options: string | null;
+  configEnv: Record<string, string> | null;
+}
+
+export interface ComposedLaunchEnv {
+  envVars: Record<string, string> | null;
+  processedOptionArgs: string[];
+}
 
 const logger = createLogger('SessionsService');
 
@@ -72,7 +114,33 @@ interface SessionRow {
   activity_state: 'idle' | 'busy' | null;
   busy_since: string | null;
   transcript_path: string | null;
-  claude_session_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface HistorySessionRow {
+  id: string;
+  provider_session_id: string | null;
+  provider_name_at_launch: string | null;
+  status: 'stopped' | 'failed';
+  started_at: string;
+  ended_at: string | null;
+  last_activity_at: string | null;
+  size_bytes: number | null;
+  transcript_path: string | null;
+}
+
+interface RestoreSourceRow {
+  id: string;
+  epic_id: string | null;
+  agent_id: string;
+  tmux_session_id: string | null;
+  status: string;
+  started_at: string;
+  ended_at: string | null;
+  transcript_path: string | null;
+  provider_session_id: string | null;
+  provider_name_at_launch: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -106,6 +174,192 @@ export class SessionsService {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     this.sqlite = (this.db as any).session?.client ?? this.db;
     logger.info('SessionsService initialized');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Launch helpers (composable by both launchSession and future restoreSession)
+  // ---------------------------------------------------------------------------
+
+  async resolveLaunchTarget(params: {
+    agentId: string;
+    projectId: string;
+    epicId?: string | null;
+  }): Promise<LaunchTarget> {
+    const { agentId, projectId, epicId } = params;
+
+    const agent = await this.storage.getAgent(agentId);
+    const project = await this.storage.getProject(projectId);
+    if (agent.projectId !== projectId) {
+      throw new ValidationError(`Agent ${agentId} does not belong to project ${projectId}.`, {
+        agentId,
+        agentProjectId: agent.projectId,
+        requestedProjectId: projectId,
+      });
+    }
+
+    const epic = epicId ? await this.storage.getEpic(epicId) : null;
+    const profile = await this.storage.getAgentProfile(agent.profileId);
+
+    let provider: Provider;
+    let options: string | null;
+    let configEnv: Record<string, string> | null = null;
+
+    if (agent.providerConfigId) {
+      const config = await this.storage.getProfileProviderConfig(agent.providerConfigId);
+      provider = await this.storage.getProvider(config.providerId);
+      options = config.options;
+      configEnv = config.env;
+      logger.info(
+        { agentId, configId: config.id, providerId: provider.id },
+        'Resolved provider via config',
+      );
+    } else {
+      const configs = await this.storage.listProfileProviderConfigsByProfile(profile.id);
+
+      if (configs.length > 0) {
+        const firstConfig = configs[0];
+        provider = await this.storage.getProvider(firstConfig.providerId);
+        options = firstConfig.options;
+        configEnv = firstConfig.env;
+        logger.info(
+          { agentId, profileId: profile.id, configId: firstConfig.id, providerId: provider.id },
+          'Resolved provider via first profile config (no providerConfigId set on agent)',
+        );
+      } else {
+        throw new ValidationError(
+          `Profile ${profile.id} has no provider configs - cannot launch session`,
+        );
+      }
+    }
+
+    return { agent, project, epic, profile, provider, options, configEnv };
+  }
+
+  verifyProviderBinary(provider: Pick<Provider, 'id' | 'name' | 'binPath'>): void {
+    if (!provider.binPath) {
+      throw new ValidationError(
+        `Provider ${provider.name} is missing a binary path. Set the path before launching sessions.`,
+        {
+          code: 'PROVIDER_BINARY_NOT_FOUND',
+          providerId: provider.id,
+          providerName: provider.name,
+        },
+      );
+    }
+  }
+
+  composeLaunchEnv(params: {
+    sessionId: string;
+    tmuxSessionName: string;
+    projectId: string;
+    agentId: string;
+    provider: Provider;
+    configEnv: Record<string, string> | null;
+    optionArgs: string[];
+  }): ComposedLaunchEnv {
+    const { sessionId, tmuxSessionName, projectId, agentId, provider, configEnv, optionArgs } =
+      params;
+
+    const providerEnv = provider.env ?? {};
+    const mergedBaseEnv = { ...providerEnv, ...(configEnv ?? {}) };
+    let envVars: Record<string, string> | null =
+      Object.keys(mergedBaseEnv).length > 0 ? mergedBaseEnv : null;
+    let processedOptionArgs = optionArgs;
+
+    if (provider.name.toLowerCase() === 'claude') {
+      const env = getEnvConfig();
+      const devchainEnv: Record<string, string> = {
+        DEVCHAIN_API_URL: `http://127.0.0.1:${env.PORT}`,
+        DEVCHAIN_PROJECT_ID: projectId,
+        DEVCHAIN_AGENT_ID: agentId,
+        DEVCHAIN_SESSION_ID: sessionId,
+        DEVCHAIN_TMUX_SESSION_NAME: tmuxSessionName,
+      };
+
+      if (provider.oneMillionContextEnabled) {
+        processedOptionArgs = rewriteModelTo1m(processedOptionArgs);
+      }
+
+      const modelStr = extractModelFromArgs(processedOptionArgs);
+      const family = modelStr ? detectClaudeModelFamily(modelStr) : null;
+
+      if (
+        provider.oneMillionContextEnabled &&
+        family === 'opus' &&
+        provider.autoCompactThreshold1m != null
+      ) {
+        devchainEnv.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = String(provider.autoCompactThreshold1m);
+      } else if (provider.autoCompactThreshold != null) {
+        devchainEnv.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = String(provider.autoCompactThreshold);
+      }
+
+      envVars = { ...devchainEnv, ...providerEnv, ...(configEnv ?? {}) };
+      delete envVars.CLAUDE_CODE_DISABLE_1M_CONTEXT;
+    }
+
+    return { envVars, processedOptionArgs };
+  }
+
+  async ensureMcpConfig(
+    provider: Pick<Provider, 'id' | 'name'>,
+    projectRootPath: string,
+  ): Promise<PreflightResult> {
+    let preflightResult = await this.preflightService.runChecks(projectRootPath);
+    let providerCheck = preflightResult.providers?.find((p) => p.id === provider.id);
+
+    if (providerCheck?.mcpStatus && providerCheck.mcpStatus !== 'pass') {
+      logger.info(
+        {
+          providerId: provider.id,
+          providerName: provider.name,
+          mcpStatus: providerCheck.mcpStatus,
+        },
+        'MCP not configured, attempting auto-ensure',
+      );
+
+      const ensureResult = await this.mcpEnsureService.ensureMcp(
+        provider as Provider,
+        projectRootPath,
+      );
+
+      if (ensureResult.success) {
+        logger.info(
+          { providerId: provider.id, action: ensureResult.action },
+          'MCP auto-configured successfully',
+        );
+
+        preflightResult = await this.preflightService.runChecks(projectRootPath);
+        providerCheck = preflightResult.providers?.find((p) => p.id === provider.id);
+      } else {
+        logger.warn(
+          { providerId: provider.id, message: ensureResult.message },
+          'MCP auto-ensure failed',
+        );
+      }
+
+      if (providerCheck?.mcpStatus && providerCheck.mcpStatus !== 'pass') {
+        throw new ValidationError('Provider MCP is not configured', {
+          code: 'MCP_NOT_CONFIGURED',
+          providerId: provider.id,
+          providerName: provider.name,
+          mcpStatus: providerCheck.mcpStatus,
+          mcpMessage: providerCheck.mcpMessage,
+        });
+      }
+    }
+
+    return preflightResult;
+  }
+
+  async setupHooksConfig(provider: Pick<Provider, 'name'>, projectRootPath: string): Promise<void> {
+    if (provider.name.toLowerCase() !== 'claude') return;
+
+    try {
+      await this.hooksConfigService.ensureHooksConfig(projectRootPath);
+      logger.info({ projectRootPath }, 'Hooks config ensured for Claude provider');
+    } catch (error) {
+      logger.warn({ error }, 'Failed to ensure hooks config (non-fatal)');
+    }
   }
 
   /**
@@ -201,64 +455,13 @@ export class SessionsService {
         logger.info({ agentId }, 'Orphaned session cleaned up, proceeding to create new session');
       }
 
-      // Fetch required entities
-      const agent = await this.storage.getAgent(agentId);
-      const project = await this.storage.getProject(projectId);
-      if (agent.projectId !== projectId) {
-        throw new ValidationError(`Agent ${agentId} does not belong to project ${projectId}.`, {
-          agentId,
-          agentProjectId: agent.projectId,
-          requestedProjectId: projectId,
-        });
-      }
-
-      const epic = epicId ? await this.storage.getEpic(epicId) : null;
-
-      // Fetch agent profile
-      const profile = await this.storage.getAgentProfile(agent.profileId);
-
-      // Resolve provider and options via provider config (if available) or fallback to profile
-      let provider;
-      let options: string | null;
-      let configEnv: Record<string, string> | null = null;
-
-      if (agent.providerConfigId) {
-        // Use provider config for provider resolution and env vars
-        const config = await this.storage.getProfileProviderConfig(agent.providerConfigId);
-        provider = await this.storage.getProvider(config.providerId);
-        options = config.options;
-        configEnv = config.env;
-        logger.info(
-          { agentId, configId: config.id, providerId: provider.id },
-          'Resolved provider via config',
-        );
-      } else {
-        // Fallback: use first provider config for this profile
-        // Note: profile.providerId removed in Phase 4, configs are the only source
-        const configs = await this.storage.listProfileProviderConfigsByProfile(profile.id);
-
-        if (configs.length > 0) {
-          // Use the first config's options and env
-          const firstConfig = configs[0];
-          provider = await this.storage.getProvider(firstConfig.providerId);
-          options = firstConfig.options;
-          configEnv = firstConfig.env;
-          logger.info(
-            { agentId, profileId: profile.id, configId: firstConfig.id, providerId: provider.id },
-            'Resolved provider via first profile config (no providerConfigId set on agent)',
-          );
-        } else {
-          // No configs - cannot launch
-          throw new ValidationError(
-            `Profile ${profile.id} has no provider configs - cannot launch session`,
-          );
-        }
-      }
+      // --- Helper 1: Resolve launch target (agent, project, epic, provider) ---
+      const { agent, project, epic, profile, provider, options, configEnv } =
+        await this.resolveLaunchTarget({ agentId, projectId, epicId });
 
       // Recommend enabling auto-compact for Claude when it's disabled (non-blocking).
       if (provider.name.toLowerCase() === 'claude') {
         const { autoCompactEnabled, configState } = await checkClaudeAutoCompact();
-        // Only recommend if config is valid or missing (not malformed — avoid false triggers)
         if (!autoCompactEnabled && configState !== 'malformed') {
           this.getTerminalGateway().broadcastEvent('system', 'session_recommendation', {
             reason: 'claude_auto_compact_disabled',
@@ -272,64 +475,11 @@ export class SessionsService {
         }
       }
 
-      // Run preflight checks
-      let preflightResult = await this.preflightService.runChecks(project.rootPath);
+      // --- Helper 4: Ensure MCP config (preflight + auto-ensure) ---
+      const preflightResult = await this.ensureMcpConfig(provider, project.rootPath);
 
-      // Auto-configure MCP if not configured
-      let providerCheck = preflightResult.providers?.find((p) => p.id === provider.id);
-      if (providerCheck?.mcpStatus && providerCheck.mcpStatus !== 'pass') {
-        logger.info(
-          {
-            providerId: provider.id,
-            providerName: provider.name,
-            mcpStatus: providerCheck.mcpStatus,
-          },
-          'MCP not configured, attempting auto-ensure',
-        );
-
-        // Attempt to auto-configure MCP
-        const ensureResult = await this.mcpEnsureService.ensureMcp(provider, project.rootPath);
-
-        if (ensureResult.success) {
-          logger.info(
-            { providerId: provider.id, action: ensureResult.action },
-            'MCP auto-configured successfully',
-          );
-
-          // Re-run preflight to verify
-          preflightResult = await this.preflightService.runChecks(project.rootPath);
-          providerCheck = preflightResult.providers?.find((p) => p.id === provider.id);
-        } else {
-          logger.warn(
-            { providerId: provider.id, message: ensureResult.message },
-            'MCP auto-ensure failed',
-          );
-        }
-
-        // If still not configured after auto-ensure attempt, throw error
-        if (providerCheck?.mcpStatus && providerCheck.mcpStatus !== 'pass') {
-          throw new ValidationError('Provider MCP is not configured', {
-            code: 'MCP_NOT_CONFIGURED',
-            providerId: provider.id,
-            providerName: provider.name,
-            mcpStatus: providerCheck.mcpStatus,
-            mcpMessage: providerCheck.mcpMessage,
-          });
-        }
-      }
-
-      // Ensure hooks config for Claude provider (non-fatal)
-      if (provider.name.toLowerCase() === 'claude') {
-        try {
-          await this.hooksConfigService.ensureHooksConfig(project.rootPath);
-          logger.info(
-            { projectId, projectRootPath: project.rootPath },
-            'Hooks config ensured for Claude provider',
-          );
-        } catch (error) {
-          logger.warn({ error, projectId }, 'Failed to ensure hooks config (non-fatal)');
-        }
-      }
+      // --- Helper 5: Setup hooks config (Claude only, non-fatal) ---
+      await this.setupHooksConfig(provider, project.rootPath);
 
       if (preflightResult.overall === 'fail') {
         const failedChecks = preflightResult.checks
@@ -371,16 +521,8 @@ export class SessionsService {
       // Start health check for tmux session
       this.tmuxService.startHealthCheck(tmuxSessionName, sessionId);
 
-      // Launch agent command based on provider
-      if (!provider.binPath) {
-        throw new ValidationError(
-          `Provider ${provider.name} is missing a binary path. Set the path before launching sessions.`,
-          {
-            providerId: provider.id,
-            providerName: provider.name,
-          },
-        );
-      }
+      // --- Helper 2: Verify provider binary exists ---
+      this.verifyProviderBinary(provider);
 
       let optionArgs: string[] = [];
       try {
@@ -399,57 +541,34 @@ export class SessionsService {
         optionArgs = injectModelOverride(optionArgs, agent.modelOverride);
       }
 
-      // Merge provider-level and config-level env vars (provider already fetched above — no extra DB call)
-      const providerEnv = provider.env ?? {};
-      // Non-Claude precedence: providerEnv < configEnv
-      const mergedBaseEnv = { ...providerEnv, ...(configEnv ?? {}) };
-      let envVars: Record<string, string> | null =
-        Object.keys(mergedBaseEnv).length > 0 ? mergedBaseEnv : null;
+      // --- Helper 3: Compose launch env (DEVCHAIN_*, provider env, config env) ---
+      const { envVars, processedOptionArgs } = this.composeLaunchEnv({
+        sessionId,
+        tmuxSessionName,
+        projectId,
+        agentId,
+        provider,
+        configEnv,
+        optionArgs,
+      });
+      optionArgs = processedOptionArgs;
 
-      // Inject DEVCHAIN_* env vars for Claude provider (relay script reads these)
-      if (provider.name.toLowerCase() === 'claude') {
-        const env = getEnvConfig();
-        const devchainEnv: Record<string, string> = {
-          DEVCHAIN_API_URL: `http://127.0.0.1:${env.PORT}`,
-          DEVCHAIN_PROJECT_ID: projectId,
-          DEVCHAIN_AGENT_ID: agentId,
-          DEVCHAIN_SESSION_ID: sessionId,
-          DEVCHAIN_TMUX_SESSION_NAME: tmuxSessionName,
-        };
-
-        // 1M context: rewrite --model value to [1m] alias variant at launch time.
-        // This is a transient rewrite — stored modelOverride and transcripts use canonical names.
-        if (provider.oneMillionContextEnabled) {
-          optionArgs = rewriteModelTo1m(optionArgs);
-        }
-
-        // Model-aware threshold resolution: pick threshold based on actual model being launched.
-        // Must run AFTER rewriteModelTo1m() so the model string reflects the final value.
-        const modelStr = extractModelFromArgs(optionArgs);
-        const family = modelStr ? detectClaudeModelFamily(modelStr) : null;
-
-        if (
-          provider.oneMillionContextEnabled &&
-          family === 'opus' &&
-          provider.autoCompactThreshold1m != null
-        ) {
-          devchainEnv.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = String(provider.autoCompactThreshold1m);
-        } else if (provider.autoCompactThreshold != null) {
-          devchainEnv.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = String(provider.autoCompactThreshold);
-        }
-
-        // Claude precedence: devchainEnv < providerEnv < configEnv
-        envVars = { ...devchainEnv, ...providerEnv, ...(configEnv ?? {}) };
-
-        // Sanitize stale CLAUDE_CODE_DISABLE_1M_CONTEXT from provider-config env leftovers.
-        // 1M context is now controlled via model alias rewriting, not env vars.
-        delete envVars.CLAUDE_CODE_DISABLE_1M_CONTEXT;
+      // Resolve per-provider launch argv (mode: 'new' for initial session launch)
+      let launchArgv = optionArgs;
+      try {
+        const launchAdapter = this.providerAdapterFactory.getAdapter(provider.name);
+        launchArgv = launchAdapter.buildLaunchArgs({
+          mode: 'new',
+          profileOptionArgs: optionArgs,
+        }).argv;
+      } catch {
+        // Unknown provider — fall back to raw profile option args
       }
 
       // Build command with env vars (if any) using env command prefix
       let commandArgs: string[];
       try {
-        commandArgs = buildSessionCommand(envVars, provider.binPath, optionArgs);
+        commandArgs = buildSessionCommand(envVars, provider.binPath!, launchArgv);
       } catch (error) {
         if (error instanceof EnvBuilderError) {
           throw new ValidationError(error.message, {
@@ -468,11 +587,21 @@ export class SessionsService {
         this.sqlite
           .prepare(
             `
-          INSERT INTO sessions (id, epic_id, agent_id, tmux_session_id, status, started_at, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO sessions (id, epic_id, agent_id, tmux_session_id, status, started_at, provider_name_at_launch, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
           )
-          .run(sessionId, epicId ?? null, agentId, tmuxSessionName, 'running', now, now, now);
+          .run(
+            sessionId,
+            epicId ?? null,
+            agentId,
+            tmuxSessionName,
+            'running',
+            now,
+            provider.name.toLowerCase(),
+            now,
+            now,
+          );
 
         logger.info({ sessionId, tmuxSessionName }, 'Session created in database');
       } catch (error: unknown) {
@@ -660,7 +789,6 @@ export class SessionsService {
         startedAt: now,
         endedAt: null,
         transcriptPath: null,
-        claudeSessionId: null,
         createdAt: now,
         updatedAt: now,
         epic: epic
@@ -680,6 +808,317 @@ export class SessionsService {
           name: project.name,
           rootPath: project.rootPath,
         },
+      };
+    });
+  }
+
+  /**
+   * Restore a previously stopped/failed session in-place.
+   * Reuses the original session id so DEVCHAIN_SESSION_ID stays stable.
+   */
+  async restoreSession(sessionId: string, projectId: string): Promise<SessionDetailDto> {
+    // Step 1: Fetch source row (outside lock — for agentId to acquire the right lock)
+    const source = this.sqlite
+      .prepare(
+        `SELECT id, epic_id, agent_id, tmux_session_id, status, started_at, ended_at,
+                transcript_path, provider_session_id, provider_name_at_launch, created_at, updated_at
+         FROM sessions WHERE id = ?`,
+      )
+      .get(sessionId) as RestoreSourceRow | undefined;
+
+    if (!source) {
+      throw new NotFoundException('Session not found');
+    }
+
+    // Step 2: Authorize — agent must belong to the requested project
+    const sourceAgent = await this.storage.getAgent(source.agent_id);
+    if (sourceAgent.projectId !== projectId) {
+      throw new ForbiddenException('PROJECT_MISMATCH');
+    }
+
+    // Step 3: Validate restorable state
+    if (source.status !== 'stopped' && source.status !== 'failed') {
+      throw new ConflictException({
+        message: 'Session is not in a restorable state',
+        code: 'INVALID_SESSION_STATE',
+      });
+    }
+    if (!source.provider_session_id) {
+      throw new ConflictException({
+        message: 'Session has no provider session ID',
+        code: 'NO_PROVIDER_SESSION_ID',
+      });
+    }
+
+    // Step 4: Provider-mismatch guard — compare current provider to launch-time provider
+    const { provider: currentProvider } = await this.resolveLaunchTarget({
+      agentId: source.agent_id,
+      projectId,
+      epicId: source.epic_id,
+    });
+    if (
+      source.provider_name_at_launch &&
+      currentProvider.name.toLowerCase() !== source.provider_name_at_launch.toLowerCase()
+    ) {
+      throw new ConflictException({
+        message: 'Current provider differs from launch-time provider',
+        code: 'PROVIDER_MISMATCH',
+      });
+    }
+
+    // Step 5: Per-agent lock with TOCTOU defense
+    return this.sessionCoordinator.withAgentLock(source.agent_id, async () => {
+      // Re-read inside lock to defeat TOCTOU races
+      const lockedSource = this.sqlite
+        .prepare(
+          `SELECT id, epic_id, agent_id, tmux_session_id, status, started_at, ended_at,
+                  transcript_path, provider_session_id, provider_name_at_launch, created_at, updated_at
+           FROM sessions WHERE id = ?`,
+        )
+        .get(sessionId) as RestoreSourceRow | undefined;
+
+      if (!lockedSource) {
+        throw new NotFoundException('Session not found');
+      }
+      if (lockedSource.status !== 'stopped' && lockedSource.status !== 'failed') {
+        throw new ConflictException({
+          message: 'Session is not in a restorable state',
+          code: 'INVALID_SESSION_STATE',
+        });
+      }
+      if (!lockedSource.provider_session_id) {
+        throw new ConflictException({
+          message: 'Session has no provider session ID',
+          code: 'NO_PROVIDER_SESSION_ID',
+        });
+      }
+      if (
+        lockedSource.provider_name_at_launch &&
+        currentProvider.name.toLowerCase() !== lockedSource.provider_name_at_launch.toLowerCase()
+      ) {
+        throw new ConflictException({
+          message: 'Current provider differs from launch-time provider',
+          code: 'PROVIDER_MISMATCH',
+        });
+      }
+
+      // Also ensure agent has no running session (unique index defense)
+      const existingRunning = this.getActiveSessionForAgent(lockedSource.agent_id);
+      if (existingRunning) {
+        throw new ConflictException({
+          message: 'Agent already has a running session',
+          code: 'INVALID_SESSION_STATE',
+        });
+      }
+
+      // Step 6: Capture rollback state
+      const prior = {
+        status: lockedSource.status,
+        ended_at: lockedSource.ended_at,
+        tmux_session_id: lockedSource.tmux_session_id,
+      };
+
+      // Step 7: Resolve launch context using P2.1 helpers (SKIP ensureMcpConfig/setupHooksConfig)
+      const { agent, project, epic, profile, provider, options, configEnv } =
+        await this.resolveLaunchTarget({
+          agentId: lockedSource.agent_id,
+          projectId,
+          epicId: lockedSource.epic_id,
+        });
+
+      this.verifyProviderBinary(provider);
+
+      // In-lock provider re-validation (defeats TOCTOU on agent provider reconfiguration)
+      if (
+        lockedSource.provider_name_at_launch &&
+        provider.name.toLowerCase() !== lockedSource.provider_name_at_launch.toLowerCase()
+      ) {
+        throw new ConflictException({
+          message: 'Current provider differs from launch-time provider',
+          code: 'PROVIDER_MISMATCH',
+        });
+      }
+
+      let optionArgs: string[] = [];
+      try {
+        optionArgs = parseProfileOptions(options);
+      } catch (error) {
+        if (error instanceof ProfileOptionsError) {
+          throw new ValidationError(error.message, {
+            profileId: profile.id,
+            profileName: profile.name,
+          });
+        }
+        throw error;
+      }
+
+      if (agent.modelOverride) {
+        optionArgs = injectModelOverride(optionArgs, agent.modelOverride);
+      }
+
+      // Create tmux session name
+      const projectSlug = project.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/(^-|-$)/g, '');
+      const epicSegment = lockedSource.epic_id ?? 'independent';
+      const tmuxSessionName = this.tmuxService.createSessionName(
+        projectSlug,
+        epicSegment,
+        agent.id,
+        lockedSource.id,
+      );
+
+      const { envVars, processedOptionArgs } = this.composeLaunchEnv({
+        sessionId: lockedSource.id,
+        tmuxSessionName,
+        projectId,
+        agentId: agent.id,
+        provider,
+        configEnv,
+        optionArgs,
+      });
+      optionArgs = processedOptionArgs;
+
+      // Build CLI command with restore-mode argv (before UPDATE — no rollback needed on failure)
+      const adapter = this.providerAdapterFactory.getAdapter(provider.name);
+      const launchArgv = adapter.buildLaunchArgs({
+        mode: 'restore',
+        providerSessionId: lockedSource.provider_session_id!,
+        profileOptionArgs: optionArgs,
+      }).argv;
+
+      if (!launchArgv.includes(lockedSource.provider_session_id!)) {
+        throw new ValidationError(
+          'Restore argv does not include provider session ID — adapter contract violation',
+          {
+            code: 'RESTORE_ARGS_UNAVAILABLE',
+            providerName: provider.name,
+            providerSessionId: lockedSource.provider_session_id,
+          },
+        );
+      }
+
+      let commandArgs: string[];
+      try {
+        commandArgs = buildSessionCommand(envVars, provider.binPath!, launchArgv);
+      } catch (error) {
+        if (error instanceof EnvBuilderError) {
+          throw new ValidationError(error.message, {
+            agentId: agent.id,
+            providerConfigId: agent.providerConfigId,
+          });
+        }
+        throw error;
+      }
+
+      // Step 8: In-place UPDATE — status flip BEFORE tmux creation
+      const now = new Date().toISOString();
+      this.sqlite
+        .prepare(
+          `UPDATE sessions
+           SET status = 'running', tmux_session_id = ?, ended_at = NULL,
+               last_activity_at = ?, updated_at = ?
+           WHERE id = ?`,
+        )
+        .run(tmuxSessionName, now, now, lockedSource.id);
+
+      // Step 10: Spawn tmux session
+      try {
+        await this.tmuxService.createSession(tmuxSessionName, project.rootPath);
+      } catch (tmuxError) {
+        // Rollback: revert the status flip
+        this.sqlite
+          .prepare(
+            `UPDATE sessions
+             SET status = ?, ended_at = ?, tmux_session_id = ?, updated_at = ?
+             WHERE id = ?`,
+          )
+          .run(prior.status, prior.ended_at, prior.tmux_session_id, now, lockedSource.id);
+        logger.error(
+          { sessionId: lockedSource.id, error: String(tmuxError) },
+          'Restore failed: tmux creation error — rolled back',
+        );
+        throw new InternalServerErrorException('RESTORE_FAILED');
+      }
+
+      await this.tmuxService.setAlternateScreenOff(tmuxSessionName);
+      this.tmuxService.startHealthCheck(tmuxSessionName, lockedSource.id);
+
+      // Step 11: Send CLI command (NO preKeys, NO renderAndPasteInitialPrompt)
+      try {
+        await this.tmuxService.sendCommandArgs(tmuxSessionName, commandArgs);
+      } catch (sendError) {
+        // Rollback: revert the status flip and destroy tmux
+        this.sqlite
+          .prepare(
+            `UPDATE sessions
+             SET status = ?, ended_at = ?, tmux_session_id = ?, updated_at = ?
+             WHERE id = ?`,
+          )
+          .run(prior.status, prior.ended_at, prior.tmux_session_id, now, lockedSource.id);
+        try {
+          await this.tmuxService.destroySession(tmuxSessionName);
+        } catch (destroyErr) {
+          logger.warn(
+            { tmuxSessionName, error: String(destroyErr) },
+            'Failed to destroy tmux session during restore rollback',
+          );
+        }
+        logger.error(
+          { sessionId: lockedSource.id, error: String(sendError) },
+          'Restore failed: CLI launch error — rolled back',
+        );
+        throw new InternalServerErrorException('RESTORE_FAILED');
+      }
+
+      // Start PTY streaming
+      await this.ptyService.startStreaming(lockedSource.id, tmuxSessionName);
+
+      // Step 13: Emit session.restored (NOT session.started)
+      await this.getEventsService().publish('session.restored', {
+        sessionId: lockedSource.id,
+        epicId: lockedSource.epic_id,
+        agentId: agent.id,
+        tmuxSessionName,
+      });
+
+      // Re-emit session.transcript.discovered to re-arm watcher
+      if (lockedSource.transcript_path) {
+        await this.getEventsService().publish('session.transcript.discovered', {
+          sessionId: lockedSource.id,
+          agentId: agent.id,
+          projectId,
+          transcriptPath: lockedSource.transcript_path,
+          providerName: provider.name.toLowerCase(),
+        });
+      }
+
+      // Broadcast presence
+      try {
+        this.getTerminalGateway().broadcastEvent(`agent/${agent.id}`, 'presence', {
+          online: true,
+          sessionId: lockedSource.id,
+          agentId: agent.id,
+        });
+      } catch (error) {
+        logger.warn({ error, agentId: agent.id }, 'Failed to broadcast presence after restore');
+      }
+
+      return {
+        id: lockedSource.id,
+        epicId: lockedSource.epic_id,
+        agentId: agent.id,
+        tmuxSessionId: tmuxSessionName,
+        status: 'running',
+        startedAt: lockedSource.started_at,
+        endedAt: null,
+        transcriptPath: lockedSource.transcript_path,
+        createdAt: lockedSource.created_at,
+        updatedAt: now,
+        epic: epic ? { id: epic.id, title: epic.title, projectId: epic.projectId } : null,
+        agent: { id: agent.id, name: agent.name, profileId: agent.profileId },
+        project: { id: project.id, name: project.name, rootPath: project.rootPath },
       };
     });
   }
@@ -721,17 +1160,32 @@ export class SessionsService {
       }
     }
 
-    // Update session status
+    // Best-effort: read transcript file size at stop time to avoid per-request stat on history queries.
+    // If transcript_path is NULL or stat fails (deleted file, race with auto-discovery), leave size_bytes NULL.
+    let sizeBytes: number | null = null;
+    if (session.transcriptPath) {
+      try {
+        const fileStat = await stat(session.transcriptPath);
+        sizeBytes = fileStat.size;
+      } catch (error) {
+        logger.warn(
+          { error, sessionId, transcriptPath: session.transcriptPath },
+          'Could not stat transcript file for size_bytes — leaving NULL (best-effort)',
+        );
+      }
+    }
+
+    // Update session status; fold size_bytes into the same statement to keep stop atomic.
     const now = new Date().toISOString();
     this.sqlite
       .prepare(
         `
       UPDATE sessions
-      SET status = ?, ended_at = ?, updated_at = ?
+      SET status = ?, ended_at = ?, size_bytes = ?, updated_at = ?
       WHERE id = ?
     `,
       )
-      .run('stopped', now, now, sessionId);
+      .run('stopped', now, sizeBytes, now, sessionId);
 
     logger.info({ sessionId }, 'Session terminated');
 
@@ -755,6 +1209,112 @@ export class SessionsService {
     }
   }
 
+  async getAgentSessionHistory(
+    agentId: string,
+    projectId: string,
+    cursor: string | undefined,
+    limit: number,
+  ): Promise<SessionHistoryResponseDto> {
+    const agent = await this.storage.getAgent(agentId);
+    if (agent.projectId !== projectId) {
+      throw new ForbiddenException('PROJECT_MISMATCH');
+    }
+
+    const clampedLimit = Math.min(Math.max(1, limit), 100);
+    const sortExpr = `COALESCE(last_activity_at, ended_at, started_at)`;
+    const selectCols = `id, provider_session_id, provider_name_at_launch, status, started_at, ended_at, last_activity_at, size_bytes, transcript_path`;
+    const baseStatus = `status IN ('stopped','failed')`;
+
+    // Total count uses base filters only — no cursor predicate (stable across pages)
+    const { cnt: total } = this.sqlite
+      .prepare(`SELECT COUNT(*) as cnt FROM sessions WHERE agent_id = ? AND ${baseStatus}`)
+      .get(agentId) as { cnt: number };
+
+    // Decode opaque cursor
+    let cursorSortKey: string | null = null;
+    let cursorId: string | null = null;
+    if (cursor) {
+      try {
+        const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf-8')) as {
+          s: string;
+          i: string;
+        };
+        cursorSortKey = decoded.s;
+        cursorId = decoded.i;
+      } catch {
+        // Malformed cursor — treat as first page
+      }
+    }
+
+    let rows: HistorySessionRow[];
+    if (cursorSortKey && cursorId) {
+      rows = this.sqlite
+        .prepare(
+          `SELECT ${selectCols} FROM sessions
+           WHERE agent_id = ? AND ${baseStatus}
+             AND (${sortExpr} < ? OR (${sortExpr} = ? AND id < ?))
+           ORDER BY ${sortExpr} DESC, id DESC
+           LIMIT ?`,
+        )
+        .all(
+          agentId,
+          cursorSortKey,
+          cursorSortKey,
+          cursorId,
+          clampedLimit + 1,
+        ) as HistorySessionRow[];
+    } else {
+      rows = this.sqlite
+        .prepare(
+          `SELECT ${selectCols} FROM sessions
+           WHERE agent_id = ? AND ${baseStatus}
+           ORDER BY ${sortExpr} DESC, id DESC
+           LIMIT ?`,
+        )
+        .all(agentId, clampedLimit + 1) as HistorySessionRow[];
+    }
+
+    const hasMore = rows.length > clampedLimit;
+    const pageRows = hasMore ? rows.slice(0, clampedLimit) : rows;
+
+    // Lazy size backfill — bounded to current page, best-effort
+    const now = new Date().toISOString();
+    for (const row of pageRows) {
+      if (row.size_bytes === null && row.transcript_path !== null) {
+        try {
+          const fileStat = await stat(row.transcript_path);
+          this.sqlite
+            .prepare(`UPDATE sessions SET size_bytes = ?, updated_at = ? WHERE id = ?`)
+            .run(fileStat.size, now, row.id);
+          row.size_bytes = fileStat.size;
+        } catch {
+          // best-effort — leave NULL
+        }
+      }
+    }
+
+    let nextCursor: string | null = null;
+    if (hasMore && pageRows.length > 0) {
+      const last = pageRows[pageRows.length - 1];
+      const sortKey = last.last_activity_at ?? last.ended_at ?? last.started_at;
+      nextCursor = Buffer.from(JSON.stringify({ s: sortKey, i: last.id })).toString('base64url');
+    }
+
+    const items: SessionHistoryItemDto[] = pageRows.map((row) => ({
+      id: row.id,
+      providerSessionId: row.provider_session_id ?? null,
+      providerNameAtLaunch: row.provider_name_at_launch,
+      status: row.status,
+      startedAt: row.started_at,
+      endedAt: row.ended_at,
+      lastActivityAt: row.last_activity_at,
+      sizeBytes: row.size_bytes,
+      transcriptAvailable: row.transcript_path !== null,
+    }));
+
+    return { items, nextCursor, hasMore, total };
+  }
+
   /**
    * Get session by ID
    */
@@ -762,7 +1322,7 @@ export class SessionsService {
     const row = this.sqlite
       .prepare(
         `
-      SELECT id, epic_id, agent_id, tmux_session_id, status, started_at, ended_at, last_activity_at, activity_state, busy_since, transcript_path, claude_session_id, created_at, updated_at
+      SELECT id, epic_id, agent_id, tmux_session_id, status, started_at, ended_at, last_activity_at, activity_state, busy_since, transcript_path, created_at, updated_at
       FROM sessions
       WHERE id = ?
     `,
@@ -786,7 +1346,6 @@ export class SessionsService {
       activityState: row.activity_state ?? null,
       busySince: row.busy_since ?? null,
       transcriptPath: row.transcript_path ?? null,
-      claudeSessionId: row.claude_session_id ?? null,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -803,7 +1362,7 @@ export class SessionsService {
     const rows = this.sqlite
       .prepare(
         `
-      SELECT id, epic_id, agent_id, tmux_session_id, status, started_at, ended_at, last_activity_at, activity_state, busy_since, transcript_path, claude_session_id, created_at, updated_at
+      SELECT id, epic_id, agent_id, tmux_session_id, status, started_at, ended_at, last_activity_at, activity_state, busy_since, transcript_path, created_at, updated_at
       FROM sessions
       WHERE status = 'running'
       ORDER BY started_at DESC
@@ -855,7 +1414,6 @@ export class SessionsService {
         activityState: row.activity_state ?? null,
         busySince: row.busy_since ?? null,
         transcriptPath: row.transcript_path ?? null,
-        claudeSessionId: row.claude_session_id ?? null,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
       }));
@@ -882,7 +1440,7 @@ export class SessionsService {
         `
         SELECT id, epic_id, agent_id, tmux_session_id, status,
                started_at, ended_at, last_activity_at, activity_state,
-               busy_since, transcript_path, claude_session_id,
+               busy_since, transcript_path,
                created_at, updated_at
         FROM sessions
         WHERE status = 'running' AND agent_id = ?
@@ -908,7 +1466,6 @@ export class SessionsService {
       activityState: row.activity_state ?? null,
       busySince: row.busy_since ?? null,
       transcriptPath: row.transcript_path ?? null,
-      claudeSessionId: row.claude_session_id ?? null,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -924,7 +1481,7 @@ export class SessionsService {
         `
         SELECT s.id, s.epic_id, s.agent_id, s.tmux_session_id, s.status,
                s.started_at, s.ended_at, s.last_activity_at, s.activity_state,
-               s.busy_since, s.transcript_path, s.claude_session_id,
+               s.busy_since, s.transcript_path,
                s.created_at, s.updated_at
         FROM sessions s
         JOIN agents a ON s.agent_id = a.id
@@ -946,7 +1503,6 @@ export class SessionsService {
       activityState: row.activity_state ?? null,
       busySince: row.busy_since ?? null,
       transcriptPath: row.transcript_path ?? null,
-      claudeSessionId: row.claude_session_id ?? null,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }));

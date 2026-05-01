@@ -1171,6 +1171,16 @@
     "max_input_tokens": 1050000,
     "max_output_tokens": 128000
   },
+  "azure/gpt-image-2": {
+    "input_cost_per_token": 0.000005,
+    "output_cost_per_token": 0.00001,
+    "cache_read_input_token_cost": 0.00000125
+  },
+  "azure/gpt-image-2-2026-04-21": {
+    "input_cost_per_token": 0.000005,
+    "output_cost_per_token": 0.00001,
+    "cache_read_input_token_cost": 0.00000125
+  },
   "azure/o1": {
     "input_cost_per_token": 0.000015,
     "output_cost_per_token": 0.00006,
@@ -2958,6 +2968,16 @@
     "cache_read_input_token_cost": 0.00000125
   },
   "gpt-image-1.5-2025-12-16": {
+    "input_cost_per_token": 0.000005,
+    "output_cost_per_token": 0.00001,
+    "cache_read_input_token_cost": 0.00000125
+  },
+  "gpt-image-2": {
+    "input_cost_per_token": 0.000005,
+    "output_cost_per_token": 0.00001,
+    "cache_read_input_token_cost": 0.00000125
+  },
+  "gpt-image-2-2026-04-21": {
     "input_cost_per_token": 0.000005,
     "output_cost_per_token": 0.00001,
     "cache_read_input_token_cost": 0.00000125

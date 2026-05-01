@@ -22,13 +22,15 @@ jest.mock('@/ui/lib/sessions', () => {
     launchSession: jest.fn(),
     restartSession: jest.fn(),
     terminateSession: jest.fn().mockResolvedValue(undefined),
+    restoreSession: jest.fn(),
   };
 });
 
-import { launchSession, restartSession, SessionApiError } from '@/ui/lib/sessions';
+import { launchSession, restartSession, restoreSession, SessionApiError } from '@/ui/lib/sessions';
 
 const mockLaunch = launchSession as jest.MockedFunction<typeof launchSession>;
 const mockRestart = restartSession as jest.MockedFunction<typeof restartSession>;
+const mockRestore = restoreSession as jest.MockedFunction<typeof restoreSession>;
 
 // ============================================
 // Helpers
@@ -275,6 +277,147 @@ describe('useChatSessionControls', () => {
       });
 
       expect(onInlineTerminalAttach).toHaveBeenCalledWith('agent-2', 'deferred-sess');
+    });
+  });
+
+  describe('handleRestoreSession', () => {
+    const sessionId = 'stopped-sess-1';
+    const agentId = 'agent-1';
+
+    it('calls restoreSession with sessionId and projectId', async () => {
+      mockRestore.mockResolvedValue(makeSession({ id: sessionId, agentId }));
+
+      const { wrapper } = createWrapper();
+      const { result } = renderHook(() => useChatSessionControls(buildOptions()), { wrapper });
+
+      await act(async () => {
+        await result.current.handleRestoreSession(sessionId, agentId);
+      });
+
+      expect(mockRestore).toHaveBeenCalledWith(sessionId, 'proj-1');
+    });
+
+    it('shows success toast after restore', async () => {
+      mockRestore.mockResolvedValue(makeSession({ id: sessionId, agentId }));
+
+      const { wrapper } = createWrapper();
+      const { result } = renderHook(() => useChatSessionControls(buildOptions()), { wrapper });
+
+      await act(async () => {
+        await result.current.handleRestoreSession(sessionId, agentId);
+      });
+
+      expect(mockToast).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Session restored' }),
+      );
+    });
+
+    it('calls onInlineTerminalAttach when canAttachInlineTerminal returns true', async () => {
+      const onInlineTerminalAttach = jest.fn();
+      const canAttachInlineTerminal = jest.fn().mockReturnValue(true);
+      const restoredSess = makeSession({ id: sessionId, agentId });
+      mockRestore.mockResolvedValue(restoredSess);
+
+      const { wrapper } = createWrapper();
+      const { result } = renderHook(
+        () =>
+          useChatSessionControls(buildOptions({ canAttachInlineTerminal, onInlineTerminalAttach })),
+        { wrapper },
+      );
+
+      await act(async () => {
+        await result.current.handleRestoreSession(sessionId, agentId);
+      });
+
+      expect(canAttachInlineTerminal).toHaveBeenCalledWith(agentId);
+      expect(onInlineTerminalAttach).toHaveBeenCalledWith(agentId, sessionId);
+    });
+
+    it('does NOT call onInlineTerminalAttach when canAttachInlineTerminal returns false', async () => {
+      const onInlineTerminalAttach = jest.fn();
+      const canAttachInlineTerminal = jest.fn().mockReturnValue(false);
+      mockRestore.mockResolvedValue(makeSession({ id: sessionId, agentId }));
+
+      const { wrapper } = createWrapper();
+      const { result } = renderHook(
+        () =>
+          useChatSessionControls(buildOptions({ canAttachInlineTerminal, onInlineTerminalAttach })),
+        { wrapper },
+      );
+
+      await act(async () => {
+        await result.current.handleRestoreSession(sessionId, agentId);
+      });
+
+      expect(onInlineTerminalAttach).not.toHaveBeenCalled();
+    });
+
+    it('shows PROVIDER_MISMATCH toast with specific title on 409', async () => {
+      mockRestore.mockRejectedValue(
+        new SessionApiError('Current provider differs from launch-time provider', 409, {
+          statusCode: 409,
+          code: 'http_exception',
+          message: 'Current provider differs from launch-time provider',
+          details: {
+            message: 'Current provider differs from launch-time provider',
+            code: 'PROVIDER_MISMATCH',
+          },
+          timestamp: new Date().toISOString(),
+          path: '/api/sessions/x/restore',
+        }),
+      );
+
+      const { wrapper } = createWrapper();
+      const { result } = renderHook(() => useChatSessionControls(buildOptions()), { wrapper });
+
+      await act(async () => {
+        await result.current.handleRestoreSession(sessionId, agentId);
+      });
+
+      expect(mockToast).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Provider mismatch', variant: 'destructive' }),
+      );
+    });
+
+    it('shows NO_PROVIDER_SESSION_ID toast with specific title on 409', async () => {
+      mockRestore.mockRejectedValue(
+        new SessionApiError('Session has no provider session ID', 409, {
+          statusCode: 409,
+          code: 'http_exception',
+          message: 'Session has no provider session ID',
+          details: {
+            message: 'Session has no provider session ID',
+            code: 'NO_PROVIDER_SESSION_ID',
+          },
+          timestamp: new Date().toISOString(),
+          path: '/api/sessions/x/restore',
+        }),
+      );
+
+      const { wrapper } = createWrapper();
+      const { result } = renderHook(() => useChatSessionControls(buildOptions()), { wrapper });
+
+      await act(async () => {
+        await result.current.handleRestoreSession(sessionId, agentId);
+      });
+
+      expect(mockToast).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Cannot restore', variant: 'destructive' }),
+      );
+    });
+
+    it('clears restoringSessionIds after restore completes', async () => {
+      mockRestore.mockResolvedValue(makeSession({ id: sessionId, agentId }));
+
+      const { wrapper } = createWrapper();
+      const { result } = renderHook(() => useChatSessionControls(buildOptions()), { wrapper });
+
+      await act(async () => {
+        await result.current.handleRestoreSession(sessionId, agentId);
+      });
+
+      // After completion, the id should be cleared from the map
+      expect(result.current.restoringSessionIds[sessionId]).toBeUndefined();
     });
   });
 });

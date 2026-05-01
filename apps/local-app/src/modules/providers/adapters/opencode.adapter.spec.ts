@@ -51,6 +51,39 @@ describe('OpencodeAdapter', () => {
     });
   });
 
+  describe('buildLaunchArgs', () => {
+    it('returns profileOptionArgs unchanged for mode new', () => {
+      const result = adapter.buildLaunchArgs({
+        mode: 'new',
+        profileOptionArgs: ['--model', 'gpt-4o'],
+      });
+      expect(result.argv).toEqual(['--model', 'gpt-4o']);
+    });
+
+    it('returns empty argv for mode new with no profileOptionArgs', () => {
+      const result = adapter.buildLaunchArgs({ mode: 'new', profileOptionArgs: [] });
+      expect(result.argv).toEqual([]);
+    });
+
+    it('prepends --session and providerSessionId for mode restore', () => {
+      const result = adapter.buildLaunchArgs({
+        mode: 'restore',
+        providerSessionId: 'session-abc',
+        profileOptionArgs: ['--model', 'gpt-4o'],
+      });
+      expect(result.argv).toEqual(['--session', 'session-abc', '--model', 'gpt-4o']);
+    });
+
+    it('restore with no profileOptionArgs yields [--session, sessionId]', () => {
+      const result = adapter.buildLaunchArgs({
+        mode: 'restore',
+        providerSessionId: 'abc',
+        profileOptionArgs: [],
+      });
+      expect(result.argv).toEqual(['--session', 'abc']);
+    });
+  });
+
   describe('parseListOutput', () => {
     it('returns empty array (fallback, config-file mode reads opencode.json)', () => {
       expect(adapter.parseListOutput('some TUI output')).toEqual([]);

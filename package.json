@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.12.1",
+  "version": "0.12.2",
   "description": "AI driven development platform",
   "homepage": "https://devchain.twitechlab.com/",
   "repository": {
@@ -8,6 +8,10 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.12.2": [
+      "Option to restore previous agent sessions",
+      "Template updates"
+    ],
     "0.12.1": [
       "Fix migration ordering"
     ],

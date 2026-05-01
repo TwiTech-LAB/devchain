@@ -743,6 +743,29 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
   }
 
   /**
+   * Listen to session.restored events from SessionsService
+   */
+  @OnEvent('session.restored')
+  handleSessionRestored(payload: {
+    sessionId: string;
+    epicId: string | null;
+    agentId: string;
+    tmuxSessionName: string;
+  }) {
+    const { sessionId, epicId, agentId } = payload;
+    logger.info({ sessionId, epicId, agentId }, 'Session restored - broadcasting to clients');
+
+    const eventPayload: SessionStatePayload = {
+      sessionId,
+      status: 'started',
+      message: 'Session restored successfully',
+    };
+
+    const envelope = createEnvelope('sessions', 'started', eventPayload);
+    this.server.emit('message', envelope);
+  }
+
+  /**
    * Listen to session.stopped events from SessionsService
    */
   @OnEvent('session.stopped')

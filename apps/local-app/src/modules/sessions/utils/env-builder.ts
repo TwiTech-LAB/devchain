@@ -116,21 +116,21 @@ export function buildEnvArgs(env: Record<string, string> | null | undefined): st
  *
  * @param envVars - Environment variables to set
  * @param providerBinPath - Path to the provider binary
- * @param optionArgs - Additional arguments for the provider
- * @returns Full argv array: ['env', 'KEY=value', ..., 'provider', ...options]
+ * @param argv - Provider argv from ProviderAdapter.buildLaunchArgs()
+ * @returns Full argv array: ['env', 'KEY=value', ..., 'provider', ...argv]
  */
 export function buildSessionCommand(
   envVars: Record<string, string> | null | undefined,
   providerBinPath: string,
-  optionArgs: string[],
+  argv: string[],
 ): string[] {
   const envArgs = buildEnvArgs(envVars);
 
   if (envArgs.length === 0) {
     // No env vars, just run provider directly
-    return [providerBinPath, ...optionArgs];
+    return [providerBinPath, ...argv];
   }
 
   // Use env command to set variables: env KEY=value KEY2=value2 provider args...
-  return ['env', ...envArgs, providerBinPath, ...optionArgs];
+  return ['env', ...envArgs, providerBinPath, ...argv];
 }

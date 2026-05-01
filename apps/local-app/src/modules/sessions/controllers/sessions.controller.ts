@@ -7,6 +7,7 @@ import {
   Param,
   Query,
   BadRequestException,
+  ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
 import { z } from 'zod';
@@ -18,9 +19,11 @@ import {
 } from '../services/sessions-message-pool.service';
 import {
   LaunchSessionSchema,
+  RestoreSessionSchema,
   SessionDetailDto,
   SessionDto,
   AgentPresenceResponseDto,
+  SessionHistoryResponseDto,
 } from '../dtos/sessions.dto';
 import { createLogger } from '../../../common/logging/logger';
 
@@ -51,6 +54,21 @@ const PoolsQuerySchema = z.object({
 /** Query params for GET /sessions and GET /sessions/agents/presence */
 const ProjectIdQuerySchema = z.object({
   projectId: z.string().uuid('projectId must be a valid UUID').optional(),
+});
+
+/** Query params for GET /sessions/agents/:agentId/history */
+const AgentHistoryQuerySchema = z.object({
+  projectId: z.string().uuid('projectId must be a valid UUID'),
+  cursor: z.string().optional(),
+  limit: z
+    .string()
+    .optional()
+    .transform((val) => {
+      if (!val) return 20;
+      const num = parseInt(val, 10);
+      if (isNaN(num) || num < 1) return 20;
+      return Math.min(num, 100);
+    }),
 });
 
 /** Preview of a message log entry (omits full text for list performance) */
@@ -274,6 +292,54 @@ export class SessionsController {
       }
       throw error;
     }
+  }
+
+  /**
+   * Get paginated history of stopped/failed sessions for an agent.
+   * MUST remain declared before @Get(':id') — NestJS evaluates routes in declaration order.
+   */
+  @Get('agents/:agentId/history')
+  async getAgentSessionHistory(
+    @Param('agentId') agentId: string,
+    @Query('projectId') projectId?: string,
+    @Query('cursor') cursor?: string,
+    @Query('limit') limit?: string,
+  ): Promise<SessionHistoryResponseDto> {
+    logger.info({ agentId }, 'GET /api/sessions/agents/:agentId/history');
+
+    try {
+      const query = AgentHistoryQuerySchema.parse({ projectId, cursor, limit });
+      return this.sessionsService.getAgentSessionHistory(
+        agentId,
+        query.projectId,
+        query.cursor,
+        query.limit,
+      );
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        throw new BadRequestException(error.errors.map((e) => e.message).join(', '));
+      }
+      if (error instanceof ForbiddenException) {
+        throw error;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Restore a previously stopped/failed session.
+   * MUST remain declared before @Get(':id') — NestJS evaluates routes in declaration order.
+   */
+  @Post(':id/restore')
+  async restoreSession(@Param('id') id: string, @Body() body: unknown): Promise<SessionDetailDto> {
+    logger.info({ sessionId: id }, 'POST /api/sessions/:id/restore');
+
+    const parsed = RestoreSessionSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.errors.map((e) => e.message).join(', '));
+    }
+
+    return this.sessionsService.restoreSession(id, parsed.data.projectId);
   }
 
   /**

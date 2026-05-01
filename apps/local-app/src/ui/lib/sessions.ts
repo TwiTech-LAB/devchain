@@ -265,6 +265,23 @@ export async function restartSession(
   };
 }
 
+export async function restoreSession(
+  sessionId: string,
+  projectId: string,
+  apiBase = '',
+): Promise<ActiveSession> {
+  return fetchJsonOrThrow<ActiveSession>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/restore`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId }),
+    },
+    'Failed to restore session',
+    apiBase,
+  );
+}
+
 // Alias exports for API surface consistency with DoD
 export async function launchAgentSession(
   agentId: string,

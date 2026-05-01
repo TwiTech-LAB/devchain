@@ -80,6 +80,39 @@ describe('GeminiAdapter', () => {
     });
   });
 
+  describe('buildLaunchArgs', () => {
+    it('returns profileOptionArgs unchanged for mode new', () => {
+      const result = adapter.buildLaunchArgs({
+        mode: 'new',
+        profileOptionArgs: ['--model', 'gemini-2.5-pro'],
+      });
+      expect(result.argv).toEqual(['--model', 'gemini-2.5-pro']);
+    });
+
+    it('returns empty argv for mode new with no profileOptionArgs', () => {
+      const result = adapter.buildLaunchArgs({ mode: 'new', profileOptionArgs: [] });
+      expect(result.argv).toEqual([]);
+    });
+
+    it('prepends --resume and providerSessionId for mode restore', () => {
+      const result = adapter.buildLaunchArgs({
+        mode: 'restore',
+        providerSessionId: 'session-xyz',
+        profileOptionArgs: ['--model', 'gemini-2.5-pro'],
+      });
+      expect(result.argv).toEqual(['--resume', 'session-xyz', '--model', 'gemini-2.5-pro']);
+    });
+
+    it('restore with no profileOptionArgs yields [--resume, sessionId]', () => {
+      const result = adapter.buildLaunchArgs({
+        mode: 'restore',
+        providerSessionId: 'xyz',
+        profileOptionArgs: [],
+      });
+      expect(result.argv).toEqual(['--resume', 'xyz']);
+    });
+  });
+
   describe('parseListOutput', () => {
     it('parses output with single entry', () => {
       const stdout = `Configured MCP servers:

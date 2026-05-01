@@ -223,6 +223,19 @@ export const EVENT_FIELDS_CATALOG: Record<string, SubscribableEventDefinition> =
     ],
   },
 
+  'session.restored': {
+    name: 'session.restored',
+    label: 'Session Restored',
+    description: 'Fired when a stopped session is restored and re-attached to a new tmux session',
+    category: 'session',
+    fields: [
+      { field: 'sessionId', label: 'Session ID', type: 'string' },
+      { field: 'epicId', label: 'Epic ID', type: 'string', nullable: true },
+      { field: 'agentId', label: 'Agent ID', type: 'string' },
+      { field: 'tmuxSessionName', label: 'Tmux Session Name', type: 'string' },
+    ],
+  },
+
   'session.stopped': {
     name: 'session.stopped',
     label: 'Session Stopped',

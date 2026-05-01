@@ -1,0 +1,2 @@
+UPDATE sessions SET provider_session_id = claude_session_id WHERE provider_session_id IS NULL AND claude_session_id IS NOT NULL;--> statement-breakpoint
+ALTER TABLE `sessions` DROP COLUMN `claude_session_id`;

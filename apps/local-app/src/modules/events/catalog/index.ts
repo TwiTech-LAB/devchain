@@ -4,6 +4,7 @@ import { agentDeletedEvent } from './agent.deleted';
 import { epicCreatedEvent } from './epic.created';
 import { epicUpdatedEvent } from './epic.updated';
 import { sessionStartedEvent } from './session.started';
+import { sessionRestoredEvent } from './session.restored';
 import { sessionStoppedEvent } from './session.stopped';
 import { sessionCrashedEvent } from './session.crashed';
 import { terminalWatcherTriggeredEvent } from './terminal.watcher.triggered';
@@ -26,6 +27,8 @@ import { teamMemberRemovedEvent } from './team.member.removed';
 
 // Re-export individual event definitions for direct import
 export { settingsTerminalChangedEvent } from './settings.terminal.changed';
+export { sessionRestoredEvent } from './session.restored';
+export type { SessionRestoredEventPayload } from './session.restored';
 
 export const eventCatalog = {
   [agentCreatedEvent.name]: agentCreatedEvent.schema,
@@ -33,6 +36,7 @@ export const eventCatalog = {
   [epicCreatedEvent.name]: epicCreatedEvent.schema,
   [epicUpdatedEvent.name]: epicUpdatedEvent.schema,
   [sessionStartedEvent.name]: sessionStartedEvent.schema,
+  [sessionRestoredEvent.name]: sessionRestoredEvent.schema,
   [sessionStoppedEvent.name]: sessionStoppedEvent.schema,
   [sessionCrashedEvent.name]: sessionCrashedEvent.schema,
   [terminalWatcherTriggeredEvent.name]: terminalWatcherTriggeredEvent.schema,

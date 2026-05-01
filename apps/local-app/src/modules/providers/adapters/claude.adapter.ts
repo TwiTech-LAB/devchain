@@ -4,6 +4,7 @@ import {
   AddMcpServerOptions,
   McpServerEntry,
   LaunchInitialPromptBehavior,
+  BuildLaunchArgsInput,
 } from './provider-adapter.interface';
 
 /**
@@ -39,6 +40,15 @@ export class ClaudeAdapter implements ProviderAdapter {
 
   binaryCheck(alias: string): string[] {
     return ['mcp', 'check', alias];
+  }
+
+  buildLaunchArgs({ mode, providerSessionId, profileOptionArgs }: BuildLaunchArgsInput): {
+    argv: string[];
+  } {
+    if (mode === 'restore') {
+      return { argv: ['--resume', providerSessionId!, ...profileOptionArgs] };
+    }
+    return { argv: [...profileOptionArgs] };
   }
 
   parseListOutput(stdout: string, _stderr?: string): McpServerEntry[] {

@@ -61,6 +61,8 @@ import { ChatThreadHeader } from '@/ui/components/chat/ChatThreadHeader';
 import { ChatMessageList } from '@/ui/components/chat/ChatMessageList';
 import { ChatComposer } from '@/ui/components/chat/ChatComposer';
 import { ChatModals } from '@/ui/components/chat/ChatModals';
+import { PreviousSessionsTable } from '@/ui/components/chat/PreviousSessionsTable';
+import { SessionReadSlideOver } from '@/ui/components/chat/SessionReadSlideOver';
 
 // Feature flags
 const CHAT_INLINE_TERMINAL_ENABLED = true;
@@ -696,6 +698,7 @@ export function ChatPage() {
   // ── Delete agent ──
   const [pendingDeleteAgent, setPendingDeleteAgent] = useState<AgentOrGuest | null>(null);
   const [pendingDeleteAgentId, setPendingDeleteAgentId] = useState<string | null>(null);
+  const [readSlideOverSessionId, setReadSlideOverSessionId] = useState<string | null>(null);
 
   const pendingDeleteHasSession = useMemo(() => {
     if (!pendingDeleteAgent) return false;
@@ -1545,28 +1548,42 @@ export function ChatPage() {
 
   const directLaunchCta =
     shouldShowDirectLaunchCta && selectedAgent ? (
-      <div className="flex items-center justify-between gap-4 rounded-lg border border-dashed border-border bg-muted/40 p-4">
-        <div>
-          <p className="text-sm font-semibold text-foreground">Agent is not active.</p>
-          <p className="text-xs text-muted-foreground">
-            Launch a session to collaborate inline inside this conversation.
-          </p>
+      <div className="space-y-0">
+        <div className="flex items-center justify-between gap-4 rounded-lg border border-dashed border-border bg-muted/40 p-4">
+          <div>
+            <p className="text-sm font-semibold text-foreground">Agent is not active.</p>
+            <p className="text-xs text-muted-foreground">
+              Launch a session to collaborate inline inside this conversation.
+            </p>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => sessionControls.handleLaunchSession(selectedAgent.id)}
+            disabled={launchingSelectedAgent || !hasSelectedProject}
+          >
+            {launchingSelectedAgent ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Launching…
+              </>
+            ) : (
+              'Launch session'
+            )}
+          </Button>
         </div>
-        <Button
-          type="button"
-          size="sm"
-          onClick={() => sessionControls.handleLaunchSession(selectedAgent.id)}
-          disabled={launchingSelectedAgent || !hasSelectedProject}
-        >
-          {launchingSelectedAgent ? (
-            <>
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Launching…
-            </>
-          ) : (
-            'Launch session'
-          )}
-        </Button>
+        {projectId && (
+          <PreviousSessionsTable
+            agentId={selectedAgent.id}
+            projectId={projectId}
+            onRead={setReadSlideOverSessionId}
+            onRestore={(sessionId) =>
+              sessionControls.handleRestoreSession(sessionId, selectedAgent.id)
+            }
+            currentProviderName={selectedAgent.providerConfig?.providerName ?? null}
+            restoringSessionIds={sessionControls.restoringSessionIds}
+          />
+        )}
       </div>
     ) : null;
 
@@ -2073,6 +2090,11 @@ export function ChatPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <SessionReadSlideOver
+        sessionId={readSlideOverSessionId}
+        onClose={() => setReadSlideOverSessionId(null)}
+      />
     </div>
   );
 }

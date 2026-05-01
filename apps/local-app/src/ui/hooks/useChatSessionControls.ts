@@ -5,6 +5,7 @@ import {
   launchSession,
   restartSession,
   terminateSession,
+  restoreSession,
   SessionApiError,
   type ActiveSession,
   type AgentPresenceMap,
@@ -62,11 +63,15 @@ export interface UseChatSessionControlsResult {
     options?: { attach?: boolean; silent?: boolean },
   ) => Promise<ActiveSession | null>;
   handleRestartSession: (agentId: string) => Promise<void>;
+  handleRestoreSession: (sessionId: string, agentId: string) => Promise<void>;
   handleTerminateSession: (agentId: string, sessionId: string) => Promise<void>;
   handleStartAllAgents: () => Promise<void>;
   handleTerminateAllAgents: () => Promise<void>;
   handleMcpConfigured: () => Promise<void>;
   handleVerifyMcp: () => Promise<boolean>;
+
+  // Restore state
+  restoringSessionIds: Record<string, boolean>;
 }
 
 // ============================================
@@ -89,6 +94,7 @@ export function useChatSessionControls({
   // Loading states
   const [launchingAgentIds, setLaunchingAgentIds] = useState<Record<string, boolean>>({});
   const [restartingAgentId, setRestartingAgentId] = useState<string | null>(null);
+  const [restoringSessionIds, setRestoringSessionIds] = useState<Record<string, boolean>>({});
   const [startingAll, setStartingAll] = useState(false);
   const [terminatingAll, setTerminatingAll] = useState(false);
 
@@ -284,6 +290,56 @@ export function useChatSessionControls({
     [agentPresence, projectId, queryClient, canAttachInlineTerminal, onInlineTerminalAttach, toast],
   );
 
+  // Restore session handler
+  const handleRestoreSession = useCallback(
+    async (sessionId: string, agentId: string) => {
+      if (!projectId) return;
+      setRestoringSessionIds((prev) => ({ ...prev, [sessionId]: true }));
+      try {
+        const session = await restoreSession(sessionId, projectId);
+        toast({
+          title: 'Session restored',
+          description: `Session ${session.id.slice(0, 8)} is running.`,
+        });
+        queryClient.invalidateQueries({ queryKey: chatQueryKeys.agentPresence(projectId) });
+        queryClient.invalidateQueries({ queryKey: chatQueryKeys.activeSessions(projectId) });
+        queryClient.invalidateQueries({ queryKey: ['agentSessionHistory', agentId, projectId] });
+        if (canAttachInlineTerminal?.(agentId)) {
+          onInlineTerminalAttach?.(agentId, session.id);
+          onTerminalMenuClose?.();
+        }
+      } catch (error) {
+        let title = 'Restore failed';
+        const description =
+          error instanceof Error ? error.message : 'Unable to restore session right now.';
+        if (error instanceof SessionApiError && error.status === 409) {
+          if (error.hasCode('PROVIDER_MISMATCH')) {
+            title = 'Provider mismatch';
+          } else if (error.hasCode('NO_PROVIDER_SESSION_ID')) {
+            title = 'Cannot restore';
+          } else if (error.hasCode('INVALID_SESSION_STATE')) {
+            title = 'Invalid session state';
+          }
+        }
+        toast({ title, description, variant: 'destructive' });
+      } finally {
+        setRestoringSessionIds((prev) => {
+          const next = { ...prev };
+          delete next[sessionId];
+          return next;
+        });
+      }
+    },
+    [
+      projectId,
+      queryClient,
+      canAttachInlineTerminal,
+      onInlineTerminalAttach,
+      onTerminalMenuClose,
+      toast,
+    ],
+  );
+
   // Terminate session handler
   const handleTerminateSession = useCallback(
     async (agentId: string, sessionId: string) => {
@@ -451,10 +507,14 @@ export function useChatSessionControls({
     // Handlers
     handleLaunchSession,
     handleRestartSession,
+    handleRestoreSession,
     handleTerminateSession,
     handleStartAllAgents,
     handleTerminateAllAgents,
     handleMcpConfigured,
     handleVerifyMcp,
+
+    // Restore state
+    restoringSessionIds,
   };
 }

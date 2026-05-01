@@ -3,7 +3,7 @@
     "slug": "5-agents-dev",
     "name": "5 Agents Development Flow",
     "description": "A multi-agent development workflow that automates software delivery through three phases:\n\n1. Planning — A Brainstormer agent collaborates with a technical validator (SubBSM) to refine user requirements into an approved master plan, then breaks it down into epics and tasks.\n2. Execution — A Coder agent implements tasks while an Epic Manager reviews and controls the flow—approving, revising, or flagging issues until all work is complete.\n3. Code Review — A Code Reviewer audits the completed work against architectural standards, generating findings that feed back into new remediation tasks if needed.\n\nSupported agents: claude, codex, gemini, glm",
-    "version": "1.1.21",
+    "version": "1.1.22",
     "category": "development",
     "tags": [
       "development",
@@ -15,10 +15,10 @@
     "authorName": "Devchain",
     "changelog": "",
     "minDevchainVersion": "0.11.0",
-    "publishedAt": "2026-04-29T11:48:48.967Z"
+    "publishedAt": "2026-05-01T20:29:31.703Z"
   },
   "version": 1,
-  "exportedAt": "2026-04-29T11:48:48.968Z",
+  "exportedAt": "2026-05-01T20:29:31.704Z",
   "prompts": [
     {
       "id": "c5674d2d-401c-4c3d-9f43-d43e8bbd17cc",
@@ -711,7 +711,7 @@
       "eventFilter": {
         "field": "source",
         "operator": "regex",
-        "value": "resume|clear|compact"
+        "value": "clear|compact"
       },
       "actionType": "send_agent_message",
       "actionInputs": {

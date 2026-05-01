@@ -38,6 +38,18 @@ export interface AddMcpServerOptions {
 }
 
 /**
+ * Input for buildLaunchArgs — describes how to compose the CLI argv for a session launch.
+ */
+export interface BuildLaunchArgsInput {
+  /** 'new' for a fresh session; 'restore' to resume an existing provider session. */
+  mode: 'new' | 'restore';
+  /** Provider-native session ID required when mode === 'restore'. */
+  providerSessionId?: string;
+  /** Option args derived from the agent profile (e.g. ['--model', 'claude-opus-4-5']). */
+  profileOptionArgs: string[];
+}
+
+/**
  * ProviderAdapter interface for known providers
  *
  * Centralizes provider-specific command logic and parsing
@@ -103,4 +115,16 @@ export interface ProviderAdapter {
    * @returns Array of normalized MCP server entries
    */
   parseListOutput(stdout: string, stderr?: string): McpServerEntry[];
+
+  /**
+   * Build the full CLI argv for launching a session.
+   *
+   * For 'new' sessions this is simply the profileOptionArgs.
+   * For 'restore' sessions each provider prepends/appends the resume flag/subcommand
+   * and providerSessionId according to its own CLI contract.
+   *
+   * @param input - Mode, optional session ID, and profile-level option args
+   * @returns Object containing the complete argv to pass to the provider binary
+   */
+  buildLaunchArgs(input: BuildLaunchArgsInput): { argv: string[] };
 }

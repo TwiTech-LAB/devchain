@@ -79,6 +79,36 @@ describe('CodexAdapter', () => {
     });
   });
 
+  describe('buildLaunchArgs', () => {
+    it('returns profileOptionArgs unchanged for mode new', () => {
+      const result = adapter.buildLaunchArgs({ mode: 'new', profileOptionArgs: ['-m', 'o3'] });
+      expect(result.argv).toEqual(['-m', 'o3']);
+    });
+
+    it('returns empty argv for mode new with no profileOptionArgs', () => {
+      const result = adapter.buildLaunchArgs({ mode: 'new', profileOptionArgs: [] });
+      expect(result.argv).toEqual([]);
+    });
+
+    it('uses resume subcommand with session ID LAST for mode restore', () => {
+      const result = adapter.buildLaunchArgs({
+        mode: 'restore',
+        providerSessionId: 'abc',
+        profileOptionArgs: ['-m', 'o3', '-p', 'work'],
+      });
+      expect(result.argv).toEqual(['resume', '-m', 'o3', '-p', 'work', 'abc']);
+    });
+
+    it('restore with no profileOptionArgs yields [resume, sessionId]', () => {
+      const result = adapter.buildLaunchArgs({
+        mode: 'restore',
+        providerSessionId: 'xyz',
+        profileOptionArgs: [],
+      });
+      expect(result.argv).toEqual(['resume', 'xyz']);
+    });
+  });
+
   describe('parseListOutput', () => {
     it('parses output with single entry', () => {
       const stdout = 'devchain  http://127.0.0.1:3000/mcp';

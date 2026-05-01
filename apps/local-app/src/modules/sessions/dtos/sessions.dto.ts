@@ -34,7 +34,6 @@ export interface SessionDto {
   activityState?: 'idle' | 'busy' | null;
   busySince?: string | null;
   transcriptPath?: string | null;
-  claudeSessionId?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -77,3 +76,28 @@ export interface AgentPresenceDto {
 export interface AgentPresenceResponseDto {
   [agentId: string]: AgentPresenceDto;
 }
+
+export interface SessionHistoryItemDto {
+  id: string;
+  providerSessionId: string | null;
+  providerNameAtLaunch: string | null;
+  status: 'stopped' | 'failed';
+  startedAt: string;
+  endedAt: string | null;
+  lastActivityAt: string | null;
+  sizeBytes: number | null;
+  transcriptAvailable: boolean;
+}
+
+export interface SessionHistoryResponseDto {
+  items: SessionHistoryItemDto[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  total: number;
+}
+
+export const RestoreSessionSchema = z.object({
+  projectId: z.string().uuid(),
+});
+
+export type RestoreSessionDto = z.infer<typeof RestoreSessionSchema>;

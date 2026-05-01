@@ -94,6 +94,39 @@ describe('ClaudeAdapter', () => {
     });
   });
 
+  describe('buildLaunchArgs', () => {
+    it('returns profileOptionArgs unchanged for mode new', () => {
+      const result = adapter.buildLaunchArgs({
+        mode: 'new',
+        profileOptionArgs: ['--model', 'claude-opus-4-5'],
+      });
+      expect(result.argv).toEqual(['--model', 'claude-opus-4-5']);
+    });
+
+    it('returns empty argv for mode new with no profileOptionArgs', () => {
+      const result = adapter.buildLaunchArgs({ mode: 'new', profileOptionArgs: [] });
+      expect(result.argv).toEqual([]);
+    });
+
+    it('prepends --resume and providerSessionId for mode restore', () => {
+      const result = adapter.buildLaunchArgs({
+        mode: 'restore',
+        providerSessionId: 'session-abc',
+        profileOptionArgs: ['--model', 'claude-opus-4-5'],
+      });
+      expect(result.argv).toEqual(['--resume', 'session-abc', '--model', 'claude-opus-4-5']);
+    });
+
+    it('restore with no profileOptionArgs yields [--resume, sessionId]', () => {
+      const result = adapter.buildLaunchArgs({
+        mode: 'restore',
+        providerSessionId: 'xyz',
+        profileOptionArgs: [],
+      });
+      expect(result.argv).toEqual(['--resume', 'xyz']);
+    });
+  });
+
   describe('parseListOutput', () => {
     it('parses output with single entry', () => {
       const stdout = `Checking MCP server health...

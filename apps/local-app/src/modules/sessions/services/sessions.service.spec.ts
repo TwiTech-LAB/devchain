@@ -264,6 +264,7 @@ describe('SessionsService', () => {
       'tmux-session',
       'running',
       expect.any(String),
+      'claude',
       expect.any(String),
       expect.any(String),
     );
@@ -370,6 +371,7 @@ describe('SessionsService', () => {
       'tmux-session',
       'running',
       expect.any(String),
+      'claude',
       expect.any(String),
       expect.any(String),
     );
@@ -3151,6 +3153,862 @@ describe('SessionsService', () => {
 
     // Verify tmux session was destroyed
     expect(tmuxService.destroySession).toHaveBeenCalledWith('tmux-session');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// restoreSession tests
+// ---------------------------------------------------------------------------
+
+describe('SessionsService.restoreSession', () => {
+  let storage: {
+    getAgent: jest.Mock;
+    getProject: jest.Mock;
+    getEpic: jest.Mock;
+    getAgentProfile: jest.Mock;
+    getProvider: jest.Mock;
+    getPrompt: jest.Mock;
+    getInitialSessionPrompt: jest.Mock;
+    getFeatureFlags: jest.Mock;
+    listProfileProviderConfigsByProfile: jest.Mock;
+    getProfileProviderConfig: jest.Mock;
+  };
+  let tmuxService: {
+    createSessionName: jest.Mock;
+    createSession: jest.Mock;
+    startHealthCheck: jest.Mock;
+    sendCommandArgs: jest.Mock;
+    destroySession: jest.Mock;
+    hasSession: jest.Mock;
+    setAlternateScreenOff: jest.Mock;
+    pasteAndSubmit: jest.Mock;
+  };
+  let ptyService: { startStreaming: jest.Mock };
+  let eventsService: { publish: jest.Mock };
+  let sessionCoordinator: { withAgentLock: jest.Mock };
+  let sqlitePrepare: jest.Mock;
+  let sqliteGetMock: jest.Mock;
+  let sqliteRunMock: jest.Mock;
+  let sqliteAllMock: jest.Mock;
+  let terminalGateway: { broadcastEvent: jest.Mock };
+  let providerAdapterFactory: { getAdapter: jest.Mock };
+  let service: SessionsService;
+
+  const stoppedSessionRow = {
+    id: 'sess-1',
+    epic_id: 'epic-1',
+    agent_id: 'agent-1',
+    tmux_session_id: 'old-tmux',
+    status: 'stopped',
+    started_at: '2026-04-30T10:00:00.000Z',
+    ended_at: '2026-04-30T12:00:00.000Z',
+    transcript_path: '/home/user/.claude/session.jsonl',
+    provider_session_id: 'provider-uuid-123',
+    provider_name_at_launch: 'claude',
+    created_at: '2026-04-30T10:00:00.000Z',
+    updated_at: '2026-04-30T12:00:00.000Z',
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+
+    storage = {
+      getAgent: jest.fn().mockResolvedValue({
+        id: 'agent-1',
+        projectId: 'proj-1',
+        profileId: 'prof-1',
+        providerConfigId: 'cfg-1',
+        name: 'Agent 1',
+        modelOverride: null,
+      }),
+      getProject: jest.fn().mockResolvedValue({
+        id: 'proj-1',
+        name: 'My Project',
+        rootPath: '/home/user/project',
+      }),
+      getEpic: jest.fn().mockResolvedValue({
+        id: 'epic-1',
+        title: 'Test Epic',
+        projectId: 'proj-1',
+      }),
+      getAgentProfile: jest.fn().mockResolvedValue({
+        id: 'prof-1',
+        name: 'default',
+      }),
+      getProvider: jest.fn().mockResolvedValue({
+        id: 'prov-1',
+        name: 'claude',
+        binPath: '/usr/bin/claude',
+        mcpConfigured: true,
+        mcpEndpoint: null,
+        mcpRegisteredAt: null,
+        autoCompactThreshold: null,
+        autoCompactThreshold1m: null,
+        oneMillionContextEnabled: false,
+        env: null,
+        createdAt: '',
+        updatedAt: '',
+      }),
+      getPrompt: jest.fn(),
+      getInitialSessionPrompt: jest.fn().mockResolvedValue(null),
+      getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
+      listProfileProviderConfigsByProfile: jest.fn().mockResolvedValue([]),
+      getProfileProviderConfig: jest.fn().mockResolvedValue({
+        id: 'cfg-1',
+        providerId: 'prov-1',
+        options: null,
+        env: null,
+      }),
+    };
+
+    tmuxService = {
+      createSessionName: jest.fn().mockReturnValue('tmux-restored'),
+      createSession: jest.fn().mockResolvedValue(undefined),
+      startHealthCheck: jest.fn(),
+      sendCommandArgs: jest.fn().mockResolvedValue(undefined),
+      destroySession: jest.fn().mockResolvedValue(undefined),
+      hasSession: jest.fn().mockResolvedValue(false),
+      setAlternateScreenOff: jest.fn().mockResolvedValue(undefined),
+      pasteAndSubmit: jest.fn().mockResolvedValue(undefined),
+    };
+
+    ptyService = { startStreaming: jest.fn().mockResolvedValue(undefined) };
+    eventsService = { publish: jest.fn().mockResolvedValue('event-log-id') };
+
+    sessionCoordinator = {
+      withAgentLock: jest.fn().mockImplementation((_agentId: string, fn: () => unknown) => fn()),
+    };
+
+    sqliteGetMock = jest.fn().mockReturnValue(stoppedSessionRow);
+    sqliteRunMock = jest.fn();
+    sqliteAllMock = jest.fn().mockReturnValue([]);
+    sqlitePrepare = jest.fn().mockImplementation((sql: string) => {
+      if (sql.includes("status = 'running'") && sql.includes('agent_id')) {
+        return {
+          get: jest.fn().mockReturnValue(undefined),
+          run: sqliteRunMock,
+          all: sqliteAllMock,
+        };
+      }
+      return { get: sqliteGetMock, run: sqliteRunMock, all: sqliteAllMock };
+    });
+
+    const dbMock = {
+      session: { client: { prepare: sqlitePrepare } },
+    } as unknown as BetterSQLite3Database;
+
+    terminalGateway = { broadcastEvent: jest.fn() };
+
+    providerAdapterFactory = {
+      getAdapter: jest.fn().mockReturnValue({
+        providerName: 'claude',
+        launchInitialPromptBehavior: undefined,
+        buildLaunchArgs: jest.fn().mockReturnValue({
+          argv: ['--resume', 'provider-uuid-123'],
+        }),
+      }),
+    };
+
+    const moduleRef = {
+      get: jest.fn().mockImplementation((token: unknown) => {
+        const tokenName = (token as { name?: string })?.name;
+        if (tokenName === 'TerminalGateway') return terminalGateway as unknown as TerminalGateway;
+        if (tokenName === 'EventsService') return eventsService as unknown as EventsService;
+        return null;
+      }),
+    };
+
+    service = new SessionsService(
+      dbMock,
+      storage as unknown as StorageService,
+      tmuxService as unknown as TmuxService,
+      {} as unknown as TerminalSendCoordinatorService,
+      ptyService as unknown as PtyService,
+      {} as unknown as PreflightService,
+      {} as unknown as ProviderMcpEnsureService,
+      sessionCoordinator as unknown as SessionCoordinatorService,
+      { ensureHooksConfig: jest.fn() } as unknown as HooksConfigService,
+      providerAdapterFactory as unknown as ProviderAdapterFactory,
+      moduleRef as unknown as ModuleRef,
+    );
+  });
+
+  it('restores a stopped session and emits session.restored', async () => {
+    const result = await service.restoreSession('sess-1', 'proj-1');
+
+    expect(result.id).toBe('sess-1');
+    expect(result.status).toBe('running');
+    expect(result.startedAt).toBe('2026-04-30T10:00:00.000Z');
+    expect(result.endedAt).toBeNull();
+    expect(result.tmuxSessionId).toBe('tmux-restored');
+
+    expect(eventsService.publish).toHaveBeenCalledWith(
+      'session.restored',
+      expect.objectContaining({
+        sessionId: 'sess-1',
+        agentId: 'agent-1',
+      }),
+    );
+    expect(eventsService.publish).not.toHaveBeenCalledWith('session.started', expect.anything());
+  });
+
+  it('re-emits session.transcript.discovered when transcript_path exists', async () => {
+    await service.restoreSession('sess-1', 'proj-1');
+
+    expect(eventsService.publish).toHaveBeenCalledWith(
+      'session.transcript.discovered',
+      expect.objectContaining({
+        sessionId: 'sess-1',
+        transcriptPath: '/home/user/.claude/session.jsonl',
+      }),
+    );
+  });
+
+  it('uses buildLaunchArgs with mode: restore', async () => {
+    await service.restoreSession('sess-1', 'proj-1');
+
+    const adapter = providerAdapterFactory.getAdapter('claude');
+    expect(adapter.buildLaunchArgs).toHaveBeenCalledWith({
+      mode: 'restore',
+      providerSessionId: 'provider-uuid-123',
+      profileOptionArgs: expect.any(Array),
+    });
+  });
+
+  it('does NOT call pasteAndSubmit (no initial prompt on restore)', async () => {
+    await service.restoreSession('sess-1', 'proj-1');
+
+    expect(tmuxService.pasteAndSubmit).not.toHaveBeenCalled();
+  });
+
+  it('throws 404 when session not found', async () => {
+    sqliteGetMock.mockReturnValue(undefined);
+
+    await expect(service.restoreSession('nonexistent', 'proj-1')).rejects.toThrow(
+      'Session not found',
+    );
+  });
+
+  it('throws 403 PROJECT_MISMATCH when agent belongs to different project', async () => {
+    storage.getAgent.mockResolvedValue({
+      id: 'agent-1',
+      projectId: 'other-project',
+      profileId: 'prof-1',
+      providerConfigId: 'cfg-1',
+      name: 'Agent 1',
+      modelOverride: null,
+    });
+
+    await expect(service.restoreSession('sess-1', 'proj-1')).rejects.toThrow('PROJECT_MISMATCH');
+  });
+
+  it('throws 409 INVALID_SESSION_STATE with details.code when session is running', async () => {
+    sqliteGetMock.mockReturnValue({ ...stoppedSessionRow, status: 'running' });
+
+    await expect(service.restoreSession('sess-1', 'proj-1')).rejects.toMatchObject({
+      status: 409,
+      response: expect.objectContaining({ code: 'INVALID_SESSION_STATE' }),
+    });
+  });
+
+  it('throws 409 NO_PROVIDER_SESSION_ID with details.code when provider_session_id is null', async () => {
+    sqliteGetMock.mockReturnValue({ ...stoppedSessionRow, provider_session_id: null });
+
+    await expect(service.restoreSession('sess-1', 'proj-1')).rejects.toMatchObject({
+      status: 409,
+      response: expect.objectContaining({ code: 'NO_PROVIDER_SESSION_ID' }),
+    });
+  });
+
+  it('throws 409 PROVIDER_MISMATCH with details.code when provider differs', async () => {
+    storage.getProvider.mockResolvedValue({
+      id: 'prov-1',
+      name: 'codex',
+      binPath: '/usr/bin/codex',
+      mcpConfigured: true,
+      mcpEndpoint: null,
+      mcpRegisteredAt: null,
+      autoCompactThreshold: null,
+      autoCompactThreshold1m: null,
+      oneMillionContextEnabled: false,
+      env: null,
+      createdAt: '',
+      updatedAt: '',
+    });
+
+    await expect(service.restoreSession('sess-1', 'proj-1')).rejects.toMatchObject({
+      status: 409,
+      response: expect.objectContaining({ code: 'PROVIDER_MISMATCH' }),
+    });
+  });
+
+  it('rolls back on sendCommandArgs failure', async () => {
+    tmuxService.sendCommandArgs.mockRejectedValue(new Error('CLI launch failed'));
+
+    await expect(service.restoreSession('sess-1', 'proj-1')).rejects.toThrow('RESTORE_FAILED');
+
+    // Verify rollback UPDATE was called
+    const updateCalls = sqlitePrepare.mock.calls.filter(
+      ([sql]: [string]) =>
+        typeof sql === 'string' && sql.includes('UPDATE sessions') && sql.includes('status = ?'),
+    );
+    expect(updateCalls.length).toBeGreaterThanOrEqual(1);
+
+    // Verify tmux session was destroyed
+    expect(tmuxService.destroySession).toHaveBeenCalledWith('tmux-restored');
+
+    // Verify presence was NOT broadcast
+    expect(terminalGateway.broadcastEvent).not.toHaveBeenCalledWith(
+      expect.stringContaining('agent/'),
+      'presence',
+      expect.anything(),
+    );
+  });
+
+  it('rolls back on tmux creation failure', async () => {
+    tmuxService.createSession.mockRejectedValue(new Error('tmux error'));
+
+    await expect(service.restoreSession('sess-1', 'proj-1')).rejects.toThrow('RESTORE_FAILED');
+
+    // Verify presence was NOT broadcast
+    expect(terminalGateway.broadcastEvent).not.toHaveBeenCalledWith(
+      expect.stringContaining('agent/'),
+      'presence',
+      expect.anything(),
+    );
+  });
+
+  it('acquires per-agent lock via sessionCoordinator', async () => {
+    await service.restoreSession('sess-1', 'proj-1');
+
+    expect(sessionCoordinator.withAgentLock).toHaveBeenCalledWith('agent-1', expect.any(Function));
+  });
+
+  it('preserves original started_at and created_at', async () => {
+    const result = await service.restoreSession('sess-1', 'proj-1');
+
+    expect(result.startedAt).toBe('2026-04-30T10:00:00.000Z');
+    expect(result.createdAt).toBe('2026-04-30T10:00:00.000Z');
+  });
+
+  it('injects DEVCHAIN_SESSION_ID with the source session id (not a new one)', async () => {
+    await service.restoreSession('sess-1', 'proj-1');
+
+    const sendCall = tmuxService.sendCommandArgs.mock.calls[0];
+    const commandArgs = sendCall[1] as string[];
+    const envArg = commandArgs.find((a: string) => a.startsWith('DEVCHAIN_SESSION_ID='));
+    expect(envArg).toBe('DEVCHAIN_SESSION_ID=sess-1');
+  });
+
+  it('fails with no DB mutation when adapter lookup throws', async () => {
+    providerAdapterFactory.getAdapter.mockImplementation(() => {
+      throw new Error('Unknown provider');
+    });
+
+    await expect(service.restoreSession('sess-1', 'proj-1')).rejects.toThrow('Unknown provider');
+
+    expect(tmuxService.createSession).not.toHaveBeenCalled();
+    expect(tmuxService.sendCommandArgs).not.toHaveBeenCalled();
+    // No UPDATE for status flip (the SET status = 'running' UPDATE should not exist)
+    const statusFlipCalls = sqlitePrepare.mock.calls.filter(
+      ([sql]: [string]) =>
+        typeof sql === 'string' && sql.includes('UPDATE') && sql.includes("SET status = 'running'"),
+    );
+    expect(statusFlipCalls).toHaveLength(0);
+  });
+
+  it('fails with no DB mutation when buildLaunchArgs throws', async () => {
+    const adapter = providerAdapterFactory.getAdapter('claude');
+    adapter.buildLaunchArgs.mockImplementation(() => {
+      throw new Error('buildLaunchArgs failed');
+    });
+
+    await expect(service.restoreSession('sess-1', 'proj-1')).rejects.toThrow(
+      'buildLaunchArgs failed',
+    );
+
+    expect(tmuxService.createSession).not.toHaveBeenCalled();
+    const statusFlipCalls = sqlitePrepare.mock.calls.filter(
+      ([sql]: [string]) =>
+        typeof sql === 'string' && sql.includes('UPDATE') && sql.includes("SET status = 'running'"),
+    );
+    expect(statusFlipCalls).toHaveLength(0);
+  });
+
+  it('fails when restore argv does not include providerSessionId', async () => {
+    const adapter = providerAdapterFactory.getAdapter('claude');
+    adapter.buildLaunchArgs.mockReturnValue({ argv: ['--some-flag'] });
+
+    await expect(service.restoreSession('sess-1', 'proj-1')).rejects.toThrow(
+      'Restore argv does not include provider session ID',
+    );
+
+    expect(tmuxService.createSession).not.toHaveBeenCalled();
+    const statusFlipCalls = sqlitePrepare.mock.calls.filter(
+      ([sql]: [string]) =>
+        typeof sql === 'string' && sql.includes('UPDATE') && sql.includes("SET status = 'running'"),
+    );
+    expect(statusFlipCalls).toHaveLength(0);
+  });
+
+  it('throws PROVIDER_MISMATCH when in-lock resolveLaunchTarget returns different provider (TOCTOU)', async () => {
+    // Pre-check passes: currentProvider (outside lock) matches provider_name_at_launch
+    // But inside the lock, resolveLaunchTarget returns a different provider (simulating concurrent config change)
+    let callCount = 0;
+    storage.getProvider.mockImplementation(() => {
+      callCount++;
+      if (callCount <= 1) {
+        // First call (outside lock — Step 4 pre-check): matches 'claude'
+        return Promise.resolve({
+          id: 'prov-1',
+          name: 'claude',
+          binPath: '/usr/bin/claude',
+          mcpConfigured: true,
+          mcpEndpoint: null,
+          mcpRegisteredAt: null,
+          autoCompactThreshold: null,
+          autoCompactThreshold1m: null,
+          oneMillionContextEnabled: false,
+          env: null,
+          createdAt: '',
+          updatedAt: '',
+        });
+      }
+      // Second call (inside lock — resolveLaunchTarget): returns 'codex' (concurrent swap)
+      return Promise.resolve({
+        id: 'prov-2',
+        name: 'codex',
+        binPath: '/usr/bin/codex',
+        mcpConfigured: true,
+        mcpEndpoint: null,
+        mcpRegisteredAt: null,
+        autoCompactThreshold: null,
+        autoCompactThreshold1m: null,
+        oneMillionContextEnabled: false,
+        env: null,
+        createdAt: '',
+        updatedAt: '',
+      });
+    });
+
+    await expect(service.restoreSession('sess-1', 'proj-1')).rejects.toMatchObject({
+      status: 409,
+      response: expect.objectContaining({ code: 'PROVIDER_MISMATCH' }),
+    });
+
+    expect(tmuxService.createSession).not.toHaveBeenCalled();
+    expect(tmuxService.sendCommandArgs).not.toHaveBeenCalled();
+    const statusFlipCalls = sqlitePrepare.mock.calls.filter(
+      ([sql]: [string]) =>
+        typeof sql === 'string' && sql.includes('UPDATE') && sql.includes("SET status = 'running'"),
+    );
+    expect(statusFlipCalls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Launch helper unit tests
+// ---------------------------------------------------------------------------
+
+describe('SessionsService launch helpers', () => {
+  let storage: {
+    getAgent: jest.Mock;
+    getProject: jest.Mock;
+    getEpic: jest.Mock;
+    getAgentProfile: jest.Mock;
+    getProvider: jest.Mock;
+    getPrompt: jest.Mock;
+    getInitialSessionPrompt: jest.Mock;
+    getFeatureFlags: jest.Mock;
+    listProfileProviderConfigsByProfile: jest.Mock;
+    getProfileProviderConfig: jest.Mock;
+  };
+  let preflightService: { runChecks: jest.Mock };
+  let mcpEnsureService: { ensureMcp: jest.Mock };
+  let hooksConfigService: { ensureHooksConfig: jest.Mock };
+  let service: SessionsService;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+
+    storage = {
+      getAgent: jest.fn(),
+      getProject: jest.fn(),
+      getEpic: jest.fn(),
+      getAgentProfile: jest.fn(),
+      getProvider: jest.fn(),
+      getPrompt: jest.fn(),
+      getInitialSessionPrompt: jest.fn().mockResolvedValue(null),
+      getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
+      listProfileProviderConfigsByProfile: jest.fn().mockResolvedValue([]),
+      getProfileProviderConfig: jest.fn(),
+    };
+
+    preflightService = {
+      runChecks: jest.fn().mockResolvedValue({ overall: 'pass', checks: [], providers: [] }),
+    };
+
+    mcpEnsureService = {
+      ensureMcp: jest.fn().mockResolvedValue({ success: true, action: 'already_configured' }),
+    };
+
+    hooksConfigService = {
+      ensureHooksConfig: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const dbMock = {
+      session: {
+        client: {
+          prepare: jest.fn().mockReturnValue({
+            run: jest.fn(),
+            get: jest.fn(),
+            all: jest.fn().mockReturnValue([]),
+          }),
+        },
+      },
+    } as unknown as BetterSQLite3Database;
+
+    service = new SessionsService(
+      dbMock,
+      storage as unknown as StorageService,
+      {} as unknown as TmuxService,
+      {} as unknown as TerminalSendCoordinatorService,
+      {} as unknown as PtyService,
+      preflightService as unknown as PreflightService,
+      mcpEnsureService as unknown as ProviderMcpEnsureService,
+      { withAgentLock: jest.fn() } as unknown as SessionCoordinatorService,
+      hooksConfigService as unknown as HooksConfigService,
+      { getAdapter: jest.fn() } as unknown as ProviderAdapterFactory,
+      { get: jest.fn() } as unknown as ModuleRef,
+    );
+  });
+
+  describe('resolveLaunchTarget', () => {
+    it('resolves agent, project, epic, profile, and provider via config', async () => {
+      const agent = { id: 'a1', projectId: 'p1', profileId: 'prof1', providerConfigId: 'cfg1' };
+      const project = { id: 'p1', name: 'proj', rootPath: '/root' };
+      const epic = { id: 'e1', title: 'epic', projectId: 'p1' };
+      const profile = { id: 'prof1', name: 'default' };
+      const provider = { id: 'prov1', name: 'claude', binPath: '/usr/bin/claude' };
+      const config = {
+        id: 'cfg1',
+        providerId: 'prov1',
+        options: '--model opus',
+        env: { KEY: 'val' },
+      };
+
+      storage.getAgent.mockResolvedValue(agent);
+      storage.getProject.mockResolvedValue(project);
+      storage.getEpic.mockResolvedValue(epic);
+      storage.getAgentProfile.mockResolvedValue(profile);
+      storage.getProfileProviderConfig.mockResolvedValue(config);
+      storage.getProvider.mockResolvedValue(provider);
+
+      const result = await service.resolveLaunchTarget({
+        agentId: 'a1',
+        projectId: 'p1',
+        epicId: 'e1',
+      });
+
+      expect(result.agent).toEqual(agent);
+      expect(result.project).toEqual(project);
+      expect(result.epic).toEqual(epic);
+      expect(result.provider).toEqual(provider);
+      expect(result.options).toBe('--model opus');
+      expect(result.configEnv).toEqual({ KEY: 'val' });
+    });
+
+    it('throws when agent does not belong to project', async () => {
+      storage.getAgent.mockResolvedValue({
+        id: 'a1',
+        projectId: 'other-project',
+        profileId: 'prof1',
+      });
+      storage.getProject.mockResolvedValue({ id: 'p1', name: 'proj', rootPath: '/root' });
+
+      await expect(service.resolveLaunchTarget({ agentId: 'a1', projectId: 'p1' })).rejects.toThrow(
+        ValidationError,
+      );
+    });
+
+    it('falls back to first profile config when no providerConfigId', async () => {
+      storage.getAgent.mockResolvedValue({
+        id: 'a1',
+        projectId: 'p1',
+        profileId: 'prof1',
+        providerConfigId: null,
+      });
+      storage.getProject.mockResolvedValue({ id: 'p1', name: 'proj', rootPath: '/root' });
+      storage.getAgentProfile.mockResolvedValue({ id: 'prof1', name: 'default' });
+      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        { id: 'cfg1', providerId: 'prov1', options: null, env: null },
+      ]);
+      storage.getProvider.mockResolvedValue({
+        id: 'prov1',
+        name: 'codex',
+        binPath: '/usr/bin/codex',
+      });
+
+      const result = await service.resolveLaunchTarget({ agentId: 'a1', projectId: 'p1' });
+
+      expect(result.provider.name).toBe('codex');
+      expect(result.epic).toBeNull();
+    });
+
+    it('throws when profile has no configs', async () => {
+      storage.getAgent.mockResolvedValue({
+        id: 'a1',
+        projectId: 'p1',
+        profileId: 'prof1',
+        providerConfigId: null,
+      });
+      storage.getProject.mockResolvedValue({ id: 'p1', name: 'proj', rootPath: '/root' });
+      storage.getAgentProfile.mockResolvedValue({ id: 'prof1', name: 'default' });
+      storage.listProfileProviderConfigsByProfile.mockResolvedValue([]);
+
+      await expect(service.resolveLaunchTarget({ agentId: 'a1', projectId: 'p1' })).rejects.toThrow(
+        'has no provider configs',
+      );
+    });
+  });
+
+  describe('verifyProviderBinary', () => {
+    it('passes when binPath is set', () => {
+      expect(() =>
+        service.verifyProviderBinary({ id: 'p1', name: 'claude', binPath: '/usr/bin/claude' }),
+      ).not.toThrow();
+    });
+
+    it('throws PROVIDER_BINARY_NOT_FOUND when binPath is null', () => {
+      expect(() =>
+        service.verifyProviderBinary({ id: 'p1', name: 'claude', binPath: null }),
+      ).toThrow(ValidationError);
+
+      try {
+        service.verifyProviderBinary({ id: 'p1', name: 'claude', binPath: null });
+      } catch (e) {
+        expect((e as ValidationError).details).toMatchObject({ code: 'PROVIDER_BINARY_NOT_FOUND' });
+      }
+    });
+  });
+
+  describe('composeLaunchEnv', () => {
+    it('returns DEVCHAIN_* env for Claude provider', () => {
+      const result = service.composeLaunchEnv({
+        sessionId: 'sess-1',
+        tmuxSessionName: 'tmux-1',
+        projectId: 'p1',
+        agentId: 'a1',
+        provider: {
+          id: 'prov1',
+          name: 'claude',
+          binPath: '/usr/bin/claude',
+          mcpConfigured: false,
+          mcpEndpoint: null,
+          mcpRegisteredAt: null,
+          autoCompactThreshold: null,
+          autoCompactThreshold1m: null,
+          oneMillionContextEnabled: false,
+          env: null,
+          createdAt: '',
+          updatedAt: '',
+        },
+        configEnv: null,
+        optionArgs: ['--model', 'opus'],
+      });
+
+      expect(result.envVars).toMatchObject({
+        DEVCHAIN_SESSION_ID: 'sess-1',
+        DEVCHAIN_TMUX_SESSION_NAME: 'tmux-1',
+        DEVCHAIN_PROJECT_ID: 'p1',
+        DEVCHAIN_AGENT_ID: 'a1',
+      });
+    });
+
+    it('returns null envVars for non-Claude provider with no env', () => {
+      const result = service.composeLaunchEnv({
+        sessionId: 'sess-1',
+        tmuxSessionName: 'tmux-1',
+        projectId: 'p1',
+        agentId: 'a1',
+        provider: {
+          id: 'prov1',
+          name: 'codex',
+          binPath: '/usr/bin/codex',
+          mcpConfigured: false,
+          mcpEndpoint: null,
+          mcpRegisteredAt: null,
+          autoCompactThreshold: null,
+          autoCompactThreshold1m: null,
+          oneMillionContextEnabled: false,
+          env: null,
+          createdAt: '',
+          updatedAt: '',
+        },
+        configEnv: null,
+        optionArgs: [],
+      });
+
+      expect(result.envVars).toBeNull();
+    });
+
+    it('accepts sessionId parameter for restore use-case', () => {
+      const result = service.composeLaunchEnv({
+        sessionId: 'restored-session-id',
+        tmuxSessionName: 'tmux-restored',
+        projectId: 'p1',
+        agentId: 'a1',
+        provider: {
+          id: 'prov1',
+          name: 'claude',
+          binPath: '/usr/bin/claude',
+          mcpConfigured: false,
+          mcpEndpoint: null,
+          mcpRegisteredAt: null,
+          autoCompactThreshold: null,
+          autoCompactThreshold1m: null,
+          oneMillionContextEnabled: false,
+          env: null,
+          createdAt: '',
+          updatedAt: '',
+        },
+        configEnv: null,
+        optionArgs: [],
+      });
+
+      expect(result.envVars!.DEVCHAIN_SESSION_ID).toBe('restored-session-id');
+    });
+
+    it('removes stale CLAUDE_CODE_DISABLE_1M_CONTEXT', () => {
+      const result = service.composeLaunchEnv({
+        sessionId: 'sess-1',
+        tmuxSessionName: 'tmux-1',
+        projectId: 'p1',
+        agentId: 'a1',
+        provider: {
+          id: 'prov1',
+          name: 'claude',
+          binPath: '/usr/bin/claude',
+          mcpConfigured: false,
+          mcpEndpoint: null,
+          mcpRegisteredAt: null,
+          autoCompactThreshold: null,
+          autoCompactThreshold1m: null,
+          oneMillionContextEnabled: false,
+          env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: '1' },
+          createdAt: '',
+          updatedAt: '',
+        },
+        configEnv: null,
+        optionArgs: [],
+      });
+
+      expect(result.envVars!.CLAUDE_CODE_DISABLE_1M_CONTEXT).toBeUndefined();
+    });
+
+    it('rewrites model to 1m when oneMillionContextEnabled', () => {
+      const result = service.composeLaunchEnv({
+        sessionId: 'sess-1',
+        tmuxSessionName: 'tmux-1',
+        projectId: 'p1',
+        agentId: 'a1',
+        provider: {
+          id: 'prov1',
+          name: 'claude',
+          binPath: '/usr/bin/claude',
+          mcpConfigured: false,
+          mcpEndpoint: null,
+          mcpRegisteredAt: null,
+          autoCompactThreshold: 80,
+          autoCompactThreshold1m: 50,
+          oneMillionContextEnabled: true,
+          env: null,
+          createdAt: '',
+          updatedAt: '',
+        },
+        configEnv: null,
+        optionArgs: ['--model', 'opus'],
+      });
+
+      expect(result.processedOptionArgs).toContain('opus[1m]');
+      expect(result.envVars!.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE).toBe('50');
+    });
+  });
+
+  describe('ensureMcpConfig', () => {
+    it('returns preflight result when MCP is already configured', async () => {
+      const preflightResult = {
+        overall: 'pass' as const,
+        checks: [],
+        providers: [],
+        supportedMcpProviders: [],
+        timestamp: '',
+      };
+      preflightService.runChecks.mockResolvedValue(preflightResult);
+
+      const result = await service.ensureMcpConfig({ id: 'p1', name: 'claude' }, '/project');
+
+      expect(result).toEqual(preflightResult);
+      expect(mcpEnsureService.ensureMcp).not.toHaveBeenCalled();
+    });
+
+    it('auto-ensures MCP and re-checks when not configured', async () => {
+      preflightService.runChecks
+        .mockResolvedValueOnce({
+          overall: 'pass',
+          checks: [],
+          supportedMcpProviders: [],
+          timestamp: '',
+          providers: [{ id: 'p1', mcpStatus: 'fail' }],
+        })
+        .mockResolvedValueOnce({
+          overall: 'pass',
+          checks: [],
+          supportedMcpProviders: [],
+          timestamp: '',
+          providers: [{ id: 'p1', mcpStatus: 'pass' }],
+        });
+
+      await service.ensureMcpConfig({ id: 'p1', name: 'claude' }, '/project');
+
+      expect(mcpEnsureService.ensureMcp).toHaveBeenCalled();
+      expect(preflightService.runChecks).toHaveBeenCalledTimes(2);
+    });
+
+    it('throws when MCP still not configured after auto-ensure', async () => {
+      preflightService.runChecks.mockResolvedValue({
+        overall: 'fail',
+        checks: [],
+        supportedMcpProviders: [],
+        timestamp: '',
+        providers: [{ id: 'p1', mcpStatus: 'fail', mcpMessage: 'not found' }],
+      });
+      mcpEnsureService.ensureMcp.mockResolvedValue({ success: false, message: 'failed' });
+
+      await expect(
+        service.ensureMcpConfig({ id: 'p1', name: 'claude' }, '/project'),
+      ).rejects.toThrow('Provider MCP is not configured');
+    });
+  });
+
+  describe('setupHooksConfig', () => {
+    it('calls ensureHooksConfig for Claude provider', async () => {
+      await service.setupHooksConfig({ name: 'claude' }, '/project');
+      expect(hooksConfigService.ensureHooksConfig).toHaveBeenCalledWith('/project');
+    });
+
+    it('skips non-Claude providers', async () => {
+      await service.setupHooksConfig({ name: 'codex' }, '/project');
+      expect(hooksConfigService.ensureHooksConfig).not.toHaveBeenCalled();
+    });
+
+    it('does not throw when ensureHooksConfig fails', async () => {
+      hooksConfigService.ensureHooksConfig.mockRejectedValue(new Error('hooks error'));
+
+      await expect(
+        service.setupHooksConfig({ name: 'claude' }, '/project'),
+      ).resolves.toBeUndefined();
+    });
   });
 });
 

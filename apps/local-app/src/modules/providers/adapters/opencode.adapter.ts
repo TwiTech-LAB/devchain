@@ -1,5 +1,10 @@
 import { Injectable } from '@nestjs/common';
-import { ProviderAdapter, AddMcpServerOptions, McpServerEntry } from './provider-adapter.interface';
+import {
+  ProviderAdapter,
+  AddMcpServerOptions,
+  McpServerEntry,
+  BuildLaunchArgsInput,
+} from './provider-adapter.interface';
 
 /**
  * OpenCode provider adapter
@@ -32,6 +37,15 @@ export class OpencodeAdapter implements ProviderAdapter {
 
   binaryCheck(_alias: string): string[] {
     return ['--version'];
+  }
+
+  buildLaunchArgs({ mode, providerSessionId, profileOptionArgs }: BuildLaunchArgsInput): {
+    argv: string[];
+  } {
+    if (mode === 'restore') {
+      return { argv: ['--session', providerSessionId!, ...profileOptionArgs] };
+    }
+    return { argv: [...profileOptionArgs] };
   }
 
   parseListOutput(_stdout: string, _stderr?: string): McpServerEntry[] {

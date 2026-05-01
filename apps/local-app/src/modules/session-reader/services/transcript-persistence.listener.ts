@@ -127,12 +127,11 @@ export class TranscriptPersistenceListener {
       return;
     }
 
-    // Update session record
     const now = new Date().toISOString();
     const result = this.sqlite
       .prepare(
         `UPDATE sessions
-         SET transcript_path = ?, claude_session_id = ?, updated_at = ?
+         SET transcript_path = ?, provider_session_id = ?, updated_at = ?
          WHERE id = ?`,
       )
       .run(normalizedPath, claudeSessionId, now, sessionId);
@@ -346,10 +345,10 @@ export class TranscriptPersistenceListener {
     const result = this.sqlite
       .prepare(
         `UPDATE sessions
-         SET transcript_path = ?, updated_at = ?
+         SET transcript_path = ?, provider_session_id = ?, updated_at = ?
          WHERE id = ? AND transcript_path IS NULL`,
       )
-      .run(normalizedPath, now, sessionId);
+      .run(normalizedPath, file.providerSessionId ?? null, now, sessionId);
 
     if (result.changes === 0) {
       this.logger.debug(
