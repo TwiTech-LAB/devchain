@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ProviderMcpEnsureService } from './provider-mcp-ensure.service';
 import { PreflightService } from './preflight.service';
+import { GeminiTrustedFoldersService } from './gemini-trusted-folders.service';
 import { McpProviderRegistrationService } from '../../mcp/services/mcp-provider-registration.service';
 import { ProviderAdapterFactory } from '../../providers/adapters';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
@@ -10,6 +11,7 @@ import * as envConfig from '../../../common/config/env.config';
 // Mock getEnvConfig for deterministic PORT
 jest.spyOn(envConfig, 'getEnvConfig').mockReturnValue({
   PORT: 3000,
+  HOST: '127.0.0.1',
   DATABASE_PATH: ':memory:',
   LOG_LEVEL: 'info',
   NODE_ENV: 'test',
@@ -41,6 +43,9 @@ describe('ProviderMcpEnsureService', () => {
   };
   let mockPreflight: {
     clearCache: jest.Mock;
+  };
+  let mockGeminiTrustedFolders: {
+    ensure: jest.Mock;
   };
 
   const createProvider = (overrides: Partial<Provider> = {}): Provider => ({
@@ -84,12 +89,19 @@ describe('ProviderMcpEnsureService', () => {
         if (name === 'opencode') {
           return { providerName: 'opencode', mcpMode: 'project_config' };
         }
+        if (name === 'gemini') {
+          return { providerName: 'gemini', mcpProjectRegistrationStrategy: 'upsert' };
+        }
         return { providerName: name };
       }),
     };
 
     mockPreflight = {
       clearCache: jest.fn(),
+    };
+
+    mockGeminiTrustedFolders = {
+      ensure: jest.fn().mockResolvedValue({ success: true, action: 'added', message: 'Added' }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -110,6 +122,10 @@ describe('ProviderMcpEnsureService', () => {
         {
           provide: PreflightService,
           useValue: mockPreflight,
+        },
+        {
+          provide: GeminiTrustedFoldersService,
+          useValue: mockGeminiTrustedFolders,
         },
       ],
     }).compile();
@@ -310,7 +326,7 @@ describe('ProviderMcpEnsureService', () => {
       expect(writtenContent.permissions.allow).toContain('mcp__devchain');
     });
 
-    it('does not update Claude settings when MCP already configured', async () => {
+    it('still runs Claude settings when MCP already configured (placement fix)', async () => {
       const provider = createProvider({ name: 'claude' });
       const projectPath = '/home/user/project';
       mockMcpRegistration.listRegistrations.mockResolvedValue({
@@ -318,12 +334,16 @@ describe('ProviderMcpEnsureService', () => {
         message: 'OK',
         entries: [{ alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp' }],
       });
+      mockReadFile.mockRejectedValue(new Error('ENOENT'));
 
       const result = await service.ensureMcp(provider, projectPath);
 
       expect(result.success).toBe(true);
       expect(result.action).toBe('already_configured');
-      expect(mockWriteFile).not.toHaveBeenCalled();
+      expect(mockMkdir).toHaveBeenCalledWith(
+        expect.stringContaining('.claude'),
+        expect.any(Object),
+      );
     });
 
     it('does not fail if Claude settings update fails', async () => {
@@ -740,6 +760,209 @@ describe('ProviderMcpEnsureService', () => {
         { endpoint: 'http://127.0.0.1:3000/mcp', alias: 'devchain' },
         { cwd: projectPath },
       );
+    });
+  });
+
+  describe('regression: no wildcard in generated endpoint URL', () => {
+    it('with HOST=0.0.0.0: endpoint does not contain 0.0.0.0', async () => {
+      jest.spyOn(envConfig, 'getEnvConfig').mockReturnValue({
+        PORT: 3000,
+        HOST: '0.0.0.0',
+        DATABASE_PATH: ':memory:',
+        LOG_LEVEL: 'info',
+        NODE_ENV: 'test',
+      } as ReturnType<typeof envConfig.getEnvConfig>);
+
+      const provider = createProvider();
+      mockMcpRegistration.listRegistrations.mockResolvedValue({
+        success: true,
+        message: 'OK',
+        entries: [],
+      });
+      mockMcpRegistration.registerProvider.mockResolvedValue({
+        success: true,
+        message: 'OK',
+      });
+
+      await service.ensureMcp(provider);
+
+      const registeredEndpoint = mockMcpRegistration.registerProvider.mock.calls[0][1].endpoint;
+      expect(registeredEndpoint).not.toContain('0.0.0.0');
+      expect(registeredEndpoint).toBe('http://127.0.0.1:3000/mcp');
+    });
+
+    it('with HOST=192.168.1.10: endpoint uses concrete host', async () => {
+      jest.spyOn(envConfig, 'getEnvConfig').mockReturnValue({
+        PORT: 3000,
+        HOST: '192.168.1.10',
+        DATABASE_PATH: ':memory:',
+        LOG_LEVEL: 'info',
+        NODE_ENV: 'test',
+      } as ReturnType<typeof envConfig.getEnvConfig>);
+
+      const provider = createProvider();
+      mockMcpRegistration.listRegistrations.mockResolvedValue({
+        success: true,
+        message: 'OK',
+        entries: [],
+      });
+      mockMcpRegistration.registerProvider.mockResolvedValue({
+        success: true,
+        message: 'OK',
+      });
+
+      await service.ensureMcp(provider);
+
+      const registeredEndpoint = mockMcpRegistration.registerProvider.mock.calls[0][1].endpoint;
+      expect(registeredEndpoint).toBe('http://192.168.1.10:3000/mcp');
+    });
+  });
+
+  describe('Gemini upsert routing and trust folders', () => {
+    const geminiProvider = createProvider({ name: 'gemini', binPath: '/usr/local/bin/gemini' });
+    const projectPath = '/home/user/project';
+
+    it('Gemini with projectPath skips list and calls registerProvider directly', async () => {
+      mockMcpRegistration.registerProvider.mockResolvedValue({ success: true, message: 'OK' });
+
+      const result = await service.ensureMcp(geminiProvider, projectPath);
+
+      expect(result.success).toBe(true);
+      expect(result.action).toBe('added');
+      expect(mockMcpRegistration.listRegistrations).not.toHaveBeenCalled();
+      expect(mockMcpRegistration.registerProvider).toHaveBeenCalledWith(
+        geminiProvider,
+        expect.objectContaining({ alias: 'devchain' }),
+        expect.objectContaining({ cwd: projectPath }),
+      );
+    });
+
+    it('Gemini calls geminiTrustedFolders.ensure BEFORE registerProvider', async () => {
+      const callOrder: string[] = [];
+      mockGeminiTrustedFolders.ensure.mockImplementation(async () => {
+        callOrder.push('trust');
+        return { success: true, action: 'added', message: 'Added' };
+      });
+      mockMcpRegistration.registerProvider.mockImplementation(async () => {
+        callOrder.push('register');
+        return { success: true, message: 'OK' };
+      });
+
+      await service.ensureMcp(geminiProvider, projectPath);
+
+      expect(callOrder).toEqual(['trust', 'register']);
+    });
+
+    it('trust-folder distrusted_warning → ensure proceeds with warning', async () => {
+      mockGeminiTrustedFolders.ensure.mockResolvedValue({
+        success: true,
+        action: 'distrusted_warning',
+        message: 'Path is distrusted',
+      });
+      mockMcpRegistration.registerProvider.mockResolvedValue({ success: true, message: 'OK' });
+
+      const result = await service.ensureMcp(geminiProvider, projectPath);
+
+      expect(result.success).toBe(true);
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ source: 'trusted_folders', code: 'GEMINI_PATH_DISTRUSTED' }),
+        ]),
+      );
+    });
+
+    it('trust-folder malformed_warning → ensure proceeds with warning', async () => {
+      mockGeminiTrustedFolders.ensure.mockResolvedValue({
+        success: false,
+        action: 'malformed_warning',
+        message: 'File is malformed',
+      });
+      mockMcpRegistration.registerProvider.mockResolvedValue({ success: true, message: 'OK' });
+
+      const result = await service.ensureMcp(geminiProvider, projectPath);
+
+      expect(result.success).toBe(true);
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            source: 'trusted_folders',
+            code: 'GEMINI_TRUST_FILE_MALFORMED',
+          }),
+        ]),
+      );
+    });
+
+    it('trust-folder throws → ensure proceeds with GEMINI_TRUST_WRITE_FAILED warning', async () => {
+      mockGeminiTrustedFolders.ensure.mockRejectedValue(new Error('write failed'));
+      mockMcpRegistration.registerProvider.mockResolvedValue({ success: true, message: 'OK' });
+
+      const result = await service.ensureMcp(geminiProvider, projectPath);
+
+      expect(result.success).toBe(true);
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ source: 'trusted_folders', code: 'GEMINI_TRUST_WRITE_FAILED' }),
+        ]),
+      );
+    });
+
+    it('REGRESSION: user-scope devchain entry does not suppress project-scope registration', async () => {
+      mockMcpRegistration.registerProvider.mockResolvedValue({ success: true, message: 'OK' });
+
+      const result = await service.ensureMcp(geminiProvider, projectPath);
+
+      expect(result.success).toBe(true);
+      expect(mockMcpRegistration.registerProvider).toHaveBeenCalled();
+      expect(mockMcpRegistration.listRegistrations).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Side-effect placement bug fix', () => {
+    beforeEach(() => {
+      jest.spyOn(envConfig, 'getEnvConfig').mockReturnValue({
+        PORT: 3000,
+        HOST: '127.0.0.1',
+        DATABASE_PATH: ':memory:',
+        LOG_LEVEL: 'info',
+        NODE_ENV: 'test',
+      } as ReturnType<typeof envConfig.getEnvConfig>);
+    });
+
+    it('Claude project settings run even when MCP action is already_configured', async () => {
+      const provider = createProvider({ name: 'claude' });
+      const projectPath = '/home/user/project';
+
+      mockMcpRegistration.listRegistrations.mockResolvedValue({
+        success: true,
+        message: 'OK',
+        entries: [{ alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp' }],
+      });
+      mockReadFile.mockRejectedValue(new Error('ENOENT'));
+
+      const result = await service.ensureMcp(provider, projectPath);
+
+      expect(result).toMatchObject({ success: true, action: 'already_configured' });
+      expect(mockMkdir).toHaveBeenCalledWith(
+        expect.stringContaining('.claude'),
+        expect.any(Object),
+      );
+    });
+
+    it('Codex does not use upsert routing', async () => {
+      const provider = createProvider({ name: 'codex', binPath: '/usr/local/bin/codex' });
+      const projectPath = '/home/user/project';
+
+      mockMcpRegistration.listRegistrations.mockResolvedValue({
+        success: true,
+        message: 'OK',
+        entries: [],
+      });
+      mockMcpRegistration.registerProvider.mockResolvedValue({ success: true, message: 'OK' });
+
+      const result = await service.ensureMcp(provider, projectPath);
+
+      expect(result.success).toBe(true);
+      expect(mockMcpRegistration.listRegistrations).toHaveBeenCalled();
     });
   });
 });

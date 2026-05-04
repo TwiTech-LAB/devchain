@@ -222,7 +222,9 @@ describe('CodebaseOverviewPage Shell', () => {
     expect(screen.getByRole('tab', { name: /structure/i })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /scope/i })).toBeInTheDocument();
 
-    queryClient.clear();
+    await act(async () => {
+      queryClient.clear();
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -240,7 +242,9 @@ describe('CodebaseOverviewPage Shell', () => {
     });
 
     await screen.findByText('No signal data available');
-    queryClient.clear();
+    await act(async () => {
+      queryClient.clear();
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -258,7 +262,9 @@ describe('CodebaseOverviewPage Shell', () => {
     });
 
     await screen.findByText('No signal data available');
-    queryClient.clear();
+    await act(async () => {
+      queryClient.clear();
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -295,7 +301,9 @@ describe('CodebaseOverviewPage Shell', () => {
     // No additional network calls
     expect(snapshotCalls()).toBe(countAfterLoad);
 
-    queryClient.clear();
+    await act(async () => {
+      queryClient.clear();
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -323,7 +331,9 @@ describe('CodebaseOverviewPage Shell', () => {
       expect(snapshotCalls()).toBeGreaterThan(countBefore);
     });
 
-    queryClient.clear();
+    await act(async () => {
+      queryClient.clear();
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -348,7 +358,9 @@ describe('CodebaseOverviewPage Shell', () => {
       expect(p2Calls.length).toBeGreaterThan(0);
     });
 
-    queryClient.clear();
+    await act(async () => {
+      queryClient.clear();
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -368,7 +380,9 @@ describe('CodebaseOverviewPage Shell', () => {
     const summaryTab = screen.getByRole('tab', { name: /summary/i });
     expect(summaryTab).toHaveAttribute('data-state', 'inactive');
 
-    queryClient.clear();
+    await act(async () => {
+      queryClient.clear();
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -386,10 +400,14 @@ describe('CodebaseOverviewPage Shell', () => {
     expect(tabs.length).toBe(7);
 
     const summaryTab = screen.getByRole('tab', { name: /summary/i });
-    summaryTab.focus();
+    await act(async () => {
+      summaryTab.focus();
+    });
     expect(document.activeElement).toBe(summaryTab);
 
-    queryClient.clear();
+    await act(async () => {
+      queryClient.clear();
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -431,7 +449,9 @@ describe('CodebaseOverviewPage Shell', () => {
     // Navigation still rendered
     expect(screen.getByRole('tab', { name: /summary/i })).toBeInTheDocument();
 
-    queryClient.clear();
+    await act(async () => {
+      queryClient.clear();
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -447,7 +467,9 @@ describe('CodebaseOverviewPage Shell', () => {
     });
 
     await screen.findByText("What's happening this week?");
-    queryClient.clear();
+    await act(async () => {
+      queryClient.clear();
+    });
   });
 
   it('Ownership section shows empty state when deep-linked with no data', async () => {
@@ -459,7 +481,9 @@ describe('CodebaseOverviewPage Shell', () => {
     });
 
     await screen.findByText('No ownership data available');
-    queryClient.clear();
+    await act(async () => {
+      queryClient.clear();
+    });
   });
 
   it('refresh button has spinning animation while fetching', async () => {
@@ -472,7 +496,9 @@ describe('CodebaseOverviewPage Shell', () => {
     expect(icon).toBeInTheDocument();
 
     await screen.findByText('No signal data available');
-    queryClient.clear();
+    await act(async () => {
+      queryClient.clear();
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -489,7 +515,9 @@ describe('CodebaseOverviewPage Shell', () => {
 
     await screen.findByText('Architecture');
     expect(screen.getByText('Is the structure decaying?')).toBeInTheDocument();
-    queryClient.clear();
+    await act(async () => {
+      queryClient.clear();
+    });
   });
 
   it('Architecture section shows empty state when no dependency data', async () => {
@@ -501,7 +529,9 @@ describe('CodebaseOverviewPage Shell', () => {
     });
 
     await screen.findByText('No architecture data available');
-    queryClient.clear();
+    await act(async () => {
+      queryClient.clear();
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -518,7 +548,9 @@ describe('CodebaseOverviewPage Shell', () => {
 
     await screen.findByText('Structure');
     expect(screen.getByText("What's in this repo?")).toBeInTheDocument();
-    queryClient.clear();
+    await act(async () => {
+      queryClient.clear();
+    });
   });
 
   it('Structure section shows empty state when no signals', async () => {
@@ -530,7 +562,9 @@ describe('CodebaseOverviewPage Shell', () => {
     });
 
     await screen.findByText('No districts analyzed');
-    queryClient.clear();
+    await act(async () => {
+      queryClient.clear();
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -555,7 +589,9 @@ describe('CodebaseOverviewPage Shell', () => {
     await screen.findByText('No signal data available');
     expect(screen.getByTestId('warnings-bar')).toBeInTheDocument();
     expect(screen.getByText('LOC data unavailable for some files')).toBeInTheDocument();
-    queryClient.clear();
+    await act(async () => {
+      queryClient.clear();
+    });
   });
 
   it('does not render WarningsBar when snapshot has no warnings', async () => {
@@ -568,7 +604,9 @@ describe('CodebaseOverviewPage Shell', () => {
 
     await screen.findByText('No signal data available');
     expect(screen.queryByTestId('warnings-bar')).not.toBeInTheDocument();
-    queryClient.clear();
+    await act(async () => {
+      queryClient.clear();
+    });
   });
 
   it('WarningsBar persists when switching sections', async () => {
@@ -596,7 +634,9 @@ describe('CodebaseOverviewPage Shell', () => {
 
     // WarningsBar still present
     expect(screen.getByTestId('warnings-bar')).toBeInTheDocument();
-    queryClient.clear();
+    await act(async () => {
+      queryClient.clear();
+    });
   });
 
   it('renders multiple warnings across severity buckets', async () => {
@@ -622,7 +662,9 @@ describe('CodebaseOverviewPage Shell', () => {
     expect(screen.getByText('Shallow clone detected')).toBeInTheDocument();
     expect(screen.getByText('Coverage data missing')).toBeInTheDocument();
     expect(screen.getByText('Some tests may be missed')).toBeInTheDocument();
-    queryClient.clear();
+    await act(async () => {
+      queryClient.clear();
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -645,7 +687,9 @@ describe('CodebaseOverviewPage Shell', () => {
 
     // Detail panel should appear (summary text from mockTargetDetail)
     await screen.findByText('Detail panel loaded');
-    queryClient.clear();
+    await act(async () => {
+      queryClient.clear();
+    });
   });
 
   it('pinning two Testability districts reveals ComparePanel', async () => {
@@ -670,7 +714,9 @@ describe('CodebaseOverviewPage Shell', () => {
 
     // ComparePanel should now appear
     await screen.findByText('Compare');
-    queryClient.clear();
+    await act(async () => {
+      queryClient.clear();
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -692,6 +738,8 @@ describe('CodebaseOverviewPage Shell', () => {
     expect(screen.getByRole('tab', { name: /scope/i })).toBeInTheDocument();
     // ScopeSection renders its description text once the query resolves
     await screen.findByText(/control which folders/i);
-    queryClient.clear();
+    await act(async () => {
+      queryClient.clear();
+    });
   });
 });

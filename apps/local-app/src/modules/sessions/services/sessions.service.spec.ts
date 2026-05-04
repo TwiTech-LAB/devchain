@@ -3989,6 +3989,51 @@ describe('SessionsService launch helpers', () => {
         service.ensureMcpConfig({ id: 'p1', name: 'claude' }, '/project'),
       ).rejects.toThrow('Provider MCP is not configured');
     });
+
+    it('calls ensureMcp for Gemini with project path even when preflight passes', async () => {
+      preflightService.runChecks.mockResolvedValue({
+        overall: 'pass',
+        checks: [],
+        providers: [{ id: 'gemini-1', mcpStatus: 'pass' }],
+        supportedMcpProviders: [],
+        timestamp: '',
+      });
+
+      await service.ensureMcpConfig({ id: 'gemini-1', name: 'gemini' }, '/project');
+
+      expect(mcpEnsureService.ensureMcp).toHaveBeenCalledWith(
+        { id: 'gemini-1', name: 'gemini' },
+        '/project',
+      );
+    });
+
+    it('skips ensureMcp for Gemini without project path when preflight passes', async () => {
+      preflightService.runChecks.mockResolvedValue({
+        overall: 'pass',
+        checks: [],
+        providers: [{ id: 'gemini-1', mcpStatus: 'pass' }],
+        supportedMcpProviders: [],
+        timestamp: '',
+      });
+
+      await service.ensureMcpConfig({ id: 'gemini-1', name: 'gemini' }, '');
+
+      expect(mcpEnsureService.ensureMcp).not.toHaveBeenCalled();
+    });
+
+    it('skips ensureMcp for non-Gemini provider when preflight passes', async () => {
+      preflightService.runChecks.mockResolvedValue({
+        overall: 'pass',
+        checks: [],
+        providers: [{ id: 'p1', mcpStatus: 'pass' }],
+        supportedMcpProviders: [],
+        timestamp: '',
+      });
+
+      await service.ensureMcpConfig({ id: 'p1', name: 'claude' }, '/project');
+
+      expect(mcpEnsureService.ensureMcp).not.toHaveBeenCalled();
+    });
   });
 
   describe('setupHooksConfig', () => {

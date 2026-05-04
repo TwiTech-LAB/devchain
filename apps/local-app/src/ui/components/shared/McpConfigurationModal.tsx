@@ -9,8 +9,9 @@ import {
 } from '@/ui/components/ui/dialog';
 import { Button } from '@/ui/components/ui/button';
 import { Alert, AlertDescription, AlertTitle } from '@/ui/components/ui/alert';
-import { AlertTriangle, Copy, Check, Loader2, Terminal, RefreshCw } from 'lucide-react';
+import { AlertTriangle, Copy, Check, Info, Loader2, Terminal, RefreshCw } from 'lucide-react';
 import { cn } from '@/ui/lib/utils';
+import { getMcpEndpointUrl } from '@/ui/lib/mcp-endpoint';
 
 export interface McpConfigurationModalProps {
   open: boolean;
@@ -23,13 +24,6 @@ export interface McpConfigurationModalProps {
   onConfigured?: () => void;
   /** Called to verify configuration (e.g., refetch preflight) */
   onVerify?: () => Promise<boolean>;
-}
-
-// Get the MCP endpoint URL based on current origin
-function getMcpEndpointUrl(): string {
-  // In dev, UI runs on Vite (5175) while API/MCP runs on 3000.
-  const port = window.location.port === '5175' ? '3000' : window.location.port || '3000';
-  return `http://127.0.0.1:${port}/mcp`;
 }
 
 // Get the manual configuration command for a provider
@@ -174,6 +168,18 @@ export function McpConfigurationModal({
                 )}
               </Button>
             )}
+          </div>
+
+          {/* Local-provider hint for remote access */}
+          <div className="flex items-start gap-2 text-xs text-muted-foreground">
+            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>
+              If your MCP provider runs on the DevChain host, use{' '}
+              <code className="rounded bg-muted px-1 py-0.5">
+                http://127.0.0.1:{new URL(endpoint).port}/mcp
+              </code>{' '}
+              instead.
+            </span>
           </div>
 
           {/* Additional info */}

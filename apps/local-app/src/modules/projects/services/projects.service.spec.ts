@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ProjectsService } from './projects.service';
+import { ProjectProviderProvisioningService } from './project-provider-provisioning.service';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { SessionsService } from '../../sessions/services/sessions.service';
 import { SettingsService } from '../../settings/services/settings.service';
@@ -235,6 +236,10 @@ describe('ProjectsService', () => {
               ...data,
             })),
           }),
+        },
+        {
+          provide: ProjectProviderProvisioningService,
+          useValue: { provisionProject: jest.fn().mockResolvedValue({ warnings: [] }) },
         },
       ],
     }).compile();

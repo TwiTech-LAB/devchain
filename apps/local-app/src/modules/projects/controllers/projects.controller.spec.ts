@@ -71,6 +71,7 @@ describe('ProjectsController', () => {
       createFromTemplate: jest.fn(),
       exportProject: jest.fn(),
       importProject: jest.fn(),
+      updateProject: jest.fn(),
       getTemplateManifestForProject: jest.fn(),
       getBundledUpgradesForProjects: jest.fn().mockReturnValue(new Map()),
     };
@@ -571,13 +572,14 @@ describe('ProjectsController', () => {
   });
 
   it('PUT/GET: toggles isTemplate and getProject returns updated value', async () => {
-    storage.updateProject.mockImplementation(async (_id: string, data: Partial<Project>) =>
-      makeProject({ ...data }),
-    );
+    projectsService.updateProject!.mockResolvedValue({
+      project: makeProject({ isTemplate: false }),
+      provisioningWarnings: [],
+    });
     storage.getProject.mockResolvedValue(makeProject({ isTemplate: false }));
 
     const updated = await controller.updateProject('p1', { isTemplate: false });
-    expect(updated.isTemplate).toBe(false);
+    expect(updated.project.isTemplate).toBe(false);
 
     const fetched = await controller.getProject('p1');
     expect(fetched.isTemplate).toBe(false);
@@ -591,7 +593,7 @@ describe('ProjectsController', () => {
     await expect(controller.updateProject('p2', { name: 'Nope' })).rejects.toThrow(
       ForbiddenException,
     );
-    expect(storage.updateProject).not.toHaveBeenCalled();
+    expect(projectsService.updateProject).not.toHaveBeenCalled();
   });
 
   it('allows update mutation for scoped project when CONTAINER_PROJECT_ID is set', async () => {
@@ -599,21 +601,23 @@ describe('ProjectsController', () => {
     process.env.CONTAINER_PROJECT_ID = '11111111-1111-4111-8111-111111111111';
     resetEnvConfig();
 
-    storage.updateProject.mockResolvedValue(
-      makeProject({
+    projectsService.updateProject!.mockResolvedValue({
+      project: makeProject({
         id: '11111111-1111-4111-8111-111111111111',
         name: 'Scoped',
       }),
-    );
+      provisioningWarnings: [],
+    });
 
     const result = await controller.updateProject('11111111-1111-4111-8111-111111111111', {
       name: 'Scoped',
     });
 
-    expect(result.id).toBe('11111111-1111-4111-8111-111111111111');
-    expect(storage.updateProject).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111', {
-      name: 'Scoped',
-    });
+    expect(result.project.id).toBe('11111111-1111-4111-8111-111111111111');
+    expect(projectsService.updateProject).toHaveBeenCalledWith(
+      '11111111-1111-4111-8111-111111111111',
+      { name: 'Scoped' },
+    );
   });
 
   describe('GET /api/projects/by-path', () => {

@@ -69,6 +69,17 @@ export interface ProviderAdapter {
    */
   readonly mcpMode?: 'cli' | 'project_config';
 
+  /** When 'pty', MCP list is routed through a PTY runner instead of piped spawn. Default unset → pipe. */
+  readonly mcpListSpawnMode?: 'pipe' | 'pty';
+
+  /**
+   * Strategy for registering a project-scope MCP server.
+   * - 'list_then_add' (default): list existing registrations first, add only if missing.
+   * - 'upsert': skip the list check and call registerProvider directly.
+   *   Use for CLIs whose `mcp list` cannot filter by scope (e.g., Gemini merges user + project).
+   */
+  readonly mcpProjectRegistrationStrategy?: 'list_then_add' | 'upsert';
+
   /**
    * Optional launch-time prompt handshake metadata.
    * When set, the sessions service uses this to dismiss provider startup

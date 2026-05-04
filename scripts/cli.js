@@ -62,6 +62,87 @@ function isNewerVersion(latest, current) {
   return false;
 }
 
+// ── Host normalization + URL builder helpers ──────────────────────────────────
+
+function normalizeHost(input) {
+  const raw = input ?? '';
+
+  // Check for control characters before trimming (trim strips \n, \t, etc.)
+  for (let i = 0; i < raw.length; i++) {
+    const code = raw.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) {
+      throw new Error(`Invalid host: contains control characters`);
+    }
+  }
+
+  const trimmed = raw.trim();
+  if (!trimmed) return '127.0.0.1';
+
+  if (/^https?:\/\//i.test(trimmed)) {
+    throw new Error(`Invalid host "${trimmed}": pass a hostname or IP, not a URL`);
+  }
+
+  if (trimmed === '*') {
+    throw new Error(
+      'Invalid host "*": use 0.0.0.0 for all IPv4 interfaces or :: for all IPv6 interfaces',
+    );
+  }
+
+  if (/^\[.*\]$/.test(trimmed)) {
+    const inner = trimmed.slice(1, -1);
+    throw new Error(`Invalid host "${trimmed}": drop the brackets — use ${inner}`);
+  }
+
+  // Distinguish IPv6 from host:port — IPv6 has 2+ colons or starts with : or contains ::
+  const colonCount = (trimmed.match(/:/g) || []).length;
+  const looksLikeIpv6 = colonCount >= 2 || trimmed.startsWith(':') || trimmed.includes('::');
+
+  if (!looksLikeIpv6 && colonCount === 1) {
+    throw new Error(
+      `Invalid host "${trimmed}": looks like host:port — pass only the host part`,
+    );
+  }
+
+  return trimmed;
+}
+
+function isWildcardHost(host) {
+  return host === '0.0.0.0' || host === '::';
+}
+
+function isNonLoopbackHost(host) {
+  if (isWildcardHost(host)) return true;
+  const lower = host.toLowerCase();
+  return lower !== '127.0.0.1' && lower !== '::1' && lower !== 'localhost';
+}
+
+function connectableHost(host) {
+  if (host === '0.0.0.0') return '127.0.0.1';
+  if (host === '::') return '::1';
+  return host;
+}
+
+function formatHostForUrl(host) {
+  if (/^\[.*\]$/.test(host)) {
+    throw new Error(`formatHostForUrl received already-bracketed input: ${host}`);
+  }
+  // IPv6 detection: contains colon(s)
+  if (host.includes(':')) return `[${host}]`;
+  return host;
+}
+
+function buildInternalBaseUrl({ host, port }) {
+  return `http://${formatHostForUrl(connectableHost(host))}:${port}`;
+}
+
+function buildDisplayUrls({ host, port }) {
+  return {
+    primary: buildInternalBaseUrl({ host, port }),
+  };
+}
+
+// ── End host helpers ──────────────────────────────────────────────────────────
+
 function getChangelogBetweenVersions(changelog, fromVersion, toVersion) {
   if (!changelog || typeof changelog !== 'object') return [];
 
@@ -486,7 +567,7 @@ function resolveDevchainApiBaseUrlForRestart({
     );
   }
 
-  return `http://127.0.0.1:${port}`;
+  return buildInternalBaseUrl({ host: pidData.host || '127.0.0.1', port });
 }
 
 function normalizeWorktreeListPayload(payload) {
@@ -956,9 +1037,9 @@ function getPidFilePath() {
   return join(devchainDir, 'devchain.pid');
 }
 
-function writePidFile(port) {
+function writePidFile(port, host) {
   const pidFile = getPidFilePath();
-  const data = JSON.stringify({ pid: process.pid, port, timestamp: Date.now() });
+  const data = JSON.stringify({ pid: process.pid, port, host: host || '127.0.0.1', timestamp: Date.now() });
   writeFileSync(pidFile, data, 'utf8');
 }
 
@@ -969,7 +1050,9 @@ function readPidFile() {
   }
   try {
     const data = readFileSync(pidFile, 'utf8');
-    return JSON.parse(data);
+    const parsed = JSON.parse(data);
+    if (parsed && !parsed.host) parsed.host = '127.0.0.1';
+    return parsed;
   } catch {
     return null;
   }
@@ -1287,6 +1370,7 @@ async function main(argv) {
     .command('start [args...]')
     .description('Start the Devchain local app')
     .option('-p, --port <number>', 'Port to listen on (default: 3000 or next free)')
+    .option('--host <address>', 'Host/bind address (default: 127.0.0.1; use 0.0.0.0 for all IPv4 interfaces, :: for all IPv6)')
     .option('-f, --foreground', 'Run in foreground (attached to terminal). Shows startup output with colors and spinners.')
     .option('-d, --detach', 'Run in background as a detached process (default). Use "devchain stop" to stop it.')
     .option('--no-open', 'Do not open a browser window')
@@ -1337,7 +1421,7 @@ async function main(argv) {
         const existingPid = readPidFile();
         if (existingPid && isProcessRunning(existingPid.pid)) {
           console.error(`Devchain is already running (PID ${existingPid.pid}, port ${existingPid.port})`);
-          console.error(`Access it at: http://127.0.0.1:${existingPid.port}`);
+          console.error(`Access it at: ${buildDisplayUrls({ host: existingPid.host || '127.0.0.1', port: existingPid.port }).primary}`);
           console.error('Use "devchain stop" to stop it first.');
           process.exit(1);
         }
@@ -1435,6 +1519,35 @@ async function main(argv) {
         port = await getPort({ port: preferPort });
       }
 
+      // Resolve effective host before detach so child inherits normalized HOST env.
+      // The --host flag also flows through childArgs (detach filter only strips --port
+      // and --detach), so the child receives the effective host via two independent paths.
+      let effectiveHost;
+      try {
+        effectiveHost = normalizeHost(opts.host ?? process.env.HOST ?? '');
+      } catch (e) {
+        console.error(e.message);
+        process.exit(1);
+      }
+      process.env.HOST = effectiveHost;
+
+      // Security warning for non-loopback bind (before detach so parent terminal sees it)
+      if (!worktreeRuntimeMode && isNonLoopbackHost(effectiveHost)) {
+        console.error('');
+        console.error(`⚠  DevChain is binding to ${effectiveHost}. There is no remote authentication`);
+        console.error('   boundary; the API, terminals, MCP, and project files are exposed');
+        console.error('   to anyone who can reach this address. Use only on a trusted');
+        console.error('   network, VPN, or behind firewall rules.');
+        if (opts.dev) {
+          console.error('');
+          console.error('   Note: --dev mode runs the UI on a separate Vite dev server bound to');
+          console.error('   127.0.0.1 only. Remote access affects the API server only. For full');
+          console.error('   remote access including the UI dev server, use production mode');
+          console.error('   (no --dev flag).');
+        }
+        console.error('');
+      }
+
       // === DETACH POINT ===
       // All interactive prompts are done. Now spawn the detached child if needed.
       if (shouldDetach) {
@@ -1473,9 +1586,8 @@ async function main(argv) {
         process.exit(0);
       }
 
-      // Apply env before requiring the server
+      // Apply env before requiring the server (HOST already set pre-detach)
       process.env.PORT = String(port);
-      process.env.HOST = process.env.HOST || '127.0.0.1';
       process.env.NODE_ENV = process.env.NODE_ENV || 'production';
       const dbEnv = parseDbPath(opts.db);
       if (dbEnv.DB_PATH) process.env.DB_PATH = dbEnv.DB_PATH;
@@ -1534,10 +1646,11 @@ async function main(argv) {
           detached: platform() !== 'win32', // Create process group on Unix
         });
 
-        const baseUrl = `http://${process.env.HOST}:${port}`;
+        const internalBaseUrl = buildInternalBaseUrl({ host: effectiveHost, port });
+        const displayUrl = buildDisplayUrls({ host: effectiveHost, port }).primary;
 
         // Wait for API to be ready (longer timeout for dev mode compilation)
-        const ready = await waitForHealth(`${baseUrl}/health`, { timeoutMs: 60000 });
+        const ready = await waitForHealth(`${internalBaseUrl}/health`, { timeoutMs: 60000 });
         if (!ready) {
           cli.error('API did not become ready in time');
           killProcessGroup(nestProcess);
@@ -1545,8 +1658,8 @@ async function main(argv) {
         }
 
         cli.blank();
-        cli.success(`API ready at ${baseUrl}`);
-        cli.info(`API docs: ${baseUrl}/api/docs`);
+        cli.success(`API ready at ${displayUrl}`);
+        cli.info(`API docs: ${displayUrl}/api/docs`);
 
         // Ensure provider rows exist
         if (
@@ -1554,7 +1667,7 @@ async function main(argv) {
           && opts.__providersDetected
           && opts.__providersDetected.size > 0
         ) {
-          await ensureProvidersInDb(baseUrl, opts.__providersDetected, log);
+          await ensureProvidersInDb(internalBaseUrl, opts.__providersDetected, log);
         }
 
         // Determine startup path for MCP validation
@@ -1564,7 +1677,7 @@ async function main(argv) {
 
         // Validate MCP for all providers
         if (!worktreeRuntimeMode) {
-          await validateMcpForProviders(baseUrl, cli, opts, log, startupPath);
+          await validateMcpForProviders(internalBaseUrl, cli, opts, log, startupPath);
         }
 
         // Note: Claude bypass prompt already handled before server start
@@ -1585,12 +1698,12 @@ async function main(argv) {
         cli.blank();
         cli.success('Development servers running');
         cli.info(`${devUiConfig.logLabel}: ${devUiConfig.url}`);
-        cli.info(`API: ${baseUrl}`);
+        cli.info(`API: ${displayUrl}`);
         cli.blank();
 
         // Write PID file for top-level runtime only
         if (!worktreeRuntimeMode) {
-          writePidFile(port);
+          writePidFile(port, effectiveHost);
         }
 
         // Handle cleanup on exit - kill entire process groups
@@ -1640,10 +1753,11 @@ async function main(argv) {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       require(serverEntry);
 
-      const baseUrl = `http://${process.env.HOST}:${port}`;
-      const ready = await waitForHealth(`${baseUrl}/health`);
+      const internalBaseUrl = buildInternalBaseUrl({ host: effectiveHost, port });
+      const displayUrl = buildDisplayUrls({ host: effectiveHost, port }).primary;
+      const ready = await waitForHealth(`${internalBaseUrl}/health`);
       if (!ready) {
-        log('error', 'Server did not become ready in time', { url: baseUrl });
+        log('error', 'Server did not become ready in time', { url: internalBaseUrl });
         if (spinner) {
           spinner.stop('✗ timeout');
           cli.blank();
@@ -1656,15 +1770,15 @@ async function main(argv) {
       }
 
       if (opts.foreground) {
-        log('info', `Devchain is running at ${baseUrl}`);
-        log('info', `API docs: ${baseUrl}/api/docs`);
-        console.log(`\nDevchain is running at ${baseUrl}`);
-        console.log(`API docs: ${baseUrl}/api/docs`);
+        log('info', `Devchain is running at ${displayUrl}`);
+        log('info', `API docs: ${displayUrl}/api/docs`);
+        console.log(`\nDevchain is running at ${displayUrl}`);
+        console.log(`API docs: ${displayUrl}/api/docs`);
         console.log('Press Ctrl+C to stop.\n');
       } else {
         cli.blank();
-        cli.success(`Server ready at ${baseUrl}`);
-        cli.info(`API docs: ${baseUrl}/api/docs`);
+        cli.success(`Server ready at ${displayUrl}`);
+        cli.info(`API docs: ${displayUrl}/api/docs`);
       }
 
       // Ensure provider rows exist (idempotent) before opening UI
@@ -1673,7 +1787,7 @@ async function main(argv) {
         && opts.__providersDetected
         && opts.__providersDetected.size > 0
       ) {
-        await ensureProvidersInDb(baseUrl, opts.__providersDetected, log);
+        await ensureProvidersInDb(internalBaseUrl, opts.__providersDetected, log);
       }
 
       // Determine startup path for MCP validation and URL
@@ -1683,19 +1797,19 @@ async function main(argv) {
 
       // Validate MCP for all providers (with project context)
       if (!worktreeRuntimeMode) {
-        await validateMcpForProviders(baseUrl, cli, opts, log, startupPath);
+        await validateMcpForProviders(internalBaseUrl, cli, opts, log, startupPath);
       }
 
       // Note: Claude bypass prompt already handled before server start (in parent process for detach mode)
 
       // Determine URL to open based on project path
-      let urlToOpen = baseUrl;
+      let urlToOpen = displayUrl;
       try {
-        const byPathUrl = `${baseUrl}/api/projects/by-path?path=${encodeURIComponent(startupPath)}`;
+        const byPathUrl = `${internalBaseUrl}/api/projects/by-path?path=${encodeURIComponent(startupPath)}`;
         const resByPath = await fetchWithTimeout(byPathUrl, {}, 2500);
         if (resByPath.ok) {
           const project = await resByPath.json();
-          urlToOpen = `${baseUrl}/projects?projectId=${encodeURIComponent(project.id)}`;
+          urlToOpen = `${displayUrl}/projects?projectId=${encodeURIComponent(project.id)}`;
           if (opts.foreground) {
             log('info', 'Resolved startup path to existing project', { startupPath, projectId: project.id });
           } else if (opts.open) {
@@ -1703,7 +1817,7 @@ async function main(argv) {
           }
         } else {
           // 404 or invalid — fall back to newProjectPath to prefill dialog
-          urlToOpen = `${baseUrl}/projects?newProjectPath=${encodeURIComponent(startupPath)}`;
+          urlToOpen = `${displayUrl}/projects?newProjectPath=${encodeURIComponent(startupPath)}`;
           if (opts.foreground) {
             log('info', 'No project at startup path; prefill create dialog', { startupPath });
           } else if (opts.open) {
@@ -1712,7 +1826,7 @@ async function main(argv) {
         }
       } catch (e) {
         // Network/timeouts: still prefer prefilled create dialog
-        urlToOpen = `${baseUrl}/projects?newProjectPath=${encodeURIComponent(startupPath)}`;
+        urlToOpen = `${displayUrl}/projects?newProjectPath=${encodeURIComponent(startupPath)}`;
         if (opts.foreground) {
           log('warn', 'Failed to resolve startup path; opening create dialog', {
             error: e instanceof Error ? e.message : String(e),
@@ -1736,7 +1850,7 @@ async function main(argv) {
 
       if (!worktreeRuntimeMode) {
         // Write PID file for stop command
-        writePidFile(port);
+        writePidFile(port, effectiveHost);
 
         // Clean up PID file on exit (main.ts handles SIGINT/SIGTERM and graceful shutdown)
         process.on('exit', () => {
@@ -1820,7 +1934,7 @@ async function main(argv) {
         console.log('No running Devchain instance found.');
         process.exit(1);
       } else {
-        const { pid, port } = pidData;
+        const { pid, port, host } = pidData;
 
         if (!isProcessRunning(pid)) {
           console.log(`Devchain process (PID ${pid}) is not running. Cleaning up stale PID file.`);
@@ -1877,6 +1991,13 @@ module.exports = {
   main,
   normalizeCliArgv,
   __test__: {
+    normalizeHost,
+    isWildcardHost,
+    isNonLoopbackHost,
+    connectableHost,
+    formatHostForUrl,
+    buildInternalBaseUrl,
+    buildDisplayUrls,
     ensureDockerAvailable,
     isDockerAvailable,
     deriveRepoRootFromGit,

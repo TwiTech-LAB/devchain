@@ -69,8 +69,15 @@ expect.extend(toHaveNoViolations);
 // @ts-expect-error React 18 testing environment flag
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-// Silence NestJS Logger output during tests to keep logs readable.
-Logger.overrideLogger(false);
+// Silence NestJS Logger.error output during tests to keep logs readable.
+// Scoped handle avoids clobbering per-test prototype spies in other specs.
+let loggerErrorSpy: jest.SpyInstance;
+beforeEach(() => {
+  loggerErrorSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation();
+});
+afterEach(() => {
+  loggerErrorSpy.mockRestore();
+});
 
 // Polyfill for libraries that rely on TextEncoder/TextDecoder (e.g., react-router)
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

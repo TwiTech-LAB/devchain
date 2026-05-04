@@ -125,7 +125,14 @@ export function ProviderConfigGranularSelector<
           >
             <label className="flex cursor-pointer items-center gap-2 px-1 py-1">
               <Checkbox
-                checked={state}
+                checked={state === true}
+                ref={(el) => {
+                  if (el) {
+                    const btn = el as unknown as HTMLButtonElement;
+                    btn.dataset.state =
+                      state === 'indeterminate' ? 'indeterminate' : state ? 'checked' : 'unchecked';
+                  }
+                }}
                 onCheckedChange={(checked) => handleProviderToggle(provider.name, checked === true)}
                 aria-label={`Select all ${provider.name} configs`}
               />

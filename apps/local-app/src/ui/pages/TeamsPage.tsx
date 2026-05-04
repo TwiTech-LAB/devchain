@@ -148,7 +148,7 @@ function TeamFormDialog({
       setProfileSelections(initialData.profileConfigSelections ?? []);
       setMaxMembers(initialData.maxMembers);
       setMaxConcurrentTasks(initialData.maxConcurrentTasks);
-      setAllowTeamLeadCreateAgents(initialData.allowTeamLeadCreateAgents);
+      setAllowTeamLeadCreateAgents(initialData.allowTeamLeadCreateAgents ?? false);
     }
   }, [open, mode, initialData]);
 
@@ -783,7 +783,7 @@ export function TeamsPage() {
       teamLeadAgentId: editTeamDetail.teamLeadAgentId,
       maxMembers: editTeamDetail.maxMembers,
       maxConcurrentTasks: editTeamDetail.maxConcurrentTasks,
-      allowTeamLeadCreateAgents: editTeamDetail.allowTeamLeadCreateAgents,
+      allowTeamLeadCreateAgents: editTeamDetail.allowTeamLeadCreateAgents ?? false,
       memberAgentIds: editTeamDetail.members.map((m) => m.agentId),
       profileIds: editTeamDetail.profileIds,
       profileConfigSelections: editTeamDetail.profileConfigSelections ?? [],

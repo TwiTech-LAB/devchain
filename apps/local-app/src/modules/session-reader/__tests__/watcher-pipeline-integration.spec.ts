@@ -82,7 +82,7 @@ function assistantLine(
  * Extra iterations help when under load (e.g., full suite concurrency).
  */
 async function flush(): Promise<void> {
-  for (let i = 0; i < 50; i++) {
+  for (let i = 0; i < 200; i++) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
 }

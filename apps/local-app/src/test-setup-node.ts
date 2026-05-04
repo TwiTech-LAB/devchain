@@ -5,8 +5,15 @@
 import { Logger } from '@nestjs/common';
 import { resetEnvConfig } from './common/config/env.config';
 
-// Silence NestJS Logger output during tests to keep logs readable.
-Logger.overrideLogger(false);
+// Silence NestJS Logger.error output during tests to keep logs readable.
+// Scoped handle avoids clobbering per-test prototype spies in other specs.
+let loggerErrorSpy: jest.SpyInstance;
+beforeEach(() => {
+  loggerErrorSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation();
+});
+afterEach(() => {
+  loggerErrorSpy.mockRestore();
+});
 
 function applyBackendTestEnvIsolation(): void {
   // Stabilize env-dependent config for backend tests regardless of host shell values.

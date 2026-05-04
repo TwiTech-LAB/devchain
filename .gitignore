@@ -18,5 +18,7 @@ packages/shared/src/**/*.js
 packages/shared/src/**/*.d.ts
 packages/shared/src/**/*.js.map
 .claude
+# Turborepo cache
+.turbo/
 # Test coverage
 coverage/

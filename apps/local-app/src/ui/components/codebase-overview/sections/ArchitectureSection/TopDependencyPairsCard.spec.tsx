@@ -9,54 +9,29 @@ function makeSnapshot(deps: DependencyEdge[]): CodebaseOverviewSnapshot {
     projectKey: 'p1',
     name: 'Test',
     regions: [],
-    districts: [
-      {
-        id: 'd0',
-        regionId: 'r1',
-        path: 'alpha',
-        name: 'alpha',
-        totalFiles: 5,
-        totalLOC: 500,
-        churn7d: 1,
-        churn30d: 5,
-        inboundWeight: 0,
-        outboundWeight: 0,
-        couplingScore: 0,
-        testFileCount: 1,
-        testFileRatio: 0.2,
-        role: 'service',
-        complexityAvg: null,
-        ownershipConcentration: null,
-        testCoverageRate: null,
-        blastRadius: 0,
-        primaryAuthorName: null,
-        primaryAuthorShare: null,
-        primaryAuthorRecentlyActive: false,
-      },
-      {
-        id: 'd1',
-        regionId: 'r1',
-        path: 'bravo',
-        name: 'bravo',
-        totalFiles: 5,
-        totalLOC: 500,
-        churn7d: 1,
-        churn30d: 5,
-        inboundWeight: 0,
-        outboundWeight: 0,
-        couplingScore: 0,
-        testFileCount: 1,
-        testFileRatio: 0.2,
-        role: 'service',
-        complexityAvg: null,
-        ownershipConcentration: null,
-        testCoverageRate: null,
-        blastRadius: 0,
-        primaryAuthorName: null,
-        primaryAuthorShare: null,
-        primaryAuthorRecentlyActive: false,
-      },
-    ],
+    districts: ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot'].map((name, i) => ({
+      id: `d${i}`,
+      regionId: 'r1',
+      path: name,
+      name,
+      totalFiles: 5,
+      totalLOC: 500,
+      churn7d: 1,
+      churn30d: 5,
+      inboundWeight: 0,
+      outboundWeight: 0,
+      couplingScore: 0,
+      testFileCount: 1,
+      testFileRatio: 0.2,
+      role: 'service' as const,
+      complexityAvg: null,
+      ownershipConcentration: null,
+      testCoverageRate: null,
+      blastRadius: 0,
+      primaryAuthorName: null,
+      primaryAuthorShare: null,
+      primaryAuthorRecentlyActive: false,
+    })),
     dependencies: deps,
     hotspots: [],
     activity: [],
@@ -110,12 +85,17 @@ describe('TopDependencyPairsCard', () => {
   });
 
   it('caps at 20 entries', () => {
-    const deps: DependencyEdge[] = Array.from({ length: 25 }, (_, i) => ({
-      fromDistrictId: 'd0',
-      toDistrictId: 'd1',
-      weight: 25 - i,
-      isCyclic: false,
-    }));
+    const deps: DependencyEdge[] = Array.from({ length: 25 }, (_, i) => {
+      const from = Math.floor(i / 5);
+      const toRaw = i % 5;
+      const to = toRaw < from ? toRaw : toRaw + 1;
+      return {
+        fromDistrictId: `d${from}`,
+        toDistrictId: `d${to}`,
+        weight: 25 - i,
+        isCyclic: false,
+      };
+    });
     render(<TopDependencyPairsCard snapshot={makeSnapshot(deps)} onSelectPair={onSelectPair} />);
     const buttons = screen.getAllByRole('button').filter((b) => b.textContent?.includes('→'));
     expect(buttons.length).toBeLessThanOrEqual(20);

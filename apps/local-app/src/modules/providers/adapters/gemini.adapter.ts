@@ -15,6 +15,11 @@ import {
 @Injectable()
 export class GeminiAdapter implements ProviderAdapter {
   readonly providerName = 'gemini';
+  readonly mcpListSpawnMode = 'pty' as const;
+  readonly mcpProjectRegistrationStrategy = 'upsert' as const;
+  // Verification (2026-05-03): `gemini mcp add` and `gemini mcp remove` are
+  // pipe-safe — they exit 0/non-zero reliably even with empty stdout/stderr.
+  // Only `mcp list` requires PTY (see mcpListSpawnMode).
   readonly launchInitialPromptBehavior: LaunchInitialPromptBehavior = {
     preKeys: ['Enter'],
     preDelayMs: 5000,
@@ -22,8 +27,8 @@ export class GeminiAdapter implements ProviderAdapter {
 
   addMcpServer(options: AddMcpServerOptions): string[] {
     const alias = options.alias ?? 'devchain';
-    // gemini mcp add -t http <alias> <endpoint>
-    const args = ['mcp', 'add', '-t', 'http', alias, options.endpoint];
+    // gemini mcp add --scope project -t http <alias> <endpoint>
+    const args = ['mcp', 'add', '--scope', 'project', '-t', 'http', alias, options.endpoint];
     if (options.extraArgs?.length) {
       args.push(...options.extraArgs);
     }
@@ -35,7 +40,7 @@ export class GeminiAdapter implements ProviderAdapter {
   }
 
   removeMcpServer(alias: string): string[] {
-    return ['mcp', 'remove', alias];
+    return ['mcp', 'remove', '--scope', 'project', alias];
   }
 
   binaryCheck(_alias: string): string[] {
@@ -66,9 +71,10 @@ export class GeminiAdapter implements ProviderAdapter {
     const lines = output.split('\n').filter((line) => line.trim().length > 0);
 
     for (const rawLine of lines) {
-      // Strip ANSI escape codes (color/formatting) that Gemini CLI may emit
-      // even when spawned without a TTY
-      const line = rawLine.replace(/\x1b\[[0-9;]*m/g, '');
+      const line = rawLine
+        .replace(/\x1b\[[\d;?]*[A-Za-z]/g, '')
+        .replace(/\x1b\][^\x07]*\x07/g, '')
+        .replace(/\r/g, '');
 
       // Skip header lines (e.g., "Configured MCP servers:")
       if (line.toLowerCase().includes('configured mcp')) {

@@ -13,6 +13,18 @@ describe('GeminiAdapter', () => {
     });
   });
 
+  describe('mcpListSpawnMode', () => {
+    it('opts into PTY-based spawning for MCP list', () => {
+      expect(adapter.mcpListSpawnMode).toBe('pty');
+    });
+  });
+
+  describe('mcpProjectRegistrationStrategy', () => {
+    it('declares upsert strategy', () => {
+      expect(adapter.mcpProjectRegistrationStrategy).toBe('upsert');
+    });
+  });
+
   describe('launchInitialPromptBehavior', () => {
     it('exposes preKeys with Enter and preDelayMs of 5000', () => {
       expect(adapter.launchInitialPromptBehavior).toBeDefined();
@@ -27,7 +39,16 @@ describe('GeminiAdapter', () => {
         endpoint: 'http://127.0.0.1:3000/mcp',
       });
 
-      expect(args).toEqual(['mcp', 'add', '-t', 'http', 'devchain', 'http://127.0.0.1:3000/mcp']);
+      expect(args).toEqual([
+        'mcp',
+        'add',
+        '--scope',
+        'project',
+        '-t',
+        'http',
+        'devchain',
+        'http://127.0.0.1:3000/mcp',
+      ]);
     });
 
     it('builds command with custom alias', () => {
@@ -36,7 +57,16 @@ describe('GeminiAdapter', () => {
         alias: 'myserver',
       });
 
-      expect(args).toEqual(['mcp', 'add', '-t', 'http', 'myserver', 'http://127.0.0.1:3000/mcp']);
+      expect(args).toEqual([
+        'mcp',
+        'add',
+        '--scope',
+        'project',
+        '-t',
+        'http',
+        'myserver',
+        'http://127.0.0.1:3000/mcp',
+      ]);
     });
 
     it('includes extra args when provided', () => {
@@ -49,6 +79,8 @@ describe('GeminiAdapter', () => {
       expect(args).toEqual([
         'mcp',
         'add',
+        '--scope',
+        'project',
         '-t',
         'http',
         'devchain',
@@ -69,7 +101,7 @@ describe('GeminiAdapter', () => {
   describe('removeMcpServer', () => {
     it('builds remove command with alias', () => {
       const args = adapter.removeMcpServer('devchain');
-      expect(args).toEqual(['mcp', 'remove', 'devchain']);
+      expect(args).toEqual(['mcp', 'remove', '--scope', 'project', 'devchain']);
     });
   });
 

@@ -44,6 +44,14 @@ export interface ProjectTemplate {
   latestVersion: string | null;
 }
 
+export interface ProvisioningWarning {
+  providerId: string;
+  providerName: string;
+  level: 'warn' | 'error';
+  message: string;
+  code?: string;
+}
+
 export interface CreateFromTemplateResponse {
   success: boolean;
   project?: { id: string; name: string };
@@ -59,6 +67,18 @@ export interface CreateFromTemplateResponse {
     familyAlternatives: FamilyAlternative[];
     canImport: boolean;
   };
+  provisioningWarnings?: ProvisioningWarning[];
+}
+
+export interface ImportProjectResponse {
+  success: boolean;
+  message?: string;
+  provisioningWarnings?: ProvisioningWarning[];
+}
+
+export interface UpdateProjectResponse {
+  project: Project;
+  provisioningWarnings: ProvisioningWarning[];
 }
 
 export async function fetchProjects(): Promise<ProjectsQueryData> {

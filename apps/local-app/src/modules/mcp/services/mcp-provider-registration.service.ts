@@ -1,6 +1,7 @@
 import { Injectable, Inject, OnModuleDestroy } from '@nestjs/common';
 import { readFile, writeFile, rename } from 'fs/promises';
 import { spawn } from 'child_process';
+import * as pty from 'node-pty';
 import * as path from 'path';
 import { Provider } from '../../storage/models/domain.models';
 import { createLogger } from '../../../common/logging/logger';
@@ -272,10 +273,12 @@ export class McpProviderRegistrationService implements OnModuleDestroy {
     }
 
     const args = adapter.listMcpServers();
-    const result = await this.runCommand(resolution.binaryPath, args, {
-      timeoutMs: execOptions?.timeoutMs ?? 10_000,
-      cwd: execOptions?.cwd,
-    });
+    const timeoutMs = execOptions?.timeoutMs ?? 10_000;
+    const cwd = execOptions?.cwd;
+    const result =
+      adapter.mcpListSpawnMode === 'pty'
+        ? await this.runCommandInPty(resolution.binaryPath, args, { timeoutMs, cwd })
+        : await this.runCommand(resolution.binaryPath, args, { timeoutMs, cwd });
 
     if (!result.success) {
       return {
@@ -641,6 +644,102 @@ export class McpProviderRegistrationService implements OnModuleDestroy {
           binaryPath,
         });
       });
+    });
+  }
+
+  private runCommandInPty(
+    binaryPath: string,
+    args: readonly string[],
+    options?: { timeoutMs?: number; cwd?: string },
+  ): Promise<McpCommandResult> {
+    return new Promise((resolve) => {
+      let buffer = '';
+      let timedOut = false;
+      let killTimer: NodeJS.Timeout | undefined;
+      let timeoutTimer: NodeJS.Timeout | undefined;
+      const disposables: import('node-pty').IDisposable[] = [];
+
+      const cleanup = () => {
+        for (const d of disposables) d.dispose();
+        if (timeoutTimer) clearTimeout(timeoutTimer);
+        if (killTimer) clearTimeout(killTimer);
+      };
+
+      let ptyProcess;
+      try {
+        ptyProcess = pty.spawn(binaryPath, [...args], {
+          name: 'xterm-256color',
+          cols: 200,
+          rows: 30,
+          cwd: options?.cwd,
+          env: process.env as { [key: string]: string },
+        });
+      } catch (error) {
+        resolve({
+          success: false,
+          message: error instanceof Error ? error.message : 'Failed to spawn PTY',
+          stdout: '',
+          stderr: '',
+          exitCode: null,
+          binaryPath,
+        });
+        return;
+      }
+
+      disposables.push(
+        ptyProcess.onData((data: string) => {
+          buffer += data;
+        }),
+      );
+
+      disposables.push(
+        ptyProcess.onExit(({ exitCode }) => {
+          setImmediate(() => {
+            cleanup();
+            if (timedOut) {
+              resolve({
+                success: false,
+                message: 'timeout',
+                stdout: buffer,
+                stderr: '',
+                exitCode: null,
+                binaryPath,
+              });
+              return;
+            }
+            if (buffer.trim() === '' && exitCode === 0) {
+              logger.warn({ binaryPath, args }, 'PTY command completed with no output');
+            }
+            resolve({
+              success: exitCode === 0,
+              message:
+                exitCode === 0 ? 'MCP command completed successfully.' : `Exit code ${exitCode}`,
+              stdout: buffer,
+              stderr: '',
+              exitCode,
+              binaryPath,
+            });
+          });
+        }),
+      );
+
+      if (options?.timeoutMs) {
+        timeoutTimer = setTimeout(() => {
+          timedOut = true;
+          try {
+            ptyProcess.kill('SIGTERM');
+          } catch {
+            /* node-pty kill may throw if process already exited */
+          }
+          killTimer = setTimeout(() => {
+            try {
+              ptyProcess.kill('SIGKILL');
+            } catch {
+              /* ignore */
+            }
+          }, 2000);
+        }, options.timeoutMs);
+      }
     });
   }
 }

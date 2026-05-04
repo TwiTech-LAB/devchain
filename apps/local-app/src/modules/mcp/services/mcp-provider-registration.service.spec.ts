@@ -24,6 +24,19 @@ jest.mock('child_process', () => {
   };
 });
 
+jest.mock('node-pty', () => ({
+  spawn: jest.fn(),
+}));
+
+jest.mock('../../../common/logging/logger', () => {
+  const instance = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+  return { createLogger: () => instance, __mockLogger: instance };
+});
+const mockLogger = jest.requireMock('../../../common/logging/logger').__mockLogger as {
+  warn: jest.Mock;
+};
+
+const ptySpawnMock = jest.requireMock('node-pty').spawn as jest.Mock;
 const accessMock = jest.requireMock('fs/promises').access as jest.Mock;
 const readFileMock = jest.requireMock('fs/promises').readFile as jest.Mock;
 const writeFileMock = jest.requireMock('fs/promises').writeFile as jest.Mock;
@@ -40,6 +53,28 @@ describe('McpProviderRegistrationService', () => {
     id: 'provider-1',
     name: 'claude',
     binPath: '/usr/local/bin/claude',
+    mcpConfigured: false,
+    mcpEndpoint: null,
+    mcpRegisteredAt: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  const geminiProvider: Provider = {
+    id: 'provider-gem',
+    name: 'gemini',
+    binPath: '/usr/local/bin/gemini',
+    mcpConfigured: false,
+    mcpEndpoint: null,
+    mcpRegisteredAt: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  const codexProvider: Provider = {
+    id: 'provider-cdx',
+    name: 'codex',
+    binPath: '/usr/local/bin/codex',
     mcpConfigured: false,
     mcpEndpoint: null,
     mcpRegisteredAt: null,
@@ -75,6 +110,8 @@ describe('McpProviderRegistrationService', () => {
     renameMock.mockReset();
     execFileMock.mockReset();
     spawnMock.mockReset();
+    ptySpawnMock.mockReset();
+    mockLogger.warn.mockReset();
 
     writeFileMock.mockResolvedValue(undefined);
     renameMock.mockResolvedValue(undefined);
@@ -688,6 +725,269 @@ describe('McpProviderRegistrationService', () => {
 
       expect(result.success).toBe(false);
       expect(result.message).toContain('invalid root structure');
+    });
+  });
+
+  describe('PTY-based MCP list (Gemini)', () => {
+    function createMockPty() {
+      const dataDispose = jest.fn();
+      const exitDispose = jest.fn();
+      let onDataCb: ((data: string) => void) | undefined;
+      let onExitCb: ((e: { exitCode: number }) => void) | undefined;
+
+      const mockProcess = {
+        onData: jest.fn((cb: (data: string) => void) => {
+          onDataCb = cb;
+          return { dispose: dataDispose };
+        }),
+        onExit: jest.fn((cb: (e: { exitCode: number }) => void) => {
+          onExitCb = cb;
+          return { dispose: exitDispose };
+        }),
+        kill: jest.fn(),
+      };
+
+      return {
+        mockProcess,
+        dataDispose,
+        exitDispose,
+        fireData: (data: string) => onDataCb?.(data),
+        fireExit: (exitCode: number) => onExitCb?.({ exitCode }),
+      };
+    }
+
+    beforeEach(() => {
+      accessMock.mockResolvedValue(undefined);
+    });
+
+    it('Gemini list uses pty.spawn, not child_process.spawn', async () => {
+      const mock = createMockPty();
+      ptySpawnMock.mockReturnValue(mock.mockProcess);
+
+      const promise = service.listRegistrations(geminiProvider);
+      await new Promise((r) => setTimeout(r, 0));
+
+      mock.fireData('Configured MCP servers:\r\n\r\n');
+      mock.fireData('\x1b[32m✓\x1b[39m devchain: http://127.0.0.1:3000/mcp (http) - Connected\r\n');
+      mock.fireExit(0);
+      await new Promise((r) => setImmediate(r));
+
+      const result = await promise;
+      expect(ptySpawnMock).toHaveBeenCalledWith(
+        geminiProvider.binPath,
+        ['mcp', 'list'],
+        expect.objectContaining({ cols: 200, rows: 30, name: 'xterm-256color' }),
+      );
+      expect(spawnMock).not.toHaveBeenCalled();
+      expect(result.success).toBe(true);
+      expect(result.entries).toEqual([
+        { alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp', transport: 'HTTP' },
+      ]);
+    });
+
+    it('Claude list uses child_process.spawn, not pty.spawn', async () => {
+      const child = Object.assign(new EventEmitter(), {
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+      });
+      spawnMock.mockReturnValue(child);
+
+      const promise = service.listRegistrations(baseProvider);
+      await new Promise((r) => setTimeout(r, 0));
+
+      child.stdout.emit('data', '');
+      child.emit('close', 0);
+
+      await promise;
+      expect(spawnMock).toHaveBeenCalled();
+      expect(ptySpawnMock).not.toHaveBeenCalled();
+    });
+
+    it('PTY output with CSI cursor/clear sequences is stripped', async () => {
+      const mock = createMockPty();
+      ptySpawnMock.mockReturnValue(mock.mockProcess);
+
+      const promise = service.listRegistrations(geminiProvider);
+      await new Promise((r) => setTimeout(r, 0));
+
+      mock.fireData('\x1b[2K\x1b[H\x1b[32m✓\x1b[39m myalias: http://10.0.0.1:4000/mcp (http)\r\n');
+      mock.fireExit(0);
+      await new Promise((r) => setImmediate(r));
+
+      const result = await promise;
+      expect(result.entries).toEqual([
+        { alias: 'myalias', endpoint: 'http://10.0.0.1:4000/mcp', transport: 'HTTP' },
+      ]);
+    });
+
+    it('PTY output with OSC title sequence is stripped', async () => {
+      const mock = createMockPty();
+      ptySpawnMock.mockReturnValue(mock.mockProcess);
+
+      const promise = service.listRegistrations(geminiProvider);
+      await new Promise((r) => setTimeout(r, 0));
+
+      mock.fireData('\x1b]0;gemini mcp list\x07✓ devchain: http://127.0.0.1:3000/mcp (http)\r\n');
+      mock.fireExit(0);
+      await new Promise((r) => setImmediate(r));
+
+      const result = await promise;
+      expect(result.entries).toEqual([
+        { alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp', transport: 'HTTP' },
+      ]);
+    });
+
+    it('PTY non-zero exit returns success=false with exitCode', async () => {
+      const mock = createMockPty();
+      ptySpawnMock.mockReturnValue(mock.mockProcess);
+
+      const promise = service.listRegistrations(geminiProvider);
+      await new Promise((r) => setTimeout(r, 0));
+
+      mock.fireData('error output');
+      mock.fireExit(1);
+      await new Promise((r) => setImmediate(r));
+
+      const result = await promise;
+      expect(result.success).toBe(false);
+    });
+
+    it('pty.spawn synchronous throw returns success=false', async () => {
+      ptySpawnMock.mockImplementation(() => {
+        throw new Error('PTY not available');
+      });
+
+      const result = await service.listRegistrations(geminiProvider);
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('PTY not available');
+    });
+
+    it('PTY timeout fires SIGTERM then SIGKILL', async () => {
+      jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'] });
+      try {
+        const mock = createMockPty();
+        ptySpawnMock.mockReturnValue(mock.mockProcess);
+
+        const promise = service.listRegistrations(geminiProvider, { timeoutMs: 5000 });
+        await new Promise((r) => setImmediate(r));
+
+        jest.advanceTimersByTime(5000);
+        expect(mock.mockProcess.kill).toHaveBeenCalledWith('SIGTERM');
+
+        jest.advanceTimersByTime(2000);
+        expect(mock.mockProcess.kill).toHaveBeenCalledWith('SIGKILL');
+
+        mock.fireExit(0);
+        await new Promise((r) => setImmediate(r));
+        await new Promise((r) => setImmediate(r));
+
+        const result = await promise;
+        expect(result.success).toBe(false);
+        expect(result.message).toBe('timeout');
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('disposes onData and onExit after resolve', async () => {
+      const mock = createMockPty();
+      ptySpawnMock.mockReturnValue(mock.mockProcess);
+
+      const promise = service.listRegistrations(geminiProvider);
+      await new Promise((r) => setImmediate(r));
+
+      mock.fireExit(0);
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+
+      await promise;
+      expect(mock.dataDispose).toHaveBeenCalled();
+      expect(mock.exitDispose).toHaveBeenCalled();
+    });
+
+    it('onData fired in same tick as onExit is included in buffer', async () => {
+      const dataDispose = jest.fn();
+      const exitDispose = jest.fn();
+      const mockProcess = {
+        onData: jest.fn((cb: (data: string) => void) => {
+          cb('initial data');
+          return { dispose: dataDispose };
+        }),
+        onExit: jest.fn((cb: (e: { exitCode: number }) => void) => {
+          cb({ exitCode: 0 });
+          return { dispose: exitDispose };
+        }),
+        kill: jest.fn(),
+      };
+      ptySpawnMock.mockReturnValue(mockProcess);
+
+      const promise = service.listRegistrations(geminiProvider);
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+
+      const result = await promise;
+      expect(result.stdout).toContain('initial data');
+    });
+
+    it('Codex list uses child_process.spawn, not pty.spawn', async () => {
+      const child = Object.assign(new EventEmitter(), {
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+      });
+      spawnMock.mockReturnValue(child);
+
+      const promise = service.listRegistrations(codexProvider);
+      await new Promise((r) => setImmediate(r));
+
+      child.stdout.emit('data', '');
+      child.emit('close', 0);
+
+      await promise;
+      expect(spawnMock).toHaveBeenCalled();
+      expect(ptySpawnMock).not.toHaveBeenCalled();
+    });
+
+    it('logger.warn called when PTY buffer is empty and exitCode is 0', async () => {
+      const mock = createMockPty();
+      ptySpawnMock.mockReturnValue(mock.mockProcess);
+
+      const promise = service.listRegistrations(geminiProvider);
+      await new Promise((r) => setImmediate(r));
+
+      mock.fireExit(0);
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+
+      await promise;
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ binaryPath: geminiProvider.binPath }),
+        'PTY command completed with no output',
+      );
+    });
+
+    it('timers cleared on normal exit before timeout fires', async () => {
+      jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'] });
+      try {
+        const mock = createMockPty();
+        ptySpawnMock.mockReturnValue(mock.mockProcess);
+
+        const promise = service.listRegistrations(geminiProvider, { timeoutMs: 5000 });
+        await new Promise((r) => setImmediate(r));
+
+        mock.fireData('✓ devchain: http://127.0.0.1:3000/mcp (http)\r\n');
+        mock.fireExit(0);
+        await new Promise((r) => setImmediate(r));
+        await new Promise((r) => setImmediate(r));
+
+        const result = await promise;
+        expect(result.success).toBe(true);
+
+        jest.advanceTimersByTime(10000);
+        expect(mock.mockProcess.kill).not.toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
     });
   });
 });

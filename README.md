@@ -89,6 +89,9 @@ devchain start --project /path/to/your/project
 # Run in foreground with logs
 devchain start --foreground
 
+# Bind to all interfaces for VM/remote browser access (prints loud security warning)
+devchain start --host 0.0.0.0
+
 # Stop the server
 devchain stop
 ```
@@ -108,6 +111,7 @@ On first run, import a template from the project page to provision your agent te
 | Option | Description |
 |--------|-------------|
 | `-p, --port <number>` | Port to run on (default: 3000 or next available) |
+| `--host <address>` | Bind address (default: `127.0.0.1`; use `0.0.0.0` for remote/VM access — see [docs/setup.md](docs/setup.md)) |
 | `-f, --foreground` | Run in foreground with visible logs |
 | `--no-open` | Don't open browser automatically |
 | `--db <path>` | Custom database directory path |

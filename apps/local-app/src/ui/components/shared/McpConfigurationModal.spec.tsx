@@ -192,4 +192,14 @@ describe('McpConfigurationModal', () => {
       ).toBeInTheDocument();
     });
   });
+
+  describe('Local-provider tooltip', () => {
+    it('renders the local-provider hint with loopback URL', () => {
+      render(<McpConfigurationModal {...defaultProps} />);
+      expect(
+        screen.getByText(/If your MCP provider runs on the DevChain host/),
+      ).toBeInTheDocument();
+      expect(screen.getByText(/http:\/\/127\.0\.0\.1:\d+\/mcp/)).toBeInTheDocument();
+    });
+  });
 });

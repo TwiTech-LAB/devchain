@@ -18,9 +18,9 @@
     "preview:ui": "vite preview --host 127.0.0.1 --port 5176",
     "lint": "eslint \"{src,test}/**/*.{ts,tsx}\" --max-warnings=0",
     "lint:fix": "eslint \"{src,test}/**/*.{ts,tsx}\" --fix",
-    "test": "cross-env NODE_ENV=test jest --maxWorkers=50% --workerIdleMemoryLimit=512MB",
-    "test:watch": "cross-env NODE_ENV=test jest --watch --maxWorkers=50%",
-    "test:cov": "cross-env NODE_ENV=test jest --coverage --maxWorkers=50% --workerIdleMemoryLimit=512MB",
+    "test": "cross-env NODE_ENV=test jest --maxWorkers=75% --workerIdleMemoryLimit=512MB",
+    "test:watch": "cross-env NODE_ENV=test jest --watch --maxWorkers=75%",
+    "test:cov": "cross-env NODE_ENV=test jest --coverage --maxWorkers=75% --workerIdleMemoryLimit=512MB",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "test:ui": "playwright test",
@@ -224,6 +224,13 @@
           "\\.(css|less|scss|sass)$": "identity-obj-proxy",
           "\\?raw$": "<rootDir>/../test/mocks/raw-file.ts"
         }
+      },
+      {
+        "displayName": "cli-helpers",
+        "rootDir": "../../scripts",
+        "testMatch": ["<rootDir>/__tests__/**/*.test.js"],
+        "testEnvironment": "node",
+        "transform": {}
       }
     ]
   }

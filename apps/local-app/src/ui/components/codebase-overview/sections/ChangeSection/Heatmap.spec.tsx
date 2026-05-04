@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent } from '@testing-library/react';
 import type {
   CodebaseOverviewSnapshot,
   DistrictSignals,
@@ -305,12 +305,14 @@ describe('Heatmap', () => {
       expect(getCell(container, 1, 0)?.getAttribute('tabindex')).toBe('-1');
     });
 
-    it('ArrowRight moves focus across columns', () => {
+    it('ArrowRight moves focus across columns', async () => {
       const { container } = render(
         <Heatmap snapshot={makeFiveRowSnapshot()} onSelectDistrict={jest.fn()} />,
       );
       const cell00 = getCell(container, 0, 0)!;
-      cell00.focus();
+      await act(async () => {
+        cell00.focus();
+      });
       fireEvent.keyDown(container.querySelector('[data-testid="heatmap"]')!, { key: 'ArrowRight' });
       fireEvent.keyDown(container.querySelector('[data-testid="heatmap"]')!, { key: 'ArrowRight' });
       fireEvent.keyDown(container.querySelector('[data-testid="heatmap"]')!, { key: 'ArrowRight' });

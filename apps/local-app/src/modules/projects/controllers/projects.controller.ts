@@ -452,11 +452,11 @@ export class ProjectsController {
   }
 
   @Put(':id')
-  async updateProject(@Param('id') id: string, @Body() body: unknown): Promise<Project> {
+  async updateProject(@Param('id') id: string, @Body() body: unknown) {
     logger.info({ id }, 'PUT /api/projects/:id');
     this.assertMutationAllowedForScopedProject(id);
     const data = UpdateProjectSchema.parse(body) as UpdateProject;
-    return this.storage.updateProject(id, data);
+    return this.projects.updateProject(id, data);
   }
 
   @Delete(':id')

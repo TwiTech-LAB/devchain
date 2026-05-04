@@ -336,6 +336,7 @@ export class ProvidersController {
       action: result.action,
       endpoint: result.endpoint,
       alias: result.alias,
+      warnings: result.warnings,
     };
   }
 

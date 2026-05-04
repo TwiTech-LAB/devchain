@@ -123,14 +123,14 @@ if (!HTMLElement.prototype.scrollIntoView) {
   HTMLElement.prototype.scrollIntoView = () => {};
 }
 
-function renderLayout(initialEntries: string[] = ['/projects']) {
+async function renderLayout(initialEntries: string[] = ['/projects']) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
     },
   });
 
-  return render(
+  const result = render(
     <QueryClientProvider client={queryClient}>
       <RuntimeProvider>
         <WorktreeTabProvider>
@@ -143,6 +143,17 @@ function renderLayout(initialEntries: string[] = ['/projects']) {
       </RuntimeProvider>
     </QueryClientProvider>,
   );
+
+  // Drain WorktreeTabProvider's initial detectMainMode() async effect.
+  // The mocked fetch resolves via microtasks; we need enough Promise.resolve()
+  // ticks to complete: fetch → json() → setIsMainMode + setRuntimeResolved.
+  await act(async () => {
+    for (let i = 0; i < 5; i++) {
+      await Promise.resolve();
+    }
+  });
+
+  return result;
 }
 
 async function emitSessionRecommendation(payload: Record<string, unknown>) {
@@ -273,7 +284,7 @@ describe('Layout auto-compact recommendation modal', () => {
   });
 
   it('opens modal for non-silent auto-compact recommendation', async () => {
-    renderLayout();
+    await renderLayout();
 
     await emitSessionRecommendation({
       reason: 'claude_auto_compact_disabled',
@@ -291,7 +302,7 @@ describe('Layout auto-compact recommendation modal', () => {
   });
 
   it('does not open modal for silent auto-compact recommendations', async () => {
-    renderLayout();
+    await renderLayout();
 
     await emitSessionRecommendation({
       reason: 'claude_auto_compact_disabled',
@@ -307,7 +318,7 @@ describe('Layout auto-compact recommendation modal', () => {
 
   it('does not open modal when localStorage bootId matches current bootId', async () => {
     localStorage.setItem('devchain:autoCompact:recommended:provider-1', 'test-boot-id-123');
-    renderLayout();
+    await renderLayout();
 
     await emitSessionRecommendation({
       reason: 'claude_auto_compact_disabled',
@@ -322,7 +333,7 @@ describe('Layout auto-compact recommendation modal', () => {
   });
 
   it('writes localStorage and shows success toast when Enable is clicked', async () => {
-    renderLayout();
+    await renderLayout();
 
     await emitSessionRecommendation({
       reason: 'claude_auto_compact_disabled',
@@ -350,7 +361,7 @@ describe('Layout auto-compact recommendation modal', () => {
   });
 
   it('writes localStorage and closes modal when Skip is clicked', async () => {
-    renderLayout();
+    await renderLayout();
 
     await emitSessionRecommendation({
       reason: 'claude_auto_compact_disabled',
@@ -379,7 +390,7 @@ describe('Layout auto-compact recommendation modal', () => {
   });
 
   it('does not reopen modal for same provider after Skip (same bootId)', async () => {
-    renderLayout();
+    await renderLayout();
 
     await emitSessionRecommendation({
       reason: 'claude_auto_compact_disabled',
@@ -413,7 +424,7 @@ describe('Layout auto-compact recommendation modal', () => {
   it('reopens modal when bootId changes (simulating server restart)', async () => {
     // Previous boot dismissed with old bootId
     localStorage.setItem('devchain:autoCompact:recommended:provider-1', 'old-boot-id-999');
-    renderLayout();
+    await renderLayout();
 
     // New server boot sends a different bootId
     await emitSessionRecommendation({
@@ -431,7 +442,7 @@ describe('Layout auto-compact recommendation modal', () => {
 
   it('falls back to any-truthy suppression when bootId is absent from payload', async () => {
     localStorage.setItem('devchain:autoCompact:recommended:provider-1', 'true');
-    renderLayout();
+    await renderLayout();
 
     // Payload without bootId (backward compat with old server)
     await emitSessionRecommendation({
@@ -447,7 +458,7 @@ describe('Layout auto-compact recommendation modal', () => {
   });
 
   it('stores "true" when payload lacks bootId and user dismisses', async () => {
-    renderLayout();
+    await renderLayout();
 
     // Payload without bootId
     await emitSessionRecommendation({
@@ -471,21 +482,21 @@ describe('Layout auto-compact recommendation modal', () => {
 
   it('hides Worktrees nav link when runtime mode is normal', async () => {
     runtimeMode = 'normal';
-    renderLayout();
+    await renderLayout();
 
     expect(screen.queryByRole('link', { name: 'Worktrees' })).not.toBeInTheDocument();
   });
 
   it('shows Worktrees nav link when runtime mode is main', async () => {
     runtimeMode = 'main';
-    renderLayout();
+    await renderLayout();
 
     expect(await screen.findByRole('link', { name: 'Worktrees' })).toBeInTheDocument();
   });
 
   it('keeps Chat and Reviews nav links visible in main mode', async () => {
     runtimeMode = 'main';
-    renderLayout();
+    await renderLayout();
 
     await waitFor(() => {
       expect(screen.getByRole('link', { name: 'Chat' })).toBeInTheDocument();
@@ -496,7 +507,7 @@ describe('Layout auto-compact recommendation modal', () => {
   it('shows Chat and Reviews nav links in main mode when a worktree tab is active', async () => {
     const user = userEvent.setup();
     runtimeMode = 'main';
-    renderLayout();
+    await renderLayout();
 
     const worktreeTab = await screen.findByRole('tab', { name: /feature-auth/i });
     await user.click(worktreeTab);
@@ -509,14 +520,14 @@ describe('Layout auto-compact recommendation modal', () => {
 
   it('keeps terminal dock and terminal layer rendered in both normal and main modes', async () => {
     runtimeMode = 'normal';
-    const normalRender = renderLayout();
+    const normalRender = await renderLayout();
 
     expect(await screen.findByTestId('terminal-dock')).toBeInTheDocument();
     expect(screen.getByTestId('terminal-layer')).toBeInTheDocument();
 
     normalRender.unmount();
     runtimeMode = 'main';
-    renderLayout();
+    await renderLayout();
 
     await waitFor(() => {
       expect(screen.getByTestId('terminal-dock')).toBeInTheDocument();
@@ -526,7 +537,7 @@ describe('Layout auto-compact recommendation modal', () => {
 
   it('hides worktree tab bar outside main mode', async () => {
     runtimeMode = 'normal';
-    renderLayout();
+    await renderLayout();
 
     await waitFor(() => {
       expect(screen.queryByRole('tab', { name: /main/i })).not.toBeInTheDocument();
@@ -535,7 +546,7 @@ describe('Layout auto-compact recommendation modal', () => {
 
   it('shows worktree tab bar in main mode with proxyable and unavailable status states', async () => {
     runtimeMode = 'main';
-    renderLayout();
+    await renderLayout();
 
     expect(await screen.findByRole('tab', { name: /main/i })).toBeInTheDocument();
     expect(await screen.findByText('feature-auth')).toBeInTheDocument();
@@ -601,7 +612,7 @@ describe('Layout auto-compact recommendation modal', () => {
       };
     });
 
-    renderLayout(['/board']);
+    await renderLayout(['/board']);
 
     expect(await screen.findByRole('tab', { name: /feature-auth/i })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /bugfix-ci/i })).toBeInTheDocument();
@@ -654,7 +665,7 @@ describe('Layout auto-compact recommendation modal', () => {
       setSelectedProjectId: jest.fn(),
     });
 
-    renderLayout(['/board']);
+    await renderLayout(['/board']);
 
     expect(
       await screen.findByRole('tab', { name: /owner-match-devchain-mismatch/i }),
@@ -706,7 +717,7 @@ describe('Layout auto-compact recommendation modal', () => {
       };
     });
 
-    renderLayout(['/board']);
+    await renderLayout(['/board']);
 
     const activeWorktreeTab = await screen.findByRole('tab', { name: /feature-auth/i });
     await act(async () => {
@@ -792,7 +803,7 @@ describe('Layout auto-compact recommendation modal', () => {
       };
     });
 
-    renderLayout(['/board']);
+    await renderLayout(['/board']);
 
     const activeWorktreeTab = await screen.findByRole('tab', { name: /feature-auth/i });
     await act(async () => {
@@ -850,7 +861,7 @@ describe('Layout auto-compact recommendation modal', () => {
       setSelectedProjectId: jest.fn(),
     });
 
-    renderLayout(['/board']);
+    await renderLayout(['/board']);
 
     expect(await screen.findByRole('tab', { name: /feature-auth/i })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /other-owner/i })).toBeInTheDocument();
@@ -859,7 +870,7 @@ describe('Layout auto-compact recommendation modal', () => {
   it('updates selected tab and URL search params when clicking a running worktree tab', async () => {
     const user = userEvent.setup();
     runtimeMode = 'main';
-    renderLayout();
+    await renderLayout();
 
     const mainTab = await screen.findByRole('tab', { name: /main/i });
     const worktreeTab = await screen.findByRole('tab', { name: /feature-auth/i });
@@ -876,7 +887,7 @@ describe('Layout auto-compact recommendation modal', () => {
   it('updates selected tab and URL search params when clicking a completed worktree tab', async () => {
     const user = userEvent.setup();
     runtimeMode = 'main';
-    renderLayout();
+    await renderLayout();
 
     const mainTab = await screen.findByRole('tab', { name: /main/i });
     const completedTab = await screen.findByRole('tab', { name: /done-epic/i });
@@ -893,7 +904,7 @@ describe('Layout auto-compact recommendation modal', () => {
   it('locks project selector when a worktree tab is active', async () => {
     const user = userEvent.setup();
     runtimeMode = 'main';
-    renderLayout();
+    await renderLayout();
 
     expect(await screen.findByTestId('project-selector-select')).toBeInTheDocument();
 
@@ -911,7 +922,7 @@ describe('Layout auto-compact recommendation modal', () => {
     runtimeMode = 'main';
 
     try {
-      renderLayout(['/board']);
+      await renderLayout(['/board']);
 
       const worktreeTab = await screen.findByRole('tab', { name: /feature-auth/i });
       await act(async () => {
@@ -962,7 +973,7 @@ describe('Layout auto-compact recommendation modal', () => {
     runtimeMode = 'main';
 
     try {
-      renderLayout(['/board']);
+      await renderLayout(['/board']);
 
       const worktreeTab = await screen.findByRole('tab', { name: /feature-auth/i });
       await act(async () => {
@@ -1002,7 +1013,7 @@ describe('Layout auto-compact recommendation modal', () => {
     runtimeMode = 'main';
 
     try {
-      renderLayout(['/board']);
+      await renderLayout(['/board']);
 
       const worktreeTab = await screen.findByRole('tab', { name: /feature-auth/i });
       await act(async () => {
@@ -1033,7 +1044,7 @@ describe('Layout auto-compact recommendation modal', () => {
 
   it('shows unavailable banner after a proxied 503 event for the active worktree tab', async () => {
     runtimeMode = 'main';
-    renderLayout(['/board']);
+    await renderLayout(['/board']);
 
     const worktreeTab = await screen.findByRole('tab', { name: /feature-auth/i });
     await act(async () => {
@@ -1068,7 +1079,7 @@ describe('Layout auto-compact recommendation modal', () => {
   it('hides Worktrees and Registry nav links when a worktree tab is active', async () => {
     const user = userEvent.setup();
     runtimeMode = 'main';
-    renderLayout();
+    await renderLayout();
 
     // Before selecting a worktree: both nav items should be visible
     await waitFor(() => {

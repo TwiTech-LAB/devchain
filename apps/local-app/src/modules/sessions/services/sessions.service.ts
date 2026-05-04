@@ -57,6 +57,7 @@ import type {
 } from '../../storage/models/domain.models';
 import type { PreflightResult } from '../../core/services/preflight.service';
 import { getEnvConfig } from '../../../common/config/env.config';
+import { getRuntimeInternalBaseUrl } from '../../../common/config/host-helpers';
 
 // ---------------------------------------------------------------------------
 // Launch helper types (used by launchSession + future restoreSession)
@@ -269,7 +270,7 @@ export class SessionsService {
     if (provider.name.toLowerCase() === 'claude') {
       const env = getEnvConfig();
       const devchainEnv: Record<string, string> = {
-        DEVCHAIN_API_URL: `http://127.0.0.1:${env.PORT}`,
+        DEVCHAIN_API_URL: getRuntimeInternalBaseUrl(env),
         DEVCHAIN_PROJECT_ID: projectId,
         DEVCHAIN_AGENT_ID: agentId,
         DEVCHAIN_SESSION_ID: sessionId,
@@ -327,6 +328,11 @@ export class SessionsService {
           { providerId: provider.id, action: ensureResult.action },
           'MCP auto-configured successfully',
         );
+        if (ensureResult.warnings?.length) {
+          for (const w of ensureResult.warnings) {
+            logger.warn({ providerId: provider.id, ...w }, 'MCP ensure warning');
+          }
+        }
 
         preflightResult = await this.preflightService.runChecks(projectRootPath);
         providerCheck = preflightResult.providers?.find((p) => p.id === provider.id);
@@ -346,6 +352,12 @@ export class SessionsService {
           mcpMessage: providerCheck.mcpMessage,
         });
       }
+    } else if (provider.name.toLowerCase() === 'gemini' && projectRootPath) {
+      // Gemini fallback: `gemini mcp list` merges user + project scopes, so
+      // preflight can report 'pass' from a user-scope entry while no project-scope
+      // entry exists (projects created before this Phase). Always upsert to
+      // guarantee project-scope MCP is present. Costs ~0.5s per session launch.
+      await this.mcpEnsureService.ensureMcp(provider as Provider, projectRootPath);
     }
 
     return preflightResult;

@@ -9,7 +9,15 @@ const envSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
     PORT: z.string().regex(/^\d+$/).transform(Number).default('3000'),
-    HOST: z.string().default('127.0.0.1'),
+    HOST: z
+      .string()
+      .default('127.0.0.1')
+      .transform((v) => v.trim())
+      .refine((v) => v.length > 0, { message: 'HOST must not be empty' })
+      .refine((v) => v !== '*', { message: 'HOST must not be "*"' })
+      .refine((v) => !/[\x00-\x1f\x7f]/.test(v), {
+        message: 'HOST must not contain control characters',
+      }),
     LOG_LEVEL: z
       .enum(['silent', 'fatal', 'error', 'warn', 'info', 'debug', 'trace'])
       .default('info'),

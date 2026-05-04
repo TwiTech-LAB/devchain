@@ -472,8 +472,9 @@ export class PreflightService {
 
     // Compute expected endpoint using runtime config
     const { getEnvConfig } = await import('../../../common/config/env.config');
+    const { getRuntimeInternalBaseUrl } = await import('../../../common/config/host-helpers');
     const env = getEnvConfig();
-    const expectedEndpoint = `http://127.0.0.1:${env.PORT}/mcp`;
+    const expectedEndpoint = `${getRuntimeInternalBaseUrl(env)}/mcp`;
     const expectedAlias = 'devchain';
 
     const listResult = await this.mcpRegistration.listRegistrations(provider, {

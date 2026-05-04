@@ -7,6 +7,11 @@ import { WatchersService } from '../../watchers/services/watchers.service';
 import { WatcherRunnerService } from '../../watchers/services/watcher-runner.service';
 import { UnifiedTemplateService } from '../../registry/services/unified-template.service';
 import { TeamsService } from '../../teams/services/teams.service';
+import {
+  ProjectProviderProvisioningService,
+  type ProvisioningWarning,
+} from './project-provider-provisioning.service';
+import type { Project, UpdateProject } from '../../storage/models/domain.models';
 import { importProjectWithHelper } from '../helpers/project-import';
 import { exportProjectWithHelper } from '../helpers/project-export';
 import { createFromTemplateWithHelper } from '../helpers/template-loader';
@@ -99,6 +104,7 @@ export class ProjectsService {
     private readonly watcherRunner: WatcherRunnerService,
     private readonly unifiedTemplateService: UnifiedTemplateService,
     private readonly teamsService: TeamsService,
+    private readonly provisioning: ProjectProviderProvisioningService,
   ) {}
 
   async listTemplates(): Promise<TemplateInfo[]> {
@@ -110,7 +116,7 @@ export class ProjectsService {
   }
 
   async createFromTemplate(input: CreateFromTemplateInput) {
-    return createFromTemplateWithHelper(input, {
+    const result = await createFromTemplateWithHelper(input, {
       storage: this.storage,
       settings: this.settings,
       unifiedTemplateService: this.unifiedTemplateService,
@@ -140,6 +146,17 @@ export class ProjectsService {
           nameMaps,
         ),
     });
+
+    if (result?.success && result.project && !('providerMappingRequired' in result)) {
+      const { warnings } = await this.provisioning.provisionProject(
+        result.project.id ?? input.projectId ?? '',
+      );
+      if (warnings.length > 0) {
+        (result as Record<string, unknown>).provisioningWarnings = warnings;
+      }
+    }
+
+    return result;
   }
 
   async exportProject(
@@ -192,7 +209,7 @@ export class ProjectsService {
   }
 
   async importProject(input: ImportProjectInput) {
-    return importProjectWithHelper(input, {
+    const result = await importProjectWithHelper(input, {
       storage: this.storage,
       settings: this.settings,
       watchersService: this.watchersService,
@@ -217,6 +234,31 @@ export class ProjectsService {
       probe1m: probe1mSupport,
       teamsService: this.teamsService,
     });
+
+    if (result && 'success' in result && result.success && !input.dryRun) {
+      const { warnings } = await this.provisioning.provisionProject(input.projectId);
+      if (warnings.length > 0) {
+        (result as Record<string, unknown>).provisioningWarnings = warnings;
+      }
+    }
+
+    return result;
+  }
+
+  async updateProject(
+    id: string,
+    data: UpdateProject,
+  ): Promise<{ project: Project; provisioningWarnings: ProvisioningWarning[] }> {
+    const before = await this.storage.getProject(id);
+    const project = await this.storage.updateProject(id, data);
+
+    let provisioningWarnings: ProvisioningWarning[] = [];
+    if (before && before.rootPath !== project.rootPath) {
+      const { warnings } = await this.provisioning.provisionProject(id);
+      provisioningWarnings = warnings;
+    }
+
+    return { project, provisioningWarnings };
   }
 
   async computeFamilyAlternatives(

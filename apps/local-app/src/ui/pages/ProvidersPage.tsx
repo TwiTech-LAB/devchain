@@ -49,6 +49,7 @@ import { EnvEditor } from '@/ui/components/EnvEditor';
 import { fetchPreflightChecks } from '@/ui/lib/preflight';
 import { providerModelQueryKeys } from '@/ui/lib/provider-model-query-keys';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
+import { getMcpEndpointUrl } from '@/ui/lib/mcp-endpoint';
 
 type ProviderType = 'codex' | 'claude' | 'gemini' | 'opencode';
 
@@ -713,7 +714,7 @@ export function ProvidersPage() {
 
       toast({
         title: actionText,
-        description: `Endpoint: ${window.location.origin}/mcp`,
+        description: `Endpoint: ${getMcpEndpointUrl()}`,
       });
     },
     onError: (error) => {

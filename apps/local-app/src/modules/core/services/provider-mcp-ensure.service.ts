@@ -3,9 +3,11 @@ import { mkdir, readFile, writeFile } from 'fs/promises';
 import { join, isAbsolute, normalize, sep } from 'path';
 import { createLogger } from '../../../common/logging/logger';
 import { getEnvConfig } from '../../../common/config/env.config';
+import { getRuntimeInternalBaseUrl } from '../../../common/config/host-helpers';
 import { McpProviderRegistrationService } from '../../mcp/services/mcp-provider-registration.service';
 import { ProviderAdapterFactory } from '../../providers/adapters';
 import { PreflightService } from './preflight.service';
+import { GeminiTrustedFoldersService } from './gemini-trusted-folders.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import type { Provider, UpdateProviderMcpMetadata } from '../../storage/models/domain.models';
 
@@ -13,12 +15,20 @@ const logger = createLogger('ProviderMcpEnsureService');
 
 export type EnsureMcpAction = 'already_configured' | 'fixed_mismatch' | 'added' | 'error';
 
+export type EnsureMcpWarning = {
+  source: 'trusted_folders' | 'mcp_register' | 'claude_settings' | 'other';
+  level: 'info' | 'warn';
+  message: string;
+  code?: string;
+};
+
 export interface EnsureMcpResult {
   success: boolean;
   action: EnsureMcpAction;
   message?: string;
   endpoint?: string;
   alias?: string;
+  warnings?: EnsureMcpWarning[];
 }
 
 interface ClaudeSettingsLocal {
@@ -46,6 +56,7 @@ export class ProviderMcpEnsureService {
     private readonly adapterFactory: ProviderAdapterFactory,
     @Inject(forwardRef(() => PreflightService))
     private readonly preflight: PreflightService,
+    private readonly geminiTrustedFolders: GeminiTrustedFoldersService,
   ) {}
 
   /**
@@ -122,7 +133,6 @@ export class ProviderMcpEnsureService {
     provider: Provider,
     projectPath?: string,
   ): Promise<EnsureMcpResult> {
-    // Config-file providers require projectPath
     const adapter = this.adapterFactory.getAdapter(provider.name);
     if (adapter.mcpMode === 'project_config' && !projectPath) {
       return {
@@ -133,15 +143,100 @@ export class ProviderMcpEnsureService {
     }
 
     const env = getEnvConfig();
-    const expectedEndpoint = `http://127.0.0.1:${env.PORT}/mcp`;
+    const expectedEndpoint = `${getRuntimeInternalBaseUrl(env)}/mcp`;
     const expectedAlias = 'devchain';
+    const warnings: EnsureMcpWarning[] = [];
 
     logger.info(
       { providerId: provider.id, providerName: provider.name, projectPath },
       'Ensuring MCP configuration',
     );
 
-    // List current registrations with project context
+    // Provider-specific project-local side effects — always run when projectPath is provided
+    if (projectPath && provider.name === 'claude') {
+      try {
+        await this.ensureClaudeProjectSettings(projectPath);
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : 'Unknown error';
+        logger.warn({ error, projectPath }, 'Failed to update Claude project settings (non-fatal)');
+        warnings.push({ source: 'claude_settings', level: 'warn', message: msg });
+      }
+    }
+
+    if (projectPath && provider.name === 'gemini') {
+      try {
+        const trustResult = await this.geminiTrustedFolders.ensure(projectPath);
+        if (trustResult.action === 'distrusted_warning') {
+          warnings.push({
+            source: 'trusted_folders',
+            level: 'warn',
+            message: trustResult.message,
+            code: 'GEMINI_PATH_DISTRUSTED',
+          });
+        } else if (trustResult.action === 'malformed_warning') {
+          warnings.push({
+            source: 'trusted_folders',
+            level: 'warn',
+            message: trustResult.message,
+            code: 'GEMINI_TRUST_FILE_MALFORMED',
+          });
+        }
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : 'Unknown error';
+        logger.warn({ error, projectPath }, 'Failed to ensure Gemini trusted folders (non-fatal)');
+        warnings.push({
+          source: 'trusted_folders',
+          level: 'warn',
+          message: msg,
+          code: 'GEMINI_TRUST_WRITE_FAILED',
+        });
+      }
+    }
+
+    // Upsert routing: adapters that declare upsert skip the list-then-add path
+    if (adapter.mcpProjectRegistrationStrategy === 'upsert' && projectPath) {
+      logger.info(
+        { provider: provider.name, projectPath },
+        'Using upsert strategy (skipping list check)',
+      );
+      const addResult = await this.mcpRegistration.registerProvider(
+        provider,
+        { endpoint: expectedEndpoint, alias: expectedAlias },
+        { cwd: projectPath },
+      );
+      if (!addResult.success) {
+        return {
+          success: false,
+          action: 'error',
+          message: `Failed to register MCP (upsert): ${addResult.message}`,
+          warnings: warnings.length > 0 ? warnings : undefined,
+        };
+      }
+
+      try {
+        await this.storage.updateProviderMcpMetadata(provider.id, {
+          mcpConfigured: true,
+          mcpEndpoint: expectedEndpoint,
+          mcpRegisteredAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        logger.warn(
+          { error, providerId: provider.id },
+          'Failed to update MCP metadata (non-fatal)',
+        );
+      }
+
+      this.preflight.clearCache();
+      return {
+        success: true,
+        action: 'added',
+        endpoint: expectedEndpoint,
+        alias: expectedAlias,
+        warnings: warnings.length > 0 ? warnings : undefined,
+      };
+    }
+
+    // List-then-add path (Claude, Codex, OpenCode)
     const listResult = await this.mcpRegistration.listRegistrations(provider, {
       cwd: projectPath,
     });
@@ -167,26 +262,23 @@ export class ProviderMcpEnsureService {
         success: false,
         action: 'error',
         message: `Failed to list MCP registrations: ${listResult.message}`,
+        warnings: warnings.length > 0 ? warnings : undefined,
       };
     }
 
-    // Check if devchain alias exists
     const existingEntry = listResult.entries.find((e) => e.alias === expectedAlias);
     let action: EnsureMcpAction;
 
     if (existingEntry) {
       if (existingEntry.endpoint === expectedEndpoint) {
-        // Already configured correctly
         action = 'already_configured';
         logger.debug({ provider: provider.name }, 'MCP already configured correctly');
       } else {
-        // Endpoint mismatch - remove and re-add
         logger.info(
           { provider: provider.name, existing: existingEntry.endpoint, expected: expectedEndpoint },
           'MCP endpoint mismatch, removing and re-adding',
         );
 
-        // Remove existing
         const removeResult = await this.mcpRegistration.removeRegistration(
           provider,
           expectedAlias,
@@ -197,16 +289,13 @@ export class ProviderMcpEnsureService {
             success: false,
             action: 'error',
             message: `Failed to remove existing MCP registration: ${removeResult.message}`,
+            warnings: warnings.length > 0 ? warnings : undefined,
           };
         }
 
-        // Add with correct endpoint
         const addResult = await this.mcpRegistration.registerProvider(
           provider,
-          {
-            endpoint: expectedEndpoint,
-            alias: expectedAlias,
-          },
+          { endpoint: expectedEndpoint, alias: expectedAlias },
           { cwd: projectPath },
         );
         if (!addResult.success) {
@@ -214,20 +303,17 @@ export class ProviderMcpEnsureService {
             success: false,
             action: 'error',
             message: `Failed to re-register MCP after removal: ${addResult.message}`,
+            warnings: warnings.length > 0 ? warnings : undefined,
           };
         }
 
         action = 'fixed_mismatch';
       }
     } else {
-      // Not registered - add it
       logger.info({ provider: provider.name }, 'MCP not registered, adding');
       const addResult = await this.mcpRegistration.registerProvider(
         provider,
-        {
-          endpoint: expectedEndpoint,
-          alias: expectedAlias,
-        },
+        { endpoint: expectedEndpoint, alias: expectedAlias },
         { cwd: projectPath },
       );
       if (!addResult.success) {
@@ -235,13 +321,13 @@ export class ProviderMcpEnsureService {
           success: false,
           action: 'error',
           message: `Failed to register MCP: ${addResult.message}`,
+          warnings: warnings.length > 0 ? warnings : undefined,
         };
       }
 
       action = 'added';
     }
 
-    // Update metadata if changed (best-effort - MCP registration already succeeded)
     if (action !== 'already_configured') {
       const metadata: UpdateProviderMcpMetadata = {
         mcpConfigured: true,
@@ -255,24 +341,9 @@ export class ProviderMcpEnsureService {
           { error, providerId: provider.id },
           'Failed to update MCP metadata (non-fatal)',
         );
-        // Don't fail the request - MCP registration already succeeded
-      }
-
-      // For Claude provider, ensure project settings file has mcp__devchain allowed
-      if (projectPath && provider.name === 'claude') {
-        try {
-          await this.ensureClaudeProjectSettings(projectPath);
-        } catch (error) {
-          logger.warn(
-            { error, projectPath },
-            'Failed to update Claude project settings (non-fatal)',
-          );
-          // Don't fail the request - MCP registration already succeeded
-        }
       }
     }
 
-    // Clear preflight cache so subsequent checks reflect the update
     this.preflight.clearCache();
     logger.debug('Cleared preflight cache after MCP ensure');
 
@@ -281,6 +352,7 @@ export class ProviderMcpEnsureService {
       action,
       endpoint: expectedEndpoint,
       alias: expectedAlias,
+      warnings: warnings.length > 0 ? warnings : undefined,
     };
   }
 
