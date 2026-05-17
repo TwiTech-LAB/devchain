@@ -5,6 +5,13 @@ import * as fsPromises from 'node:fs/promises';
 import { SessionCacheService } from './session-cache.service';
 import { SessionReaderAdapterFactory } from '../adapters/session-reader-adapter.factory';
 import { EventsService } from '../../events/services/events.service';
+import { buildChunks } from '../builders/chunk-builder';
+import { encodeCursor } from './transcript-cursor';
+import { truncateMessages, truncateChunks } from './transcript-truncation';
+import {
+  serializeChunk as serializeChunkToWire,
+  serializeMessage as serializeMessageToWire,
+} from './transcript-serialization';
 import type { SessionTranscriptDiscoveredEventPayload } from '../../events/catalog/session.transcript.discovered';
 import type { SessionStoppedEventPayload } from '../../events/catalog/session.stopped';
 import type { SessionCrashedEventPayload } from '../../events/catalog/session.crashed';
@@ -36,6 +43,7 @@ interface WatcherState {
   lastIno: number;
   lastSize: number;
   lastMessageCount: number;
+  lastChunkCount: number;
   lastMetrics: MetricsSnapshot;
 }
 
@@ -111,6 +119,35 @@ export class TranscriptWatcherService implements OnModuleDestroy {
       this.logger.warn({ sessionId }, 'fs.watch failed to start — using stat-poll only');
     }
 
+    // Seed watcher state from current session to avoid first-update flood
+    let lastMessageCount = 0;
+    let lastChunkCount = 0;
+    let lastMetrics: MetricsSnapshot = {
+      totalTokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: 0,
+      messageCount: 0,
+    };
+    try {
+      const adapter = this.adapterFactory.getAdapter(providerName);
+      if (adapter && stat.size > 0) {
+        const session = await this.cacheService.getOrParse(sessionId, filePath, adapter);
+        lastMessageCount = session.metrics.messageCount;
+        const chunks = buildChunks(session.messages);
+        lastChunkCount = chunks.length;
+        lastMetrics = {
+          totalTokens: session.metrics.totalTokens,
+          inputTokens: session.metrics.inputTokens,
+          outputTokens: session.metrics.outputTokens,
+          costUsd: session.metrics.costUsd,
+          messageCount: session.metrics.messageCount,
+        };
+      }
+    } catch (error) {
+      this.logger.warn({ error, sessionId }, 'Failed to seed watcher state — starting from zero');
+    }
+
     // Fallback: stat-poll every 3s
     const pollTimer = setInterval(() => {
       this.checkStatPoll(sessionId).catch((error) => {
@@ -127,8 +164,9 @@ export class TranscriptWatcherService implements OnModuleDestroy {
       debounceTimer: null,
       lastIno: stat.ino,
       lastSize: stat.size,
-      lastMessageCount: 0,
-      lastMetrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, messageCount: 0 },
+      lastMessageCount,
+      lastChunkCount,
+      lastMetrics,
     });
 
     this.logger.log({ sessionId, filePath, hasFsWatch: !!fsWatcher }, 'Started transcript watcher');
@@ -280,10 +318,24 @@ export class TranscriptWatcherService implements OnModuleDestroy {
 
       const newMessageCount = session.metrics.messageCount - state.lastMessageCount;
 
+      // Build chunks for delta computation
+      const chunks = buildChunks(session.messages);
+      const prevCursor = encodeCursor(state.lastSize, state.lastMessageCount, state.lastChunkCount);
+      const cursor = encodeCursor(stat.size, session.metrics.messageCount, chunks.length);
+      const replaceFromChunkIndex = Math.max(0, state.lastChunkCount - 1);
+      const newChunkIds = chunks.slice(replaceFromChunkIndex).map((c) => c.id);
+      const truncatedDeltaMessages = truncateMessages(
+        session.messages.slice(state.lastMessageCount),
+      );
+      const truncatedDeltaChunks = truncateChunks(chunks.slice(replaceFromChunkIndex));
+      const deltaChunks = truncatedDeltaChunks.map(serializeChunkToWire);
+      const deltaMessages = truncatedDeltaMessages.map(serializeMessageToWire);
+
       // Update watcher state
       state.lastSize = stat.size;
       state.lastIno = stat.ino;
       state.lastMessageCount = session.metrics.messageCount;
+      state.lastChunkCount = chunks.length;
       state.lastMetrics = {
         totalTokens: session.metrics.totalTokens,
         inputTokens: session.metrics.inputTokens,
@@ -299,6 +351,13 @@ export class TranscriptWatcherService implements OnModuleDestroy {
           transcriptPath: state.filePath,
           newMessageCount,
           metrics: state.lastMetrics,
+          cursor,
+          prevCursor,
+          replaceFromChunkIndex,
+          newChunkIds,
+          totalChunkCount: chunks.length,
+          deltaChunks,
+          deltaMessages,
         });
       }
     } catch (error) {

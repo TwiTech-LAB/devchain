@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/ui/hooks/use-toast';
-import { useAppSocket } from '@/ui/hooks/useAppSocket';
+import { useRealtimeDispatch } from '@/ui/hooks/useRealtimeDispatch';
+import type { RealtimeInvalidationRegistry } from '@/ui/lib/realtime-invalidation-registry';
 import { useTerminalWindowManager } from '@/ui/terminal-windows';
-import type { WsEnvelope } from '@/ui/lib/socket';
 import {
   fetchAgentPresence,
   terminateSession,
@@ -17,6 +17,7 @@ import {
   TERMINAL_SESSIONS_QUERY_KEY,
   OPEN_TERMINAL_DOCK_EVENT,
 } from '@/ui/components/terminal-dock';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 // ============================================
 // Last-used agent persistence helpers
@@ -110,6 +111,7 @@ export function useAgentSessionControls({
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const openTerminalWindow = useTerminalWindowManager();
+  const apiFetch = useFetchFactory();
   const terminalSessionsQueryKey = [...TERMINAL_SESSIONS_QUERY_KEY, projectId ?? 'all'] as const;
 
   // ---- State ----
@@ -128,30 +130,38 @@ export function useAgentSessionControls({
   // ---- Presence query ----
   const { data: agentPresence = {} as AgentPresenceMap, refetch: refetchPresence } = useQuery({
     queryKey: ['agent-presence', projectId],
-    queryFn: () => fetchAgentPresence(projectId as string),
+    queryFn: () => fetchAgentPresence(projectId as string, apiFetch),
     enabled: !!projectId,
     refetchInterval: 2000,
   });
 
   // ---- Realtime presence via socket ----
-  useAppSocket(
-    {
-      message: (envelope: WsEnvelope) => {
-        const { topic, type } = envelope;
-        if (
-          (topic.startsWith('agent/') && type === 'presence') ||
-          (topic.startsWith('session/') && type === 'activity')
-        ) {
-          queryClient.invalidateQueries({ queryKey: ['agent-presence'] });
-          if (projectId) {
-            queryClient.invalidateQueries({ queryKey: ['agent-presence', projectId] });
-          }
-          if (projectId) void refetchPresence();
-        }
+  const presenceRegistry: RealtimeInvalidationRegistry = useMemo(
+    () => [
+      {
+        match: (t) => t.startsWith('agent/'),
+        type: 'presence',
+        entries: [
+          { kind: 'invalidate', queryKey: ['agent-presence'] },
+          ...(projectId
+            ? [{ kind: 'invalidate' as const, queryKey: ['agent-presence', projectId] }]
+            : []),
+        ],
       },
-    },
-    [queryClient, projectId, refetchPresence],
+      {
+        match: (t) => t.startsWith('session/'),
+        type: 'activity',
+        entries: [
+          { kind: 'invalidate', queryKey: ['agent-presence'] },
+          ...(projectId
+            ? [{ kind: 'invalidate' as const, queryKey: ['agent-presence', projectId] }]
+            : []),
+        ],
+      },
+    ],
+    [projectId],
   );
+  useRealtimeDispatch(presenceRegistry);
 
   // ---- Helper: persist last agent & open terminal dock ----
   const persistAndOpenDock = useCallback(
@@ -190,7 +200,7 @@ export function useAgentSessionControls({
 
   // ---- Terminate mutation ----
   const terminateMutation = useMutation({
-    mutationFn: (sessionId: string) => terminateSession(sessionId),
+    mutationFn: (sessionId: string) => terminateSession(sessionId, '', apiFetch),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['active-sessions', projectId] });
       queryClient.invalidateQueries({ queryKey: ['agent-presence', projectId] });
@@ -210,7 +220,8 @@ export function useAgentSessionControls({
 
   // ---- Launch mutation ----
   const launchMutation = useMutation({
-    mutationFn: ({ agentId, pid }: { agentId: string; pid: string }) => launchSession(agentId, pid),
+    mutationFn: ({ agentId, pid }: { agentId: string; pid: string }) =>
+      launchSession(agentId, pid, undefined, '', apiFetch),
     onMutate: ({ agentId }) => {
       setLaunchingAgentId(agentId);
     },
@@ -271,7 +282,7 @@ export function useAgentSessionControls({
       if (!projectId) return;
       setRestartingAgentId(agentId);
       try {
-        const result = await restartSession(agentId, projectId, sessionId);
+        const result = await restartSession(agentId, projectId, sessionId, '', apiFetch);
         const newSession = result.session;
         openTerminalWindow(newSession);
         updateTerminalSessionsCache(newSession);

@@ -2,316 +2,49 @@ import type { EpicOperationContext } from '../../../epics/services/epics.service
 import type { Status, Epic } from '../../../storage/models/domain.models';
 import { createLogger } from '../../../../common/logging/logger';
 import { NotFoundError, ValidationError } from '../../../../common/errors/error-types';
-import { loadAgentRecipientContext } from '../../../../common/template/agent-recipient-context';
 import {
   McpResponse,
-  ListAgentsParamsSchema,
-  ListAgentsResponse,
-  AgentSummary,
-  GetAgentByNameParamsSchema,
-  GetAgentByNameResponse,
-  ListStatusesParamsSchema,
-  ListStatusesResponse,
-  ListEpicsParamsSchema,
   ListEpicsResponse,
-  ListAssignedEpicsTasksParamsSchema,
   ListAssignedEpicsTasksResponse,
-  CreateEpicParamsSchema,
   CreateEpicResponse,
-  GetEpicByIdParamsSchema,
   GetEpicByIdResponse,
-  AddEpicCommentParamsSchema,
   AddEpicCommentResponse,
-  UpdateEpicParamsSchema,
   UpdateEpicResponse,
+  DeleteEpicResponse,
   SessionContext,
   AgentSessionContext,
   GuestSessionContext,
   EpicParentSummary,
+  type ListEpicsParams,
+  type ListAssignedEpicsTasksParams,
+  type CreateEpicParams,
+  type GetEpicByIdParams,
+  type AddEpicCommentParams,
+  type UpdateEpicParams,
+  type DeleteEpicParams,
 } from '../../dtos/mcp.dto';
 import {
-  mapStatusSummary,
   mapEpicSummary,
   mapEpicChild,
   mapEpicParent,
   mapEpicComment,
 } from '../mappers/dto-mappers';
-import type { McpToolContext } from './types';
+import { ServiceUnavailableError } from '../../../../common/errors/service-unavailable.error';
+import type { EpicToolContext } from './epic-context';
 import { resolveEpicId } from '../utils/resolve-epic-id';
+import { resolveSessionContext, getActorFromContext } from '../utils/session-context-helpers';
+import { resolveAgentNames } from '../utils/agent-name-resolver';
+import { requireProject } from '../utils/require-project';
 
 const logger = createLogger('McpService');
 
-function getActorFromContext(
-  ctx: SessionContext,
-): { id: string; name: string; projectId: string } | null {
-  if (ctx.type === 'agent') {
-    return ctx.agent;
-  }
-  if (ctx.type === 'guest') {
-    return {
-      id: ctx.guest.id,
-      name: ctx.guest.name,
-      projectId: ctx.guest.projectId,
-    };
-  }
-  return null;
-}
-
-function missingSessionResolver(): McpResponse {
-  return {
-    success: false,
-    error: {
-      code: 'SERVICE_UNAVAILABLE',
-      message:
-        'Session resolution requires full app context (not available in standalone MCP mode)',
-    },
-  };
-}
-
-async function resolveSessionContext(ctx: McpToolContext, sessionId: string): Promise<McpResponse> {
-  if (!ctx.resolveSessionContext) {
-    return missingSessionResolver();
-  }
-  return ctx.resolveSessionContext(sessionId);
-}
-
-export async function handleListAgents(ctx: McpToolContext, params: unknown): Promise<McpResponse> {
-  const validated = ListAgentsParamsSchema.parse(params);
+export async function handleListEpics(ctx: EpicToolContext, params: unknown): Promise<McpResponse> {
+  const validated = params as ListEpicsParams;
 
   const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
-  if (!sessionCtxResult.success) return sessionCtxResult;
-  const { project } = sessionCtxResult.data as SessionContext;
-
-  if (!project) {
-    return {
-      success: false,
-      error: {
-        code: 'PROJECT_NOT_FOUND',
-        message: 'No project associated with this session',
-      },
-    };
-  }
-
-  const limit = validated.limit ?? 100;
-  const offset = validated.offset ?? 0;
-  const normalizedQuery = validated.q?.toLowerCase();
-
-  const MAX_COMBINED_FETCH = 1000;
-  const [agentsResult, guests] = await Promise.all([
-    ctx.storage.listAgents(project.id, { limit: MAX_COMBINED_FETCH, offset: 0 }),
-    ctx.storage.listGuests(project.id),
-  ]);
-
-  const [agentPresence, tmuxSessions] = await Promise.all([
-    ctx.sessionsService
-      ? ctx.sessionsService.getAgentPresence(project.id)
-      : Promise.resolve(new Map<string, { online: boolean }>()),
-    ctx.tmuxService ? ctx.tmuxService.listAllSessionNames() : Promise.resolve(new Set<string>()),
-  ]);
-
-  const agentItems: AgentSummary[] = agentsResult.items.map((agent) => ({
-    id: agent.id,
-    name: agent.name,
-    profileId: agent.profileId,
-    description: agent.description,
-    type: 'agent' as const,
-    online: agentPresence.get(agent.id)?.online ?? false,
-  }));
-
-  const guestItems: AgentSummary[] = guests.map((guest) => ({
-    id: guest.id,
-    name: guest.name,
-    profileId: null,
-    description: guest.description,
-    type: 'guest' as const,
-    online: tmuxSessions.has(guest.tmuxSessionId),
-  }));
-
-  let allItems = [...agentItems, ...guestItems].sort((a, b) => {
-    const nameCompare = a.name.localeCompare(b.name);
-    if (nameCompare !== 0) return nameCompare;
-    return a.type === 'agent' ? -1 : 1;
-  });
-
-  if (normalizedQuery) {
-    allItems = allItems.filter((item) => item.name.toLowerCase().includes(normalizedQuery));
-  }
-
-  const total = allItems.length;
-  const paginatedItems = allItems.slice(offset, offset + limit);
-
-  const response: ListAgentsResponse = {
-    agents: paginatedItems,
-    total,
-    limit,
-    offset,
-  };
-
-  return { success: true, data: response };
-}
-
-export async function handleGetAgentByName(
-  ctx: McpToolContext,
-  params: unknown,
-): Promise<McpResponse> {
-  const validated = GetAgentByNameParamsSchema.parse(params);
-
-  const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
-  if (!sessionCtxResult.success) return sessionCtxResult;
-  const { project } = sessionCtxResult.data as SessionContext;
-
-  if (!project) {
-    return {
-      success: false,
-      error: {
-        code: 'PROJECT_NOT_FOUND',
-        message: 'No project associated with this session',
-      },
-    };
-  }
-
-  const normalizedName = validated.name.trim().toLowerCase();
-  const agentsList = await ctx.storage.listAgents(project.id, { limit: 1000, offset: 0 });
-
-  const candidate = agentsList.items.find((agent) => agent.name.toLowerCase() === normalizedName);
-
-  if (!candidate) {
-    return {
-      success: false,
-      error: {
-        code: 'AGENT_NOT_FOUND',
-        message: `Agent "${validated.name}" not found in project`,
-        data: {
-          availableNames: agentsList.items.map((agent) => agent.name),
-        },
-      },
-    };
-  }
-
-  let agentWithProfile;
-  try {
-    agentWithProfile = await ctx.storage.getAgentByName(project.id, candidate.name);
-  } catch (error) {
-    if (error instanceof NotFoundError) {
-      return {
-        success: false,
-        error: {
-          code: 'AGENT_NOT_FOUND',
-          message: `Agent "${validated.name}" not found in project`,
-          data: {
-            availableNames: agentsList.items.map((agent) => agent.name),
-          },
-        },
-      };
-    }
-    logger.warn(
-      { projectId: project.id, name: candidate.name, error },
-      'Agent lookup failed after matching by name',
-    );
-    throw error;
-  }
-
-  if (!ctx.instructionsResolver) {
-    return {
-      success: false,
-      error: {
-        code: 'SERVICE_UNAVAILABLE',
-        message:
-          'Instructions resolver requires full app context (not available in standalone MCP mode)',
-      },
-    };
-  }
-
-  const profile = agentWithProfile.profile;
-  const sessionContext = sessionCtxResult.data as SessionContext;
-  const callerAgentId = sessionContext.type === 'agent' ? sessionContext.agent?.id : undefined;
-  const teamCtx =
-    callerAgentId && ctx.teamsService
-      ? await loadAgentRecipientContext(ctx.teamsService, callerAgentId)
-      : { team_name: '', team_names: '', is_team_lead: false };
-  const renderVars: Record<string, unknown> = {
-    agent_name: sessionContext.type === 'agent' ? (sessionContext.agent?.name ?? '') : '',
-    project_name: project.name,
-    ...teamCtx,
-  };
-
-  const resolvedInstructions = profile
-    ? await ctx.instructionsResolver.resolve(project.id, profile.instructions ?? null, {
-        maxBytes: ctx.defaultInlineMaxBytes ?? 64 * 1024,
-        render: {
-          vars: renderVars,
-          legacyVariables: Object.keys(renderVars),
-        },
-      })
-    : null;
-
-  const response: GetAgentByNameResponse = {
-    agent: {
-      id: agentWithProfile.id,
-      name: agentWithProfile.name,
-      profileId: agentWithProfile.profileId,
-      description: agentWithProfile.description,
-      profile: profile
-        ? {
-            id: profile.id,
-            name: profile.name,
-            instructions: profile.instructions ?? null,
-            instructionsResolved: resolvedInstructions ?? undefined,
-          }
-        : undefined,
-    },
-  };
-
-  return { success: true, data: response };
-}
-
-export async function handleListStatuses(
-  ctx: McpToolContext,
-  params: unknown,
-): Promise<McpResponse> {
-  const validated = ListStatusesParamsSchema.parse(params);
-
-  const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
-  if (!sessionCtxResult.success) return sessionCtxResult;
-  const { project } = sessionCtxResult.data as SessionContext;
-
-  if (!project) {
-    return {
-      success: false,
-      error: {
-        code: 'PROJECT_NOT_FOUND',
-        message: 'No project associated with this session',
-      },
-    };
-  }
-
-  const result = await ctx.storage.listStatuses(project.id, {
-    limit: 1000,
-    offset: 0,
-  });
-  const response: ListStatusesResponse = {
-    statuses: result.items.map((status) => mapStatusSummary(status)),
-  };
-
-  return { success: true, data: response };
-}
-
-export async function handleListEpics(ctx: McpToolContext, params: unknown): Promise<McpResponse> {
-  const validated = ListEpicsParamsSchema.parse(params);
-
-  const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
-  if (!sessionCtxResult.success) return sessionCtxResult;
-  const { project } = sessionCtxResult.data as SessionContext;
-
-  if (!project) {
-    return {
-      success: false,
-      error: {
-        code: 'PROJECT_NOT_FOUND',
-        message: 'No project associated with this session',
-      },
-    };
-  }
+  const projectResult = requireProject(sessionCtxResult);
+  if (!('project' in projectResult)) return projectResult;
+  const { project } = projectResult;
 
   let statusId: string | undefined;
   if (validated.statusName) {
@@ -353,15 +86,7 @@ export async function handleListEpics(ctx: McpToolContext, params: unknown): Pro
     if (epic.agentId) agentIds.add(epic.agentId);
   }
 
-  const agentNameById = new Map<string, string>();
-  for (const agentId of agentIds) {
-    try {
-      const agent = await ctx.storage.getAgent(agentId);
-      agentNameById.set(agentId, agent.name);
-    } catch (error) {
-      logger.warn({ agentId }, 'Failed to resolve agent name');
-    }
-  }
+  const agentNameById = await resolveAgentNames(ctx.storage, agentIds);
 
   const parentIds = result.items.map((epic) => epic.id);
   const subEpicsMap = await ctx.storage.listSubEpicsForParents(project.id, parentIds, {
@@ -374,7 +99,7 @@ export async function handleListEpics(ctx: McpToolContext, params: unknown): Pro
     const summary = mapEpicSummary(epic, agentNameById);
     const status = statusById.get(epic.statusId);
     if (status) {
-      summary.status = mapStatusSummary(status);
+      summary.status = status.label;
     }
 
     const subEpics = subEpicsMap.get(epic.id) ?? [];
@@ -382,7 +107,7 @@ export async function handleListEpics(ctx: McpToolContext, params: unknown): Pro
       const child = mapEpicChild(subEpic);
       const subStatus = statusById.get(subEpic.statusId);
       if (subStatus) {
-        child.status = mapStatusSummary(subStatus);
+        child.status = subStatus.label;
       }
       return child;
     });
@@ -401,24 +126,15 @@ export async function handleListEpics(ctx: McpToolContext, params: unknown): Pro
 }
 
 export async function handleListAssignedEpicsTasks(
-  ctx: McpToolContext,
+  ctx: EpicToolContext,
   params: unknown,
 ): Promise<McpResponse> {
-  const validated = ListAssignedEpicsTasksParamsSchema.parse(params);
+  const validated = params as ListAssignedEpicsTasksParams;
 
   const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
-  if (!sessionCtxResult.success) return sessionCtxResult;
-  const { project } = sessionCtxResult.data as SessionContext;
-
-  if (!project) {
-    return {
-      success: false,
-      error: {
-        code: 'PROJECT_NOT_FOUND',
-        message: 'No project associated with this session',
-      },
-    };
-  }
+  const projectResult = requireProject(sessionCtxResult);
+  if (!('project' in projectResult)) return projectResult;
+  const { project } = projectResult;
 
   const limit = validated.limit ?? 100;
   const offset = validated.offset ?? 0;
@@ -443,21 +159,13 @@ export async function handleListAssignedEpicsTasks(
       if (epic.agentId) agentIds.add(epic.agentId);
     }
 
-    const agentNameById = new Map<string, string>();
-    for (const agentId of agentIds) {
-      try {
-        const agent = await ctx.storage.getAgent(agentId);
-        agentNameById.set(agentId, agent.name);
-      } catch (error) {
-        logger.warn({ agentId }, 'Failed to resolve agent name');
-      }
-    }
+    const agentNameById = await resolveAgentNames(ctx.storage, agentIds);
 
     const epicsWithStatus = result.items.map((epic) => {
       const summary = mapEpicSummary(epic, agentNameById);
       const status = statusById.get(epic.statusId);
       if (status) {
-        summary.status = mapStatusSummary(status);
+        summary.status = status.label;
       }
       return summary;
     });
@@ -496,32 +204,16 @@ export async function handleListAssignedEpicsTasks(
   }
 }
 
-export async function handleCreateEpic(ctx: McpToolContext, params: unknown): Promise<McpResponse> {
-  if (!ctx.epicsService) {
-    return {
-      success: false,
-      error: {
-        code: 'SERVICE_UNAVAILABLE',
-        message: 'Epic creation requires full app context (not available in standalone MCP mode)',
-      },
-    };
-  }
-
-  const validated = CreateEpicParamsSchema.parse(params);
+export async function handleCreateEpic(
+  ctx: EpicToolContext,
+  params: unknown,
+): Promise<McpResponse> {
+  const validated = params as CreateEpicParams;
 
   const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
-  if (!sessionCtxResult.success) return sessionCtxResult;
-  const { project } = sessionCtxResult.data as SessionContext;
-
-  if (!project) {
-    return {
-      success: false,
-      error: {
-        code: 'PROJECT_NOT_FOUND',
-        message: 'No project associated with this session',
-      },
-    };
-  }
+  const projectResult = requireProject(sessionCtxResult);
+  if (!('project' in projectResult)) return projectResult;
+  const { project } = projectResult;
 
   let statusId: string | undefined;
   if (validated.statusName) {
@@ -570,23 +262,22 @@ export async function handleCreateEpic(ctx: McpToolContext, params: unknown): Pr
       context,
     );
 
-    let agentNameById: Map<string, string> | undefined;
-    if (epic.agentId) {
-      agentNameById = new Map();
-      try {
-        const agent = await ctx.storage.getAgent(epic.agentId);
-        agentNameById.set(epic.agentId, agent.name);
-      } catch (error) {
-        logger.warn({ agentId: epic.agentId }, 'Failed to resolve agent name');
-      }
-    }
-
     const response: CreateEpicResponse = {
-      epic: mapEpicSummary(epic, agentNameById),
+      id: epic.id,
+      version: epic.version,
     };
 
     return { success: true, data: response };
   } catch (error) {
+    if (error instanceof ServiceUnavailableError) {
+      return {
+        success: false,
+        error: {
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'Epic creation requires full app context (not available in standalone MCP mode)',
+        },
+      };
+    }
     if (error instanceof NotFoundError) {
       return {
         success: false,
@@ -613,24 +304,15 @@ export async function handleCreateEpic(ctx: McpToolContext, params: unknown): Pr
 }
 
 export async function handleGetEpicById(
-  ctx: McpToolContext,
+  ctx: EpicToolContext,
   params: unknown,
 ): Promise<McpResponse> {
-  const validated = GetEpicByIdParamsSchema.parse(params);
+  const validated = params as GetEpicByIdParams;
 
   const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
-  if (!sessionCtxResult.success) return sessionCtxResult;
-  const { project } = sessionCtxResult.data as SessionContext;
-
-  if (!project) {
-    return {
-      success: false,
-      error: {
-        code: 'PROJECT_NOT_FOUND',
-        message: 'No project associated with this session',
-      },
-    };
-  }
+  const projectResult = requireProject(sessionCtxResult);
+  if (!('project' in projectResult)) return projectResult;
+  const { project } = projectResult;
 
   const resolved = await resolveEpicId(ctx.storage, project.id, validated.id);
   if (!resolved.success) return resolved;
@@ -698,15 +380,7 @@ export async function handleGetEpicById(
   }
   if (parentEpic?.agentId) agentIds.add(parentEpic.agentId);
 
-  const agentNameById = new Map<string, string>();
-  for (const agentId of agentIds) {
-    try {
-      const agent = await ctx.storage.getAgent(agentId);
-      agentNameById.set(agentId, agent.name);
-    } catch (error) {
-      logger.warn({ agentId }, 'Failed to resolve agent name');
-    }
-  }
+  const agentNameById = await resolveAgentNames(ctx.storage, agentIds);
 
   let parentSummary: EpicParentSummary | undefined;
   if (parentEpic) {
@@ -716,14 +390,14 @@ export async function handleGetEpicById(
   const epicSummary = mapEpicSummary(epic, agentNameById);
   const epicStatus = statusById.get(epic.statusId);
   if (epicStatus) {
-    epicSummary.status = mapStatusSummary(epicStatus);
+    epicSummary.status = epicStatus.label;
   }
 
   const subEpicsWithStatus = subEpicsResult.items.map((child) => {
     const childSummary = mapEpicChild(child);
     const childStatus = statusById.get(child.statusId);
     if (childStatus) {
-      childSummary.status = mapStatusSummary(childStatus);
+      childSummary.status = childStatus.label;
     }
     return childSummary;
   });
@@ -744,10 +418,10 @@ export async function handleGetEpicById(
 }
 
 export async function handleAddEpicComment(
-  ctx: McpToolContext,
+  ctx: EpicToolContext,
   params: unknown,
 ): Promise<McpResponse> {
-  const validated = AddEpicCommentParamsSchema.parse(params);
+  const validated = params as AddEpicCommentParams;
 
   const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
   if (!sessionCtxResult.success) return sessionCtxResult;
@@ -779,10 +453,31 @@ export async function handleAddEpicComment(
   if (!resolved.success) return resolved;
   const epicId = (resolved.data as { epicId: string }).epicId;
 
-  let epic: Epic;
   try {
-    epic = await ctx.storage.getEpic(epicId);
+    const comment = await ctx.epicsService.addEpicComment(
+      epicId,
+      project.id,
+      validated.content,
+      authorActor.id,
+      sessionCtx.type,
+    );
+
+    const response: AddEpicCommentResponse = {
+      id: comment.id,
+    };
+
+    return { success: true, data: response };
   } catch (error) {
+    if (error instanceof ServiceUnavailableError) {
+      return {
+        success: false,
+        error: {
+          code: 'SERVICE_UNAVAILABLE',
+          message:
+            'Epic comment creation requires full app context (not available in standalone MCP mode)',
+        },
+      };
+    }
     if (error instanceof NotFoundError) {
       return {
         success: false,
@@ -792,56 +487,25 @@ export async function handleAddEpicComment(
         },
       };
     }
+    if (error instanceof ValidationError) {
+      return {
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: error.message,
+          data: error.details,
+        },
+      };
+    }
     throw error;
   }
-
-  if (epic.projectId !== project.id) {
-    return {
-      success: false,
-      error: {
-        code: 'EPIC_NOT_FOUND',
-        message: `Epic ${epicId} does not belong to the resolved project.`,
-      },
-    };
-  }
-
-  const comment = await ctx.storage.createEpicComment({
-    epicId,
-    authorName: authorActor.name,
-    content: validated.content,
-  });
-
-  const response: AddEpicCommentResponse = {
-    comment: mapEpicComment(comment),
-  };
-
-  return { success: true, data: response };
 }
 
-export async function handleUpdateEpic(ctx: McpToolContext, params: unknown): Promise<McpResponse> {
-  if (!ctx.epicsService) {
-    return {
-      success: false,
-      error: {
-        code: 'SERVICE_UNAVAILABLE',
-        message: 'Epic updates require full app context (not available in standalone MCP mode)',
-      },
-    };
-  }
-
-  let preprocessedParams = params;
-  if (params && typeof params === 'object' && 'assignment' in params) {
-    const p = params as Record<string, unknown>;
-    if (typeof p.assignment === 'string') {
-      try {
-        preprocessedParams = { ...p, assignment: JSON.parse(p.assignment) };
-      } catch {
-        // Leave as-is; Zod will report the validation error
-      }
-    }
-  }
-
-  const validated = UpdateEpicParamsSchema.parse(preprocessedParams);
+export async function handleUpdateEpic(
+  ctx: EpicToolContext,
+  params: unknown,
+): Promise<McpResponse> {
+  const validated = params as UpdateEpicParams;
 
   const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
   if (!sessionCtxResult.success) return sessionCtxResult;
@@ -999,17 +663,6 @@ export async function handleUpdateEpic(ctx: McpToolContext, params: unknown): Pr
       };
     }
 
-    if (parentEpic.parentId !== null) {
-      return {
-        success: false,
-        error: {
-          code: 'HIERARCHY_CONFLICT',
-          message:
-            'Only one level of epic hierarchy is allowed. The specified parent already has a parent.',
-        },
-      };
-    }
-
     updateData.parentId = validated.parentId;
   }
 
@@ -1030,6 +683,7 @@ export async function handleUpdateEpic(ctx: McpToolContext, params: unknown): Pr
   }
 
   let updatedEpic: Epic;
+  let outcome: import('../../../epics/services/epics.service').UpdateEpicOutcome | undefined;
   try {
     const actor =
       sessionCtx.type === 'agent'
@@ -1040,8 +694,24 @@ export async function handleUpdateEpic(ctx: McpToolContext, params: unknown): Pr
 
     const context: EpicOperationContext = { actor };
 
-    updatedEpic = await ctx.epicsService.updateEpic(epicId, updateData, validated.version, context);
+    const result = await ctx.epicsService.updateEpicWithOutcome(
+      epicId,
+      updateData,
+      validated.version,
+      context,
+    );
+    updatedEpic = result.epic;
+    outcome = result.outcome;
   } catch (error) {
+    if (error instanceof ServiceUnavailableError) {
+      return {
+        success: false,
+        error: {
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'Epic updates require full app context (not available in standalone MCP mode)',
+        },
+      };
+    }
     if (error instanceof Error && error.message.includes('was modified by another operation')) {
       const currentEpic = await ctx.storage.getEpic(epicId);
       return {
@@ -1055,36 +725,123 @@ export async function handleUpdateEpic(ctx: McpToolContext, params: unknown): Pr
         },
       };
     }
+    if (error instanceof ValidationError) {
+      return {
+        success: false,
+        error: {
+          code: 'HIERARCHY_CONFLICT',
+          message: error.message,
+        },
+      };
+    }
     throw error;
   }
 
-  let agentNameById: Map<string, string> | undefined;
-  if (updatedEpic.agentId) {
-    agentNameById = new Map();
-    try {
-      const agent = await ctx.storage.getAgent(updatedEpic.agentId);
-      agentNameById.set(updatedEpic.agentId, agent.name);
-    } catch (error) {
-      logger.warn({ agentId: updatedEpic.agentId }, 'Failed to resolve agent name');
-    }
-  }
-
   const response: UpdateEpicResponse = {
-    epic: mapEpicSummary(updatedEpic, agentNameById),
+    id: updatedEpic.id,
+    version: updatedEpic.version,
   };
-
-  const statusChanged = updateData.statusId !== undefined && updateData.statusId !== epic.statusId;
 
   if (
     sessionCtx.type === 'agent' &&
     sessionCtx.agent?.id &&
-    statusChanged &&
+    outcome.statusChanged &&
     validated.assignment === undefined &&
-    updatedEpic.agentId === sessionCtx.agent.id
+    outcome.agentUnchanged &&
+    outcome.previousAssigneeAgent?.id === sessionCtx.agent.id
   ) {
-    const hintAgentName = agentNameById?.get(updatedEpic.agentId) ?? sessionCtx.agent.name;
-    response.hint = `CHECK REQUIRED: Epic moved to a new status while still assigned to ${hintAgentName}. Answer this before continuing — is this a handoff to another agent? If YES, call devchain_update_epic with assignment: { agentName: "Target Agent" } now. If NO, the current assignee remains and you may proceed. Do not skip this check.`;
+    response.hint = `CHECK REQUIRED: Epic moved to a new status while still assigned to ${outcome.previousAssigneeAgent.name}. Answer this before continuing — is this a handoff to another agent? If YES, call devchain_update_epic with assignment: { agentName: "Target Agent" } now. If NO, the current assignee remains and you may proceed. Do not skip this check.`;
   }
+
+  return { success: true, data: response };
+}
+
+export async function handleDeleteEpic(
+  ctx: EpicToolContext,
+  params: unknown,
+): Promise<McpResponse> {
+  const validated = params as DeleteEpicParams;
+
+  const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
+  if (!sessionCtxResult.success) return sessionCtxResult;
+  const sessionCtx = sessionCtxResult.data as SessionContext;
+  const { project } = sessionCtx;
+
+  if (!project) {
+    return {
+      success: false,
+      error: {
+        code: 'PROJECT_NOT_FOUND',
+        message: 'No project associated with this session',
+      },
+    };
+  }
+
+  const resolved = await resolveEpicId(ctx.storage, project.id, validated.id);
+  if (!resolved.success) return resolved;
+  const epicId = (resolved.data as { epicId: string }).epicId;
+
+  let epic: Epic;
+  try {
+    epic = await ctx.storage.getEpic(epicId);
+  } catch (error) {
+    if (error instanceof NotFoundError) {
+      return {
+        success: false,
+        error: {
+          code: 'EPIC_NOT_FOUND',
+          message: `Epic ${epicId} was not found.`,
+        },
+      };
+    }
+    throw error;
+  }
+
+  if (epic.projectId !== project.id) {
+    return {
+      success: false,
+      error: {
+        code: 'EPIC_NOT_FOUND',
+        message: `Epic ${epicId} does not belong to the resolved project.`,
+      },
+    };
+  }
+
+  try {
+    const actor =
+      sessionCtx.type === 'agent'
+        ? { type: 'agent' as const, id: (sessionCtx as AgentSessionContext).agent!.id }
+        : sessionCtx.type === 'guest'
+          ? { type: 'guest' as const, id: (sessionCtx as GuestSessionContext).guest!.id }
+          : null;
+    const context: EpicOperationContext = { actor };
+    await ctx.epicsService.deleteEpic(epicId, context);
+  } catch (error) {
+    if (error instanceof ServiceUnavailableError) {
+      return {
+        success: false,
+        error: {
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'Epic deletion requires full app context (not available in standalone MCP mode)',
+        },
+      };
+    }
+    if (error instanceof NotFoundError) {
+      return {
+        success: false,
+        error: {
+          code: 'EPIC_NOT_FOUND',
+          message: `Epic ${epicId} was not found.`,
+        },
+      };
+    }
+    throw error;
+  }
+
+  const response: DeleteEpicResponse = {
+    id: epic.id,
+    deleted: true,
+  };
 
   return { success: true, data: response };
 }

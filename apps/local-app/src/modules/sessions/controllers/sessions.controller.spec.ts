@@ -1,11 +1,18 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
 import { SessionsController } from './sessions.controller';
 import type { SessionsService } from '../services/sessions.service';
+import type { SessionRuntime } from '../services/session-runtime';
 import type {
   SessionsMessagePoolService,
   MessageLogEntry,
   PoolDetails,
 } from '../services/sessions-message-pool.service';
+import type { StorageService } from '../../storage/interfaces/storage.interface';
 
 // Valid UUIDs for testing
 const VALID_PROJECT_ID = '550e8400-e29b-41d4-a716-446655440000';
@@ -15,9 +22,11 @@ const VALID_AGENT_ID_2 = '770e8400-e29b-41d4-a716-446655440002';
 describe('SessionsController', () => {
   let controller: SessionsController;
   let mockSessionsService: jest.Mocked<SessionsService>;
+  let mockSessionRuntime: jest.Mocked<SessionRuntime>;
   let mockMessagePoolService: jest.Mocked<
     Pick<SessionsMessagePoolService, 'getMessageLog' | 'getPoolDetails' | 'getMessageById'>
   >;
+  let mockStorage: { getAgent: jest.Mock };
 
   const createMockLogEntry = (overrides: Partial<MessageLogEntry> = {}): MessageLogEntry => ({
     id: 'msg-1',
@@ -45,15 +54,26 @@ describe('SessionsController', () => {
   beforeEach(() => {
     mockSessionsService = {} as jest.Mocked<SessionsService>;
 
+    mockSessionRuntime = {
+      launch: jest.fn(),
+      restore: jest.fn(),
+    } as unknown as jest.Mocked<SessionRuntime>;
+
     mockMessagePoolService = {
       getMessageLog: jest.fn().mockReturnValue([]),
       getPoolDetails: jest.fn().mockReturnValue([]),
       getMessageById: jest.fn().mockReturnValue(null),
     };
 
+    mockStorage = {
+      getAgent: jest.fn(),
+    };
+
     controller = new SessionsController(
       mockSessionsService as SessionsService,
       mockMessagePoolService as unknown as SessionsMessagePoolService,
+      mockSessionRuntime as SessionRuntime,
+      mockStorage as unknown as StorageService,
     );
   });
 
@@ -303,6 +323,150 @@ describe('SessionsController', () => {
       // Check truncation for long messages
       expect(result.messages[1].preview).toHaveLength(103); // 100 + '...'
       expect(result.messages[1].preview).toMatch(/\.\.\.$/);
+    });
+  });
+
+  describe('PATCH /sessions/:id (renameSession)', () => {
+    const VALID_SESSION_ID = '880e8400-e29b-41d4-a716-446655440003';
+
+    const mockSession = {
+      id: VALID_SESSION_ID,
+      epicId: null,
+      agentId: VALID_AGENT_ID,
+      tmuxSessionId: null,
+      status: 'stopped' as const,
+      startedAt: '2024-01-01T00:00:00Z',
+      endedAt: '2024-01-01T01:00:00Z',
+      lastActivityAt: null,
+      activityState: null,
+      busySince: null,
+      transcriptPath: null,
+      name: null,
+      createdAt: '2024-01-01T00:00:00Z',
+      updatedAt: '2024-01-01T00:00:00Z',
+    };
+
+    it('returns updated session with new name', async () => {
+      mockSessionsService.getSession = jest.fn().mockReturnValue(mockSession);
+      mockStorage.getAgent.mockResolvedValue({ projectId: VALID_PROJECT_ID });
+      const updated = { ...mockSession, name: 'My Session' };
+      mockSessionsService.updateName = jest.fn().mockReturnValue(updated);
+
+      const result = await controller.renameSession(VALID_SESSION_ID, {
+        projectId: VALID_PROJECT_ID,
+        name: 'My Session',
+      });
+
+      expect(result.name).toBe('My Session');
+      expect(mockSessionsService.updateName).toHaveBeenCalledWith(VALID_SESSION_ID, 'My Session');
+    });
+
+    it('clears name when null is passed', async () => {
+      mockSessionsService.getSession = jest.fn().mockReturnValue(mockSession);
+      mockStorage.getAgent.mockResolvedValue({ projectId: VALID_PROJECT_ID });
+      const updated = { ...mockSession, name: null };
+      mockSessionsService.updateName = jest.fn().mockReturnValue(updated);
+
+      const result = await controller.renameSession(VALID_SESSION_ID, {
+        projectId: VALID_PROJECT_ID,
+        name: null,
+      });
+
+      expect(result.name).toBeNull();
+    });
+
+    it('throws 404 when session not found', async () => {
+      mockSessionsService.getSession = jest.fn().mockReturnValue(null);
+
+      await expect(
+        controller.renameSession(VALID_SESSION_ID, {
+          projectId: VALID_PROJECT_ID,
+          name: 'Test',
+        }),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('throws 403 on project mismatch', async () => {
+      mockSessionsService.getSession = jest.fn().mockReturnValue(mockSession);
+      mockStorage.getAgent.mockResolvedValue({ projectId: 'different-project-id' });
+
+      await expect(
+        controller.renameSession(VALID_SESSION_ID, {
+          projectId: VALID_PROJECT_ID,
+          name: 'Test',
+        }),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('throws 400 on invalid body', async () => {
+      await expect(controller.renameSession(VALID_SESSION_ID, { name: 'Test' })).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+  });
+
+  describe('DELETE /sessions/:id/record (deleteSessionRecord)', () => {
+    const VALID_SESSION_ID = '880e8400-e29b-41d4-a716-446655440003';
+
+    const mockStoppedSession = {
+      id: VALID_SESSION_ID,
+      epicId: null,
+      agentId: VALID_AGENT_ID,
+      tmuxSessionId: null,
+      status: 'stopped' as const,
+      startedAt: '2024-01-01T00:00:00Z',
+      endedAt: '2024-01-01T01:00:00Z',
+      lastActivityAt: null,
+      activityState: null,
+      busySince: null,
+      transcriptPath: null,
+      name: null,
+      createdAt: '2024-01-01T00:00:00Z',
+      updatedAt: '2024-01-01T00:00:00Z',
+    };
+
+    it('deletes a stopped session record', async () => {
+      mockSessionsService.getSession = jest.fn().mockReturnValue(mockStoppedSession);
+      mockStorage.getAgent.mockResolvedValue({ projectId: VALID_PROJECT_ID });
+      mockSessionsService.hardDeleteRecord = jest.fn().mockReturnValue({ deleted: true });
+
+      const result = await controller.deleteSessionRecord(VALID_SESSION_ID, VALID_PROJECT_ID);
+
+      expect(result).toEqual({ deleted: true });
+      expect(mockSessionsService.hardDeleteRecord).toHaveBeenCalledWith(VALID_SESSION_ID);
+    });
+
+    it('throws 409 when session is running', async () => {
+      const runningSession = { ...mockStoppedSession, status: 'running' as const };
+      mockSessionsService.getSession = jest.fn().mockReturnValue(runningSession);
+      mockStorage.getAgent.mockResolvedValue({ projectId: VALID_PROJECT_ID });
+
+      await expect(
+        controller.deleteSessionRecord(VALID_SESSION_ID, VALID_PROJECT_ID),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it('throws 404 when session not found', async () => {
+      mockSessionsService.getSession = jest.fn().mockReturnValue(null);
+
+      await expect(
+        controller.deleteSessionRecord(VALID_SESSION_ID, VALID_PROJECT_ID),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('throws 403 on project mismatch', async () => {
+      mockSessionsService.getSession = jest.fn().mockReturnValue(mockStoppedSession);
+      mockStorage.getAgent.mockResolvedValue({ projectId: 'different-project-id' });
+
+      await expect(
+        controller.deleteSessionRecord(VALID_SESSION_ID, VALID_PROJECT_ID),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('throws 400 when projectId is missing', async () => {
+      await expect(controller.deleteSessionRecord(VALID_SESSION_ID, undefined)).rejects.toThrow(
+        BadRequestException,
+      );
     });
   });
 });

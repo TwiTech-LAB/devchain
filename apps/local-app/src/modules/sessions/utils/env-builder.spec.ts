@@ -163,12 +163,12 @@ describe('buildSessionCommand', () => {
 });
 
 /**
- * Regression test: Simulates TmuxService.sendCommandArgs() quoting behavior.
+ * Regression test: Simulates tmux send-keys quoting behavior.
  * This ensures env values don't get double-quoted when passed through tmux.
  */
 describe('tmux quoting simulation (regression)', () => {
   /**
-   * Simulates how TmuxService.sendCommandArgs() quotes argv elements.
+   * Simulates how tmux send-keys quotes argv elements.
    * Each element is wrapped in single quotes with internal quotes escaped.
    */
   function simulateSendCommandArgsQuoting(argv: string[]): string {

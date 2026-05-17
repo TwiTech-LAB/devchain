@@ -2,6 +2,7 @@ import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 import { useSessionTranscript } from '@/ui/hooks/useSessionTranscript';
 import { SessionViewerPanel } from '@/ui/components/session-reader/SessionViewerPanel';
+import { isPagedTranscriptEnabled } from '@/ui/hooks/usePagedTranscript';
 
 export interface SessionReadSlideOverProps {
   sessionId: string | null;
@@ -9,8 +10,11 @@ export interface SessionReadSlideOverProps {
 }
 
 export function SessionReadSlideOver({ sessionId, onClose }: SessionReadSlideOverProps) {
-  const { messages, chunks, metrics, isLoading, error, isLive, session } =
-    useSessionTranscript(sessionId);
+  const pagedMode = isPagedTranscriptEnabled();
+  const { messages, chunks, metrics, isLoading, error, isLive, session } = useSessionTranscript(
+    sessionId,
+    { enableTranscript: !pagedMode },
+  );
 
   return (
     <DialogPrimitive.Root open={!!sessionId} onOpenChange={(open) => !open && onClose()}>

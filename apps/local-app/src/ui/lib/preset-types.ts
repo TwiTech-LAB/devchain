@@ -9,3 +9,15 @@ export interface Preset {
   description?: string | null;
   agentConfigs: PresetAgentConfig[];
 }
+
+export interface RenameProviderConfigPresetAgentContext {
+  name: string;
+  profileId: string;
+}
+
+export interface RenameProviderConfigInProjectPresetsInput {
+  profileId: string;
+  oldName: string;
+  newName: string;
+  agents: RenameProviderConfigPresetAgentContext[];
+}

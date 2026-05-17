@@ -12,6 +12,7 @@ import {
   formatDuration,
   truncateText,
 } from '@/ui/utils/session-reader-formatters';
+import { useSessionViewMode } from '@/ui/hooks/useSessionViewMode';
 
 const TRUNCATE_THRESHOLD = 5000;
 
@@ -26,6 +27,7 @@ export interface ThinkingBlockProps {
 }
 
 export function ThinkingBlock({ step, isStepHot, percentOfChunk }: ThinkingBlockProps) {
+  const { mode } = useSessionViewMode();
   const text = step.content.thinkingText ?? '';
   const estimatedTokens = step.estimatedTokens ?? 0;
   const previewText = text ? truncateText(text, 80) : '';
@@ -49,17 +51,17 @@ export function ThinkingBlock({ step, isStepHot, percentOfChunk }: ThinkingBlock
           <span>Thinking</span>
           {text && (
             <span
-              className="truncate max-w-[300px] text-muted-foreground/60 font-normal"
+              className="truncate max-w-[300px] text-muted-foreground/70 font-mono italic"
               data-testid="thinking-preview"
             >
               — {previewText}
             </span>
           )}
           <span className="ml-auto flex items-center gap-1.5">
-            {isStepHot && (
+            {isStepHot && mode === 'diagnostic' && (
               <Flame className="h-3 w-3 text-amber-500" data-testid="step-hotspot-flame" />
             )}
-            {isStepHot && percentOfChunk != null && percentOfChunk > 0 && (
+            {isStepHot && mode === 'diagnostic' && percentOfChunk != null && percentOfChunk > 0 && (
               <span
                 className="text-amber-600 font-medium text-[10px] tabular-nums"
                 data-testid="step-hotspot-pct"
@@ -69,7 +71,7 @@ export function ThinkingBlock({ step, isStepHot, percentOfChunk }: ThinkingBlock
             )}
             {estimatedTokens > 0 && (
               <span
-                className="text-muted-foreground/60 text-[10px] tabular-nums"
+                className="text-muted-foreground/70 text-[10px] tabular-nums"
                 data-testid="thinking-token-badge"
               >
                 ~{formatTokens(estimatedTokens)}
@@ -77,7 +79,7 @@ export function ThinkingBlock({ step, isStepHot, percentOfChunk }: ThinkingBlock
             )}
             {step.durationMs > 0 && (
               <span
-                className="text-muted-foreground/60 text-[10px] tabular-nums"
+                className="text-muted-foreground/70 text-[10px] tabular-nums"
                 data-testid="thinking-duration"
               >
                 {formatDuration(step.durationMs)}
@@ -87,7 +89,7 @@ export function ThinkingBlock({ step, isStepHot, percentOfChunk }: ThinkingBlock
         </CollapsibleTrigger>
         <CollapsibleContent>
           <pre
-            className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 text-[11px] text-muted-foreground/80 leading-relaxed"
+            className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 text-[11px] text-foreground leading-relaxed"
             data-testid="thinking-block-content"
           >
             {displayText}

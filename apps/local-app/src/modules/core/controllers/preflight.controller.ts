@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Query } from '@nestjs/common';
+import { Controller, Get, Query } from '@nestjs/common';
 import { PreflightService, PreflightResult } from '../services/preflight.service';
 import { createLogger } from '../../../common/logging/logger';
 
@@ -16,19 +16,5 @@ export class PreflightController {
     const includeAllProviders = all === '1' || all === 'true';
     logger.info({ projectPath, includeAllProviders }, 'GET /api/preflight');
     return this.preflightService.runChecks(projectPath, { includeAllProviders });
-  }
-
-  @Post('clear-cache')
-  async clearCache(
-    @Query('projectPath') projectPath?: string,
-  ): Promise<{ success: boolean; message: string }> {
-    logger.info({ projectPath }, 'POST /api/preflight/clear-cache');
-    this.preflightService.clearCache(projectPath);
-    return {
-      success: true,
-      message: projectPath
-        ? `Cleared preflight cache for ${projectPath}`
-        : 'Cleared all preflight cache',
-    };
   }
 }

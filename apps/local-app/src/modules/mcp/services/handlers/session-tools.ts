@@ -4,30 +4,35 @@ import {
   McpResponse,
   ListSessionsResponse,
   SessionSummary,
-  RegisterGuestParamsSchema,
   RegisterGuestResponse,
+  type RegisterGuestParams,
 } from '../../dtos/mcp.dto';
-import { ListSessionsParamsSchema } from '../../dtos/schema-registry';
-import type { McpToolContext } from './types';
+import type { SessionToolContext } from './session-context';
+import { ServiceUnavailableError } from '../../../../common/errors/service-unavailable.error';
 
 const logger = createLogger('McpService');
 
-export async function handleListSessions(
-  ctx: McpToolContext,
-  params: unknown,
-): Promise<McpResponse> {
-  if (!ctx.sessionsService) {
-    return {
-      success: false,
-      error: {
-        code: 'SERVICE_UNAVAILABLE',
-        message: 'Session listing requires full app context (not available in standalone MCP mode)',
-      },
-    };
+function sessionServiceUnavailable(): McpResponse {
+  return {
+    success: false,
+    error: {
+      code: 'SERVICE_UNAVAILABLE',
+      message: 'Session operations require full app context (not available in standalone MCP mode)',
+    },
+  };
+}
+
+function catchSessionUnavailable(error: unknown): McpResponse {
+  if (error instanceof ServiceUnavailableError) {
+    return sessionServiceUnavailable();
   }
+  throw error;
+}
 
-  ListSessionsParamsSchema.parse(params);
-
+export async function handleListSessions(
+  ctx: SessionToolContext,
+  _params: unknown,
+): Promise<McpResponse> {
   try {
     const activeSessions = await ctx.sessionsService.listActiveSessions();
 
@@ -77,6 +82,9 @@ export async function handleListSessions(
     const response: ListSessionsResponse = { sessions };
     return { success: true, data: response };
   } catch (error) {
+    if (error instanceof ServiceUnavailableError) {
+      return sessionServiceUnavailable();
+    }
     logger.error({ error }, 'listSessions failed');
     return {
       success: false,
@@ -89,20 +97,10 @@ export async function handleListSessions(
 }
 
 export async function handleRegisterGuest(
-  ctx: McpToolContext,
+  ctx: SessionToolContext,
   params: unknown,
 ): Promise<McpResponse> {
-  if (!ctx.guestsService) {
-    return {
-      success: false,
-      error: {
-        code: 'SERVICE_UNAVAILABLE',
-        message: 'Guest registration requires full app context',
-      },
-    };
-  }
-
-  const validated = RegisterGuestParamsSchema.parse(params);
+  const validated = params as RegisterGuestParams;
 
   try {
     const result = await ctx.guestsService.register({
@@ -113,11 +111,6 @@ export async function handleRegisterGuest(
 
     const response: RegisterGuestResponse = {
       guestId: result.guestId,
-      name: validated.name,
-      projectId: result.projectId,
-      projectName: result.projectName,
-      isSandbox: result.isSandbox,
-      registeredAt: new Date().toISOString(),
     };
 
     logger.info(
@@ -147,6 +140,6 @@ export async function handleRegisterGuest(
         },
       };
     }
-    throw error;
+    return catchSessionUnavailable(error);
   }
 }

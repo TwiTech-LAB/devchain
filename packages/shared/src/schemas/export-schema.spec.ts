@@ -624,6 +624,202 @@ describe('ExportSchema', () => {
     });
   });
 
+  describe('scheduledEpics', () => {
+    const baseTemplate = {
+      version: 1,
+      exportedAt: '2024-01-01T00:00:00Z',
+      prompts: [],
+      profiles: [],
+      agents: [],
+      statuses: [],
+    };
+
+    const validScheduledEpic = {
+      name: 'Daily Standup',
+      cronExpression: '0 9 * * 1-5',
+      timezone: 'America/New_York',
+      enabled: true,
+      titleTemplate: 'Standup {{date}}',
+      descriptionTemplate: 'Daily standup notes',
+      templateStatusLabel: 'New',
+      templateAgentName: 'Scrum Master',
+      templateTags: ['standup', 'recurring'],
+      allowOverlap: false,
+      missedRunPolicy: 'skip' as const,
+    };
+
+    it('should default to empty array when omitted (backward compatibility)', () => {
+      const result = ExportSchema.safeParse(baseTemplate);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.scheduledEpics).toEqual([]);
+      }
+    });
+
+    it('legacy templates without scheduledEpics still parse', () => {
+      const legacy = { version: 1, profiles: [], statuses: [], agents: [] };
+      const result = ExportSchema.safeParse(legacy);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.scheduledEpics).toEqual([]);
+      }
+    });
+
+    it('should accept valid scheduledEpics with all fields', () => {
+      const template = {
+        ...baseTemplate,
+        scheduledEpics: [validScheduledEpic],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.scheduledEpics).toHaveLength(1);
+        expect(result.data.scheduledEpics[0].name).toBe('Daily Standup');
+        expect(result.data.scheduledEpics[0].enabled).toBe(true);
+        expect(result.data.scheduledEpics[0].cronExpression).toBe('0 9 * * 1-5');
+        expect(result.data.scheduledEpics[0].timezone).toBe('America/New_York');
+      }
+    });
+
+    it('should preserve enabled state', () => {
+      const template = {
+        ...baseTemplate,
+        scheduledEpics: [{ ...validScheduledEpic, enabled: false }],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.scheduledEpics[0].enabled).toBe(false);
+      }
+    });
+
+    it('should accept scheduledEpic with only required fields', () => {
+      const minimal = {
+        name: 'Minimal',
+        cronExpression: '0 0 * * *',
+        timezone: 'UTC',
+        enabled: true,
+        titleTemplate: 'Task {{date}}',
+      };
+      const template = { ...baseTemplate, scheduledEpics: [minimal] };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.scheduledEpics[0].templateTags).toEqual([]);
+        expect(result.data.scheduledEpics[0].allowOverlap).toBe(false);
+        expect(result.data.scheduledEpics[0].missedRunPolicy).toBe('skip');
+      }
+    });
+
+    it('should accept empty scheduledEpics array', () => {
+      const template = { ...baseTemplate, scheduledEpics: [] };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.scheduledEpics).toEqual([]);
+      }
+    });
+
+    it('should reject scheduledEpic with empty name', () => {
+      const template = {
+        ...baseTemplate,
+        scheduledEpics: [{ ...validScheduledEpic, name: '' }],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject scheduledEpic with empty cronExpression', () => {
+      const template = {
+        ...baseTemplate,
+        scheduledEpics: [{ ...validScheduledEpic, cronExpression: '' }],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject scheduledEpic without enabled field', () => {
+      const { enabled, ...noEnabled } = validScheduledEpic;
+      const template = { ...baseTemplate, scheduledEpics: [noEnabled] };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(false);
+    });
+
+    it('should accept all missedRunPolicy values', () => {
+      for (const policy of ['skip', 'run_once', 'run_all'] as const) {
+        const template = {
+          ...baseTemplate,
+          scheduledEpics: [{ ...validScheduledEpic, missedRunPolicy: policy }],
+        };
+        const result = ExportSchema.safeParse(template);
+        expect(result.success).toBe(true);
+        if (result.success) {
+          expect(result.data.scheduledEpics[0].missedRunPolicy).toBe(policy);
+        }
+      }
+    });
+
+    it('should reject invalid missedRunPolicy value', () => {
+      const template = {
+        ...baseTemplate,
+        scheduledEpics: [{ ...validScheduledEpic, missedRunPolicy: 'invalid' }],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(false);
+    });
+
+    it('should not accept runtime fields (strict mode)', () => {
+      const withRuntime = {
+        ...validScheduledEpic,
+        nextRunAt: '2024-01-02T09:00:00Z',
+        lastRunAt: '2024-01-01T09:00:00Z',
+        lastRunStatus: 'completed',
+      };
+      const template = { ...baseTemplate, scheduledEpics: [withRuntime] };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(false);
+    });
+
+    it('should accept nullable optional fields as null', () => {
+      const template = {
+        ...baseTemplate,
+        scheduledEpics: [
+          {
+            ...validScheduledEpic,
+            descriptionTemplate: null,
+            templateStatusLabel: null,
+            templateParentEpicTitle: null,
+            templateAgentName: null,
+          },
+        ],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(true);
+    });
+
+    it('should accept multiple scheduled epics', () => {
+      const template = {
+        ...baseTemplate,
+        scheduledEpics: [
+          validScheduledEpic,
+          {
+            name: 'Weekly Review',
+            cronExpression: '0 14 * * 5',
+            timezone: 'Europe/London',
+            enabled: false,
+            titleTemplate: 'Weekly Review {{week}}',
+          },
+        ],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.scheduledEpics).toHaveLength(2);
+        expect(result.data.scheduledEpics[1].enabled).toBe(false);
+      }
+    });
+  });
+
   describe('EnvVarsSchema (standalone)', () => {
     it('should accept valid env vars', () => {
       const result = EnvVarsSchema.safeParse({ MY_VAR: 'value', PATH: '/usr/bin' });

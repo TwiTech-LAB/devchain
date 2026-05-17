@@ -13,6 +13,7 @@ import { Badge } from '@/ui/components/ui/badge';
 import { ScrollArea } from '@/ui/components/ui/scroll-area';
 import { Copy, Check, Clock, User, Zap, Hash, AlertCircle, Loader2 } from 'lucide-react';
 import { cn } from '@/ui/lib/utils';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 import type { MessageLogEntry, MessageLogPreview } from './MessageActivityList';
 
 interface MessageDetailDrawerProps {
@@ -22,8 +23,10 @@ interface MessageDetailDrawerProps {
 }
 
 /** Fetch full message content by ID */
-async function fetchMessageDetail(messageId: string): Promise<MessageLogEntry> {
-  const res = await fetch(`/api/sessions/messages/${messageId}`);
+type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
+async function fetchMessageDetail(messageId: string, fetchFn: FetchFn): Promise<MessageLogEntry> {
+  const res = await fetchFn(`/api/sessions/messages/${messageId}`);
   if (!res.ok) {
     throw new Error('Failed to fetch message details');
   }
@@ -123,8 +126,8 @@ export function MessageDetailDrawer({ message, onClose }: MessageDetailDrawerPro
   const [fullMessage, setFullMessage] = useState<MessageLogEntry | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const apiFetch = useFetchFactory();
 
-  // Fetch full message content when drawer opens
   useEffect(() => {
     if (!message) {
       setFullMessage(null);
@@ -135,7 +138,7 @@ export function MessageDetailDrawer({ message, onClose }: MessageDetailDrawerPro
     setIsLoading(true);
     setError(null);
 
-    fetchMessageDetail(message.id)
+    fetchMessageDetail(message.id, apiFetch)
       .then(setFullMessage)
       .catch((err) => {
         console.error('Failed to fetch message details:', err);

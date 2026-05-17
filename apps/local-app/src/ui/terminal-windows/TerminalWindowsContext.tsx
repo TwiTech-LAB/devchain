@@ -33,6 +33,17 @@ export interface TerminalWindowDetail {
   value: string;
   title?: string;
   hidden?: boolean;
+  interactive?: boolean;
+  sessionId?: string;
+  isRenaming?: boolean;
+  draftName?: string;
+  renameInputRef?: React.RefObject<HTMLInputElement | null>;
+  onRenameStart?: () => void;
+  onDraftChange?: (value: string) => void;
+  onRenameKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
+  onRenameBlur?: () => void;
+  onCopyId?: () => void;
+  copiedId?: boolean;
 }
 
 export interface TerminalWindowConfig {
@@ -478,20 +489,35 @@ export function TerminalWindowsProvider({ children }: { children: ReactNode }) {
       if (!meta.title && !meta.subtitle && !meta.menuItems && !meta.details && !meta.sessionId) {
         return;
       }
-      setWindows((prev) =>
-        prev.map((window) =>
-          window.id === id
-            ? {
-                ...window,
-                title: meta.title ?? window.title,
-                subtitle: meta.subtitle ?? window.subtitle,
-                menuItems: meta.menuItems ?? window.menuItems,
-                details: meta.details ?? window.details,
-                sessionId: meta.sessionId ?? window.sessionId,
-              }
-            : window,
-        ),
-      );
+      setWindows((prev) => {
+        const idx = prev.findIndex((w) => w.id === id);
+        if (idx === -1) return prev;
+        const w = prev[idx];
+        const nextTitle = meta.title ?? w.title;
+        const nextSubtitle = meta.subtitle ?? w.subtitle;
+        const nextMenuItems = meta.menuItems ?? w.menuItems;
+        const nextDetails = meta.details ?? w.details;
+        const nextSessionId = meta.sessionId ?? w.sessionId;
+        if (
+          nextTitle === w.title &&
+          nextSubtitle === w.subtitle &&
+          nextMenuItems === w.menuItems &&
+          nextDetails === w.details &&
+          nextSessionId === w.sessionId
+        ) {
+          return prev;
+        }
+        const next = [...prev];
+        next[idx] = {
+          ...w,
+          title: nextTitle,
+          subtitle: nextSubtitle,
+          menuItems: nextMenuItems,
+          details: nextDetails,
+          sessionId: nextSessionId,
+        };
+        return next;
+      });
     },
     [],
   );

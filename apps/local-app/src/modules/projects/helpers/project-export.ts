@@ -88,6 +88,7 @@ export async function exportProjectWithHelper(
   const providerSettings = buildProviderSettings(profileContext.providersMap);
   const providerModels = await buildProviderModels(profileContext.providersMap, deps.storage);
   const teams = deps.teamsService ? await buildExportTeams(state.project, deps) : [];
+  const scheduledEpics = await buildExportScheduledEpics(projectId, state, deps.storage);
 
   const manifest = buildManifest(
     state.project,
@@ -118,6 +119,7 @@ export async function exportProjectWithHelper(
     subscribers,
     ...(teams.length > 0 && { teams }),
     ...(exportPresets !== undefined ? { presets: exportPresets } : {}),
+    scheduledEpics,
   };
 }
 
@@ -570,6 +572,57 @@ async function buildExportTeams(project: { id: string }, deps: ExportProjectDeps
   }
 
   return result;
+}
+
+async function buildExportScheduledEpics(
+  projectId: string,
+  state: ExportState,
+  storage: StorageService,
+) {
+  const { items: schedules } = await storage.listScheduledEpics(projectId, { limit: 10000 });
+
+  const statusMap = new Map(state.statusesRes.items.map((s) => [s.id, s.label]));
+  const agentMap = new Map(state.agentsRes.items.map((a) => [a.id, a.name]));
+
+  const epicTitleCache = new Map<string, string>();
+
+  return Promise.all(
+    schedules.map(async (schedule) => {
+      let templateParentEpicTitle: string | null = null;
+      if (schedule.templateParentEpicId) {
+        if (epicTitleCache.has(schedule.templateParentEpicId)) {
+          templateParentEpicTitle = epicTitleCache.get(schedule.templateParentEpicId)!;
+        } else {
+          try {
+            const epic = await storage.getEpic(schedule.templateParentEpicId);
+            templateParentEpicTitle = epic.title;
+            epicTitleCache.set(schedule.templateParentEpicId, epic.title);
+          } catch {
+            templateParentEpicTitle = null;
+          }
+        }
+      }
+
+      return {
+        name: schedule.name,
+        cronExpression: schedule.cronExpression,
+        timezone: schedule.timezone,
+        enabled: schedule.enabled,
+        titleTemplate: schedule.titleTemplate,
+        descriptionTemplate: schedule.descriptionTemplate,
+        templateStatusLabel: schedule.templateStatusId
+          ? (statusMap.get(schedule.templateStatusId) ?? null)
+          : null,
+        templateParentEpicTitle,
+        templateAgentName: schedule.templateAgentId
+          ? (agentMap.get(schedule.templateAgentId) ?? null)
+          : null,
+        templateTags: schedule.templateTags,
+        allowOverlap: schedule.allowOverlap,
+        missedRunPolicy: schedule.missedRunPolicy,
+      };
+    }),
+  );
 }
 
 function buildManifest(

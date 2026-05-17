@@ -567,3 +567,91 @@ export type CreateReviewComment = Omit<
 export type UpdateReviewComment = Partial<Pick<ReviewComment, 'content' | 'status'>>;
 
 export type CreateReviewCommentTarget = Omit<ReviewCommentTarget, 'id' | 'createdAt'>;
+
+// ============================================
+// SCHEDULED EPICS
+// ============================================
+
+export type ScheduledEpicMissedRunPolicy = 'skip' | 'run_once' | 'run_all';
+export type ScheduledEpicRunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+export type ScheduledEpicRunSource = 'scheduler' | 'manual';
+
+export interface ScheduledEpic {
+  id: string;
+  projectId: string;
+  name: string;
+  cronExpression: string;
+  timezone: string;
+  enabled: boolean;
+  titleTemplate: string;
+  descriptionTemplate: string | null;
+  templateStatusId: string | null;
+  templateParentEpicId: string | null;
+  templateAgentId: string | null;
+  templateTags: string[];
+  allowOverlap: boolean;
+  missedRunPolicy: ScheduledEpicMissedRunPolicy;
+  configVersion: number;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  lastRunStatus: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ScheduledEpicRun {
+  id: string;
+  scheduleId: string;
+  plannedFor: string;
+  source: ScheduledEpicRunSource;
+  status: ScheduledEpicRunStatus;
+  createdEpicId: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type CreateScheduledEpic = Omit<
+  ScheduledEpic,
+  | 'id'
+  | 'configVersion'
+  | 'nextRunAt'
+  | 'lastRunAt'
+  | 'lastRunStatus'
+  | 'lastError'
+  | 'createdAt'
+  | 'updatedAt'
+> & {
+  nextRunAt?: string | null;
+};
+
+export type UpdateScheduledEpic = Partial<
+  Omit<
+    ScheduledEpic,
+    | 'id'
+    | 'projectId'
+    | 'configVersion'
+    | 'nextRunAt'
+    | 'lastRunAt'
+    | 'lastRunStatus'
+    | 'lastError'
+    | 'createdAt'
+    | 'updatedAt'
+  >
+>;
+
+export type UpdateScheduledEpicRuntimeState = Partial<
+  Pick<ScheduledEpic, 'nextRunAt' | 'lastRunAt' | 'lastRunStatus' | 'lastError'>
+>;
+
+export type CreateScheduledEpicRun = Omit<
+  ScheduledEpicRun,
+  'id' | 'createdEpicId' | 'startedAt' | 'finishedAt' | 'errorMessage' | 'createdAt' | 'updatedAt'
+>;
+
+export type UpdateScheduledEpicRun = Partial<
+  Pick<ScheduledEpicRun, 'status' | 'createdEpicId' | 'startedAt' | 'finishedAt' | 'errorMessage'>
+>;

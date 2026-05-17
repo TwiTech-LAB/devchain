@@ -2,9 +2,11 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { PreflightService } from './preflight.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import { access } from 'fs/promises';
-import { McpProviderRegistrationService } from '../../mcp/services/mcp-provider-registration.service';
+import { McpProviderRegistrationService } from '../../providers/services/mcp-provider-registration.service';
 import { ProviderAdapterFactory } from '../../providers/adapters';
 import { DEFAULT_FEATURE_FLAGS } from '../../../common/config/feature-flags';
+import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
+import { FakeProcessExecutor } from '../../terminal/services/process-executor/fake-process-executor';
 
 type ExecCallback = (error: Error | null, stdout: string, stderr: string) => void;
 
@@ -84,6 +86,7 @@ describe('PreflightService', () => {
     getSupportedProviders: jest.Mock;
     getAdapter: jest.Mock;
   };
+  let fakeExecutor: FakeProcessExecutor;
 
   beforeEach(async () => {
     delete process.env.ENABLED_PROVIDERS;
@@ -141,6 +144,14 @@ describe('PreflightService', () => {
         {
           provide: ProviderAdapterFactory,
           useValue: mockAdapterFactory,
+        },
+        {
+          provide: ProcessExecutor,
+          useFactory: () => {
+            fakeExecutor = new FakeProcessExecutor();
+            fakeExecutor.setDefaultResponse({ type: 'success', stdout: 'tmux 3.3a' });
+            return fakeExecutor;
+          },
         },
       ],
     }).compile();
@@ -714,16 +725,6 @@ describe('PreflightService', () => {
       const result = await service.runChecks();
       expect(result.providers[0].mcpStatus).toBe('fail');
       expect(result.providers[0].mcpMessage).toContain('timed out');
-    });
-  });
-
-  describe('clearCache', () => {
-    it('should be a no-op (cache removed)', () => {
-      // clearCache is kept for backward compatibility but is now a no-op
-      service.clearCache('/test/project');
-      service.clearCache();
-      // No errors should be thrown
-      expect(true).toBe(true);
     });
   });
 

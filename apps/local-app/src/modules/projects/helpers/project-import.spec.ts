@@ -4,6 +4,7 @@ import {
   preserveImportedEnv,
   createImportedTeams,
   applyTeamOverrides,
+  pruneUnavailableTeamProfileSelections,
 } from './project-import';
 
 jest.mock('../../../common/logging/logger', () => ({
@@ -663,6 +664,107 @@ describe('createImportedTeams', () => {
         profileConfigSelections: [{ profileId: 'profile-1', configIds: ['config-1'] }],
       }),
     );
+  });
+});
+
+describe('pruneUnavailableTeamProfileSelections', () => {
+  it('drops known template configs that were not created because their provider is unavailable', () => {
+    const result = pruneUnavailableTeamProfileSelections(
+      [
+        {
+          name: 'Planning',
+          memberAgentNames: ['Architect'],
+          profileSelections: [
+            {
+              profileName: 'Architect',
+              configNames: ['gpt-high', 'gemini3', 'opus'],
+            },
+          ],
+        },
+      ],
+      [
+        {
+          id: 'profile-old-1',
+          name: 'Architect',
+          providerConfigs: [{ name: 'gpt-high' }, { name: 'gemini3' }, { name: 'opus' }],
+        },
+      ],
+      { 'profile-old-1': 'profile-new-1' },
+      new Map([
+        ['profile-new-1:gpt-high', 'config-gpt'],
+        ['profile-new-1:opus', 'config-opus'],
+      ]),
+    );
+
+    expect(result[0].profileSelections).toEqual([
+      {
+        profileName: 'Architect',
+        configNames: ['gpt-high', 'opus'],
+      },
+    ]);
+  });
+
+  it('keeps unknown config names so strict team import still reports template typos', () => {
+    const result = pruneUnavailableTeamProfileSelections(
+      [
+        {
+          name: 'Planning',
+          memberAgentNames: ['Architect'],
+          profileSelections: [
+            {
+              profileName: 'Architect',
+              configNames: ['typo-config'],
+            },
+          ],
+        },
+      ],
+      [
+        {
+          id: 'profile-old-1',
+          name: 'Architect',
+          providerConfigs: [{ name: 'gpt-high' }],
+        },
+      ],
+      { 'profile-old-1': 'profile-new-1' },
+      new Map([['profile-new-1:gpt-high', 'config-gpt']]),
+    );
+
+    expect(result[0].profileSelections).toEqual([
+      {
+        profileName: 'Architect',
+        configNames: ['typo-config'],
+      },
+    ]);
+  });
+
+  it('removes a profile from profileNames when all selected configs are unavailable', () => {
+    const result = pruneUnavailableTeamProfileSelections(
+      [
+        {
+          name: 'Planning',
+          memberAgentNames: ['Architect'],
+          profileNames: ['Architect'],
+          profileSelections: [
+            {
+              profileName: 'Architect',
+              configNames: ['gemini3'],
+            },
+          ],
+        },
+      ],
+      [
+        {
+          id: 'profile-old-1',
+          name: 'Architect',
+          providerConfigs: [{ name: 'gemini3' }],
+        },
+      ],
+      { 'profile-old-1': 'profile-new-1' },
+      new Map(),
+    );
+
+    expect(result[0].profileNames).toEqual([]);
+    expect(result[0].profileSelections).toBeUndefined();
   });
 });
 

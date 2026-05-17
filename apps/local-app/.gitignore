@@ -9,3 +9,4 @@ coverage
 *.sqlite-wal
 .devchain
 test-results/
+output/

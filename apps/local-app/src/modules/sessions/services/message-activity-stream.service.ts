@@ -1,10 +1,16 @@
-import { Inject, Injectable, Logger, forwardRef } from '@nestjs/common';
-import { TerminalGateway } from '../../terminal/gateways/terminal.gateway';
-import type { MessageLogEntry, PoolDetails } from './sessions-message-pool.service';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  REALTIME_BROADCASTER,
+  type RealtimeBroadcaster,
+} from '../../realtime/ports/realtime-broadcaster.port';
+import type { MessageLogEntry, PoolDetails } from './message-pool.types';
 
 /**
  * Service for broadcasting message activity events via WebSocket.
  * Follows the EventsStreamService pattern for real-time UI updates.
+ *
+ * T2 disposition: keep — domain-specific vocabulary (broadcastEnqueued, broadcastDelivered,
+ * broadcastFailed) adds semantic clarity; single caller is SessionsMessagePoolService.
  *
  * Topics:
  * - messages/activity: enqueued, delivered, failed
@@ -15,8 +21,8 @@ export class MessageActivityStreamService {
   private readonly logger = new Logger(MessageActivityStreamService.name);
 
   constructor(
-    @Inject(forwardRef(() => TerminalGateway))
-    private readonly terminalGateway: TerminalGateway,
+    @Inject(REALTIME_BROADCASTER)
+    private readonly broadcaster: RealtimeBroadcaster,
   ) {}
 
   /**
@@ -56,7 +62,7 @@ export class MessageActivityStreamService {
 
   private broadcast(topic: string, type: string, payload: unknown): void {
     try {
-      this.terminalGateway.broadcastEvent(topic, type, payload);
+      this.broadcaster.broadcastEvent(topic, type, payload);
     } catch (error) {
       this.logger.error({ topic, type, error }, 'Failed to broadcast message activity update');
     }

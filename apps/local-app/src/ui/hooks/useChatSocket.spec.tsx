@@ -14,6 +14,10 @@ jest.mock('@/ui/hooks/useAppSocket', () => ({
   useAppSocket: jest.fn(),
 }));
 
+jest.mock('@/ui/hooks/useRealtimeDispatch', () => ({
+  useRealtimeDispatch: jest.fn(),
+}));
+
 function createMockSocket(): Socket {
   return {
     connected: true,
@@ -60,8 +64,6 @@ describe('useChatSocket', () => {
     });
 
     expect(useAppSocketMock).toHaveBeenCalled();
-    // No 3rd argument (socketOverride) — useAppSocket handles worktree selection
-    expect(useAppSocketMock.mock.calls[0][2]).toBeUndefined();
     expect(result.current.socketRef.current).toBe(socket);
   });
 
@@ -73,7 +75,8 @@ describe('useChatSocket', () => {
       wrapper: createWrapper(),
     });
 
-    const handlers = useAppSocketMock.mock.calls[0][0];
+    const lastCall = useAppSocketMock.mock.calls[useAppSocketMock.mock.calls.length - 1];
+    const handlers = lastCall[0];
     expect(typeof handlers.connect).toBe('function');
     expect(typeof handlers.disconnect).toBe('function');
     expect(typeof handlers.message).toBe('function');
@@ -108,26 +111,11 @@ describe('useChatSocket', () => {
         ),
       });
 
-      messageHandler = useAppSocketMock.mock.calls[0][0].message;
+      const lastCall = useAppSocketMock.mock.calls[useAppSocketMock.mock.calls.length - 1];
+      messageHandler = lastCall[0].message;
     }
 
-    it('agent.created invalidates agents and activeSessions', () => {
-      setup();
-      messageHandler({
-        topic: 'project/project-1/state',
-        type: 'agent.created',
-        payload: { agentId: 'a1', agentName: 'Coder' },
-      });
-
-      expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
-        queryKey: ['agents', 'project-1'],
-      });
-      expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
-        queryKey: ['active-sessions', 'project-1'],
-      });
-    });
-
-    it('team.member.added invalidates agents, teams list, and team detail', () => {
+    it('team.member.added invalidates team detail', () => {
       setup();
       messageHandler({
         topic: 'project/project-1/state',
@@ -136,17 +124,11 @@ describe('useChatSocket', () => {
       });
 
       expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
-        queryKey: ['agents', 'project-1'],
-      });
-      expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
-        queryKey: ['teams', 'project-1'],
-      });
-      expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
         queryKey: ['teams', 'detail', 't1'],
       });
     });
 
-    it('team.member.removed invalidates agents, teams list, and team detail', () => {
+    it('team.member.removed invalidates team detail', () => {
       setup();
       messageHandler({
         topic: 'project/project-1/state',
@@ -155,17 +137,11 @@ describe('useChatSocket', () => {
       });
 
       expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
-        queryKey: ['agents', 'project-1'],
-      });
-      expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
-        queryKey: ['teams', 'project-1'],
-      });
-      expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
         queryKey: ['teams', 'detail', 't1'],
       });
     });
 
-    it('team.config.updated invalidates teams list and team detail', () => {
+    it('team.config.updated invalidates team detail', () => {
       setup();
       messageHandler({
         topic: 'project/project-1/state',
@@ -174,44 +150,7 @@ describe('useChatSocket', () => {
       });
 
       expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
-        queryKey: ['teams', 'project-1'],
-      });
-      expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
         queryKey: ['teams', 'detail', 't1'],
-      });
-      expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith(
-        expect.objectContaining({ queryKey: ['agents', 'project-1'] }),
-      );
-    });
-
-    it('agent.deleted invalidates agents, presence, sessions, teams, and thread lists', () => {
-      setup();
-      messageHandler({
-        topic: 'project/project-1/state',
-        type: 'agent.deleted',
-        payload: { agentId: 'a1', agentName: 'Coder', teamId: 't1', teamName: 'Backend' },
-      });
-
-      expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
-        queryKey: ['agents', 'project-1'],
-      });
-      expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
-        queryKey: ['agent-presence', 'project-1'],
-      });
-      expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
-        queryKey: ['active-sessions', 'project-1'],
-      });
-      expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
-        queryKey: ['teams', 'project-1'],
-      });
-      expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
-        queryKey: ['teams', 'detail'],
-      });
-      expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
-        queryKey: ['threads', 'project-1', 'user'],
-      });
-      expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
-        queryKey: ['threads', 'project-1', 'agent'],
       });
     });
 

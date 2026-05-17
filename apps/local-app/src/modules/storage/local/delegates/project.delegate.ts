@@ -13,7 +13,6 @@ import {
   NotFoundError,
 } from '../../../../common/errors/error-types';
 import { createLogger } from '../../../../common/logging/logger';
-import { getRawSqliteClient } from '../../db/sqlite-raw';
 import { isSqliteUniqueConstraint } from '../helpers/storage-helpers';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 
@@ -161,261 +160,235 @@ export class ProjectStorageDelegate extends BaseStorageDelegate {
     const configIdMap: Record<string, string> = {}; // Maps newProfileId -> configId
     const agentIdMap: Record<string, string> = {};
 
-    // NOTE: Using raw SQL transaction control instead of Drizzle's transaction() method
-    // Reason: Drizzle's transaction wrapper with better-sqlite3 does NOT properly rollback
-    // on errors. Testing revealed that when ValidationError is thrown during agent creation,
-    // the error is caught and logged as "rolled back" but database changes persist.
-    // Root cause: Drizzle's transaction implementation may not properly handle Error subclasses
-    // or has issues with better-sqlite3 in WAL mode.
-    // Solution: Use getRawSqliteClient helper to obtain the underlying better-sqlite3 client,
-    // then use raw SQL BEGIN/COMMIT/ROLLBACK for guaranteed atomicity.
-    //
-    // WAL Mode Considerations:
-    // - WAL (Write-Ahead Logging) allows concurrent readers during writes
-    // - BEGIN IMMEDIATE ensures write lock is acquired immediately, preventing concurrent writes
-    // - This prevents "database is locked" errors in multi-threaded scenarios
-    // - ROLLBACK is guaranteed to undo all changes since BEGIN, even across multiple statements
-    const sqlite = getRawSqliteClient(this.db);
-    if (!sqlite || typeof sqlite.exec !== 'function') {
-      throw new StorageError('Unable to access underlying SQLite client for transaction control');
-    }
-
-    sqlite.exec('BEGIN IMMEDIATE TRANSACTION');
-
-    try {
-      // 1. Create project
-      await this.db.insert(projects).values({
-        id: project.id,
-        name: project.name,
-        description: project.description,
-        rootPath: project.rootPath,
-        isTemplate: project.isTemplate,
-        createdAt: project.createdAt,
-        updatedAt: project.updatedAt,
-      });
-
-      // 2. Create statuses from template
-      for (const s of template.statuses.sort((a, b) => a.position - b.position)) {
-        const statusId = randomUUID();
-        await this.db.insert(statuses).values({
-          id: statusId,
-          projectId: project.id,
-          label: s.label,
-          color: s.color,
-          position: s.position,
-          mcpHidden: s.mcpHidden ?? false,
-          createdAt: now,
-          updatedAt: now,
+    await this.txRunner
+      .runImmediateAsync(async () => {
+        // 1. Create project
+        await this.db.insert(projects).values({
+          id: project.id,
+          name: project.name,
+          description: project.description,
+          rootPath: project.rootPath,
+          isTemplate: project.isTemplate,
+          createdAt: project.createdAt,
+          updatedAt: project.updatedAt,
         });
-        if (s.id) statusIdMap[s.id] = statusId;
-      }
 
-      if (seedableSourceNames.length > 0) {
-        await this.db.insert(sourceProjectEnabled).values(
-          seedableSourceNames.map((sourceName) => ({
-            id: randomUUID(),
+        // 2. Create statuses from template
+        for (const s of template.statuses.sort((a, b) => a.position - b.position)) {
+          const statusId = randomUUID();
+          await this.db.insert(statuses).values({
+            id: statusId,
             projectId: project.id,
-            sourceName,
-            enabled: true,
+            label: s.label,
+            color: s.color,
+            position: s.position,
+            mcpHidden: s.mcpHidden ?? false,
             createdAt: now,
-          })),
-        );
-      }
+            updatedAt: now,
+          });
+          if (s.id) statusIdMap[s.id] = statusId;
+        }
 
-      // 3. Create prompts from template with tags
-      const { eq, and, or, isNull } = await import('drizzle-orm');
-      for (const p of template.prompts) {
-        const promptId = randomUUID();
-        await this.db.insert(prompts).values({
-          id: promptId,
-          projectId: project.id,
-          title: p.title,
-          content: p.content ?? '',
-          version: 1,
-          createdAt: now,
-          updatedAt: now,
-        });
-        if (p.id) promptIdMap[p.id] = promptId;
+        if (seedableSourceNames.length > 0) {
+          await this.db.insert(sourceProjectEnabled).values(
+            seedableSourceNames.map((sourceName) => ({
+              id: randomUUID(),
+              projectId: project.id,
+              sourceName,
+              enabled: true,
+              createdAt: now,
+            })),
+          );
+        }
 
-        // Handle tags for this prompt
-        if (p.tags?.length) {
-          for (const tagName of p.tags) {
-            // Find or create the tag
-            let tag = await this.db
-              .select()
-              .from(tags)
-              .where(
-                and(
-                  eq(tags.name, tagName),
-                  or(eq(tags.projectId, project.id), isNull(tags.projectId)),
-                ),
-              )
-              .limit(1);
+        // 3. Create prompts from template with tags
+        const { eq, and, or, isNull } = await import('drizzle-orm');
+        for (const p of template.prompts) {
+          const promptId = randomUUID();
+          await this.db.insert(prompts).values({
+            id: promptId,
+            projectId: project.id,
+            title: p.title,
+            content: p.content ?? '',
+            version: 1,
+            createdAt: now,
+            updatedAt: now,
+          });
+          if (p.id) promptIdMap[p.id] = promptId;
 
-            if (!tag[0]) {
-              const tagId = randomUUID();
-              await this.db.insert(tags).values({
-                id: tagId,
-                projectId: project.id,
-                name: tagName,
+          // Handle tags for this prompt
+          if (p.tags?.length) {
+            for (const tagName of p.tags) {
+              // Find or create the tag
+              let tag = await this.db
+                .select()
+                .from(tags)
+                .where(
+                  and(
+                    eq(tags.name, tagName),
+                    or(eq(tags.projectId, project.id), isNull(tags.projectId)),
+                  ),
+                )
+                .limit(1);
+
+              if (!tag[0]) {
+                const tagId = randomUUID();
+                await this.db.insert(tags).values({
+                  id: tagId,
+                  projectId: project.id,
+                  name: tagName,
+                  createdAt: now,
+                  updatedAt: now,
+                });
+                tag = [
+                  {
+                    id: tagId,
+                    projectId: project.id,
+                    name: tagName,
+                    createdAt: now,
+                    updatedAt: now,
+                  },
+                ];
+              }
+
+              // Create prompt-tag junction
+              await this.db.insert(promptTags).values({
+                promptId,
+                tagId: tag[0].id,
+                createdAt: now,
+              });
+            }
+          }
+        }
+
+        // 4. Create profiles from template
+        // Note: providerId and options are now on profile_provider_configs, not on agent_profiles
+        for (const prof of template.profiles) {
+          const profileId = randomUUID();
+          await this.db.insert(agentProfiles).values({
+            id: profileId,
+            projectId: project.id,
+            name: prof.name,
+            familySlug: prof.familySlug ?? null,
+            systemPrompt: null,
+            instructions: prof.instructions,
+            // Temperature stored as integer (×100) to match createAgentProfile convention
+            temperature: prof.temperature != null ? Math.round(prof.temperature * 100) : null,
+            maxTokens: prof.maxTokens,
+            createdAt: now,
+            updatedAt: now,
+          });
+          if (prof.id) profileIdMap[prof.id] = profileId;
+
+          // Handle provider configs for this profile
+          // New format: providerConfigs array with positions
+          // Fallback: Old format with single providerId/options
+          if (prof.providerConfigs && prof.providerConfigs.length > 0) {
+            // New format: multiple configs with positions
+            // Sort by position (fallback to array index if position missing)
+            const sortedConfigs = [...prof.providerConfigs].sort((a, b) => {
+              const posA = a.position ?? 0;
+              const posB = b.position ?? 0;
+              return posA - posB;
+            });
+
+            for (const config of sortedConfigs) {
+              // Resolve provider by name
+              const provider = await this.db
+                .select()
+                .from(providers)
+                .where(eq(providers.name, config.providerName))
+                .limit(1);
+
+              if (!provider[0]) {
+                throw new ValidationError(`Provider not found: ${config.providerName}`);
+              }
+
+              const configId = randomUUID();
+              await this.db.insert(profileProviderConfigs).values({
+                id: configId,
+                profileId: profileId,
+                providerId: provider[0].id,
+                name: config.name,
+                options: config.options ?? null,
+                env: config.env ? JSON.stringify(config.env) : null,
+                position: config.position ?? sortedConfigs.indexOf(config), // Fallback to array index
                 createdAt: now,
                 updatedAt: now,
               });
-              tag = [
-                { id: tagId, projectId: project.id, name: tagName, createdAt: now, updatedAt: now },
-              ];
+              // Store first config as default for agents
+              if (!configIdMap[profileId]) {
+                configIdMap[profileId] = configId;
+              }
             }
-
-            // Create prompt-tag junction
-            await this.db.insert(promptTags).values({
-              promptId,
-              tagId: tag[0].id,
-              createdAt: now,
-            });
-          }
-        }
-      }
-
-      // 4. Create profiles from template
-      // Note: providerId and options are now on profile_provider_configs, not on agent_profiles
-      for (const prof of template.profiles) {
-        const profileId = randomUUID();
-        await this.db.insert(agentProfiles).values({
-          id: profileId,
-          projectId: project.id,
-          name: prof.name,
-          familySlug: prof.familySlug ?? null,
-          systemPrompt: null,
-          instructions: prof.instructions,
-          // Temperature stored as integer (×100) to match createAgentProfile convention
-          temperature: prof.temperature != null ? Math.round(prof.temperature * 100) : null,
-          maxTokens: prof.maxTokens,
-          createdAt: now,
-          updatedAt: now,
-        });
-        if (prof.id) profileIdMap[prof.id] = profileId;
-
-        // Handle provider configs for this profile
-        // New format: providerConfigs array with positions
-        // Fallback: Old format with single providerId/options
-        if (prof.providerConfigs && prof.providerConfigs.length > 0) {
-          // New format: multiple configs with positions
-          // Sort by position (fallback to array index if position missing)
-          const sortedConfigs = [...prof.providerConfigs].sort((a, b) => {
-            const posA = a.position ?? 0;
-            const posB = b.position ?? 0;
-            return posA - posB;
-          });
-
-          for (const config of sortedConfigs) {
-            // Resolve provider by name
-            const provider = await this.db
-              .select()
-              .from(providers)
-              .where(eq(providers.name, config.providerName))
-              .limit(1);
-
-            if (!provider[0]) {
-              throw new ValidationError(`Provider not found: ${config.providerName}`);
-            }
-
+          } else {
+            // Fallback for old templates: create single config from providerId/options
             const configId = randomUUID();
             await this.db.insert(profileProviderConfigs).values({
               id: configId,
               profileId: profileId,
-              providerId: provider[0].id,
-              name: config.name,
-              options: config.options ?? null,
-              env: config.env ? JSON.stringify(config.env) : null,
-              position: config.position ?? sortedConfigs.indexOf(config), // Fallback to array index
+              providerId: prof.providerId,
+              name: prof.name, // Use profile name as config name
+              options: prof.options ?? null,
+              env: null,
+              position: 0,
               createdAt: now,
               updatedAt: now,
             });
-            // Store first config as default for agents
-            if (!configIdMap[profileId]) {
-              configIdMap[profileId] = configId;
-            }
+            configIdMap[profileId] = configId;
           }
-        } else {
-          // Fallback for old templates: create single config from providerId/options
-          const configId = randomUUID();
-          await this.db.insert(profileProviderConfigs).values({
-            id: configId,
-            profileId: profileId,
-            providerId: prof.providerId,
-            name: prof.name, // Use profile name as config name
-            options: prof.options ?? null,
-            env: null,
-            position: 0,
+        }
+
+        // 5. Create agents from template (remap profile ids)
+        for (const a of template.agents) {
+          const oldProfileId = a.profileId ?? '';
+          const newProfileId =
+            oldProfileId && profileIdMap[oldProfileId] ? profileIdMap[oldProfileId] : undefined;
+          if (!newProfileId) {
+            throw new ValidationError(`Profile mapping missing for agent ${a.name}`, {
+              profileId: oldProfileId || null,
+            });
+          }
+          const configId = configIdMap[newProfileId];
+          if (!configId) {
+            throw new ValidationError(`Config mapping missing for agent ${a.name}`, {
+              profileId: newProfileId,
+            });
+          }
+          const agentId = randomUUID();
+          await this.db.insert(agents).values({
+            id: agentId,
+            projectId: project.id,
+            name: a.name,
+            profileId: newProfileId,
+            providerConfigId: configId,
+            description: a.description ?? null,
+            modelOverride: a.modelOverride ?? null,
             createdAt: now,
             updatedAt: now,
           });
-          configIdMap[profileId] = configId;
+          if (a.id) agentIdMap[a.id] = agentId;
         }
-      }
 
-      // 5. Create agents from template (remap profile ids)
-      for (const a of template.agents) {
-        const oldProfileId = a.profileId ?? '';
-        const newProfileId =
-          oldProfileId && profileIdMap[oldProfileId] ? profileIdMap[oldProfileId] : undefined;
-        if (!newProfileId) {
-          throw new ValidationError(`Profile mapping missing for agent ${a.name}`, {
-            profileId: oldProfileId || null,
+        logger.info(
+          { projectId: project.id, counts: template },
+          'Created project with template (transactional)',
+        );
+      })
+      .catch((error) => {
+        const errorMessage = error instanceof Error ? error.message : '';
+        if (
+          providedProjectId &&
+          isSqliteUniqueConstraint(error) &&
+          errorMessage.includes('projects.id')
+        ) {
+          throw new ConflictError(`Project ID "${providedProjectId}" already exists.`, {
+            field: 'projectId',
+            projectId: providedProjectId,
           });
         }
-        const configId = configIdMap[newProfileId];
-        if (!configId) {
-          throw new ValidationError(`Config mapping missing for agent ${a.name}`, {
-            profileId: newProfileId,
-          });
-        }
-        const agentId = randomUUID();
-        await this.db.insert(agents).values({
-          id: agentId,
-          projectId: project.id,
-          name: a.name,
-          profileId: newProfileId,
-          providerConfigId: configId,
-          description: a.description ?? null,
-          modelOverride: a.modelOverride ?? null,
-          createdAt: now,
-          updatedAt: now,
-        });
-        if (a.id) agentIdMap[a.id] = agentId;
-      }
-
-      // If we reached here, all operations succeeded - commit the transaction
-      sqlite.exec('COMMIT');
-
-      logger.info(
-        { projectId: project.id, counts: template },
-        'Created project with template (transactional)',
-      );
-    } catch (error) {
-      // Rollback transaction on any error
-      try {
-        sqlite.exec('ROLLBACK');
-        logger.info({ projectId: project.id }, 'Transaction rolled back successfully');
-      } catch (rollbackError) {
-        logger.error({ rollbackError }, 'Failed to rollback transaction');
-      }
-      logger.error({ error, projectId: project.id }, 'Transaction failed');
-
-      const errorMessage = error instanceof Error ? error.message : '';
-      if (
-        providedProjectId &&
-        isSqliteUniqueConstraint(error) &&
-        errorMessage.includes('projects.id')
-      ) {
-        throw new ConflictError(`Project ID "${providedProjectId}" already exists.`, {
-          field: 'projectId',
-          projectId: providedProjectId,
-        });
-      }
-
-      throw error;
-    }
+        throw error;
+      });
 
     return {
       project,

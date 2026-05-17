@@ -6,6 +6,8 @@ import { tmpdir } from 'os';
 import { promisify } from 'util';
 import { GitWorktreeService } from './git-worktree.service';
 import { resetEnvConfig } from '../../../../common/config/env.config';
+import { FakeProcessExecutor } from '../../../terminal/services/process-executor/fake-process-executor';
+import { ChildProcessExecutor } from '../../../terminal/services/process-executor/child-process-executor';
 
 const execFileAsync = promisify(execFile);
 const MAX_BUFFER = 10 * 1024 * 1024;
@@ -46,7 +48,7 @@ describe('GitWorktreeService', () => {
     await git(repoPath, ['commit', '-m', 'initial commit']);
     await git(repoPath, ['branch', '-M', 'main']);
 
-    service = new GitWorktreeService();
+    service = new GitWorktreeService(new ChildProcessExecutor());
   });
 
   afterEach(async () => {
@@ -97,7 +99,7 @@ describe('GitWorktreeService', () => {
         '.env.local\0node_modules/\0vendor/\0.vscode/\0dist/\0build/\0.next/\0.turbo/\0__pycache__/\0.cache/\0logs/runtime.log\0tmp.txt\0',
       stderr: '',
     }));
-    const ignoredService = new GitWorktreeService(runner);
+    const ignoredService = new GitWorktreeService(new FakeProcessExecutor(), runner);
 
     const result = await ignoredService.listIgnoredFiles('/tmp/repo-ignored');
 
@@ -167,7 +169,7 @@ describe('GitWorktreeService', () => {
 
   it('deletes branch with -- separator and force flag', async () => {
     const runner = jest.fn(async () => ({ stdout: '', stderr: '' }));
-    const branchService = new GitWorktreeService(runner);
+    const branchService = new GitWorktreeService(new FakeProcessExecutor(), runner);
 
     await branchService.deleteBranch('-feature/delete-me', '/tmp/repo-branches', true);
 
@@ -181,7 +183,7 @@ describe('GitWorktreeService', () => {
 
   it('uses safe delete when force is false', async () => {
     const runner = jest.fn(async () => ({ stdout: '', stderr: '' }));
-    const branchService = new GitWorktreeService(runner);
+    const branchService = new GitWorktreeService(new FakeProcessExecutor(), runner);
 
     await branchService.deleteBranch('feature/delete-me', '/tmp/repo-branches', false);
 
@@ -327,7 +329,7 @@ describe('GitWorktreeService', () => {
 
   it('rejects invalid branch names before invoking git command', async () => {
     const runner = jest.fn(async () => ({ stdout: '', stderr: '' }));
-    const validatingService = new GitWorktreeService(runner);
+    const validatingService = new GitWorktreeService(new FakeProcessExecutor(), runner);
 
     await expect(
       validatingService.createWorktree({
@@ -357,7 +359,7 @@ describe('GitWorktreeService', () => {
     resetEnvConfig();
 
     const runner = jest.fn(async () => ({ stdout: '', stderr: '' }));
-    const envAwareService = new GitWorktreeService(runner);
+    const envAwareService = new GitWorktreeService(new FakeProcessExecutor(), runner);
 
     await envAwareService.listWorktrees();
     await envAwareService.listBranches();
@@ -387,7 +389,7 @@ describe('GitWorktreeService', () => {
     resetEnvConfig();
 
     const runner = jest.fn(async () => ({ stdout: '', stderr: '' }));
-    const envAwareService = new GitWorktreeService(runner);
+    const envAwareService = new GitWorktreeService(new FakeProcessExecutor(), runner);
 
     await envAwareService.createWorktree({
       name: 'feature-paths',
@@ -411,7 +413,7 @@ describe('GitWorktreeService', () => {
 
   it('returns empty branch list when git reports no local branches', async () => {
     const runner = jest.fn(async () => ({ stdout: '\n', stderr: '' }));
-    const branchService = new GitWorktreeService(runner);
+    const branchService = new GitWorktreeService(new FakeProcessExecutor(), runner);
 
     const branches = await branchService.listBranches('/tmp/repo-empty');
 
@@ -428,7 +430,7 @@ describe('GitWorktreeService', () => {
       stdout: '  main  \n\n feature/login \n\trelease/1.0\t\n',
       stderr: '',
     }));
-    const branchService = new GitWorktreeService(runner);
+    const branchService = new GitWorktreeService(new FakeProcessExecutor(), runner);
 
     const branches = await branchService.listBranches('/tmp/repo-branches');
 
@@ -451,7 +453,7 @@ describe('GitWorktreeService', () => {
       return { stdout: '', stderr: '' };
     });
 
-    const serializedService = new GitWorktreeService(runner);
+    const serializedService = new GitWorktreeService(new FakeProcessExecutor(), runner);
     await Promise.all([
       serializedService.listWorktrees('/tmp/repo-a'),
       serializedService.listWorktrees('/tmp/repo-b'),

@@ -86,10 +86,7 @@ function parseList(lines: string[], startIndex: number, isOrdered: boolean): [st
 
   const tag = isOrdered ? 'ol' : 'ul';
   const className = isOrdered ? 'list-decimal' : 'list-disc';
-  return [
-    `<${tag} class="${className} pl-6 my-2 space-y-1 text-muted-foreground">${items.join('')}</${tag}>`,
-    i,
-  ];
+  return [`<${tag} class="${className} pl-6 my-2 space-y-1">${items.join('')}</${tag}>`, i];
 }
 
 /**
@@ -252,9 +249,7 @@ export function renderMarkdown(content: string): string {
 
     if (paragraphLines.length > 0) {
       const text = paragraphLines.join(' ');
-      output.push(
-        `<p class="my-3 leading-relaxed text-muted-foreground">${parseInline(escapeHtml(text))}</p>`,
-      );
+      output.push(`<p class="my-3 leading-relaxed">${parseInline(escapeHtml(text))}</p>`);
     }
   }
 
@@ -321,7 +316,7 @@ function MarkdownRendererComponent({ content, className }: MarkdownRendererProps
 
   return (
     <div
-      className={cn('prose prose-sm max-w-none', className)}
+      className={cn('prose prose-sm max-w-none dark:prose-invert', className)}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );

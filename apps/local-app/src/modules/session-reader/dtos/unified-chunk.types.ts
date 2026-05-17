@@ -9,8 +9,6 @@
  * Session-level metrics are forwarded as-is from the adapter.
  */
 
-import type { UnifiedMessage } from './unified-session.types';
-
 // ---------------------------------------------------------------------------
 // Chunk Metrics (per-chunk token sums)
 // ---------------------------------------------------------------------------
@@ -104,7 +102,7 @@ interface BaseChunk {
   type: UnifiedChunkType;
   startTime: Date;
   endTime: Date;
-  messages: UnifiedMessage[];
+  messages: import('./unified-message.types').UnifiedMessage[];
   metrics: ChunkMetrics;
 }
 

@@ -4,7 +4,7 @@ import { NormalAppModule } from '../app.normal.module';
 import { TerminalModule } from '../modules/terminal/terminal.module';
 import { SessionsModule } from '../modules/sessions/sessions.module';
 import { ChatModule } from '../modules/chat/chat.module';
-import { McpModule } from '../modules/mcp/mcp.module';
+import { McpFullModule } from '../modules/mcp/mcp-full.module';
 import { EpicsModule } from '../modules/epics/epics.module';
 import { OrchestratorStorageModule } from '../modules/orchestrator/orchestrator-storage/orchestrator-storage.module';
 import { OrchestratorDockerModule } from '../modules/orchestrator/docker/docker.module';
@@ -12,6 +12,7 @@ import { OrchestratorGitModule } from '../modules/orchestrator/git/git.module';
 import { OrchestratorWorktreesModule } from '../modules/orchestrator/worktrees/worktrees.module';
 import { OrchestratorSyncModule } from '../modules/orchestrator/sync/sync.module';
 import { OrchestratorProxyModule } from '../modules/orchestrator/proxy/orchestrator-proxy.module';
+import { CloudTunnelModule } from '../modules/cloud-tunnel/cloud-tunnel.module';
 
 describe('MainAppModule', () => {
   const mainImports = (Reflect.getMetadata(MODULE_METADATA.IMPORTS, MainAppModule) ??
@@ -24,7 +25,8 @@ describe('MainAppModule', () => {
     expect(mainImports).toContain(SessionsModule);
     expect(mainImports).toContain(ChatModule);
     expect(mainImports).toContain(EpicsModule);
-    expect(mainImports).toContain(McpModule);
+    expect(mainImports).toContain(McpFullModule);
+    expect(mainImports).toContain(CloudTunnelModule);
   });
 
   it('loads orchestrator backend modules', () => {

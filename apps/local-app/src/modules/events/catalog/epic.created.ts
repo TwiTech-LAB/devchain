@@ -24,6 +24,12 @@ export const epicCreatedEvent = {
     statusName: z.string().min(1).optional(),
     agentName: z.string().min(1).optional(),
     parentTitle: z.string().min(1).optional(),
+    epicTitle: z.string().min(1).optional(),
+    assignmentRecipientIds: z.array(z.string().min(1)).optional(),
+    parentAgentId: z.string().min(1).optional(),
+    parentAgentName: z.string().min(1).optional(),
+    creatorName: z.string().min(1).optional(),
+    subEpicRecipientIds: z.array(z.string().min(1)).optional(),
   }),
 } as const;
 

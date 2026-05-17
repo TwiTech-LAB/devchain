@@ -41,6 +41,7 @@ import { FacetedNav } from '@/ui/components/FacetedNav';
 import { InlineTagInput } from '@/ui/components/InlineTagInput';
 import { DocumentPreviewPane } from '@/ui/components/DocumentPreviewPane';
 import { Checkbox } from '@/ui/components/ui/checkbox';
+import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
 import {
   extractAllTags,
   groupDocumentsByFacet,
@@ -467,6 +468,8 @@ export function DocumentsPage() {
   const [selectedDocuments, setSelectedDocuments] = useState<Set<string>>(new Set());
   const [previewDocument, setPreviewDocument] = useState<Document | null>(null);
   const [focusedDocumentIndex, setFocusedDocumentIndex] = useState<number>(0);
+  const [pendingDeleteDocumentId, setPendingDeleteDocumentId] = useState<string | null>(null);
+  const [pendingDeleteView, setPendingDeleteView] = useState<SavedView | null>(null);
 
   // Compute selected tags from facets for API queries
   const selectedTags = useMemo(() => facetsToTagsArray(selectedFacets), [selectedFacets]);
@@ -660,8 +663,13 @@ export function DocumentsPage() {
   };
 
   const handleDelete = (id: string) => {
-    if (!confirm('Delete this document permanently?')) return;
-    deleteMutation.mutate(id);
+    setPendingDeleteDocumentId(id);
+  };
+
+  const handleConfirmDeleteDocument = () => {
+    if (!pendingDeleteDocumentId) return;
+    deleteMutation.mutate(pendingDeleteDocumentId);
+    setPendingDeleteDocumentId(null);
   };
 
   const handlePinnedToggle = (document: Document) => {
@@ -808,13 +816,17 @@ export function DocumentsPage() {
       return;
     }
 
-    if (!window.confirm(`Delete view "${current.name}"?`)) {
+    setPendingDeleteView(current);
+  };
+
+  const handleConfirmDeleteView = () => {
+    if (!pendingDeleteView) {
       return;
     }
-
-    setSavedViews((prev) => prev.filter((view) => view.id !== current.id));
+    setSavedViews((prev) => prev.filter((view) => view.id !== pendingDeleteView.id));
     setActiveViewId(null);
-    toast({ title: 'View deleted', description: `"${current.name}" removed.` });
+    toast({ title: 'View deleted', description: `"${pendingDeleteView.name}" removed.` });
+    setPendingDeleteView(null);
   };
 
   const createMutation = useMutation({
@@ -1853,6 +1865,39 @@ export function DocumentsPage() {
           </div>
         )}
       </div>
+      <ConfirmDialog
+        open={pendingDeleteDocumentId !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingDeleteDocumentId(null);
+          }
+        }}
+        onConfirm={handleConfirmDeleteDocument}
+        title="Delete document?"
+        description="Delete this document permanently?"
+        confirmText="Delete"
+        cancelText="Cancel"
+        variant="destructive"
+        loading={deleteMutation.isPending}
+      />
+      <ConfirmDialog
+        open={pendingDeleteView !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingDeleteView(null);
+          }
+        }}
+        onConfirm={handleConfirmDeleteView}
+        title="Delete saved view?"
+        description={
+          pendingDeleteView
+            ? `Delete view "${pendingDeleteView.name}"?`
+            : 'Delete selected saved view?'
+        }
+        confirmText="Delete"
+        cancelText="Cancel"
+        variant="destructive"
+      />
     </div>
   );
 }

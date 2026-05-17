@@ -9,7 +9,6 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { ChildProcess, spawn } from 'child_process';
 import { randomUUID } from 'crypto';
 import { existsSync } from 'fs';
 import { createLogger } from '../../../../common/logging/logger';
@@ -31,7 +30,7 @@ import { OrchestratorDockerService } from '../../docker/services/docker.service'
 import { SeedPreparationService } from '../../docker/services/seed-preparation.service';
 import { WORKTREE_TASK_MERGE_REQUESTED_EVENT } from '../../sync/events/task-merge.events';
 import { WORKTREE_CHANGED_EVENT, WorktreeChangedEvent } from '../events/worktree.events';
-import { cp, mkdir, open, readFile, rm } from 'fs/promises';
+import { cp, mkdir, readFile, rm } from 'fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { isValidGitBranchName, isValidWorktreeName } from '../worktree-validation';
 import {
@@ -43,6 +42,7 @@ import {
   validatePathWithinRoot,
   validateResolvedPathWithinRoot,
 } from '../../../../common/validation/path-validation';
+import { ProcessExecutor } from '../../../terminal/services/process-executor/process-executor.port';
 
 const logger = createLogger('OrchestratorWorktreesService');
 
@@ -138,6 +138,7 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
     private readonly eventEmitter: EventEmitter2,
     private readonly eventLogService: EventLogService,
     @Optional() @Inject(STORAGE_SERVICE) private readonly storage?: StorageService,
+    @Optional() private readonly executor?: ProcessExecutor,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -1263,65 +1264,35 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
     const logPath = this.resolveProcessLogPath(input.dataPath);
     const portFilePath = join(input.dataPath, PROCESS_RUNTIME_PORT_FILE);
     await mkdir(input.dataPath, { recursive: true });
-    const logFile = await open(logPath, 'a');
 
-    try {
-      const child = spawn(
+    const result = await this.executor!.spawnDaemon({
+      argv: [
         process.execPath,
-        [cliPath, 'start', '--foreground', '--worktree-runtime', 'process', '--port', '0'],
-        {
-          cwd: input.worktreePath,
-          detached: true,
-          stdio: ['ignore', logFile.fd, logFile.fd],
-          env: {
-            ...process.env,
-            PORT: '0',
-            HOST: '127.0.0.1',
-            NODE_ENV: 'production',
-            DB_PATH: input.dataPath,
-            DB_FILENAME: PROCESS_DB_FILE_NAME,
-            DEVCHAIN_MODE: 'normal',
-            CONTAINER_PROJECT_ID: input.projectId,
-            RUNTIME_TOKEN: input.runtimeToken,
-            RUNTIME_PORT_FILE: portFilePath,
-          },
-        },
-      );
-
-      const pid = await this.awaitSpawn(child);
-      child.unref();
-      return pid;
-    } finally {
-      await logFile.close().catch(() => undefined);
-    }
-  }
-
-  private async awaitSpawn(child: ChildProcess): Promise<number> {
-    if (typeof child.pid === 'number') {
-      return child.pid;
-    }
-
-    return new Promise<number>((resolve, reject) => {
-      const onSpawn = () => {
-        cleanup();
-        if (typeof child.pid !== 'number') {
-          reject(new Error('Process runtime started without a PID'));
-          return;
-        }
-        resolve(child.pid);
-      };
-      const onError = (error: unknown) => {
-        cleanup();
-        reject(error instanceof Error ? error : new Error(String(error)));
-      };
-      const cleanup = () => {
-        child.off('spawn', onSpawn);
-        child.off('error', onError);
-      };
-
-      child.once('spawn', onSpawn);
-      child.once('error', onError);
+        cliPath,
+        'start',
+        '--foreground',
+        '--worktree-runtime',
+        'process',
+        '--port',
+        '0',
+      ],
+      cwd: input.worktreePath,
+      logPath,
+      env: {
+        ...process.env,
+        PORT: '0',
+        HOST: '127.0.0.1',
+        NODE_ENV: 'production',
+        DB_PATH: input.dataPath,
+        DB_FILENAME: PROCESS_DB_FILE_NAME,
+        DEVCHAIN_MODE: 'normal',
+        CONTAINER_PROJECT_ID: input.projectId,
+        RUNTIME_TOKEN: input.runtimeToken,
+        RUNTIME_PORT_FILE: portFilePath,
+      },
     });
+
+    return result.pid;
   }
 
   private async waitForRuntimeHealthy(

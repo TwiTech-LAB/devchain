@@ -9,6 +9,10 @@ export const teamMemberRemovedEvent = {
     teamName: z.string().min(1),
     removedAgentId: z.string().min(1),
     removedAgentName: z.string().nullable(),
+    projectName: z.string().min(1).optional(),
+    recipientIds: z.array(z.string().min(1)).optional(),
+    agentName: z.string().min(1).optional(),
+    teamLeadAgentName: z.string().min(1).optional(),
   }),
 } as const;
 

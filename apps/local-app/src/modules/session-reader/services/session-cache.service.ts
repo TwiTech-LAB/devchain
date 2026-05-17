@@ -18,6 +18,14 @@ export interface SessionCacheEntry {
   cachedAt: number;
 }
 
+export interface GetOrParseResult {
+  session: UnifiedSession;
+  cacheHit: boolean;
+  lastOffset: number;
+  lastSize: number;
+  lastMtime: number;
+}
+
 @Injectable()
 export class SessionCacheService implements OnModuleDestroy {
   private readonly logger = new Logger(SessionCacheService.name);
@@ -118,6 +126,29 @@ export class SessionCacheService implements OnModuleDestroy {
     });
 
     return session;
+  }
+
+  async getOrParseWithMeta(
+    sessionId: string,
+    filePath: string,
+    adapter: SessionReaderAdapter,
+  ): Promise<GetOrParseResult> {
+    const prevSession = this.cache.get(sessionId)?.session;
+
+    const session = await this.getOrParse(sessionId, filePath, adapter);
+
+    const entry = this.cache.get(sessionId)!;
+    return {
+      session,
+      cacheHit: session === prevSession,
+      lastOffset: entry.lastOffset,
+      lastSize: entry.lastSize,
+      lastMtime: entry.lastMtime,
+    };
+  }
+
+  getEntry(sessionId: string): SessionCacheEntry | undefined {
+    return this.cache.get(sessionId);
   }
 
   /** Invalidate a specific session's cache entry. */

@@ -38,10 +38,10 @@ interface UpgradeDialogProps {
 }
 
 async function upgradeProject(projectId: string, targetVersion: string): Promise<UpgradeResult> {
-  const res = await fetch('/api/registry/upgrade-project', {
+  const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/upgrade-template`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ projectId, targetVersion }),
+    body: JSON.stringify({ targetVersion }),
   });
   if (!res.ok) {
     const error = await res.json().catch(() => ({ message: 'Upgrade failed' }));
@@ -50,8 +50,8 @@ async function upgradeProject(projectId: string, targetVersion: string): Promise
   return res.json();
 }
 
-async function restoreBackup(backupId: string): Promise<{ success: boolean }> {
-  const res = await fetch('/api/registry/restore-backup', {
+async function restoreBackup(projectId: string, backupId: string): Promise<{ success: boolean }> {
+  const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/restore-backup`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ backupId }),
@@ -128,7 +128,7 @@ export function UpgradeDialog({
 
   // Restore mutation
   const restoreMutation = useMutation({
-    mutationFn: () => restoreBackup(backupId!),
+    mutationFn: () => restoreBackup(projectId, backupId!),
     onSuccess: () => {
       toast({
         title: 'Backup Restored',

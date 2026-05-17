@@ -3,8 +3,12 @@ export type DevchainRuntimeMode = 'normal' | 'orchestrator' | 'main' | string;
 export interface RuntimeInfo {
   mode: DevchainRuntimeMode;
   version: string;
+  bootId: string;
   dockerAvailable: boolean;
   runtimeToken?: string;
+  features?: {
+    cloudUi?: boolean;
+  };
 }
 
 export async function fetchRuntimeInfo(): Promise<RuntimeInfo> {

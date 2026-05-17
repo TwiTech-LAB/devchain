@@ -49,6 +49,9 @@ import {
   filterChunksForHotspot,
 } from '@/ui/utils/hotspot-detection';
 import { getHeaderInputTotal } from '@/ui/utils/ai-group-enhancer';
+import { SessionViewModeProvider } from '@/ui/hooks/useSessionViewMode';
+import { usePagedTranscriptFlag } from '@/ui/hooks/usePagedTranscript';
+import { PagedSessionMessageList } from './PagedSessionMessageList';
 
 // ---------------------------------------------------------------------------
 // Text extraction helpers
@@ -93,10 +96,12 @@ function ThinkingBlock({ text }: { text: string }) {
         <ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />
         <Brain className="h-3 w-3" />
         <span>Thinking</span>
-        <span className="ml-1 text-muted-foreground/50">({truncateText(text, 40)})</span>
+        <span className="ml-1 text-muted-foreground/70 font-mono italic">
+          ({truncateText(text, 40)})
+        </span>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 text-[11px] text-muted-foreground/80 leading-relaxed">
+        <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 text-[11px] text-foreground leading-relaxed">
           {text}
         </pre>
       </CollapsibleContent>
@@ -187,9 +192,9 @@ const ToolCallBlock = memo(function ToolCallBlock({
       <CollapsibleTrigger className="group flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors">
         <ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />
         {isTask ? <Layers className="h-3 w-3 text-blue-400" /> : <Wrench className="h-3 w-3" />}
-        <span className="font-medium">{toolCall.name}</span>
+        <span className="font-mono font-medium">{toolCall.name}</span>
         {isTask && toolCall.taskDescription && (
-          <span className="ml-1 text-muted-foreground/60">
+          <span className="ml-1 text-muted-foreground/70">
             — {truncateText(toolCall.taskDescription, 50)}
           </span>
         )}
@@ -197,7 +202,7 @@ const ToolCallBlock = memo(function ToolCallBlock({
       </CollapsibleTrigger>
       <CollapsibleContent>
         <div className="mt-1 space-y-1">
-          <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 text-[11px] text-muted-foreground/80 leading-relaxed">
+          <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 text-[11px] text-foreground leading-relaxed">
             {inputPreview}
           </pre>
           {resultText && (
@@ -206,7 +211,7 @@ const ToolCallBlock = memo(function ToolCallBlock({
                 'max-h-32 overflow-auto whitespace-pre-wrap rounded-md p-2 text-[11px] leading-relaxed',
                 result?.isError
                   ? 'bg-destructive/10 text-destructive'
-                  : 'bg-muted/40 text-muted-foreground/80',
+                  : 'bg-muted/40 text-foreground',
               )}
             >
               {resultPreview}
@@ -263,7 +268,7 @@ const UserMessageCard = memo(function UserMessageCard({ message }: MessageCardPr
           <span className="text-muted-foreground/50">·</span>
           <span>{timestampText}</span>
         </div>
-        <div className="max-h-96 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed">
+        <div className="max-h-96 overflow-y-auto whitespace-pre-wrap text-sm leading-relaxed">
           {text}
         </div>
       </div>
@@ -317,7 +322,7 @@ const AIMessageCard = memo(function AIMessageCard({ sessionId, message }: Messag
 
         {/* Output text (markdown rendered) */}
         {text.trim() && (
-          <MarkdownRenderer content={text} className="text-xs leading-relaxed [&_p]:my-1" />
+          <MarkdownRenderer content={text} className="text-sm leading-relaxed [&_p]:my-1" />
         )}
       </div>
     </div>
@@ -341,9 +346,7 @@ const SystemMessageCard = memo(function SystemMessageCard({ message }: MessageCa
           <span className="text-muted-foreground/50">·</span>
           <span>{timestampText}</span>
         </div>
-        <div className="whitespace-pre-wrap text-[11px] text-muted-foreground leading-relaxed">
-          {text}
-        </div>
+        <div className="whitespace-pre-wrap text-sm text-foreground leading-relaxed">{text}</div>
       </div>
     </div>
   );
@@ -393,7 +396,7 @@ const ChunkRenderer = memo(function ChunkRenderer({
   onAiGroupLayoutChange,
 }: ChunkRendererProps) {
   return (
-    <div className="space-y-2" data-testid={`chunk-${chunk.type}`}>
+    <div className="space-y-3" data-testid={`chunk-${chunk.type}`}>
       {chunk.type === 'ai' ? (
         chunk.semanticSteps ? (
           <AIGroupCard
@@ -963,6 +966,7 @@ export function SessionViewerPanel({
   error,
   warnings,
 }: SessionViewerPanelProps) {
+  const [pagedMode] = usePagedTranscriptFlag();
   const [warningsDismissed, setWarningsDismissed] = useState(false);
   const warningsKey = useMemo(() => (warnings ?? []).slice().sort().join('|'), [warnings]);
 
@@ -970,6 +974,24 @@ export function SessionViewerPanel({
     setWarningsDismissed(false);
   }, [sessionId, warningsKey]);
 
+  // Paged mode: the panel fetches its own data via index + chunk pages
+  if (pagedMode && sessionId) {
+    return (
+      <SessionViewModeProvider>
+        <div className="flex h-full flex-col" data-testid="session-viewer-panel-paged">
+          {metrics && <SessionMetricsHeader metrics={metrics} />}
+          <PagedSessionMessageList
+            sessionId={sessionId}
+            isLive={isLive}
+            metrics={metrics}
+            ChunkRenderer={ChunkRenderer}
+          />
+        </div>
+      </SessionViewModeProvider>
+    );
+  }
+
+  // Full-fetch mode (existing behavior)
   if (error) {
     return (
       <div className="flex h-full items-center justify-center p-6 text-sm text-destructive">
@@ -1042,42 +1064,44 @@ export function SessionViewerPanel({
   }
 
   return (
-    <div className="flex h-full flex-col" data-testid="session-viewer-panel">
-      {metrics && <SessionMetricsHeader metrics={metrics} />}
-      {warnings && warnings.length > 0 && !warningsDismissed && (
-        <div
-          className="flex items-start gap-2 border-b border-amber-200 bg-amber-50 px-3 py-2 dark:border-amber-800 dark:bg-amber-950"
-          data-testid="session-warnings-banner"
-        >
-          <div className="flex min-w-0 flex-1 flex-col gap-1">
-            {warnings.map((warning, idx) => (
-              <div
-                key={idx}
-                className="flex items-start gap-2 text-xs text-amber-800 dark:text-amber-200"
-              >
-                <AlertTriangle className="mt-0.5 h-3 w-3 flex-shrink-0" />
-                <span>{warning}</span>
-              </div>
-            ))}
-          </div>
-          <button
-            type="button"
-            onClick={() => setWarningsDismissed(true)}
-            className="flex-shrink-0 rounded p-0.5 text-amber-600 hover:bg-amber-100 hover:text-amber-800 dark:text-amber-400 dark:hover:bg-amber-900 dark:hover:text-amber-200"
-            data-testid="session-warnings-dismiss"
-            aria-label="Dismiss warnings"
+    <SessionViewModeProvider>
+      <div className="flex h-full flex-col" data-testid="session-viewer-panel">
+        {metrics && <SessionMetricsHeader metrics={metrics} />}
+        {warnings && warnings.length > 0 && !warningsDismissed && (
+          <div
+            className="flex items-start gap-2 border-b border-amber-200 bg-amber-50 px-3 py-2 dark:border-amber-800 dark:bg-amber-950"
+            data-testid="session-warnings-banner"
           >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      )}
-      <SessionMessageList
-        sessionId={sessionId}
-        messages={messages}
-        chunks={chunks}
-        contextWindowTokens={metrics?.contextWindowTokens}
-        isLive={isLive}
-      />
-    </div>
+            <div className="flex min-w-0 flex-1 flex-col gap-1">
+              {warnings.map((warning, idx) => (
+                <div
+                  key={idx}
+                  className="flex items-start gap-2 text-xs text-amber-800 dark:text-amber-200"
+                >
+                  <AlertTriangle className="mt-0.5 h-3 w-3 flex-shrink-0" />
+                  <span>{warning}</span>
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={() => setWarningsDismissed(true)}
+              className="flex-shrink-0 rounded p-0.5 text-amber-600 hover:bg-amber-100 hover:text-amber-800 dark:text-amber-400 dark:hover:bg-amber-900 dark:hover:text-amber-200"
+              data-testid="session-warnings-dismiss"
+              aria-label="Dismiss warnings"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
+        <SessionMessageList
+          sessionId={sessionId}
+          messages={messages}
+          chunks={chunks}
+          contextWindowTokens={metrics?.contextWindowTokens}
+          isLive={isLive}
+        />
+      </div>
+    </SessionViewModeProvider>
   );
 }

@@ -18,6 +18,7 @@ import {
   profileProviderConfigs,
 } from '../../storage/db/schema';
 import { getRawSqliteClient } from '../../storage/db/sqlite-raw';
+import { TransactionRunner } from '../../storage/db/transaction-runner';
 import { isSqliteUniqueConstraint } from '../../storage/local/helpers/storage-helpers';
 import type { ListOptions, ListResult } from '../../storage/interfaces/storage.interface';
 import type { Team, TeamMember, CreateTeam, UpdateTeam } from '../../storage/models/domain.models';
@@ -28,65 +29,75 @@ export interface TeamsListOptions extends ListOptions {
 
 @Injectable()
 export class TeamsStore {
-  constructor(@Inject(DB_CONNECTION) private readonly db: BetterSQLite3Database) {}
+  private readonly txRunner: TransactionRunner;
+  private readonly sqlite: ReturnType<typeof getRawSqliteClient>;
 
-  async createTeam(data: CreateTeam): Promise<Team> {
+  constructor(@Inject(DB_CONNECTION) private readonly db: BetterSQLite3Database) {
     const sqlite = getRawSqliteClient(this.db);
     if (!sqlite || typeof sqlite.exec !== 'function') {
       throw new StorageError('Unable to access underlying SQLite client for transaction control');
     }
+    this.sqlite = sqlite;
+    this.txRunner = new TransactionRunner(sqlite);
+  }
 
+  async createTeam(data: CreateTeam): Promise<Team> {
     const id = randomUUID();
     const now = new Date().toISOString();
 
-    sqlite.exec('BEGIN IMMEDIATE TRANSACTION');
-
     try {
-      await this.db.insert(teams).values({
-        id,
-        projectId: data.projectId,
-        name: data.name,
-        description: data.description ?? null,
-        teamLeadAgentId: data.teamLeadAgentId ?? null,
-        maxMembers: data.maxMembers ?? 5,
-        maxConcurrentTasks: data.maxConcurrentTasks ?? data.maxMembers ?? 5,
-        allowTeamLeadCreateAgents: data.allowTeamLeadCreateAgents ?? false,
-        createdAt: now,
-        updatedAt: now,
+      return await this.txRunner.runImmediateAsync(async () => {
+        await this.db.insert(teams).values({
+          id,
+          projectId: data.projectId,
+          name: data.name,
+          description: data.description ?? null,
+          teamLeadAgentId: data.teamLeadAgentId ?? null,
+          maxMembers: data.maxMembers ?? 5,
+          maxConcurrentTasks: data.maxConcurrentTasks ?? data.maxMembers ?? 5,
+          allowTeamLeadCreateAgents: data.allowTeamLeadCreateAgents ?? false,
+          createdAt: now,
+          updatedAt: now,
+        });
+
+        if (data.memberAgentIds.length > 0) {
+          await this.db.insert(teamMembers).values(
+            data.memberAgentIds.map((agentId) => ({
+              teamId: id,
+              agentId,
+              createdAt: now,
+            })),
+          );
+        }
+
+        if (data.profileIds && data.profileIds.length > 0) {
+          await this.db.insert(teamProfiles).values(
+            data.profileIds.map((profileId) => ({
+              teamId: id,
+              profileId,
+              createdAt: now,
+            })),
+          );
+        }
+
+        if (data.profileConfigSelections && data.profileConfigSelections.length > 0) {
+          await this.writeTeamProfileConfigs(id, data.profileConfigSelections);
+        }
+
+        return {
+          id,
+          projectId: data.projectId,
+          name: data.name,
+          description: data.description ?? null,
+          teamLeadAgentId: data.teamLeadAgentId ?? null,
+          maxMembers: data.maxMembers ?? 5,
+          maxConcurrentTasks: data.maxConcurrentTasks ?? data.maxMembers ?? 5,
+          allowTeamLeadCreateAgents: data.allowTeamLeadCreateAgents ?? false,
+          createdAt: now,
+          updatedAt: now,
+        };
       });
-
-      if (data.memberAgentIds.length > 0) {
-        await this.db.insert(teamMembers).values(
-          data.memberAgentIds.map((agentId) => ({
-            teamId: id,
-            agentId,
-            createdAt: now,
-          })),
-        );
-      }
-
-      if (data.profileIds && data.profileIds.length > 0) {
-        await this.db.insert(teamProfiles).values(
-          data.profileIds.map((profileId) => ({
-            teamId: id,
-            profileId,
-            createdAt: now,
-          })),
-        );
-      }
-
-      if (data.profileConfigSelections && data.profileConfigSelections.length > 0) {
-        await this.writeTeamProfileConfigs(id, data.profileConfigSelections);
-      }
-
-      sqlite.exec('COMMIT');
     } catch (error) {
-      try {
-        sqlite.exec('ROLLBACK');
-      } catch {
-        // Rollback may fail if already committed; safe to ignore
-      }
-
       if (isSqliteUniqueConstraint(error)) {
         const msg =
           'message' in (error as object) ? String((error as { message?: unknown }).message) : '';
@@ -103,19 +114,6 @@ export class TeamsStore {
 
       throw error;
     }
-
-    return {
-      id,
-      projectId: data.projectId,
-      name: data.name,
-      description: data.description ?? null,
-      teamLeadAgentId: data.teamLeadAgentId ?? null,
-      maxMembers: data.maxMembers ?? 5,
-      maxConcurrentTasks: data.maxConcurrentTasks ?? data.maxMembers ?? 5,
-      allowTeamLeadCreateAgents: data.allowTeamLeadCreateAgents ?? false,
-      createdAt: now,
-      updatedAt: now,
-    };
   }
 
   async getTeam(id: string): Promise<
@@ -207,94 +205,78 @@ export class TeamsStore {
   }
 
   async updateTeam(id: string, data: UpdateTeam): Promise<Team> {
-    const sqlite = getRawSqliteClient(this.db);
-    if (!sqlite || typeof sqlite.exec !== 'function') {
-      throw new StorageError('Unable to access underlying SQLite client for transaction control');
-    }
-
     const now = new Date().toISOString();
 
-    sqlite.exec('BEGIN IMMEDIATE TRANSACTION');
-
     try {
-      // Build update set
-      const updateSet: Record<string, unknown> = { updatedAt: now };
-      if (data.name !== undefined) updateSet.name = data.name;
-      if (data.description !== undefined) updateSet.description = data.description;
-      if (data.teamLeadAgentId !== undefined) updateSet.teamLeadAgentId = data.teamLeadAgentId;
-      if (data.maxMembers !== undefined) updateSet.maxMembers = data.maxMembers;
-      if (data.maxConcurrentTasks !== undefined)
-        updateSet.maxConcurrentTasks = data.maxConcurrentTasks;
-      if (data.allowTeamLeadCreateAgents !== undefined)
-        updateSet.allowTeamLeadCreateAgents = data.allowTeamLeadCreateAgents;
+      return await this.txRunner.runImmediateAsync(async () => {
+        const updateSet: Record<string, unknown> = { updatedAt: now };
+        if (data.name !== undefined) updateSet.name = data.name;
+        if (data.description !== undefined) updateSet.description = data.description;
+        if (data.teamLeadAgentId !== undefined) updateSet.teamLeadAgentId = data.teamLeadAgentId;
+        if (data.maxMembers !== undefined) updateSet.maxMembers = data.maxMembers;
+        if (data.maxConcurrentTasks !== undefined)
+          updateSet.maxConcurrentTasks = data.maxConcurrentTasks;
+        if (data.allowTeamLeadCreateAgents !== undefined)
+          updateSet.allowTeamLeadCreateAgents = data.allowTeamLeadCreateAgents;
 
-      const [updated] = await this.db
-        .update(teams)
-        .set(updateSet)
-        .where(eq(teams.id, id))
-        .returning();
+        const [updated] = await this.db
+          .update(teams)
+          .set(updateSet)
+          .where(eq(teams.id, id))
+          .returning();
 
-      if (!updated) {
-        throw new NotFoundError('Team', id);
-      }
-
-      // Replace all members if memberAgentIds provided
-      if (data.memberAgentIds !== undefined) {
-        await this.db.delete(teamMembers).where(eq(teamMembers.teamId, id));
-
-        if (data.memberAgentIds.length > 0) {
-          await this.db.insert(teamMembers).values(
-            data.memberAgentIds.map((agentId) => ({
-              teamId: id,
-              agentId,
-              createdAt: now,
-            })),
-          );
+        if (!updated) {
+          throw new NotFoundError('Team', id);
         }
-      }
 
-      if (data.profileIds !== undefined) {
-        // Diff-based: only remove/add changed profiles to preserve allowlist rows on retained profiles
-        const existingRows = await this.db
-          .select({ profileId: teamProfiles.profileId })
-          .from(teamProfiles)
-          .where(eq(teamProfiles.teamId, id));
-        const existingSet = new Set(existingRows.map((r) => r.profileId));
-        const nextSet = new Set(data.profileIds);
+        if (data.memberAgentIds !== undefined) {
+          await this.db.delete(teamMembers).where(eq(teamMembers.teamId, id));
 
-        const toRemove = [...existingSet].filter((pid) => !nextSet.has(pid));
-        const toAdd = [...nextSet].filter((pid) => !existingSet.has(pid));
-
-        if (toRemove.length > 0) {
-          await this.db
-            .delete(teamProfiles)
-            .where(and(eq(teamProfiles.teamId, id), inArray(teamProfiles.profileId, toRemove)));
+          if (data.memberAgentIds.length > 0) {
+            await this.db.insert(teamMembers).values(
+              data.memberAgentIds.map((agentId) => ({
+                teamId: id,
+                agentId,
+                createdAt: now,
+              })),
+            );
+          }
         }
-        if (toAdd.length > 0) {
-          await this.db.insert(teamProfiles).values(
-            toAdd.map((profileId) => ({
-              teamId: id,
-              profileId,
-              createdAt: now,
-            })),
-          );
+
+        if (data.profileIds !== undefined) {
+          const existingRows = await this.db
+            .select({ profileId: teamProfiles.profileId })
+            .from(teamProfiles)
+            .where(eq(teamProfiles.teamId, id));
+          const existingSet = new Set(existingRows.map((r) => r.profileId));
+          const nextSet = new Set(data.profileIds);
+
+          const toRemove = [...existingSet].filter((pid) => !nextSet.has(pid));
+          const toAdd = [...nextSet].filter((pid) => !existingSet.has(pid));
+
+          if (toRemove.length > 0) {
+            await this.db
+              .delete(teamProfiles)
+              .where(and(eq(teamProfiles.teamId, id), inArray(teamProfiles.profileId, toRemove)));
+          }
+          if (toAdd.length > 0) {
+            await this.db.insert(teamProfiles).values(
+              toAdd.map((profileId) => ({
+                teamId: id,
+                profileId,
+                createdAt: now,
+              })),
+            );
+          }
         }
-      }
 
-      if (data.profileConfigSelections !== undefined) {
-        await this.writeTeamProfileConfigs(id, data.profileConfigSelections);
-      }
+        if (data.profileConfigSelections !== undefined) {
+          await this.writeTeamProfileConfigs(id, data.profileConfigSelections);
+        }
 
-      sqlite.exec('COMMIT');
-
-      return this.toTeam(updated);
+        return this.toTeam(updated);
+      });
     } catch (error) {
-      try {
-        sqlite.exec('ROLLBACK');
-      } catch {
-        // Rollback may fail if already committed; safe to ignore
-      }
-
       if (error instanceof NotFoundError) throw error;
 
       if (isSqliteUniqueConstraint(error)) {
@@ -353,26 +335,12 @@ export class TeamsStore {
   async deleteTeamsByIds(ids: string[]): Promise<void> {
     if (ids.length === 0) return;
 
-    const sqlite = getRawSqliteClient(this.db);
-    if (!sqlite || typeof sqlite.exec !== 'function') {
-      throw new StorageError('Unable to access underlying SQLite client for transaction control');
-    }
-
-    sqlite.exec('BEGIN IMMEDIATE TRANSACTION');
-    try {
+    await this.txRunner.runImmediateAsync(async () => {
       await this.db.delete(teamProfileConfigs).where(inArray(teamProfileConfigs.teamId, ids));
       await this.db.delete(teamProfiles).where(inArray(teamProfiles.teamId, ids));
       await this.db.delete(teamMembers).where(inArray(teamMembers.teamId, ids));
       await this.db.delete(teams).where(inArray(teams.id, ids));
-      sqlite.exec('COMMIT');
-    } catch (error) {
-      try {
-        sqlite.exec('ROLLBACK');
-      } catch {
-        // safe to ignore
-      }
-      throw error;
-    }
+    });
   }
 
   async getTeamLeadTeams(agentId: string): Promise<Team[]> {
@@ -444,13 +412,8 @@ export class TeamsStore {
     teamLeadAgentId: string | null;
     createAgentFn: () => Promise<import('../../storage/models/domain.models').Agent>;
   }): Promise<import('../../storage/models/domain.models').Agent> {
-    const sqlite = getRawSqliteClient(this.db);
-    if (!sqlite || typeof sqlite.exec !== 'function') {
-      throw new StorageError('Unable to access underlying SQLite client for transaction control');
-    }
-    sqlite.exec('BEGIN IMMEDIATE TRANSACTION');
-    try {
-      const countResult = sqlite
+    return await this.txRunner.runImmediateAsync(async () => {
+      const countResult = this.sqlite
         .prepare(
           `SELECT COUNT(*) as cnt FROM team_members
            WHERE team_id = ?
@@ -469,24 +432,13 @@ export class TeamsStore {
         agentId: agent.id,
         createdAt: now,
       });
-      sqlite.exec('COMMIT');
+
       return agent;
-    } catch (error) {
-      try {
-        sqlite.exec('ROLLBACK');
-      } catch {
-        /* safe to ignore */
-      }
-      throw error;
-    }
+    });
   }
 
   async countBusyTeamMembers(teamId: string, teamLeadAgentId: string | null): Promise<number> {
-    const sqlite = getRawSqliteClient(this.db);
-    if (!sqlite || typeof sqlite.exec !== 'function') {
-      throw new StorageError('Unable to access underlying SQLite client for transaction control');
-    }
-    const result = sqlite
+    const result = this.sqlite
       .prepare(
         `SELECT COUNT(DISTINCT e.agent_id) as cnt
          FROM epics e
@@ -505,22 +457,9 @@ export class TeamsStore {
     teamId: string,
     selections: Array<{ profileId: string; configIds: string[] }>,
   ): Promise<void> {
-    const sqlite = getRawSqliteClient(this.db);
-    if (!sqlite || typeof sqlite.exec !== 'function') {
-      throw new StorageError('Unable to access underlying SQLite client for transaction control');
-    }
-    sqlite.exec('BEGIN IMMEDIATE TRANSACTION');
-    try {
+    await this.txRunner.runImmediateAsync(async () => {
       await this.writeTeamProfileConfigs(teamId, selections);
-      sqlite.exec('COMMIT');
-    } catch (error) {
-      try {
-        sqlite.exec('ROLLBACK');
-      } catch {
-        /* safe to ignore */
-      }
-      throw error;
-    }
+    });
   }
 
   async listProfileConfigSelections(

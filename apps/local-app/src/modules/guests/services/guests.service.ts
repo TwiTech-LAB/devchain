@@ -2,7 +2,7 @@ import { Injectable, Inject, OnModuleInit, forwardRef } from '@nestjs/common';
 import { createLogger } from '../../../common/logging/logger';
 import { ValidationError, ConflictError } from '../../../common/errors/error-types';
 import { STORAGE_SERVICE, StorageService } from '../../storage/interfaces/storage.interface';
-import { TmuxService } from '../../terminal/services/tmux.service';
+import { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
 import { EventsService } from '../../events/services/events.service';
 import { RegisterGuestDto, RegisterGuestResultDto } from '../dtos/guest.dto';
 import { GUEST_SANDBOX_PROJECT_NAME, GUEST_SANDBOX_ROOT_PATH } from '../constants';
@@ -16,7 +16,7 @@ export class GuestsService implements OnModuleInit {
 
   constructor(
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
-    @Inject(forwardRef(() => TmuxService)) private readonly tmuxService: TmuxService,
+    @Inject(forwardRef(() => TerminalIOService)) private readonly terminalIO: TerminalIOService,
     @Inject(forwardRef(() => EventsService)) private readonly eventsService: EventsService,
   ) {
     logger.info('GuestsService initialized');
@@ -96,7 +96,7 @@ export class GuestsService implements OnModuleInit {
     logger.info({ name, tmuxSessionId }, 'Registering guest');
 
     // 1. Validate tmux session exists
-    const sessionExists = await this.tmuxService.hasSession(tmuxSessionId);
+    const sessionExists = await this.terminalIO.sessionExists({ name: tmuxSessionId });
     if (!sessionExists) {
       throw new ValidationError(`Tmux session "${tmuxSessionId}" does not exist`, {
         tmuxSessionId,
@@ -113,7 +113,7 @@ export class GuestsService implements OnModuleInit {
     }
 
     // 3. Get the cwd of the tmux session
-    const cwd = await this.tmuxService.getSessionCwd(tmuxSessionId);
+    const cwd = await this.terminalIO.getSessionCwd({ name: tmuxSessionId });
     if (!cwd) {
       throw new ValidationError(
         `Could not determine working directory for tmux session "${tmuxSessionId}"`,

@@ -328,17 +328,13 @@ describe('PresetDialog', () => {
       expect(descInput).toHaveValue('My test preset');
     });
 
-    // API integration test skipped due to timing issues with async fetch calls
-    // The core functionality is covered by backend tests
-    it.skip('calls create API and closes on success', async () => {
-      // TODO: Fix timing issues with fetch mock
-    });
+    // TODO(test-strategy-overhaul): SKIPPED — fetch mock timing issues with React Query in jsdom.
+    // The core functionality is covered by backend tests. Needs service-layer mocking or Playwright.
+    it.skip('calls create API and closes on success', async () => {});
 
-    // Error case test skipped due to complex mock setup with multiple fetch calls
-    // Error handling is covered by backend tests
-    it.skip('shows error toast when API call fails', async () => {
-      // TODO: Fix mock setup for error case
-    });
+    // TODO(test-strategy-overhaul): SKIPPED — complex mock setup with multiple fetch calls in jsdom.
+    // Error handling is covered by backend tests. Needs service-layer mocking.
+    it.skip('shows error toast when API call fails', async () => {});
   });
 
   describe('dialog close behavior', () => {
@@ -352,8 +348,8 @@ describe('PresetDialog', () => {
       });
     });
 
-    // Skipping this test due to mock fetch timing issues with React Query
-    // The actual functionality works correctly in manual testing
+    // TODO(test-strategy-overhaul): SKIPPED — mock fetch timing issues with React Query in jsdom.
+    // The actual functionality works correctly in manual testing. Needs service-layer mocking.
     it.skip('closes dialog when cancel clicked', async () => {
       renderWithQueryClient(<PresetDialog {...defaultProps} />);
 

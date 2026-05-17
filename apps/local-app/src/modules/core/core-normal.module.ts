@@ -1,16 +1,22 @@
-import { Module, forwardRef } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { PreflightController } from './controllers/preflight.controller';
 import { PreflightService } from './services/preflight.service';
-import { ProviderMcpEnsureService } from './services/provider-mcp-ensure.service';
-import { GeminiTrustedFoldersService } from './services/gemini-trusted-folders.service';
+import { GeminiTrustedFoldersModule } from './services/gemini-trusted-folders.module';
 import { StorageModule } from '../storage/storage.module';
-import { McpModule } from '../mcp/mcp.module';
+import { ProvidersModule } from '../providers/providers.module';
 import { ProviderAdaptersModule } from '../providers/adapters';
+import { ProcessExecutorModule } from '../terminal/services/process-executor/process-executor.module';
 
 @Module({
-  imports: [StorageModule, forwardRef(() => McpModule), ProviderAdaptersModule],
+  imports: [
+    StorageModule,
+    ProvidersModule,
+    ProviderAdaptersModule,
+    ProcessExecutorModule,
+    GeminiTrustedFoldersModule,
+  ],
   controllers: [PreflightController],
-  providers: [PreflightService, ProviderMcpEnsureService, GeminiTrustedFoldersService],
-  exports: [PreflightService, ProviderMcpEnsureService, GeminiTrustedFoldersService],
+  providers: [PreflightService],
+  exports: [PreflightService, GeminiTrustedFoldersModule],
 })
 export class CoreNormalModule {}

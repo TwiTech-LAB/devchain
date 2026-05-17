@@ -16,12 +16,16 @@ import { ProfileProviderConfig } from '../../storage/models/domain.models';
 import { createLogger } from '../../../common/logging/logger';
 import { UpdateProviderConfigSchema, ProfileProviderConfigSchema } from '../dto';
 import { ValidationError } from '../../../common/errors/error-types';
+import { ProviderConfigsService } from '../services/provider-configs.service';
 
 const logger = createLogger('ProviderConfigsController');
 
 @Controller('api/provider-configs')
 export class ProviderConfigsController {
-  constructor(@Inject(STORAGE_SERVICE) private readonly storage: ProfileProviderConfigStorage) {}
+  constructor(
+    @Inject(STORAGE_SERVICE) private readonly storage: ProfileProviderConfigStorage,
+    private readonly providerConfigsService: ProviderConfigsService,
+  ) {}
 
   @Get(':id')
   async getProviderConfig(@Param('id') id: string): Promise<ProfileProviderConfig> {
@@ -64,7 +68,7 @@ export class ProviderConfigsController {
       updateData.env = data.env;
     }
 
-    const config = await this.storage.updateProfileProviderConfig(id, updateData);
+    const config = await this.providerConfigsService.updateProviderConfig(id, updateData);
     return ProfileProviderConfigSchema.parse(config);
   }
 

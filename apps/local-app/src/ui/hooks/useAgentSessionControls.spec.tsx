@@ -143,7 +143,7 @@ describe('useAgentSessionControls', () => {
           'agent-1': { online: true, sessionId: 'sess-1' },
         });
       });
-      expect(mockFetchPresence).toHaveBeenCalledWith('proj-1');
+      expect(mockFetchPresence).toHaveBeenCalledWith('proj-1', expect.any(Function));
     });
   });
 
@@ -176,7 +176,13 @@ describe('useAgentSessionControls', () => {
         expect(result.current.launchingAgentId).toBeNull();
       });
 
-      expect(mockLaunch).toHaveBeenCalledWith('agent-1', 'proj-1');
+      expect(mockLaunch).toHaveBeenCalledWith(
+        'agent-1',
+        'proj-1',
+        undefined,
+        '',
+        expect.any(Function),
+      );
       expect(mockOpenTerminalWindow).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'sess-1' }),
       );
@@ -331,7 +337,13 @@ describe('useAgentSessionControls', () => {
         await result.current.handleRestart('agent-1', 'sess-old');
       });
 
-      expect(mockRestart).toHaveBeenCalledWith('agent-1', 'proj-1', 'sess-old');
+      expect(mockRestart).toHaveBeenCalledWith(
+        'agent-1',
+        'proj-1',
+        'sess-old',
+        '',
+        expect.any(Function),
+      );
       expect(mockOpenTerminalWindow).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'sess-new' }),
       );
@@ -472,7 +484,7 @@ describe('useAgentSessionControls', () => {
         expect(result.current.terminatingAgentId).toBeNull();
       });
 
-      expect(mockTerminate).toHaveBeenCalledWith('sess-1');
+      expect(mockTerminate).toHaveBeenCalledWith('sess-1', '', expect.any(Function));
       expect(mockToast).toHaveBeenCalledWith(
         expect.objectContaining({ title: 'Session terminated' }),
       );

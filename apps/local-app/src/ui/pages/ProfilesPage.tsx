@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useRef, useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/ui/components/ui/button';
 import { Input } from '@/ui/components/ui/input';
@@ -28,7 +28,8 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { cn } from '@/ui/lib/utils';
-import { EnvEditor } from '@/ui/components/EnvEditor';
+import { EnvEditor, type EnvEditorHandle } from '@/ui/components/EnvEditor';
+import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
 import { MarkdownReferenceInput } from '@/ui/components/shared';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 
@@ -351,6 +352,9 @@ function ProviderConfigsSection({
   const [editingConfigId, setEditingConfigId] = useState<string | null>(null);
   const [localConfigIds, setLocalConfigIds] = useState<string[]>([]);
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  const [pendingDeleteConfig, setPendingDeleteConfig] = useState<ProviderConfig | null>(null);
+  const createEnvEditorRef = useRef<EnvEditorHandle>(null);
+  const editEnvEditorRef = useRef<EnvEditorHandle>(null);
   const [formData, setFormData] = useState({
     providerId: '',
     name: '',
@@ -402,6 +406,7 @@ function ProviderConfigsSection({
       data,
     }: {
       id: string;
+      oldName: string;
       data: {
         name?: string;
         description?: string | null;
@@ -409,8 +414,23 @@ function ProviderConfigsSection({
         env?: Record<string, string> | null;
       };
     }) => updateProviderConfig(id, data),
-    onSuccess: () => {
+    onSuccess: (updatedConfig, variables) => {
       queryClient.invalidateQueries({ queryKey: ['provider-configs', profileId] });
+      if (variables.oldName.trim() !== updatedConfig.name.trim()) {
+        queryClient.invalidateQueries({
+          predicate: (query) => query.queryKey[0] === 'project-presets',
+        });
+        queryClient.invalidateQueries({
+          predicate: (query) => {
+            const [key, , profileIds] = query.queryKey;
+            return (
+              key === 'provider-configs-by-profile' &&
+              Array.isArray(profileIds) &&
+              profileIds.includes(profileId)
+            );
+          },
+        });
+      }
       setEditingConfigId(null);
       resetForm();
       toast({ title: 'Success', description: 'Provider configuration updated' });
@@ -491,19 +511,24 @@ function ProviderConfigsSection({
       });
       return;
     }
+
+    const committedEnv = createEnvEditorRef.current?.commitPending();
+    if (committedEnv === null) return;
+    const env = committedEnv ?? formData.env;
+
     createMutation.mutate({
       providerId: formData.providerId,
       name: trimmedName || undefined, // API will auto-generate if not provided
       description: formData.description.trim() || null,
       options: formData.options.trim() || null,
-      env: Object.keys(formData.env).length > 0 ? formData.env : null,
+      env: Object.keys(env).length > 0 ? env : null,
     });
   };
 
-  const handleUpdate = (configId: string) => {
+  const handleUpdate = (config: ProviderConfig) => {
     // Check for name conflict (excluding the current config being edited)
     const trimmedName = formData.name.trim();
-    if (trimmedName && configs?.some((c) => c.id !== configId && c.name === trimmedName)) {
+    if (trimmedName && configs?.some((c) => c.id !== config.id && c.name === trimmedName)) {
       toast({
         title: 'Error',
         description: 'A configuration with this name already exists',
@@ -511,20 +536,30 @@ function ProviderConfigsSection({
       });
       return;
     }
+
+    const committedEnv = editEnvEditorRef.current?.commitPending();
+    if (committedEnv === null) return;
+    const env = committedEnv ?? formData.env;
+
     updateMutation.mutate({
-      id: configId,
+      id: config.id,
+      oldName: config.name,
       data: {
         name: trimmedName || undefined,
         description: formData.description.trim() || null,
         options: formData.options.trim() || null,
-        env: Object.keys(formData.env).length > 0 ? formData.env : null,
+        env: Object.keys(env).length > 0 ? env : null,
       },
     });
   };
 
-  const handleDelete = (configId: string) => {
-    if (confirm('Are you sure you want to delete this configuration?')) {
-      deleteMutation.mutate(configId);
+  const handleDelete = (config: ProviderConfig) => {
+    setPendingDeleteConfig(config);
+  };
+
+  const handleConfirmDelete = () => {
+    if (pendingDeleteConfig) {
+      deleteMutation.mutate(pendingDeleteConfig.id);
     }
   };
 
@@ -670,6 +705,7 @@ function ProviderConfigsSection({
                   <div>
                     <Label className="text-xs">Environment Variables</Label>
                     <EnvEditor
+                      ref={editEnvEditorRef}
                       env={formData.env}
                       onChange={(env) => setFormData({ ...formData, env })}
                     />
@@ -678,7 +714,7 @@ function ProviderConfigsSection({
                     <Button
                       type="button"
                       size="sm"
-                      onClick={() => handleUpdate(config.id)}
+                      onClick={() => handleUpdate(config)}
                       disabled={updateMutation.isPending || !formData.name.trim()}
                     >
                       Save
@@ -737,8 +773,9 @@ function ProviderConfigsSection({
                           type="button"
                           variant="ghost"
                           size="sm"
-                          onClick={() => handleDelete(config.id)}
+                          onClick={() => handleDelete(config)}
                           disabled={deleteMutation.isPending}
+                          aria-label={`Delete configuration ${config.name}`}
                         >
                           <Trash2 className="h-4 w-4" />
                         </Button>
@@ -824,6 +861,7 @@ function ProviderConfigsSection({
               <div>
                 <Label className="text-xs">Environment Variables</Label>
                 <EnvEditor
+                  ref={createEnvEditorRef}
                   env={formData.env}
                   onChange={(env) => setFormData({ ...formData, env })}
                 />
@@ -873,6 +911,19 @@ function ProviderConfigsSection({
           )}
         </div>
       )}
+      <ConfirmDialog
+        open={pendingDeleteConfig !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDeleteConfig(null);
+        }}
+        title="Delete configuration?"
+        description="Are you sure you want to delete this configuration?"
+        confirmText="Delete"
+        cancelText="Cancel"
+        variant="destructive"
+        loading={deleteMutation.isPending}
+        onConfirm={handleConfirmDelete}
+      />
     </div>
   );
 }
@@ -883,6 +934,7 @@ export function ProfilesPage() {
   const { selectedProjectId } = useSelectedProject();
   const [showDialog, setShowDialog] = useState(false);
   const [editingProfile, setEditingProfile] = useState<AgentProfile | null>(null);
+  const [pendingDeleteProfile, setPendingDeleteProfile] = useState<AgentProfile | null>(null);
   // Note: providerId and options removed in Phase 4
   // Provider configuration now managed via ProviderConfigsSection
   const [formData, setFormData] = useState({
@@ -1148,7 +1200,8 @@ export function ProfilesPage() {
     setShowDialog(true);
   };
 
-  const handleDelete = (id: string, agentCount: number) => {
+  const handleDelete = (profile: AgentProfile) => {
+    const agentCount = profile.agentCount || 0;
     if (agentCount > 0) {
       toast({
         title: 'Cannot delete',
@@ -1157,8 +1210,12 @@ export function ProfilesPage() {
       });
       return;
     }
-    if (confirm('Are you sure you want to delete this profile?')) {
-      deleteMutation.mutate(id);
+    setPendingDeleteProfile(profile);
+  };
+
+  const handleConfirmProfileDelete = () => {
+    if (pendingDeleteProfile) {
+      deleteMutation.mutate(pendingDeleteProfile.id);
     }
   };
 
@@ -1230,7 +1287,8 @@ export function ProfilesPage() {
                   <Button
                     variant="destructive"
                     size="sm"
-                    onClick={() => handleDelete(profile.id, profile.agentCount || 0)}
+                    onClick={() => handleDelete(profile)}
+                    aria-label={`Delete profile ${profile.name}`}
                   >
                     Delete
                   </Button>
@@ -1389,6 +1447,19 @@ export function ProfilesPage() {
           </form>
         </DialogContent>
       </Dialog>
+      <ConfirmDialog
+        open={pendingDeleteProfile !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDeleteProfile(null);
+        }}
+        title="Delete profile?"
+        description="Are you sure you want to delete this profile?"
+        confirmText="Delete"
+        cancelText="Cancel"
+        variant="destructive"
+        loading={deleteMutation.isPending}
+        onConfirm={handleConfirmProfileDelete}
+      />
     </div>
   );
 }

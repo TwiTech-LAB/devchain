@@ -1,9 +1,15 @@
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { type WsEnvelope } from '@/ui/lib/socket';
+import type { WsEnvelope } from '@/ui/lib/socket';
 import { useAppSocket } from '@/ui/hooks/useAppSocket';
+import {
+  type RealtimeInvalidationRegistry,
+  dispatchRealtimeEnvelope,
+  exactTopic,
+} from '@/ui/lib/realtime-invalidation-registry';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/ui/components/ui/card';
 import { cn } from '@/ui/lib/utils';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 /** Pool details from the API */
 export interface PoolDetails {
@@ -30,8 +36,10 @@ interface CurrentPoolsPanelProps {
   selectedAgentId?: string;
 }
 
-async function fetchPools(projectId: string): Promise<PoolDetails[]> {
-  const res = await fetch(`/api/sessions/pools?projectId=${encodeURIComponent(projectId)}`);
+type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
+async function fetchPools(projectId: string, fetchFn: FetchFn): Promise<PoolDetails[]> {
+  const res = await fetchFn(`/api/sessions/pools?projectId=${encodeURIComponent(projectId)}`);
   if (!res.ok) {
     throw new Error('Failed to fetch pools');
   }
@@ -75,6 +83,7 @@ export function CurrentPoolsPanel({
   selectedAgentId,
 }: CurrentPoolsPanelProps) {
   const queryClient = useQueryClient();
+  const apiFetch = useFetchFactory();
 
   const {
     data: pools,
@@ -82,20 +91,27 @@ export function CurrentPoolsPanel({
     error,
   } = useQuery({
     queryKey: ['pools', projectId],
-    queryFn: () => fetchPools(projectId),
+    queryFn: () => fetchPools(projectId, apiFetch),
     refetchInterval: 5000, // Poll every 5 seconds as fallback
     staleTime: 1000,
   });
 
+  const poolsRegistry: RealtimeInvalidationRegistry = useMemo(
+    () => [
+      {
+        match: exactTopic('messages/pools'),
+        type: 'updated',
+        entries: [{ kind: 'invalidate' as const, queryKey: ['pools', projectId] }],
+      },
+    ],
+    [projectId],
+  );
+
   const handleEnvelope = useCallback(
     (envelope: WsEnvelope) => {
-      if (!envelope) return;
-      const { topic, type } = envelope;
-      if (topic === 'messages/pools' && type === 'updated') {
-        queryClient.invalidateQueries({ queryKey: ['pools', projectId] });
-      }
+      dispatchRealtimeEnvelope(envelope, poolsRegistry, queryClient);
     },
-    [queryClient, projectId],
+    [poolsRegistry, queryClient],
   );
 
   useAppSocket({ message: handleEnvelope }, [handleEnvelope]);

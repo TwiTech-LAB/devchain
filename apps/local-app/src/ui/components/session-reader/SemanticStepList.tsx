@@ -72,10 +72,13 @@ export const SemanticStepList = memo(function SemanticStepList({
             return <SubagentItem key={step.id} step={step} />;
           case 'output':
             return step.content.outputText?.trim() ? (
-              <div key={step.id} className="border-l-2 border-emerald-400/40 pl-2">
+              <div
+                key={step.id}
+                className="border-l-2 border-emerald-400/40 bg-card/40 rounded-md px-3 py-2"
+              >
                 <MarkdownRenderer
                   content={step.content.outputText}
-                  className="text-xs leading-relaxed [&_p]:my-1"
+                  className="text-sm leading-relaxed [&_p]:my-1"
                 />
               </div>
             ) : null;
@@ -95,7 +98,7 @@ export const SemanticStepList = memo(function SemanticStepList({
             return (
               <pre
                 key={step.id}
-                className="max-h-32 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 text-[11px] text-muted-foreground/80 leading-relaxed"
+                className="max-h-32 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 text-[11px] text-foreground leading-relaxed"
                 data-testid="orphan-tool-result"
               >
                 {resultText}

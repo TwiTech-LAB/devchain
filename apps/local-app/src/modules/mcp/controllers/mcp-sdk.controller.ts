@@ -12,7 +12,7 @@ import { McpService } from '../services/mcp.service';
 import { McpServerService } from '../services/mcp-server.service';
 import { createLogger } from '../../../common/logging/logger';
 import { filterHiddenTools } from '../constants';
-import { getToolDefinitions as getSharedToolDefinitions } from '../tool-definitions';
+import { allMetadata } from '../tool-descriptors';
 
 const logger = createLogger('McpSdkController');
 
@@ -136,7 +136,9 @@ export class McpSdkController {
   }
 
   private getToolDefinitions() {
-    return filterHiddenTools(getSharedToolDefinitions());
+    return filterHiddenTools(
+      allMetadata.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
+    );
   }
 
   @All()

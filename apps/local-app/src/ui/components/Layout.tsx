@@ -15,15 +15,23 @@ import {
   useTerminalWindows,
 } from '../terminal-windows';
 import { useAppSocket } from '../hooks/useAppSocket';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from './ui/dialog';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from './ui/dialog';
 import { useToast } from '../hooks/use-toast';
 import { AutoCompactEnableModal } from './shared/AutoCompactEnableModal';
 import { BreadcrumbsProvider, useBreadcrumbs } from '../hooks/useBreadcrumbs';
 import { useRuntime } from '../hooks/useRuntime';
 import { useOptionalWorktreeTab } from '../hooks/useWorktreeTab';
+import { CloudStatusIndicator } from './cloud/CloudStatusIndicator';
 import { cn } from '../lib/utils';
 import { fetchPreflightChecks } from '../lib/preflight';
-import type { ActiveSession } from '../lib/sessions';
+import { fetchActiveSessions, type ActiveSession } from '../lib/sessions';
 import type { WsEnvelope } from '../lib/socket';
 import {
   Menu,
@@ -55,6 +63,8 @@ import {
   GitCompareArrows,
   GitBranch,
   UsersRound,
+  Cloud,
+  Bell,
 } from 'lucide-react';
 import { ThemeSelect, type ThemeValue, getStoredTheme } from '@/ui/components/ThemeSelect';
 import { Popover, PopoverContent, PopoverTrigger } from '@/ui/components/ui/popover';
@@ -74,6 +84,10 @@ interface NavItem {
   icon: typeof FolderOpen;
   /** Only show this item when the app is running in main (orchestrator) mode */
   mainModeOnly?: boolean;
+  /** Only show this item when gated Cloud UI features are enabled. */
+  cloudUiOnly?: boolean;
+  /** Override active-state matching for paths with query strings (e.g. `/cloud?section=notifications`). */
+  activeMatch?: (location: { pathname: string; search: string }) => boolean;
 }
 
 interface NavSection {
@@ -96,6 +110,7 @@ interface KeyboardShortcut {
   keys: string;
   description: string;
   hideInMainMode?: boolean;
+  cloudUiOnly?: boolean;
 }
 
 // Grouped navigation sections for collapsible sidebar
@@ -111,6 +126,14 @@ const navSections: NavSection[] = [
       { label: 'Reviews', path: '/reviews', icon: GitCompareArrows },
       { label: 'Registry', path: '/registry', icon: Package, mainModeOnly: true },
       { label: 'Skills', path: '/skills', icon: Sparkles },
+      {
+        label: 'Notifications',
+        path: '/cloud?section=notifications',
+        icon: Bell,
+        cloudUiOnly: true,
+        activeMatch: (loc) =>
+          loc.pathname === '/cloud' && loc.search.includes('section=notifications'),
+      },
     ],
   },
   {
@@ -134,6 +157,14 @@ const navSections: NavSection[] = [
       { label: 'Events', path: '/events', icon: Activity },
       { label: 'Messages', path: '/messages', icon: Inbox },
       { label: 'Automation', path: '/automation', icon: Zap },
+      {
+        label: 'Cloud',
+        path: '/cloud',
+        icon: Cloud,
+        cloudUiOnly: true,
+        activeMatch: (loc) =>
+          loc.pathname === '/cloud' && !loc.search.includes('section=notifications'),
+      },
       { label: 'Settings', path: '/settings', icon: Settings },
     ],
   },
@@ -145,6 +176,8 @@ const SHORTCUTS: KeyboardShortcut[] = [
   { keys: 'g c', description: 'Go to Chat' },
   { keys: 'g b', description: 'Go to Board' },
   { keys: 'g r', description: 'Go to Reviews' },
+  { keys: 'g l', description: 'Go to Cloud', cloudUiOnly: true },
+  { keys: 'g n', description: 'Go to Notifications', cloudUiOnly: true },
   { keys: 'g t', description: 'Go to Teams' },
   { keys: 't', description: 'Toggle terminal dock', hideInMainMode: true },
   { keys: 'Alt+Shift+X', description: 'Toggle all terminal windows', hideInMainMode: true },
@@ -239,19 +272,33 @@ function getWorktreeVisualStatus(status: string): WorktreeVisualStatus {
 }
 
 export function Layout(props: LayoutProps) {
-  const { isMainMode } = useRuntime();
+  const { isMainMode, cloudUiEnabled, runtimeInfo } = useRuntime();
 
   return (
     <BreadcrumbsProvider>
       <TerminalWindowsProvider>
-        <LayoutShell {...props} isMainMode={isMainMode} />
+        <LayoutShell
+          {...props}
+          isMainMode={isMainMode}
+          cloudUiEnabled={cloudUiEnabled}
+          runtimeInfo={runtimeInfo}
+        />
         <TerminalWindowsLayer />
       </TerminalWindowsProvider>
     </BreadcrumbsProvider>
   );
 }
 
-function LayoutShell({ children, isMainMode }: LayoutProps & { isMainMode: boolean }) {
+function LayoutShell({
+  children,
+  isMainMode,
+  cloudUiEnabled,
+  runtimeInfo,
+}: LayoutProps & {
+  isMainMode: boolean;
+  cloudUiEnabled: boolean;
+  runtimeInfo: import('@/ui/lib/runtime').RuntimeInfo | undefined;
+}) {
   const location = useLocation();
   const navigate = useNavigate();
   const {
@@ -272,6 +319,7 @@ function LayoutShell({ children, isMainMode }: LayoutProps & { isMainMode: boole
     return window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === 'true';
   });
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showThemeTerminalNotice, setShowThemeTerminalNotice] = useState(false);
   const [theme, setTheme] = useState<ThemeValue>(() => {
     if (typeof window === 'undefined') return 'ocean';
     return getStoredTheme() ?? 'ocean';
@@ -301,6 +349,52 @@ function LayoutShell({ children, isMainMode }: LayoutProps & { isMainMode: boole
     bootId: string;
   } | null>(null);
   const switchedAwayWorktreeRef = useRef<string | null>(null);
+  const themeWarnedBootIdsRef = useRef<Set<string>>(new Set());
+
+  const handleThemeChange = useCallback(
+    (nextTheme: ThemeValue) => {
+      setTheme(nextTheme);
+
+      const bootId = runtimeInfo?.bootId;
+      if (!bootId) return;
+
+      if (themeWarnedBootIdsRef.current.has(bootId)) return;
+
+      const storageKey = `devchain:theme-warning-shown:${bootId}`;
+      try {
+        if (localStorage.getItem(storageKey) === 'true') {
+          themeWarnedBootIdsRef.current.add(bootId);
+          return;
+        }
+      } catch {
+        // localStorage unavailable — continue to async check
+      }
+
+      // Mark immediately to prevent duplicate notices from concurrent fetches
+      themeWarnedBootIdsRef.current.add(bootId);
+
+      fetchActiveSessions(selectedProjectId ?? undefined)
+        .then((sessions) => {
+          const hasRunning = sessions.some((s) => s.status === 'running');
+          if (!hasRunning) {
+            themeWarnedBootIdsRef.current.delete(bootId);
+            return;
+          }
+
+          try {
+            localStorage.setItem(storageKey, 'true');
+          } catch {
+            // in-memory set already holds the bootId
+          }
+
+          setShowThemeTerminalNotice(true);
+        })
+        .catch(() => {
+          themeWarnedBootIdsRef.current.delete(bootId);
+        });
+    },
+    [runtimeInfo?.bootId, selectedProjectId],
+  );
 
   useAppSocket({
     message: (envelope: WsEnvelope) => {
@@ -405,9 +499,10 @@ function LayoutShell({ children, isMainMode }: LayoutProps & { isMainMode: boole
       SHORTCUTS.filter((shortcut) => {
         if (isMainMode && shortcut.hideInMainMode) return false;
         if (activeWorktree && shortcut.keys === 'g w') return false;
+        if (shortcut.cloudUiOnly && !cloudUiEnabled) return false;
         return true;
       }),
-    [isMainMode, activeWorktree],
+    [isMainMode, activeWorktree, cloudUiEnabled],
   );
   const visibleNavSections = useMemo(() => {
     const hiddenPaths = new Set<string>();
@@ -419,11 +514,12 @@ function LayoutShell({ children, isMainMode }: LayoutProps & { isMainMode: boole
       const filtered = section.items.filter((item) => {
         if (hiddenPaths.has(item.path)) return false;
         if (item.mainModeOnly && !isMainMode) return false;
+        if (item.cloudUiOnly && !cloudUiEnabled) return false;
         return true;
       });
       return filtered.length === section.items.length ? section : { ...section, items: filtered };
     });
-  }, [activeWorktree, isMainMode]);
+  }, [activeWorktree, isMainMode, cloudUiEnabled]);
   const {
     data: worktreesData,
     isLoading: worktreesLoading,
@@ -727,7 +823,9 @@ function LayoutShell({ children, isMainMode }: LayoutProps & { isMainMode: boole
           event.key === 'w' ||
           event.key === 'b' ||
           event.key === 'c' ||
-          event.key === 'r') &&
+          event.key === 'r' ||
+          event.key === 'l' ||
+          event.key === 'n') &&
         !event.metaKey &&
         !event.ctrlKey &&
         !event.altKey
@@ -749,6 +847,12 @@ function LayoutShell({ children, isMainMode }: LayoutProps & { isMainMode: boole
           } else if (event.key === 'r') {
             navigate('/reviews');
             announceShortcut('nav-reviews', 'Navigated to Reviews (shortcut g r)');
+          } else if (event.key === 'l' && cloudUiEnabled) {
+            navigate('/cloud');
+            announceShortcut('nav-cloud', 'Navigated to Cloud (shortcut g l)');
+          } else if (event.key === 'n' && cloudUiEnabled) {
+            navigate('/cloud?section=notifications');
+            announceShortcut('nav-notifications', 'Navigated to Notifications (shortcut g n)');
           }
         }
         lastKeyRef.current = null;
@@ -797,17 +901,20 @@ function LayoutShell({ children, isMainMode }: LayoutProps & { isMainMode: boole
     minimizeWindow,
     navigate,
     isMainMode,
+    cloudUiEnabled,
     restoreWindow,
     terminalWindows,
     toast,
     toggleTerminalDock,
   ]);
 
-  const isActive = (path: string) => {
-    if (path === '/board') {
-      return location.pathname === path || location.pathname.startsWith('/epics/');
+  const isActive = (item: NavItem) => {
+    if (item.activeMatch)
+      return item.activeMatch({ pathname: location.pathname, search: location.search });
+    if (item.path === '/board') {
+      return location.pathname === item.path || location.pathname.startsWith('/epics/');
     }
-    return location.pathname === path || location.pathname.startsWith(path + '/');
+    return location.pathname === item.path || location.pathname.startsWith(item.path + '/');
   };
 
   const toggleSidebar = () => setSidebarOpen(!sidebarOpen);
@@ -1252,7 +1359,7 @@ function LayoutShell({ children, isMainMode }: LayoutProps & { isMainMode: boole
                     <ul id={`${section.id}-items`} className="space-y-1">
                       {section.items.map((item) => {
                         const Icon = item.icon;
-                        const active = isActive(item.path);
+                        const active = isActive(item);
                         const hasUpdates = item.label === 'Registry' && hasRegistryUpdates;
 
                         // Preload lazy-loaded pages on hover for faster navigation
@@ -1416,9 +1523,11 @@ function LayoutShell({ children, isMainMode }: LayoutProps & { isMainMode: boole
               {selectedProjectId && (
                 <EpicSearchInput projectId={selectedProjectId} className="hidden lg:block" />
               )}
+              {/* Cloud connection indicator */}
+              {cloudUiEnabled && <CloudStatusIndicator />}
               {/* Theme toggle: inline on >=sm, popover on small screens */}
               <div className="hidden sm:block">
-                <ThemeSelect value={theme} onChange={setTheme} />
+                <ThemeSelect value={theme} onChange={handleThemeChange} />
               </div>
               <div className="sm:hidden">
                 <Popover>
@@ -1432,7 +1541,7 @@ function LayoutShell({ children, isMainMode }: LayoutProps & { isMainMode: boole
                     </Button>
                   </PopoverTrigger>
                   <PopoverContent align="end">
-                    <ThemeSelect value={theme} onChange={setTheme} />
+                    <ThemeSelect value={theme} onChange={handleThemeChange} />
                   </PopoverContent>
                 </Popover>
               </div>
@@ -1609,6 +1718,33 @@ function LayoutShell({ children, isMainMode }: LayoutProps & { isMainMode: boole
               </div>
             ))}
           </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={showThemeTerminalNotice}>
+        <DialogContent
+          className="max-w-md"
+          showCloseButton={false}
+          onEscapeKeyDown={(event) => event.preventDefault()}
+          onPointerDownOutside={(event) => event.preventDefault()}
+        >
+          <DialogHeader>
+            <DialogTitle>Restart agent terminals</DialogTitle>
+            <DialogDescription>
+              DevChain changed themes, but active agent terminals may keep their previous colors
+              until they are restarted or reloaded separately.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 text-sm text-muted-foreground">
+            <p>Restart or reload active agent terminals to apply the DevChain theme fully.</p>
+            <p>
+              Agents like Codex and Claude also support a{' '}
+              <span className="font-mono text-foreground">/theme</span> option inside the terminal,
+              which can be used to adjust their own theme to match DevChain.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button onClick={() => setShowThemeTerminalNotice(false)}>I understand</Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
       <AutoCompactEnableModal

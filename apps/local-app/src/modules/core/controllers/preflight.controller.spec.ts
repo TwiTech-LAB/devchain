@@ -5,7 +5,7 @@ import type { PreflightResult } from '../services/preflight.service';
 
 describe('PreflightController', () => {
   let controller: PreflightController;
-  let mockPreflightService: { runChecks: jest.Mock; clearCache: jest.Mock };
+  let mockPreflightService: { runChecks: jest.Mock };
 
   const mockResult: PreflightResult = {
     overall: 'pass',
@@ -18,7 +18,6 @@ describe('PreflightController', () => {
   beforeEach(async () => {
     mockPreflightService = {
       runChecks: jest.fn().mockResolvedValue(mockResult),
-      clearCache: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -88,20 +87,6 @@ describe('PreflightController', () => {
       expect(mockPreflightService.runChecks).toHaveBeenCalledWith('/my/project', {
         includeAllProviders: false,
       });
-    });
-  });
-
-  describe('POST /api/preflight/clear-cache', () => {
-    it('calls clearCache with projectPath when provided', async () => {
-      const result = await controller.clearCache('/my/project');
-      expect(mockPreflightService.clearCache).toHaveBeenCalledWith('/my/project');
-      expect(result.success).toBe(true);
-    });
-
-    it('calls clearCache without projectPath when omitted', async () => {
-      const result = await controller.clearCache(undefined);
-      expect(mockPreflightService.clearCache).toHaveBeenCalledWith(undefined);
-      expect(result.success).toBe(true);
     });
   });
 });

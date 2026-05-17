@@ -217,9 +217,8 @@ describe('TemplateDetailDrawer', () => {
     });
   });
 
-  // TODO: Fix this test - projects query not returning data in waitFor
-  // The mock is set up correctly but the second query doesn't seem to complete
-  // This is a pre-existing issue unrelated to DialogTitle fix
+  // TODO(test-strategy-overhaul): SKIPPED — second useQuery (projects using template) never resolves in jsdom.
+  // The mock is set up correctly but the multi-query chain doesn't flush. Needs query cache pre-seeding or Playwright.
   it.skip('displays projects using template with update badge', async () => {
     global.fetch = jest.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

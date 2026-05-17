@@ -4,7 +4,7 @@
  */
 
 jest.mock('../utils/claude-config', () => ({
-  checkClaudeAutoCompact: jest.fn(),
+  checkAutoCompactConfig: jest.fn(),
 }));
 
 jest.mock('../../../common/logging/logger', () => ({
@@ -24,14 +24,12 @@ import { stat } from 'fs/promises';
 import { SessionsService } from './sessions.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import type { TmuxService } from '../../terminal/services/tmux.service';
 import type { PtyService } from '../../terminal/services/pty.service';
 import type { PreflightService } from '../../core/services/preflight.service';
-import type { ProviderMcpEnsureService } from '../../core/services/provider-mcp-ensure.service';
+import type { ProviderMcpEnsureService } from '../../providers/services/provider-mcp-ensure.service';
 import type { EventsService } from '../../events/services/events.service';
-import type { TerminalSendCoordinatorService } from '../../terminal/services/terminal-send-coordinator.service';
-import { TerminalGateway } from '../../terminal/gateways/terminal.gateway';
-import type { ModuleRef } from '@nestjs/core';
+import type { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
+import type { TerminalSessionRegistry } from '../../terminal/services/terminal-session/terminal-session-registry';
 import type { HooksConfigService } from '../../hooks/services/hooks-config.service';
 import type { ProviderAdapterFactory } from '../../providers/adapters/provider-adapter.factory';
 import { SessionCoordinatorService } from './session-coordinator.service';
@@ -96,45 +94,28 @@ describe('SessionsService.terminateSession — size_bytes', () => {
       getProfileProviderConfig: jest.fn(),
     };
 
-    const tmuxService = {
-      createSessionName: jest.fn(),
-      createSession: jest.fn(),
-      startHealthCheck: jest.fn(),
-      sendCommand: jest.fn(),
-      sendCommandArgs: jest.fn(),
-      waitForOutput: jest.fn(),
-      pasteAndSubmit: jest.fn(),
-      setAlternateScreenOff: jest.fn(),
-      destroySession: jest.fn().mockResolvedValue(undefined),
-      hasSession: jest.fn().mockResolvedValue(true),
-    };
-
     const ptyService = { startStreaming: jest.fn(), stopStreaming: jest.fn() };
     const preflightService = { runChecks: jest.fn() };
     const mcpEnsureService = { ensureMcp: jest.fn() };
-    const sendCoordinator = {
-      ensureAgentGap: jest.fn(),
-    } as unknown as TerminalSendCoordinatorService;
+    const terminalIO = {
+      sessionExists: jest.fn(),
+    } as unknown as TerminalIOService;
     const sessionCoordinator = { withAgentLock: jest.fn() } as unknown as SessionCoordinatorService;
     const hooksConfigService = { ensureHooksConfig: jest.fn() };
 
     const eventsService: { publish: jest.Mock } = { publish: jest.fn().mockResolvedValue('evt') };
-    const terminalGateway = { broadcastEvent: jest.fn() };
 
-    const moduleRef = {
-      get: jest.fn().mockImplementation((token: unknown) => {
-        const name = (token as { name?: string })?.name;
-        if (name === 'TerminalGateway') return terminalGateway as unknown as TerminalGateway;
-        if (name === 'EventsService') return eventsService as unknown as EventsService;
-        return null;
-      }),
-    } as unknown as ModuleRef;
+    const terminalSessionRegistry = {
+      dispose: jest.fn(),
+      create: jest.fn(),
+      bind: jest.fn(),
+      get: jest.fn(),
+    } as unknown as TerminalSessionRegistry;
 
     service = new SessionsService(
       dbMock,
       storage as unknown as StorageService,
-      tmuxService as unknown as TmuxService,
-      sendCoordinator,
+      terminalIO,
       ptyService as unknown as PtyService,
       preflightService as unknown as PreflightService,
       mcpEnsureService as unknown as ProviderMcpEnsureService,
@@ -143,7 +124,8 @@ describe('SessionsService.terminateSession — size_bytes', () => {
       {
         getAdapter: jest.fn().mockReturnValue({ providerName: 'claude' }),
       } as unknown as ProviderAdapterFactory,
-      moduleRef,
+      eventsService as unknown as EventsService,
+      terminalSessionRegistry,
     );
   });
 

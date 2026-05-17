@@ -4,21 +4,18 @@ import {
   Delete,
   Get,
   Inject,
-  InternalServerErrorException,
   NotFoundException,
   Param,
   Post,
   Body,
 } from '@nestjs/common';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { z } from 'zod';
 import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
-import { McpProviderRegistrationService } from '../../mcp/services/mcp-provider-registration.service';
+import { McpProviderRegistrationService } from '../services/mcp-provider-registration.service';
 import { createLogger } from '../../../common/logging/logger';
+import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 
 const logger = createLogger('ProviderModelsController');
-const execFileAsync = promisify(execFile);
 
 const ProviderModelCreateSchema = z
   .object({
@@ -51,6 +48,7 @@ export class ProviderModelsController {
   constructor(
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
     private readonly mcpRegistration: McpProviderRegistrationService,
+    private readonly executor: ProcessExecutor,
   ) {}
 
   @Get()
@@ -117,51 +115,37 @@ export class ProviderModelsController {
       throw new BadRequestException(resolution.message ?? 'Unable to resolve provider binary');
     }
 
-    try {
-      const { stdout } = await execFileAsync(resolution.binaryPath, ['models'], {
-        timeout: 30_000,
-        maxBuffer: 1024 * 1024,
-      });
-      const modelNames = stdout
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0);
+    const execResult = await this.executor.run({
+      argv: [resolution.binaryPath, 'models'],
+      mode: 'pipe',
+      timeout: 30_000,
+      outputLimits: { maxBytes: 1024 * 1024 },
+    });
 
-      const result = await this.storage.bulkCreateProviderModels(providerId, modelNames);
-      return {
-        ...result,
-        total: result.added.length + result.existing.length,
-      };
-    } catch (error) {
-      throw this.handleDiscoverError(error, resolution.binaryPath);
-    }
-  }
-
-  private handleDiscoverError(error: unknown, binaryPath: string): never {
-    const err = error as NodeJS.ErrnoException & {
-      stdout?: string;
-      stderr?: string;
-      signal?: NodeJS.Signals | null;
-      code?: string | number | null;
-      killed?: boolean;
-    };
-
-    if (err.code === 'ENOENT') {
-      throw new BadRequestException(`Provider binary not found: ${binaryPath}`);
-    }
-
-    if (err.killed || err.signal === 'SIGTERM') {
+    if (execResult.timedOut) {
       throw new BadRequestException('Model discovery timed out after 30000ms');
     }
 
-    if (typeof err.code === 'number') {
+    if (!execResult.success) {
+      const details = (execResult.stderr || execResult.stdout || '').trim();
+      if (execResult.exitCode === null && !details) {
+        throw new BadRequestException(`Provider binary not found: ${resolution.binaryPath}`);
+      }
       throw new BadRequestException({
-        message: `Model discovery command failed with exit code ${err.code}`,
-        details: (err.stderr || err.stdout || err.message || '').trim(),
+        message: `Model discovery command failed with exit code ${execResult.exitCode}`,
+        details,
       });
     }
 
-    logger.error({ error }, 'Unexpected error while discovering provider models');
-    throw new InternalServerErrorException('Failed to discover provider models');
+    const modelNames = execResult.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+    const result = await this.storage.bulkCreateProviderModels(providerId, modelNames);
+    return {
+      ...result,
+      total: result.added.length + result.existing.length,
+    };
   }
 }

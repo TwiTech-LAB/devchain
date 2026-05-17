@@ -1,7 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { execFile } from 'child_process';
 import { createHash } from 'crypto';
-import { promisify } from 'util';
 import { type Dirent, existsSync } from 'fs';
 import * as fs from 'fs/promises';
 import { dirname, extname, join, normalize, relative, sep } from 'path';
@@ -38,8 +36,8 @@ import {
 import { ScopeResolverService } from './scope-resolver.service';
 import { ScopeAutoDetectorService } from './scope-auto-detector.service';
 import { OverviewScopeRepository } from '../repositories/overview-scope.repository';
+import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 
-const execFileAsync = promisify(execFile);
 const MAX_BUFFER = 10 * 1024 * 1024; // 10 MB
 const MAX_ADAPTER_FILE_SIZE = 256 * 1024; // 256 KB — skip large/generated files
 const EMPTY_TREE_SHA = '4b825dc642cb6eb9a060e54bf899d15f0a75b9a7';
@@ -114,6 +112,7 @@ export class CodebaseOverviewAnalyzerService {
     private readonly scopeResolver: ScopeResolverService,
     private readonly scopeAutoDetector: ScopeAutoDetectorService,
     private readonly scopeRepository: OverviewScopeRepository,
+    private readonly executor: ProcessExecutor,
   ) {}
   /**
    * Scan a repository and assemble a snapshot with regions, districts,
@@ -563,18 +562,18 @@ export class CodebaseOverviewAnalyzerService {
     args: string[],
     options?: { allowNonZero?: boolean },
   ): Promise<string> {
-    try {
-      const { stdout } = await execFileAsync('git', args, {
-        cwd: projectPath,
-        maxBuffer: MAX_BUFFER,
-      });
-      return stdout;
-    } catch (err: unknown) {
-      if (options?.allowNonZero && isExecError(err) && err.stdout != null) {
-        return err.stdout;
-      }
-      throw err;
+    const result = await this.executor.run({
+      argv: ['git', ...args],
+      mode: 'pipe',
+      cwd: projectPath,
+      outputLimits: { maxBytes: MAX_BUFFER },
+    });
+
+    if (!result.success && !options?.allowNonZero) {
+      throw new Error(`git ${args[0]} failed with exit code ${result.exitCode}: ${result.stderr}`);
     }
+
+    return result.stdout;
   }
 
   private async getRecentCommits(
@@ -1519,12 +1518,6 @@ export class CodebaseOverviewAnalyzerService {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function isExecError(
-  err: unknown,
-): err is Error & { stdout: string; stderr: string; code: number } {
-  return err instanceof Error && 'stdout' in err;
-}
 
 /**
  * Resolve a relative import specifier to a file path within the project.

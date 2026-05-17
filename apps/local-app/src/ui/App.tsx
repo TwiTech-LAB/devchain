@@ -25,6 +25,8 @@ import { SkillsPage } from './pages/SkillsPage';
 import { WorktreesPage } from './pages/WorktreesPage';
 import { CodebaseOverviewDisabledPage } from './pages/CodebaseOverviewDisabledPage';
 import { RuntimeProvider, useRuntime } from './hooks/useRuntime';
+import { CloudCallbackPage } from './components/cloud/CloudCallbackPage';
+import { CloudPage } from './pages/CloudPage';
 
 export function App() {
   return (
@@ -35,10 +37,27 @@ export function App() {
 }
 
 function AppRoutes() {
-  const { runtimeLoading } = useRuntime();
+  const { runtimeLoading, cloudUiEnabled } = useRuntime();
+  const runtimeLoadingElement = (
+    <div className="px-2 py-4 text-sm text-muted-foreground">Loading runtime...</div>
+  );
 
   return (
     <Routes>
+      {/* Cloud OAuth/magic-link callback — outside Layout */}
+      <Route
+        path="/auth/cloud/callback"
+        element={
+          runtimeLoading ? (
+            runtimeLoadingElement
+          ) : cloudUiEnabled ? (
+            <CloudCallbackPage />
+          ) : (
+            <NotFoundPage />
+          )
+        }
+      />
+
       {/* Main App Routes */}
       <Route
         path="/*"
@@ -61,38 +80,16 @@ function AppRoutes() {
                 <Route path="/board" element={<BoardPage />} />
                 <Route
                   path="/chat"
-                  element={
-                    runtimeLoading ? (
-                      <div className="px-2 py-4 text-sm text-muted-foreground">
-                        Loading runtime...
-                      </div>
-                    ) : (
-                      <ChatPage />
-                    )
-                  }
+                  element={runtimeLoading ? runtimeLoadingElement : <ChatPage />}
                 />
                 <Route
                   path="/reviews"
-                  element={
-                    runtimeLoading ? (
-                      <div className="px-2 py-4 text-sm text-muted-foreground">
-                        Loading runtime...
-                      </div>
-                    ) : (
-                      <ReviewsPageWithSuspense />
-                    )
-                  }
+                  element={runtimeLoading ? runtimeLoadingElement : <ReviewsPageWithSuspense />}
                 />
                 <Route
                   path="/reviews/:reviewId"
                   element={
-                    runtimeLoading ? (
-                      <div className="px-2 py-4 text-sm text-muted-foreground">
-                        Loading runtime...
-                      </div>
-                    ) : (
-                      <ReviewDetailPageWithSuspense />
-                    )
+                    runtimeLoading ? runtimeLoadingElement : <ReviewDetailPageWithSuspense />
                   }
                 />
                 <Route path="/records" element={<RecordsDisabledPage />} />
@@ -102,13 +99,17 @@ function AppRoutes() {
                 <Route path="/automation" element={<AutomationPage />} />
                 <Route
                   path="/worktrees"
+                  element={runtimeLoading ? runtimeLoadingElement : <WorktreesPage />}
+                />
+                <Route
+                  path="/cloud"
                   element={
                     runtimeLoading ? (
-                      <div className="px-2 py-4 text-sm text-muted-foreground">
-                        Loading runtime...
-                      </div>
+                      runtimeLoadingElement
+                    ) : cloudUiEnabled ? (
+                      <CloudPage />
                     ) : (
-                      <WorktreesPage />
+                      <NotFoundPage />
                     )
                   }
                 />

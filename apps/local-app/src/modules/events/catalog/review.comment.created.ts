@@ -16,8 +16,10 @@ export const reviewCommentCreatedEvent = {
     lineEnd: z.number().int().positive().nullable(),
     parentId: z.string().uuid().nullable(),
     targetAgentIds: z.array(z.string().uuid()).optional(),
+    recipientIds: z.array(z.string().uuid()).optional(),
     // Resolved names for readability
     projectName: z.string().min(1).optional(),
+    agentName: z.string().min(1).optional(),
     reviewTitle: z.string().min(1).optional(),
     // Review context for agents to locate the code
     reviewMode: z.enum(['working_tree', 'commit']).optional(),

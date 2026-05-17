@@ -34,6 +34,7 @@ export interface SessionDto {
   activityState?: 'idle' | 'busy' | null;
   busySince?: string | null;
   transcriptPath?: string | null;
+  name?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -87,6 +88,7 @@ export interface SessionHistoryItemDto {
   lastActivityAt: string | null;
   sizeBytes: number | null;
   transcriptAvailable: boolean;
+  name: string | null;
 }
 
 export interface SessionHistoryResponseDto {

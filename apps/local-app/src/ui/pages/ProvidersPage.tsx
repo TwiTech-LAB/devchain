@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useRef, useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/ui/components/ui/button';
 import { Input } from '@/ui/components/ui/input';
@@ -45,7 +45,7 @@ import {
   Search,
 } from 'lucide-react';
 import { cn } from '@/ui/lib/utils';
-import { EnvEditor } from '@/ui/components/EnvEditor';
+import { EnvEditor, type EnvEditorHandle } from '@/ui/components/EnvEditor';
 import { fetchPreflightChecks } from '@/ui/lib/preflight';
 import { providerModelQueryKeys } from '@/ui/lib/provider-model-query-keys';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
@@ -501,6 +501,7 @@ export function ProvidersPage() {
   >('idle');
   const [providerType, setProviderType] = useState<ProviderType>('codex');
   const [binPathTouched, setBinPathTouched] = useState(false);
+  const envEditorRef = useRef<EnvEditorHandle>(null);
 
   const { data: providersData, isLoading } = useQuery({
     queryKey: ['providers'],
@@ -825,6 +826,10 @@ export function ProvidersPage() {
       }
     }
 
+    const committedEnv = envEditorRef.current?.commitPending();
+    if (committedEnv === null) return;
+    const env = committedEnv ?? formData.env;
+
     if (editingProvider) {
       const autoCompactThreshold: number | null = thresholdStr === '' ? null : Number(thresholdStr);
       const autoCompactThreshold1m: number | null =
@@ -836,7 +841,7 @@ export function ProvidersPage() {
         data: {
           binPath,
           autoCompactThreshold,
-          env: Object.keys(formData.env).length > 0 ? formData.env : null,
+          env: Object.keys(env).length > 0 ? env : null,
           ...(isClaude
             ? {
                 oneMillionContextEnabled: formData.oneMillionContextEnabled,
@@ -854,7 +859,7 @@ export function ProvidersPage() {
       } = {
         name: providerName,
         binPath,
-        env: Object.keys(formData.env).length > 0 ? formData.env : null,
+        env: Object.keys(env).length > 0 ? env : null,
       };
       if (thresholdStr !== '' && providerType === 'claude') {
         payload.autoCompactThreshold = Number(thresholdStr);
@@ -1463,6 +1468,7 @@ export function ProvidersPage() {
                 This env is shared across all projects using this provider.
               </p>
               <EnvEditor
+                ref={envEditorRef}
                 env={formData.env}
                 onChange={(env) => setFormData((prev) => ({ ...prev, env }))}
               />

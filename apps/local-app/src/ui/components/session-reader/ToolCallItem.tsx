@@ -13,6 +13,7 @@ import {
   formatTokensSmart as formatTokens,
   truncateText,
 } from '@/ui/utils/session-reader-formatters';
+import { useSessionViewMode } from '@/ui/hooks/useSessionViewMode';
 
 const INPUT_TRUNCATE = 500;
 const RESULT_TRUNCATE = 500;
@@ -87,6 +88,7 @@ export function ToolCallItem({
   isStepHot,
   percentOfChunk,
 }: ToolCallItemProps) {
+  const { mode } = useSessionViewMode();
   const toolName = step.content.toolName ?? 'Unknown';
   const isTask = toolName === 'Task';
   const isError = resultStep?.content.isError ?? false;
@@ -185,12 +187,12 @@ export function ToolCallItem({
           ) : (
             <Wrench className="h-3 w-3 text-amber-400" />
           )}
-          <span className="font-medium">{oneLiner}</span>
+          <span className="font-mono font-medium">{oneLiner}</span>
           <span className="ml-auto flex items-center gap-1.5">
-            {isStepHot && (
+            {isStepHot && mode === 'diagnostic' && (
               <Flame className="h-3 w-3 text-amber-500" data-testid="step-hotspot-flame" />
             )}
-            {isStepHot && percentOfChunk != null && percentOfChunk > 0 && (
+            {isStepHot && mode === 'diagnostic' && percentOfChunk != null && percentOfChunk > 0 && (
               <span
                 className="text-amber-600 font-medium text-[10px] tabular-nums"
                 data-testid="step-hotspot-pct"
@@ -200,7 +202,7 @@ export function ToolCallItem({
             )}
             {estimatedTokens > 0 && (
               <span
-                className="text-muted-foreground/60 text-[10px] tabular-nums"
+                className="text-muted-foreground/70 text-[10px] tabular-nums"
                 data-testid="tool-call-token-estimate"
               >
                 ~{formatTokens(estimatedTokens)}
@@ -214,7 +216,7 @@ export function ToolCallItem({
                   data-testid="tool-call-duration-dot"
                 />
                 <span
-                  className="text-muted-foreground/60 text-[10px] tabular-nums"
+                  className="text-muted-foreground/70 text-[10px] tabular-nums"
                   data-testid="tool-call-duration"
                 >
                   {formatDuration(computedDuration)}
@@ -229,7 +231,7 @@ export function ToolCallItem({
             {displayInput && (
               <div>
                 <pre
-                  className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 text-[11px] text-muted-foreground/80 leading-relaxed"
+                  className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 text-[11px] text-foreground leading-relaxed"
                   data-testid="tool-call-input"
                 >
                   {displayInput}
@@ -254,9 +256,7 @@ export function ToolCallItem({
                 <pre
                   className={cn(
                     'max-h-64 overflow-auto whitespace-pre-wrap rounded-md p-2 text-[11px] leading-relaxed',
-                    isError
-                      ? 'bg-destructive/10 text-destructive'
-                      : 'bg-muted/40 text-muted-foreground/80',
+                    isError ? 'bg-destructive/10 text-destructive' : 'bg-muted/40 text-foreground',
                   )}
                   data-testid="tool-call-result"
                 >

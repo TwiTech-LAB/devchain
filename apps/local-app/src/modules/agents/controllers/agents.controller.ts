@@ -10,13 +10,13 @@ import {
   Query,
   Inject,
   BadRequestException,
-  forwardRef,
   Optional,
 } from '@nestjs/common';
 import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { CreateAgent, UpdateAgent, Agent } from '../../storage/models/domain.models';
 import { SessionsService } from '../../sessions/services/sessions.service';
 import { SessionCoordinatorService } from '../../sessions/services/session-coordinator.service';
+import { SessionRuntime } from '../../sessions/services/session-runtime';
 import { SessionDto } from '../../sessions/dtos/sessions.dto';
 import { EventsService } from '../../events/services/events.service';
 import { z } from 'zod';
@@ -93,9 +93,9 @@ const UpdateAgentSchema = z.object({
 export class AgentsController {
   constructor(
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
-    @Inject(forwardRef(() => SessionsService)) private readonly sessionsService: SessionsService,
-    @Inject(forwardRef(() => SessionCoordinatorService))
+    private readonly sessionsService: SessionsService,
     private readonly sessionCoordinator: SessionCoordinatorService,
+    private readonly sessionRuntime: SessionRuntime,
     @Optional() private readonly eventsService?: EventsService,
   ) {}
 
@@ -379,7 +379,7 @@ export class AgentsController {
     // Launch new independent session (no epicId)
     // launchSession() is idempotent and handles its own locking internally
     logger.info({ agentId, projectId }, 'Launching new session');
-    const newSession = await this.sessionsService.launchSession({
+    const newSession = await this.sessionRuntime.launch({
       agentId,
       projectId,
     });

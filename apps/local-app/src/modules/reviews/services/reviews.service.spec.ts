@@ -12,6 +12,7 @@ describe('ReviewsService', () => {
     Pick<
       StorageService,
       | 'getProject'
+      | 'getAgent'
       | 'createReview'
       | 'getReview'
       | 'updateReview'
@@ -36,6 +37,7 @@ describe('ReviewsService', () => {
   beforeEach(async () => {
     storage = {
       getProject: jest.fn(),
+      getAgent: jest.fn(),
       createReview: jest.fn(),
       getReview: jest.fn(),
       updateReview: jest.fn(),
@@ -560,6 +562,31 @@ describe('ReviewsService', () => {
           'review.comment.created',
           expect.objectContaining({
             targetAgentIds: ['agent-for-event-test'],
+          }),
+        );
+      });
+
+      it('adds recipientIds and agentName to review.comment.created payload', async () => {
+        storage.getReview.mockResolvedValue(makeReview());
+        storage.createReviewComment.mockResolvedValue(
+          makeComment({ authorType: 'agent', authorAgentId: 'agent-1' }),
+        );
+        storage.getProject.mockResolvedValue({ id: projectId, name: 'Test Project' } as never);
+        storage.getAgent.mockResolvedValue({ id: 'agent-1', name: 'Agent One' } as never);
+
+        await service.createComment(reviewId, {
+          content: 'Targeted review comment',
+          targetAgentIds: ['agent-1', 'agent-2', 'agent-2'],
+          authorType: 'agent',
+          authorAgentId: 'agent-1',
+        });
+
+        expect(eventsService.publish).toHaveBeenCalledWith(
+          'review.comment.created',
+          expect.objectContaining({
+            targetAgentIds: ['agent-2'],
+            recipientIds: ['agent-2'],
+            agentName: 'Agent One',
           }),
         );
       });

@@ -1,9 +1,11 @@
 import { Global, Module } from '@nestjs/common';
 import { HEALTH_READINESS_CHECKER } from './services/health.service';
 import { NormalReadinessCheckerService } from './services/normal-readiness-checker.service';
+import { ProcessExecutorModule } from '../terminal/services/process-executor/process-executor.module';
 
 @Global()
 @Module({
+  imports: [ProcessExecutorModule],
   providers: [
     NormalReadinessCheckerService,
     {

@@ -13,6 +13,13 @@ export const sessionTranscriptUpdatedEvent = {
       costUsd: z.number().nonnegative(),
       messageCount: z.number().int().nonnegative(),
     }),
+    cursor: z.string().min(1),
+    prevCursor: z.string().min(1),
+    replaceFromChunkIndex: z.number().int().nonnegative(),
+    newChunkIds: z.array(z.string()),
+    totalChunkCount: z.number().int().nonnegative(),
+    deltaChunks: z.array(z.unknown()),
+    deltaMessages: z.array(z.unknown()),
   }),
 } as const;
 

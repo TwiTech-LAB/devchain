@@ -1,4 +1,4 @@
-import { renderHook } from '@testing-library/react';
+import { renderHook, waitFor } from '@testing-library/react';
 import { useRef } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -9,6 +9,7 @@ import {
   MIN_TERMINAL_SCROLLBACK,
   MAX_TERMINAL_SCROLLBACK,
 } from '@/common/constants/terminal';
+import { DARK_XTERM_THEME, OCEAN_XTERM_THEME } from '../terminal-themes';
 
 // Mock @xterm/xterm (same pattern as ChatTerminal.spec.tsx)
 jest.mock('@xterm/xterm', () => {
@@ -31,6 +32,8 @@ jest.mock('@xterm/xterm', () => {
       scrollLines: jest.fn(),
       onData: jest.fn().mockReturnValue({ dispose: jest.fn() }),
       onScroll: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+      onSelectionChange: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+      getSelection: jest.fn().mockReturnValue(''),
       parser: { registerOscHandler: jest.fn().mockReturnValue({ dispose: jest.fn() }) },
       buffer: { active: { viewportY: 0, baseY: 0, cursorY: 0, length: 24 } },
       options: { scrollback: 10000 },
@@ -50,6 +53,10 @@ jest.mock('@xterm/addon-fit', () => ({
 
 jest.mock('@/ui/lib/debug', () => ({
   termLog: jest.fn(),
+}));
+
+jest.mock('@/ui/hooks/use-toast', () => ({
+  toast: jest.fn(),
 }));
 
 describe('useXterm', () => {
@@ -75,7 +82,7 @@ describe('useXterm', () => {
 
     expect(Terminal).toHaveBeenCalledWith(
       expect.objectContaining({
-        convertEol: true,
+        convertEol: false,
         scrollback: DEFAULT_TERMINAL_SCROLLBACK,
         cursorBlink: false,
         disableStdin: true,
@@ -160,6 +167,44 @@ describe('useXterm', () => {
     expect(result.current.fitAddonRef.current).toBeTruthy();
     expect(result.current.xtermRef.current?.dispose).toBeDefined();
     expect(result.current.fitAddonRef.current?.fit).toBeDefined();
+  });
+
+  it('decodes OSC 52 clipboard payloads as UTF-8', async () => {
+    const terminalRef = { current: mockContainerElement };
+    const writeText = jest.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const { result } = renderHook(() => {
+      const xtermRef = useRef<Terminal | null>(null);
+      const fitAddonRef = useRef<FitAddon | null>(null);
+      useXterm(terminalRef, 'test-session', xtermRef, fitAddonRef);
+      return { xtermRef, fitAddonRef };
+    });
+
+    const terminal = result.current.xtermRef.current as Record<string, unknown>;
+    const registerOscHandler = (terminal.parser as { registerOscHandler: jest.Mock })
+      .registerOscHandler;
+    const handler = registerOscHandler.mock.calls.find(([code]) => code === 52)?.[1] as
+      | ((data: string) => boolean)
+      | undefined;
+
+    expect(handler).toBeDefined();
+    expect(handler?.(`c;${Buffer.from('—', 'utf-8').toString('base64')}`)).toBe(true);
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith('—');
+    });
+
+    const { toast } = jest.requireMock('@/ui/hooks/use-toast');
+    expect(toast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Copied to clipboard',
+        description: '1 character from the terminal',
+      }),
+    );
   });
 
   it('should not reinitialize if terminal already exists', () => {
@@ -442,6 +487,136 @@ describe('useXterm', () => {
 
       expect(wheelCallback(event)).toBe(false);
       expect(terminal.scrollLines).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('appTheme initialization and live update', () => {
+    it('initializes with dark xterm theme by default', () => {
+      const terminalRef = { current: mockContainerElement };
+
+      renderHook(() => {
+        const xtermRef = useRef<Terminal | null>(null);
+        const fitAddonRef = useRef<FitAddon | null>(null);
+        useXterm(terminalRef, 'test-session', xtermRef, fitAddonRef);
+        return { xtermRef, fitAddonRef };
+      });
+
+      expect(Terminal).toHaveBeenCalledWith(
+        expect.objectContaining({
+          theme: DARK_XTERM_THEME,
+        }),
+      );
+    });
+
+    it('initializes with ocean xterm theme when appTheme is ocean', () => {
+      const terminalRef = { current: mockContainerElement };
+
+      renderHook(() => {
+        const xtermRef = useRef<Terminal | null>(null);
+        const fitAddonRef = useRef<FitAddon | null>(null);
+        useXterm(
+          terminalRef,
+          'test-session',
+          xtermRef,
+          fitAddonRef,
+          undefined,
+          'form',
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          DEFAULT_TERMINAL_SCROLLBACK,
+          undefined,
+          'ocean',
+        );
+        return { xtermRef, fitAddonRef };
+      });
+
+      expect(Terminal).toHaveBeenCalledWith(
+        expect.objectContaining({
+          theme: OCEAN_XTERM_THEME,
+        }),
+      );
+    });
+
+    it('updates terminal options.theme on live theme change without dispose', () => {
+      const terminalRef = { current: mockContainerElement };
+      let appTheme: 'dark' | 'ocean' = 'dark';
+
+      const { result, rerender } = renderHook(() => {
+        const xtermRef = useRef<Terminal | null>(null);
+        const fitAddonRef = useRef<FitAddon | null>(null);
+        useXterm(
+          terminalRef,
+          'test-session',
+          xtermRef,
+          fitAddonRef,
+          undefined,
+          'form',
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          DEFAULT_TERMINAL_SCROLLBACK,
+          undefined,
+          appTheme,
+        );
+        return { xtermRef, fitAddonRef };
+      });
+
+      const terminal = result.current.xtermRef.current;
+      expect(terminal).toBeTruthy();
+      expect(terminal!.options.theme).toBe(DARK_XTERM_THEME);
+
+      // Change theme to ocean
+      appTheme = 'ocean';
+      rerender();
+
+      // Terminal should NOT be disposed/recreated
+      expect(result.current.xtermRef.current).toBe(terminal);
+      expect(terminal!.dispose).not.toHaveBeenCalled();
+
+      // Theme should be updated on the existing instance
+      expect(terminal!.options.theme).toBe(OCEAN_XTERM_THEME);
+    });
+
+    it('updates from ocean back to dark without remount', () => {
+      const terminalRef = { current: mockContainerElement };
+      let appTheme: 'dark' | 'ocean' = 'ocean';
+
+      const { result, rerender } = renderHook(() => {
+        const xtermRef = useRef<Terminal | null>(null);
+        const fitAddonRef = useRef<FitAddon | null>(null);
+        useXterm(
+          terminalRef,
+          'test-session',
+          xtermRef,
+          fitAddonRef,
+          undefined,
+          'form',
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          DEFAULT_TERMINAL_SCROLLBACK,
+          undefined,
+          appTheme,
+        );
+        return { xtermRef, fitAddonRef };
+      });
+
+      const terminal = result.current.xtermRef.current;
+      expect(terminal!.options.theme).toBe(OCEAN_XTERM_THEME);
+
+      appTheme = 'dark';
+      rerender();
+
+      expect(result.current.xtermRef.current).toBe(terminal);
+      expect(terminal!.dispose).not.toHaveBeenCalled();
+      expect(terminal!.options.theme).toBe(DARK_XTERM_THEME);
     });
   });
 });

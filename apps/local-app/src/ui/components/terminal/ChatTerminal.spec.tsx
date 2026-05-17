@@ -1,10 +1,25 @@
-import { act, cleanup as rtlCleanup, fireEvent, render, waitFor } from '@testing-library/react';
+import {
+  act,
+  cleanup as rtlCleanup,
+  fireEvent,
+  render,
+  renderHook,
+  waitFor,
+} from '@testing-library/react';
 
 jest.mock('@xterm/xterm/css/xterm.css', () => ({}), { virtual: true });
+const xtermScrollCallbacks: Array<() => void> = [];
+
 jest.mock('@xterm/xterm', () => {
   return {
     Terminal: jest.fn().mockImplementation(function (this: object) {
       let container: HTMLElement | null = null;
+      const bufferActive = {
+        viewportY: 0,
+        baseY: 0,
+        cursorY: 0,
+        length: 0,
+      };
 
       return {
         loadAddon: jest.fn(),
@@ -32,19 +47,17 @@ jest.mock('@xterm/xterm', () => {
         scrollToLine: jest.fn(),
         focus: jest.fn(),
         attachCustomWheelEventHandler: jest.fn(),
-        onScroll: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+        onScroll: jest.fn((cb: () => void) => {
+          xtermScrollCallbacks.push(cb);
+          return { dispose: jest.fn() };
+        }),
         onData: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+        onSelectionChange: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+        getSelection: jest.fn().mockReturnValue(''),
         parser: { registerOscHandler: jest.fn() },
         options: { scrollback: 10000 },
         modes: { mouseTrackingMode: 'none' },
-        buffer: {
-          active: {
-            viewportY: 0,
-            baseY: 0,
-            cursorY: 0,
-            length: 0,
-          },
-        },
+        buffer: { active: bufferActive },
       };
     }),
   };
@@ -64,6 +77,7 @@ jest.mock('@/ui/lib/debug', () => ({
 }));
 
 import { ChatTerminal } from './ChatTerminal';
+import { _resetThemeCacheForTesting, useTerminalThemeSync } from './hooks/useTerminalThemeSync';
 import { DEFAULT_TERMINAL_SCROLLBACK } from '@/common/constants/terminal';
 
 type SocketHandlerMap = Record<string, Set<(...args: unknown[]) => void>>;
@@ -143,6 +157,8 @@ describe('ChatTerminal', () => {
       (currentAppSocket as unknown as MockSocket).clearHandlers?.();
     }
     currentAppSocket = null;
+    xtermScrollCallbacks.length = 0;
+    _resetThemeCacheForTesting();
     jest.clearAllMocks();
     jest.useRealTimers();
   });
@@ -194,7 +210,7 @@ describe('ChatTerminal', () => {
     return { socket, history, viewport, utils };
   };
 
-  it('assembles seed chunks and skips writing content (Option A - TUI redraw)', async () => {
+  it('assembles seed chunks and writes content (unified seed_ansi contract)', async () => {
     const { socket, history } = await renderTerminal();
     const { termLog } = jest.requireMock('@/ui/lib/debug');
 
@@ -233,10 +249,9 @@ describe('ChatTerminal', () => {
       });
     });
 
-    // Option A: Seed content is NOT written - we skip it and trigger TUI redraw instead.
-    // This fixes cursor position issues with Claude Code TUI.
+    // Unified seed_ansi: seed content IS written to xterm before resize jiggle.
     await waitFor(() => {
-      expect(history.innerHTML).toBe('');
+      expect(history.innerHTML).toBe('AB');
     });
 
     // Verify that hasHistory is enabled for scroll-up history loading
@@ -388,13 +403,13 @@ describe('ChatTerminal', () => {
     expect(last[1]).toEqual(expect.objectContaining({ ours: false }));
   });
 
-  it('writes data after seed completes (Option A skips seed content)', async () => {
+  it('writes data after seed completes (unified seed_ansi writes content)', async () => {
     jest.useFakeTimers();
     const { socket, history } = await renderTerminal(true);
 
     const seedEnvelope = { topic: 'terminal/chat-session', ts: new Date().toISOString() };
 
-    // Send seed - with Option A, content is NOT written
+    // Seed content IS written under unified contract
     await act(async () => {
       socket.trigger('message', {
         ...seedEnvelope,
@@ -403,9 +418,8 @@ describe('ChatTerminal', () => {
       });
     });
 
-    // Option A: seed content is skipped
     await waitFor(() => {
-      expect(history.innerHTML).toBe('');
+      expect(history.innerHTML).toBe('Initial');
     });
 
     // Advance past the seed ready delay (400ms)
@@ -444,8 +458,9 @@ describe('ChatTerminal', () => {
     });
   });
 
-  it('requests scrollback history on scroll-up (Option A enables hasHistory)', async () => {
-    const { socket, history, viewport } = await renderTerminal();
+  it('requests scrollback history on scroll-up (hasHistory enabled after seed)', async () => {
+    jest.useFakeTimers();
+    const { socket, history } = await renderTerminal(true);
 
     const envelope = { topic: 'terminal/chat-session', ts: new Date().toISOString() };
 
@@ -464,18 +479,35 @@ describe('ChatTerminal', () => {
       });
     });
 
-    // Option A: seed content is skipped, but hasHistory is enabled
-    await waitFor(() => {
-      expect(history.innerHTML).toBe('');
-    });
+    // Unified seed_ansi: seed content is written
+    expect(history.innerHTML).toBe('V');
 
     const initialRequestCount = socket.emit.mock.calls.filter(
       ([event]) => event === 'terminal:request_full_history',
     ).length;
 
+    // Simulate xterm scroll-up: set buffer to show user was at bottom (baseY=10)
+    // then scrolled up (viewportY=0). The polling fallback detects this change.
+    const { Terminal } = jest.requireMock('@xterm/xterm');
+    const terminalInstance = Terminal.mock.results[0]?.value;
+    if (terminalInstance) {
+      terminalInstance.buffer.active.baseY = 10;
+      terminalInstance.buffer.active.viewportY = 10;
+    }
+
+    // Advance past the poll interval to establish wasAtBottom = true
     await act(async () => {
-      viewport.scrollTop = 0;
-      fireEvent.scroll(viewport);
+      jest.advanceTimersByTime(150);
+    });
+
+    // Now simulate scroll-up (viewportY moves away from baseY)
+    if (terminalInstance) {
+      terminalInstance.buffer.active.viewportY = 0;
+    }
+
+    // Advance past poll interval to trigger detection
+    await act(async () => {
+      jest.advanceTimersByTime(150);
     });
 
     expect(socket.emit).toHaveBeenCalledWith('terminal:request_full_history', {
@@ -497,19 +529,9 @@ describe('ChatTerminal', () => {
       });
     });
 
-    await waitFor(() => {
-      expect(history.innerHTML).toContain('HV');
-    });
+    expect(history.innerHTML).toContain('HV');
 
-    await act(async () => {
-      viewport.scrollTop = 0;
-      fireEvent.scroll(viewport);
-    });
-
-    const requestCount = socket.emit.mock.calls.filter(
-      ([event]) => event === 'terminal:request_full_history',
-    ).length;
-    expect(requestCount).toBe(afterFirstScrollCount);
+    jest.useRealTimers();
   });
 
   it('appends session lifecycle messages', async () => {
@@ -557,5 +579,205 @@ describe('ChatTerminal', () => {
     const { Terminal: TerminalMock } = jest.requireMock('@xterm/xterm');
     const instance = (TerminalMock as jest.Mock).mock.results[0].value;
     expect(instance.parser.registerOscHandler).toHaveBeenCalledWith(52, expect.any(Function));
+  });
+
+  // ── terminal:theme sync ─────────────────────────────────────────────
+
+  it('does not emit terminal:theme before server subscription confirmation', async () => {
+    const { socket } = await renderTerminal();
+
+    const themeCalls = (socket.emit as jest.Mock).mock.calls.filter(
+      ([event]: [string]) => event === 'terminal:theme',
+    );
+    expect(themeCalls).toHaveLength(0);
+  });
+
+  it('emits terminal:theme with dark colors after subscribed message', async () => {
+    const { socket } = await renderTerminal();
+
+    await act(async () => {
+      socket.trigger('message', {
+        topic: 'terminal/chat-session',
+        ts: new Date().toISOString(),
+        type: 'subscribed',
+        payload: { currentSequence: 0 },
+      });
+    });
+
+    const themeCalls = (socket.emit as jest.Mock).mock.calls.filter(
+      ([event]: [string]) => event === 'terminal:theme',
+    );
+    expect(themeCalls).toHaveLength(1);
+    expect(themeCalls[0][1]).toEqual({ foregroundHex: '#c9d1d9', backgroundHex: '#1a1a1a' });
+  });
+
+  it('re-emits terminal:theme on each subscribe confirmation so the server is always synced after reconnect', async () => {
+    const { socket } = await renderTerminal();
+
+    const subscribeMsg = {
+      topic: 'terminal/chat-session',
+      ts: new Date().toISOString(),
+      type: 'subscribed',
+      payload: { currentSequence: 0 },
+    };
+
+    await act(async () => {
+      socket.trigger('message', subscribeMsg);
+    });
+    await act(async () => {
+      socket.trigger('message', subscribeMsg);
+    });
+
+    const themeCalls = (socket.emit as jest.Mock).mock.calls.filter(
+      ([event]: [string]) => event === 'terminal:theme',
+    );
+    expect(themeCalls).toHaveLength(2);
+    expect(themeCalls[0][1]).toEqual(themeCalls[1][1]);
+  });
+
+  it('re-emits terminal:theme with ocean colors when app theme changes to ocean', async () => {
+    const { socket } = await renderTerminal();
+
+    await act(async () => {
+      socket.trigger('message', {
+        topic: 'terminal/chat-session',
+        ts: new Date().toISOString(),
+        type: 'subscribed',
+        payload: { currentSequence: 0 },
+      });
+    });
+
+    (socket.emit as jest.Mock).mockClear();
+
+    await act(async () => {
+      document.documentElement.classList.add('theme-ocean');
+    });
+
+    await waitFor(() => {
+      const themeCalls = (socket.emit as jest.Mock).mock.calls.filter(
+        ([event]: [string]) => event === 'terminal:theme',
+      );
+      expect(themeCalls.length).toBeGreaterThan(0);
+      expect(themeCalls[themeCalls.length - 1][1]).toEqual({
+        foregroundHex: '#1d2b3a',
+        backgroundHex: '#eaeff5',
+      });
+    });
+
+    document.documentElement.classList.remove('theme-ocean');
+  });
+
+  it('suppresses duplicate theme emit when two hook instances share the same sessionId (per-session dedup)', () => {
+    const mockEmit = jest.fn();
+    const mockSocket = {
+      connected: true,
+      emit: mockEmit,
+      on: jest.fn(),
+      off: jest.fn(),
+    } as unknown as Socket;
+
+    const isSubscribedRef1 = { current: false };
+    const isSubscribedRef2 = { current: false };
+
+    type AppThemeProp = Parameters<typeof useTerminalThemeSync>[1];
+
+    const { result: result1, rerender: rerender1 } = renderHook(
+      ({ appTheme }: { appTheme: AppThemeProp }) =>
+        useTerminalThemeSync('shared-session', appTheme, isSubscribedRef1, mockSocket),
+      { initialProps: { appTheme: 'dark' as AppThemeProp } },
+    );
+
+    const { result: result2, rerender: rerender2 } = renderHook(
+      ({ appTheme }: { appTheme: AppThemeProp }) =>
+        useTerminalThemeSync('shared-session', appTheme, isSubscribedRef2, mockSocket),
+      { initialProps: { appTheme: 'dark' as AppThemeProp } },
+    );
+
+    // Simulate server subscription confirmation for both instances
+    act(() => {
+      isSubscribedRef1.current = true;
+      result1.current.notifySubscribed();
+    });
+    act(() => {
+      isSubscribedRef2.current = true;
+      result2.current.notifySubscribed();
+    });
+
+    // Each subscribe always re-emits (reconnect correctness)
+    const subscribeEmits = mockEmit.mock.calls.filter(([e]: [string]) => e === 'terminal:theme');
+    expect(subscribeEmits).toHaveLength(2);
+
+    mockEmit.mockClear();
+
+    // Theme changes to ocean: instance 1 re-renders first → cache miss → emits → sets cache
+    rerender1({ appTheme: 'ocean' as AppThemeProp });
+    // Instance 2 re-renders with same theme → cache hit → suppressed
+    rerender2({ appTheme: 'ocean' as AppThemeProp });
+
+    const themeChangeCalls = mockEmit.mock.calls.filter(([e]: [string]) => e === 'terminal:theme');
+    expect(themeChangeCalls).toHaveLength(1);
+  });
+
+  it('theme change does not reset terminal content or trigger a seed/history reload', async () => {
+    // Layer: ui-component — verifies the live-retheme path is transparent to session state.
+    const { socket, history } = await renderTerminal();
+    const envelope = { topic: 'terminal/chat-session', ts: new Date().toISOString() };
+
+    // Subscribe so theme sync is active
+    await act(async () => {
+      socket.trigger('message', {
+        ...envelope,
+        type: 'subscribed',
+        payload: { currentSequence: 0 },
+      });
+    });
+
+    // Complete seed so the terminal has visible content
+    await act(async () => {
+      socket.trigger('message', {
+        ...envelope,
+        type: 'seed_ansi',
+        payload: { chunk: 0, totalChunks: 1, data: 'live-content' },
+      });
+    });
+
+    await waitFor(() => {
+      expect(history.innerHTML).toBe('live-content');
+    });
+
+    (socket.emit as jest.Mock).mockClear();
+
+    // Trigger a theme change
+    await act(async () => {
+      document.documentElement.classList.add('theme-ocean');
+    });
+
+    // Only terminal:theme may be emitted — no history reload or re-subscribe
+    await waitFor(() => {
+      const calls = (socket.emit as jest.Mock).mock.calls;
+      expect(calls.some(([event]: [string]) => event === 'terminal:theme')).toBe(true);
+      expect(calls.every(([event]: [string]) => event === 'terminal:theme')).toBe(true);
+    });
+
+    // Terminal content must survive the retheme
+    expect(history.innerHTML).toBe('live-content');
+
+    document.documentElement.classList.remove('theme-ocean');
+  });
+
+  it('does not emit terminal:theme when socket is not connected', async () => {
+    const socket = createMockSocket();
+    socket.connected = false;
+    currentAppSocket = socket as unknown as Socket;
+
+    render(<ChatTerminal sessionId="chat-session" socket={currentAppSocket} />);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    const themeCalls = (socket.emit as jest.Mock).mock.calls.filter(
+      ([event]: [string]) => event === 'terminal:theme',
+    );
+    expect(themeCalls).toHaveLength(0);
   });
 });

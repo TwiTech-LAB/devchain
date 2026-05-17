@@ -1,14 +1,17 @@
-import { execFile } from 'child_process';
 import { Inject, Injectable, OnModuleInit, Optional } from '@nestjs/common';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { getRawSqliteClient } from '../../storage/db/sqlite-raw';
 import type { HealthReadinessChecker } from './health.service';
+import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 
 @Injectable()
 export class NormalReadinessCheckerService implements HealthReadinessChecker, OnModuleInit {
   private tmuxAvailablePromise?: Promise<boolean>;
 
-  constructor(@Optional() @Inject('DB_CONNECTION') private readonly db?: BetterSQLite3Database) {}
+  constructor(
+    private readonly executor: ProcessExecutor,
+    @Optional() @Inject('DB_CONNECTION') private readonly db?: BetterSQLite3Database,
+  ) {}
 
   onModuleInit(): void {
     this.tmuxAvailablePromise = this.checkTmuxReady();
@@ -43,11 +46,8 @@ export class NormalReadinessCheckerService implements HealthReadinessChecker, On
     return this.tmuxAvailablePromise;
   }
 
-  private checkTmuxReady(): Promise<boolean> {
-    return new Promise((resolve) => {
-      execFile('tmux', ['-V'], (error) => {
-        resolve(!error);
-      });
-    });
+  private async checkTmuxReady(): Promise<boolean> {
+    const result = await this.executor.run({ argv: ['tmux', '-V'], mode: 'pipe' });
+    return result.success;
   }
 }

@@ -42,6 +42,9 @@ export class OrchestratorProxyService implements OnModuleInit {
     }
 
     const fastify = adapter.getInstance<FastifyInstance>();
+    // @ts-expect-error — wsClientOptions.rewriteRequestHeaders is a valid runtime
+    // option in @fastify/http-proxy but is missing from upstream @types/ws ClientOptions.
+    // Remove when @fastify/http-proxy types declare this field natively.
     await fastify.register(fastifyHttpProxy, {
       upstream: '',
       prefix: PROXY_PREFIX,

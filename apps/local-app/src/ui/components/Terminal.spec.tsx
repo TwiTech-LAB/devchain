@@ -223,9 +223,8 @@ describe('TerminalComponent', () => {
       });
     });
 
-    // Option A: Seed chunks are assembled but NOT written - TUI redraws instead.
-    // This fixes cursor position issues with Claude Code.
-    expect(writeMock.mock.calls.map((call) => call[0])).toEqual([]);
+    // Unified seed_ansi contract: seed content IS written to xterm.
+    expect(writeMock.mock.calls.map((call) => call[0])).toEqual(['seed-chunk-aseed-chunk-b']);
 
     // Wait for seed ready delay (400ms)
     await act(async () => {

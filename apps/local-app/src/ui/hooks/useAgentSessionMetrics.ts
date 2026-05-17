@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { useQueries } from '@tanstack/react-query';
 import { fetchTranscriptSummary } from '@/ui/lib/sessions';
 import { transcriptQueryKeys } from '@/ui/hooks/useSessionTranscript';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -46,10 +47,11 @@ function buildQueryKey(sessionId: string, apiBase?: string) {
 export function useAgentSessionMetrics(
   entries: AgentSessionEntry[],
 ): Map<string, AgentContextMetrics> {
+  const apiFetch = useFetchFactory();
   const queries = useQueries({
     queries: entries.map((entry) => ({
       queryKey: buildQueryKey(entry.sessionId, entry.apiBase),
-      queryFn: () => fetchTranscriptSummary(entry.sessionId, entry.apiBase),
+      queryFn: () => fetchTranscriptSummary(entry.sessionId, entry.apiBase, apiFetch),
       staleTime: 10_000,
       retry: false,
       refetchInterval: (query: { state: { data?: { isOngoing: boolean } } }) => {

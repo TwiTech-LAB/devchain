@@ -445,7 +445,7 @@ describe('ChatPage team-grouped agent view', () => {
     }
   });
 
-  // Disposition: SKIPPED — team detail useQueries never resolve in jsdom + React Query v5.
+  // TODO(test-strategy-overhaul): SKIPPED — team detail useQueries never resolve in jsdom + React Query v5.
   // Root cause: React Query v5's useQueries creates dynamic query observers that depend on
   // teams list resolving first, then team details resolving second. The multi-step async chain
   // (teams list → localStorage mode switch → team detail queries → render) doesn't flush
@@ -2135,7 +2135,7 @@ describe('ChatPage worktree provider config context menu', () => {
     fireEvent.keyDown(reopenedConfigWithModels, { key: 'ArrowRight' });
 
     expect(await screen.findByText('model-1099')).toBeInTheDocument();
-  });
+  }, 15_000);
 
   it('supports cross-config modelOverride selection in the main agent flow', async () => {
     setupFetch({

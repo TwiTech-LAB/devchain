@@ -1,162 +1,45 @@
-/**
- * Provider Adapter Interface
- *
- * Defines the contract for provider-specific MCP command logic.
- * Each known provider (claude, codex, gemini) implements this interface
- * to encapsulate command building and output parsing.
- */
-
-/**
- * Normalized MCP server entry returned by listMcpServers
- */
 export interface McpServerEntry {
   alias: string;
   endpoint: string;
   transport?: string;
 }
 
-/**
- * Optional launch-time prompt handshake metadata.
- * Providers that surface a startup confirmation or question before the first
- * real prompt can declare pre-keys and an optional delay so the sessions
- * service can dismiss the prompt before injecting user content.
- */
 export interface LaunchInitialPromptBehavior {
-  /** Keys to send before the initial prompt (e.g., Enter to confirm a startup prompt). */
   preKeys?: string[];
-  /** Milliseconds to wait after sending preKeys before injecting the prompt. */
   preDelayMs?: number;
 }
 
-/**
- * Per-provider runtime delivery readiness behavior.
- * Providers whose TUIs need settle time between paste confirmation and
- * Enter dispatch can declare a delay here. Consumed by deliverWithConfirmation
- * and pasteAndSubmit on the runtime (non-launch) path.
- */
 export interface RuntimePromptBehavior {
-  /** Milliseconds to wait between paste landing/confirmation and Enter dispatch.
-   *  Allows TUI input editors with debounced state machines to settle into
-   *  submit-ready state before receiving the submit keystroke.
-   *  Clamped to [0, 5000] at the consumer boundary; NaN/negative → 0. */
   postPasteDelayMs?: number;
 }
 
-/**
- * Options for adding an MCP server
- */
+export interface TerminalOutputBehavior {
+  /**
+   * When true, the adapter emits raw VT-style output: bare LF means
+   * cursor-down-only, cursor positioning is done explicitly via CSI sequences,
+   * and the terminal pipeline must NOT add CR before LF. When undefined or
+   * false, the pipeline normalizes bare LFs to CRLF on the server side
+   * (required because xterm.js runs with convertEol:false for Claude's sake).
+   */
+  rawLineEndings?: boolean;
+}
+
 export interface AddMcpServerOptions {
   endpoint: string;
   alias?: string;
   extraArgs?: string[];
 }
 
-/**
- * Input for buildLaunchArgs — describes how to compose the CLI argv for a session launch.
- */
 export interface BuildLaunchArgsInput {
-  /** 'new' for a fresh session; 'restore' to resume an existing provider session. */
   mode: 'new' | 'restore';
-  /** Provider-native session ID required when mode === 'restore'. */
   providerSessionId?: string;
-  /** Option args derived from the agent profile (e.g. ['--model', 'claude-opus-4-5']). */
   profileOptionArgs: string[];
 }
 
-/**
- * ProviderAdapter interface for known providers
- *
- * Centralizes provider-specific command logic and parsing
- * to decouple controllers, preflight, and CLI from provider details.
- */
 export interface ProviderAdapter {
-  /**
-   * Provider name (e.g., 'claude', 'codex', 'gemini', 'opencode')
-   */
   readonly providerName: string;
-
-  /**
-   * MCP configuration mode:
-   * - 'cli': MCP managed via CLI subcommands (claude, codex, gemini)
-   * - 'project_config': MCP managed via project config file (opencode)
-   * Defaults to 'cli' if not specified.
-   */
-  readonly mcpMode?: 'cli' | 'project_config';
-
-  /** When 'pty', MCP list is routed through a PTY runner instead of piped spawn. Default unset → pipe. */
-  readonly mcpListSpawnMode?: 'pipe' | 'pty';
-
-  /**
-   * Strategy for registering a project-scope MCP server.
-   * - 'list_then_add' (default): list existing registrations first, add only if missing.
-   * - 'upsert': skip the list check and call registerProvider directly.
-   *   Use for CLIs whose `mcp list` cannot filter by scope (e.g., Gemini merges user + project).
-   */
-  readonly mcpProjectRegistrationStrategy?: 'list_then_add' | 'upsert';
-
-  /**
-   * Optional launch-time prompt handshake metadata.
-   * When set, the sessions service uses this to dismiss provider startup
-   * dialogs before injecting the initial prompt.
-   */
   readonly launchInitialPromptBehavior?: LaunchInitialPromptBehavior;
-
-  /**
-   * Optional runtime delivery readiness metadata.
-   * When set, runtime message delivery uses the declared delay between
-   * paste confirmation and Enter dispatch. Undefined → consumer default (250ms).
-   */
   readonly runtimePromptBehavior?: RuntimePromptBehavior;
-
-  /**
-   * Build command arguments for adding an MCP server
-   *
-   * @param options - Configuration for MCP server registration
-   * @returns Array of command arguments to pass to the provider binary
-   */
-  addMcpServer(options: AddMcpServerOptions): string[];
-
-  /**
-   * Build command arguments for listing registered MCP servers
-   *
-   * @returns Array of command arguments to pass to the provider binary
-   */
-  listMcpServers(): string[];
-
-  /**
-   * Build command arguments for removing an MCP server
-   *
-   * @param alias - The alias/name of the MCP server to remove
-   * @returns Array of command arguments to pass to the provider binary
-   */
-  removeMcpServer(alias: string): string[];
-
-  /**
-   * Build command arguments for checking MCP connectivity
-   *
-   * @param alias - The alias/name of the MCP server to check
-   * @returns Array of command arguments to pass to the provider binary
-   */
-  binaryCheck(alias: string): string[];
-
-  /**
-   * Parse the output of listMcpServers command and return normalized entries
-   *
-   * @param stdout - Standard output from the list command
-   * @param stderr - Standard error from the list command (optional)
-   * @returns Array of normalized MCP server entries
-   */
-  parseListOutput(stdout: string, stderr?: string): McpServerEntry[];
-
-  /**
-   * Build the full CLI argv for launching a session.
-   *
-   * For 'new' sessions this is simply the profileOptionArgs.
-   * For 'restore' sessions each provider prepends/appends the resume flag/subcommand
-   * and providerSessionId according to its own CLI contract.
-   *
-   * @param input - Mode, optional session ID, and profile-level option args
-   * @returns Object containing the complete argv to pass to the provider binary
-   */
+  readonly terminalOutputBehavior?: TerminalOutputBehavior;
   buildLaunchArgs(input: BuildLaunchArgsInput): { argv: string[] };
 }

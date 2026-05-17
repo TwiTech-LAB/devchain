@@ -65,7 +65,7 @@ export function SubNavLayout<K extends string>({
         <TabsContent
           key={section.key}
           value={section.key}
-          className="flex-1 mt-0 overflow-y-auto focus-visible:ring-0 focus-visible:ring-offset-0"
+          className="flex-1 min-w-0 mt-0 overflow-y-auto pt-4 lg:pt-0 lg:pl-6 focus-visible:ring-0 focus-visible:ring-offset-0"
         >
           {section.render()}
         </TabsContent>

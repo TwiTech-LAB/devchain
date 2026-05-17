@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { getRawSqliteClient } from '../../storage/db/sqlite-raw';
-import type { DataSeeder, SeederContext } from '../services/data-seeder.service';
+import type { DataSeeder, SeederContext } from '../types/seeder.types';
 
 const SEEDER_NAME = '0004_seed_disable_microsoft_source_default';
 const SEEDER_VERSION = 1;

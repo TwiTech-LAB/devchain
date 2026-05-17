@@ -1,5 +1,4 @@
-import { Injectable } from '@nestjs/common';
-import { ModuleRef } from '@nestjs/core';
+import { Injectable, Inject, forwardRef } from '@nestjs/common';
 import { Socket } from 'socket.io';
 import { createLogger } from '../../../common/logging/logger';
 import {
@@ -8,10 +7,11 @@ import {
   MIN_TERMINAL_SEED_MAX_BYTES,
   MAX_TERMINAL_SEED_MAX_BYTES,
 } from '../../settings/services/settings.service';
-import { TmuxService } from './tmux.service';
+import { TerminalIOService } from './terminal-io/terminal-io.service';
 import { SessionsService } from '../../sessions/services/sessions.service';
 import { createEnvelope, TerminalSeedPayload } from '../dtos/ws-envelope.dto';
-import { PtyService } from './pty.service';
+import { TerminalSessionRegistry } from './terminal-session/terminal-session-registry';
+import { normalizeLineEndings } from '../utils/normalize-line-endings';
 
 const logger = createLogger('TerminalSeedService');
 
@@ -40,8 +40,11 @@ export class TerminalSeedService {
 
   constructor(
     private readonly settingsService: SettingsService,
-    private readonly ptyService: PtyService,
-    private readonly moduleRef: ModuleRef,
+    private readonly terminalSessionRegistry: TerminalSessionRegistry,
+    @Inject(forwardRef(() => TerminalIOService))
+    private readonly terminalIO: TerminalIOService,
+    @Inject(forwardRef(() => SessionsService))
+    private readonly sessionsService: SessionsService,
   ) {}
 
   /**
@@ -101,12 +104,12 @@ export class TerminalSeedService {
 
     // Capture fresh
     try {
-      const tmuxService = this.moduleRef.get(TmuxService, { strict: false });
-      if (!tmuxService) {
-        return null;
-      }
-
-      const snapshot = await tmuxService.capturePane(tmuxSessionId, scrollbackLines, true);
+      const result = await this.terminalIO.captureHistory(
+        { name: tmuxSessionId },
+        scrollbackLines,
+        true,
+      );
+      const snapshot = result.ok ? result.output : null;
 
       if (snapshot && snapshot.length > 0) {
         // Cache for future requests
@@ -257,58 +260,49 @@ export class TerminalSeedService {
     let wasTruncated = false;
 
     try {
-      const sessionsService = this.moduleRef.get(SessionsService, { strict: false });
+      const session = this.sessionsService.getSession(sessionId);
+      if (session?.tmuxSessionId) {
+        const scrollbackLines = this.settingsService.getScrollbackLines();
+        logger.info(
+          {
+            sessionId,
+            tmuxSessionId: session.tmuxSessionId,
+            scrollbackLines,
+            source: 'tmux-ansi',
+          },
+          'Capturing tmux ANSI scrollback for seed',
+        );
 
-      if (sessionsService) {
-        const session = sessionsService.getSession(sessionId);
-        if (session?.tmuxSessionId) {
-          const scrollbackLines = this.settingsService.getScrollbackLines();
-          logger.info(
-            {
-              sessionId,
-              tmuxSessionId: session.tmuxSessionId,
-              scrollbackLines,
-              source: 'tmux-ansi',
-            },
-            'Capturing tmux ANSI scrollback for seed',
-          );
+        // Use cached capture if available (2s TTL)
+        snapshot = await this.getCachedCapture(sessionId, session.tmuxSessionId, scrollbackLines);
 
-          // Use cached capture if available (2s TTL)
-          snapshot = await this.getCachedCapture(sessionId, session.tmuxSessionId, scrollbackLines);
+        // Strip trailing newlines and capture cursor position for metadata
+        if (snapshot && snapshot.length > 0) {
+          snapshot = snapshot.replace(/(\r?\n)+$/, '');
 
-          // Strip trailing newlines and capture cursor position for metadata
-          if (snapshot && snapshot.length > 0) {
-            // Strip trailing newlines from snapshot to avoid extra blank lines
-            // tmux capture-pane often adds trailing \n which creates duplication
-            snapshot = snapshot.replace(/(\r?\n)+$/, '');
+          const truncateResult = this.truncateToMaxBytes(snapshot, maxBytes);
+          snapshot = truncateResult.truncated;
+          wasTruncated = truncateResult.wasTruncated;
 
-            // Apply maxBytes limit to tmux capture path
-            const truncateResult = this.truncateToMaxBytes(snapshot, maxBytes);
-            snapshot = truncateResult.truncated;
-            wasTruncated = truncateResult.wasTruncated;
+          snapshot = normalizeLineEndings(snapshot);
 
-            const tmuxService = this.moduleRef.get(TmuxService, { strict: false });
-            if (tmuxService) {
-              const cursorPos = await tmuxService.getCursorPosition(session.tmuxSessionId);
-              if (cursorPos) {
-                // Store for metadata/logging only
-                // Don't append cursor positioning codes due to dimension mismatch between
-                // server and client after fit() - causes scrolling/duplication
-                tmuxCursorX = cursorPos.x;
-                tmuxCursorY = cursorPos.y;
-
-                logger.info(
-                  { sessionId, cursorX: tmuxCursorX, cursorY: tmuxCursorY },
-                  'Captured cursor position (stripped trailing newlines)',
-                );
-              }
-            }
+          const cursorPos = await this.terminalIO.getCursorPosition({
+            name: session.tmuxSessionId,
+          });
+          if (cursorPos) {
+            tmuxCursorX = cursorPos.x;
+            tmuxCursorY = cursorPos.y;
 
             logger.info(
-              { sessionId, snapshotBytes: snapshot.length, source: 'tmux-ansi', wasTruncated },
-              'Got tmux ANSI scrollback (cached or fresh)',
+              { sessionId, cursorX: tmuxCursorX, cursorY: tmuxCursorY },
+              'Captured cursor position (stripped trailing newlines)',
             );
           }
+
+          logger.info(
+            { sessionId, snapshotBytes: snapshot.length, source: 'tmux-ansi', wasTruncated },
+            'Got tmux ANSI scrollback (cached or fresh)',
+          );
         }
       }
     } catch (error) {
@@ -321,17 +315,17 @@ export class TerminalSeedService {
       return;
     }
 
-    // Get actual PTY dimensions to include in seed
+    // Get actual terminal dimensions to include in seed
     let actualCols: number | undefined;
     let actualRows: number | undefined;
     try {
-      const ptyDimensions = this.ptyService.getDimensions(sessionId);
-      if (ptyDimensions) {
-        actualCols = ptyDimensions.cols;
-        actualRows = ptyDimensions.rows;
+      const dims = this.terminalSessionRegistry.get(sessionId)?.getDimensions() ?? null;
+      if (dims) {
+        actualCols = dims.cols;
+        actualRows = dims.rows;
       }
     } catch (error) {
-      logger.warn({ sessionId, error }, 'Failed to get PTY dimensions for seed');
+      logger.warn({ sessionId, error }, 'Failed to get terminal dimensions for seed');
     }
 
     this.emitSeedSnapshot(

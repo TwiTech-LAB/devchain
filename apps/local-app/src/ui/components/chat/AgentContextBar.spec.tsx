@@ -63,7 +63,7 @@ describe('AgentContextBar', () => {
     expect(container.childElementCount).toBe(0);
   });
 
-  it('renders bar with bg-primary/60 for contextPercent < 50', () => {
+  it('renders compact context meter when metrics are present', () => {
     render(
       <AgentContextBar
         contextPercent={30}
@@ -72,40 +72,27 @@ describe('AgentContextBar', () => {
       />,
     );
     const progressbar = screen.getByRole('progressbar');
-    const fill = progressbar.firstElementChild as HTMLElement;
-    expect(fill.className).toContain('bg-primary/60');
-    expect(fill.className).not.toContain('bg-amber-500');
-    expect(fill.className).not.toContain('bg-destructive');
+    expect(screen.queryByText('Context')).not.toBeInTheDocument();
+    expect(screen.queryByText('30%')).not.toBeInTheDocument();
+    expect(progressbar).toHaveAttribute('data-context-tier', 'healthy');
+    expect(progressbar.querySelector('.block.h-px.w-full')).not.toBeNull();
   });
 
-  it('renders bar with bg-amber-500 for contextPercent 50-80', () => {
+  it.each([
+    [30, 'healthy'],
+    [65, 'medium'],
+    [85, 'high'],
+    [95, 'critical'],
+  ] as const)('marks %s percent usage as %s tier', (contextPercent, tier) => {
     render(
       <AgentContextBar
-        contextPercent={65}
-        totalContextTokens={130_000}
+        contextPercent={contextPercent}
+        totalContextTokens={contextPercent * 2_000}
         contextWindowTokens={200_000}
       />,
     );
-    const progressbar = screen.getByRole('progressbar');
-    const fill = progressbar.firstElementChild as HTMLElement;
-    expect(fill.className).toContain('bg-amber-500');
-    expect(fill.className).not.toContain('bg-primary/60');
-    expect(fill.className).not.toContain('bg-destructive');
-  });
 
-  it('renders bar with bg-destructive for contextPercent > 80', () => {
-    render(
-      <AgentContextBar
-        contextPercent={90}
-        totalContextTokens={180_000}
-        contextWindowTokens={200_000}
-      />,
-    );
-    const progressbar = screen.getByRole('progressbar');
-    const fill = progressbar.firstElementChild as HTMLElement;
-    expect(fill.className).toContain('bg-destructive');
-    expect(fill.className).not.toContain('bg-amber-500');
-    expect(fill.className).not.toContain('bg-primary/60');
+    expect(screen.getByRole('progressbar')).toHaveAttribute('data-context-tier', tier);
   });
 
   it('tooltip shows formatted context info', () => {
@@ -157,7 +144,7 @@ describe('AgentContextBar', () => {
       />,
     );
     const progressbar = screen.getByRole('progressbar');
-    const fill = progressbar.firstElementChild as HTMLElement;
+    const fill = progressbar.querySelector('[style]') as HTMLElement;
     expect(fill.style.width).toBe('75%');
   });
 });

@@ -6,7 +6,9 @@ import { CoreNormalModule } from './modules/core/core-normal.module';
 import { StorageModule } from './modules/storage/storage.module';
 import { TerminalModule } from './modules/terminal/terminal.module';
 import { SessionsModule } from './modules/sessions/sessions.module';
-import { McpModule } from './modules/mcp/mcp.module';
+import { SessionsReadModule } from './modules/sessions/sessions-read.module';
+import { SessionsDeliveryModule } from './modules/sessions/sessions-delivery.module';
+import { McpFullModule } from './modules/mcp/mcp-full.module';
 import { UiModule } from './modules/ui/ui.module';
 import { SettingsModule } from './modules/settings/settings.module';
 import { SkillsModule } from './modules/skills/skills.module';
@@ -17,6 +19,7 @@ import { ProvidersModule } from './modules/providers/providers.module';
 import { AgentsModule } from './modules/agents/agents.module';
 import { StatusesModule } from './modules/statuses/statuses.module';
 import { EpicsModule } from './modules/epics/epics.module';
+import { ScheduledEpicsModule } from './modules/scheduled-epics/scheduled-epics.module';
 import { RecordsModule } from './modules/records/records.module';
 import { DocumentsModule } from './modules/documents/documents.module';
 import { FsModule } from './modules/fs/fs.module';
@@ -30,8 +33,7 @@ import { SessionReaderModule } from './modules/session-reader/session-reader.mod
 import { TeamsModule } from './modules/teams/teams.module';
 import { DataSeederModule } from './modules/seeders/seeders.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
-import { EventsInfraModule } from './modules/events/events-infra.module';
-import { EventsDomainModule } from './modules/events/events-domain.module';
+import { EventsCoreModule } from './modules/events/events-core.module';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 import { AllWsExceptionsFilter } from './common/filters/ws-exception.filter';
 import { OrchestratorStorageModule } from './modules/orchestrator/orchestrator-storage/orchestrator-storage.module';
@@ -41,18 +43,21 @@ import { OrchestratorWorktreesModule } from './modules/orchestrator/worktrees/wo
 import { OrchestratorSyncModule } from './modules/orchestrator/sync/sync.module';
 import { OrchestratorProxyModule } from './modules/orchestrator/proxy/orchestrator-proxy.module';
 import { CodebaseOverviewAnalyzerModule } from './modules/codebase-overview-analyzer/codebase-overview-analyzer.module';
+import { CloudModule } from './modules/cloud/cloud.module';
+import { CloudTunnelModule } from './modules/cloud-tunnel/cloud-tunnel.module';
 
 @Module({
   imports: [
-    EventsInfraModule,
-    EventsDomainModule,
+    EventsCoreModule,
     CoreMainHealthModule,
     CoreCommonModule,
     CoreNormalModule,
     StorageModule,
     TerminalModule,
     SessionsModule,
-    McpModule,
+    SessionsReadModule,
+    SessionsDeliveryModule,
+    McpFullModule,
     UiModule,
     SettingsModule,
     SkillsModule,
@@ -63,6 +68,7 @@ import { CodebaseOverviewAnalyzerModule } from './modules/codebase-overview-anal
     AgentsModule,
     StatusesModule,
     EpicsModule,
+    ScheduledEpicsModule,
     RecordsModule,
     DocumentsModule,
     FsModule,
@@ -82,6 +88,8 @@ import { CodebaseOverviewAnalyzerModule } from './modules/codebase-overview-anal
     OrchestratorSyncModule,
     OrchestratorProxyModule,
     CodebaseOverviewAnalyzerModule,
+    CloudModule,
+    CloudTunnelModule,
   ],
   controllers: [],
   providers: [

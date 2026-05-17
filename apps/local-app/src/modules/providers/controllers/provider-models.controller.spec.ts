@@ -1,54 +1,15 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import {
-  BadRequestException,
-  InternalServerErrorException,
-  NotFoundException,
-} from '@nestjs/common';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { ProviderModelsController } from './provider-models.controller';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
-import { McpProviderRegistrationService } from '../../mcp/services/mcp-provider-registration.service';
+import { McpProviderRegistrationService } from '../services/mcp-provider-registration.service';
 import { ConflictError } from '../../../common/errors/error-types';
-
-jest.mock('child_process', () => {
-  const execFileMock = jest.fn();
-  execFileMock[Symbol.for('nodejs.util.promisify.custom')] = (...args: unknown[]) =>
-    new Promise((resolve, reject) => {
-      const callback = (error: Error | null, stdout: string, stderr: string) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        resolve({ stdout, stderr });
-      };
-      execFileMock(...args, callback);
-    });
-  return { execFile: execFileMock };
-});
-
-type ExecFileWithPromisify = typeof execFile & {
-  [promisify.custom]: (...args: unknown[]) => Promise<{ stdout: string; stderr: string }>;
-};
-
-const mockExecFile = execFile as jest.MockedFunction<ExecFileWithPromisify>;
-
-function mockExecFileCallback(error: Error | null, stdout: string, stderr: string): void {
-  mockExecFile.mockImplementation((...args: unknown[]) => {
-    const cb = args.find(
-      (arg): arg is (err: Error | null, out: string, errOut: string) => void =>
-        typeof arg === 'function',
-    );
-    if (!cb) {
-      throw new Error('execFile callback was not provided');
-    }
-    cb(error, stdout, stderr);
-    return {} as never;
-  });
-}
+import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
+import { FakeProcessExecutor } from '../../terminal/services/process-executor/fake-process-executor';
 
 describe('ProviderModelsController', () => {
   let controller: ProviderModelsController;
+  let fakeExecutor: FakeProcessExecutor;
   let storage: {
     getProvider: jest.Mock;
     listProviderModelsByProvider: jest.Mock;
@@ -89,6 +50,9 @@ describe('ProviderModelsController', () => {
         .mockResolvedValue({ success: true, binaryPath: '/usr/local/bin/opencode' }),
     };
 
+    fakeExecutor = new FakeProcessExecutor();
+    fakeExecutor.setDefaultResponse({ type: 'success', stdout: '' });
+
     const module: TestingModule = await Test.createTestingModule({
       controllers: [ProviderModelsController],
       providers: [
@@ -99,6 +63,10 @@ describe('ProviderModelsController', () => {
         {
           provide: McpProviderRegistrationService,
           useValue: mcpRegistration,
+        },
+        {
+          provide: ProcessExecutor,
+          useValue: fakeExecutor,
         },
       ],
     }).compile();
@@ -228,7 +196,10 @@ describe('ProviderModelsController', () => {
 
   describe('POST /api/providers/:id/models/discover', () => {
     it('discovers models, parses output, and merges via bulkCreate', async () => {
-      mockExecFileCallback(null, 'gpt-4.1\n\nclaude-sonnet-4\n', '');
+      fakeExecutor.enqueueResponse({
+        type: 'success',
+        stdout: 'gpt-4.1\n\nclaude-sonnet-4\n',
+      });
       storage.bulkCreateProviderModels.mockResolvedValue({
         added: ['gpt-4.1'],
         existing: ['claude-sonnet-4'],
@@ -237,12 +208,7 @@ describe('ProviderModelsController', () => {
       const result = await controller.discoverProviderModels('provider-1');
 
       expect(mcpRegistration.resolveBinary).toHaveBeenCalledWith(opencodeProvider);
-      expect(mockExecFile).toHaveBeenCalledWith(
-        '/usr/local/bin/opencode',
-        ['models'],
-        expect.objectContaining({ timeout: 30000, maxBuffer: 1024 * 1024 }),
-        expect.any(Function),
-      );
+      expect(fakeExecutor.calls[0].argv).toEqual(['/usr/local/bin/opencode', 'models']);
       expect(storage.bulkCreateProviderModels).toHaveBeenCalledWith('provider-1', [
         'gpt-4.1',
         'claude-sonnet-4',
@@ -264,7 +230,7 @@ describe('ProviderModelsController', () => {
         BadRequestException,
       );
       expect(mcpRegistration.resolveBinary).not.toHaveBeenCalled();
-      expect(mockExecFile).not.toHaveBeenCalled();
+      expect(fakeExecutor.calls).toHaveLength(0);
     });
 
     it('returns bad request when binary cannot be resolved', async () => {
@@ -276,27 +242,11 @@ describe('ProviderModelsController', () => {
       await expect(controller.discoverProviderModels('provider-1')).rejects.toThrow(
         BadRequestException,
       );
-      expect(mockExecFile).not.toHaveBeenCalled();
+      expect(fakeExecutor.calls).toHaveLength(0);
     });
 
     it('maps timeout failures to bad request', async () => {
-      const timeoutError = Object.assign(new Error('Command timed out'), {
-        killed: true,
-        signal: 'SIGTERM',
-        code: null,
-      });
-      mockExecFileCallback(timeoutError, '', '');
-
-      await expect(controller.discoverProviderModels('provider-1')).rejects.toThrow(
-        BadRequestException,
-      );
-    });
-
-    it('maps ENOENT failures to bad request', async () => {
-      const enoentError = Object.assign(new Error('not found'), {
-        code: 'ENOENT',
-      });
-      mockExecFileCallback(enoentError, '', '');
+      fakeExecutor.enqueueResponse({ type: 'timeout' });
 
       await expect(controller.discoverProviderModels('provider-1')).rejects.toThrow(
         BadRequestException,
@@ -304,25 +254,27 @@ describe('ProviderModelsController', () => {
     });
 
     it('maps non-zero exit failures to bad request', async () => {
-      const exitError = Object.assign(new Error('Exit 1'), {
-        code: 1,
+      fakeExecutor.enqueueResponse({
+        type: 'failure',
+        exitCode: 1,
         stderr: 'boom',
       });
-      mockExecFileCallback(exitError, '', 'boom');
 
       await expect(controller.discoverProviderModels('provider-1')).rejects.toThrow(
         BadRequestException,
       );
     });
 
-    it('maps unexpected discover failures to InternalServerErrorException', async () => {
-      const unexpectedError = Object.assign(new Error('unexpected failure'), {
-        code: 'EACCES',
+    it('maps ENOENT-like failures (null exit code, no output) to bad request', async () => {
+      fakeExecutor.enqueueResponse({
+        type: 'failure',
+        exitCode: undefined,
+        stdout: '',
+        stderr: '',
       });
-      mockExecFileCallback(unexpectedError, '', '');
 
       await expect(controller.discoverProviderModels('provider-1')).rejects.toThrow(
-        InternalServerErrorException,
+        BadRequestException,
       );
     });
   });

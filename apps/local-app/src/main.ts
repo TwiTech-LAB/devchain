@@ -3,7 +3,7 @@ import { FastifyAdapter, NestFastifyApplication } from '@nestjs/platform-fastify
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { ValidationPipe } from '@nestjs/common';
 import { getEnvConfig } from './common/config/env.config';
-import { getRuntimeInternalBaseUrl } from './common/config/host-helpers';
+import { HostResolver } from '@devchain/shared';
 import { logger, createLogger } from './common/logging/logger';
 import { join } from 'path';
 import { existsSync } from 'fs';
@@ -151,7 +151,7 @@ async function bootstrap() {
     }
   }
 
-  const displayUrl = getRuntimeInternalBaseUrl({ HOST: config.HOST, PORT: actualPort });
+  const displayUrl = HostResolver.buildInternalBaseUrl({ host: config.HOST, port: actualPort });
   appLogger.info(
     {
       mode,

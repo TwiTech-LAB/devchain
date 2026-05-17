@@ -1,17 +1,17 @@
 import { MessageActivityStreamService } from './message-activity-stream.service';
-import type { TerminalGateway } from '../../terminal/gateways/terminal.gateway';
+import type { RealtimeBroadcaster } from '../../realtime/ports/realtime-broadcaster.port';
 import type { MessageLogEntry, PoolDetails } from './sessions-message-pool.service';
 
 describe('MessageActivityStreamService', () => {
   let service: MessageActivityStreamService;
-  let mockGateway: jest.Mocked<Pick<TerminalGateway, 'broadcastEvent'>>;
+  let mockBroadcaster: jest.Mocked<Pick<RealtimeBroadcaster, 'broadcastEvent'>>;
 
   beforeEach(() => {
-    mockGateway = {
+    mockBroadcaster = {
       broadcastEvent: jest.fn(),
     };
 
-    service = new MessageActivityStreamService(mockGateway as unknown as TerminalGateway);
+    service = new MessageActivityStreamService(mockBroadcaster as unknown as RealtimeBroadcaster);
   });
 
   afterEach(() => {
@@ -34,7 +34,7 @@ describe('MessageActivityStreamService', () => {
 
       service.broadcastEnqueued(entry);
 
-      expect(mockGateway.broadcastEvent).toHaveBeenCalledWith(
+      expect(mockBroadcaster.broadcastEvent).toHaveBeenCalledWith(
         'messages/activity',
         'enqueued',
         entry,
@@ -75,10 +75,14 @@ describe('MessageActivityStreamService', () => {
 
       service.broadcastDelivered('batch-1', entries);
 
-      expect(mockGateway.broadcastEvent).toHaveBeenCalledWith('messages/activity', 'delivered', {
-        batchId: 'batch-1',
-        entries,
-      });
+      expect(mockBroadcaster.broadcastEvent).toHaveBeenCalledWith(
+        'messages/activity',
+        'delivered',
+        {
+          batchId: 'batch-1',
+          entries,
+        },
+      );
     });
   });
 
@@ -99,7 +103,11 @@ describe('MessageActivityStreamService', () => {
 
       service.broadcastFailed(entry);
 
-      expect(mockGateway.broadcastEvent).toHaveBeenCalledWith('messages/activity', 'failed', entry);
+      expect(mockBroadcaster.broadcastEvent).toHaveBeenCalledWith(
+        'messages/activity',
+        'failed',
+        entry,
+      );
     });
   });
 
@@ -121,19 +129,23 @@ describe('MessageActivityStreamService', () => {
 
       service.broadcastPoolsUpdated(pools);
 
-      expect(mockGateway.broadcastEvent).toHaveBeenCalledWith('messages/pools', 'updated', pools);
+      expect(mockBroadcaster.broadcastEvent).toHaveBeenCalledWith(
+        'messages/pools',
+        'updated',
+        pools,
+      );
     });
 
     it('should broadcast empty pools array', () => {
       service.broadcastPoolsUpdated([]);
 
-      expect(mockGateway.broadcastEvent).toHaveBeenCalledWith('messages/pools', 'updated', []);
+      expect(mockBroadcaster.broadcastEvent).toHaveBeenCalledWith('messages/pools', 'updated', []);
     });
   });
 
   describe('error handling', () => {
     it('should catch and log errors without throwing', () => {
-      mockGateway.broadcastEvent.mockImplementation(() => {
+      mockBroadcaster.broadcastEvent.mockImplementation(() => {
         throw new Error('WebSocket error');
       });
 

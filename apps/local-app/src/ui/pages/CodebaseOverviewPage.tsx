@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import type { CodebaseOverviewSnapshot, TargetDetail } from '@devchain/codebase-overview';
 import { useSelectedProject } from '../hooks/useProjectSelection';
+import { useProjectActivityReporter } from '../hooks/useProjectActivityReporter';
 import { useSubNavSearchParam } from '../hooks/useSubNavSearchParam';
 import { fetchJsonOrThrow } from '../lib/sessions';
 import { cn } from '../lib/utils';
@@ -142,6 +143,7 @@ export type OverviewSectionProps = {
 
 export function CodebaseOverviewPage() {
   const { selectedProjectId } = useSelectedProject();
+  const { projectActivityHandlers } = useProjectActivityReporter(selectedProjectId);
   const queryClient = useQueryClient();
 
   const [activeSection, setActiveSection] = useSubNavSearchParam(
@@ -354,7 +356,7 @@ export function CodebaseOverviewPage() {
   ];
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full" {...projectActivityHandlers}>
       <PageHeader
         title="Overview"
         description="Project issue radar"

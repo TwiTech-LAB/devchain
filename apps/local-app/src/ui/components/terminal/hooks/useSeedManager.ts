@@ -271,10 +271,6 @@ export function useSeedManager(
             xtermRef.current.reset();
             xtermRef.current.clear(); // Clear buffer content (reset only resets terminal state)
 
-            // Option A: Skip seed content, rely on scroll-up history
-            // 1. Don't write seed (avoids seed/TUI content mismatch)
-            // 2. Force TUI redraw → viewport shows correctly with proper cursor
-            // 3. User scrolls up → history loads from tmux on demand
             xtermRef.current.options.scrollback = scrollbackLines;
 
             // Fit to container first to get correct dimensions for THIS terminal
@@ -283,14 +279,21 @@ export function useSeedManager(
             const cols = xtermRef.current.cols;
             const rows = xtermRef.current.rows;
 
-            termLog('seed_skip_for_tui_redraw', {
+            // Write the captured tmux scrollback so the viewport has visible content
+            // immediately. The resize jiggle below still fires for cursor positioning
+            // and to give the TUI a chance to redraw, but no longer the only source
+            // of visible content.
+            if (fullSeed) {
+              xtermRef.current.write(fullSeed);
+            }
+
+            termLog('seed_written', {
               sessionId,
               seedBytes: fullSeed.length,
               cols,
               rows,
               seedCols: state.cols,
               seedRows: state.rows,
-              reason: 'option_a_scroll_up_history',
             });
 
             // Force TUI redraw via SIGWINCH (resize jiggle)

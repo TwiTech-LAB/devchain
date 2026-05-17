@@ -200,7 +200,10 @@ describe('CurrentPoolsPanel', () => {
     });
 
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('projectId=my-project-123'));
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('projectId=my-project-123'),
+        undefined,
+      );
     });
   });
 

@@ -1,7 +1,7 @@
 import { Injectable, Inject, OnModuleInit, OnModuleDestroy, forwardRef } from '@nestjs/common';
 import { createLogger } from '../../../common/logging/logger';
 import { STORAGE_SERVICE, GuestStorage } from '../../storage/interfaces/storage.interface';
-import { TmuxService } from '../../terminal/services/tmux.service';
+import { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
 import { EventsService } from '../../events/services/events.service';
 import { GuestsService } from './guests.service';
 import { Guest } from '../../storage/models/domain.models';
@@ -15,7 +15,7 @@ export class GuestHealthService implements OnModuleInit, OnModuleDestroy {
 
   constructor(
     @Inject(STORAGE_SERVICE) private readonly storage: GuestStorage,
-    @Inject(forwardRef(() => TmuxService)) private readonly tmuxService: TmuxService,
+    @Inject(forwardRef(() => TerminalIOService)) private readonly terminalIO: TerminalIOService,
     @Inject(forwardRef(() => EventsService)) private readonly eventsService: EventsService,
     @Inject(forwardRef(() => GuestsService)) private readonly guestsService: GuestsService,
   ) {
@@ -66,16 +66,14 @@ export class GuestHealthService implements OnModuleInit, OnModuleDestroy {
 
       for (const guest of guests) {
         // First check if the tmux session still exists
-        const sessionExists = await this.tmuxService.hasSession(guest.tmuxSessionId);
+        const sessionExists = await this.terminalIO.sessionExists({ name: guest.tmuxSessionId });
         if (!sessionExists) {
-          // Session is dead, clean up the guest
           logger.info(
             { guestId: guest.id, tmuxSessionId: guest.tmuxSessionId },
             'Tmux session dead on startup, cleaning up guest',
           );
           await this.handleGuestDeath(guest);
         } else {
-          // Session exists, start monitoring
           this.startMonitoring(guest);
         }
       }
@@ -119,7 +117,7 @@ export class GuestHealthService implements OnModuleInit, OnModuleDestroy {
    */
   private async checkGuestHealth(guest: Guest): Promise<void> {
     try {
-      const sessionExists = await this.tmuxService.hasSession(guest.tmuxSessionId);
+      const sessionExists = await this.terminalIO.sessionExists({ name: guest.tmuxSessionId });
 
       if (!sessionExists) {
         logger.info(

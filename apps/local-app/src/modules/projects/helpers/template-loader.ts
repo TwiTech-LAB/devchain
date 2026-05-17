@@ -22,7 +22,13 @@ import {
   type ProjectSettingsTemplateInput,
 } from './profile-mapping.helpers';
 import type { ProbeOutcome } from '../../providers/utils/probe-1m';
-import { importProviderSettings, createImportedTeams, preserveImportedEnv } from './project-import';
+import {
+  importProviderSettings,
+  createImportedTeams,
+  createImportedScheduledEpics,
+  preserveImportedEnv,
+  pruneUnavailableTeamProfileSelections,
+} from './project-import';
 import type { TeamsService } from '../../teams/services/teams.service';
 
 const logger = createLogger('TemplateLoader');
@@ -95,6 +101,10 @@ interface CreateFromTemplateDeps {
   ) => Promise<{ applied: number; warnings: string[] }>;
   probe1m?: (binPath: string) => Promise<ProbeOutcome>;
   teamsService?: TeamsService;
+  scheduledEpicsRefresh?: {
+    refreshScheduleWindow: () => void;
+  };
+  computeNextRunAt?: (cronExpression: string, timezone: string) => Date | null;
 }
 
 type FamilyMappingResolution =
@@ -326,12 +336,18 @@ export async function createFromTemplateWithHelper(
     }
 
     try {
-      await createImportedTeams(result.project.id, remappedTeams, {
+      const teamsWithAvailableConfigs = pruneUnavailableTeamProfileSelections(
+        remappedTeams,
+        selectedProfilesByFamily.profilesToCreate,
+        result.mappings.profileIdMap,
+        configLookupMap,
+      );
+      await createImportedTeams(result.project.id, teamsWithAvailableConfigs, {
         storage: deps.storage,
         teamsService: deps.teamsService,
       } as unknown as Parameters<typeof createImportedTeams>[2]);
     } catch (error) {
-      logger.error({ error }, 'Failed to seed teams from template (non-fatal)');
+      logger.error({ err: error }, 'Failed to seed teams from template (non-fatal)');
     }
   }
 
@@ -372,6 +388,23 @@ export async function createFromTemplateWithHelper(
     result.project.id,
     resolvedPayload.subscribers,
   );
+
+  let scheduledEpicsCreated = 0;
+  if (resolvedPayload.scheduledEpics?.length) {
+    scheduledEpicsCreated = await createImportedScheduledEpics(
+      result.project.id,
+      resolvedPayload.scheduledEpics,
+      {
+        agentNameToId: agentNameToNewId,
+        statusLabelToId,
+      },
+      {
+        storage: deps.storage,
+        scheduledEpicsRefresh: deps.scheduledEpicsRefresh,
+        computeNextRunAt: deps.computeNextRunAt,
+      },
+    );
+  }
 
   await importProviderSettings(resolvedPayload, deps.storage, { probe1m: deps.probe1m });
 
@@ -416,6 +449,7 @@ export async function createFromTemplateWithHelper(
       ...result.imported,
       watchers: watchersCreated,
       subscribers: subscribersCreated,
+      scheduledEpics: scheduledEpicsCreated,
     },
     mappings: result.mappings,
     initialPromptSet: settingsResult.initialPromptSet,

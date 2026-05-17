@@ -11,6 +11,7 @@ import { EpicTooltipWrapper } from '@/ui/components/shared/EpicTooltipWrapper';
 import { EpicContextMenu } from './EpicContextMenu';
 import { InlineStatusSelect } from './InlineStatusSelect';
 import { InlineAgentSelect } from './InlineAgentSelect';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 import type { Epic, Status, Agent } from './types';
 
 /** Response shape from sub-epics API */
@@ -24,8 +25,10 @@ interface SubEpicsResponse {
  * Note: This function is called lazily by React Query only when a parent epic row is expanded.
  * Results are cached for 30 seconds (staleTime) to prevent duplicate fetches.
  */
-async function fetchSubEpics(parentId: string): Promise<SubEpicsResponse> {
-  const res = await fetch(`/api/epics?parentId=${encodeURIComponent(parentId)}`);
+type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
+async function fetchSubEpics(parentId: string, fetchFn: FetchFn): Promise<SubEpicsResponse> {
+  const res = await fetchFn(`/api/epics?parentId=${encodeURIComponent(parentId)}`);
   if (!res.ok) throw new Error('Failed to fetch sub-epics');
   return res.json();
 }
@@ -107,7 +110,8 @@ export function EpicTableRow({
   isSubEpic = false,
   subEpicCount = 0,
 }: EpicTableRowProps) {
-  // Check if this epic is selected
+  const apiFetch = useFetchFactory();
+
   const isSelected = selectedEpics?.has(epic.id) ?? false;
   // Internal expanded state if not controlled
   const [internalExpanded, setInternalExpanded] = useState(false);
@@ -150,7 +154,7 @@ export function EpicTableRow({
     isError: subEpicsError,
   } = useQuery({
     queryKey: ['sub-epics', epic.id],
-    queryFn: () => fetchSubEpics(epic.id),
+    queryFn: () => fetchSubEpics(epic.id, apiFetch),
     enabled: isParentEpic && subEpicCount > 0 && expanded,
     staleTime: 30000,
   });

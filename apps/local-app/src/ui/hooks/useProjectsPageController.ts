@@ -577,6 +577,7 @@ export function useProjectsPageController() {
     startImport,
     importingProjectId,
     handleExport,
+    editingProject,
     showDialog,
     setShowDialog,
     formData,

@@ -198,7 +198,9 @@ describe('ai-group-enhancer utilities', () => {
       expect(items.map((item) => item.type)).toEqual(['thinking', 'tool', 'subagent']);
       const toolItem = items.find((item) => item.type === 'tool' && item.step.id === 'call-1');
       expect(toolItem?.linkedResult?.id).toBe('result-1');
-      expect(items.some((item) => item.step.id === 'output-last')).toBe(false);
+      expect(
+        items.some((item) => item.type !== 'tool-group' && item.step.id === 'output-last'),
+      ).toBe(false);
     });
 
     it('includes orphan tool_result items when no tool_call matches', () => {
@@ -223,6 +225,524 @@ describe('ai-group-enhancer utilities', () => {
     });
   });
 
+  describe('buildDisplayItems – same-type grouping', () => {
+    it('groups 3 consecutive Read calls into a single tool-group', () => {
+      const steps: UnifiedSemanticStep[] = [
+        makeStep({
+          id: 'read-1',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-1', toolName: 'Read', toolInput: { file_path: 'src/a.ts' } },
+          estimatedTokens: 100,
+          durationMs: 10,
+        }),
+        makeStep({
+          id: 'result-1',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-1', toolResultContent: 'content-a', isError: false },
+          estimatedTokens: 200,
+        }),
+        makeStep({
+          id: 'read-2',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-2', toolName: 'Read', toolInput: { file_path: 'src/b.ts' } },
+          estimatedTokens: 150,
+          durationMs: 20,
+        }),
+        makeStep({
+          id: 'result-2',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-2', toolResultContent: 'content-b', isError: false },
+          estimatedTokens: 250,
+        }),
+        makeStep({
+          id: 'read-3',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-3', toolName: 'Read', toolInput: { file_path: 'src/c.ts' } },
+          estimatedTokens: 120,
+          durationMs: 15,
+        }),
+        makeStep({
+          id: 'result-3',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-3', toolResultContent: 'content-c', isError: false },
+          estimatedTokens: 180,
+        }),
+      ];
+
+      const items = buildDisplayItems(steps, null);
+
+      expect(items).toHaveLength(1);
+      expect(items[0].type).toBe('tool-group');
+      if (items[0].type !== 'tool-group') throw new Error('expected tool-group');
+      expect(items[0].count).toBe(3);
+      expect(items[0].toolName).toBe('Read');
+      expect(items[0].totalTokens).toBe(100 + 200 + 150 + 250 + 120 + 180);
+      expect(items[0].commonPathPrefix).toBe('src');
+      expect(items[0].errorCount).toBe(0);
+      expect(items[0].items).toHaveLength(3);
+    });
+
+    it('does not group [Read, Bash, Read] – separated by non-Read', () => {
+      const steps: UnifiedSemanticStep[] = [
+        makeStep({
+          id: 'read-1',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-1', toolName: 'Read', toolInput: { file_path: 'a.ts' } },
+        }),
+        makeStep({
+          id: 'result-1',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-1', toolResultContent: 'content', isError: false },
+        }),
+        makeStep({
+          id: 'bash-1',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-2', toolName: 'Bash', toolInput: { command: 'ls' } },
+        }),
+        makeStep({
+          id: 'result-2',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-2', toolResultContent: 'output', isError: false },
+        }),
+        makeStep({
+          id: 'read-2',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-3', toolName: 'Read', toolInput: { file_path: 'b.ts' } },
+        }),
+        makeStep({
+          id: 'result-3',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-3', toolResultContent: 'content', isError: false },
+        }),
+      ];
+
+      const items = buildDisplayItems(steps, null);
+
+      expect(items).toHaveLength(3);
+      expect(items.map((i) => i.type)).toEqual(['tool', 'tool', 'tool']);
+    });
+
+    it('does not group a single Read – renders as plain tool item', () => {
+      const steps: UnifiedSemanticStep[] = [
+        makeStep({
+          id: 'read-1',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-1', toolName: 'Read', toolInput: { file_path: 'a.ts' } },
+        }),
+        makeStep({
+          id: 'result-1',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-1', toolResultContent: 'content', isError: false },
+        }),
+      ];
+
+      const items = buildDisplayItems(steps, null);
+
+      expect(items).toHaveLength(1);
+      expect(items[0].type).toBe('tool');
+    });
+
+    it('counts errors within grouped items', () => {
+      const steps: UnifiedSemanticStep[] = [
+        makeStep({
+          id: 'read-1',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-1', toolName: 'Read', toolInput: { file_path: 'a.ts' } },
+        }),
+        makeStep({
+          id: 'result-1',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-1', toolResultContent: 'error', isError: true },
+        }),
+        makeStep({
+          id: 'read-2',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-2', toolName: 'Read', toolInput: { file_path: 'b.ts' } },
+        }),
+        makeStep({
+          id: 'result-2',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-2', toolResultContent: 'ok', isError: false },
+        }),
+      ];
+
+      const items = buildDisplayItems(steps, null);
+
+      expect(items).toHaveLength(1);
+      if (items[0].type !== 'tool-group') throw new Error('expected tool-group');
+      expect(items[0].errorCount).toBe(1);
+    });
+
+    it('computes common path prefix across grouped reads', () => {
+      const steps: UnifiedSemanticStep[] = [
+        makeStep({
+          id: 'read-1',
+          type: 'tool_call',
+          content: {
+            toolCallId: 'tc-1',
+            toolName: 'Read',
+            toolInput: { file_path: 'apps/local-app/src/a.ts' },
+          },
+        }),
+        makeStep({
+          id: 'result-1',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-1', toolResultContent: 'a', isError: false },
+        }),
+        makeStep({
+          id: 'read-2',
+          type: 'tool_call',
+          content: {
+            toolCallId: 'tc-2',
+            toolName: 'Read',
+            toolInput: { file_path: 'apps/local-app/src/b.ts' },
+          },
+        }),
+        makeStep({
+          id: 'result-2',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-2', toolResultContent: 'b', isError: false },
+        }),
+      ];
+
+      const items = buildDisplayItems(steps, null);
+
+      if (items[0].type !== 'tool-group') throw new Error('expected tool-group');
+      expect(items[0].commonPathPrefix).toBe('apps/local-app/src');
+    });
+
+    it('preserves order: [thinking, Read, Read, subagent]', () => {
+      const steps: UnifiedSemanticStep[] = [
+        makeStep({
+          id: 'thinking-1',
+          type: 'thinking',
+          content: { thinkingText: 'Planning...' },
+        }),
+        makeStep({
+          id: 'read-1',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-1', toolName: 'Read', toolInput: { file_path: 'a.ts' } },
+        }),
+        makeStep({
+          id: 'result-1',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-1', toolResultContent: 'a', isError: false },
+        }),
+        makeStep({
+          id: 'read-2',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-2', toolName: 'Read', toolInput: { file_path: 'b.ts' } },
+        }),
+        makeStep({
+          id: 'result-2',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-2', toolResultContent: 'b', isError: false },
+        }),
+        makeStep({
+          id: 'subagent-1',
+          type: 'subagent',
+          content: { subagentId: 'p1', subagentDescription: 'Explore' },
+        }),
+      ];
+
+      const items = buildDisplayItems(steps, null);
+
+      expect(items.map((i) => i.type)).toEqual(['thinking', 'tool-group', 'subagent']);
+    });
+
+    it('groups 4 consecutive Bash calls into a single tool-group', () => {
+      const steps: UnifiedSemanticStep[] = [
+        makeStep({
+          id: 'bash-1',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-1', toolName: 'Bash', toolInput: { command: 'ls' } },
+        }),
+        makeStep({
+          id: 'result-1',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-1', toolResultContent: 'output-1', isError: false },
+        }),
+        makeStep({
+          id: 'bash-2',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-2', toolName: 'Bash', toolInput: { command: 'pwd' } },
+        }),
+        makeStep({
+          id: 'result-2',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-2', toolResultContent: 'output-2', isError: false },
+        }),
+        makeStep({
+          id: 'bash-3',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-3', toolName: 'Bash', toolInput: { command: 'whoami' } },
+        }),
+        makeStep({
+          id: 'result-3',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-3', toolResultContent: 'output-3', isError: false },
+        }),
+        makeStep({
+          id: 'bash-4',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-4', toolName: 'Bash', toolInput: { command: 'date' } },
+        }),
+        makeStep({
+          id: 'result-4',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-4', toolResultContent: 'output-4', isError: false },
+        }),
+      ];
+
+      const items = buildDisplayItems(steps, null);
+
+      expect(items).toHaveLength(1);
+      expect(items[0].type).toBe('tool-group');
+      if (items[0].type !== 'tool-group') throw new Error('expected tool-group');
+      expect(items[0].toolName).toBe('Bash');
+      expect(items[0].count).toBe(4);
+    });
+
+    it('groups [Read, Read, Bash, Bash] into 2 separate tool-groups', () => {
+      const steps: UnifiedSemanticStep[] = [
+        makeStep({
+          id: 'read-1',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-1', toolName: 'Read', toolInput: { file_path: 'a.ts' } },
+        }),
+        makeStep({
+          id: 'result-1',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-1', toolResultContent: 'a', isError: false },
+        }),
+        makeStep({
+          id: 'read-2',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-2', toolName: 'Read', toolInput: { file_path: 'b.ts' } },
+        }),
+        makeStep({
+          id: 'result-2',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-2', toolResultContent: 'b', isError: false },
+        }),
+        makeStep({
+          id: 'bash-1',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-3', toolName: 'Bash', toolInput: { command: 'ls' } },
+        }),
+        makeStep({
+          id: 'result-3',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-3', toolResultContent: 'out', isError: false },
+        }),
+        makeStep({
+          id: 'bash-2',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-4', toolName: 'Bash', toolInput: { command: 'pwd' } },
+        }),
+        makeStep({
+          id: 'result-4',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-4', toolResultContent: 'out2', isError: false },
+        }),
+      ];
+
+      const items = buildDisplayItems(steps, null);
+
+      expect(items).toHaveLength(2);
+      expect(items[0].type).toBe('tool-group');
+      expect(items[1].type).toBe('tool-group');
+      if (items[0].type !== 'tool-group' || items[1].type !== 'tool-group') throw new Error();
+      expect(items[0].toolName).toBe('Read');
+      expect(items[0].count).toBe(2);
+      expect(items[1].toolName).toBe('Bash');
+      expect(items[1].count).toBe(2);
+    });
+
+    it('does not group [Read, Bash, Read] – no consecutive same-type runs', () => {
+      const steps: UnifiedSemanticStep[] = [
+        makeStep({
+          id: 'read-1',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-1', toolName: 'Read', toolInput: { file_path: 'a.ts' } },
+        }),
+        makeStep({
+          id: 'result-1',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-1', toolResultContent: 'a', isError: false },
+        }),
+        makeStep({
+          id: 'bash-1',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-2', toolName: 'Bash', toolInput: { command: 'ls' } },
+        }),
+        makeStep({
+          id: 'result-2',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-2', toolResultContent: 'out', isError: false },
+        }),
+        makeStep({
+          id: 'read-2',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-3', toolName: 'Read', toolInput: { file_path: 'b.ts' } },
+        }),
+        makeStep({
+          id: 'result-3',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-3', toolResultContent: 'b', isError: false },
+        }),
+      ];
+
+      const items = buildDisplayItems(steps, null);
+
+      expect(items).toHaveLength(3);
+      expect(items.map((i) => i.type)).toEqual(['tool', 'tool', 'tool']);
+    });
+
+    it('groups exactly 2 consecutive Edit calls into a tool-group', () => {
+      const steps: UnifiedSemanticStep[] = [
+        makeStep({
+          id: 'edit-1',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-1', toolName: 'Edit', toolInput: { file_path: 'a.ts' } },
+        }),
+        makeStep({
+          id: 'result-1',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-1', toolResultContent: 'ok', isError: false },
+        }),
+        makeStep({
+          id: 'edit-2',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-2', toolName: 'Edit', toolInput: { file_path: 'b.ts' } },
+        }),
+        makeStep({
+          id: 'result-2',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-2', toolResultContent: 'ok', isError: false },
+        }),
+      ];
+
+      const items = buildDisplayItems(steps, null);
+
+      expect(items).toHaveLength(1);
+      expect(items[0].type).toBe('tool-group');
+      if (items[0].type !== 'tool-group') throw new Error('expected tool-group');
+      expect(items[0].toolName).toBe('Edit');
+      expect(items[0].count).toBe(2);
+    });
+
+    it('groups 2 consecutive mcp__devchain__devchain_get_epic_by_id calls', () => {
+      const steps: UnifiedSemanticStep[] = [
+        makeStep({
+          id: 'mcp-1',
+          type: 'tool_call',
+          content: {
+            toolCallId: 'tc-1',
+            toolName: 'mcp__devchain__devchain_get_epic_by_id',
+            toolInput: { id: 'abc' },
+          },
+        }),
+        makeStep({
+          id: 'result-1',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-1', toolResultContent: '{}', isError: false },
+        }),
+        makeStep({
+          id: 'mcp-2',
+          type: 'tool_call',
+          content: {
+            toolCallId: 'tc-2',
+            toolName: 'mcp__devchain__devchain_get_epic_by_id',
+            toolInput: { id: 'def' },
+          },
+        }),
+        makeStep({
+          id: 'result-2',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-2', toolResultContent: '{}', isError: false },
+        }),
+      ];
+
+      const items = buildDisplayItems(steps, null);
+
+      expect(items).toHaveLength(1);
+      expect(items[0].type).toBe('tool-group');
+      if (items[0].type !== 'tool-group') throw new Error('expected tool-group');
+      expect(items[0].toolName).toBe('mcp__devchain__devchain_get_epic_by_id');
+      expect(items[0].count).toBe(2);
+    });
+
+    it('does not group different MCP tool names', () => {
+      const steps: UnifiedSemanticStep[] = [
+        makeStep({
+          id: 'mcp-1',
+          type: 'tool_call',
+          content: {
+            toolCallId: 'tc-1',
+            toolName: 'mcp__devchain__devchain_get_epic_by_id',
+            toolInput: { id: 'abc' },
+          },
+        }),
+        makeStep({
+          id: 'result-1',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-1', toolResultContent: '{}', isError: false },
+        }),
+        makeStep({
+          id: 'mcp-2',
+          type: 'tool_call',
+          content: {
+            toolCallId: 'tc-2',
+            toolName: 'mcp__devchain__devchain_create_epic',
+            toolInput: { title: 'test' },
+          },
+        }),
+        makeStep({
+          id: 'result-2',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-2', toolResultContent: '{}', isError: false },
+        }),
+      ];
+
+      const items = buildDisplayItems(steps, null);
+
+      expect(items).toHaveLength(2);
+      expect(items.map((i) => i.type)).toEqual(['tool', 'tool']);
+    });
+
+    it('does not compute commonPathPrefix for non-Read tool groups', () => {
+      const steps: UnifiedSemanticStep[] = [
+        makeStep({
+          id: 'bash-1',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-1', toolName: 'Bash', toolInput: { command: 'ls' } },
+        }),
+        makeStep({
+          id: 'result-1',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-1', toolResultContent: 'out', isError: false },
+        }),
+        makeStep({
+          id: 'bash-2',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-2', toolName: 'Bash', toolInput: { command: 'pwd' } },
+        }),
+        makeStep({
+          id: 'result-2',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-2', toolResultContent: 'out2', isError: false },
+        }),
+      ];
+
+      const items = buildDisplayItems(steps, null);
+
+      expect(items).toHaveLength(1);
+      if (items[0].type !== 'tool-group') throw new Error('expected tool-group');
+      expect(items[0].commonPathPrefix).toBeUndefined();
+    });
+  });
+
   describe('buildSummary', () => {
     it('uses singular tool call label for a single tool item', () => {
       const items = [
@@ -242,6 +762,46 @@ describe('ai-group-enhancer utilities', () => {
       ] as const;
 
       expect(buildSummary(items)).toBe('1 thinking, 2 tool calls, 1 message, 1 subagent');
+    });
+
+    it('counts individual tools within a tool-group, not the group itself', () => {
+      const steps: UnifiedSemanticStep[] = [
+        makeStep({
+          id: 'read-1',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-1', toolName: 'Read', toolInput: { file_path: 'a.ts' } },
+        }),
+        makeStep({
+          id: 'result-1',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-1', toolResultContent: 'a', isError: false },
+        }),
+        makeStep({
+          id: 'read-2',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-2', toolName: 'Read', toolInput: { file_path: 'b.ts' } },
+        }),
+        makeStep({
+          id: 'result-2',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-2', toolResultContent: 'b', isError: false },
+        }),
+        makeStep({
+          id: 'read-3',
+          type: 'tool_call',
+          content: { toolCallId: 'tc-3', toolName: 'Read', toolInput: { file_path: 'c.ts' } },
+        }),
+        makeStep({
+          id: 'result-3',
+          type: 'tool_result',
+          content: { toolCallId: 'tc-3', toolResultContent: 'c', isError: false },
+        }),
+      ];
+
+      const items = buildDisplayItems(steps, null);
+      expect(items).toHaveLength(1);
+      expect(items[0].type).toBe('tool-group');
+      expect(buildSummary(items)).toBe('3 tool calls');
     });
 
     it('returns "No items" for empty list', () => {

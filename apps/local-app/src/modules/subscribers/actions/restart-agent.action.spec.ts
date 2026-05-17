@@ -6,7 +6,10 @@ describe('RestartAgentAction', () => {
   let mockSessionsService: {
     listActiveSessions: jest.Mock;
     terminateSession: jest.Mock;
-    launchSession: jest.Mock;
+  };
+  let mockSessionRuntime: {
+    launch: jest.Mock;
+    restore: jest.Mock;
   };
   let mockSessionCoordinator: {
     withAgentLock: jest.Mock;
@@ -25,7 +28,10 @@ describe('RestartAgentAction', () => {
     mockSessionsService = {
       listActiveSessions: jest.fn().mockResolvedValue([]),
       terminateSession: jest.fn().mockResolvedValue(undefined),
-      launchSession: jest.fn().mockResolvedValue({ id: 'new-session-123' }),
+    };
+    mockSessionRuntime = {
+      launch: jest.fn().mockResolvedValue({ id: 'new-session-123' }),
+      restore: jest.fn(),
     };
 
     mockSessionCoordinator = {
@@ -51,11 +57,11 @@ describe('RestartAgentAction', () => {
     };
 
     mockContext = {
-      tmuxService: {} as ActionContext['tmuxService'],
+      terminalIO: {} as ActionContext['terminalIO'],
       sessionsService: mockSessionsService as unknown as ActionContext['sessionsService'],
+      sessionRuntime: mockSessionRuntime as unknown as ActionContext['sessionRuntime'],
       sessionCoordinator: mockSessionCoordinator as unknown as ActionContext['sessionCoordinator'],
-      sendCoordinator: {} as ActionContext['sendCoordinator'],
-      messagePoolService: {} as ActionContext['messagePoolService'],
+      amd: {} as ActionContext['amd'],
       storage: mockStorage as unknown as ActionContext['storage'],
       sessionId: 'session-123',
       agentId: 'agent-456',
@@ -224,7 +230,7 @@ describe('RestartAgentAction', () => {
 
       await restartAgentAction.execute(mockContext, inputs);
 
-      expect(mockSessionsService.launchSession).toHaveBeenCalledWith({
+      expect(mockSessionRuntime.launch).toHaveBeenCalledWith({
         agentId: 'agent-456',
         projectId: 'project-789',
         // epicId intentionally omitted
@@ -233,7 +239,7 @@ describe('RestartAgentAction', () => {
     });
 
     it('should return newSessionId from launched session', async () => {
-      mockSessionsService.launchSession.mockResolvedValue({ id: 'brand-new-session' });
+      mockSessionRuntime.launch.mockResolvedValue({ id: 'brand-new-session' });
       const inputs = {};
 
       const result = await restartAgentAction.execute(mockContext, inputs);
@@ -269,7 +275,7 @@ describe('RestartAgentAction', () => {
     });
 
     it('should handle launchSession errors', async () => {
-      mockSessionsService.launchSession.mockRejectedValue(new Error('Failed to launch'));
+      mockSessionRuntime.launch.mockRejectedValue(new Error('Failed to launch'));
       const inputs = {};
 
       const result = await restartAgentAction.execute(mockContext, inputs);
@@ -280,7 +286,7 @@ describe('RestartAgentAction', () => {
     });
 
     it('should log errors on failure', async () => {
-      mockSessionsService.launchSession.mockRejectedValue(new Error('Launch failed'));
+      mockSessionRuntime.launch.mockRejectedValue(new Error('Launch failed'));
       const inputs = {};
 
       await restartAgentAction.execute(mockContext, inputs);
@@ -297,7 +303,7 @@ describe('RestartAgentAction', () => {
       mockSessionsService.listActiveSessions.mockResolvedValue([
         { id: 'old-session', agentId: 'agent-456' },
       ]);
-      mockSessionsService.launchSession.mockResolvedValue({ id: 'new-session' });
+      mockSessionRuntime.launch.mockResolvedValue({ id: 'new-session' });
       const inputs = {};
 
       const result = await restartAgentAction.execute(mockContext, inputs);
@@ -309,7 +315,7 @@ describe('RestartAgentAction', () => {
 
     it('should return success with message when no previous session', async () => {
       mockSessionsService.listActiveSessions.mockResolvedValue([]);
-      mockSessionsService.launchSession.mockResolvedValue({ id: 'new-session' });
+      mockSessionRuntime.launch.mockResolvedValue({ id: 'new-session' });
       const inputs = {};
 
       const result = await restartAgentAction.execute(mockContext, inputs);
@@ -323,7 +329,7 @@ describe('RestartAgentAction', () => {
       mockSessionsService.listActiveSessions.mockResolvedValue([
         { id: 'prev-session', agentId: 'agent-456' },
       ]);
-      mockSessionsService.launchSession.mockResolvedValue({ id: 'new-session' });
+      mockSessionRuntime.launch.mockResolvedValue({ id: 'new-session' });
       const inputs = {};
 
       const result = await restartAgentAction.execute(mockContext, inputs);
@@ -338,7 +344,7 @@ describe('RestartAgentAction', () => {
     });
 
     it('should log successful restart', async () => {
-      mockSessionsService.launchSession.mockResolvedValue({ id: 'new-session-id' });
+      mockSessionRuntime.launch.mockResolvedValue({ id: 'new-session-id' });
       const inputs = {};
 
       await restartAgentAction.execute(mockContext, inputs);
@@ -403,7 +409,7 @@ describe('RestartAgentAction', () => {
       expect(result.success).toBe(false);
       expect(result.error).toContain('Refusing to restart agent from a different project');
       expect(mockSessionsService.terminateSession).not.toHaveBeenCalled();
-      expect(mockSessionsService.launchSession).not.toHaveBeenCalled();
+      expect(mockSessionRuntime.launch).not.toHaveBeenCalled();
     });
   });
 });

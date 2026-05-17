@@ -23,7 +23,8 @@ import { TerminalStreamService } from '../../terminal/services/terminal-stream.s
 import { SettingsService } from '../../settings/services/settings.service';
 import { PtyService } from '../../terminal/services/pty.service';
 import { TerminalSeedService } from '../../terminal/services/terminal-seed.service';
-import { ModuleRef } from '@nestjs/core';
+import { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
+import { TerminalSessionRegistry } from '../../terminal/services/terminal-session/terminal-session-registry';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -51,14 +52,16 @@ function createGateway() {
     emitSeedToClient: jest.fn(),
     invalidateCache: jest.fn(),
   } as unknown as TerminalSeedService;
-  const moduleRef = {} as ModuleRef;
+  const terminalIO = {} as TerminalIOService;
+  const registry = new TerminalSessionRegistry();
 
   const gateway = new TerminalGateway(
     streamService,
     settingsService,
     ptyService,
-    moduleRef,
     seedService,
+    terminalIO,
+    registry,
   );
 
   const serverEmit = jest.fn();
@@ -87,6 +90,7 @@ describe('session.restored event catalog', () => {
       epicId: null,
       agentId: 'agent-1',
       tmuxSessionName: 'devchain-session-1',
+      providerName: 'claude',
     });
     expect(result.success).toBe(true);
   });
@@ -98,6 +102,7 @@ describe('session.restored event catalog', () => {
       epicId: 'epic-1',
       agentId: 'agent-1',
       tmuxSessionName: 'devchain-session-1',
+      providerName: 'claude',
     });
     expect(result.success).toBe(true);
   });
@@ -127,6 +132,7 @@ describe('TerminalGateway.handleSessionRestored', () => {
       epicId: null,
       agentId: 'agent-1',
       tmuxSessionName: 'devchain-session-abc',
+      providerName: 'claude',
     });
 
     expect(serverEmit).toHaveBeenCalledTimes(1);
@@ -149,6 +155,7 @@ describe('TerminalGateway.handleSessionRestored', () => {
         epicId: 'epic-99',
         agentId: 'agent-2',
         tmuxSessionName: 'devchain-session-xyz',
+        providerName: 'codex',
       }),
     ).not.toThrow();
   });
@@ -161,6 +168,7 @@ describe('TerminalGateway.handleSessionRestored', () => {
         epicId: null,
         agentId: 'agent-1',
         tmuxSessionName: 'tmux-1',
+        providerName: 'claude',
       }),
     ).not.toThrow();
     expect(serverEmit).toHaveBeenCalledTimes(1);

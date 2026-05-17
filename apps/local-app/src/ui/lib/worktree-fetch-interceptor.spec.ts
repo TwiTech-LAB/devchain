@@ -4,6 +4,7 @@ import {
   WORKTREE_PROXY_UNAVAILABLE_EVENT,
   type WorktreeProxyUnavailableDetail,
   rewriteApiRequestUrl,
+  _resetInstallGuard,
 } from './worktree-fetch-interceptor';
 
 const TEST_ORIGIN = 'http://localhost:3000';
@@ -109,6 +110,7 @@ describe('installWorktreeFetchInterceptor', () => {
       delete (global as unknown as { fetch?: unknown }).fetch;
       delete (window as unknown as { fetch?: unknown }).fetch;
     }
+    _resetInstallGuard();
     jest.clearAllMocks();
   });
 
@@ -371,5 +373,78 @@ describe('installWorktreeFetchInterceptor', () => {
       window.removeEventListener(WORKTREE_PROXY_UNAVAILABLE_EVENT, onUnavailable);
       uninstall();
     }
+  });
+
+  it('skips second install and logs warning (double-install guard)', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const fetchMock = jest.fn(async (_input: RequestInfo | URL) => {
+      return {
+        ok: true,
+        json: async () => ({}),
+      } as Response;
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+    window.fetch = fetchMock as unknown as typeof fetch;
+
+    const uninstall1 = installWorktreeFetchInterceptor({
+      getApiBase: () => '/wt/feature-auth',
+      origin: TEST_ORIGIN,
+    });
+
+    const uninstall2 = installWorktreeFetchInterceptor({
+      getApiBase: () => '/wt/other',
+      origin: TEST_ORIGIN,
+    });
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      'installWorktreeFetchInterceptor: already installed; skipping',
+    );
+
+    await window.fetch('/api/epics');
+    expect(asRequestUrl(fetchMock.mock.calls[0][0] as RequestInfo | URL)).toBe(
+      '/wt/feature-auth/api/epics',
+    );
+
+    uninstall1();
+    expect(window.fetch).toBe(fetchMock);
+
+    uninstall2();
+    expect(window.fetch).toBe(fetchMock);
+
+    warnSpy.mockRestore();
+  });
+
+  it('allows re-installation after uninstall', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const fetchMock = jest.fn(async (_input: RequestInfo | URL) => {
+      return {
+        ok: true,
+        json: async () => ({}),
+      } as Response;
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+    window.fetch = fetchMock as unknown as typeof fetch;
+
+    const uninstall1 = installWorktreeFetchInterceptor({
+      getApiBase: () => '/wt/first',
+      origin: TEST_ORIGIN,
+    });
+
+    uninstall1();
+
+    const uninstall2 = installWorktreeFetchInterceptor({
+      getApiBase: () => '/wt/second',
+      origin: TEST_ORIGIN,
+    });
+
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    await window.fetch('/api/epics');
+    expect(asRequestUrl(fetchMock.mock.calls[0][0] as RequestInfo | URL)).toBe(
+      '/wt/second/api/epics',
+    );
+
+    uninstall2();
+    warnSpy.mockRestore();
   });
 });

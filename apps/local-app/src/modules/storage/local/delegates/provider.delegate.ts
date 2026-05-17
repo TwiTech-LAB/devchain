@@ -38,16 +38,8 @@ export class ProviderStorageDelegate extends BaseStorageDelegate {
           ? 85
           : null;
 
-    let env: Record<string, string> | null =
+    const env: Record<string, string> | null =
       data.env && Object.keys(data.env).length > 0 ? data.env : null;
-
-    // Default CLAUDE_CODE_NO_FLICKER='1' for Claude providers if not explicitly set
-    if (
-      data.name.toLowerCase() === 'claude' &&
-      (env === null || !('CLAUDE_CODE_NO_FLICKER' in env))
-    ) {
-      env = { ...(env ?? {}), CLAUDE_CODE_NO_FLICKER: '1' };
-    }
 
     const provider: Provider = {
       id: randomUUID(),

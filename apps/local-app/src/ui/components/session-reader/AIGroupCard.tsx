@@ -12,8 +12,8 @@ import {
   findLastOutput,
   getHeaderInputTotal,
   getHeaderTokens,
-  type DisplayItem,
   type EnhancerStep,
+  type SingleDisplayItem,
 } from '@/ui/utils/ai-group-enhancer';
 import { classifyDisplayItemHotspots } from '@/ui/utils/hotspot-detection';
 import {
@@ -22,7 +22,9 @@ import {
   formatTokensCompact as formatTokens,
 } from '@/ui/utils/session-reader-formatters';
 import { SemanticStepList } from './SemanticStepList';
+import { ToolGroupItem } from './ToolGroupItem';
 import { LastOutputDisplay } from './LastOutputDisplay';
+import { useSessionViewMode } from '@/ui/hooks/useSessionViewMode';
 
 export interface AIGroupCardProps {
   sessionId?: string | null;
@@ -37,24 +39,13 @@ export interface AIGroupCardProps {
   onLayoutChange?: () => void;
 }
 
-function flattenDisplayItems(items: DisplayItem[]): SerializedSemanticStep[] {
+function flattenSingleItems(items: SingleDisplayItem[]): SerializedSemanticStep[] {
   const steps: SerializedSemanticStep[] = [];
   for (const item of items) {
-    if (item.type !== 'tool') {
-      steps.push(item.step as SerializedSemanticStep);
-      continue;
-    }
-
-    if (item.step.type === 'tool_call') {
-      steps.push(item.step as SerializedSemanticStep);
-      if (item.linkedResult) {
-        steps.push(item.linkedResult as SerializedSemanticStep);
-      }
-      continue;
-    }
-
-    // Orphan tool_result: preserve it so SemanticStepList can render fallback output.
     steps.push(item.step as SerializedSemanticStep);
+    if (item.linkedResult) {
+      steps.push(item.linkedResult as SerializedSemanticStep);
+    }
   }
   return steps;
 }
@@ -81,6 +72,7 @@ export const AIGroupCard = memo(function AIGroupCard({
   onToggle,
   onLayoutChange,
 }: AIGroupCardProps) {
+  const { mode } = useSessionViewMode();
   const semanticSteps = useMemo(
     () => (chunk.semanticSteps ?? []) as EnhancerStep[],
     [chunk.semanticSteps],
@@ -91,7 +83,6 @@ export const AIGroupCard = memo(function AIGroupCard({
     () => buildDisplayItems(semanticSteps, lastOutput?.stepId ?? null),
     [lastOutput?.stepId, semanticSteps],
   );
-  const displayItemSteps = useMemo(() => flattenDisplayItems(displayItems), [displayItems]);
   const summary = useMemo(() => buildSummary(displayItems), [displayItems]);
   const headerTokens = useMemo(() => getHeaderTokens(chunk), [chunk]);
   const timestampIso = useMemo(
@@ -128,7 +119,9 @@ export const AIGroupCard = memo(function AIGroupCard({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
             <Bot className="h-3 w-3" />
-            {isHot && <Flame className="h-3 w-3 text-amber-500" data-testid="ai-group-flame" />}
+            {isHot && mode === 'diagnostic' && (
+              <Flame className="h-3 w-3 text-amber-500" data-testid="ai-group-flame" />
+            )}
             <span>{model}</span>
             <span className="text-muted-foreground/50">·</span>
             <span className="truncate">{summary}</span>
@@ -137,9 +130,9 @@ export const AIGroupCard = memo(function AIGroupCard({
             {headerTokens && (
               <span className="tabular-nums">
                 in {formatTokens(getHeaderInputTotal(chunk) ?? 0)}
-                {inputDelta != null && inputDelta > 0 && (
+                {mode === 'diagnostic' && inputDelta != null && inputDelta > 0 && (
                   <span
-                    className="text-muted-foreground/50 ml-0.5"
+                    className="text-muted-foreground/70 ml-0.5"
                     data-testid="ai-group-input-delta"
                   >
                     (+{formatTokens(inputDelta)})
@@ -151,7 +144,7 @@ export const AIGroupCard = memo(function AIGroupCard({
             )}
             <span>{formatDuration(chunk.metrics.durationMs)}</span>
             <span>{formatTimestamp(timestampIso)}</span>
-            {isHot && contextPct != null && (
+            {isHot && mode === 'diagnostic' && contextPct != null && (
               <span
                 className="text-amber-600 font-medium tabular-nums"
                 data-testid="ai-group-ctx-pct"
@@ -168,13 +161,59 @@ export const AIGroupCard = memo(function AIGroupCard({
         />
       </button>
 
-      {isExpanded && displayItemSteps.length > 0 && (
+      {isExpanded && displayItems.length > 0 && (
         <div className="mt-1 pl-4" data-testid="ai-group-expanded">
-          <SemanticStepList
-            sessionId={sessionId}
-            steps={displayItemSteps}
-            stepHotspots={stepHotspots}
-          />
+          {(() => {
+            const segments: { key: string; element: React.ReactNode }[] = [];
+            let runStart = -1;
+
+            const flushRun = (end: number) => {
+              if (runStart < 0) return;
+              const run = displayItems.slice(runStart, end) as SingleDisplayItem[];
+              const runSteps = flattenSingleItems(run);
+              segments.push({
+                key: `run-${run[0].step.id}`,
+                element: (
+                  <SemanticStepList
+                    sessionId={sessionId}
+                    steps={runSteps}
+                    stepHotspots={stepHotspots}
+                  />
+                ),
+              });
+              runStart = -1;
+            };
+
+            for (let idx = 0; idx < displayItems.length; idx++) {
+              const item = displayItems[idx];
+              if (item.type === 'tool-group') {
+                flushRun(idx);
+                const groupHotspot = stepHotspots?.get(item.items[0].step.id);
+                segments.push({
+                  key: `group-${item.items[0].step.id}`,
+                  element: (
+                    <ToolGroupItem
+                      sessionId={sessionId}
+                      group={item}
+                      isStepHot={groupHotspot?.isHot}
+                      percentOfChunk={groupHotspot?.percentOfChunk}
+                    />
+                  ),
+                });
+              } else {
+                if (runStart < 0) runStart = idx;
+              }
+            }
+            flushRun(displayItems.length);
+
+            return (
+              <div className="space-y-1.5">
+                {segments.map((s) => (
+                  <div key={s.key}>{s.element}</div>
+                ))}
+              </div>
+            );
+          })()}
         </div>
       )}
 

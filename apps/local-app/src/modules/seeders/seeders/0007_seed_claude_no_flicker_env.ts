@@ -1,4 +1,4 @@
-import type { DataSeeder, SeederContext } from '../services/data-seeder.service';
+import type { DataSeeder, SeederContext } from '../types/seeder.types';
 
 const SEEDER_NAME = '0007_seed_claude_no_flicker_env';
 const SEEDER_VERSION = 1;

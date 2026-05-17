@@ -35,7 +35,6 @@ export function mapEpicSummary(epic: Epic, agentNameById?: Map<string, string>):
     id: epic.id,
     title: epic.title,
     description: epic.description ?? null,
-    statusId: epic.statusId,
     version: epic.version,
   };
 
@@ -62,7 +61,6 @@ export function mapEpicChild(epic: Epic): EpicChildSummary {
   return {
     id: epic.id,
     title: epic.title,
-    statusId: epic.statusId,
   };
 }
 

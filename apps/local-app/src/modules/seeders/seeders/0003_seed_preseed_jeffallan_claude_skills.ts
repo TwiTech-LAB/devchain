@@ -1,5 +1,5 @@
 import type { CreateCommunitySkillSource } from '../../storage/models/domain.models';
-import type { DataSeeder, SeederContext } from '../services/data-seeder.service';
+import type { DataSeeder, SeederContext } from '../types/seeder.types';
 
 const SEEDER_NAME = '0003_seed_preseed_jeffallan_claude_skills';
 const SEEDER_VERSION = 1;

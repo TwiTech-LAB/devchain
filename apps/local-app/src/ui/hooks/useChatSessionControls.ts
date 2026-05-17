@@ -11,6 +11,7 @@ import {
   type AgentPresenceMap,
 } from '@/ui/lib/sessions';
 import { chatQueryKeys, type AgentOrGuest } from './useChatQueries';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 // ============================================
 // Types
@@ -90,6 +91,7 @@ export function useChatSessionControls({
 }: UseChatSessionControlsOptions): UseChatSessionControlsResult {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const apiFetch = useFetchFactory();
 
   // Loading states
   const [launchingAgentIds, setLaunchingAgentIds] = useState<Record<string, boolean>>({});
@@ -115,6 +117,41 @@ export function useChatSessionControls({
   const agentsWithSessions = presenceReady
     ? agents.filter((a) => agentPresence[a.id]?.online && agentPresence[a.id]?.sessionId)
     : [];
+
+  const primeRunningSessionCache = useCallback(
+    async (agentId: string, session: ActiveSession) => {
+      if (!projectId) return;
+
+      await Promise.all([
+        queryClient.cancelQueries({ queryKey: chatQueryKeys.agentPresence(projectId) }),
+        queryClient.cancelQueries({ queryKey: chatQueryKeys.activeSessions(projectId) }),
+      ]);
+
+      queryClient.setQueryData<AgentPresenceMap>(
+        chatQueryKeys.agentPresence(projectId),
+        (previous = {}) => ({
+          ...previous,
+          [agentId]: {
+            ...previous[agentId],
+            online: true,
+            sessionId: session.id,
+          },
+        }),
+      );
+
+      queryClient.setQueryData<ActiveSession[]>(
+        chatQueryKeys.activeSessions(projectId),
+        (previous = []) => {
+          const sessionAgentId = session.agentId ?? agentId;
+          const remaining = previous.filter(
+            (item) => item.id !== session.id && item.agentId !== sessionAgentId,
+          );
+          return [{ ...session, agentId: sessionAgentId }, ...remaining];
+        },
+      );
+    },
+    [projectId, queryClient],
+  );
 
   // Launch session handler
   const handleLaunchSession = useCallback(
@@ -145,7 +182,7 @@ export function useChatSessionControls({
 
       setLaunchingAgentIds((prev) => ({ ...prev, [agentId]: true }));
       try {
-        const raw = await launchSession(agentId, projectId, { silent });
+        const raw = await launchSession(agentId, projectId, { silent }, '', apiFetch);
         if (!raw || typeof raw !== 'object' || !('id' in raw)) {
           throw new Error('Unexpected response when launching session');
         }
@@ -168,6 +205,8 @@ export function useChatSessionControls({
             description: `Session ${session.id.slice(0, 8)} started.`,
           });
         }
+
+        await primeRunningSessionCache(agentId, session);
 
         if (attach && canAttachInlineTerminal?.(agentId)) {
           onInlineTerminalAttach?.(session.agentId ?? agentId, session.id);
@@ -229,6 +268,7 @@ export function useChatSessionControls({
       queryClient,
       onInlineTerminalAttach,
       onTerminalMenuClose,
+      primeRunningSessionCache,
     ],
   );
 
@@ -251,11 +291,11 @@ export function useChatSessionControls({
         let terminateWarning: string | undefined;
 
         if (sessionId) {
-          const result = await restartSession(agentId, projectId, sessionId);
+          const result = await restartSession(agentId, projectId, sessionId, '', apiFetch);
           session = result.session;
           terminateWarning = result.terminateWarning;
         } else {
-          session = await launchSession(agentId, projectId);
+          session = await launchSession(agentId, projectId, undefined, '', apiFetch);
         }
 
         if (terminateWarning) {
@@ -270,6 +310,8 @@ export function useChatSessionControls({
             description: session ? `Session ${session.id?.slice(0, 8)}` : 'Session started',
           });
         }
+
+        await primeRunningSessionCache(agentId, session);
 
         queryClient.invalidateQueries({ queryKey: chatQueryKeys.agentPresence(projectId) });
         queryClient.invalidateQueries({ queryKey: chatQueryKeys.activeSessions(projectId) });
@@ -287,7 +329,15 @@ export function useChatSessionControls({
         setRestartingAgentId(null);
       }
     },
-    [agentPresence, projectId, queryClient, canAttachInlineTerminal, onInlineTerminalAttach, toast],
+    [
+      agentPresence,
+      projectId,
+      queryClient,
+      canAttachInlineTerminal,
+      onInlineTerminalAttach,
+      toast,
+      primeRunningSessionCache,
+    ],
   );
 
   // Restore session handler
@@ -296,11 +346,12 @@ export function useChatSessionControls({
       if (!projectId) return;
       setRestoringSessionIds((prev) => ({ ...prev, [sessionId]: true }));
       try {
-        const session = await restoreSession(sessionId, projectId);
+        const session = await restoreSession(sessionId, projectId, '', apiFetch);
         toast({
           title: 'Session restored',
           description: `Session ${session.id.slice(0, 8)} is running.`,
         });
+        await primeRunningSessionCache(agentId, session);
         queryClient.invalidateQueries({ queryKey: chatQueryKeys.agentPresence(projectId) });
         queryClient.invalidateQueries({ queryKey: chatQueryKeys.activeSessions(projectId) });
         queryClient.invalidateQueries({ queryKey: ['agentSessionHistory', agentId, projectId] });
@@ -337,6 +388,7 @@ export function useChatSessionControls({
       onInlineTerminalAttach,
       onTerminalMenuClose,
       toast,
+      primeRunningSessionCache,
     ],
   );
 
@@ -354,7 +406,7 @@ export function useChatSessionControls({
       setTerminateConfirm(null);
       setLaunchingAgentIds((prev) => ({ ...prev, [agentId]: true }));
       try {
-        await terminateSession(sessionId);
+        await terminateSession(sessionId, '', apiFetch);
         toast({ title: 'Session terminated', description: 'The session was terminated.' });
         queryClient.invalidateQueries({ queryKey: chatQueryKeys.agentPresence(projectId) });
         queryClient.invalidateQueries({ queryKey: chatQueryKeys.activeSessions(projectId) });
@@ -430,7 +482,7 @@ export function useChatSessionControls({
         const sessionId = agentPresence[agent.id]?.sessionId;
         if (sessionId) {
           try {
-            await terminateSession(sessionId);
+            await terminateSession(sessionId, '', apiFetch);
             succeeded++;
           } catch {
             failed++;

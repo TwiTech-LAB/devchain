@@ -219,8 +219,12 @@ describe('WorktreePresetButton', () => {
   });
 
   it('calls apply endpoint on correct worktree proxy path', async () => {
-    const group = makeGroup();
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
+    const group = makeGroup({
+      agentPresence: {
+        'agent-1': { online: false, sessionId: null, startedAt: null },
+        'agent-2': { online: false, sessionId: null, startedAt: null },
+      },
+    });
 
     renderWithQueryClient(<WorktreePresetButton group={group} onMarkForRestart={jest.fn()} />);
 
@@ -239,14 +243,11 @@ describe('WorktreePresetButton', () => {
       expect(applyCalls[0][0]).toBe('/wt/feature-auth/api/projects/proj-1/presets/apply');
       expect(JSON.parse(applyCalls[0][1].body)).toEqual({ presetName: 'Tier-A' });
     });
-
-    jest.spyOn(window, 'confirm').mockRestore();
   });
 
   it('marks only online affected agents for restart with composite key on apply success', async () => {
     const group = makeGroup();
     const onMarkForRestart = jest.fn();
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
 
     renderWithQueryClient(
       <WorktreePresetButton group={group} onMarkForRestart={onMarkForRestart} />,
@@ -258,6 +259,8 @@ describe('WorktreePresetButton', () => {
     await act(async () => {
       fireEvent.click(screen.getByText('Tier-A'));
     });
+    expect(await screen.findByText('Active sessions detected')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
     await waitFor(() => {
       expect(onMarkForRestart).toHaveBeenCalledWith(['/wt/feature-auth:agent-1']);
@@ -266,13 +269,15 @@ describe('WorktreePresetButton', () => {
     // agent-2 is offline — should NOT be in the restart list
     const callArgs = onMarkForRestart.mock.calls[0][0] as string[];
     expect(callArgs).not.toContain('/wt/feature-auth:agent-2');
-
-    jest.spyOn(window, 'confirm').mockRestore();
   });
 
   it('invalidates worktree agent groups on successful apply', async () => {
-    const group = makeGroup();
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
+    const group = makeGroup({
+      agentPresence: {
+        'agent-1': { online: false, sessionId: null, startedAt: null },
+        'agent-2': { online: false, sessionId: null, startedAt: null },
+      },
+    });
 
     const { queryClient } = renderWithQueryClient(
       <WorktreePresetButton group={group} onMarkForRestart={jest.fn()} />,
@@ -292,16 +297,21 @@ describe('WorktreePresetButton', () => {
         expect.objectContaining({ queryKey: ['chat-worktree-agent-groups'] }),
       );
     });
-
-    jest.spyOn(window, 'confirm').mockRestore();
   });
 
   it('shows error toast when apply fails', async () => {
     fetchMock = setupFetchRouter({ applyResponse: { ok: false } });
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
 
     renderWithQueryClient(
-      <WorktreePresetButton group={makeGroup()} onMarkForRestart={jest.fn()} />,
+      <WorktreePresetButton
+        group={makeGroup({
+          agentPresence: {
+            'agent-1': { online: false, sessionId: null, startedAt: null },
+            'agent-2': { online: false, sessionId: null, startedAt: null },
+          },
+        })}
+        onMarkForRestart={jest.fn()}
+      />,
     );
 
     fireEvent.click(screen.getByLabelText('Select preset'));
@@ -319,13 +329,9 @@ describe('WorktreePresetButton', () => {
         }),
       );
     });
-
-    jest.spyOn(window, 'confirm').mockRestore();
   });
 
   it('shows confirmation dialog when agents have active sessions', async () => {
-    const confirmSpy = jest.spyOn(window, 'confirm').mockReturnValue(false);
-
     renderWithQueryClient(
       <WorktreePresetButton group={makeGroup()} onMarkForRestart={jest.fn()} />,
     );
@@ -335,14 +341,16 @@ describe('WorktreePresetButton', () => {
 
     fireEvent.click(screen.getByText('Tier-A'));
 
-    expect(confirmSpy).toHaveBeenCalled();
-    // Should NOT have called apply since user declined
+    expect(await screen.findByText('Active sessions detected')).toBeInTheDocument();
+    expect(screen.getByText(/Coder/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    // Should NOT have called apply since user cancelled
     const applyCalls = fetchMock.mock.calls.filter(
       (c: string[]) => typeof c[0] === 'string' && c[0].includes('/presets/apply'),
     );
     expect(applyCalls).toHaveLength(0);
-
-    confirmSpy.mockRestore();
   });
 
   it('skips confirmation when no agents have active sessions', async () => {
@@ -352,8 +360,6 @@ describe('WorktreePresetButton', () => {
         'agent-2': { online: false, sessionId: null, startedAt: null },
       },
     });
-    const confirmSpy = jest.spyOn(window, 'confirm');
-
     renderWithQueryClient(<WorktreePresetButton group={group} onMarkForRestart={jest.fn()} />);
 
     fireEvent.click(screen.getByLabelText('Select preset'));
@@ -364,7 +370,7 @@ describe('WorktreePresetButton', () => {
     });
 
     // No confirmation dialog shown (no active sessions)
-    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(screen.queryByText('Active sessions detected')).not.toBeInTheDocument();
 
     // But apply should have been called
     await waitFor(() => {
@@ -373,7 +379,5 @@ describe('WorktreePresetButton', () => {
       );
       expect(applyCalls).toHaveLength(1);
     });
-
-    confirmSpy.mockRestore();
   });
 });

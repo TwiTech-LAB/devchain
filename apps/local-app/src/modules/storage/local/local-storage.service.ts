@@ -9,6 +9,7 @@ import {
   DocumentIdentifier,
   ListProjectEpicsOptions,
   ListAssignedEpicsOptions,
+  ListParentChildrenOptions,
   ListSubEpicsForParentsOptions,
   CreateEpicForProjectInput,
   ProfileListOptions,
@@ -18,6 +19,9 @@ import {
   ListReviewCommentsOptions,
   type CreateIfMissingInput,
   type CreateIfMissingResult,
+  ListScheduledEpicsOptions,
+  ListScheduledEpicRunsOptions,
+  type ClaimRunResult,
 } from '../interfaces/storage.interface';
 import {
   Project,
@@ -79,6 +83,13 @@ import {
   CreateCommunitySkillSource,
   LocalSkillSource,
   CreateLocalSkillSource,
+  ScheduledEpic,
+  CreateScheduledEpic,
+  UpdateScheduledEpic,
+  UpdateScheduledEpicRuntimeState,
+  ScheduledEpicRun,
+  CreateScheduledEpicRun,
+  UpdateScheduledEpicRun,
 } from '../models/domain.models';
 import { ValidationError, ConflictError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
@@ -104,6 +115,7 @@ import { SkillSourceStorageDelegate } from './delegates/skill-source.delegate';
 import { StatusStorageDelegate } from './delegates/status.delegate';
 import { SubscriberStorageDelegate } from './delegates/subscriber.delegate';
 import { TagStorageDelegate } from './delegates/tag.delegate';
+import { ScheduledEpicStorageDelegate } from './delegates/scheduled-epic.delegate';
 import { WatcherStorageDelegate } from './delegates/watcher.delegate';
 
 const logger = createLogger('LocalStorageService');
@@ -135,6 +147,7 @@ export class LocalStorageService implements StorageService {
   private readonly guestDelegate: GuestStorageDelegate;
   private readonly reviewDelegate: ReviewStorageDelegate;
   private readonly providerModelDelegate: ProviderModelStorageDelegate;
+  private readonly scheduledEpicDelegate: ScheduledEpicStorageDelegate;
 
   constructor(@Inject(DB_CONNECTION) private readonly db: BetterSQLite3Database) {
     const context = createStorageDelegateContext(this.db);
@@ -194,6 +207,7 @@ export class LocalStorageService implements StorageService {
       getReview: (id) => this.getReview(id),
       getReviewComment: (id) => this.getReviewComment(id),
     });
+    this.scheduledEpicDelegate = new ScheduledEpicStorageDelegate(context);
     logger.info('LocalStorageService initialized');
   }
 
@@ -326,6 +340,13 @@ export class LocalStorageService implements StorageService {
 
   async listSubEpics(parentId: string, options: ListOptions = {}): Promise<ListResult<Epic>> {
     return this.epicDelegate.listSubEpics(parentId, options);
+  }
+
+  async listParentChildren(
+    parentId: string,
+    options: ListParentChildrenOptions = {},
+  ): Promise<ListResult<Epic>> {
+    return this.epicDelegate.listParentChildren(parentId, options);
   }
 
   async listSubEpicsForParents(
@@ -913,5 +934,73 @@ export class LocalStorageService implements StorageService {
 
   async deleteNonResolvedComments(reviewId: string): Promise<number> {
     return this.reviewDelegate.deleteNonResolvedComments(reviewId);
+  }
+
+  // ============================================
+  // SCHEDULED EPICS
+  // ============================================
+
+  async createScheduledEpic(data: CreateScheduledEpic): Promise<ScheduledEpic> {
+    return this.scheduledEpicDelegate.createScheduledEpic(data);
+  }
+
+  async getScheduledEpic(id: string): Promise<ScheduledEpic> {
+    return this.scheduledEpicDelegate.getScheduledEpic(id);
+  }
+
+  async listScheduledEpics(
+    projectId: string,
+    options: ListScheduledEpicsOptions = {},
+  ): Promise<ListResult<ScheduledEpic>> {
+    return this.scheduledEpicDelegate.listScheduledEpics(projectId, options);
+  }
+
+  async updateScheduledEpic(
+    id: string,
+    data: UpdateScheduledEpic,
+    expectedVersion: number,
+  ): Promise<ScheduledEpic> {
+    return this.scheduledEpicDelegate.updateScheduledEpic(id, data, expectedVersion);
+  }
+
+  async deleteScheduledEpic(id: string): Promise<void> {
+    return this.scheduledEpicDelegate.deleteScheduledEpic(id);
+  }
+
+  async updateScheduledEpicRuntimeState(
+    id: string,
+    data: UpdateScheduledEpicRuntimeState,
+  ): Promise<ScheduledEpic> {
+    return this.scheduledEpicDelegate.updateScheduledEpicRuntimeState(id, data);
+  }
+
+  async listDueScheduledEpics(projectId: string, before: string): Promise<ScheduledEpic[]> {
+    return this.scheduledEpicDelegate.listDueScheduledEpics(projectId, before);
+  }
+
+  async createScheduledEpicRun(data: CreateScheduledEpicRun): Promise<ClaimRunResult> {
+    return this.scheduledEpicDelegate.createScheduledEpicRun(data);
+  }
+
+  async getScheduledEpicRun(id: string): Promise<ScheduledEpicRun> {
+    return this.scheduledEpicDelegate.getScheduledEpicRun(id);
+  }
+
+  async listScheduledEpicRuns(
+    scheduleId: string,
+    options: ListScheduledEpicRunsOptions = {},
+  ): Promise<ListResult<ScheduledEpicRun>> {
+    return this.scheduledEpicDelegate.listScheduledEpicRuns(scheduleId, options);
+  }
+
+  async updateScheduledEpicRun(
+    id: string,
+    data: UpdateScheduledEpicRun,
+  ): Promise<ScheduledEpicRun> {
+    return this.scheduledEpicDelegate.updateScheduledEpicRun(id, data);
+  }
+
+  async claimScheduledEpicRun(runId: string): Promise<ClaimRunResult> {
+    return this.scheduledEpicDelegate.claimScheduledEpicRun(runId);
   }
 }

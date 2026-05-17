@@ -22,6 +22,7 @@ import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import { useTerminalWindows } from '@/ui/terminal-windows';
 import { cn } from '@/ui/lib/utils';
 import { ChevronRight, Copy, Loader2, Square, Terminal as TerminalIcon } from 'lucide-react';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 export const TERMINAL_SESSIONS_QUERY_KEY = ['terminal-dock', 'sessions'] as const;
 export const OPEN_TERMINAL_DOCK_EVENT = 'devchain:terminal-dock:open';
@@ -140,6 +141,7 @@ export function TerminalDock({
 }: TerminalDockProps) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const apiFetch = useFetchFactory();
   const [confirmSessionId, setConfirmSessionId] = useState<string | null>(null);
   const [restartSessionId, setRestartSessionId] = useState<string | null>(null);
   const [srMessage, setSrMessage] = useState('');
@@ -155,7 +157,7 @@ export function TerminalDock({
 
   const { data, isLoading, isFetching, error } = useQuery<ActiveSession[]>({
     queryKey: sessionsQueryKey,
-    queryFn: () => fetchActiveSessions(selectedProjectId ?? undefined),
+    queryFn: () => fetchActiveSessions(selectedProjectId ?? undefined, apiFetch),
     enabled: expanded || sessions.length === 0,
     refetchInterval: expanded ? 7000 : false,
   });
@@ -172,7 +174,7 @@ export function TerminalDock({
   const agentQueries = useQueries({
     queries: uniqueAgentIds.map((agentId) => ({
       queryKey: ['agent-summary', agentId] as const,
-      queryFn: () => fetchAgentSummary(agentId),
+      queryFn: () => fetchAgentSummary(agentId, apiFetch),
       enabled: expanded, // Only fetch when dock is expanded (collapsed pills use window.details fallback)
       staleTime: 5 * 60 * 1000, // 5 minutes - agent names rarely change
       gcTime: 10 * 60 * 1000, // Keep in cache for 10 minutes
@@ -214,7 +216,7 @@ export function TerminalDock({
 
   const terminateMutation = useMutation({
     mutationFn: async (sessionId: string) => {
-      await terminateSession(sessionId);
+      await terminateSession(sessionId, '', apiFetch);
       await queryClient.invalidateQueries({ queryKey: sessionsQueryKey });
     },
     onSuccess: (_, sessionId) => {
@@ -244,7 +246,13 @@ export function TerminalDock({
       if (!session?.agentId || !selectedProjectId) {
         throw new Error('Cannot restart: missing agent or project');
       }
-      const result = await restartSession(session.agentId, selectedProjectId, sessionId);
+      const result = await restartSession(
+        session.agentId,
+        selectedProjectId,
+        sessionId,
+        '',
+        apiFetch,
+      );
       await queryClient.invalidateQueries({ queryKey: sessionsQueryKey });
       return result;
     },

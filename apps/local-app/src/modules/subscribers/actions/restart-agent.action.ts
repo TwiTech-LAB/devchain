@@ -53,7 +53,14 @@ export const restartAgentAction: ActionDefinition = {
     context: ActionContext,
     inputs: Record<string, unknown>,
   ): Promise<ActionResult> => {
-    const { sessionsService, storage, projectId, agentId: contextAgentId, logger } = context;
+    const {
+      sessionsService,
+      sessionRuntime,
+      storage,
+      projectId,
+      agentId: contextAgentId,
+      logger,
+    } = context;
 
     // Extract inputs
     const inputAgentName = inputs.agentName as string | undefined;
@@ -137,12 +144,13 @@ export const restartAgentAction: ActionDefinition = {
       // Launch new independent session (no epicId)
       // launchSession() is idempotent and handles its own locking internally
       logger.info({ agentId: resolvedAgentId }, 'Launching new independent session');
-      const newSession = await sessionsService.launchSession({
+      const launchData = {
         agentId: resolvedAgentId!,
         projectId,
         // epicId intentionally omitted for independent session
         options: { silent: true },
-      });
+      };
+      const newSession = await sessionRuntime.launch(launchData);
 
       const result = {
         previousSessionId,

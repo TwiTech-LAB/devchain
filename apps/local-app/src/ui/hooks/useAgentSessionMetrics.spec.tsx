@@ -177,26 +177,38 @@ describe('useAgentSessionMetrics', () => {
     expect(result.current.size).toBe(0);
   });
 
-  it('dedup — same sessionId from same apiBase does not create duplicate queries', async () => {
-    fetchMock.mockResolvedValue(
-      makeSummary({ totalContextTokens: 100_000, contextWindowTokens: 200_000 }),
-    );
-
-    const entries: AgentSessionEntry[] = [
-      { agentId: 'agent-1', sessionId: 'session-1' },
-      { agentId: 'agent-2', sessionId: 'session-1' }, // same sessionId → same query key
-    ];
-
-    const { result } = renderHook(() => useAgentSessionMetrics(entries), {
-      wrapper: createWrapper(),
+  describe('dedup', () => {
+    // Suppress Duplicate Queries warning — this test intentionally passes duplicate
+    // query keys to verify React Query's dedup. The warning is expected behavior.
+    let warnSpy: jest.SpyInstance;
+    beforeAll(() => {
+      warnSpy = jest.spyOn(console, 'warn').mockImplementation();
+    });
+    afterAll(() => {
+      warnSpy.mockRestore();
     });
 
-    await waitFor(() => {
-      expect(result.current.size).toBe(2);
-    });
+    it('same sessionId from same apiBase does not create duplicate queries', async () => {
+      fetchMock.mockResolvedValue(
+        makeSummary({ totalContextTokens: 100_000, contextWindowTokens: 200_000 }),
+      );
 
-    // React Query dedupes by query key — only one fetch for same sessionId
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+      const entries: AgentSessionEntry[] = [
+        { agentId: 'agent-1', sessionId: 'session-1' },
+        { agentId: 'agent-2', sessionId: 'session-1' }, // same sessionId → same query key
+      ];
+
+      const { result } = renderHook(() => useAgentSessionMetrics(entries), {
+        wrapper: createWrapper(),
+      });
+
+      await waitFor(() => {
+        expect(result.current.size).toBe(2);
+      });
+
+      // React Query dedupes by query key — only one fetch for same sessionId
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('polling stops when isOngoing === false', async () => {

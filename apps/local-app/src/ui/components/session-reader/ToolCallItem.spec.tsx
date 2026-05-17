@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { ToolCallItem } from './ToolCallItem';
 import type { SerializedSemanticStep } from '@/ui/hooks/useSessionTranscript';
 import { fetchJsonOrThrow } from '@/ui/lib/sessions';
+import { renderWithMode } from './__tests__/test-utils';
 
 jest.mock('@/ui/lib/sessions', () => ({
   ...jest.requireActual('@/ui/lib/sessions'),
@@ -317,9 +318,10 @@ describe('ToolCallItem', () => {
   // Step-level hotspot visual treatment
   // ---------------------------------------------------------------------------
 
-  it('shows amber border, flame icon, and percentage when isStepHot=true', () => {
-    render(
+  it('shows amber border, flame icon, and percentage when isStepHot=true (diagnostic mode)', () => {
+    renderWithMode(
       <ToolCallItem step={makeStep({ estimatedTokens: 500 })} isStepHot percentOfChunk={62} />,
+      'diagnostic',
     );
 
     const wrapper = screen.getByTestId('tool-call-wrapper');
@@ -332,6 +334,15 @@ describe('ToolCallItem', () => {
     expect(pct).toHaveTextContent('62%');
   });
 
+  it('hides hotspot indicators in Reader mode even when isStepHot=true', () => {
+    render(
+      <ToolCallItem step={makeStep({ estimatedTokens: 500 })} isStepHot percentOfChunk={62} />,
+    );
+
+    expect(screen.queryByTestId('step-hotspot-flame')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('step-hotspot-pct')).not.toBeInTheDocument();
+  });
+
   it('does not show hotspot indicators when isStepHot is false or undefined', () => {
     render(<ToolCallItem step={makeStep()} />);
 
@@ -342,8 +353,8 @@ describe('ToolCallItem', () => {
     expect(screen.queryByTestId('step-hotspot-pct')).not.toBeInTheDocument();
   });
 
-  it('does not show percentage badge when percentOfChunk is 0', () => {
-    render(<ToolCallItem step={makeStep()} isStepHot percentOfChunk={0} />);
+  it('does not show percentage badge when percentOfChunk is 0 (diagnostic mode)', () => {
+    renderWithMode(<ToolCallItem step={makeStep()} isStepHot percentOfChunk={0} />, 'diagnostic');
 
     expect(screen.getByTestId('step-hotspot-flame')).toBeInTheDocument();
     expect(screen.queryByTestId('step-hotspot-pct')).not.toBeInTheDocument();

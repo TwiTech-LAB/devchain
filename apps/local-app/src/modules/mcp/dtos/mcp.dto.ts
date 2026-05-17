@@ -258,10 +258,22 @@ export const UpdateEpicParamsSchema = z
     description: z.string().optional(),
     statusName: z.string().min(1).optional(),
     assignment: z
-      .union([
-        z.object({ agentName: z.string().min(1) }).strict(),
-        z.object({ clear: z.literal(true) }).strict(),
-      ])
+      .preprocess(
+        (value) => {
+          if (typeof value === 'string') {
+            try {
+              return JSON.parse(value);
+            } catch {
+              return value;
+            }
+          }
+          return value;
+        },
+        z.union([
+          z.object({ agentName: z.string().min(1) }).strict(),
+          z.object({ clear: z.literal(true) }).strict(),
+        ]),
+      )
       .optional(),
     parentId: z.string().uuid().optional(),
     clearParent: z.boolean().optional(),
@@ -281,6 +293,16 @@ export const UpdateEpicParamsSchema = z
   });
 
 export type UpdateEpicParams = z.infer<typeof UpdateEpicParamsSchema>;
+
+// devchain_delete_epic
+export const DeleteEpicParamsSchema = z
+  .object({
+    sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
+    id: EpicIdPrefixSchema, // Epic UUID or 8+ char hex prefix
+  })
+  .strict();
+
+export type DeleteEpicParams = z.infer<typeof DeleteEpicParamsSchema>;
 
 // devchain.get_prompt
 export const GetPromptParamsSchema = z
@@ -356,24 +378,12 @@ export interface McpResponse {
 
 export interface CreateRecordResponse {
   id: string;
-  epicId: string;
-  type: string;
-  data: Record<string, unknown>;
-  tags: string[];
   version: number;
-  createdAt: string;
-  updatedAt: string;
 }
 
 export interface UpdateRecordResponse {
   id: string;
-  epicId: string;
-  type: string;
-  data: Record<string, unknown>;
-  tags: string[];
   version: number;
-  createdAt: string;
-  updatedAt: string;
 }
 
 export interface GetRecordResponse {
@@ -403,12 +413,12 @@ export interface ListRecordsResponse {
 
 export interface AddTagsResponse {
   id: string;
-  tags: string[];
+  version: number;
 }
 
 export interface RemoveTagsResponse {
   id: string;
-  tags: string[];
+  version: number;
 }
 
 export interface DocumentSummary {
@@ -456,11 +466,13 @@ export interface GetDocumentResponse {
 }
 
 export interface CreateDocumentResponse {
-  document: DocumentDetail;
+  id: string;
+  version: number;
 }
 
 export interface UpdateDocumentResponse {
-  document: DocumentDetail;
+  id: string;
+  version: number;
 }
 
 /**
@@ -578,10 +590,9 @@ export interface EpicSummary {
   id: string;
   title: string;
   description: string | null;
-  statusId: string;
   version: number; // Required for optimistic locking in updates
-  // Optional resolved status for convenience in detail views
-  status?: StatusSummary;
+  // Optional resolved status name for convenience without returning full status metadata
+  status?: string;
   agentName?: string | null;
   parentId?: string | null;
   // Optional tags for filtering/categorization
@@ -604,9 +615,8 @@ export type ListAssignedEpicsTasksResponse = ListEpicsResponse;
 export interface EpicChildSummary {
   id: string;
   title: string;
-  statusId: string;
-  // Optional resolved status to avoid extra lookups
-  status?: StatusSummary;
+  // Optional resolved status name to avoid extra lookups
+  status?: string;
 }
 
 export interface EpicParentSummary {
@@ -634,16 +644,23 @@ export interface GetEpicByIdResponse {
 }
 
 export interface CreateEpicResponse {
-  epic: EpicSummary;
+  id: string;
+  version: number;
 }
 
 export interface AddEpicCommentResponse {
-  comment: EpicCommentSummary;
+  id: string;
 }
 
 export interface UpdateEpicResponse {
-  epic: EpicSummary;
+  id: string;
+  version: number;
   hint?: string;
+}
+
+export interface DeleteEpicResponse {
+  id: string;
+  deleted: true;
 }
 
 // devchain_send_message
@@ -896,11 +913,6 @@ export type RegisterGuestParams = z.infer<typeof RegisterGuestParamsSchema>;
 
 export interface RegisterGuestResponse {
   guestId: string;
-  name: string;
-  projectId: string;
-  projectName: string;
-  isSandbox: boolean;
-  registeredAt: string;
 }
 
 // resolveSessionContext - discriminated union for agent and guest contexts
@@ -1065,8 +1077,7 @@ export type TeamsDeleteAgentParams = z.infer<typeof TeamsDeleteAgentParamsSchema
 
 export interface TeamsDeleteAgentResponse {
   deletedAgentId: string;
-  deletedAgentName: string;
-  teamName: string;
+  deleted: true;
 }
 
 export const DevchainTeamParamsSchema = z
@@ -1081,6 +1092,7 @@ export type DevchainTeamParams = z.infer<typeof DevchainTeamParamsSchema>;
 export interface DevchainTeamMemberProjection {
   agentId: string;
   agentName: string;
+  description: string | null;
   isLead: boolean;
   profileId: string | null;
   profileName: string | null;
@@ -1107,14 +1119,7 @@ export interface DevchainTeamResponse {
 }
 
 export interface TeamsCreateAgentResponse {
-  agent: {
-    id: string;
-    name: string;
-    description: string | null;
-    profileName: string;
-    configName: string;
-  };
-  teamName: string;
+  agentId: string;
 }
 
 // ============================================
@@ -1240,7 +1245,8 @@ export const ReplyCommentParamsSchema = z
 export type ReplyCommentParams = z.infer<typeof ReplyCommentParamsSchema>;
 
 export interface ReplyCommentResponse {
-  comment: ReviewCommentSummary;
+  id: string;
+  version: number;
 }
 
 // devchain_resolve_comment
@@ -1256,7 +1262,9 @@ export const ResolveCommentParamsSchema = z
 export type ResolveCommentParams = z.infer<typeof ResolveCommentParamsSchema>;
 
 export interface ResolveCommentResponse {
-  comment: ReviewCommentSummary;
+  id: string;
+  version: number;
+  status: 'open' | 'resolved' | 'wont_fix';
 }
 
 // devchain_apply_suggestion
@@ -1271,11 +1279,11 @@ export const ApplySuggestionParamsSchema = z
 export type ApplySuggestionParams = z.infer<typeof ApplySuggestionParamsSchema>;
 
 export interface ApplySuggestionResponse {
-  comment: ReviewCommentSummary;
+  commentId: string;
+  version: number;
   applied: {
     filePath: string;
     lineStart: number;
     lineEnd: number;
-    suggestedCode: string;
   };
 }

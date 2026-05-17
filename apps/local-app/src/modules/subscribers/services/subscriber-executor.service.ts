@@ -1,47 +1,26 @@
-import { Injectable, OnModuleInit, OnModuleDestroy, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, OnModuleInit, OnModuleDestroy, Inject } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { createLogger } from '../../../common/logging/logger';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
 import type { Subscriber, EventFilter, ActionInput } from '../../storage/models/domain.models';
 import type { TerminalWatcherTriggeredEventPayload } from '../../events/catalog/terminal.watcher.triggered';
-import { TmuxService } from '../../terminal/services/tmux.service';
+import { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
 import { SessionsService } from '../../sessions/services/sessions.service';
+import { SessionRuntime } from '../../sessions/services/session-runtime';
 import { SessionCoordinatorService } from '../../sessions/services/session-coordinator.service';
-import { TerminalSendCoordinatorService } from '../../terminal/services/terminal-send-coordinator.service';
-import { SessionsMessagePoolService } from '../../sessions/services/sessions-message-pool.service';
+import { AgentMessageDeliveryService } from '../../agent-message-delivery/agent-message-delivery.service';
 import { getAction } from '../actions/actions.registry';
 import type { ActionContext, EventEnvelope } from '../actions/action.interface';
 import { isSubscribableEvent, getSubscribableEvents } from '../events/event-fields-catalog';
 import { EventLogService } from '../../events/services/event-log.service';
 import { getEventMetadata } from '../../events/services/events.service';
-import { AutomationSchedulerService, type ScheduledTask } from './automation-scheduler.service';
+import { AutomationSchedulerService } from './automation-scheduler.service';
+import type { ScheduledTask, SubscriberExecutionResult } from './subscriber-scheduler.types';
+export type { SubscriberExecutionResult } from './subscriber-scheduler.types';
 import { renderTemplate } from '../../../common/template/handlebars-renderer';
-import { loadAgentRecipientContext } from '../../../common/template/agent-recipient-context';
+import { buildPromptRenderContext } from '../../../common/template/prompt-render-context';
 import { TeamsService } from '../../teams/services/teams.service';
-
-const LEGACY_VARS = ['team_name', 'team_names', 'is_team_lead'];
-
-/**
- * Result of a single subscriber execution.
- */
-export interface SubscriberExecutionResult {
-  subscriberId: string;
-  subscriberName: string;
-  actionType: string;
-  success: boolean;
-  message?: string;
-  error?: string;
-  durationMs: number;
-  skipped?: boolean;
-  skipReason?:
-    | 'deleted'
-    | 'disabled'
-    | 'filter_not_matched'
-    | 'cooldown'
-    | 'action_not_found'
-    | 'session_error';
-}
 
 /**
  * Summary result of scheduling subscribers for an event (not execution).
@@ -103,15 +82,14 @@ export class SubscriberExecutorService implements OnModuleInit, OnModuleDestroy 
   private eventHandler: ((eventName: string | string[], ...args: unknown[]) => void) | null = null;
 
   private teamsServiceRef?: TeamsService;
+  private sessionRuntimeRef?: SessionRuntime;
 
   constructor(
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
-    private readonly tmuxService: TmuxService,
+    private readonly terminalIO: TerminalIOService,
     private readonly sessionsService: SessionsService,
     private readonly sessionCoordinator: SessionCoordinatorService,
-    private readonly sendCoordinator: TerminalSendCoordinatorService,
-    @Inject(forwardRef(() => SessionsMessagePoolService))
-    private readonly messagePoolService: SessionsMessagePoolService,
+    private readonly amd: AgentMessageDeliveryService,
     private readonly eventLogService: EventLogService,
     private readonly eventEmitter: EventEmitter2,
     private readonly scheduler: AutomationSchedulerService,
@@ -126,6 +104,16 @@ export class SubscriberExecutorService implements OnModuleInit, OnModuleDestroy 
       }
     }
     return this.teamsServiceRef;
+  }
+
+  private getSessionRuntime(): SessionRuntime {
+    if (!this.sessionRuntimeRef) {
+      this.sessionRuntimeRef = this.moduleRef.get(SessionRuntime, { strict: false });
+      if (!this.sessionRuntimeRef) {
+        throw new Error('SessionRuntime is not available in the current module context');
+      }
+    }
+    return this.sessionRuntimeRef;
   }
 
   async onModuleInit(): Promise<void> {
@@ -680,14 +668,14 @@ export class SubscriberExecutorService implements OnModuleInit, OnModuleDestroy 
         if (typeof customValue === 'string') {
           if (actionType === 'send_agent_message' && inputName === 'text') {
             try {
-              let teamContext: Record<string, unknown> = {};
-              if (payload.agentId) {
-                teamContext = {
-                  ...(await loadAgentRecipientContext(this.getTeamsService(), payload.agentId)),
-                };
-              }
-              const renderContext = { ...context, ...teamContext };
-              resolved[inputName] = renderTemplate(customValue, renderContext, [...LEGACY_VARS]);
+              const { vars, recipientLegacyVariables } = await buildPromptRenderContext({
+                recipientAgentId: payload.agentId ?? undefined,
+                teams: this.getTeamsService(),
+                extras: context,
+              });
+              resolved[inputName] = renderTemplate(customValue, vars, [
+                ...recipientLegacyVariables,
+              ]);
             } catch (error) {
               this.logger.error(
                 { subscriberId, actionType, inputName, error: String(error) },
@@ -883,11 +871,11 @@ export class SubscriberExecutorService implements OnModuleInit, OnModuleDestroy 
     // and actions requiring terminal access will fail gracefully
     // projectId is resolved earlier (may come from payload or via session lookup)
     const context: ActionContext = {
-      tmuxService: this.tmuxService,
+      terminalIO: this.terminalIO,
       sessionsService: this.sessionsService,
+      sessionRuntime: this.getSessionRuntime(),
       sessionCoordinator: this.sessionCoordinator,
-      sendCoordinator: this.sendCoordinator,
-      messagePoolService: this.messagePoolService,
+      amd: this.amd,
       storage: this.storage,
       sessionId,
       agentId: payload.agentId ?? null,

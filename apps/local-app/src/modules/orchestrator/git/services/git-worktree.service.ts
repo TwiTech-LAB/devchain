@@ -1,13 +1,11 @@
 import { Injectable, Optional } from '@nestjs/common';
-import { execFile } from 'child_process';
 import { mkdir } from 'fs/promises';
 import { basename, dirname, isAbsolute, join, resolve } from 'path';
-import { promisify } from 'util';
 import { createLogger } from '../../../../common/logging/logger';
 import { isValidGitBranchName, isValidWorktreeName } from '../../worktrees/worktree-validation';
 import { getEnvConfig } from '../../../../common/config/env.config';
+import { ProcessExecutor } from '../../../terminal/services/process-executor/process-executor.port';
 
-const execFileAsync = promisify(execFile);
 const logger = createLogger('GitWorktreeService');
 const MAX_GIT_BUFFER = 10 * 1024 * 1024;
 const REFS_HEADS_PREFIX = 'refs/heads/';
@@ -91,7 +89,10 @@ type GitCommandRunner = (
 export class GitWorktreeService {
   private operationQueue: Promise<void> = Promise.resolve();
 
-  constructor(@Optional() private readonly gitRunner: GitCommandRunner = runGitCommand) {}
+  constructor(
+    private readonly executor: ProcessExecutor,
+    @Optional() private readonly gitRunner?: GitCommandRunner,
+  ) {}
 
   async createWorktree(opts: CreateWorktreeOptions): Promise<WorktreeInfo> {
     this.assertValidCreateOptions(opts);
@@ -451,7 +452,22 @@ export class GitWorktreeService {
     repoPath: string,
     args: string[],
   ): Promise<{ stdout: string; stderr: string }> {
-    return this.gitRunner(repoPath, args);
+    if (this.gitRunner) return this.gitRunner(repoPath, args);
+
+    const result = await this.executor.run({
+      argv: ['git', ...args],
+      mode: 'pipe',
+      cwd: repoPath,
+      outputLimits: { maxBytes: MAX_GIT_BUFFER },
+    });
+
+    if (!result.success) {
+      const command = `git ${args.join(' ')}`;
+      const detail = result.stderr || result.stdout || `exit code ${result.exitCode}`;
+      throw new Error(`Git command failed (${command}) in ${repoPath}: ${detail}`);
+    }
+
+    return { stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
   }
 
   private resolveRepoPath(repoPath?: string): string {
@@ -480,33 +496,6 @@ export class GitWorktreeService {
       () => undefined,
     );
     return next;
-  }
-}
-
-async function runGitCommand(
-  cwd: string,
-  args: string[],
-): Promise<{
-  stdout: string;
-  stderr: string;
-}> {
-  try {
-    const { stdout, stderr } = await execFileAsync('git', args, {
-      cwd,
-      maxBuffer: MAX_GIT_BUFFER,
-    });
-    return {
-      stdout: stdout ?? '',
-      stderr: stderr ?? '',
-    };
-  } catch (error) {
-    const command = `git ${args.join(' ')}`;
-    const stderr =
-      error && typeof error === 'object' && 'stderr' in error ? String(error.stderr) : '';
-    const stdout =
-      error && typeof error === 'object' && 'stdout' in error ? String(error.stdout) : '';
-    const message = `Git command failed (${command}) in ${cwd}: ${stderr || stdout || String(error)}`;
-    throw new Error(message);
   }
 }
 

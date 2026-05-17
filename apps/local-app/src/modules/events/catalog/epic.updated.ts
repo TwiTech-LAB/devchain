@@ -41,10 +41,12 @@ export const epicUpdatedEvent = {
   schema: z.object({
     epicId: z.string().min(1),
     projectId: z.string().min(1),
+    parentId: z.string().min(1).nullable(),
     version: z.number().int().positive(),
     epicTitle: z.string().min(1),
     projectName: z.string().min(1).optional(),
     actor: actorSchema, // Who triggered this event (null if unknown/system)
+    recipientIds: z.array(z.string().min(1)).optional(),
     changes: z.object({
       title: titleChangeSchema.optional(),
       statusId: statusIdChangeSchema.optional(),

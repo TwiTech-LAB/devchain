@@ -301,6 +301,7 @@ describe('MessageActivityList', () => {
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         expect.stringMatching(/projectId=project-1.*status=delivered.*agentId=agent-1/),
+        undefined,
       );
     });
   });

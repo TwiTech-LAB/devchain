@@ -3,6 +3,7 @@ import { useEffect } from 'react';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import { fetchActiveSessions, fetchAgentSummary, type ActiveSession } from '@/ui/lib/sessions';
 import { cn } from '@/ui/lib/utils';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 interface SessionSwitcherProps {
   currentSessionId: string;
@@ -51,11 +52,12 @@ function SessionTab({ session, isActive, agentName, shortcutNumber, onClick }: S
 
 export function SessionSwitcher({ currentSessionId, onSessionSwitch }: SessionSwitcherProps) {
   const { selectedProjectId } = useSelectedProject();
+  const apiFetch = useFetchFactory();
 
   // Fetch all active sessions for the current project
   const { data: activeSessions = [] } = useQuery({
     queryKey: ['active-sessions', selectedProjectId],
-    queryFn: () => fetchActiveSessions(selectedProjectId!),
+    queryFn: () => fetchActiveSessions(selectedProjectId!, apiFetch),
     enabled: Boolean(selectedProjectId),
     refetchInterval: 10000, // Refresh every 10 seconds
   });
@@ -205,10 +207,11 @@ function SessionTabWithAgent({
   shortcutNumber,
   onSessionSwitch,
 }: SessionTabWithAgentProps) {
+  const apiFetch = useFetchFactory();
   // Fetch agent name for this session
   const { data: agent } = useQuery({
     queryKey: ['terminal-window', 'agent', session.agentId],
-    queryFn: () => fetchAgentSummary(session.agentId!),
+    queryFn: () => fetchAgentSummary(session.agentId!, apiFetch),
     enabled: Boolean(session.agentId),
   });
 

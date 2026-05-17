@@ -21,6 +21,8 @@ import {
   DropdownMenuTrigger,
 } from '@/ui/components/ui/dropdown-menu';
 import { useToast } from '@/ui/hooks/use-toast';
+import { useActiveSessionConfirm } from '@/ui/hooks/useActiveSessionConfirm';
+import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
 import { Loader2, CheckCircle2, AlertCircle, MoreVertical, Pencil, Trash2 } from 'lucide-react';
 import { validatePresetAvailability, type Preset } from '@/ui/lib/preset-validation';
 import type { AgentPresenceMap } from '@/ui/lib/sessions';
@@ -89,6 +91,8 @@ export function PresetSelector({
   onDeletePreset,
 }: PresetSelectorProps) {
   const { toast } = useToast();
+  const { confirmIfActiveSessions, dialogProps: activeSessionDialogProps } =
+    useActiveSessionConfirm();
   const queryClient = useQueryClient();
   const [selectedPreset, setSelectedPreset] = useState<string>('');
   const [isApplying, setIsApplying] = useState(false);
@@ -171,19 +175,18 @@ export function PresetSelector({
     const agentIdsInPreset = new Set(
       preset?.agentConfigs.map((ac) => ac.agentName.trim().toLowerCase()) || [],
     );
-    const agentsWithActiveSessions = agents.filter(
-      (a) => agentIdsInPreset.has(a.name.trim().toLowerCase()) && agentPresence[a.id]?.online,
-    );
+    const activeAgentNames = agents
+      .filter(
+        (a) => agentIdsInPreset.has(a.name.trim().toLowerCase()) && agentPresence[a.id]?.online,
+      )
+      .map((a) => a.name);
 
-    if (agentsWithActiveSessions.length > 0) {
-      const agentNames = agentsWithActiveSessions.map((a) => a.name).join(', ');
-      const confirmed = window.confirm(
-        `The following agents have active sessions: ${agentNames}. ` +
-          'Changing their provider configuration may affect running sessions. Continue?',
-      );
-      if (!confirmed) return;
-    }
+    confirmIfActiveSessions(activeAgentNames, async () => {
+      await applyPresetInner();
+    });
+  };
 
+  const applyPresetInner = async () => {
     setIsApplying(true);
     try {
       const result = await applyPreset(projectId, selectedPreset);
@@ -232,97 +235,100 @@ export function PresetSelector({
   const canManage = !!selectedPreset;
 
   return (
-    <div className="flex items-center gap-2">
-      <Select value={selectedPreset} onValueChange={setSelectedPreset} disabled={isApplying}>
-        <SelectTrigger className="w-[240px]">
-          {presetsLoading || configsLoading ? (
-            <div className="flex items-center gap-2">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              <span>Loading presets...</span>
-            </div>
-          ) : (
-            <SelectValue placeholder="Select a preset..." />
-          )}
-        </SelectTrigger>
-        <SelectContent>
-          {sortedPresets.map(({ preset, available, missingConfigs }) => (
-            <SelectItem key={preset.name} value={preset.name}>
+    <>
+      <div className="flex items-center gap-2">
+        <Select value={selectedPreset} onValueChange={setSelectedPreset} disabled={isApplying}>
+          <SelectTrigger className="w-[240px]">
+            {presetsLoading || configsLoading ? (
               <div className="flex items-center gap-2">
-                {available ? (
-                  <CheckCircle2 className="h-4 w-4 text-green-500 flex-shrink-0" />
-                ) : (
-                  <TooltipProvider>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <AlertCircle className="h-4 w-4 text-yellow-500 flex-shrink-0" />
-                      </TooltipTrigger>
-                      <TooltipContent side="right" className="max-w-xs">
-                        <p className="font-medium mb-1">Missing configs:</p>
-                        <ul className="text-sm list-disc pl-4">
-                          {missingConfigs.map((m, i) => (
-                            <li key={i}>
-                              {m.agentName} → {m.configName}
-                            </li>
-                          ))}
-                        </ul>
-                      </TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
-                )}
-                <span className="font-medium">{preset.name}</span>
-                {preset.description && (
-                  <span className="text-xs text-muted-foreground truncate max-w-[100px]">
-                    {preset.description}
-                  </span>
-                )}
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span>Loading presets...</span>
               </div>
-            </SelectItem>
-          ))}
-          {sortedPresets.length === 0 && (
-            <div className="p-2 text-sm text-muted-foreground text-center">
-              No presets available
-            </div>
-          )}
-        </SelectContent>
-      </Select>
+            ) : (
+              <SelectValue placeholder="Select a preset..." />
+            )}
+          </SelectTrigger>
+          <SelectContent>
+            {sortedPresets.map(({ preset, available, missingConfigs }) => (
+              <SelectItem key={preset.name} value={preset.name}>
+                <div className="flex items-center gap-2">
+                  {available ? (
+                    <CheckCircle2 className="h-4 w-4 text-green-500 flex-shrink-0" />
+                  ) : (
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <AlertCircle className="h-4 w-4 text-yellow-500 flex-shrink-0" />
+                        </TooltipTrigger>
+                        <TooltipContent side="right" className="max-w-xs">
+                          <p className="font-medium mb-1">Missing configs:</p>
+                          <ul className="text-sm list-disc pl-4">
+                            {missingConfigs.map((m, i) => (
+                              <li key={i}>
+                                {m.agentName} → {m.configName}
+                              </li>
+                            ))}
+                          </ul>
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  )}
+                  <span className="font-medium">{preset.name}</span>
+                  {preset.description && (
+                    <span className="text-xs text-muted-foreground truncate max-w-[100px]">
+                      {preset.description}
+                    </span>
+                  )}
+                </div>
+              </SelectItem>
+            ))}
+            {sortedPresets.length === 0 && (
+              <div className="p-2 text-sm text-muted-foreground text-center">
+                No presets available
+              </div>
+            )}
+          </SelectContent>
+        </Select>
 
-      {/* Apply button - always visible, enabled only when selection differs from activePreset */}
-      <Button
-        onClick={handleApplyPreset}
-        disabled={!canApply || isApplying}
-        size="sm"
-        variant="default"
-      >
-        {isApplying && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-        Apply
-      </Button>
+        {/* Apply button - always visible, enabled only when selection differs from activePreset */}
+        <Button
+          onClick={handleApplyPreset}
+          disabled={!canApply || isApplying}
+          size="sm"
+          variant="default"
+        >
+          {isApplying && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+          Apply
+        </Button>
 
-      {/* Management menu - always visible, enabled when a preset is selected */}
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant="outline" size="sm" className="h-8 w-8 p-0" disabled={!canManage}>
-            <MoreVertical className="h-4 w-4" />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          {onEditPreset && (
-            <DropdownMenuItem onClick={handleEdit} disabled={!canManage}>
-              <Pencil className="h-4 w-4 mr-2" />
-              Edit preset
-            </DropdownMenuItem>
-          )}
-          {onDeletePreset && (
-            <DropdownMenuItem
-              onClick={handleDelete}
-              disabled={!canManage}
-              className="text-destructive focus:text-destructive"
-            >
-              <Trash2 className="h-4 w-4 mr-2" />
-              Delete preset
-            </DropdownMenuItem>
-          )}
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </div>
+        {/* Management menu - always visible, enabled when a preset is selected */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" size="sm" className="h-8 w-8 p-0" disabled={!canManage}>
+              <MoreVertical className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            {onEditPreset && (
+              <DropdownMenuItem onClick={handleEdit} disabled={!canManage}>
+                <Pencil className="h-4 w-4 mr-2" />
+                Edit preset
+              </DropdownMenuItem>
+            )}
+            {onDeletePreset && (
+              <DropdownMenuItem
+                onClick={handleDelete}
+                disabled={!canManage}
+                className="text-destructive focus:text-destructive"
+              >
+                <Trash2 className="h-4 w-4 mr-2" />
+                Delete preset
+              </DropdownMenuItem>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+      <ConfirmDialog {...activeSessionDialogProps} />
+    </>
   );
 }

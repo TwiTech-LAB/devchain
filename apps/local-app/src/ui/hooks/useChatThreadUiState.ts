@@ -4,6 +4,39 @@ import type { AgentPresenceMap } from '@/ui/lib/sessions';
 import type { Thread } from '@/ui/lib/chat';
 import type { AgentOrGuest } from './useChatQueries';
 
+const LAST_THREAD_STORAGE_PREFIX = 'devchain:chat:lastThread:';
+
+function getLastThreadStorageKey(projectId: string): string {
+  return `${LAST_THREAD_STORAGE_PREFIX}${projectId}`;
+}
+
+function readLastThreadId(projectId: string): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.localStorage.getItem(getLastThreadStorageKey(projectId));
+  } catch {
+    return null;
+  }
+}
+
+function writeLastThreadId(projectId: string, threadId: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(getLastThreadStorageKey(projectId), threadId);
+  } catch {
+    // localStorage may be unavailable in restricted browser modes.
+  }
+}
+
+function clearLastThreadId(projectId: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(getLastThreadStorageKey(projectId));
+  } catch {
+    // localStorage may be unavailable in restricted browser modes.
+  }
+}
+
 // ============================================
 // Types
 // ============================================
@@ -115,19 +148,43 @@ export function useChatThreadUiState({
       const target = threadId ?? null;
       if ((target && currentThread === target) || (!target && !currentThread)) {
         latestSelectedThreadRef.current = target;
+        if (target && normalizedProjectId) {
+          writeLastThreadId(normalizedProjectId, target);
+        }
         return;
       }
 
       if (threadId) {
         params.set('thread', threadId);
+        if (normalizedProjectId) {
+          writeLastThreadId(normalizedProjectId, threadId);
+        }
       } else {
         params.delete('thread');
       }
       latestSelectedThreadRef.current = target;
       setSearchParams(params, { replace });
     },
-    [searchParams, setSearchParams],
+    [normalizedProjectId, searchParams, setSearchParams],
   );
+
+  useEffect(() => {
+    if (!normalizedProjectId || selectedThreadId || allThreads.length === 0 || projectChanged) {
+      return;
+    }
+
+    const storedThreadId = readLastThreadId(normalizedProjectId);
+    if (!storedThreadId) {
+      return;
+    }
+
+    if (allThreads.some((thread) => thread.id === storedThreadId)) {
+      handleSelectThread(storedThreadId, { replace: true });
+      return;
+    }
+
+    clearLastThreadId(normalizedProjectId);
+  }, [allThreads, handleSelectThread, normalizedProjectId, projectChanged, selectedThreadId]);
 
   // Keep ref in sync
   useEffect(() => {
@@ -139,6 +196,13 @@ export function useChatThreadUiState({
     () => allThreads.find((thread) => thread.id === effectiveSelectedThreadId) ?? null,
     [allThreads, effectiveSelectedThreadId],
   );
+
+  useEffect(() => {
+    if (!normalizedProjectId || !currentThread) {
+      return;
+    }
+    writeLastThreadId(normalizedProjectId, currentThread.id);
+  }, [currentThread, normalizedProjectId]);
 
   const currentThreadMembers = useMemo(() => {
     if (!currentThread?.members) {
@@ -308,6 +372,10 @@ export function useChatThreadUiState({
     }
 
     previousProjectIdRef.current = normalizedProjectId;
+
+    if (previousProjectId === null) {
+      return;
+    }
 
     handleSelectThread(null, { replace: true });
     setGroupDialogOpen(false);

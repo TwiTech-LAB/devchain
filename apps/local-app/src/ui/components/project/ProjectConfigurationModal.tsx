@@ -33,10 +33,13 @@ import {
   TableRow,
 } from '@/ui/components/ui/table';
 import { useToast } from '@/ui/hooks/use-toast';
+import { useActiveSessionConfirm } from '@/ui/hooks/useActiveSessionConfirm';
+import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
 import { Label } from '@/ui/components/ui/label';
 import { Loader2, AlertTriangle, Settings, Info, AlertCircle } from 'lucide-react';
 import { fetchAgentPresence, type AgentPresenceMap } from '@/ui/lib/sessions';
 import { cn } from '@/ui/lib/utils';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 import { validatePresetAvailability } from '@/ui/lib/preset-validation';
 import type { Preset } from '@/ui/lib/preset-types';
 
@@ -126,8 +129,11 @@ export function ProjectConfigurationModal({
   onOpenChange,
 }: ProjectConfigurationModalProps) {
   const { toast } = useToast();
+  const { confirmIfActiveSessions, dialogProps: activeSessionDialogProps } =
+    useActiveSessionConfirm();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const apiFetch = useFetchFactory();
 
   const [isSaving, setIsSaving] = useState(false);
   const [presence, setPresence] = useState<AgentPresenceMap>({});
@@ -170,7 +176,7 @@ export function ProjectConfigurationModal({
   // Fetch presence when modal opens
   useEffect(() => {
     if (open && projectId) {
-      fetchAgentPresence(projectId).then(setPresence).catch(console.error);
+      fetchAgentPresence(projectId, apiFetch).then(setPresence).catch(console.error);
     }
   }, [open, projectId]);
 
@@ -263,19 +269,16 @@ export function ProjectConfigurationModal({
       preset?.agentConfigs.map((ac) => ac.agentName.trim().toLowerCase()) || [],
     );
     const agents: Agent[] = agentsData?.items || [];
-    const agentsWithActiveSessions = agents.filter(
-      (a) => agentIdsInPreset.has(a.name.trim().toLowerCase()) && hasActiveSession(a.id),
-    );
+    const activeAgentNames = agents
+      .filter((a) => agentIdsInPreset.has(a.name.trim().toLowerCase()) && hasActiveSession(a.id))
+      .map((a) => a.name);
 
-    if (agentsWithActiveSessions.length > 0) {
-      const agentNames = agentsWithActiveSessions.map((a) => a.name).join(', ');
-      const confirmed = window.confirm(
-        `The following agents have active sessions: ${agentNames}. ` +
-          'Changing their provider configuration may affect running sessions. Continue?',
-      );
-      if (!confirmed) return;
-    }
+    confirmIfActiveSessions(activeAgentNames, () => {
+      void applyPresetInner();
+    });
+  };
 
+  const applyPresetInner = async () => {
     setIsSaving(true);
     try {
       const result = await applyPreset(projectId, presetToApply);
@@ -292,7 +295,7 @@ export function ProjectConfigurationModal({
 
       // Refresh agents and presence
       await queryClient.invalidateQueries({ queryKey: ['agents', projectId] });
-      fetchAgentPresence(projectId).then(setPresence).catch(console.error);
+      fetchAgentPresence(projectId, apiFetch).then(setPresence).catch(console.error);
 
       // Reset selection
       setPresetToApply('');
@@ -506,6 +509,7 @@ export function ProjectConfigurationModal({
           )}
         </DialogContent>
       </Dialog>
+      <ConfirmDialog {...activeSessionDialogProps} />
     </TooltipProvider>
   );
 }

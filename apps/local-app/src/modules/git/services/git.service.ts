@@ -1,13 +1,11 @@
 import { Injectable, Inject } from '@nestjs/common';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { existsSync, statSync } from 'fs';
 import { join, resolve, relative, isAbsolute } from 'path';
 import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { createLogger } from '../../../common/logging/logger';
 import { NotFoundError, ValidationError, IOError } from '../../../common/errors/error-types';
+import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 
-const execFileAsync = promisify(execFile);
 const logger = createLogger('GitService');
 
 // 10MB buffer for large diffs
@@ -81,7 +79,10 @@ export interface WorkingTreeData {
 
 @Injectable()
 export class GitService {
-  constructor(@Inject(STORAGE_SERVICE) private readonly storage: StorageService) {}
+  constructor(
+    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    private readonly executor: ProcessExecutor,
+  ) {}
 
   /**
    * Execute a git command in the project's root directory.
@@ -111,30 +112,27 @@ export class GitService {
       });
     }
 
-    try {
-      const { stdout } = await execFileAsync('git', args, {
-        cwd: rootPath,
-        maxBuffer: options?.maxBuffer ?? MAX_BUFFER,
-      });
-      return stdout;
-    } catch (error) {
-      const err = error as Error & { stderr?: string; code?: number; stdout?: string };
+    const result = await this.executor.run({
+      argv: ['git', ...args],
+      mode: 'pipe',
+      cwd: rootPath,
+      outputLimits: { maxBytes: options?.maxBuffer ?? MAX_BUFFER },
+    });
 
-      // If allowNonZero is set and exit code is 1, return stdout
-      // This is useful for commands like `git diff --no-index` which exits with 1 when there are differences
-      // Exit code 2+ indicates real errors (e.g., file not found) and should still throw
-      if (options?.allowNonZero && err.code === 1 && err.stdout !== undefined) {
-        return err.stdout;
+    if (!result.success) {
+      if (options?.allowNonZero && result.exitCode === 1) {
+        return result.stdout;
       }
-
-      logger.error({ error: err.message, args, projectId }, 'Git command failed');
+      logger.error({ error: result.stderr, args, projectId }, 'Git command failed');
       throw new IOError('Git command failed', {
         projectId,
         command: `git ${args.join(' ')}`,
-        stderr: err.stderr,
-        code: err.code,
+        stderr: result.stderr,
+        code: result.exitCode,
       });
     }
+
+    return result.stdout;
   }
 
   /**

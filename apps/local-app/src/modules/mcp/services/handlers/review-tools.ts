@@ -1,155 +1,99 @@
-import { NotFoundError, ValidationError } from '../../../../common/errors/error-types';
-import {
-  validatePathWithinRoot,
-  validateResolvedPathWithinRoot,
-  validateLineBounds,
-} from '../../../../common/validation/path-validation';
+import { NotFoundError } from '../../../../common/errors/error-types';
 import {
   McpResponse,
-  ListReviewsParamsSchema,
   ListReviewsResponse,
   ReviewSummary,
-  GetReviewParamsSchema,
   GetReviewResponse,
   ReviewCommentSummary,
   ChangedFileSummary,
-  GetReviewCommentsParamsSchema,
   GetReviewCommentsResponse,
-  ReplyCommentParamsSchema,
   ReplyCommentResponse,
-  ResolveCommentParamsSchema,
   ResolveCommentResponse,
-  ApplySuggestionParamsSchema,
   ApplySuggestionResponse,
   SessionContext,
+  type ListReviewsParams,
+  type GetReviewParams,
+  type GetReviewCommentsParams,
+  type ReplyCommentParams,
+  type ResolveCommentParams,
+  type ApplySuggestionParams,
 } from '../../dtos/mcp.dto';
-import type { McpToolContext } from './types';
-
-function getActorFromContext(
-  ctx: SessionContext,
-): { id: string; name: string; projectId: string } | null {
-  if (ctx.type === 'agent') {
-    return ctx.agent;
-  }
-  if (ctx.type === 'guest') {
-    return {
-      id: ctx.guest.id,
-      name: ctx.guest.name,
-      projectId: ctx.guest.projectId,
-    };
-  }
-  return null;
-}
-
-function missingSessionResolver(): McpResponse {
-  return {
-    success: false,
-    error: {
-      code: 'SERVICE_UNAVAILABLE',
-      message:
-        'Session resolution requires full app context (not available in standalone MCP mode)',
-    },
-  };
-}
-
-async function resolveSessionContext(ctx: McpToolContext, sessionId: string): Promise<McpResponse> {
-  if (!ctx.resolveSessionContext) {
-    return missingSessionResolver();
-  }
-  return ctx.resolveSessionContext(sessionId);
-}
+import type { ReviewToolContext } from './review-context';
+import { ServiceUnavailableError } from '../../../../common/errors/service-unavailable.error';
+import { resolveSessionContext, getActorFromContext } from '../utils/session-context-helpers';
+import { resolveAgentNames } from '../utils/agent-name-resolver';
+import { requireProject } from '../utils/require-project';
+import { SuggestionApplicationError } from '../../../reviews/services/review-suggestion-applier.service';
 
 export async function handleListReviews(
-  ctx: McpToolContext,
+  ctx: ReviewToolContext,
   params: unknown,
 ): Promise<McpResponse> {
-  const validated = ListReviewsParamsSchema.parse(params);
+  const validated = params as ListReviewsParams;
 
   const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
-  if (!sessionCtxResult.success) return sessionCtxResult;
-  const { project } = sessionCtxResult.data as SessionContext;
+  const projectResult = requireProject(sessionCtxResult);
+  if (!('project' in projectResult)) return projectResult;
+  const { project } = projectResult;
 
-  if (!project) {
-    return {
-      success: false,
-      error: {
-        code: 'PROJECT_NOT_FOUND',
-        message: 'No project associated with this session',
-      },
+  try {
+    const result = await ctx.reviewsService.listReviews(project.id, {
+      status: validated.status,
+      epicId: validated.epicId,
+      limit: validated.limit ?? 100,
+      offset: validated.offset ?? 0,
+    });
+
+    const reviews: ReviewSummary[] = result.items.map((review) => ({
+      id: review.id,
+      title: review.title,
+      description: review.description,
+      status: review.status,
+      baseRef: review.baseRef,
+      headRef: review.headRef,
+      baseSha: review.baseSha,
+      headSha: review.headSha,
+      epicId: review.epicId,
+      createdBy: review.createdBy,
+      createdByAgentId: review.createdByAgentId,
+      version: review.version,
+      commentCount: review.commentCount,
+      createdAt: review.createdAt,
+      updatedAt: review.updatedAt,
+    }));
+
+    const response: ListReviewsResponse = {
+      reviews,
+      total: result.total,
+      limit: result.limit,
+      offset: result.offset,
     };
+
+    return { success: true, data: response };
+  } catch (error) {
+    if (error instanceof ServiceUnavailableError) {
+      return {
+        success: false,
+        error: {
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'ReviewsService is not available',
+        },
+      };
+    }
+    throw error;
   }
-
-  if (!ctx.reviewsService) {
-    return {
-      success: false,
-      error: {
-        code: 'SERVICE_UNAVAILABLE',
-        message: 'ReviewsService is not available',
-      },
-    };
-  }
-
-  const result = await ctx.reviewsService.listReviews(project.id, {
-    status: validated.status,
-    epicId: validated.epicId,
-    limit: validated.limit ?? 100,
-    offset: validated.offset ?? 0,
-  });
-
-  const reviews: ReviewSummary[] = result.items.map((review) => ({
-    id: review.id,
-    title: review.title,
-    description: review.description,
-    status: review.status,
-    baseRef: review.baseRef,
-    headRef: review.headRef,
-    baseSha: review.baseSha,
-    headSha: review.headSha,
-    epicId: review.epicId,
-    createdBy: review.createdBy,
-    createdByAgentId: review.createdByAgentId,
-    version: review.version,
-    commentCount: review.commentCount,
-    createdAt: review.createdAt,
-    updatedAt: review.updatedAt,
-  }));
-
-  const response: ListReviewsResponse = {
-    reviews,
-    total: result.total,
-    limit: result.limit,
-    offset: result.offset,
-  };
-
-  return { success: true, data: response };
 }
 
-export async function handleGetReview(ctx: McpToolContext, params: unknown): Promise<McpResponse> {
-  const validated = GetReviewParamsSchema.parse(params);
+export async function handleGetReview(
+  ctx: ReviewToolContext,
+  params: unknown,
+): Promise<McpResponse> {
+  const validated = params as GetReviewParams;
 
   const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
-  if (!sessionCtxResult.success) return sessionCtxResult;
-  const { project } = sessionCtxResult.data as SessionContext;
-
-  if (!project) {
-    return {
-      success: false,
-      error: {
-        code: 'PROJECT_NOT_FOUND',
-        message: 'No project associated with this session',
-      },
-    };
-  }
-
-  if (!ctx.reviewsService) {
-    return {
-      success: false,
-      error: {
-        code: 'SERVICE_UNAVAILABLE',
-        message: 'ReviewsService is not available',
-      },
-    };
-  }
+  const projectResult = requireProject(sessionCtxResult);
+  if (!('project' in projectResult)) return projectResult;
+  const { project } = projectResult;
 
   try {
     const reviewWithFiles = await ctx.reviewsService.getReview(validated.reviewId);
@@ -173,15 +117,7 @@ export async function handleGetReview(ctx: McpToolContext, params: unknown): Pro
       if (comment.authorAgentId) agentIds.add(comment.authorAgentId);
     }
 
-    const agentNameById = new Map<string, string>();
-    for (const agentId of agentIds) {
-      try {
-        const agent = await ctx.storage.getAgent(agentId);
-        agentNameById.set(agentId, agent.name);
-      } catch {
-        // Graceful degradation
-      }
-    }
+    const agentNameById = await resolveAgentNames(ctx.storage, agentIds);
 
     const comments: ReviewCommentSummary[] = commentsResult.items.map((comment) => ({
       id: comment.id,
@@ -232,6 +168,15 @@ export async function handleGetReview(ctx: McpToolContext, params: unknown): Pro
 
     return { success: true, data: response };
   } catch (error) {
+    if (error instanceof ServiceUnavailableError) {
+      return {
+        success: false,
+        error: {
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'ReviewsService is not available',
+        },
+      };
+    }
     if (error instanceof NotFoundError) {
       return {
         success: false,
@@ -246,34 +191,15 @@ export async function handleGetReview(ctx: McpToolContext, params: unknown): Pro
 }
 
 export async function handleGetReviewComments(
-  ctx: McpToolContext,
+  ctx: ReviewToolContext,
   params: unknown,
 ): Promise<McpResponse> {
-  const validated = GetReviewCommentsParamsSchema.parse(params);
+  const validated = params as GetReviewCommentsParams;
 
   const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
-  if (!sessionCtxResult.success) return sessionCtxResult;
-  const { project } = sessionCtxResult.data as SessionContext;
-
-  if (!project) {
-    return {
-      success: false,
-      error: {
-        code: 'PROJECT_NOT_FOUND',
-        message: 'No project associated with this session',
-      },
-    };
-  }
-
-  if (!ctx.reviewsService) {
-    return {
-      success: false,
-      error: {
-        code: 'SERVICE_UNAVAILABLE',
-        message: 'ReviewsService is not available',
-      },
-    };
-  }
+  const projectResult = requireProject(sessionCtxResult);
+  if (!('project' in projectResult)) return projectResult;
+  const { project } = projectResult;
 
   try {
     const review = await ctx.storage.getReview(validated.reviewId);
@@ -299,15 +225,7 @@ export async function handleGetReviewComments(
       if (comment.authorAgentId) agentIds.add(comment.authorAgentId);
     }
 
-    const agentNameById = new Map<string, string>();
-    for (const agentId of agentIds) {
-      try {
-        const agent = await ctx.storage.getAgent(agentId);
-        agentNameById.set(agentId, agent.name);
-      } catch {
-        // Graceful degradation
-      }
-    }
+    const agentNameById = await resolveAgentNames(ctx.storage, agentIds);
 
     const comments: ReviewCommentSummary[] = result.items.map((comment) => ({
       id: comment.id,
@@ -336,6 +254,15 @@ export async function handleGetReviewComments(
 
     return { success: true, data: response };
   } catch (error) {
+    if (error instanceof ServiceUnavailableError) {
+      return {
+        success: false,
+        error: {
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'ReviewsService is not available',
+        },
+      };
+    }
     if (error instanceof NotFoundError) {
       return {
         success: false,
@@ -350,10 +277,10 @@ export async function handleGetReviewComments(
 }
 
 export async function handleReplyComment(
-  ctx: McpToolContext,
+  ctx: ReviewToolContext,
   params: unknown,
 ): Promise<McpResponse> {
-  const validated = ReplyCommentParamsSchema.parse(params);
+  const validated = params as ReplyCommentParams;
 
   const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
   if (!sessionCtxResult.success) return sessionCtxResult;
@@ -367,16 +294,6 @@ export async function handleReplyComment(
       error: {
         code: 'PROJECT_NOT_FOUND',
         message: 'No project associated with this session',
-      },
-    };
-  }
-
-  if (!ctx.reviewsService) {
-    return {
-      success: false,
-      error: {
-        code: 'SERVICE_UNAVAILABLE',
-        message: 'ReviewsService is not available',
       },
     };
   }
@@ -406,23 +323,8 @@ export async function handleReplyComment(
     });
 
     const response: ReplyCommentResponse = {
-      comment: {
-        id: comment.id,
-        filePath: comment.filePath,
-        lineStart: comment.lineStart,
-        lineEnd: comment.lineEnd,
-        side: comment.side,
-        content: comment.content,
-        commentType: comment.commentType,
-        status: comment.status,
-        authorType: comment.authorType,
-        authorAgentId: comment.authorAgentId,
-        authorAgentName: actor?.name,
-        parentId: comment.parentId,
-        version: comment.version,
-        createdAt: comment.createdAt,
-        updatedAt: comment.updatedAt,
-      },
+      id: comment.id,
+      version: comment.version,
     };
 
     return { success: true, data: response };
@@ -436,39 +338,29 @@ export async function handleReplyComment(
         },
       };
     }
+    if (error instanceof ServiceUnavailableError) {
+      return {
+        success: false,
+        error: {
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'ReviewsService is not available',
+        },
+      };
+    }
     throw error;
   }
 }
 
 export async function handleResolveComment(
-  ctx: McpToolContext,
+  ctx: ReviewToolContext,
   params: unknown,
 ): Promise<McpResponse> {
-  const validated = ResolveCommentParamsSchema.parse(params);
+  const validated = params as ResolveCommentParams;
 
   const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
-  if (!sessionCtxResult.success) return sessionCtxResult;
-  const { project } = sessionCtxResult.data as SessionContext;
-
-  if (!project) {
-    return {
-      success: false,
-      error: {
-        code: 'PROJECT_NOT_FOUND',
-        message: 'No project associated with this session',
-      },
-    };
-  }
-
-  if (!ctx.reviewsService) {
-    return {
-      success: false,
-      error: {
-        code: 'SERVICE_UNAVAILABLE',
-        message: 'ReviewsService is not available',
-      },
-    };
-  }
+  const projectResult = requireProject(sessionCtxResult);
+  if (!('project' in projectResult)) return projectResult;
+  const { project } = projectResult;
 
   try {
     const comment = await ctx.storage.getReviewComment(validated.commentId);
@@ -490,38 +382,23 @@ export async function handleResolveComment(
       validated.version,
     );
 
-    let authorAgentName: string | undefined;
-    if (updatedComment.authorAgentId) {
-      try {
-        const agent = await ctx.storage.getAgent(updatedComment.authorAgentId);
-        authorAgentName = agent.name;
-      } catch {
-        // Graceful degradation
-      }
-    }
-
     const response: ResolveCommentResponse = {
-      comment: {
-        id: updatedComment.id,
-        filePath: updatedComment.filePath,
-        lineStart: updatedComment.lineStart,
-        lineEnd: updatedComment.lineEnd,
-        side: updatedComment.side,
-        content: updatedComment.content,
-        commentType: updatedComment.commentType,
-        status: updatedComment.status,
-        authorType: updatedComment.authorType,
-        authorAgentId: updatedComment.authorAgentId,
-        authorAgentName,
-        parentId: updatedComment.parentId,
-        version: updatedComment.version,
-        createdAt: updatedComment.createdAt,
-        updatedAt: updatedComment.updatedAt,
-      },
+      id: updatedComment.id,
+      version: updatedComment.version,
+      status: updatedComment.status,
     };
 
     return { success: true, data: response };
   } catch (error) {
+    if (error instanceof ServiceUnavailableError) {
+      return {
+        success: false,
+        error: {
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'ReviewsService is not available',
+        },
+      };
+    }
     if (error instanceof NotFoundError) {
       return {
         success: false,
@@ -536,188 +413,55 @@ export async function handleResolveComment(
 }
 
 export async function handleApplySuggestion(
-  ctx: McpToolContext,
+  ctx: ReviewToolContext,
   params: unknown,
 ): Promise<McpResponse> {
-  const validated = ApplySuggestionParamsSchema.parse(params);
+  const validated = params as ApplySuggestionParams;
 
   const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
-  if (!sessionCtxResult.success) return sessionCtxResult;
-  const { project } = sessionCtxResult.data as SessionContext;
-
-  if (!project) {
-    return {
-      success: false,
-      error: {
-        code: 'PROJECT_NOT_FOUND',
-        message: 'No project associated with this session',
-      },
-    };
-  }
-
-  if (!ctx.reviewsService) {
-    return {
-      success: false,
-      error: {
-        code: 'SERVICE_UNAVAILABLE',
-        message: 'ReviewsService is not available',
-      },
-    };
-  }
+  const projectResult = requireProject(sessionCtxResult);
+  if (!('project' in projectResult)) return projectResult;
+  const { project } = projectResult;
 
   try {
-    const comment = await ctx.storage.getReviewComment(validated.commentId);
-    const review = await ctx.storage.getReview(comment.reviewId);
-
-    if (review.projectId !== project.id) {
-      return {
-        success: false,
-        error: {
-          code: 'COMMENT_NOT_FOUND',
-          message: `Comment ${validated.commentId} does not belong to this project`,
-        },
-      };
-    }
-
-    if (!comment.filePath || comment.lineStart === null) {
-      return {
-        success: false,
-        error: {
-          code: 'INVALID_SUGGESTION',
-          message: 'Comment does not have file path or line information',
-        },
-      };
-    }
-
-    const suggestionMatch = comment.content.match(/```suggestion\s*\n([\s\S]*?)```/);
-    if (!suggestionMatch) {
-      return {
-        success: false,
-        error: {
-          code: 'NO_SUGGESTION',
-          message: 'Comment does not contain a suggestion block',
-        },
-      };
-    }
-
-    const suggestedCode = suggestionMatch[1].trimEnd();
-    const lineStart = comment.lineStart;
-    const lineEnd = comment.lineEnd ?? comment.lineStart;
-
-    let validatedPath;
-    try {
-      validatedPath = validatePathWithinRoot(project.rootPath, comment.filePath, {
-        errorPrefix: 'Invalid file path in comment',
-      });
-    } catch (error) {
-      if (error instanceof ValidationError) {
-        return {
-          success: false,
-          error: {
-            code: 'PATH_TRAVERSAL_BLOCKED',
-            message: error.message,
-            data: error.details,
-          },
-        };
-      }
-      throw error;
-    }
-
-    let realFilePath: string;
-    try {
-      realFilePath = await validateResolvedPathWithinRoot(
-        validatedPath.absolutePath,
-        project.rootPath,
-        {
-          errorPrefix: 'Symlink validation failed',
-        },
-      );
-    } catch (error) {
-      if (error instanceof ValidationError) {
-        return {
-          success: false,
-          error: {
-            code: 'SYMLINK_ESCAPE_BLOCKED',
-            message: error.message,
-            data: error.details,
-          },
-        };
-      }
-      throw error;
-    }
-
-    const fs = await import('fs/promises');
-    const filePath = realFilePath;
-
-    const fileContent = await fs.readFile(filePath, 'utf-8');
-    const lines = fileContent.split('\n');
-
-    try {
-      validateLineBounds(lineStart, lineEnd, lines.length);
-    } catch (error) {
-      if (error instanceof ValidationError) {
-        return {
-          success: false,
-          error: {
-            code: 'INVALID_LINE_BOUNDS',
-            message: error.message,
-            data: error.details,
-          },
-        };
-      }
-      throw error;
-    }
-
-    const suggestedLines = suggestedCode.split('\n');
-    lines.splice(lineStart - 1, lineEnd - lineStart + 1, ...suggestedLines);
-
-    await fs.writeFile(filePath, lines.join('\n'), 'utf-8');
-
-    const updatedComment = await ctx.reviewsService.resolveComment(
-      comment.reviewId,
-      validated.commentId,
-      'resolved',
-      validated.version,
-    );
-
-    let authorAgentName: string | undefined;
-    if (updatedComment.authorAgentId) {
-      try {
-        const agent = await ctx.storage.getAgent(updatedComment.authorAgentId);
-        authorAgentName = agent.name;
-      } catch {
-        // Graceful degradation
-      }
-    }
+    const result = await ctx.reviewSuggestionApplier.apply({
+      commentId: validated.commentId,
+      projectId: project.id,
+      projectRootPath: project.rootPath,
+      version: validated.version,
+    });
 
     const response: ApplySuggestionResponse = {
-      comment: {
-        id: updatedComment.id,
-        filePath: updatedComment.filePath,
-        lineStart: updatedComment.lineStart,
-        lineEnd: updatedComment.lineEnd,
-        side: updatedComment.side,
-        content: updatedComment.content,
-        commentType: updatedComment.commentType,
-        status: updatedComment.status,
-        authorType: updatedComment.authorType,
-        authorAgentId: updatedComment.authorAgentId,
-        authorAgentName,
-        parentId: updatedComment.parentId,
-        version: updatedComment.version,
-        createdAt: updatedComment.createdAt,
-        updatedAt: updatedComment.updatedAt,
-      },
+      commentId: result.updatedComment.id,
+      version: result.updatedComment.version,
       applied: {
-        filePath: comment.filePath,
-        lineStart,
-        lineEnd,
-        suggestedCode,
+        filePath: result.filePath,
+        lineStart: result.lineStart,
+        lineEnd: result.lineEnd,
       },
     };
 
     return { success: true, data: response };
   } catch (error) {
+    if (error instanceof ServiceUnavailableError) {
+      return {
+        success: false,
+        error: {
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'ReviewSuggestionApplier is not available',
+        },
+      };
+    }
+    if (error instanceof SuggestionApplicationError) {
+      return {
+        success: false,
+        error: {
+          code: error.code,
+          message: error.message,
+          ...(error.details && { data: error.details }),
+        },
+      };
+    }
     if (error instanceof NotFoundError) {
       return {
         success: false,

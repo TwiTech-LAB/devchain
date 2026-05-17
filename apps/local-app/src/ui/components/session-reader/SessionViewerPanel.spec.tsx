@@ -5,6 +5,12 @@ import type { SerializedMessage, SerializedChunk } from '@/ui/hooks/useSessionTr
 import type { UnifiedMetrics } from '@/modules/session-reader/dtos/unified-session.types';
 import { fetchJsonOrThrow } from '@/ui/lib/sessions';
 
+// Legacy mode: explicitly mock paged flag to false (legacy full-transcript path)
+jest.mock('@/ui/hooks/usePagedTranscript', () => ({
+  usePagedTranscriptFlag: () => [false, jest.fn()],
+  isPagedTranscriptEnabled: () => false,
+}));
+
 jest.mock('@/ui/lib/sessions', () => ({
   ...jest.requireActual('@/ui/lib/sessions'),
   fetchJsonOrThrow: jest.fn(),
@@ -78,9 +84,10 @@ function makeChunk(overrides: Partial<SerializedChunk> = {}): SerializedChunk {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('SessionViewerPanel', () => {
+describe('SessionViewerPanel — Legacy full-transcript mode (devchain.pagedTranscript=false)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    localStorage.clear();
   });
 
   const baseProps = {
@@ -1085,13 +1092,23 @@ describe('SessionViewerPanel', () => {
       expect(within(cards[4]).queryByTestId('semantic-step-list')).not.toBeNull();
     });
 
-    it('shows flame icon on hot AI chunks', () => {
+    it('shows flame icon on hot AI chunks (diagnostic mode)', () => {
       const chunks = buildHotspotChunks();
       render(<SessionViewerPanel {...hotspotProps} chunks={chunks} />);
+
+      // Switch to diagnostic mode to see flames
+      fireEvent.click(screen.getByTestId('view-mode-diagnostic'));
 
       // Only chunk-ai-4 is hot and should have a flame icon
       const flames = screen.getAllByTestId('ai-group-flame');
       expect(flames).toHaveLength(1);
+    });
+
+    it('hides flame icon on hot AI chunks in Reader mode', () => {
+      const chunks = buildHotspotChunks();
+      render(<SessionViewerPanel {...hotspotProps} chunks={chunks} />);
+
+      expect(screen.queryByTestId('ai-group-flame')).not.toBeInTheDocument();
     });
 
     it('mixed-sequence regression: user → hot ai → user → non-hot ai with filter on', () => {
@@ -1281,12 +1298,14 @@ describe('SessionViewerPanel', () => {
       expect(screen.queryByTestId('ai-group-input-delta')).not.toBeInTheDocument();
     });
 
-    it('second AI chunk renders correct positive delta', () => {
+    it('second AI chunk renders correct positive delta (diagnostic mode)', () => {
       const chunks = buildDeltaChunks([
         { input: 10_000, cacheRead: 5_000, cacheCreation: 1_000 }, // total: 16k
         { input: 20_000, cacheRead: 8_000, cacheCreation: 2_000 }, // total: 30k → delta: 14k
       ]);
       render(<SessionViewerPanel {...deltaProps} chunks={chunks} />);
+
+      fireEvent.click(screen.getByTestId('view-mode-diagnostic'));
 
       const deltas = screen.getAllByTestId('ai-group-input-delta');
       expect(deltas).toHaveLength(1);
@@ -1345,6 +1364,9 @@ describe('SessionViewerPanel', () => {
 
       const hotspotMetrics = makeMetrics({ contextWindowTokens: 200_000 });
       render(<SessionViewerPanel {...deltaProps} metrics={hotspotMetrics} chunks={chunks} />);
+
+      // Switch to diagnostic mode to see deltas
+      fireEvent.click(screen.getByTestId('view-mode-diagnostic'));
 
       // Before filter: find the last AI card's delta (chunk-ai-4 has delta +140k)
       const deltasBeforeFilter = screen.getAllByTestId('ai-group-input-delta');
@@ -1419,6 +1441,9 @@ describe('SessionViewerPanel', () => {
 
       const chunks = [userChunk0, aiChunk0, userChunk1, aiChunk1];
       render(<SessionViewerPanel {...deltaProps} chunks={chunks} />);
+
+      // Switch to diagnostic mode to see deltas
+      fireEvent.click(screen.getByTestId('view-mode-diagnostic'));
 
       const deltas = screen.getAllByTestId('ai-group-input-delta');
       expect(deltas).toHaveLength(1);
@@ -1713,9 +1738,12 @@ describe('SessionViewerPanel', () => {
       isLive: false,
     };
 
-    it('outlier step shows flame icon when AI card is expanded', () => {
+    it('outlier step shows flame icon when AI card is expanded (diagnostic mode)', () => {
       const chunks = buildStepHotspotChunks();
       render(<SessionViewerPanel {...stepHotspotProps} chunks={chunks} />);
+
+      // Switch to diagnostic mode to see hotspot indicators
+      fireEvent.click(screen.getByTestId('view-mode-diagnostic'));
 
       // Expand the AI card containing the outlier (ai-2, the 3rd AI card at index 2)
       const headers = screen.getAllByTestId('ai-group-header');

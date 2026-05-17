@@ -1,9 +1,13 @@
-import type { StorageService } from '../../../storage/interfaces/storage.interface';
+import type {
+  DocumentStorage,
+  PromptStorage,
+  ProjectStorage,
+} from '../../../storage/interfaces/storage.interface';
 import { mapDocumentDetail, mapPromptDetail } from '../mappers/dto-mappers';
 import type { McpResponse } from '../../dtos/mcp.dto';
 
 export class ResourceResolver {
-  constructor(private readonly storage: StorageService) {}
+  constructor(private readonly storage: DocumentStorage & PromptStorage & ProjectStorage) {}
 
   async resolve(uri: string): Promise<McpResponse> {
     if (uri.startsWith('doc://')) {

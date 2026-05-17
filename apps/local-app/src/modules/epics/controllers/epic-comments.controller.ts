@@ -8,6 +8,7 @@ import {
 } from '../../storage/interfaces/storage.interface';
 import { EpicComment } from '../../storage/models/domain.models';
 import { createLogger } from '../../../common/logging/logger';
+import { EpicsService } from '../services/epics.service';
 
 const logger = createLogger('EpicCommentsController');
 
@@ -18,7 +19,10 @@ const CreateEpicCommentSchema = z.object({
 
 @Controller('api')
 export class EpicCommentsController {
-  constructor(@Inject(STORAGE_SERVICE) private readonly storage: EpicStorage) {}
+  constructor(
+    @Inject(STORAGE_SERVICE) private readonly storage: EpicStorage,
+    private readonly epicsService: EpicsService,
+  ) {}
 
   @Get('epics/:id/comments')
   async listEpicComments(
@@ -35,11 +39,7 @@ export class EpicCommentsController {
   async createEpicComment(@Param('id') id: string, @Body() body: unknown): Promise<EpicComment> {
     logger.info({ id }, 'POST /api/epics/:id/comments');
     const parsed = CreateEpicCommentSchema.parse(body);
-    return this.storage.createEpicComment({
-      epicId: id,
-      authorName: parsed.authorName,
-      content: parsed.content,
-    });
+    return this.epicsService.addEpicCommentFromRest(id, parsed.authorName, parsed.content);
   }
 
   @Delete('comments/:id')

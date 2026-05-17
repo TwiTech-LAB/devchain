@@ -1,34 +1,10 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { createLogger } from '../../../common/logging/logger';
-import type { SubscriberExecutionResult } from './subscriber-executor.service';
+import type { SubscriberExecutionResult } from './subscriber-scheduler.types';
+import type { ScheduledTask } from './subscriber-scheduler.types';
+export type { ScheduledTask, SubscriberExecutionResult } from './subscriber-scheduler.types';
 
 const logger = createLogger('AutomationSchedulerService');
-
-/**
- * A scheduled task in the automation queue.
- */
-export interface ScheduledTask {
-  /** Unique task ID */
-  taskId: string;
-  /** The subscriber ID this task executes */
-  subscriberId: string;
-  /** Optional event ID for tracking */
-  eventId?: string;
-  /** Absolute timestamp when task should run (ms since epoch) */
-  runAt: number;
-  /** Priority for tie-breaking (higher runs first) */
-  priority: number;
-  /** Position within group for tie-breaking (lower runs first) */
-  position: number;
-  /** Creation timestamp for stable tie-breaking */
-  createdAt: string;
-  /** Agent ID for per-agent concurrency (optional) */
-  agentId?: string;
-  /** Group key for per-group concurrency: groupName ?? "event:" + eventName */
-  groupKey: string;
-  /** The function to execute when the task runs */
-  execute: () => Promise<SubscriberExecutionResult>;
-}
 
 /**
  * Concurrency configuration for the scheduler.

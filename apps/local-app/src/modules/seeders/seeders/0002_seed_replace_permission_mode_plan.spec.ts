@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import { WatchersService } from '../../watchers/services/watchers.service';
-import type { SeederContext } from '../services/data-seeder.service';
+import type { SeederContext } from '../types/seeder.types';
 import {
   runSeedReplacePermissionModePlan,
   seedReplacePermissionModePlanSeeder,

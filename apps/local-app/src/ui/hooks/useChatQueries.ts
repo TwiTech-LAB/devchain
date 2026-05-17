@@ -15,6 +15,7 @@ import {
 import { fetchPreflightChecks, type PreflightResult } from '@/ui/lib/preflight';
 import {
   fetchThreads,
+  fetchThread,
   createGroupThread,
   fetchMessages,
   createMessage,
@@ -24,6 +25,7 @@ import {
   type Message,
   type Thread,
 } from '@/ui/lib/chat';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 // ============================================
 // Types
@@ -133,6 +135,8 @@ export const chatQueryKeys = {
   preflight: (rootPath?: string) => ['preflight', 'chat-page', rootPath ?? 'global'] as const,
   userThreads: (projectId: string | null) => ['threads', projectId, 'user'] as const,
   agentThreads: (projectId: string | null) => ['threads', projectId, 'agent'] as const,
+  selectedThread: (threadId: string | null, projectId: string | null) =>
+    ['thread', threadId, projectId] as const,
   messages: (threadId: string | null, projectId: string | null) =>
     ['messages', threadId, projectId] as const,
 };
@@ -148,6 +152,7 @@ export function useChatQueries({
 }: UseChatQueriesOptions): UseChatQueriesResult {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const apiFetch = useFetchFactory();
   const hasSelectedProject = Boolean(projectId);
   const normalizedProjectId = projectId ?? null;
   const previousProjectIdRef = useRef<string | null>(normalizedProjectId);
@@ -179,7 +184,7 @@ export function useChatQueries({
   // Agent presence query
   const { data: agentPresence = {}, isLoading: agentPresenceLoading } = useQuery({
     queryKey: chatQueryKeys.agentPresence(projectId),
-    queryFn: () => fetchAgentPresence(projectId!),
+    queryFn: () => fetchAgentPresence(projectId!, apiFetch),
     enabled: hasSelectedProject,
     refetchInterval: 10000,
   });
@@ -187,7 +192,7 @@ export function useChatQueries({
   // Active sessions query
   const { data: activeSessions = [] } = useQuery({
     queryKey: chatQueryKeys.activeSessions(projectId),
-    queryFn: () => fetchActiveSessions(projectId!),
+    queryFn: () => fetchActiveSessions(projectId!, apiFetch),
     enabled: hasSelectedProject,
     refetchInterval: 10000,
   });
@@ -200,7 +205,7 @@ export function useChatQueries({
   } = useQuery({
     queryKey: chatQueryKeys.agents(projectId),
     queryFn: async () => {
-      const response = await fetch(`/api/agents?projectId=${projectId}&includeGuests=true`);
+      const response = await apiFetch(`/api/agents?projectId=${projectId}&includeGuests=true`);
       if (!response.ok) {
         throw new Error('Failed to fetch agents');
       }
@@ -213,7 +218,7 @@ export function useChatQueries({
   const { data: profilesResponse = [] } = useQuery({
     queryKey: chatQueryKeys.profiles(projectId),
     queryFn: async () => {
-      const response = await fetch(`/api/profiles?projectId=${encodeURIComponent(projectId!)}`);
+      const response = await apiFetch(`/api/profiles?projectId=${encodeURIComponent(projectId!)}`);
       if (!response.ok) {
         throw new Error('Failed to fetch profiles');
       }
@@ -226,7 +231,7 @@ export function useChatQueries({
   const { data: providersResponse = [] } = useQuery({
     queryKey: chatQueryKeys.providers(),
     queryFn: async () => {
-      const response = await fetch('/api/providers');
+      const response = await apiFetch('/api/providers');
       if (!response.ok) {
         throw new Error('Failed to fetch providers');
       }
@@ -245,21 +250,36 @@ export function useChatQueries({
   // User threads query
   const { data: userThreadsData, isLoading: userThreadsLoading } = useQuery({
     queryKey: chatQueryKeys.userThreads(projectId),
-    queryFn: () => fetchThreads(projectId!, 'user'),
+    queryFn: () => fetchThreads(projectId!, 'user', undefined, undefined, apiFetch),
     enabled: hasSelectedProject,
   });
 
   // Agent threads query
   const { data: agentThreadsData, isLoading: agentThreadsLoading } = useQuery({
     queryKey: chatQueryKeys.agentThreads(projectId),
-    queryFn: () => fetchThreads(projectId!, 'agent'),
+    queryFn: () => fetchThreads(projectId!, 'agent', undefined, undefined, apiFetch),
     enabled: hasSelectedProject,
+  });
+
+  const { data: selectedThreadData } = useQuery({
+    queryKey: chatQueryKeys.selectedThread(effectiveSelectedThreadId, projectId),
+    queryFn: () => fetchThread(effectiveSelectedThreadId!, projectId!, apiFetch),
+    enabled: Boolean(effectiveSelectedThreadId && projectId),
+    retry: false,
   });
 
   // Messages query
   const { data: messagesData, refetch: refetchMessages } = useQuery({
     queryKey: chatQueryKeys.messages(effectiveSelectedThreadId, projectId),
-    queryFn: () => fetchMessages(effectiveSelectedThreadId!, projectId!),
+    queryFn: () =>
+      fetchMessages(
+        effectiveSelectedThreadId!,
+        projectId!,
+        undefined,
+        undefined,
+        undefined,
+        apiFetch,
+      ),
     enabled: Boolean(effectiveSelectedThreadId && projectId),
   });
 
@@ -272,7 +292,7 @@ export function useChatQueries({
       if (!projectId) {
         throw new Error('Select a project before creating a group.');
       }
-      return createGroupThread({ projectId, agentIds, title });
+      return createGroupThread({ projectId, agentIds, title }, apiFetch);
     },
     onSuccess: () => {
       if (projectId) {
@@ -298,7 +318,7 @@ export function useChatQueries({
       threadId: string;
       agentIds: string[];
       inviterName?: string;
-    }) => inviteMembers(threadId, { agentIds, inviterName, projectId: projectId! }),
+    }) => inviteMembers(threadId, { agentIds, inviterName, projectId: projectId! }, apiFetch),
     onSuccess: () => {
       if (projectId) {
         queryClient.invalidateQueries({ queryKey: chatQueryKeys.userThreads(projectId) });
@@ -315,7 +335,7 @@ export function useChatQueries({
   });
 
   const clearHistoryMutation = useMutation({
-    mutationFn: (threadId: string) => clearHistory(threadId, { announce: true }),
+    mutationFn: (threadId: string) => clearHistory(threadId, { announce: true }, apiFetch),
     onSuccess: () => {
       if (projectId && selectedThreadId) {
         queryClient.invalidateQueries({
@@ -337,7 +357,7 @@ export function useChatQueries({
   });
 
   const purgeHistoryMutation = useMutation({
-    mutationFn: (threadId: string) => purgeHistory(threadId, { announce: true }),
+    mutationFn: (threadId: string) => purgeHistory(threadId, { announce: true }, apiFetch),
     onSuccess: () => {
       if (projectId && selectedThreadId) {
         queryClient.invalidateQueries({
@@ -368,12 +388,16 @@ export function useChatQueries({
       content: string;
       targets?: string[];
     }) =>
-      createMessage(threadId, {
-        content,
-        authorType: 'user',
-        projectId: projectId!,
-        targets,
-      }),
+      createMessage(
+        threadId,
+        {
+          content,
+          authorType: 'user',
+          projectId: projectId!,
+          targets,
+        },
+        apiFetch,
+      ),
     onSuccess: () => {
       if (projectId) {
         queryClient.invalidateQueries({
@@ -470,10 +494,33 @@ export function useChatQueries({
     return agentToProviderIdMap.get(agentId) ?? null;
   };
 
-  // Normalize threads
-  const userThreads: Thread[] = userThreadsData?.items ?? [];
-  const agentThreads: Thread[] = agentThreadsData?.items ?? [];
-  const allThreads = [...userThreads, ...agentThreads];
+  // Normalize threads. The selected URL thread may be outside the first paginated
+  // sidebar page, so merge the direct lookup to keep thread metadata available.
+  const listedUserThreads: Thread[] = userThreadsData?.items ?? [];
+  const listedAgentThreads: Thread[] = agentThreadsData?.items ?? [];
+  const hasUserThread = selectedThreadData
+    ? listedUserThreads.some((thread) => thread.id === selectedThreadData.id)
+    : false;
+  const hasAgentThread = selectedThreadData
+    ? listedAgentThreads.some((thread) => thread.id === selectedThreadData.id)
+    : false;
+  const hasListedSelectedThread = hasUserThread || hasAgentThread;
+  const userThreads: Thread[] =
+    selectedThreadData?.createdByType === 'user' && !hasUserThread
+      ? [selectedThreadData, ...listedUserThreads]
+      : listedUserThreads;
+  const agentThreads: Thread[] =
+    selectedThreadData?.createdByType === 'agent' && !hasAgentThread
+      ? [selectedThreadData, ...listedAgentThreads]
+      : listedAgentThreads;
+  const selectedThreadOnly =
+    selectedThreadData &&
+    !hasListedSelectedThread &&
+    selectedThreadData.createdByType !== 'user' &&
+    selectedThreadData.createdByType !== 'agent'
+      ? [selectedThreadData]
+      : [];
+  const allThreads = [...selectedThreadOnly, ...userThreads, ...agentThreads];
 
   // Normalize messages
   const messages: Message[] = messagesData?.items ?? [];

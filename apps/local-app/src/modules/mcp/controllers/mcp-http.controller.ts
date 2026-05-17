@@ -3,7 +3,7 @@ import { McpService } from '../services/mcp.service';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { randomUUID } from 'crypto';
 import { filterHiddenTools } from '../constants';
-import { getToolDefinitions } from '../tool-definitions';
+import { allMetadata } from '../tool-descriptors';
 
 // Minimal JSON-RPC types/utilities to avoid cross-package imports
 type JsonRpcId = string | number | null;
@@ -207,7 +207,9 @@ export class McpHttpController {
   }
 
   private listTools(): Array<{ name: string; description?: string; inputSchema?: unknown }> {
-    return filterHiddenTools(getToolDefinitions());
+    return filterHiddenTools(
+      allMetadata.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
+    );
   }
 
   @Get()

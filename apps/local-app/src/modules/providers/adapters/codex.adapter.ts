@@ -1,20 +1,22 @@
 import { Injectable } from '@nestjs/common';
-import {
+import type {
   ProviderAdapter,
   AddMcpServerOptions,
   McpServerEntry,
   LaunchInitialPromptBehavior,
   BuildLaunchArgsInput,
 } from './provider-adapter.interface';
+import type { McpCliCapability, TranscriptDiscoveryCapability } from './capabilities';
 
-/**
- * Codex provider adapter
- *
- * Implements MCP command building and output parsing for the Codex CLI.
- */
 @Injectable()
-export class CodexAdapter implements ProviderAdapter {
+export class CodexAdapter
+  implements ProviderAdapter, McpCliCapability, TranscriptDiscoveryCapability
+{
   readonly providerName = 'codex';
+  readonly transcriptDiscoveryStrategy = 'all' as const;
+  readonly transcriptContentSearchMaxBytes = 65_536;
+  readonly contentMatchMaxCandidates = 200;
+  readonly providerSessionIdRequiredForRestore = true;
   readonly launchInitialPromptBehavior: LaunchInitialPromptBehavior = {
     preKeys: ['Enter'],
     preDelayMs: 2000,

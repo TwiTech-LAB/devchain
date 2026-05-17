@@ -67,6 +67,32 @@ export function isTerminalInternalSequence(data: string): boolean {
 }
 
 /**
+ * Decode the OSC 52 clipboard payload. The payload is base64-encoded UTF-8;
+ * browser atob() only returns raw bytes as a binary string, so non-ASCII text
+ * must be passed through TextDecoder before it is written to the clipboard.
+ */
+export function decodeOsc52ClipboardPayload(payload: string): string {
+  if (typeof atob === 'function') {
+    const binary = atob(payload);
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+
+    if (typeof TextDecoder === 'function') {
+      return new TextDecoder('utf-8').decode(bytes);
+    }
+
+    try {
+      return decodeURIComponent(
+        Array.from(bytes, (byte) => `%${byte.toString(16).padStart(2, '0')}`).join(''),
+      );
+    } catch {
+      return binary;
+    }
+  }
+
+  return Buffer.from(payload, 'base64').toString('utf-8');
+}
+
+/**
  * Check whether the terminal's current mouse-tracking mode supports wheel events.
  *
  * xterm.js sets `terminal.modes.mouseTrackingMode` when a TUI application

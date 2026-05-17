@@ -1,42 +1,43 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Inject } from '@nestjs/common';
+import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
+import type Database from 'better-sqlite3';
+import { DB_CONNECTION } from '../../storage/db/db.provider';
+import { getRawSqliteClient } from '../../storage/db/sqlite-raw';
 import { createLogger } from '../../../common/logging/logger';
 
 const logger = createLogger('ProbeProofService');
 
-interface ProbeProof {
-  binPath: string;
-  timestamp: number;
+interface ProofRow {
+  bin_path: string;
 }
 
-/**
- * In-memory store for server-verified Claude 1M probe results.
- *
- * Proof is tied to provider ID + binPath. Changing binPath invalidates
- * prior proof and requires a fresh probe before oneMillionContextEnabled
- * can be set to true.
- */
 @Injectable()
 export class ProbeProofService {
-  private readonly proofs = new Map<string, ProbeProof>();
+  private readonly sqlite: Database.Database;
 
-  /** Record a successful probe for the given provider and binary path. */
+  constructor(@Inject(DB_CONNECTION) db: BetterSQLite3Database) {
+    this.sqlite = getRawSqliteClient(db);
+  }
+
   recordProof(providerId: string, binPath: string): void {
-    this.proofs.set(providerId, { binPath, timestamp: Date.now() });
+    this.sqlite
+      .prepare(
+        `INSERT INTO provider_probe_proofs (provider_id, bin_path, recorded_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(provider_id) DO UPDATE SET bin_path = excluded.bin_path, recorded_at = excluded.recorded_at`,
+      )
+      .run(providerId, binPath, Date.now());
     logger.info({ providerId, binPath }, 'Recorded 1M probe proof');
   }
 
-  /**
-   * Check whether a valid proof exists for the given provider and binary path.
-   * Returns false if no proof exists or if binPath has changed since the probe.
-   */
   hasValidProof(providerId: string, binPath: string): boolean {
-    const proof = this.proofs.get(providerId);
-    if (!proof) return false;
-    return proof.binPath === binPath;
+    const row = this.sqlite
+      .prepare('SELECT bin_path FROM provider_probe_proofs WHERE provider_id = ?')
+      .get(providerId) as ProofRow | undefined;
+    return row !== undefined && row.bin_path === binPath;
   }
 
-  /** Clear proof for a provider (e.g., on deletion). */
   clearProof(providerId: string): void {
-    this.proofs.delete(providerId);
+    this.sqlite.prepare('DELETE FROM provider_probe_proofs WHERE provider_id = ?').run(providerId);
   }
 }

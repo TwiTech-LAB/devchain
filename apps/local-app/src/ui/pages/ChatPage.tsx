@@ -15,6 +15,8 @@ import { useChatLauncher } from '@/ui/components/chat/ChatLauncher';
 import { useToast } from '@/ui/hooks/use-toast';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import { usePointerCoarse } from '@/ui/hooks/usePointerCoarse';
+import { useActiveSessionConfirm } from '@/ui/hooks/useActiveSessionConfirm';
+import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
 import { useWorktreeAgents, type WorktreeAgentGroup } from '@/ui/hooks/useWorktreeAgents';
 import { useWorktreeSocket } from '@/ui/hooks/useWorktreeSocket';
 import {
@@ -35,6 +37,7 @@ import { Button } from '@/ui/components/ui/button';
 // Session reader
 import { useSessionTranscript } from '@/ui/hooks/useSessionTranscript';
 import { SessionViewerPanel } from '@/ui/components/session-reader/SessionViewerPanel';
+import { isPagedTranscriptEnabled } from '@/ui/hooks/usePagedTranscript';
 
 // Extracted hooks
 import { useChatQueries, chatQueryKeys } from '@/ui/hooks/useChatQueries';
@@ -54,6 +57,7 @@ import {
 import { useChatSocket } from '@/ui/hooks/useChatSocket';
 import { useChatSessionControls } from '@/ui/hooks/useChatSessionControls';
 import { useChatThreadUiState } from '@/ui/hooks/useChatThreadUiState';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 // Extracted components
 import { ChatSidebar } from '@/ui/components/chat/ChatSidebar';
@@ -131,16 +135,23 @@ function WorktreeInlineTerminal({
   );
 }
 
+type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
 async function fetchPresets(
   projectId: string,
+  fetchFn: FetchFn,
 ): Promise<{ presets: Preset[]; activePreset: string | null }> {
-  const res = await fetch(`/api/projects/${projectId}/presets`);
+  const res = await fetchFn(`/api/projects/${projectId}/presets`);
   if (!res.ok) throw new Error('Failed to fetch presets');
   return res.json();
 }
 
-async function applyPreset(projectId: string, presetName: string): Promise<ApplyPresetResult> {
-  const res = await fetch(`/api/projects/${projectId}/presets/apply`, {
+async function applyPreset(
+  projectId: string,
+  presetName: string,
+  fetchFn: FetchFn,
+): Promise<ApplyPresetResult> {
+  const res = await fetchFn(`/api/projects/${projectId}/presets/apply`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ presetName }),
@@ -152,12 +163,15 @@ async function applyPreset(projectId: string, presetName: string): Promise<Apply
 export function ChatPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const { confirmIfActiveSessions, dialogProps: activeSessionDialogProps } =
+    useActiveSessionConfirm();
   const { selectedProjectId, selectedProject, projectsLoading } = useSelectedProject();
   const projectId = selectedProjectId ?? null;
   const hasSelectedProject = Boolean(projectId);
   const isCoarsePointer = usePointerCoarse();
   const openTerminalWindow = useTerminalWindowManager();
   const openWorktreeTerminalWindow = useWorktreeTerminalWindowManager();
+  const apiFetch = useFetchFactory();
   const { windows: terminalWindows, closeWindow, focusedWindowId } = useTerminalWindows();
 
   // Derive selectedThreadId from URL params FIRST (before hooks that depend on it)
@@ -291,7 +305,7 @@ export function ChatPage() {
   // Fetch presets for this project
   const { data: presetsData } = useQuery<{ presets: Preset[]; activePreset: string | null }>({
     queryKey: ['project-presets', projectId],
-    queryFn: () => fetchPresets(projectId!),
+    queryFn: () => fetchPresets(projectId!, apiFetch),
     enabled: hasSelectedProject,
   });
   const presets = presetsData?.presets ?? [];
@@ -320,7 +334,7 @@ export function ChatPage() {
       const results = await Promise.all(
         Array.from(profileIds).map(async (profileId) => {
           try {
-            const res = await fetch(`/api/profiles/${profileId}/provider-configs`);
+            const res = await apiFetch(`/api/profiles/${profileId}/provider-configs`);
             if (!res.ok) return { profileId, configs: [] };
             const configs = await res.json();
             return { profileId, configs };
@@ -357,7 +371,8 @@ export function ChatPage() {
 
   // Apply preset mutation with affected agent detection
   const applyPresetMutation = useMutation({
-    mutationFn: ({ presetName }: { presetName: string }) => applyPreset(projectId!, presetName),
+    mutationFn: ({ presetName }: { presetName: string }) =>
+      applyPreset(projectId!, presetName, apiFetch),
     onSuccess: (result) => {
       // Build map of agentId -> providerConfigId (using stable IDs, not names)
       const currentConfigMap = new Map(queries.agents.map((a) => [a.id, a.providerConfigId]));
@@ -418,25 +433,27 @@ export function ChatPage() {
         preset.agentConfigs.map((ac) => ac.agentName.trim().toLowerCase()),
       );
 
-      // Check for active sessions among affected agents
-      const agentsWithActiveSessions = queries.agents.filter(
-        (a) =>
-          agentNamesInPreset.has(a.name.trim().toLowerCase()) &&
-          queries.agentPresence[a.id]?.online,
-      );
+      const activeAgentNames = queries.agents
+        .filter(
+          (a) =>
+            agentNamesInPreset.has(a.name.trim().toLowerCase()) &&
+            queries.agentPresence[a.id]?.online,
+        )
+        .map((a) => a.name);
 
-      if (agentsWithActiveSessions.length > 0) {
-        const agentNames = agentsWithActiveSessions.map((a) => a.name).join(', ');
-        const confirmed = window.confirm(
-          `The following agents have active sessions: ${agentNames}. ` +
-            'Changing their provider configuration may affect running sessions. Continue?',
-        );
-        if (!confirmed) return;
-      }
-
-      applyPresetMutation.mutate({ presetName });
+      confirmIfActiveSessions(activeAgentNames, () => {
+        applyPresetMutation.mutate({ presetName });
+      });
     },
-    [presets, validatedPresets, queries.agents, queries.agentPresence, applyPresetMutation, toast],
+    [
+      presets,
+      validatedPresets,
+      queries.agents,
+      queries.agentPresence,
+      applyPresetMutation,
+      toast,
+      confirmIfActiveSessions,
+    ],
   );
 
   // ============================================
@@ -467,7 +484,7 @@ export function ChatPage() {
         body.modelOverride = modelOverride;
       }
 
-      const res = await fetch(`/api/agents/${agentId}`, {
+      const res = await apiFetch(`/api/agents/${agentId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -598,7 +615,7 @@ export function ChatPage() {
       modelOverride?: string | null;
       targetTeamId?: string | null;
     }) => {
-      const res = await fetch('/api/agents', {
+      const res = await apiFetch('/api/agents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -618,7 +635,7 @@ export function ChatPage() {
 
       if (payload.targetTeamId) {
         try {
-          const teamDetailRes = await fetch(`/api/teams/${payload.targetTeamId}`);
+          const teamDetailRes = await apiFetch(`/api/teams/${payload.targetTeamId}`);
           if (!teamDetailRes.ok) {
             return { ...created, teamAddFailed: true };
           }
@@ -626,7 +643,7 @@ export function ChatPage() {
           const currentMemberIds = (teamDetail.members ?? []).map(
             (m: { agentId: string }) => m.agentId,
           );
-          const putRes = await fetch(`/api/teams/${payload.targetTeamId}`, {
+          const putRes = await apiFetch(`/api/teams/${payload.targetTeamId}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -713,9 +730,9 @@ export function ChatPage() {
         (s) => s.agentId === agentId && s.status === 'running',
       );
       if (agentSessions.length > 0) {
-        await Promise.all(agentSessions.map((s) => terminateSession(s.id)));
+        await Promise.all(agentSessions.map((s) => terminateSession(s.id, '', apiFetch)));
       }
-      const res = await fetch(`/api/agents/${agentId}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/agents/${agentId}`, { method: 'DELETE' });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         if (res.status === 409) {
@@ -763,7 +780,7 @@ export function ChatPage() {
       providerConfigId: string;
       name: string;
     }) => {
-      const res = await fetch(`/api/teams/${payload.teamId}/agents`, {
+      const res = await apiFetch(`/api/teams/${payload.teamId}/agents`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -889,11 +906,11 @@ export function ChatPage() {
   // Helper to fetch provider configs for a profile (used by ChatSidebar)
   const fetchProviderConfigsForProfile = useCallback(
     async (profileId: string): Promise<Array<{ id: string; name: string; providerId: string }>> => {
-      const res = await fetch(`/api/profiles/${profileId}/provider-configs`);
+      const res = await apiFetch(`/api/profiles/${profileId}/provider-configs`);
       if (!res.ok) throw new Error('Failed to fetch provider configs');
       return res.json();
     },
-    [],
+    [apiFetch],
   );
 
   // Build updating config agent IDs record for ChatSidebar
@@ -964,6 +981,9 @@ export function ChatPage() {
     ? (queries.agents.find((a) => a.id === inlineTerminalState.agentId)?.name ?? null)
     : null;
   const inlineTerminalAgentId = inlineTerminalState?.agentId ?? null;
+  const inlineTerminalSessionName = inlineTerminalSessionId
+    ? (queries.activeSessions.find((s) => s.id === inlineTerminalSessionId)?.name ?? null)
+    : null;
 
   const isInlineSessionWindowOpen = useMemo(() => {
     if (!inlineTerminalSessionId) return false;
@@ -985,7 +1005,7 @@ export function ChatPage() {
 
   // Session transcript for Session tab
   const sessionTranscript = useSessionTranscript(inlineTerminalSessionId, {
-    enableTranscript: inlineActiveTab === 'session',
+    enableTranscript: !isPagedTranscriptEnabled() && inlineActiveTab === 'session',
   });
 
   // ============================================
@@ -1514,6 +1534,11 @@ export function ChatPage() {
       if (targetSessionId && socketRef.current?.connected) {
         e.preventDefault();
         e.stopPropagation();
+        // Claim authority before sending input — focusedWindowId is UI-only state
+        // and does not trigger terminal:focus. claimAuthority is idempotent.
+        // Known limitation: worktree floating windows use a separate worktree socket;
+        // the main socket cannot claim authority on those sessions (pre-existing).
+        socketRef.current.emit('terminal:focus', { sessionId: targetSessionId });
         socketRef.current.emit('terminal:input', {
           sessionId: targetSessionId,
           data: '\x1b',
@@ -1799,6 +1824,9 @@ export function ChatPage() {
                     activeTab={inlineActiveTab}
                     onTabChange={handleInlineTabChange}
                     hasTranscript={Boolean(inlineTerminalSessionId)}
+                    sessionId={inlineTerminalSessionId}
+                    sessionName={inlineTerminalSessionName}
+                    projectId={projectId}
                     sessionChip={
                       sessionTranscript.metrics
                         ? {
@@ -2095,6 +2123,7 @@ export function ChatPage() {
         sessionId={readSlideOverSessionId}
         onClose={() => setReadSlideOverSessionId(null)}
       />
+      <ConfirmDialog {...activeSessionDialogProps} />
     </div>
   );
 }

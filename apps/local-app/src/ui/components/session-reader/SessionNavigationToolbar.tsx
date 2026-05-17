@@ -8,7 +8,10 @@ import {
   ChevronUp,
   ChevronDown,
   Flame,
+  BookOpen,
+  Stethoscope,
 } from 'lucide-react';
+import { useSessionViewMode } from '@/ui/hooks/useSessionViewMode';
 
 export interface SessionNavigationToolbarProps {
   onTop: () => void;
@@ -27,6 +30,55 @@ export interface SessionNavigationToolbarProps {
 const navBtnClass =
   'h-7 w-7 flex items-center justify-center rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring';
 const disabledClass = 'opacity-40 cursor-default pointer-events-none';
+
+const toggleBtnClass =
+  'h-6 px-1.5 flex items-center justify-center gap-0.5 rounded text-[9px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring';
+
+function ViewModeToggle() {
+  const { mode, setMode } = useSessionViewMode();
+
+  return (
+    <>
+      <div className="h-px bg-border/40 mx-1" />
+      <div className="flex flex-col gap-0.5" data-testid="view-mode-toggle">
+        <button
+          type="button"
+          onClick={() => setMode('reader')}
+          className={cn(
+            toggleBtnClass,
+            mode === 'reader'
+              ? 'bg-primary/15 text-primary'
+              : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
+          )}
+          aria-label="Reader mode"
+          title="Reader mode"
+          aria-pressed={mode === 'reader'}
+          data-testid="view-mode-reader"
+        >
+          <BookOpen className="h-2.5 w-2.5" />
+          <span>R</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setMode('diagnostic')}
+          className={cn(
+            toggleBtnClass,
+            mode === 'diagnostic'
+              ? 'bg-primary/15 text-primary'
+              : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
+          )}
+          aria-label="Diagnostic mode"
+          title="Diagnostic mode"
+          aria-pressed={mode === 'diagnostic'}
+          data-testid="view-mode-diagnostic"
+        >
+          <Stethoscope className="h-2.5 w-2.5" />
+          <span>D</span>
+        </button>
+      </div>
+    </>
+  );
+}
 
 export const SessionNavigationToolbar = memo(function SessionNavigationToolbar({
   onTop,
@@ -160,6 +212,9 @@ export const SessionNavigationToolbar = memo(function SessionNavigationToolbar({
           )}
         </>
       )}
+
+      {/* View mode toggle */}
+      <ViewModeToggle />
 
       <button
         type="button"

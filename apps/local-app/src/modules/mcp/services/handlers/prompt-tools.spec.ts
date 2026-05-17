@@ -1,16 +1,20 @@
 import { handleGetPrompt, handleListPrompts } from './prompt-tools';
-import type { McpToolContext } from './types';
+import type { PromptToolContext } from './prompt-context';
 import type { AgentSessionContext } from '../../dtos/mcp.dto';
 
-function makeCtx(overrides: Partial<McpToolContext> = {}): McpToolContext {
+function makeCtx(overrides: Partial<PromptToolContext> = {}): PromptToolContext {
   return {
     storage: {
       getPrompt: jest.fn(),
       listPrompts: jest.fn().mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 }),
-    } as unknown as McpToolContext['storage'],
+    } as unknown as PromptToolContext['storage'],
     teamsService: {
       listTeamsByAgent: jest.fn().mockResolvedValue([]),
-    } as unknown as McpToolContext['teamsService'],
+    } as unknown as PromptToolContext['teamsService'],
+    resolveSessionContext: jest.fn().mockResolvedValue({
+      success: true,
+      data: agentSession,
+    }),
     ...overrides,
   };
 }
@@ -111,7 +115,7 @@ describe('prompt-tools', () => {
               updatedAt: '',
             },
           ]),
-        } as unknown as McpToolContext['teamsService'],
+        } as unknown as PromptToolContext['teamsService'],
       });
       (ctx.storage.getPrompt as jest.Mock).mockResolvedValue(testPrompt);
 
@@ -158,6 +162,84 @@ describe('prompt-tools', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toMatchObject({ code: 'SESSION_NOT_FOUND' });
+    });
+
+    it('renders {{#if is_team_lead}} LEAD when agent is team lead', async () => {
+      const leadPrompt = {
+        ...testPrompt,
+        content: '{{#if is_team_lead}}LEAD{{else}}MEMBER{{/if}}',
+      };
+      const ctx = makeCtx({
+        resolveSessionContext: jest.fn().mockResolvedValue({
+          success: true,
+          data: agentSession,
+        }),
+        teamsService: {
+          listTeamsByAgent: jest.fn().mockResolvedValue([
+            {
+              id: 't1',
+              name: 'Backend',
+              teamLeadAgentId: 'agent-1',
+              projectId: 'proj-1',
+              description: null,
+              maxMembers: 10,
+              maxConcurrentTasks: 3,
+              allowTeamLeadCreateAgents: false,
+              createdAt: '',
+              updatedAt: '',
+            },
+          ]),
+        } as unknown as PromptToolContext['teamsService'],
+      });
+      (ctx.storage.getPrompt as jest.Mock).mockResolvedValue(leadPrompt);
+
+      const result = await handleGetPrompt(ctx, {
+        id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        sessionId: 'session-1',
+      });
+
+      expect(result.success).toBe(true);
+      const prompt = (result.data as { prompt: { content: string } }).prompt;
+      expect(prompt.content).toBe('LEAD');
+    });
+
+    it('renders {{#if is_team_lead}} MEMBER when agent is not team lead', async () => {
+      const leadPrompt = {
+        ...testPrompt,
+        content: '{{#if is_team_lead}}LEAD{{else}}MEMBER{{/if}}',
+      };
+      const ctx = makeCtx({
+        resolveSessionContext: jest.fn().mockResolvedValue({
+          success: true,
+          data: agentSession,
+        }),
+        teamsService: {
+          listTeamsByAgent: jest.fn().mockResolvedValue([
+            {
+              id: 't1',
+              name: 'Backend',
+              teamLeadAgentId: 'other-agent',
+              projectId: 'proj-1',
+              description: null,
+              maxMembers: 10,
+              maxConcurrentTasks: 3,
+              allowTeamLeadCreateAgents: false,
+              createdAt: '',
+              updatedAt: '',
+            },
+          ]),
+        } as unknown as PromptToolContext['teamsService'],
+      });
+      (ctx.storage.getPrompt as jest.Mock).mockResolvedValue(leadPrompt);
+
+      const result = await handleGetPrompt(ctx, {
+        id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        sessionId: 'session-1',
+      });
+
+      expect(result.success).toBe(true);
+      const prompt = (result.data as { prompt: { content: string } }).prompt;
+      expect(prompt.content).toBe('MEMBER');
     });
   });
 

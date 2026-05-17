@@ -66,7 +66,7 @@ export function validateEnvValue(key: string, value: string): void {
  * Quotes a value for safe shell usage using single quotes.
  * Single quotes preserve literal value, only ' needs escaping as '\''
  *
- * NOTE: This function is NOT used by buildEnvArgs() because TmuxService.sendCommandArgs()
+ * NOTE: This function is NOT used by buildEnvArgs() because TerminalIOService
  * handles shell quoting for all argv elements. Using quoteEnvValue() here would cause
  * double-quoting. This function is kept for potential direct shell command usage.
  */
@@ -84,7 +84,7 @@ export function quoteEnvValue(value: string): string {
  * Builds an array of env var assignments for use with the `env` command.
  * Each entry is formatted as KEY=value WITHOUT shell quoting.
  *
- * IMPORTANT: Do NOT add shell quoting here. The TmuxService.sendCommandArgs() method
+ * IMPORTANT: Do NOT add shell quoting here. TerminalIOService
  * handles quoting for all argv elements. Adding quotes here causes double-quoting,
  * resulting in literal quote characters in the final env var values.
  *
@@ -123,14 +123,18 @@ export function buildSessionCommand(
   envVars: Record<string, string> | null | undefined,
   providerBinPath: string,
   argv: string[],
+  unsetEnv?: readonly string[],
 ): string[] {
   const envArgs = buildEnvArgs(envVars);
+  const unsetArgs: string[] = [];
+  for (const key of unsetEnv ?? []) {
+    validateEnvKey(key);
+    unsetArgs.push('-u', key);
+  }
 
-  if (envArgs.length === 0) {
-    // No env vars, just run provider directly
+  if (envArgs.length === 0 && unsetArgs.length === 0) {
     return [providerBinPath, ...argv];
   }
 
-  // Use env command to set variables: env KEY=value KEY2=value2 provider args...
-  return ['env', ...envArgs, providerBinPath, ...argv];
+  return ['env', ...unsetArgs, ...envArgs, providerBinPath, ...argv];
 }

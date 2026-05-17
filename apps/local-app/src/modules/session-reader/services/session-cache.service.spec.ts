@@ -980,4 +980,66 @@ describe('SessionCacheService', () => {
     expect(result).toBe(session2);
     expect(adapter.parseFullSession).toHaveBeenCalledTimes(2);
   });
+
+  // -------------------------------------------------------------------------
+  // getOrParseWithMeta
+  // -------------------------------------------------------------------------
+
+  describe('getOrParseWithMeta', () => {
+    it('should return cacheHit=false on first call', async () => {
+      const result = await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
+
+      expect(result.cacheHit).toBe(false);
+      expect(result.lastSize).toBe(1000);
+      expect(result.lastMtime).toBe(1706000000000);
+      expect(result.lastOffset).toBe(1000);
+      expect(result.session).toBeDefined();
+    });
+
+    it('should return cacheHit=true when file unchanged and TTL valid', async () => {
+      await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
+      const result = await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
+
+      expect(result.cacheHit).toBe(true);
+      expect(adapter.parseFullSession).toHaveBeenCalledTimes(1);
+    });
+
+    it('should return cacheHit=false when file grew (incremental parse)', async () => {
+      const incResult: IncrementalResult = {
+        entries: [makeMessage('m3', 1706000010000)],
+        nextByteOffset: 1500,
+        metrics: makeMetrics({ messageCount: 3 }),
+      };
+      (adapter.parseIncremental as jest.Mock).mockResolvedValue(incResult);
+
+      await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
+
+      mockedFsStat.mockResolvedValue(makeStat(1500, 1706000005000));
+      const result = await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
+
+      expect(result.cacheHit).toBe(false);
+      expect(result.lastOffset).toBe(1500);
+      expect(result.lastSize).toBe(1500);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // getEntry
+  // -------------------------------------------------------------------------
+
+  describe('getEntry', () => {
+    it('should return undefined for unknown session', () => {
+      expect(service.getEntry('unknown')).toBeUndefined();
+    });
+
+    it('should return cache entry after getOrParse', async () => {
+      await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
+
+      const entry = service.getEntry(SESSION_ID);
+      expect(entry).toBeDefined();
+      expect(entry!.lastSize).toBe(1000);
+      expect(entry!.lastMtime).toBe(1706000000000);
+      expect(entry!.lastOffset).toBe(1000);
+    });
+  });
 });

@@ -54,9 +54,9 @@ RUN pnpm --filter local-app deploy --prod /app/deploy
 FROM node:20-slim AS production
 
 WORKDIR /app/apps/local-app
-ARG CLAUDE_CODE_VERSION=2.1.118
-ARG CODEX_VERSION=0.125.0
-ARG GEMINI_CLI_VERSION=0.39.1
+ARG CLAUDE_CODE_VERSION=2.1.143
+ARG CODEX_VERSION=0.130.0
+ARG GEMINI_CLI_VERSION=0.42.0
 
 # Runtime system dependencies required by local-app
 RUN apt-get update \

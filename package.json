@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.12.4",
+  "version": "0.14.0",
   "description": "AI driven development platform",
   "homepage": "https://devchain.twitechlab.com/",
   "repository": {
@@ -8,6 +8,26 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.14.0": [
+      "Scheduled epics: storage, runner, API events, automation UI, and form portability",
+      "MCP: epic status returned as label; reduced write response payloads",
+      "Terminal: normalize Claude line endings",
+      "Bug fixes: chat thread metadata",
+      "Bumped worktree provider CLI versions and pricing data"
+    ],
+    "0.13.1": [
+      "Bug fixes: terminal restore, environment editor, chat teams, team seeding"
+    ],
+    "0.13.0": [
+      "Module architecture",
+      "Session Reader: improved UI",
+      "Previous Sessions UX: pagination, rename, copy session ID, delete",
+      "Terminal: light theme, extended ANSI palette and app-theme sync, OSC 52 clipboard forwarding (UTF-8), Shift-drag copy, per-provider line-ending normalization",
+      "Chat sidebar redesign with remembered thread and selected-agent highlight",
+      "MCP: epic delete tool; agent description exposed in devchain_team members",
+      "teams-dev flow updates: smarter work distribution, shorter review loops",
+      "Deprecated: 5-agents-dev template (use teams-dev)"
+    ],
     "0.12.4": [
       "Board: pin a saved filter as the project default",
       "Fix dev-mode Ctrl+C child cleanup",
@@ -321,6 +341,7 @@
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "commander": "^12.1.0",
+    "croner": "10.0.1",
     "devchain-cli": "0.4.1",
     "dockerode": "4.0.9",
     "dompurify": "3.3.1",
@@ -332,6 +353,7 @@
     "handlebars": "^4.7.9",
     "hterm": "2.0.2",
     "hterm-umd": "1.0.1",
+    "jose": "^5.10.0",
     "lucide-react": "0.545.0",
     "node-pty": "1.2.0-beta.2",
     "open": "^8.4.2",
@@ -353,6 +375,7 @@
     "socket.io-client": "4.8.1",
     "tailwind-merge": "3.3.1",
     "tar": "7.5.7",
+    "ws": "8.20.0",
     "zod": "^3.22.4"
   },
   "devDependencies": {

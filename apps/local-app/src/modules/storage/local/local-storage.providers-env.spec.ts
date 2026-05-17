@@ -56,12 +56,11 @@ describe('LocalStorageService - Provider env', () => {
       expect(result.env).toEqual({
         API_BASE: 'https://api.example.com',
         DEBUG: 'true',
-        CLAUDE_CODE_NO_FLICKER: '1',
       });
       expect(result.id).toBeDefined();
     });
 
-    it('creates provider with null env — Claude gets CLAUDE_CODE_NO_FLICKER default', async () => {
+    it('creates provider with null env without Claude no-flicker default', async () => {
       const insertChain = { values: jest.fn().mockResolvedValue(undefined) };
       mockDb.insert = jest.fn().mockReturnValue(insertChain);
 
@@ -74,10 +73,10 @@ describe('LocalStorageService - Provider env', () => {
         env: null,
       });
 
-      expect(result.env).toEqual({ CLAUDE_CODE_NO_FLICKER: '1' });
+      expect(result.env).toBeNull();
     });
 
-    it('normalizes empty env {} — Claude gets CLAUDE_CODE_NO_FLICKER default', async () => {
+    it('normalizes empty env {} to null without Claude no-flicker default', async () => {
       const insertChain = { values: jest.fn().mockResolvedValue(undefined) };
       mockDb.insert = jest.fn().mockReturnValue(insertChain);
 
@@ -90,7 +89,7 @@ describe('LocalStorageService - Provider env', () => {
         env: {},
       });
 
-      expect(result.env).toEqual({ CLAUDE_CODE_NO_FLICKER: '1' });
+      expect(result.env).toBeNull();
     });
   });
 

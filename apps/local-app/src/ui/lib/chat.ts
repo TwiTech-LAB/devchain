@@ -29,11 +29,21 @@ export interface CreateDirectThreadRequest {
   agentId: string;
 }
 
+type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
+const defaultFetch: FetchFn = (input, init) => {
+  if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
+    return window.fetch.call(window, input as RequestInfo, init);
+  }
+  return Promise.reject(new Error('fetch not available'));
+};
+
 export async function fetchThreads(
   projectId: string,
   createdByType?: 'user' | 'agent' | 'system',
   limit = 50,
   offset = 0,
+  fetchFn: FetchFn = defaultFetch,
 ): Promise<ThreadsListResponse> {
   const params = new URLSearchParams({
     projectId,
@@ -45,15 +55,31 @@ export async function fetchThreads(
     params.append('createdByType', createdByType);
   }
 
-  const response = await fetch(`/api/chat/threads?${params.toString()}`);
+  const response = await fetchFn(`/api/chat/threads?${params.toString()}`);
   if (!response.ok) {
     throw new Error('Failed to fetch threads');
   }
   return response.json();
 }
 
-export async function createGroupThread(request: CreateGroupThreadRequest): Promise<Thread> {
-  const response = await fetch('/api/chat/threads/group', {
+export async function fetchThread(
+  threadId: string,
+  projectId: string,
+  fetchFn: FetchFn = defaultFetch,
+): Promise<Thread> {
+  const params = new URLSearchParams({ projectId });
+  const response = await fetchFn(`/api/chat/threads/${threadId}?${params.toString()}`);
+  if (!response.ok) {
+    throw new Error('Failed to fetch thread');
+  }
+  return response.json();
+}
+
+export async function createGroupThread(
+  request: CreateGroupThreadRequest,
+  fetchFn: FetchFn = defaultFetch,
+): Promise<Thread> {
+  const response = await fetchFn('/api/chat/threads/group', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
@@ -65,8 +91,11 @@ export async function createGroupThread(request: CreateGroupThreadRequest): Prom
   return response.json();
 }
 
-export async function createDirectThread(request: CreateDirectThreadRequest): Promise<Thread> {
-  const response = await fetch('/api/chat/threads/direct', {
+export async function createDirectThread(
+  request: CreateDirectThreadRequest,
+  fetchFn: FetchFn = defaultFetch,
+): Promise<Thread> {
+  const response = await fetchFn('/api/chat/threads/direct', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
@@ -109,6 +138,7 @@ export async function fetchMessages(
   since?: string,
   limit = 50,
   offset = 0,
+  fetchFn: FetchFn = defaultFetch,
 ): Promise<MessagesListResponse> {
   const params = new URLSearchParams({
     projectId,
@@ -120,7 +150,7 @@ export async function fetchMessages(
     params.append('since', since);
   }
 
-  const response = await fetch(`/api/chat/threads/${threadId}/messages?${params.toString()}`);
+  const response = await fetchFn(`/api/chat/threads/${threadId}/messages?${params.toString()}`);
   if (!response.ok) {
     throw new Error('Failed to fetch messages');
   }
@@ -130,8 +160,9 @@ export async function fetchMessages(
 export async function createMessage(
   threadId: string,
   request: CreateMessageRequest,
+  fetchFn: FetchFn = defaultFetch,
 ): Promise<Message> {
-  const response = await fetch(`/api/chat/threads/${threadId}/messages`, {
+  const response = await fetchFn(`/api/chat/threads/${threadId}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
@@ -152,8 +183,9 @@ export interface InviteMembersRequest {
 export async function inviteMembers(
   threadId: string,
   request: InviteMembersRequest,
+  fetchFn: FetchFn = defaultFetch,
 ): Promise<Thread> {
-  const response = await fetch(`/api/chat/threads/${threadId}/invite`, {
+  const response = await fetchFn(`/api/chat/threads/${threadId}/invite`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
@@ -201,9 +233,12 @@ export interface ChatSettingsResponse {
   is_default: boolean;
 }
 
-export async function fetchChatSettings(projectId: string): Promise<ChatSettingsResponse> {
+export async function fetchChatSettings(
+  projectId: string,
+  fetchFn: FetchFn = defaultFetch,
+): Promise<ChatSettingsResponse> {
   const params = new URLSearchParams({ projectId });
-  const response = await fetch(`/api/chat/settings?${params.toString()}`);
+  const response = await fetchFn(`/api/chat/settings?${params.toString()}`);
 
   if (!response.ok) {
     throw new Error('Failed to fetch chat settings');
@@ -219,8 +254,9 @@ export interface UpdateChatSettingsRequest {
 
 export async function updateChatSettings(
   request: UpdateChatSettingsRequest,
+  fetchFn: FetchFn = defaultFetch,
 ): Promise<ChatSettingsResponse> {
-  const response = await fetch('/api/chat/settings', {
+  const response = await fetchFn('/api/chat/settings', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
@@ -240,8 +276,9 @@ export interface ClearHistoryRequest {
 export async function clearHistory(
   threadId: string,
   request: ClearHistoryRequest = {},
+  fetchFn: FetchFn = defaultFetch,
 ): Promise<Thread> {
-  const response = await fetch(`/api/chat/threads/${threadId}/clear`, {
+  const response = await fetchFn(`/api/chat/threads/${threadId}/clear`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
@@ -262,8 +299,9 @@ export interface PurgeHistoryRequest {
 export async function purgeHistory(
   threadId: string,
   request: PurgeHistoryRequest = {},
+  fetchFn: FetchFn = defaultFetch,
 ): Promise<Thread> {
-  const response = await fetch(`/api/chat/threads/${threadId}/purge`, {
+  const response = await fetchFn(`/api/chat/threads/${threadId}/purge`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),

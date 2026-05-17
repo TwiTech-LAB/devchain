@@ -6,20 +6,20 @@ import {
   ListRecordsResponse,
   AddTagsResponse,
   RemoveTagsResponse,
-  CreateRecordParamsSchema,
-  UpdateRecordParamsSchema,
-  GetRecordParamsSchema,
-  ListRecordsParamsSchema,
-  AddTagsParamsSchema,
-  RemoveTagsParamsSchema,
+  type CreateRecordParams,
+  type UpdateRecordParams,
+  type GetRecordParams,
+  type ListRecordsParams,
+  type AddTagsParams,
+  type RemoveTagsParams,
 } from '../../dtos/mcp.dto';
-import type { McpToolContext } from './types';
+import type { RecordToolContext } from './record-context';
 
 export async function handleCreateRecord(
-  ctx: McpToolContext,
+  ctx: RecordToolContext,
   params: unknown,
 ): Promise<McpResponse> {
-  const validated = CreateRecordParamsSchema.parse(params);
+  const validated = params as CreateRecordParams;
   const record = await ctx.storage.createRecord({
     epicId: validated.epicId,
     type: validated.type,
@@ -29,23 +29,17 @@ export async function handleCreateRecord(
 
   const response: CreateRecordResponse = {
     id: record.id,
-    epicId: record.epicId,
-    type: record.type,
-    data: record.data,
-    tags: record.tags,
     version: record.version,
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt,
   };
 
   return { success: true, data: response };
 }
 
 export async function handleUpdateRecord(
-  ctx: McpToolContext,
+  ctx: RecordToolContext,
   params: unknown,
 ): Promise<McpResponse> {
-  const validated = UpdateRecordParamsSchema.parse(params);
+  const validated = params as UpdateRecordParams;
   const record = await ctx.storage.updateRecord(
     validated.id,
     {
@@ -58,20 +52,17 @@ export async function handleUpdateRecord(
 
   const response: UpdateRecordResponse = {
     id: record.id,
-    epicId: record.epicId,
-    type: record.type,
-    data: record.data,
-    tags: record.tags,
     version: record.version,
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt,
   };
 
   return { success: true, data: response };
 }
 
-export async function handleGetRecord(ctx: McpToolContext, params: unknown): Promise<McpResponse> {
-  const validated = GetRecordParamsSchema.parse(params);
+export async function handleGetRecord(
+  ctx: RecordToolContext,
+  params: unknown,
+): Promise<McpResponse> {
+  const validated = params as GetRecordParams;
   const record = await ctx.storage.getRecord(validated.id);
 
   const response: GetRecordResponse = {
@@ -89,10 +80,10 @@ export async function handleGetRecord(ctx: McpToolContext, params: unknown): Pro
 }
 
 export async function handleListRecords(
-  ctx: McpToolContext,
+  ctx: RecordToolContext,
   params: unknown,
 ): Promise<McpResponse> {
-  const validated = ListRecordsParamsSchema.parse(params);
+  const validated = params as ListRecordsParams;
   const result = await ctx.storage.listRecords(validated.epicId, {
     limit: validated.limit,
     offset: validated.offset,
@@ -126,8 +117,8 @@ export async function handleListRecords(
   return { success: true, data: response };
 }
 
-export async function handleAddTags(ctx: McpToolContext, params: unknown): Promise<McpResponse> {
-  const validated = AddTagsParamsSchema.parse(params);
+export async function handleAddTags(ctx: RecordToolContext, params: unknown): Promise<McpResponse> {
+  const validated = params as AddTagsParams;
   const record = await ctx.storage.getRecord(validated.id);
 
   const newTags = Array.from(new Set([...record.tags, ...validated.tags]));
@@ -136,14 +127,17 @@ export async function handleAddTags(ctx: McpToolContext, params: unknown): Promi
 
   const response: AddTagsResponse = {
     id: updated.id,
-    tags: updated.tags,
+    version: updated.version,
   };
 
   return { success: true, data: response };
 }
 
-export async function handleRemoveTags(ctx: McpToolContext, params: unknown): Promise<McpResponse> {
-  const validated = RemoveTagsParamsSchema.parse(params);
+export async function handleRemoveTags(
+  ctx: RecordToolContext,
+  params: unknown,
+): Promise<McpResponse> {
+  const validated = params as RemoveTagsParams;
   const record = await ctx.storage.getRecord(validated.id);
 
   const newTags = record.tags.filter((tag) => !validated.tags.includes(tag));
@@ -152,7 +146,7 @@ export async function handleRemoveTags(ctx: McpToolContext, params: unknown): Pr
 
   const response: RemoveTagsResponse = {
     id: updated.id,
-    tags: updated.tags,
+    version: updated.version,
   };
 
   return { success: true, data: response };

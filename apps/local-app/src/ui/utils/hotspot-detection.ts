@@ -211,7 +211,8 @@ export function classifyDisplayItemHotspots(
 
   for (const item of displayItems) {
     const stepTokens = getDisplayItemTokens(item);
-    itemTokens.push({ id: item.step.id, tokens: stepTokens });
+    const id = item.type === 'tool-group' ? item.items[0].step.id : item.step.id;
+    itemTokens.push({ id, tokens: stepTokens });
     totalRendered += stepTokens;
   }
 
@@ -231,6 +232,9 @@ export function classifyDisplayItemHotspots(
 
 /** Combined estimated tokens for a display item (tool_call + linked result). */
 function getDisplayItemTokens(item: DisplayItem): number {
+  if (item.type === 'tool-group') {
+    return item.totalTokens;
+  }
   const stepTokens = (item.step as SerializedSemanticStep).estimatedTokens ?? 0;
   const resultTokens = item.linkedResult
     ? ((item.linkedResult as SerializedSemanticStep).estimatedTokens ?? 0)

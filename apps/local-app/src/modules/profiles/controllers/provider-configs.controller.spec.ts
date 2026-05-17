@@ -4,6 +4,7 @@ import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { BadRequestException } from '@nestjs/common';
 import { ValidationError, NotFoundError } from '../../../common/errors/error-types';
 import { ProfileProviderConfig } from '../../storage/models/domain.models';
+import { ProviderConfigsService } from '../services/provider-configs.service';
 
 jest.mock('../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
@@ -13,9 +14,9 @@ describe('ProviderConfigsController', () => {
   let controller: ProviderConfigsController;
   let storage: {
     getProfileProviderConfig: jest.Mock;
-    updateProfileProviderConfig: jest.Mock;
     deleteProfileProviderConfig: jest.Mock;
   };
+  let providerConfigsService: { updateProviderConfig: jest.Mock };
 
   const baseConfig: ProfileProviderConfig = {
     id: 'config-1',
@@ -33,8 +34,10 @@ describe('ProviderConfigsController', () => {
   beforeEach(async () => {
     storage = {
       getProfileProviderConfig: jest.fn(),
-      updateProfileProviderConfig: jest.fn(),
       deleteProfileProviderConfig: jest.fn(),
+    };
+    providerConfigsService = {
+      updateProviderConfig: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -43,6 +46,10 @@ describe('ProviderConfigsController', () => {
         {
           provide: STORAGE_SERVICE,
           useValue: storage,
+        },
+        {
+          provide: ProviderConfigsService,
+          useValue: providerConfigsService,
         },
       ],
     }).compile();
@@ -82,7 +89,7 @@ describe('ProviderConfigsController', () => {
         options: '--model new',
         env: { NEW_KEY: 'new-value' },
       };
-      storage.updateProfileProviderConfig.mockResolvedValue(updatedConfig);
+      providerConfigsService.updateProviderConfig.mockResolvedValue(updatedConfig);
 
       const result = await controller.updateProviderConfig('config-1', {
         providerId: 'provider-2',
@@ -90,7 +97,7 @@ describe('ProviderConfigsController', () => {
         env: { NEW_KEY: 'new-value' },
       });
 
-      expect(storage.updateProfileProviderConfig).toHaveBeenCalledWith('config-1', {
+      expect(providerConfigsService.updateProviderConfig).toHaveBeenCalledWith('config-1', {
         providerId: 'provider-2',
         options: '--model new',
         env: { NEW_KEY: 'new-value' },
@@ -100,27 +107,29 @@ describe('ProviderConfigsController', () => {
 
     it('updates only provided fields', async () => {
       const updatedConfig = { ...baseConfig, options: null };
-      storage.updateProfileProviderConfig.mockResolvedValue(updatedConfig);
+      providerConfigsService.updateProviderConfig.mockResolvedValue(updatedConfig);
 
       await controller.updateProviderConfig('config-1', { options: null });
 
-      expect(storage.updateProfileProviderConfig).toHaveBeenCalledWith('config-1', {
+      expect(providerConfigsService.updateProviderConfig).toHaveBeenCalledWith('config-1', {
         options: null,
       });
     });
 
     it('clears env by sending null', async () => {
       const updatedConfig = { ...baseConfig, env: null };
-      storage.updateProfileProviderConfig.mockResolvedValue(updatedConfig);
+      providerConfigsService.updateProviderConfig.mockResolvedValue(updatedConfig);
 
       const result = await controller.updateProviderConfig('config-1', { env: null });
 
-      expect(storage.updateProfileProviderConfig).toHaveBeenCalledWith('config-1', { env: null });
+      expect(providerConfigsService.updateProviderConfig).toHaveBeenCalledWith('config-1', {
+        env: null,
+      });
       expect(result.env).toBeNull();
     });
 
     it('throws when config not found', async () => {
-      storage.updateProfileProviderConfig.mockRejectedValue(
+      providerConfigsService.updateProviderConfig.mockRejectedValue(
         new NotFoundError('ProfileProviderConfig', 'config-1'),
       );
 

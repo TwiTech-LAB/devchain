@@ -103,45 +103,6 @@ describe('CreateFromRegistryDialog', () => {
     expect(screen.getByRole('button', { name: /create project/i })).toBeInTheDocument();
   });
 
-  /**
-   * SKIPPED TESTS: Submit-time validation errors (Q2 Phase 1.0.4)
-   *
-   * These tests are intentionally skipped because:
-   * 1. The component uses disabled-button validation (button disabled when form invalid)
-   * 2. Submit-time validation errors are unreachable when button is disabled
-   * 3. The actual validation behavior is tested in "Create button is disabled when required fields are empty"
-   *
-   * If the component changes to allow submit with invalid data (e.g., for async validation),
-   * these tests should be un-skipped and updated accordingly.
-   */
-  it.skip('shows error when project name is empty on submit', async () => {
-    renderWithProviders(<CreateFromRegistryDialog {...defaultProps} />);
-
-    // Fill only root path
-    fireEvent.change(screen.getByLabelText('Root Path'), { target: { value: '/tmp/test' } });
-
-    const submitButton = screen.getByRole('button', { name: /create project/i });
-    fireEvent.click(submitButton);
-
-    await waitFor(() => {
-      expect(screen.getByText('Project name is required')).toBeInTheDocument();
-    });
-  });
-
-  it.skip('shows error when root path is empty on submit', async () => {
-    renderWithProviders(<CreateFromRegistryDialog {...defaultProps} />);
-
-    // Fill only project name
-    fireEvent.change(screen.getByLabelText('Project Name'), { target: { value: 'My Project' } });
-
-    const submitButton = screen.getByRole('button', { name: /create project/i });
-    fireEvent.click(submitButton);
-
-    await waitFor(() => {
-      expect(screen.getByText('Root path is required')).toBeInTheDocument();
-    });
-  });
-
   it('submits form with valid data', async () => {
     const fetchMock = jest.fn(async () => ({
       ok: true,
@@ -169,7 +130,7 @@ describe('CreateFromRegistryDialog', () => {
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        '/api/registry/create-project',
+        '/api/projects/from-registry',
         expect.objectContaining({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

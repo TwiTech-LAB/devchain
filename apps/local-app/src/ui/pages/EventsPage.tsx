@@ -2,6 +2,11 @@ import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { WsEnvelope } from '@/ui/lib/socket';
 import { useAppSocket } from '@/ui/hooks/useAppSocket';
+import {
+  type RealtimeInvalidationRegistry,
+  dispatchRealtimeEnvelope,
+  exactTopic,
+} from '@/ui/lib/realtime-invalidation-registry';
 import type { Socket } from 'socket.io-client';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/ui/components/ui/card';
 import { Input } from '@/ui/components/ui/input';
@@ -182,18 +187,29 @@ export function EventsPage() {
     setPagination((prev) => (prev.offset === 0 ? prev : { ...prev, offset: 0 }));
   }, [filters.name, filters.handler, filters.status, filters.timeRange]);
 
-  const handleEnvelope = useCallback(
-    (envelope: WsEnvelope) => {
-      if (!envelope) return;
-      const { topic, type } = envelope;
-      if (topic === 'events/logs' && (type === 'event_created' || type === 'handler_recorded')) {
-        queryClient.invalidateQueries({ queryKey: ['eventLogs'] });
-      }
-    },
-    [queryClient],
+  const eventsRegistry: RealtimeInvalidationRegistry = useMemo(
+    () => [
+      {
+        match: exactTopic('events/logs'),
+        type: 'event_created',
+        entries: [{ kind: 'invalidate' as const, queryKey: ['eventLogs'] }],
+      },
+      {
+        match: exactTopic('events/logs'),
+        type: 'handler_recorded',
+        entries: [{ kind: 'invalidate' as const, queryKey: ['eventLogs'] }],
+      },
+    ],
+    [],
   );
 
-  // Subscribe via shared socket; keep a semantic subscribe on connect
+  const handleEnvelope = useCallback(
+    (envelope: WsEnvelope) => {
+      dispatchRealtimeEnvelope(envelope, eventsRegistry, queryClient);
+    },
+    [eventsRegistry, queryClient],
+  );
+
   const eventsSocketRef = useRef<Socket | null>(null);
   const eventsSocket = useAppSocket(
     {

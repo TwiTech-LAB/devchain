@@ -1,6 +1,6 @@
 /**
  * Integration tests for POST /api/sessions/:id/restore.
- * Boots a real NestJS app with a temp SQLite DB; mocks TmuxService and PtyService
+ * Boots a real NestJS app with a temp SQLite DB; mocks TerminalIOService and PtyService
  * so no actual processes are spawned.
  */
 import { mkdtemp, rm } from 'fs/promises';
@@ -13,7 +13,7 @@ import { resetEnvConfig } from '../../common/config/env.config';
 import { ORCHESTRATOR_DB_CONNECTION } from '../orchestrator/orchestrator-storage/db/orchestrator.provider';
 import { DB_CONNECTION } from '../storage/db/db.provider';
 import { getRawSqliteClient } from '../storage/db/sqlite-raw';
-import { TmuxService } from '../terminal/services/tmux.service';
+import { TerminalIOService } from '../terminal/services/terminal-io/terminal-io.service';
 import { PtyService } from '../terminal/services/pty.service';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import type Database from 'better-sqlite3';
@@ -126,18 +126,17 @@ describe('POST /api/sessions/:id/restore', () => {
   let dbDir: string | null = null;
   let sqlite: Database.Database | null = null;
 
-  const mockTmux = {
-    createSession: jest.fn().mockResolvedValue(undefined),
-    sendCommandArgs: jest.fn().mockResolvedValue(undefined),
-    setAlternateScreenOff: jest.fn().mockResolvedValue(undefined),
-    startHealthCheck: jest.fn(),
+  const mockTerminalIO = {
+    createEmptySession: jest.fn().mockResolvedValue({ name: 'tmux-session' }),
+    disableAlternateScreen: jest.fn().mockResolvedValue(undefined),
     destroySession: jest.fn().mockResolvedValue(undefined),
-    hasSession: jest.fn().mockResolvedValue(false),
-    createSessionName: jest.fn().mockReturnValue('tmux-restored-test'),
-    sendCommand: jest.fn().mockResolvedValue(undefined),
-    waitForOutput: jest.fn().mockResolvedValue(undefined),
-    pasteAndSubmit: jest.fn().mockResolvedValue(undefined),
-    stopHealthCheck: jest.fn(),
+    typeCommand: jest.fn().mockResolvedValue(undefined),
+    waitForOutput: jest.fn().mockResolvedValue(true),
+    sessionExists: jest.fn().mockResolvedValue(false),
+    startHealthCheck: jest.fn(),
+    deliver: jest.fn().mockResolvedValue({ confirmed: true, method: 'bracketed-paste' }),
+    deliverImmediate: jest.fn().mockResolvedValue({ confirmed: true, method: 'bracketed-paste' }),
+    sendControl: jest.fn().mockResolvedValue(undefined),
   };
   const mockPty = { startStreaming: jest.fn().mockResolvedValue(undefined) };
 
@@ -157,8 +156,8 @@ describe('POST /api/sessions/:id/restore', () => {
     })
       .overrideProvider(ORCHESTRATOR_DB_CONNECTION)
       .useValue({})
-      .overrideProvider(TmuxService)
-      .useValue(mockTmux)
+      .overrideProvider(TerminalIOService)
+      .useValue(mockTerminalIO)
       .overrideProvider(PtyService)
       .useValue(mockPty)
       .compile();
@@ -360,11 +359,11 @@ describe('POST /api/sessions/:id/restore', () => {
     expect(row.started_at).toBe(originalStartedAt);
 
     // (f) tmux session created
-    expect(mockTmux.createSession).toHaveBeenCalledTimes(1);
+    expect(mockTerminalIO.createEmptySession).toHaveBeenCalledTimes(1);
     // (g) CLI command sent
-    expect(mockTmux.sendCommandArgs).toHaveBeenCalledTimes(1);
-    // (h) NO pasteAndSubmit (no initial prompt on restore)
-    expect(mockTmux.pasteAndSubmit).not.toHaveBeenCalled();
+    expect(mockTerminalIO.typeCommand).toHaveBeenCalledTimes(1);
+    // (h) NO deliver (no initial prompt on restore)
+    expect(mockTerminalIO.deliver).not.toHaveBeenCalled();
   });
 
   it('CLI command includes --resume flag with providerSessionId (Claude adapter)', async () => {
@@ -390,8 +389,11 @@ describe('POST /api/sessions/:id/restore', () => {
       });
     expect(res.statusCode).toBe(201);
 
-    // sendCommandArgs receives the full env-prefixed command array
-    const [, commandArgs] = mockTmux.sendCommandArgs.mock.calls[0] as [string, string[]];
+    // typeCommand receives (target, argv) — the full env-prefixed command array
+    const [, commandArgs] = mockTerminalIO.typeCommand.mock.calls[0] as [
+      { name: string },
+      string[],
+    ];
     // Should contain --resume and the providerSessionId
     const joined = commandArgs.join(' ');
     expect(joined).toContain('--resume');
@@ -406,7 +408,7 @@ describe('POST /api/sessions/:id/restore', () => {
     seedAgent(sqlite!, { projectId, agentId, providerName: 'claude' });
     seedSession(sqlite!, { sessionId, agentId });
 
-    mockTmux.sendCommandArgs.mockRejectedValueOnce(new Error('CLI spawn failed'));
+    mockTerminalIO.typeCommand.mockRejectedValueOnce(new Error('CLI spawn failed'));
 
     const res = await app!
       .getHttpAdapter()
@@ -425,7 +427,7 @@ describe('POST /api/sessions/:id/restore', () => {
     expect(row.status).toBe('stopped');
 
     // Tmux session must be destroyed
-    expect(mockTmux.destroySession).toHaveBeenCalledTimes(1);
+    expect(mockTerminalIO.destroySession).toHaveBeenCalledTimes(1);
   });
 
   it('event emission: session.restored published; session.started NOT published', async () => {

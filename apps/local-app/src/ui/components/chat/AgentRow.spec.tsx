@@ -101,14 +101,35 @@ function renderAgentRow(overrides: Partial<React.ComponentProps<typeof AgentRow>
 }
 
 describe('AgentRow', () => {
-  it('renders agent name, online indicator, provider icon, and activity badge', () => {
+  it('renders agent name, online provider icon, and activity badge', () => {
     const { container } = renderAgentRow();
 
     expect(screen.getByLabelText(/Chat with Alpha \(online\)/i)).toBeInTheDocument();
     expect(screen.getByText('Busy 10s')).toBeInTheDocument();
-    expect(screen.getByTitle('Provider: Claude')).toBeInTheDocument();
+    const providerIconFrame = screen.getByTitle('Provider: Claude (online)');
+    expect(providerIconFrame).toHaveClass('h-6', 'w-6', 'bg-muted/40', 'border-border');
+    expect(providerIconFrame.querySelector('img')).toHaveClass('h-4', 'w-4');
+    expect(providerIconFrame.querySelector('img')).not.toHaveClass('grayscale');
+    expect(screen.getByText('Alpha')).toHaveClass('truncate', 'text-foreground');
+    expect(screen.getByText('Sonnet')).toHaveClass('text-muted-foreground');
+    expect(screen.queryByText('Alpha (Sonnet)')).not.toBeInTheDocument();
     expect(screen.getByText('Reviewing code')).toBeInTheDocument();
-    expect(container.querySelector('svg.lucide-circle.text-green-500')).not.toBeNull();
+    expect(container.querySelector('svg.lucide-circle.text-green-500')).toBeNull();
+  });
+
+  it('uses a grayscaled provider icon for offline agents', () => {
+    renderAgentRow({
+      isOnline: false,
+      activityState: null,
+      currentActivityTitle: null,
+      activityBadge: undefined,
+    });
+
+    expect(screen.getByLabelText(/Chat with Alpha \(offline\)/i)).toBeInTheDocument();
+    const providerIconFrame = screen.getByTitle('Provider: Claude (offline)');
+    expect(providerIconFrame).toHaveClass('bg-muted/20', 'border-border/60');
+    expect(providerIconFrame.querySelector('img')).toHaveClass('grayscale', 'opacity-50');
+    expect(screen.queryByText('Reviewing code')).not.toBeInTheDocument();
   });
 
   it('fires onClick when the row is clicked', () => {
@@ -138,6 +159,40 @@ describe('AgentRow', () => {
       'aria-current',
       'true',
     );
+    expect(screen.getByLabelText(/Chat with Alpha \(online\)/i)).toHaveClass(
+      'border-border',
+      'border-r-primary',
+      'bg-muted',
+    );
+  });
+
+  it('uses a subtle accent surface for team leads', () => {
+    renderAgentRow({ isTeamLead: true });
+
+    expect(screen.getByLabelText(/Chat with Alpha \(online\)/i)).toHaveClass(
+      'bg-primary/5',
+      'hover:bg-primary/10',
+    );
+    expect(screen.getByText('Alpha')).toHaveClass('text-[#8f4f39]', 'dark:text-[#d08a67]');
+  });
+
+  it('keeps long agent names and config labels inline and truncated', () => {
+    renderAgentRow({
+      agent: {
+        ...agent,
+        name: 'Very Long Agent Name That Should Truncate Inside The Row',
+      } as AgentOrGuest,
+      configDisplayName: 'Provider Config With A Very Long Model Override Label',
+    });
+
+    expect(
+      screen.getByText('Very Long Agent Name That Should Truncate Inside The Row'),
+    ).toHaveClass('truncate');
+    expect(screen.getByText('Provider Config With A Very Long Model Override Label')).toHaveClass(
+      'max-w-[45%]',
+      'truncate',
+      'text-muted-foreground',
+    );
   });
 
   it('shows Clone menu item when canClone is true', async () => {
@@ -146,9 +201,9 @@ describe('AgentRow', () => {
 
     fireEvent.contextMenu(screen.getByLabelText(/Chat with Alpha/i));
 
-    await waitFor(() => {
-      expect(screen.getByText('Clone')).toBeInTheDocument();
-    });
+    const cloneItem = await screen.findByText('Clone');
+    fireEvent.click(cloneItem);
+    expect(onClone).toHaveBeenCalledTimes(1);
   });
 
   it('does not show Clone menu item when canClone is false', async () => {
@@ -168,9 +223,9 @@ describe('AgentRow', () => {
 
     fireEvent.contextMenu(screen.getByLabelText(/Chat with Alpha/i));
 
-    await waitFor(() => {
-      expect(screen.getByText('Delete')).toBeInTheDocument();
-    });
+    const deleteItem = await screen.findByText('Delete');
+    fireEvent.click(deleteItem);
+    expect(onDelete).toHaveBeenCalledTimes(1);
   });
 
   it('does not show Delete menu item when canDelete is false', async () => {
@@ -193,5 +248,54 @@ describe('AgentRow', () => {
     await waitFor(() => {
       expect(screen.getByText('Deleting…')).toBeInTheDocument();
     });
+  });
+
+  it('fires edit team action from the context menu', async () => {
+    const onEditTeam = jest.fn();
+    renderAgentRow({
+      canEditTeam: true,
+      onEditTeam,
+    });
+
+    fireEvent.contextMenu(screen.getByLabelText(/Chat with Alpha/i));
+
+    fireEvent.click(await screen.findByText('Edit team'));
+
+    expect(onEditTeam).toHaveBeenCalledTimes(1);
+  });
+
+  it('fires context tracking toggle from the context menu', async () => {
+    const { onToggleContextTracking } = renderAgentRow();
+
+    fireEvent.contextMenu(screen.getByLabelText(/Chat with Alpha/i));
+
+    fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: /Context tracking/i }));
+
+    expect(onToggleContextTracking).toHaveBeenCalledTimes(1);
+  });
+
+  it('fires restart and launch session actions from the context menu', async () => {
+    const { onRestart, onLaunch } = renderAgentRow({ hasSession: false, sessionId: null });
+
+    fireEvent.contextMenu(screen.getByLabelText(/Chat with Alpha/i));
+
+    fireEvent.click(await screen.findByText('Restart session'));
+    fireEvent.click(screen.getByText('Launch session'));
+
+    await waitFor(() => {
+      expect(onRestart).toHaveBeenCalledTimes(1);
+      expect(onLaunch).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('fires terminate session action when an active session exists', async () => {
+    const { onTerminate } = renderAgentRow({ hasSession: true, sessionId: 'session-1' });
+
+    fireEvent.contextMenu(screen.getByLabelText(/Chat with Alpha/i));
+
+    fireEvent.click(await screen.findByText('Terminate session'));
+
+    expect(onTerminate).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('Launch session')).not.toBeInTheDocument();
   });
 });

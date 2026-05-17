@@ -21,6 +21,7 @@ import { useToast } from '@/ui/hooks/use-toast';
 import { Loader2, AlertTriangle, GitBranch, CheckCircle2 } from 'lucide-react';
 import { listWorktrees, type WorktreeSummary } from '@/modules/orchestrator/ui/app/lib/worktrees';
 import { moveEpicToWorktree, type MoveProgress } from '@/ui/lib/move-epic-to-worktree';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 import type { Epic, Status, Agent } from '@/ui/types';
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -58,14 +59,19 @@ type Phase = 'preflight' | 'select' | 'mapping' | 'confirm' | 'moving' | 'error'
 
 // ── Fetch helpers ──────────────────────────────────────────────────
 
-async function fetchSubEpicCounts(epicId: string): Promise<Record<string, number>> {
-  const res = await fetch(`/api/epics/${epicId}/sub-epics/counts`);
+type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
+async function fetchSubEpicCounts(
+  epicId: string,
+  fetchFn: FetchFn,
+): Promise<Record<string, number>> {
+  const res = await fetchFn(`/api/epics/${epicId}/sub-epics/counts`);
   if (!res.ok) throw new Error('Failed to fetch sub-epic counts');
   return res.json();
 }
 
-async function fetchCommentCount(epicId: string): Promise<number> {
-  const res = await fetch(`/api/epics/${epicId}/comments?limit=1`);
+async function fetchCommentCount(epicId: string, fetchFn: FetchFn): Promise<number> {
+  const res = await fetchFn(`/api/epics/${epicId}/comments?limit=1`);
   if (!res.ok) return 0;
   const data = await res.json();
   return data.total ?? 0;
@@ -181,6 +187,7 @@ export function MoveToWorktreeDialog({
 }: MoveToWorktreeDialogProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const apiFetch = useFetchFactory();
 
   const [phase, setPhase] = useState<Phase>('preflight');
   const [preflight, setPreflight] = useState<PreflightData | null>(null);
@@ -228,8 +235,8 @@ export function MoveToWorktreeDialog({
     (async () => {
       try {
         const [counts, commentCount] = await Promise.all([
-          fetchSubEpicCounts(epic.id),
-          fetchCommentCount(epic.id),
+          fetchSubEpicCounts(epic.id, apiFetch),
+          fetchCommentCount(epic.id, apiFetch),
         ]);
         if (cancelled) return;
         const totalDescendants = Object.values(counts).reduce((sum, n) => sum + n, 0);

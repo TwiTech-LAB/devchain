@@ -247,11 +247,24 @@ export function rewriteApiRequestUrl(url: string, options: RewriteApiRequestUrlO
   return parsedUrl.toString();
 }
 
+let _installed = false;
+let _uninstallRef: (() => void) | null = null;
+
+export function _resetInstallGuard(): void {
+  _installed = false;
+  _uninstallRef = null;
+}
+
 export function installWorktreeFetchInterceptor(
   options: WorktreeFetchInterceptorOptions,
 ): () => void {
   if (typeof window === 'undefined' || typeof window.fetch !== 'function') {
     return () => undefined;
+  }
+
+  if (_installed) {
+    console.warn('installWorktreeFetchInterceptor: already installed; skipping');
+    return _uninstallRef ?? (() => undefined);
   }
 
   const origin = getOrigin(options.origin);
@@ -273,10 +286,17 @@ export function installWorktreeFetchInterceptor(
   };
 
   window.fetch = interceptedFetch;
+  _installed = true;
 
-  return () => {
+  const uninstall = () => {
     if (window.fetch === interceptedFetch) {
       window.fetch = previousFetch;
     }
+    _installed = false;
+    _uninstallRef = null;
   };
+
+  _uninstallRef = uninstall;
+
+  return uninstall;
 }

@@ -22,3 +22,15 @@ packages/shared/src/**/*.js.map
 .turbo/
 # Test coverage
 coverage/
+
+# Mobile app (operator-provided Firebase config)
+apps/mobile-app/google-services.json
+apps/mobile-app/.expo/
+apps/mobile-app/android/
+apps/mobile-app/ios/
+
+# Local tool metadata
+.serena/
+
+# Binary tarballs
+*.tgz

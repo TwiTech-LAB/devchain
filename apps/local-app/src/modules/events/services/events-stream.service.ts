@@ -1,13 +1,21 @@
-import { Inject, Injectable, Logger, forwardRef } from '@nestjs/common';
-import { TerminalGateway } from '../../terminal/gateways/terminal.gateway';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  REALTIME_BROADCASTER,
+  type RealtimeBroadcaster,
+} from '../../realtime/ports/realtime-broadcaster.port';
 
+/**
+ * T2 disposition: keep — domain-specific broadcast vocabulary (broadcastEventCreated,
+ * broadcastHandlerResult) adds semantic clarity over raw broadcastEvent calls.
+ * Single caller: EventLogService.
+ */
 @Injectable()
 export class EventsStreamService {
   private readonly logger = new Logger(EventsStreamService.name);
 
   constructor(
-    @Inject(forwardRef(() => TerminalGateway))
-    private readonly terminalGateway: TerminalGateway,
+    @Inject(REALTIME_BROADCASTER)
+    private readonly broadcaster: RealtimeBroadcaster,
   ) {}
 
   broadcastEventCreated(payload: {
@@ -34,7 +42,7 @@ export class EventsStreamService {
 
   private broadcast(topic: string, type: string, payload: unknown): void {
     try {
-      this.terminalGateway.broadcastEvent(topic, type, payload);
+      this.broadcaster.broadcastEvent(topic, type, payload);
     } catch (error) {
       this.logger.error({ topic, type, error }, 'Failed to broadcast events stream update');
     }

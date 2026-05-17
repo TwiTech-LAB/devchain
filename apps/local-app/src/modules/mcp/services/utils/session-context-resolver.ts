@@ -1,23 +1,23 @@
 import { createLogger } from '../../../../common/logging/logger';
-import type { StorageService } from '../../../storage/interfaces/storage.interface';
+import type {
+  AgentStorage,
+  ProjectStorage,
+  GuestStorage,
+} from '../../../storage/interfaces/storage.interface';
 import type { SessionsService } from '../../../sessions/services/sessions.service';
 import type { GuestsService } from '../../../guests/services/guests.service';
-import type { TmuxService } from '../../../terminal/services/tmux.service';
+import type { TerminalIOService } from '../../../terminal/services/terminal-io/terminal-io.service';
 import type { AgentSessionContext, GuestSessionContext, McpResponse } from '../../dtos/mcp.dto';
+import { redactSessionId } from './redact';
 
 const logger = createLogger('McpService');
 
-function redactSessionId(sessionId: string | undefined): string {
-  if (!sessionId) return '(none)';
-  return sessionId.slice(0, 4) + '****';
-}
-
 export class SessionContextResolver {
   constructor(
-    private readonly storage: StorageService,
+    private readonly storage: AgentStorage & ProjectStorage & GuestStorage,
     private readonly sessionsService?: SessionsService,
     private readonly guestsService?: GuestsService,
-    private readonly tmuxService?: TmuxService,
+    private readonly terminalIO?: TerminalIOService,
   ) {}
 
   async resolve(sessionId: string): Promise<McpResponse> {
@@ -147,7 +147,7 @@ export class SessionContextResolver {
   }
 
   private async tryResolveGuestContext(guestId: string): Promise<GuestSessionContext | null> {
-    if (!this.guestsService || !this.tmuxService) {
+    if (!this.guestsService || !this.terminalIO) {
       return null;
     }
 
@@ -164,7 +164,7 @@ export class SessionContextResolver {
         }
       }
 
-      const sessionAlive = await this.tmuxService.hasSession(guest.tmuxSessionId);
+      const sessionAlive = await this.terminalIO.sessionExists({ name: guest.tmuxSessionId });
       if (!sessionAlive) {
         logger.warn(
           { guestId: guest.id, tmuxSessionId: guest.tmuxSessionId },

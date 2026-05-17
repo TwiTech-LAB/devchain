@@ -696,7 +696,7 @@ describe('TerminalDock collapsed bar pills', () => {
       );
 
       await waitFor(() => {
-        expect(mockFetchAgentSummary).toHaveBeenCalledWith('agent-456');
+        expect(mockFetchAgentSummary).toHaveBeenCalledWith('agent-456', expect.any(Function));
       });
     });
 
@@ -718,8 +718,8 @@ describe('TerminalDock collapsed bar pills', () => {
       await waitFor(() => {
         // Should deduplicate: only 2 unique agents
         expect(mockFetchAgentSummary).toHaveBeenCalledTimes(2);
-        expect(mockFetchAgentSummary).toHaveBeenCalledWith('agent-a');
-        expect(mockFetchAgentSummary).toHaveBeenCalledWith('agent-b');
+        expect(mockFetchAgentSummary).toHaveBeenCalledWith('agent-a', expect.any(Function));
+        expect(mockFetchAgentSummary).toHaveBeenCalledWith('agent-b', expect.any(Function));
       });
     });
   });

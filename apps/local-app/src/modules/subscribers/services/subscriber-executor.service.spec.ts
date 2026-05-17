@@ -9,11 +9,10 @@ import {
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
 import type { Subscriber, EventFilter, ActionInput } from '../../storage/models/domain.models';
 import type { TerminalWatcherTriggeredEventPayload } from '../../events/catalog/terminal.watcher.triggered';
-import { TmuxService } from '../../terminal/services/tmux.service';
+import { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
 import { SessionsService } from '../../sessions/services/sessions.service';
 import { SessionCoordinatorService } from '../../sessions/services/session-coordinator.service';
-import { TerminalSendCoordinatorService } from '../../terminal/services/terminal-send-coordinator.service';
-import { SessionsMessagePoolService } from '../../sessions/services/sessions-message-pool.service';
+import { AgentMessageDeliveryService } from '../../agent-message-delivery/agent-message-delivery.service';
 import { EventLogService } from '../../events/services/event-log.service';
 import { AutomationSchedulerService } from './automation-scheduler.service';
 import * as actionsRegistry from '../actions/actions.registry';
@@ -26,11 +25,10 @@ describe('SubscriberExecutorService', () => {
   let mockStorage: jest.Mocked<
     Pick<StorageService, 'findSubscribersByEventName' | 'getSubscriber' | 'getAgent'>
   >;
-  let mockTmuxService: jest.Mocked<Pick<TmuxService, 'pasteAndSubmit'>>;
+  let mockTerminalIO: jest.Mocked<Partial<TerminalIOService>>;
   let mockSessionsService: jest.Mocked<Pick<SessionsService, 'getSession'>>;
   let mockSessionCoordinator: jest.Mocked<Pick<SessionCoordinatorService, 'withAgentLock'>>;
-  let mockSendCoordinator: jest.Mocked<Pick<TerminalSendCoordinatorService, 'ensureAgentGap'>>;
-  let mockMessagePoolService: jest.Mocked<Pick<SessionsMessagePoolService, 'enqueue'>>;
+  let mockAmd: jest.Mocked<Pick<AgentMessageDeliveryService, 'deliver'>>;
   let mockEventLogService: jest.Mocked<
     Pick<EventLogService, 'recordHandledOk' | 'recordHandledFail'>
   >;
@@ -113,9 +111,7 @@ describe('SubscriberExecutorService', () => {
       schedule: jest.fn(),
     };
 
-    mockTmuxService = {
-      pasteAndSubmit: jest.fn().mockResolvedValue(undefined),
-    };
+    mockTerminalIO = {};
 
     mockSessionsService = {
       getSession: jest.fn().mockReturnValue({
@@ -135,12 +131,11 @@ describe('SubscriberExecutorService', () => {
       withAgentLock: jest.fn().mockImplementation(async (_agentId, fn) => fn()),
     };
 
-    mockSendCoordinator = {
-      ensureAgentGap: jest.fn().mockResolvedValue(undefined),
-    };
-
-    mockMessagePoolService = {
-      enqueue: jest.fn().mockResolvedValue({ status: 'queued', poolSize: 1 }),
+    mockAmd = {
+      deliver: jest.fn().mockResolvedValue({
+        status: 'queued',
+        results: [{ agentId: 'agent-456', status: 'queued' }],
+      }),
     };
 
     mockEventLogService = {
@@ -167,8 +162,8 @@ describe('SubscriberExecutorService', () => {
           useValue: mockStorage,
         },
         {
-          provide: TmuxService,
-          useValue: mockTmuxService,
+          provide: TerminalIOService,
+          useValue: mockTerminalIO,
         },
         {
           provide: SessionsService,
@@ -179,12 +174,8 @@ describe('SubscriberExecutorService', () => {
           useValue: mockSessionCoordinator,
         },
         {
-          provide: TerminalSendCoordinatorService,
-          useValue: mockSendCoordinator,
-        },
-        {
-          provide: SessionsMessagePoolService,
-          useValue: mockMessagePoolService,
+          provide: AgentMessageDeliveryService,
+          useValue: mockAmd,
         },
         {
           provide: EventLogService,
@@ -1264,9 +1255,8 @@ describe('SubscriberExecutorService', () => {
         await service.executeSubscriber(subscriber, 'test.event', payload);
 
         const context = mockExecute.mock.calls[0][0];
-        expect(context.tmuxService).toBeDefined();
+        expect(context.terminalIO).toBeDefined();
         expect(context.sessionsService).toBeDefined();
-        expect(context.sendCoordinator).toBeDefined();
         expect(context.logger).toBeDefined();
       });
     });
@@ -1395,11 +1385,10 @@ describe('SubscriberExecutorService', () => {
       const realScheduler = new AutomationSchedulerService();
       const serviceWithRealScheduler = new SubscriberExecutorService(
         mockStorage as unknown as StorageService,
-        mockTmuxService as unknown as TmuxService,
+        mockTerminalIO as unknown as TerminalIOService,
         mockSessionsService as unknown as SessionsService,
         mockSessionCoordinator as unknown as SessionCoordinatorService,
-        mockSendCoordinator as unknown as TerminalSendCoordinatorService,
-        mockMessagePoolService as unknown as SessionsMessagePoolService,
+        mockAmd as unknown as AgentMessageDeliveryService,
         mockEventLogService as unknown as EventLogService,
         mockEventEmitter as unknown as EventEmitter2,
         realScheduler,
@@ -2089,12 +2078,30 @@ describe('SubscriberExecutorService', () => {
 
         expect(result.success).toBe(false);
         expect(result.error).toBeDefined();
-        expect(mockMessagePoolService.enqueue).not.toHaveBeenCalled();
+        expect(mockAmd.deliver).not.toHaveBeenCalled();
       });
 
       it('send_agent_message.text without agentId renders without team context', async () => {
         const result = await resolveMessage('{{sessionIdShort}} {{team_name}}', { agentId: null });
         expect(result.text).toBe('session- ');
+      });
+
+      it('legacy {team_name} and {is_team_lead} tokens still work after kernel migration', async () => {
+        const result = await resolveMessage(
+          'Team: {team_name}, lead: {is_team_lead}',
+          { agentId: 'agent-456' },
+          [{ name: 'Backend', teamLeadAgentId: 'agent-456' }],
+        );
+        expect(result.text).toBe('Team: Backend, lead: true');
+      });
+
+      it('legacy {otherEventField} is NOT promoted (stays literal)', async () => {
+        const result = await resolveMessage(
+          'Sender: {senderName}, team: {team_name}',
+          { agentId: 'agent-456', senderName: 'alice' },
+          [],
+        );
+        expect(result.text).toBe('Sender: {senderName}, team: ');
       });
     });
   });
@@ -2209,5 +2216,27 @@ describe('EventEmitter2 onAny eventName capture (integration)', () => {
     expect(receivedEventNames).toHaveLength(1);
     expect(receivedEventNames[0]).toBe('test.event');
     expect(receivedEventNames[0]).not.toBeUndefined();
+  });
+
+  describe('getSessionRuntime fail-fast', () => {
+    it('throws when SessionRuntime cannot be resolved via moduleRef', () => {
+      const nullModuleRef = { get: jest.fn().mockReturnValue(undefined) };
+
+      const svc = new SubscriberExecutorService(
+        {} as unknown as never, // storage
+        {} as unknown as never, // terminalIO
+        {} as unknown as never, // sessionsService
+        {} as unknown as never, // sessionCoordinator
+        {} as unknown as never, // amd
+        {} as unknown as never, // eventLogService
+        { addListener: jest.fn(), onAny: jest.fn() } as unknown as never, // eventEmitter
+        {} as unknown as never, // scheduler
+        nullModuleRef as unknown as never, // moduleRef (11th param)
+      );
+
+      expect(() =>
+        (svc as unknown as { getSessionRuntime: () => unknown }).getSessionRuntime(),
+      ).toThrow('SessionRuntime is not available in the current module context');
+    });
   });
 });

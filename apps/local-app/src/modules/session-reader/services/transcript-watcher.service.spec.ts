@@ -303,6 +303,7 @@ describe('TranscriptWatcherService', () => {
       mockCacheService.getOrParse.mockResolvedValue(session);
 
       await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+      mockCacheService.getOrParse.mockClear();
 
       // File grew
       mockedFsPromisesStat.mockResolvedValue(makeStat(1500));
@@ -369,7 +370,10 @@ describe('TranscriptWatcherService', () => {
       const session = makeSession({
         metrics: makeMetrics({ messageCount: 5, totalTokens: 500, costUsd: 0.05 }),
       });
-      mockCacheService.getOrParse.mockResolvedValue(session);
+      // Seed returns empty session; file-change returns session with 5 messages
+      mockCacheService.getOrParse
+        .mockResolvedValueOnce(makeSession({ metrics: makeMetrics({ messageCount: 0 }) }))
+        .mockResolvedValue(session);
 
       await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
 
@@ -392,6 +396,13 @@ describe('TranscriptWatcherService', () => {
           costUsd: 0.05,
           messageCount: 5,
         },
+        cursor: expect.any(String),
+        prevCursor: expect.any(String),
+        replaceFromChunkIndex: 0,
+        newChunkIds: expect.any(Array),
+        totalChunkCount: expect.any(Number),
+        deltaChunks: expect.any(Array),
+        deltaMessages: expect.any(Array),
       });
     });
 
@@ -524,6 +535,7 @@ describe('TranscriptWatcherService', () => {
 
     it('should not schedule debounce when size is unchanged in stat-poll', async () => {
       await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+      mockCacheService.getOrParse.mockClear();
 
       // Stat returns same size and same inode
       mockedFsPromisesStat.mockResolvedValue(makeStat(1000));
@@ -531,7 +543,7 @@ describe('TranscriptWatcherService', () => {
       await jest.advanceTimersByTimeAsync(3000);
       await jest.advanceTimersByTimeAsync(200);
 
-      // No parse should have been triggered
+      // No parse should have been triggered (beyond seed)
       expect(mockCacheService.getOrParse).not.toHaveBeenCalled();
     });
 
@@ -618,6 +630,7 @@ describe('TranscriptWatcherService', () => {
       mockCacheService.getOrParse.mockResolvedValue(session);
 
       await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+      mockCacheService.getOrParse.mockClear();
 
       // First stat-poll: file grew → schedules debounce
       mockedFsPromisesStat.mockResolvedValue(makeStat(2000));
@@ -701,7 +714,8 @@ describe('TranscriptWatcherService', () => {
         'session.transcript.ended',
         expect.objectContaining({
           sessionId: SESSION_ID,
-          finalMetrics: expect.objectContaining({ messageCount: 0 }),
+          // Seeded from initial parse during startWatching
+          finalMetrics: expect.objectContaining({ messageCount: expect.any(Number) }),
         }),
       );
     });
@@ -741,13 +755,14 @@ describe('TranscriptWatcherService', () => {
       const mockWatcher = createMockFsWatcher();
 
       await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+      mockCacheService.getOrParse.mockClear();
 
       // Trigger an unrecognized event type
       mockWatcher.triggerChange('access');
 
       await jest.advanceTimersByTimeAsync(200);
 
-      // No parse triggered
+      // No parse triggered (beyond seed)
       expect(mockCacheService.getOrParse).not.toHaveBeenCalled();
     });
   });
@@ -785,6 +800,7 @@ describe('TranscriptWatcherService', () => {
       mockCacheService.getOrParse.mockResolvedValue(session);
 
       await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+      mockCacheService.getOrParse.mockClear();
 
       // File changed
       mockedFsPromisesStat.mockResolvedValue(makeStat(2000));
@@ -792,7 +808,7 @@ describe('TranscriptWatcherService', () => {
       // First change event → schedules debounce
       mockWatcher.triggerChange('change');
 
-      // Second change event BEFORE debounce fires → clears old + schedules new (line 193)
+      // Second change event BEFORE debounce fires → clears old + schedules new
       mockWatcher.triggerChange('change');
 
       // Advance past debounce
@@ -840,6 +856,7 @@ describe('TranscriptWatcherService', () => {
       const mockWatcher = createMockFsWatcher();
 
       await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+      mockCacheService.getOrParse.mockClear();
 
       // Trigger change → schedules debounce (100ms)
       mockedFsPromisesStat.mockResolvedValue(makeStat(2000));
@@ -866,6 +883,7 @@ describe('TranscriptWatcherService', () => {
       const mockWatcher = createMockFsWatcher();
 
       await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+      mockCacheService.getOrParse.mockClear();
 
       // Stop watching (removes state from map)
       const session = makeSession({ metrics: makeMetrics({ messageCount: 0 }) });
@@ -882,6 +900,227 @@ describe('TranscriptWatcherService', () => {
 
       // getOrParse should only have been called once (during stopWatching's final parse)
       expect(mockCacheService.getOrParse).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // R2: Watcher state seeding (no first-update flood)
+  // -------------------------------------------------------------------------
+
+  describe('watcher state seeding', () => {
+    it('should seed lastMessageCount from current session during startWatching', async () => {
+      // Seed with 3 messages already in the transcript
+      const existingSession = makeSession({ metrics: makeMetrics({ messageCount: 3 }) });
+      mockCacheService.getOrParse.mockResolvedValue(existingSession);
+
+      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+      mockCacheService.getOrParse.mockClear();
+
+      // File grows — session now has 4 messages
+      const grownSession = makeSession({ metrics: makeMetrics({ messageCount: 4 }) });
+      mockCacheService.getOrParse.mockResolvedValue(grownSession);
+
+      mockedFsPromisesStat.mockResolvedValue(makeStat(2000));
+      await jest.advanceTimersByTimeAsync(3000);
+      await jest.advanceTimersByTimeAsync(200);
+
+      // Should publish with newMessageCount=1 (4-3), NOT newMessageCount=4 (4-0)
+      expect(mockEvents.publish).toHaveBeenCalledWith(
+        'session.transcript.updated',
+        expect.objectContaining({
+          newMessageCount: 1,
+        }),
+      );
+    });
+
+    it('should gracefully handle seed parse failure and start from zero', async () => {
+      mockCacheService.getOrParse.mockRejectedValueOnce(new Error('Parse failed'));
+
+      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+
+      expect(service.activeWatcherCount).toBe(1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // newChunkIds and totalChunkCount in published event (4c.1)
+  // -------------------------------------------------------------------------
+
+  describe('newChunkIds and totalChunkCount', () => {
+    it('should include newChunkIds and totalChunkCount in transcript.updated event', async () => {
+      const aiMessage = {
+        id: 'ai-msg',
+        parentId: null,
+        role: 'assistant' as const,
+        timestamp: new Date('2026-01-01T10:00:05.000Z'),
+        content: [{ type: 'text', text: 'response' }],
+        toolCalls: [],
+        toolResults: [],
+        isMeta: false,
+        isSidechain: false,
+        usage: { input: 100, output: 200, cacheRead: 0, cacheCreation: 0 },
+      };
+
+      const sessionWithAI = makeSession({
+        messages: [aiMessage] as never[],
+        metrics: makeMetrics({ messageCount: 1 }),
+      });
+
+      mockCacheService.getOrParse
+        .mockResolvedValueOnce(makeSession({ metrics: makeMetrics({ messageCount: 0 }) }))
+        .mockResolvedValue(sessionWithAI);
+
+      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+      mockCacheService.getOrParse.mockClear();
+      mockCacheService.getOrParse.mockResolvedValue(sessionWithAI);
+
+      mockedFsPromisesStat.mockResolvedValue(makeStat(2000));
+      await jest.advanceTimersByTimeAsync(3000);
+      await jest.advanceTimersByTimeAsync(200);
+
+      const publishCall = mockEvents.publish.mock.calls.find(
+        ([name]) => name === 'session.transcript.updated',
+      );
+      expect(publishCall).toBeDefined();
+
+      const payload = publishCall![1] as {
+        newChunkIds: string[];
+        totalChunkCount: number;
+        replaceFromChunkIndex: number;
+      };
+
+      expect(payload.newChunkIds).toEqual(expect.any(Array));
+      expect(payload.newChunkIds.length).toBeGreaterThan(0);
+      expect(payload.totalChunkCount).toBe(1);
+      expect(payload.newChunkIds).toEqual(['chunk-0']);
+    });
+
+    it('should compute newChunkIds from replaceFromChunkIndex to end of chunks', async () => {
+      const userMsg = {
+        id: 'user-msg',
+        parentId: null,
+        role: 'user' as const,
+        timestamp: new Date('2026-01-01T10:00:00.000Z'),
+        content: [{ type: 'text', text: 'hello' }],
+        toolCalls: [],
+        toolResults: [],
+        isMeta: false,
+        isSidechain: false,
+      };
+      const aiMsg = {
+        id: 'ai-msg',
+        parentId: null,
+        role: 'assistant' as const,
+        timestamp: new Date('2026-01-01T10:00:05.000Z'),
+        content: [{ type: 'text', text: 'hi' }],
+        toolCalls: [],
+        toolResults: [],
+        isMeta: false,
+        isSidechain: false,
+        usage: { input: 100, output: 50, cacheRead: 0, cacheCreation: 0 },
+      };
+      const aiMsg2 = {
+        id: 'ai-msg-2',
+        parentId: null,
+        role: 'assistant' as const,
+        timestamp: new Date('2026-01-01T10:00:10.000Z'),
+        content: [{ type: 'text', text: 'more' }],
+        toolCalls: [],
+        toolResults: [],
+        isMeta: false,
+        isSidechain: false,
+        usage: { input: 200, output: 100, cacheRead: 0, cacheCreation: 0 },
+      };
+
+      // Seed with 2 messages (user + ai → 2 chunks: user, ai)
+      const seedSession = makeSession({
+        messages: [userMsg, aiMsg] as never[],
+        metrics: makeMetrics({ messageCount: 2 }),
+      });
+      mockCacheService.getOrParse.mockResolvedValueOnce(seedSession);
+
+      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+      mockCacheService.getOrParse.mockClear();
+
+      // File grows: 3 messages now (user + ai + ai → 2 chunks: user, ai(both))
+      const grownSession = makeSession({
+        messages: [userMsg, aiMsg, aiMsg2] as never[],
+        metrics: makeMetrics({ messageCount: 3 }),
+      });
+      mockCacheService.getOrParse.mockResolvedValue(grownSession);
+
+      mockedFsPromisesStat.mockResolvedValue(makeStat(2000));
+      await jest.advanceTimersByTimeAsync(3000);
+      await jest.advanceTimersByTimeAsync(200);
+
+      const publishCall = mockEvents.publish.mock.calls.find(
+        ([name]) => name === 'session.transcript.updated',
+      );
+      expect(publishCall).toBeDefined();
+
+      const payload = publishCall![1] as {
+        newChunkIds: string[];
+        totalChunkCount: number;
+        replaceFromChunkIndex: number;
+      };
+
+      // replaceFromChunkIndex = max(0, lastChunkCount - 1) = max(0, 2 - 1) = 1
+      expect(payload.replaceFromChunkIndex).toBe(1);
+      // newChunkIds = chunks.slice(1) = ['chunk-1'] (the AI chunk that was extended)
+      expect(payload.newChunkIds).toEqual(['chunk-1']);
+      expect(payload.totalChunkCount).toBe(2);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Wire serialization: deltaChunks must not contain deprecated `turns`
+  // -------------------------------------------------------------------------
+
+  describe('deltaChunks wire shape', () => {
+    it('should not include turns field in deltaChunks (T1.3 contract)', async () => {
+      const aiMessage = {
+        id: 'ai-msg',
+        parentId: null,
+        role: 'assistant' as const,
+        timestamp: new Date('2026-01-01T10:00:05.000Z'),
+        content: [{ type: 'text', text: 'response' }],
+        toolCalls: [],
+        toolResults: [],
+        isMeta: false,
+        isSidechain: false,
+        usage: { input: 100, output: 200, cacheRead: 0, cacheCreation: 0 },
+      };
+
+      const sessionWithAI = makeSession({
+        messages: [aiMessage] as never[],
+        metrics: makeMetrics({ messageCount: 1 }),
+      });
+
+      mockCacheService.getOrParse
+        .mockResolvedValueOnce(makeSession({ metrics: makeMetrics({ messageCount: 0 }) }))
+        .mockResolvedValue(sessionWithAI);
+
+      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+      mockCacheService.getOrParse.mockClear();
+      mockCacheService.getOrParse.mockResolvedValue(sessionWithAI);
+
+      mockedFsPromisesStat.mockResolvedValue(makeStat(2000));
+      await jest.advanceTimersByTimeAsync(3000);
+      await jest.advanceTimersByTimeAsync(200);
+
+      expect(mockEvents.publish).toHaveBeenCalledWith(
+        'session.transcript.updated',
+        expect.objectContaining({ sessionId: SESSION_ID }),
+      );
+
+      const publishCall = mockEvents.publish.mock.calls.find(
+        ([name]) => name === 'session.transcript.updated',
+      );
+      const payload = publishCall![1] as { deltaChunks: Record<string, unknown>[] };
+
+      for (const chunk of payload.deltaChunks) {
+        expect(chunk).not.toHaveProperty('turns');
+      }
     });
   });
 });

@@ -22,6 +22,12 @@ jest.mock('@/ui/hooks/useAppSocket', () => ({
   useAppSocket: jest.fn(),
 }));
 
+// Legacy mode: explicitly mock paged flag to false (legacy full-transcript path)
+jest.mock('@/ui/hooks/usePagedTranscript', () => ({
+  usePagedTranscriptFlag: () => [false, jest.fn()],
+  isPagedTranscriptEnabled: () => false,
+}));
+
 jest.mock('@/ui/lib/sessions', () => ({
   ...jest.requireActual('@/ui/lib/sessions'),
   fetchJsonOrThrow: jest.fn(),
@@ -29,6 +35,17 @@ jest.mock('@/ui/lib/sessions', () => ({
 
 const useAppSocketMock = useAppSocket as jest.MockedFunction<typeof useAppSocket>;
 const fetchJsonOrThrowMock = fetchJsonOrThrow as jest.MockedFunction<typeof fetchJsonOrThrow>;
+const fetchMock = jest.fn<Promise<Response>, [string | URL | Request, RequestInit?]>();
+
+function mockResponse(body: unknown, status = 200): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    text: () => Promise.resolve(JSON.stringify(body)),
+    json: () => Promise.resolve(body),
+    headers: new Headers(),
+  } as unknown as Response;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -179,15 +196,40 @@ function IntegrationHarness({ sessionId }: { sessionId: string | null }) {
 describe('Session Reader Integration', () => {
   let queryClient: QueryClient;
 
+  const originalFetch = global.fetch;
+
   beforeEach(() => {
     jest.clearAllMocks();
+    fetchMock.mockReset();
+    global.fetch = fetchMock as unknown as typeof fetch;
     queryClient = createQueryClient();
     useAppSocketMock.mockReturnValue(createMockSocket());
   });
 
   afterEach(() => {
     queryClient.clear();
+    global.fetch = originalFetch;
   });
+
+  function setupMocks(
+    transcript: SerializedSession | (() => Promise<SerializedSession>),
+    summary: TranscriptSummary,
+  ) {
+    fetchJsonOrThrowMock.mockImplementation((url: string) => {
+      if (url.includes('/transcript/summary')) return Promise.resolve(summary);
+      return Promise.reject(new Error(`Unexpected fetchJsonOrThrow URL: ${url}`));
+    });
+    fetchMock.mockImplementation((url) => {
+      const urlStr = String(url);
+      if (urlStr.includes('/transcript') && !urlStr.includes('/transcript/summary')) {
+        if (typeof transcript === 'function') {
+          return transcript().then((data) => Promise.resolve(mockResponse(data)));
+        }
+        return Promise.resolve(mockResponse(transcript));
+      }
+      return Promise.reject(new Error(`Unexpected fetch URL: ${urlStr}`));
+    });
+  }
 
   function renderHarness(sessionId: string | null = 'session-1') {
     return render(
@@ -205,11 +247,7 @@ describe('Session Reader Integration', () => {
     const session = makeSession();
     const summary = makeSummary();
 
-    fetchJsonOrThrowMock.mockImplementation((url: string) => {
-      if (url.includes('/transcript/summary')) return Promise.resolve(summary);
-      if (url.includes('/transcript')) return Promise.resolve(session);
-      return Promise.reject(new Error(`Unexpected URL: ${url}`));
-    });
+    setupMocks(session, summary);
 
     renderHarness();
 
@@ -238,11 +276,7 @@ describe('Session Reader Integration', () => {
       resolveTranscript = r;
     });
 
-    fetchJsonOrThrowMock.mockImplementation((url: string) => {
-      if (url.includes('/transcript/summary')) return Promise.resolve(makeSummary());
-      if (url.includes('/transcript')) return transcriptPromise;
-      return Promise.reject(new Error(`Unexpected URL: ${url}`));
-    });
+    setupMocks(() => transcriptPromise, makeSummary());
 
     renderHarness();
 
@@ -269,11 +303,7 @@ describe('Session Reader Integration', () => {
     const session = makeSession();
     const summary = makeSummary();
 
-    fetchJsonOrThrowMock.mockImplementation((url: string) => {
-      if (url.includes('/transcript/summary')) return Promise.resolve(summary);
-      if (url.includes('/transcript')) return Promise.resolve(session);
-      return Promise.reject(new Error(`Unexpected URL: ${url}`));
-    });
+    setupMocks(session, summary);
 
     renderHarness();
 
@@ -304,11 +334,7 @@ describe('Session Reader Integration', () => {
       messageCount: 3,
     });
 
-    fetchJsonOrThrowMock.mockImplementation((url: string) => {
-      if (url.includes('/transcript/summary')) return Promise.resolve(updatedSummary);
-      if (url.includes('/transcript')) return Promise.resolve(updatedSession);
-      return Promise.reject(new Error(`Unexpected URL: ${url}`));
-    });
+    setupMocks(updatedSession, updatedSummary);
 
     // Simulate WS event
     const handler = captureWsHandler();
@@ -340,11 +366,7 @@ describe('Session Reader Integration', () => {
     const session = makeSession({ isOngoing: true });
     const summary = makeSummary({ isOngoing: true });
 
-    fetchJsonOrThrowMock.mockImplementation((url: string) => {
-      if (url.includes('/transcript/summary')) return Promise.resolve(summary);
-      if (url.includes('/transcript')) return Promise.resolve(session);
-      return Promise.reject(new Error(`Unexpected URL: ${url}`));
-    });
+    setupMocks(session, summary);
 
     renderHarness();
 
@@ -368,11 +390,7 @@ describe('Session Reader Integration', () => {
       metrics: makeMetrics({ isOngoing: false }),
     });
 
-    fetchJsonOrThrowMock.mockImplementation((url: string) => {
-      if (url.includes('/transcript/summary')) return Promise.resolve(summary);
-      if (url.includes('/transcript')) return Promise.resolve(session);
-      return Promise.reject(new Error(`Unexpected URL: ${url}`));
-    });
+    setupMocks(session, summary);
 
     renderHarness();
 
@@ -393,11 +411,7 @@ describe('Session Reader Integration', () => {
   // -------------------------------------------------------------------------
 
   it('hides panel when switching to terminal tab and restores on session tab', async () => {
-    fetchJsonOrThrowMock.mockImplementation((url: string) => {
-      if (url.includes('/transcript/summary')) return Promise.resolve(makeSummary());
-      if (url.includes('/transcript')) return Promise.resolve(makeSession());
-      return Promise.reject(new Error(`Unexpected URL: ${url}`));
-    });
+    setupMocks(makeSession(), makeSummary());
 
     renderHarness();
 
@@ -427,11 +441,7 @@ describe('Session Reader Integration', () => {
   });
 
   it('chip click switches from terminal to session tab', async () => {
-    fetchJsonOrThrowMock.mockImplementation((url: string) => {
-      if (url.includes('/transcript/summary')) return Promise.resolve(makeSummary());
-      if (url.includes('/transcript')) return Promise.resolve(makeSession());
-      return Promise.reject(new Error(`Unexpected URL: ${url}`));
-    });
+    setupMocks(makeSession(), makeSummary());
 
     renderHarness();
 
@@ -453,6 +463,9 @@ describe('Session Reader Integration', () => {
   // -------------------------------------------------------------------------
 
   it('shows error in panel when fetch fails', async () => {
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(mockResponse({ message: 'Server error' }, 500)),
+    );
     fetchJsonOrThrowMock.mockRejectedValue(new Error('Server error'));
 
     renderHarness();

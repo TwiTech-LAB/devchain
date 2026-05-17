@@ -1,8 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import { DB_CONNECTION } from '../../storage/db/db.provider';
+import { getRawSqliteClient } from '../../storage/db/sqlite-raw';
 import { createLogger } from '../../../common/logging/logger';
 import { ValidationError } from '../../../common/errors/error-types';
 import {
@@ -33,11 +33,10 @@ function isTemplateStore(value: unknown): value is TemplateStore {
 @Injectable()
 export class ChatSettingsService {
   private readonly key = 'chat.invite_template';
-  private readonly sqlite: Database.Database;
+  private readonly sqlite;
 
   constructor(@Inject(DB_CONNECTION) private readonly db: BetterSQLite3Database) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    this.sqlite = (this.db as any).session?.client ?? (this.db as unknown as Database.Database);
+    this.sqlite = getRawSqliteClient(this.db);
   }
 
   async getInviteTemplate(projectId: string): Promise<string> {

@@ -34,6 +34,14 @@ import {
   TemplatePresetSchema,
 } from '../../settings/dtos/settings.dto';
 import { ExportWithOverridesSchema } from '../dtos/export.dto';
+import {
+  CreateProjectFromRegistryDto,
+  RestoreTemplateBackupDto,
+  TemplateBackupResponse,
+  UpgradeTemplateDto,
+} from '../dtos/template-upgrade.dto';
+import { ProjectRegistryImportService } from '../services/project-registry-import.service';
+import { ProjectTemplateUpgradeService } from '../services/project-template-upgrade.service';
 
 const logger = createLogger('ProjectsController');
 
@@ -60,6 +68,28 @@ const CreateProjectSchema = z.object({
 });
 
 const UpdateProjectSchema = CreateProjectSchema.partial();
+
+const UpgradeTemplateRequestSchema = z.object({
+  targetVersion: z.string().regex(SEMVER_PATTERN, VALIDATION_MESSAGES.INVALID_VERSION),
+});
+
+const RestoreTemplateBackupRequestSchema = z.object({
+  backupId: z
+    .string()
+    .min(1, 'backupId is required')
+    .regex(/^backup-/, 'Invalid backup ID format'),
+});
+
+const CreateProjectFromRegistryRequestSchema = z.object({
+  slug: z
+    .string()
+    .min(1, 'Template slug is required')
+    .regex(SLUG_PATTERN, VALIDATION_MESSAGES.INVALID_SLUG),
+  version: z.string().regex(SEMVER_PATTERN, VALIDATION_MESSAGES.INVALID_VERSION),
+  projectName: z.string().min(1, 'Project name is required'),
+  projectDescription: z.preprocess(normalizeOptionalStringField, z.string().min(1).optional()),
+  rootPath: z.string().min(1, 'Root path is required'),
+});
 
 /**
  * Schema for familyProviderMappings: familySlug → providerName
@@ -95,12 +125,25 @@ function normalizeOptionalStringField(value: unknown): unknown {
   return trimmed.length === 0 ? undefined : trimmed;
 }
 
+function parseRequestBody<T>(schema: z.ZodType<T>, body: unknown, message: string): T {
+  const result = schema.safeParse(body);
+  if (!result.success) {
+    const errors = result.error.errors
+      .map((error) => `${error.path.join('.')}: ${error.message}`)
+      .join('; ');
+    throw new BadRequestException(`${message}: ${errors}`);
+  }
+  return result.data;
+}
+
 @Controller('api/projects')
 export class ProjectsController {
   constructor(
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
     private readonly projects: ProjectsService,
     private readonly settings: SettingsService,
+    private readonly templateUpgrade: ProjectTemplateUpgradeService,
+    private readonly registryImport: ProjectRegistryImportService,
   ) {}
 
   /**
@@ -306,6 +349,91 @@ export class ProjectsController {
     }
 
     return this.enrichProject(project);
+  }
+
+  @Post('from-registry')
+  @HttpCode(HttpStatus.CREATED)
+  async createProjectFromRegistry(@Body() body: CreateProjectFromRegistryDto) {
+    logger.info('POST /api/projects/from-registry');
+    const parsed = parseRequestBody(
+      CreateProjectFromRegistryRequestSchema,
+      body,
+      'Invalid registry project request',
+    );
+    const projectDescription =
+      typeof parsed.projectDescription === 'string' ? parsed.projectDescription : undefined;
+    return this.registryImport.createProjectFromRegistry({
+      slug: parsed.slug,
+      version: parsed.version,
+      projectName: parsed.projectName,
+      ...(projectDescription ? { projectDescription } : {}),
+      rootPath: parsed.rootPath,
+    });
+  }
+
+  @Post(':id/upgrade-template')
+  @HttpCode(HttpStatus.OK)
+  async upgradeTemplate(@Param('id') id: string, @Body() body: UpgradeTemplateDto) {
+    logger.info({ projectId: id }, 'POST /api/projects/:id/upgrade-template');
+    const parsed = parseRequestBody(
+      UpgradeTemplateRequestSchema,
+      body,
+      'Invalid template upgrade request',
+    );
+    return this.templateUpgrade.upgradeProject({
+      projectId: id,
+      targetVersion: parsed.targetVersion,
+    });
+  }
+
+  @Post(':id/restore-backup')
+  @HttpCode(HttpStatus.OK)
+  async restoreTemplateBackup(@Param('id') id: string, @Body() body: RestoreTemplateBackupDto) {
+    logger.info({ projectId: id }, 'POST /api/projects/:id/restore-backup');
+    const parsed = parseRequestBody(
+      RestoreTemplateBackupRequestSchema,
+      body,
+      'Invalid restore backup request',
+    );
+
+    const info = this.templateUpgrade.getBackupInfo(parsed.backupId);
+    if (!info || info.projectId !== id) {
+      throw new NotFoundException(`Backup ${parsed.backupId} not found for project ${id}`);
+    }
+
+    await this.templateUpgrade.restoreBackup(parsed.backupId);
+    return { success: true, message: 'Backup restored successfully' };
+  }
+
+  @Get(':id/template-backup/:backupId')
+  async getTemplateBackup(
+    @Param('id') id: string,
+    @Param('backupId') backupId: string,
+  ): Promise<TemplateBackupResponse> {
+    logger.info({ projectId: id, backupId }, 'GET /api/projects/:id/template-backup/:backupId');
+    const info = this.templateUpgrade.getBackupInfo(backupId);
+    if (!info || info.projectId !== id) {
+      return {
+        backupId,
+        found: false,
+      };
+    }
+
+    return {
+      backupId,
+      found: true,
+      ...info,
+    };
+  }
+
+  @Get(':id/template-backups')
+  async getTemplateBackups(@Param('id') id: string) {
+    logger.info({ projectId: id }, 'GET /api/projects/:id/template-backups');
+    const backups = this.templateUpgrade.getProjectBackups(id);
+    return {
+      projectId: id,
+      backups,
+    };
   }
 
   @Get(':id')

@@ -5,6 +5,7 @@ import { Readable } from 'stream';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { OrchestratorDockerService } from './docker.service';
+import { FakeProcessExecutor } from '../../../terminal/services/process-executor/fake-process-executor';
 
 jest.mock('child_process', () => ({
   ...jest.requireActual('child_process'),
@@ -132,7 +133,10 @@ describe('OrchestratorDockerService', () => {
     };
     dockerMock.createContainer.mockResolvedValue(containerMock);
 
-    const service = new OrchestratorDockerService(dockerMock as unknown as Dockerode);
+    const service = new OrchestratorDockerService(
+      new FakeProcessExecutor(),
+      dockerMock as unknown as Dockerode,
+    );
     const info = await service.createContainer({
       name: 'devchain-wt-feature-auth',
       worktreePath,
@@ -208,7 +212,10 @@ describe('OrchestratorDockerService', () => {
     delete process.env.ORCHESTRATOR_CONTAINER_IMAGE;
     process.env.DEVCHAIN_MODE = 'main';
 
-    const service = new OrchestratorDockerService(dockerMock as unknown as Dockerode);
+    const service = new OrchestratorDockerService(
+      new FakeProcessExecutor(),
+      dockerMock as unknown as Dockerode,
+    );
 
     await expect(
       service.createContainer({
@@ -248,7 +255,10 @@ describe('OrchestratorDockerService', () => {
     };
     dockerMock.createContainer.mockResolvedValue(containerMock);
 
-    const service = new OrchestratorDockerService(dockerMock as unknown as Dockerode);
+    const service = new OrchestratorDockerService(
+      new FakeProcessExecutor(),
+      dockerMock as unknown as Dockerode,
+    );
     await service.createContainer({
       name: 'devchain-wt-feature-gemini',
       worktreePath,
@@ -284,7 +294,10 @@ describe('OrchestratorDockerService', () => {
     };
     dockerMock.createContainer.mockResolvedValue(containerMock);
 
-    const service = new OrchestratorDockerService(dockerMock as unknown as Dockerode);
+    const service = new OrchestratorDockerService(
+      new FakeProcessExecutor(),
+      dockerMock as unknown as Dockerode,
+    );
     await service.createContainer({
       name: 'devchain-wt-no-providers',
       worktreePath,
@@ -304,13 +317,6 @@ describe('OrchestratorDockerService', () => {
   });
 
   it('includes git identity env vars when host has git config', async () => {
-    mockExecFileSync.mockImplementation((_file, args) => {
-      const key = (args as string[])?.[3];
-      if (key === 'user.name') return 'Test User' as never;
-      if (key === 'user.email') return 'test@example.com' as never;
-      throw new Error('unknown key');
-    });
-
     const worktreePath = join(tempHome, 'worktree');
     const dataPath = join(tempHome, 'data');
     await mkdir(worktreePath, { recursive: true });
@@ -320,7 +326,16 @@ describe('OrchestratorDockerService', () => {
       mockRunningContainer('devchain-wt-git-identity', '49170'),
     );
 
-    const service = new OrchestratorDockerService(dockerMock as unknown as Dockerode);
+    const gitFakeExecutor = new FakeProcessExecutor();
+    gitFakeExecutor.enqueueResponse(
+      { type: 'success', stdout: 'Test User\n' }, // git config user.name
+      { type: 'success', stdout: 'test@example.com\n' }, // git config user.email
+    );
+
+    const service = new OrchestratorDockerService(
+      gitFakeExecutor,
+      dockerMock as unknown as Dockerode,
+    );
     await service.createContainer({
       name: 'devchain-wt-git-identity',
       worktreePath,
@@ -348,7 +363,10 @@ describe('OrchestratorDockerService', () => {
       mockRunningContainer('devchain-wt-no-git', '49171'),
     );
 
-    const service = new OrchestratorDockerService(dockerMock as unknown as Dockerode);
+    const service = new OrchestratorDockerService(
+      new FakeProcessExecutor(),
+      dockerMock as unknown as Dockerode,
+    );
     await service.createContainer({
       name: 'devchain-wt-no-git',
       worktreePath,
@@ -363,13 +381,6 @@ describe('OrchestratorDockerService', () => {
   });
 
   it('preserves user-supplied git env vars over host config', async () => {
-    mockExecFileSync.mockImplementation((_file, args) => {
-      const key = (args as string[])?.[3];
-      if (key === 'user.name') return 'Host User' as never;
-      if (key === 'user.email') return 'host@example.com' as never;
-      throw new Error('unknown key');
-    });
-
     const worktreePath = join(tempHome, 'worktree');
     const dataPath = join(tempHome, 'data');
     await mkdir(worktreePath, { recursive: true });
@@ -379,7 +390,16 @@ describe('OrchestratorDockerService', () => {
       mockRunningContainer('devchain-wt-custom-git', '49172'),
     );
 
-    const service = new OrchestratorDockerService(dockerMock as unknown as Dockerode);
+    const gitFakeExecutor = new FakeProcessExecutor();
+    gitFakeExecutor.enqueueResponse(
+      { type: 'success', stdout: 'Host User\n' }, // git config user.name
+      { type: 'success', stdout: 'host@example.com\n' }, // git config user.email
+    );
+
+    const service = new OrchestratorDockerService(
+      gitFakeExecutor,
+      dockerMock as unknown as Dockerode,
+    );
     await service.createContainer({
       name: 'devchain-wt-custom-git',
       worktreePath,
@@ -420,7 +440,10 @@ describe('OrchestratorDockerService', () => {
       mockRunningContainer('devchain-wt-feature-auth', '49159'),
     );
 
-    const service = new OrchestratorDockerService(dockerMock as unknown as Dockerode);
+    const service = new OrchestratorDockerService(
+      new FakeProcessExecutor(),
+      dockerMock as unknown as Dockerode,
+    );
     await service.createContainer({
       name: 'devchain-wt-feature-auth',
       worktreePath,
@@ -442,7 +465,10 @@ describe('OrchestratorDockerService', () => {
       mockRunningContainer('devchain-wt-dir-git', '49160'),
     );
 
-    const service = new OrchestratorDockerService(dockerMock as unknown as Dockerode);
+    const service = new OrchestratorDockerService(
+      new FakeProcessExecutor(),
+      dockerMock as unknown as Dockerode,
+    );
     await service.createContainer({
       name: 'devchain-wt-dir-git',
       worktreePath,
@@ -470,7 +496,10 @@ describe('OrchestratorDockerService', () => {
       mockRunningContainer('devchain-wt-missing-git', '49161'),
     );
 
-    const service = new OrchestratorDockerService(dockerMock as unknown as Dockerode);
+    const service = new OrchestratorDockerService(
+      new FakeProcessExecutor(),
+      dockerMock as unknown as Dockerode,
+    );
     await service.createContainer({
       name: 'devchain-wt-missing-git',
       worktreePath,
@@ -500,7 +529,10 @@ describe('OrchestratorDockerService', () => {
       mockRunningContainer('devchain-wt-missing-gitdir', '49162'),
     );
 
-    const service = new OrchestratorDockerService(dockerMock as unknown as Dockerode);
+    const service = new OrchestratorDockerService(
+      new FakeProcessExecutor(),
+      dockerMock as unknown as Dockerode,
+    );
     await service.createContainer({
       name: 'devchain-wt-missing-gitdir',
       worktreePath,
@@ -533,7 +565,10 @@ describe('OrchestratorDockerService', () => {
       mockRunningContainer('devchain-wt-non-posix-gitdir', '49163'),
     );
 
-    const service = new OrchestratorDockerService(dockerMock as unknown as Dockerode);
+    const service = new OrchestratorDockerService(
+      new FakeProcessExecutor(),
+      dockerMock as unknown as Dockerode,
+    );
     await service.createContainer({
       name: 'devchain-wt-non-posix-gitdir',
       worktreePath,
@@ -577,7 +612,10 @@ describe('OrchestratorDockerService', () => {
     };
     dockerMock.createContainer.mockResolvedValue(containerMock);
 
-    const service = new OrchestratorDockerService(dockerMock as unknown as Dockerode);
+    const service = new OrchestratorDockerService(
+      new FakeProcessExecutor(),
+      dockerMock as unknown as Dockerode,
+    );
     await service.createContainer({
       name: 'devchain-wt-existing',
       worktreePath,
@@ -610,7 +648,10 @@ describe('OrchestratorDockerService', () => {
       } as unknown as Dockerode.Network;
     });
 
-    const service = new OrchestratorDockerService(dockerMock as unknown as Dockerode);
+    const service = new OrchestratorDockerService(
+      new FakeProcessExecutor(),
+      dockerMock as unknown as Dockerode,
+    );
     await service.ensureWorktreeOnComposeNetwork('feature-auth', 'worktree-1');
 
     expect(connect).toHaveBeenCalledWith({ Container: 'worktree-1' });
@@ -675,7 +716,10 @@ describe('OrchestratorDockerService', () => {
       } as unknown as Dockerode.Network;
     });
 
-    const service = new OrchestratorDockerService(dockerMock as unknown as Dockerode);
+    const service = new OrchestratorDockerService(
+      new FakeProcessExecutor(),
+      dockerMock as unknown as Dockerode,
+    );
     await service.cleanupWorktreeProjectContainers('feature-auth', 'worktree-1');
 
     expect(dockerMock.listContainers).toHaveBeenCalledWith({
@@ -733,7 +777,10 @@ describe('OrchestratorDockerService', () => {
       remove: jest.fn().mockResolvedValue(undefined),
     });
 
-    const service = new OrchestratorDockerService(dockerMock as unknown as Dockerode);
+    const service = new OrchestratorDockerService(
+      new FakeProcessExecutor(),
+      dockerMock as unknown as Dockerode,
+    );
     await service.cleanupWorktreeProjectContainers('feature-auth', 'worktree-1');
 
     expect(worktreeContainer.exec).toHaveBeenCalledWith(
@@ -758,7 +805,10 @@ describe('OrchestratorDockerService', () => {
       remove,
     });
 
-    const service = new OrchestratorDockerService(dockerMock as unknown as Dockerode);
+    const service = new OrchestratorDockerService(
+      new FakeProcessExecutor(),
+      dockerMock as unknown as Dockerode,
+    );
     await service.removeWorktreeNetwork('feature-auth');
     await service.removeWorktreeNetwork('feature-auth');
 
@@ -787,7 +837,10 @@ describe('OrchestratorDockerService', () => {
     await mkdir(worktreePath, { recursive: true });
     await mkdir(dataPath, { recursive: true });
 
-    const service = new OrchestratorDockerService(dockerMock as unknown as Dockerode);
+    const service = new OrchestratorDockerService(
+      new FakeProcessExecutor(),
+      dockerMock as unknown as Dockerode,
+    );
     await service.createContainer({
       name: 'devchain-wt-test',
       image: 'custom:latest',
@@ -808,7 +861,10 @@ describe('OrchestratorDockerService', () => {
       logs: jest.fn().mockResolvedValue(logsBuffer),
     });
 
-    const service = new OrchestratorDockerService(dockerMock as unknown as Dockerode);
+    const service = new OrchestratorDockerService(
+      new FakeProcessExecutor(),
+      dockerMock as unknown as Dockerode,
+    );
     const logs = await service.getContainerLogs('container-123');
 
     expect(logs).toBe('stdout-line\nstderr-line\n');
@@ -824,7 +880,10 @@ describe('OrchestratorDockerService', () => {
       exec: jest.fn().mockResolvedValue(execMock),
     });
 
-    const service = new OrchestratorDockerService(dockerMock as unknown as Dockerode);
+    const service = new OrchestratorDockerService(
+      new FakeProcessExecutor(),
+      dockerMock as unknown as Dockerode,
+    );
     const result = await service.execInContainer('container-123', ['echo', 'ok']);
 
     expect(result).toEqual({ exitCode: 0, output: 'exec-output\n' });
@@ -840,7 +899,10 @@ describe('OrchestratorDockerService', () => {
       }),
     });
 
-    const service = new OrchestratorDockerService(dockerMock as unknown as Dockerode);
+    const service = new OrchestratorDockerService(
+      new FakeProcessExecutor(),
+      dockerMock as unknown as Dockerode,
+    );
     const ready = await service.waitForHealthy('container-123', 2000);
 
     expect(ready).toBe(true);
@@ -852,12 +914,18 @@ describe('OrchestratorDockerService', () => {
 
   it('uses docker ping for daemon readiness', async () => {
     dockerMock.ping = jest.fn().mockResolvedValue(undefined);
-    const service = new OrchestratorDockerService(dockerMock as unknown as Dockerode);
+    const service = new OrchestratorDockerService(
+      new FakeProcessExecutor(),
+      dockerMock as unknown as Dockerode,
+    );
     const ready = await service.ping();
     expect(ready).toBe(true);
 
     dockerMock.ping = jest.fn().mockRejectedValue(new Error('unreachable'));
-    const unavailableService = new OrchestratorDockerService(dockerMock as unknown as Dockerode);
+    const unavailableService = new OrchestratorDockerService(
+      new FakeProcessExecutor(),
+      dockerMock as unknown as Dockerode,
+    );
     const unavailable = await unavailableService.ping();
     expect(unavailable).toBe(false);
   });

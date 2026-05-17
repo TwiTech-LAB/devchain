@@ -18,3 +18,5 @@ export {
   getLatestVersion,
   formatSemVer,
 } from '../../../../packages/shared/src/utils/semver';
+
+export { HostResolver } from '../../../../packages/shared/src/host-resolver';

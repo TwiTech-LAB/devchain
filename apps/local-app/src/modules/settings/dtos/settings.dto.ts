@@ -55,7 +55,7 @@ const RegistryTemplateMetadataSchema = z.object({
 });
 
 // Template preset configuration for agent provider mappings
-const TemplatePresetAgentConfigSchema = z.object({
+export const TemplatePresetAgentConfigSchema = z.object({
   agentName: z.string().min(1),
   providerConfigName: z.string().min(1),
   modelOverride: z.string().nullable().optional(),
@@ -155,4 +155,5 @@ export type TerminalSettingsDto = z.infer<typeof TerminalSettingsSchema>;
 export type TerminalInputMode = (typeof TERMINAL_INPUT_MODES)[number];
 export type RegistryTemplateMetadataDto = z.infer<typeof RegistryTemplateMetadataSchema>;
 export type RegistryConfigDto = z.infer<typeof RegistryConfigSchema>;
+export type TemplatePresetAgentConfigDto = z.infer<typeof TemplatePresetAgentConfigSchema>;
 export type TemplatePresetDto = z.infer<typeof TemplatePresetSchema>;

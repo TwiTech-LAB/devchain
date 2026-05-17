@@ -1,6 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { SessionNavigationToolbar } from './SessionNavigationToolbar';
+import { SessionViewModeProvider } from '@/ui/hooks/useSessionViewMode';
 
 function makeProps(overrides: Partial<React.ComponentProps<typeof SessionNavigationToolbar>> = {}) {
   return {
@@ -19,16 +20,30 @@ function makeProps(overrides: Partial<React.ComponentProps<typeof SessionNavigat
   };
 }
 
+function renderToolbar(
+  overrides: Partial<React.ComponentProps<typeof SessionNavigationToolbar>> = {},
+) {
+  return render(
+    <SessionViewModeProvider>
+      <SessionNavigationToolbar {...makeProps(overrides)} />
+    </SessionViewModeProvider>,
+  );
+}
+
 describe('SessionNavigationToolbar', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
   it('renders top/end buttons regardless of hasChunks', () => {
-    render(<SessionNavigationToolbar {...makeProps({ hasChunks: false })} />);
+    renderToolbar({ hasChunks: false });
 
     expect(screen.getByTestId('nav-jump-top')).toBeInTheDocument();
     expect(screen.getByTestId('nav-jump-end')).toBeInTheDocument();
   });
 
   it('hides semantic nav buttons when hasChunks is false', () => {
-    render(<SessionNavigationToolbar {...makeProps({ hasChunks: false })} />);
+    renderToolbar({ hasChunks: false });
 
     expect(screen.queryByTestId('nav-prev-thinking')).not.toBeInTheDocument();
     expect(screen.queryByTestId('nav-next-thinking')).not.toBeInTheDocument();
@@ -39,7 +54,7 @@ describe('SessionNavigationToolbar', () => {
   });
 
   it('shows semantic nav buttons when hasChunks is true', () => {
-    render(<SessionNavigationToolbar {...makeProps({ hasChunks: true })} />);
+    renderToolbar({ hasChunks: true });
 
     expect(screen.getByTestId('nav-prev-thinking')).toBeInTheDocument();
     expect(screen.getByTestId('nav-next-thinking')).toBeInTheDocument();
@@ -51,33 +66,31 @@ describe('SessionNavigationToolbar', () => {
   });
 
   it('shows prev/next hotspot buttons when filter is active', () => {
-    render(
-      <SessionNavigationToolbar {...makeProps({ hasChunks: true, hotspotFilterActive: true })} />,
-    );
+    renderToolbar({ hasChunks: true, hotspotFilterActive: true });
 
     expect(screen.getByTestId('nav-prev-hotspot')).toBeInTheDocument();
     expect(screen.getByTestId('nav-next-hotspot')).toBeInTheDocument();
   });
 
   it('calls onTop when jump-to-top button is clicked', () => {
-    const props = makeProps();
-    render(<SessionNavigationToolbar {...props} />);
+    const onTop = jest.fn();
+    renderToolbar({ onTop });
 
     fireEvent.click(screen.getByTestId('nav-jump-top'));
-    expect(props.onTop).toHaveBeenCalledTimes(1);
+    expect(onTop).toHaveBeenCalledTimes(1);
   });
 
   it('calls onEnd when jump-to-end button is clicked', () => {
-    const props = makeProps();
-    render(<SessionNavigationToolbar {...props} />);
+    const onEnd = jest.fn();
+    renderToolbar({ onEnd });
 
     fireEvent.click(screen.getByTestId('nav-jump-end'));
-    expect(props.onEnd).toHaveBeenCalledTimes(1);
+    expect(onEnd).toHaveBeenCalledTimes(1);
   });
 
   it('calls onPrevThinking when prev-thinking button is clicked', () => {
     const onPrevThinking = jest.fn();
-    render(<SessionNavigationToolbar {...makeProps({ onPrevThinking })} />);
+    renderToolbar({ onPrevThinking });
 
     fireEvent.click(screen.getByTestId('nav-prev-thinking'));
     expect(onPrevThinking).toHaveBeenCalledTimes(1);
@@ -85,7 +98,7 @@ describe('SessionNavigationToolbar', () => {
 
   it('calls onNextThinking when next-thinking button is clicked', () => {
     const onNextThinking = jest.fn();
-    render(<SessionNavigationToolbar {...makeProps({ onNextThinking })} />);
+    renderToolbar({ onNextThinking });
 
     fireEvent.click(screen.getByTestId('nav-next-thinking'));
     expect(onNextThinking).toHaveBeenCalledTimes(1);
@@ -93,22 +106,18 @@ describe('SessionNavigationToolbar', () => {
 
   it('calls onNextResponse when next-response button is clicked', () => {
     const onNextResponse = jest.fn();
-    render(<SessionNavigationToolbar {...makeProps({ onNextResponse })} />);
+    renderToolbar({ onNextResponse });
 
     fireEvent.click(screen.getByTestId('nav-next-response'));
     expect(onNextResponse).toHaveBeenCalledTimes(1);
   });
 
   it('disables semantic buttons when handlers are null', () => {
-    render(
-      <SessionNavigationToolbar
-        {...makeProps({
-          onPrevThinking: null,
-          onNextThinking: null,
-          onNextResponse: null,
-        })}
-      />,
-    );
+    renderToolbar({
+      onPrevThinking: null,
+      onNextThinking: null,
+      onNextResponse: null,
+    });
 
     const prevThinking = screen.getByTestId('nav-prev-thinking');
     const nextThinking = screen.getByTestId('nav-next-thinking');
@@ -124,32 +133,30 @@ describe('SessionNavigationToolbar', () => {
   });
 
   it('all buttons have aria-label attributes (filter inactive)', () => {
-    render(<SessionNavigationToolbar {...makeProps()} />);
+    renderToolbar();
 
     const buttons = screen.getAllByRole('button');
     for (const button of buttons) {
       expect(button).toHaveAttribute('aria-label');
     }
-    // top, prev-thinking, next-thinking, next-response, filter-toggle, end
-    expect(buttons).toHaveLength(6);
+    // top, prev-thinking, next-thinking, next-response, filter-toggle, R, D, end
+    expect(buttons).toHaveLength(8);
   });
 
   it('all buttons have aria-label attributes (filter active)', () => {
-    render(<SessionNavigationToolbar {...makeProps({ hotspotFilterActive: true })} />);
+    renderToolbar({ hotspotFilterActive: true });
 
     const buttons = screen.getAllByRole('button');
     for (const button of buttons) {
       expect(button).toHaveAttribute('aria-label');
     }
-    // top, prev-thinking, next-thinking, next-response, filter-toggle, prev-hotspot, next-hotspot, end
-    expect(buttons).toHaveLength(8);
+    // top, prev-thinking, next-thinking, next-response, filter-toggle, prev-hotspot, next-hotspot, R, D, end
+    expect(buttons).toHaveLength(10);
   });
 
   it('calls onPrevHotspot when prev-hotspot button is clicked', () => {
     const onPrevHotspot = jest.fn();
-    render(
-      <SessionNavigationToolbar {...makeProps({ onPrevHotspot, hotspotFilterActive: true })} />,
-    );
+    renderToolbar({ onPrevHotspot, hotspotFilterActive: true });
 
     fireEvent.click(screen.getByTestId('nav-prev-hotspot'));
     expect(onPrevHotspot).toHaveBeenCalledTimes(1);
@@ -157,9 +164,7 @@ describe('SessionNavigationToolbar', () => {
 
   it('calls onNextHotspot when next-hotspot button is clicked', () => {
     const onNextHotspot = jest.fn();
-    render(
-      <SessionNavigationToolbar {...makeProps({ onNextHotspot, hotspotFilterActive: true })} />,
-    );
+    renderToolbar({ onNextHotspot, hotspotFilterActive: true });
 
     fireEvent.click(screen.getByTestId('nav-next-hotspot'));
     expect(onNextHotspot).toHaveBeenCalledTimes(1);
@@ -167,23 +172,19 @@ describe('SessionNavigationToolbar', () => {
 
   it('calls onToggleHotspotFilter when filter button is clicked', () => {
     const onToggleHotspotFilter = jest.fn();
-    render(<SessionNavigationToolbar {...makeProps({ onToggleHotspotFilter })} />);
+    renderToolbar({ onToggleHotspotFilter });
 
     fireEvent.click(screen.getByTestId('nav-toggle-hotspot-filter'));
     expect(onToggleHotspotFilter).toHaveBeenCalledTimes(1);
   });
 
   it('disables hotspot buttons when handlers are null', () => {
-    render(
-      <SessionNavigationToolbar
-        {...makeProps({
-          hotspotFilterActive: true,
-          onPrevHotspot: null,
-          onNextHotspot: null,
-          onToggleHotspotFilter: null,
-        })}
-      />,
-    );
+    renderToolbar({
+      hotspotFilterActive: true,
+      onPrevHotspot: null,
+      onNextHotspot: null,
+      onToggleHotspotFilter: null,
+    });
 
     expect(screen.getByTestId('nav-prev-hotspot')).toHaveAttribute('aria-disabled', 'true');
     expect(screen.getByTestId('nav-next-hotspot')).toHaveAttribute('aria-disabled', 'true');
@@ -194,33 +195,71 @@ describe('SessionNavigationToolbar', () => {
   });
 
   it('shows hotspot count badge when filter active and hotspots exist', () => {
-    render(
-      <SessionNavigationToolbar {...makeProps({ hotspotFilterActive: true, hotspotCount: 3 })} />,
-    );
+    renderToolbar({ hotspotFilterActive: true, hotspotCount: 3 });
 
     expect(screen.getByTestId('nav-hotspot-count')).toHaveTextContent('3');
   });
 
   it('hides visible-count hint when filter inactive', () => {
-    render(
-      <SessionNavigationToolbar {...makeProps({ hotspotFilterActive: false, hotspotCount: 3 })} />,
-    );
+    renderToolbar({ hotspotFilterActive: false, hotspotCount: 3 });
 
     expect(screen.queryByTestId('nav-hotspot-count')).not.toBeInTheDocument();
   });
 
   it('highlights filter button when active', () => {
-    render(
-      <SessionNavigationToolbar
-        {...makeProps({
-          hotspotFilterActive: true,
-          onToggleHotspotFilter: jest.fn(),
-        })}
-      />,
-    );
+    renderToolbar({
+      hotspotFilterActive: true,
+      onToggleHotspotFilter: jest.fn(),
+    });
 
     const filterBtn = screen.getByTestId('nav-toggle-hotspot-filter');
     expect(filterBtn).toHaveAttribute('aria-pressed', 'true');
     expect(filterBtn).toHaveClass('bg-amber-500/10');
+  });
+
+  // ---------------------------------------------------------------------------
+  // View mode toggle
+  // ---------------------------------------------------------------------------
+
+  it('shows view mode toggle with Reader active by default', () => {
+    renderToolbar();
+
+    expect(screen.getByTestId('view-mode-toggle')).toBeInTheDocument();
+    expect(screen.getByTestId('view-mode-reader')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('view-mode-diagnostic')).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('clicking Diagnostic button switches mode', () => {
+    renderToolbar();
+
+    fireEvent.click(screen.getByTestId('view-mode-diagnostic'));
+
+    expect(screen.getByTestId('view-mode-diagnostic')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('view-mode-reader')).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('persists mode selection to localStorage', () => {
+    localStorage.clear();
+    renderToolbar();
+
+    fireEvent.click(screen.getByTestId('view-mode-diagnostic'));
+    expect(localStorage.getItem('devchain.session.viewMode')).toBe('diagnostic');
+
+    fireEvent.click(screen.getByTestId('view-mode-reader'));
+    expect(localStorage.getItem('devchain.session.viewMode')).toBe('reader');
+  });
+
+  it('restores mode from localStorage on mount', () => {
+    localStorage.setItem('devchain.session.viewMode', 'diagnostic');
+    renderToolbar();
+
+    expect(screen.getByTestId('view-mode-diagnostic')).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('falls back to Reader when localStorage has invalid value', () => {
+    localStorage.setItem('devchain.session.viewMode', 'invalid');
+    renderToolbar();
+
+    expect(screen.getByTestId('view-mode-reader')).toHaveAttribute('aria-pressed', 'true');
   });
 });

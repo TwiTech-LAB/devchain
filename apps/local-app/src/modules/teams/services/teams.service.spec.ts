@@ -82,6 +82,7 @@ describe('TeamsService', () => {
   let teamsStore: jest.Mocked<TeamsStore>;
   let storageService: {
     getAgent: jest.Mock;
+    getProject: jest.Mock;
     listAgents: jest.Mock;
     getAgentProfile: jest.Mock;
     createAgent: jest.Mock;
@@ -113,6 +114,7 @@ describe('TeamsService', () => {
 
     storageService = {
       getAgent: jest.fn(),
+      getProject: jest.fn().mockResolvedValue({ id: PROJECT_ID, name: 'Test Project' }),
       listAgents: jest.fn(),
       getAgentProfile: jest.fn(),
       createAgent: jest.fn(),
@@ -539,6 +541,9 @@ describe('TeamsService', () => {
         'team.config.updated',
         expect.objectContaining({
           teamId: 'team-1',
+          projectName: 'Test Project',
+          recipientIds: [AGENT_A],
+          agentName: `Agent-${AGENT_A}`,
           previous: { maxMembers: 5, maxConcurrentTasks: 5, allowTeamLeadCreateAgents: true },
           current: { maxMembers: 8, maxConcurrentTasks: 5, allowTeamLeadCreateAgents: true },
         }),
@@ -606,6 +611,11 @@ describe('TeamsService', () => {
         expect.objectContaining({
           teamId: 'team-1',
           addedAgentId: AGENT_C,
+          addedAgentDescription: null,
+          projectName: 'Test Project',
+          recipientIds: [AGENT_A],
+          agentName: `Agent-${AGENT_C}`,
+          teamLeadAgentName: `Agent-${AGENT_A}`,
         }),
       );
     });
@@ -622,6 +632,10 @@ describe('TeamsService', () => {
         expect.objectContaining({
           teamId: 'team-1',
           removedAgentId: AGENT_B,
+          projectName: 'Test Project',
+          recipientIds: [AGENT_A],
+          agentName: `Agent-${AGENT_B}`,
+          teamLeadAgentName: `Agent-${AGENT_A}`,
         }),
       );
     });
@@ -1330,14 +1344,21 @@ describe('TeamsService', () => {
     it('publishes team.member.added with correct payload on MCP path', async () => {
       await service.createTeamAgent(baseInput);
 
-      expect(eventsService.publish).toHaveBeenCalledWith('team.member.added', {
-        teamId: 'team-1',
-        projectId: PROJECT_ID,
-        teamLeadAgentId: AGENT_A,
-        teamName: 'Backend Team',
-        addedAgentId: expect.any(String),
-        addedAgentName: 'New Agent',
-      });
+      expect(eventsService.publish).toHaveBeenCalledWith(
+        'team.member.added',
+        expect.objectContaining({
+          teamId: 'team-1',
+          projectId: PROJECT_ID,
+          teamLeadAgentId: AGENT_A,
+          teamName: 'Backend Team',
+          addedAgentId: expect.any(String),
+          addedAgentName: 'New Agent',
+          addedAgentDescription: 'Does stuff',
+          projectName: 'Test Project',
+          recipientIds: [AGENT_A],
+          agentName: 'New Agent',
+        }),
+      );
     });
 
     it('publishes agent.created before team.member.added (ordering)', async () => {
@@ -1394,6 +1415,79 @@ describe('TeamsService', () => {
         canDelete: true,
         blockingTeams: ['Backend Team', 'Frontend Team'],
       });
+    });
+  });
+
+  describe('getRecipientContext', () => {
+    it('returns lead context when the agent leads a project team', async () => {
+      teamsStore.listTeamsByAgent.mockResolvedValue([
+        makeTeam({ id: 'team-1', name: 'Backend Team', teamLeadAgentId: AGENT_A }),
+      ]);
+
+      const result = await service.getRecipientContext(AGENT_A, PROJECT_ID);
+
+      expect(result).toEqual({
+        isTeamLead: true,
+        teamNames: ['Backend Team'],
+        memberRole: 'lead',
+      });
+      expect(storageService.getAgent).toHaveBeenCalledWith(AGENT_A);
+      expect(teamsStore.listTeamsByAgent).toHaveBeenCalledWith(AGENT_A);
+    });
+
+    it('returns member context when the agent belongs to a project team without leading it', async () => {
+      teamsStore.listTeamsByAgent.mockResolvedValue([
+        makeTeam({ id: 'team-1', name: 'Backend Team', teamLeadAgentId: AGENT_A }),
+      ]);
+
+      const result = await service.getRecipientContext(AGENT_B, PROJECT_ID);
+
+      expect(result).toEqual({
+        isTeamLead: false,
+        teamNames: ['Backend Team'],
+        memberRole: 'member',
+      });
+    });
+
+    it('returns all project team names sorted and lead role when agent belongs to multiple teams', async () => {
+      teamsStore.listTeamsByAgent.mockResolvedValue([
+        makeTeam({ id: 'team-1', name: 'Zulu Team', teamLeadAgentId: AGENT_C }),
+        makeTeam({ id: 'team-2', name: 'Alpha Team', teamLeadAgentId: AGENT_B }),
+        makeTeam({
+          id: 'team-other',
+          projectId: 'other-project',
+          name: 'Other Project Team',
+          teamLeadAgentId: AGENT_B,
+        }),
+      ]);
+
+      const result = await service.getRecipientContext(AGENT_B, PROJECT_ID);
+
+      expect(result).toEqual({
+        isTeamLead: true,
+        teamNames: ['Alpha Team', 'Zulu Team'],
+        memberRole: 'lead',
+      });
+    });
+
+    it('returns empty context when the agent belongs to no project teams', async () => {
+      teamsStore.listTeamsByAgent.mockResolvedValue([]);
+
+      const result = await service.getRecipientContext(AGENT_C, PROJECT_ID);
+
+      expect(result).toEqual({
+        isTeamLead: false,
+        teamNames: [],
+        memberRole: null,
+      });
+    });
+
+    it('rejects when the agent belongs to another project', async () => {
+      await expect(service.getRecipientContext(AGENT_OTHER_PROJECT, PROJECT_ID)).rejects.toThrow(
+        ValidationError,
+      );
+
+      expect(teamsStore.listTeamsByAgent).not.toHaveBeenCalled();
     });
   });
 
@@ -1767,6 +1861,11 @@ describe('TeamsService', () => {
           teamName: 'Test Team',
           addedAgentId: 'created-1',
           addedAgentName: 'New Agent',
+          addedAgentDescription: 'Config desc',
+          projectName: 'Test Project',
+          recipientIds: [AGENT_A],
+          agentName: 'New Agent',
+          teamLeadAgentName: `Agent-${AGENT_A}`,
         }),
       );
     });
@@ -1822,6 +1921,10 @@ describe('TeamsService', () => {
           teamId: 'team-1',
           projectId: PROJECT_ID,
           removedAgentId: AGENT_B,
+          projectName: 'Test Project',
+          recipientIds: [AGENT_A],
+          agentName: `Agent-${AGENT_B}`,
+          teamLeadAgentName: `Agent-${AGENT_A}`,
         }),
       );
       expect(eventsService.publish).toHaveBeenCalledWith(

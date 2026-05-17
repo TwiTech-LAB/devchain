@@ -3,6 +3,7 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '../hooks/use-toast';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 import { resolveSkillSlugs, type SkillSummary } from '@/ui/lib/skills';
 import { getMergedWorktree, isMergedTag } from '@/ui/lib/epic-tags';
 import { useTerminalWindowManager } from '@/ui/terminal-windows';
@@ -30,6 +31,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/ui/components/ui/alert';
 import { Popover, PopoverContent, PopoverTrigger } from '@/ui/components/ui/popover';
 import { SubEpicsBoard } from '@/ui/components/shared/SubEpicsBoard';
 import { Breadcrumbs } from '@/ui/components/shared/Breadcrumbs';
+import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
 import { CategoryBadge } from '@/ui/components/skills/CategoryBadge';
 import { SkillDetailDrawer } from '@/ui/components/skills/SkillDetailDrawer';
 import {
@@ -123,54 +125,65 @@ interface PreflightResult {
   }>;
 }
 
-async function fetchEpic(id: string): Promise<Epic> {
-  const res = await fetch(`/api/epics/${id}`);
+type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
+type DeleteEpicDialogState = { type: 'sub-epic'; subEpicId: string } | { type: 'epic' };
+
+async function fetchEpic(id: string, fetchFn: FetchFn): Promise<Epic> {
+  const res = await fetchFn(`/api/epics/${id}`);
   if (!res.ok) throw new Error('Failed to fetch epic');
   return res.json();
 }
 
-async function fetchStatuses(projectId: string): Promise<{ items: Status[] }> {
-  const res = await fetch(`/api/statuses?projectId=${projectId}`);
+async function fetchStatuses(projectId: string, fetchFn: FetchFn): Promise<{ items: Status[] }> {
+  const res = await fetchFn(`/api/statuses?projectId=${projectId}`);
   if (!res.ok) throw new Error('Failed to fetch statuses');
   return res.json();
 }
 
-async function fetchSubEpics(parentId: string): Promise<{ items: Epic[] }> {
-  const res = await fetch(`/api/epics?parentId=${parentId}`);
+async function fetchSubEpics(parentId: string, fetchFn: FetchFn): Promise<{ items: Epic[] }> {
+  const res = await fetchFn(`/api/epics?parentId=${parentId}`);
   if (!res.ok) throw new Error('Failed to fetch sub-epics');
   return res.json();
 }
 
-async function fetchEpicComments(epicId: string): Promise<{ items: EpicComment[] }> {
-  const res = await fetch(`/api/epics/${epicId}/comments`);
+async function fetchEpicComments(
+  epicId: string,
+  fetchFn: FetchFn,
+): Promise<{ items: EpicComment[] }> {
+  const res = await fetchFn(`/api/epics/${epicId}/comments`);
   if (!res.ok) throw new Error('Failed to fetch comments');
   return res.json();
 }
 
-async function fetchAgents(projectId: string): Promise<{ items: Agent[] }> {
-  const res = await fetch(`/api/agents?projectId=${projectId}`);
+async function fetchAgents(projectId: string, fetchFn: FetchFn): Promise<{ items: Agent[] }> {
+  const res = await fetchFn(`/api/agents?projectId=${projectId}`);
   if (!res.ok) throw new Error('Failed to fetch agents');
   return res.json();
 }
 
-async function fetchActiveSessionsForProject(projectId?: string): Promise<Session[]> {
+async function fetchActiveSessionsForProject(
+  projectId: string | undefined,
+  fetchFn: FetchFn,
+): Promise<Session[]> {
   const params = new URLSearchParams();
   if (projectId) {
     params.set('projectId', projectId);
   }
-  const res = await fetch(`/api/sessions${params.size ? `?${params.toString()}` : ''}`);
+  const res = await fetchFn(`/api/sessions${params.size ? `?${params.toString()}` : ''}`);
   if (!res.ok) throw new Error('Failed to fetch sessions');
   return res.json();
 }
 
 async function checkPreflight(
   projectId: string,
-  projectRootPath?: string,
+  projectRootPath: string | undefined,
+  fetchFn: FetchFn,
 ): Promise<PreflightResult> {
   try {
     let rootPath = projectRootPath;
     if (!rootPath) {
-      const projectRes = await fetch(`/api/projects/${projectId}`);
+      const projectRes = await fetchFn(`/api/projects/${projectId}`);
       if (!projectRes.ok) {
         return {
           success: false,
@@ -198,7 +211,7 @@ async function checkPreflight(
       };
     }
 
-    const res = await fetch(`/api/preflight?projectPath=${encodeURIComponent(rootPath)}`);
+    const res = await fetchFn(`/api/preflight?projectPath=${encodeURIComponent(rootPath)}`);
     if (!res.ok) {
       throw new Error('Preflight endpoint returned an error');
     }
@@ -260,8 +273,8 @@ async function checkPreflight(
   }
 }
 
-async function launchSession(epicId: string, agentId: string, projectId: string) {
-  const res = await fetch('/api/sessions/launch', {
+async function launchSession(epicId: string, agentId: string, projectId: string, fetchFn: FetchFn) {
+  const res = await fetchFn('/api/sessions/launch', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ epicId, agentId, projectId }),
@@ -273,16 +286,16 @@ async function launchSession(epicId: string, agentId: string, projectId: string)
   return res.json();
 }
 
-async function terminateSession(sessionId: string) {
-  const res = await fetch(`/api/sessions/${sessionId}`, {
+async function terminateSession(sessionId: string, fetchFn: FetchFn) {
+  const res = await fetchFn(`/api/sessions/${sessionId}`, {
     method: 'DELETE',
   });
   if (!res.ok) throw new Error('Failed to terminate session');
   return res.json();
 }
 
-async function updateEpicRequest(id: string, data: Partial<Epic>) {
-  const res = await fetch(`/api/epics/${id}`, {
+async function updateEpicRequest(id: string, data: Partial<Epic>, fetchFn: FetchFn) {
+  const res = await fetchFn(`/api/epics/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -294,8 +307,12 @@ async function updateEpicRequest(id: string, data: Partial<Epic>) {
   return res.json();
 }
 
-async function createEpicComment(epicId: string, data: { authorName: string; content: string }) {
-  const res = await fetch(`/api/epics/${epicId}/comments`, {
+async function createEpicComment(
+  epicId: string,
+  data: { authorName: string; content: string },
+  fetchFn: FetchFn,
+) {
+  const res = await fetchFn(`/api/epics/${epicId}/comments`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -307,8 +324,8 @@ async function createEpicComment(epicId: string, data: { authorName: string; con
   return res.json();
 }
 
-async function deleteEpicComment(commentId: string) {
-  const res = await fetch(`/api/comments/${commentId}`, {
+async function deleteEpicComment(commentId: string, fetchFn: FetchFn) {
+  const res = await fetchFn(`/api/comments/${commentId}`, {
     method: 'DELETE',
   });
   if (!res.ok) {
@@ -317,13 +334,16 @@ async function deleteEpicComment(commentId: string) {
   }
 }
 
-async function createSubEpic(data: {
-  projectId: string;
-  statusId: string;
-  title: string;
-  parentId: string;
-}) {
-  const res = await fetch('/api/epics', {
+async function createSubEpic(
+  data: {
+    projectId: string;
+    statusId: string;
+    title: string;
+    parentId: string;
+  },
+  fetchFn: FetchFn,
+) {
+  const res = await fetchFn('/api/epics', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -335,8 +355,8 @@ async function createSubEpic(data: {
   return res.json();
 }
 
-async function deleteEpic(epicId: string) {
-  const res = await fetch(`/api/epics/${epicId}`, {
+async function deleteEpic(epicId: string, fetchFn: FetchFn) {
+  const res = await fetchFn(`/api/epics/${epicId}`, {
     method: 'DELETE',
   });
   if (!res.ok) {
@@ -352,6 +372,7 @@ export function EpicDetailPage() {
   const { selectedProject } = useSelectedProject();
   const openTerminalWindow = useTerminalWindowManager();
   const queryClient = useQueryClient();
+  const apiFetch = useFetchFactory();
 
   const [selectedAgentId, setSelectedAgentId] = useState('');
   const [preflightResult, setPreflightResult] = useState<PreflightResult | null>(null);
@@ -363,6 +384,7 @@ export function EpicDetailPage() {
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
   const [addSubEpicOpen, setAddSubEpicOpen] = useState(false);
   const [addSubEpicForm, setAddSubEpicForm] = useState({ title: '', statusId: '' });
+  const [deleteDialog, setDeleteDialog] = useState<DeleteEpicDialogState | null>(null);
   const [searchParams] = useSearchParams();
   const editMode = searchParams.get('edit') === '1';
   const titleInputRef = useRef<HTMLInputElement>(null);
@@ -370,14 +392,14 @@ export function EpicDetailPage() {
 
   const { data: epic, isLoading: epicLoading } = useQuery({
     queryKey: ['epic', id],
-    queryFn: () => fetchEpic(id!),
+    queryFn: () => fetchEpic(id!, apiFetch),
     enabled: !!id,
   });
 
   // Fetch parent epic for breadcrumb navigation (only when epic has a parent)
   const { data: parentEpic, isLoading: parentEpicLoading } = useQuery({
     queryKey: ['epic', epic?.parentId],
-    queryFn: () => fetchEpic(epic!.parentId!),
+    queryFn: () => fetchEpic(epic!.parentId!, apiFetch),
     enabled: !!epic?.parentId,
   });
 
@@ -403,26 +425,26 @@ export function EpicDetailPage() {
 
   const { data: agentsData } = useQuery({
     queryKey: ['agents', epic?.projectId],
-    queryFn: () => fetchAgents(epic!.projectId),
+    queryFn: () => fetchAgents(epic!.projectId, apiFetch),
     enabled: !!epic?.projectId,
   });
 
   const { data: sessions, refetch: refetchSessions } = useQuery({
     queryKey: ['sessions', selectedProject?.id ?? 'all'],
-    queryFn: () => fetchActiveSessionsForProject(selectedProject?.id),
+    queryFn: () => fetchActiveSessionsForProject(selectedProject?.id, apiFetch),
     refetchInterval: 5000,
   });
 
   const { data: statusesData } = useQuery({
     queryKey: ['statuses', epic?.projectId],
-    queryFn: () => fetchStatuses(epic!.projectId),
+    queryFn: () => fetchStatuses(epic!.projectId, apiFetch),
     enabled: !!epic?.projectId,
   });
 
   // SubEpics data for SubEpicsBoard
   const { data: subEpicsData, isLoading: subEpicsLoading } = useQuery({
     queryKey: ['sub-epics', epic?.id],
-    queryFn: () => fetchSubEpics(epic!.id),
+    queryFn: () => fetchSubEpics(epic!.id, apiFetch),
     enabled: !!epic?.id,
   });
   const subEpicsRaw = subEpicsData?.items || [];
@@ -469,7 +491,7 @@ export function EpicDetailPage() {
 
   const { data: commentsData, isLoading: commentsLoading } = useQuery({
     queryKey: ['epic-comments', epic?.id],
-    queryFn: () => fetchEpicComments(epic!.id),
+    queryFn: () => fetchEpicComments(epic!.id, apiFetch),
     enabled: !!epic?.id,
     refetchInterval: 30000,
   });
@@ -478,7 +500,7 @@ export function EpicDetailPage() {
     if (epic?.projectId) {
       const rootPath =
         selectedProject?.id === epic.projectId ? selectedProject.rootPath : undefined;
-      checkPreflight(epic.projectId, rootPath).then(setPreflightResult);
+      checkPreflight(epic.projectId, rootPath, apiFetch).then(setPreflightResult);
     }
   }, [epic?.projectId, selectedProject?.id, selectedProject?.rootPath]);
 
@@ -528,7 +550,7 @@ export function EpicDetailPage() {
       epicId: string;
       agentId: string;
       projectId: string;
-    }) => launchSession(epicId, agentId, projectId),
+    }) => launchSession(epicId, agentId, projectId, apiFetch),
     onSuccess: (data) => {
       toast({
         title: 'Session launched',
@@ -559,7 +581,7 @@ export function EpicDetailPage() {
   });
 
   const terminateMutation = useMutation({
-    mutationFn: terminateSession,
+    mutationFn: (sessionId: string) => terminateSession(sessionId, apiFetch),
     onSuccess: () => {
       toast({
         title: 'Session terminated',
@@ -577,7 +599,7 @@ export function EpicDetailPage() {
   });
 
   const updateEpicMutation = useMutation({
-    mutationFn: (data: Partial<Epic>) => updateEpicRequest(id!, data),
+    mutationFn: (data: Partial<Epic>) => updateEpicRequest(id!, data, apiFetch),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['epic', id] });
       queryClient.invalidateQueries({ queryKey: ['epics'] });
@@ -596,7 +618,8 @@ export function EpicDetailPage() {
   });
 
   const commentMutation = useMutation({
-    mutationFn: (data: { authorName: string; content: string }) => createEpicComment(id!, data),
+    mutationFn: (data: { authorName: string; content: string }) =>
+      createEpicComment(id!, data, apiFetch),
     onSuccess: () => {
       setCommentForm({ authorName: 'User', content: '' });
       queryClient.invalidateQueries({ queryKey: ['epic-comments', id] });
@@ -611,7 +634,7 @@ export function EpicDetailPage() {
   });
 
   const deleteCommentMutation = useMutation({
-    mutationFn: (commentId: string) => deleteEpicComment(commentId),
+    mutationFn: (commentId: string) => deleteEpicComment(commentId, apiFetch),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['epic-comments', id] });
     },
@@ -626,11 +649,14 @@ export function EpicDetailPage() {
 
   const createSubEpicMutation = useMutation({
     mutationFn: (data: { title: string; statusId: string }) =>
-      createSubEpic({
-        projectId: epic!.projectId,
-        parentId: epic!.id,
-        ...data,
-      }),
+      createSubEpic(
+        {
+          projectId: epic!.projectId,
+          parentId: epic!.id,
+          ...data,
+        },
+        apiFetch,
+      ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sub-epics', epic?.id] });
       queryClient.invalidateQueries({ queryKey: ['epics'] });
@@ -649,7 +675,7 @@ export function EpicDetailPage() {
   });
 
   const deleteSubEpicMutation = useMutation({
-    mutationFn: (subEpicId: string) => deleteEpic(subEpicId),
+    mutationFn: (subEpicId: string) => deleteEpic(subEpicId, apiFetch),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sub-epics', epic?.id] });
       queryClient.invalidateQueries({ queryKey: ['epics'] });
@@ -671,7 +697,7 @@ export function EpicDetailPage() {
     mutationFn: ({ subEpicId, agentId }: { subEpicId: string; agentId: string | null }) => {
       const subEpic = subEpicsRaw.find((s) => s.id === subEpicId);
       if (!subEpic) throw new Error('Sub-epic not found');
-      return updateEpicRequest(subEpicId, { agentId, version: subEpic.version });
+      return updateEpicRequest(subEpicId, { agentId, version: subEpic.version }, apiFetch);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sub-epics', epic?.id] });
@@ -687,7 +713,7 @@ export function EpicDetailPage() {
   });
 
   const deleteThisEpicMutation = useMutation({
-    mutationFn: () => deleteEpic(id!),
+    mutationFn: () => deleteEpic(id!, apiFetch),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['epics'] });
       toast({
@@ -779,7 +805,7 @@ export function EpicDetailPage() {
   const runPreflightCheck = async (): Promise<boolean> => {
     setShowPreflight(false);
     const rootPath = selectedProject?.id === epic.projectId ? selectedProject.rootPath : undefined;
-    const result = await checkPreflight(epic.projectId, rootPath);
+    const result = await checkPreflight(epic.projectId, rootPath, apiFetch);
     setPreflightResult(result);
     if (!result.success) {
       setShowPreflight(true);
@@ -886,6 +912,17 @@ export function EpicDetailPage() {
         },
       },
     );
+  };
+
+  const handleConfirmDelete = () => {
+    if (deleteDialog?.type === 'sub-epic') {
+      deleteSubEpicMutation.mutate(deleteDialog.subEpicId);
+      return;
+    }
+
+    if (deleteDialog?.type === 'epic') {
+      deleteThisEpicMutation.mutate();
+    }
   };
 
   const formatDate = (value: string) => new Date(value).toLocaleString();
@@ -1410,11 +1447,9 @@ export function EpicDetailPage() {
                     statuses={sortedStatuses}
                     agents={agents}
                     onSubEpicClick={(subEpicId) => navigate(`/epics/${subEpicId}`)}
-                    onDeleteSubEpic={(subEpicId) => {
-                      if (window.confirm('Are you sure you want to delete this sub-epic?')) {
-                        deleteSubEpicMutation.mutate(subEpicId);
-                      }
-                    }}
+                    onDeleteSubEpic={(subEpicId) =>
+                      setDeleteDialog({ type: 'sub-epic', subEpicId })
+                    }
                     onAssignAgent={(subEpicId, agentId) => {
                       updateSubEpicMutation.mutate({ subEpicId, agentId });
                     }}
@@ -1519,15 +1554,7 @@ export function EpicDetailPage() {
                 variant="ghost"
                 size="sm"
                 className="w-full text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                onClick={() => {
-                  if (
-                    window.confirm(
-                      'Are you sure you want to delete this epic? This cannot be undone.',
-                    )
-                  ) {
-                    deleteThisEpicMutation.mutate();
-                  }
-                }}
+                onClick={() => setDeleteDialog({ type: 'epic' })}
                 disabled={deleteThisEpicMutation.isPending}
               >
                 {deleteThisEpicMutation.isPending ? (
@@ -1542,6 +1569,23 @@ export function EpicDetailPage() {
         </aside>
       </div>
       <SkillDetailDrawer skillId={selectedSkillId} onClose={() => setSelectedSkillId(null)} />
+      <ConfirmDialog
+        open={deleteDialog !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteDialog(null);
+        }}
+        title={deleteDialog?.type === 'sub-epic' ? 'Delete sub-epic?' : 'Delete epic?'}
+        description={
+          deleteDialog?.type === 'sub-epic'
+            ? 'Are you sure you want to delete this sub-epic?'
+            : 'Are you sure you want to delete this epic? This cannot be undone.'
+        }
+        confirmText="Delete"
+        cancelText="Cancel"
+        variant="destructive"
+        loading={deleteSubEpicMutation.isPending || deleteThisEpicMutation.isPending}
+        onConfirm={handleConfirmDelete}
+      />
     </div>
   );
 }

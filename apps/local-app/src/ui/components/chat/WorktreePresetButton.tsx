@@ -1,6 +1,8 @@
 import { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/ui/hooks/use-toast';
+import { useActiveSessionConfirm } from '@/ui/hooks/useActiveSessionConfirm';
+import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
 import {
   validatePresetAvailability,
   type Preset,
@@ -18,6 +20,8 @@ interface WorktreePresetButtonProps {
 export function WorktreePresetButton({ group, onMarkForRestart }: WorktreePresetButtonProps) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const { confirmIfActiveSessions, dialogProps: activeSessionDialogProps } =
+    useActiveSessionConfirm();
   const [open, setOpen] = useState(false);
 
   const enabled = !group.disabled && Boolean(group.devchainProjectId);
@@ -168,32 +172,30 @@ export function WorktreePresetButton({ group, onMarkForRestart }: WorktreePreset
       preset.agentConfigs.map((ac) => ac.agentName.trim().toLowerCase()),
     );
 
-    const agentsWithActiveSessions = group.agents.filter(
-      (a) =>
-        agentNamesInPreset.has(a.name.trim().toLowerCase()) && group.agentPresence[a.id]?.online,
-    );
+    const activeAgentNames = group.agents
+      .filter(
+        (a) =>
+          agentNamesInPreset.has(a.name.trim().toLowerCase()) && group.agentPresence[a.id]?.online,
+      )
+      .map((a) => a.name);
 
-    if (agentsWithActiveSessions.length > 0) {
-      const agentNames = agentsWithActiveSessions.map((a) => a.name).join(', ');
-      const confirmed = window.confirm(
-        `The following agents have active sessions: ${agentNames}. ` +
-          'Changing their provider configuration may affect running sessions. Continue?',
-      );
-      if (!confirmed) return;
-    }
-
-    applyMutation.mutate(presetName);
+    confirmIfActiveSessions(activeAgentNames, () => {
+      applyMutation.mutate(presetName);
+    });
   };
 
   return (
-    <PresetPopover
-      presets={validatedPresets}
-      activePreset={activePreset}
-      applying={applyMutation.isPending}
-      onApply={handleApply}
-      disabled={!enabled}
-      onOpenChange={setOpen}
-      alwaysShowTrigger
-    />
+    <>
+      <PresetPopover
+        presets={validatedPresets}
+        activePreset={activePreset}
+        applying={applyMutation.isPending}
+        onApply={handleApply}
+        disabled={!enabled}
+        onOpenChange={setOpen}
+        alwaysShowTrigger
+      />
+      <ConfirmDialog {...activeSessionDialogProps} />
+    </>
   );
 }

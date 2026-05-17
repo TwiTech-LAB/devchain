@@ -7,6 +7,7 @@ export const sessionRestoredEvent = {
     epicId: z.string().min(1).nullable(),
     agentId: z.string().min(1),
     tmuxSessionName: z.string().min(1),
+    providerName: z.string().min(1),
   }),
 } as const;
 

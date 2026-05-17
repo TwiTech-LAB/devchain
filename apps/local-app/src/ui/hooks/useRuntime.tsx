@@ -7,6 +7,7 @@ export interface RuntimeContextValue {
   runtimeLoading: boolean;
   isMainMode: boolean;
   dockerAvailable: boolean;
+  cloudUiEnabled: boolean;
 }
 
 const RuntimeContext = createContext<RuntimeContextValue | null>(null);
@@ -24,6 +25,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       runtimeLoading,
       isMainMode: runtimeInfo?.mode === 'main',
       dockerAvailable: runtimeInfo?.dockerAvailable === true,
+      cloudUiEnabled: runtimeInfo?.features?.cloudUi === true,
     }),
     [runtimeInfo, runtimeLoading],
   );

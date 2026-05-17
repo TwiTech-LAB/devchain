@@ -13,8 +13,31 @@ const { join, dirname, basename } = require('path');
 const { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, openSync, realpathSync } = require('fs');
 const { homedir, platform } = require('os');
 const { spawn, execSync, execFileSync } = require('child_process');
+const { pathToFileURL } = require('url');
 const { InteractiveCLI } = require('./lib/interactive-cli');
 const readline = require('readline');
+
+// Resolve @devchain/shared across packed (dist/node_modules) and workspace (packages/shared
+// or apps/local-app/node_modules) layouts. Node's ESM resolver only walks node_modules from
+// this script's location, where the workspace symlink does not exist, so dynamic imports must
+// use a concrete file:// URL.
+let _sharedModuleUrlCache;
+function resolveSharedModuleSpecifier() {
+  if (_sharedModuleUrlCache) return _sharedModuleUrlCache;
+  const candidates = [
+    join(__dirname, '..', 'dist', 'node_modules', '@devchain', 'shared', 'index.js'),
+    join(__dirname, '..', 'packages', 'shared', 'dist', 'index.js'),
+    join(__dirname, '..', 'node_modules', '@devchain', 'shared', 'dist', 'index.js'),
+    join(__dirname, '..', 'apps', 'local-app', 'node_modules', '@devchain', 'shared', 'dist', 'index.js'),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      _sharedModuleUrlCache = pathToFileURL(candidate).href;
+      return _sharedModuleUrlCache;
+    }
+  }
+  return '@devchain/shared';
+}
 
 async function waitForHealth(url, { timeoutMs = 15000, intervalMs = 250 } = {}) {
   const start = Date.now();
@@ -62,83 +85,34 @@ function isNewerVersion(latest, current) {
   return false;
 }
 
-// ── Host normalization + URL builder helpers ──────────────────────────────────
+// ── Host helpers (delegated to @devchain/shared) ──────────────────────────────
 
-function normalizeHost(input) {
-  const raw = input ?? '';
+async function _getHostResolver() {
+  const { HostResolver } = await import(resolveSharedModuleSpecifier());
+  return HostResolver;
+}
 
-  // Check for control characters before trimming (trim strips \n, \t, etc.)
-  for (let i = 0; i < raw.length; i++) {
-    const code = raw.charCodeAt(i);
-    if (code < 0x20 || code === 0x7f) {
-      throw new Error(`Invalid host: contains control characters`);
-    }
-  }
-
-  const trimmed = raw.trim();
-  if (!trimmed) return '127.0.0.1';
-
-  if (/^https?:\/\//i.test(trimmed)) {
-    throw new Error(`Invalid host "${trimmed}": pass a hostname or IP, not a URL`);
-  }
-
-  if (trimmed === '*') {
+async function resolveDevchainApiBaseUrlForRestart({
+  readPidFileFn = readPidFile,
+  isProcessRunningFn = isProcessRunning,
+} = {}) {
+  const pidData = readPidFileFn();
+  if (!pidData || !Number.isFinite(Number(pidData.pid)) || !Number.isFinite(Number(pidData.port))) {
     throw new Error(
-      'Invalid host "*": use 0.0.0.0 for all IPv4 interfaces or :: for all IPv6 interfaces',
+      'Image was rebuilt, but Devchain is not running. Start container mode first, then retry with --restart.',
     );
   }
 
-  if (/^\[.*\]$/.test(trimmed)) {
-    const inner = trimmed.slice(1, -1);
-    throw new Error(`Invalid host "${trimmed}": drop the brackets — use ${inner}`);
-  }
-
-  // Distinguish IPv6 from host:port — IPv6 has 2+ colons or starts with : or contains ::
-  const colonCount = (trimmed.match(/:/g) || []).length;
-  const looksLikeIpv6 = colonCount >= 2 || trimmed.startsWith(':') || trimmed.includes('::');
-
-  if (!looksLikeIpv6 && colonCount === 1) {
+  const pid = Number(pidData.pid);
+  const port = Number(pidData.port);
+  if (!isProcessRunningFn(pid)) {
     throw new Error(
-      `Invalid host "${trimmed}": looks like host:port — pass only the host part`,
+      'Image was rebuilt, but Devchain is not running. Start container mode first, then retry with --restart.',
     );
   }
 
-  return trimmed;
-}
-
-function isWildcardHost(host) {
-  return host === '0.0.0.0' || host === '::';
-}
-
-function isNonLoopbackHost(host) {
-  if (isWildcardHost(host)) return true;
-  const lower = host.toLowerCase();
-  return lower !== '127.0.0.1' && lower !== '::1' && lower !== 'localhost';
-}
-
-function connectableHost(host) {
-  if (host === '0.0.0.0') return '127.0.0.1';
-  if (host === '::') return '::1';
-  return host;
-}
-
-function formatHostForUrl(host) {
-  if (/^\[.*\]$/.test(host)) {
-    throw new Error(`formatHostForUrl received already-bracketed input: ${host}`);
-  }
-  // IPv6 detection: contains colon(s)
-  if (host.includes(':')) return `[${host}]`;
-  return host;
-}
-
-function buildInternalBaseUrl({ host, port }) {
-  return `http://${formatHostForUrl(connectableHost(host))}:${port}`;
-}
-
-function buildDisplayUrls({ host, port }) {
-  return {
-    primary: buildInternalBaseUrl({ host, port }),
-  };
+  const HostResolver = await _getHostResolver();
+  return HostResolver.buildInternalBaseUrl({ host: pidData.host || '127.0.0.1', port });
 }
 
 // ── End host helpers ──────────────────────────────────────────────────────────
@@ -546,28 +520,6 @@ function buildWorktreeImage({
       ].join('\n'),
     );
   }
-}
-
-function resolveDevchainApiBaseUrlForRestart({
-  readPidFileFn = readPidFile,
-  isProcessRunningFn = isProcessRunning,
-} = {}) {
-  const pidData = readPidFileFn();
-  if (!pidData || !Number.isFinite(Number(pidData.pid)) || !Number.isFinite(Number(pidData.port))) {
-    throw new Error(
-      'Image was rebuilt, but Devchain is not running. Start container mode first, then retry with --restart.',
-    );
-  }
-
-  const pid = Number(pidData.pid);
-  const port = Number(pidData.port);
-  if (!isProcessRunningFn(pid)) {
-    throw new Error(
-      'Image was rebuilt, but Devchain is not running. Start container mode first, then retry with --restart.',
-    );
-  }
-
-  return buildInternalBaseUrl({ host: pidData.host || '127.0.0.1', port });
 }
 
 function normalizeWorktreeListPayload(payload) {
@@ -1340,6 +1292,10 @@ function getPreferredDevApiPort(optsPort, containerMode, env = process.env) {
   return 3000;
 }
 
+function isTruthyEnvValue(value) {
+  return ['1', 'true', 'yes', 'on'].includes(String(value ?? '').trim().toLowerCase());
+}
+
 function getDevModeSpawnConfig({ containerMode, port, env = process.env }) {
   const ui = getDevUiConfig(containerMode);
   return {
@@ -1391,8 +1347,11 @@ async function main(argv) {
       'Respects LOG_LEVEL env var if set.'
     )
     .option('--dev', 'Development mode with hot reload (spawns nest --watch + vite)')
+    .option('--cloud', 'Enable Cloud and Notifications UI features for this run')
+    .option('--cloude', '[alias] Enable Cloud and Notifications UI features for this run')
     .option('--internal-detached-child', '[internal] Marker for detached child process')
     .action(async (rawArgs, opts) => {
+      const { HostResolver } = await import(resolveSharedModuleSpecifier());
       const args = Array.isArray(rawArgs) ? [...rawArgs] : [];
       const usesContainerSubcommand = args[0] === 'container';
       if (usesContainerSubcommand) {
@@ -1409,6 +1368,12 @@ async function main(argv) {
         process.exit(1);
       }
       const worktreeRuntimeMode = isWorktreeRuntimeModeEnabled(worktreeRuntimeType);
+      const cloudUiEnabled = Boolean(
+        opts.cloud || opts.cloude || isTruthyEnvValue(process.env.DEVCHAIN_CLOUD_UI_ENABLED),
+      );
+      if (cloudUiEnabled) {
+        process.env.DEVCHAIN_CLOUD_UI_ENABLED = '1';
+      }
 
       // Check if "help" was passed as an argument
       if (args && args.length > 0 && args[0] === 'help') {
@@ -1421,7 +1386,7 @@ async function main(argv) {
         const existingPid = readPidFile();
         if (existingPid && isProcessRunning(existingPid.pid)) {
           console.error(`Devchain is already running (PID ${existingPid.pid}, port ${existingPid.port})`);
-          console.error(`Access it at: ${buildDisplayUrls({ host: existingPid.host || '127.0.0.1', port: existingPid.port }).primary}`);
+          console.error(`Access it at: ${HostResolver.buildDisplayUrls({ host: existingPid.host || '127.0.0.1', port: existingPid.port }).primary}`);
           console.error('Use "devchain stop" to stop it first.');
           process.exit(1);
         }
@@ -1524,7 +1489,7 @@ async function main(argv) {
       // and --detach), so the child receives the effective host via two independent paths.
       let effectiveHost;
       try {
-        effectiveHost = normalizeHost(opts.host ?? process.env.HOST ?? '');
+        effectiveHost = HostResolver.normalizeHost(opts.host ?? process.env.HOST ?? '');
       } catch (e) {
         console.error(e.message);
         process.exit(1);
@@ -1532,7 +1497,7 @@ async function main(argv) {
       process.env.HOST = effectiveHost;
 
       // Security warning for non-loopback bind (before detach so parent terminal sees it)
-      if (!worktreeRuntimeMode && isNonLoopbackHost(effectiveHost)) {
+      if (!worktreeRuntimeMode && HostResolver.isNonLoopbackHost(effectiveHost)) {
         console.error('');
         console.error(`⚠  DevChain is binding to ${effectiveHost}. There is no remote authentication`);
         console.error('   boundary; the API, terminals, MCP, and project files are exposed');
@@ -1662,8 +1627,9 @@ async function main(argv) {
           detached: platform() !== 'win32', // Create process group on Unix
         });
 
-        const internalBaseUrl = buildInternalBaseUrl({ host: effectiveHost, port });
-        const displayUrl = buildDisplayUrls({ host: effectiveHost, port }).primary;
+        const internalBaseUrl = HostResolver.buildInternalBaseUrl({ host: effectiveHost, port });
+
+        const displayUrl = HostResolver.buildDisplayUrls({ host: effectiveHost, port }).primary;
 
         // Wait for API to be ready (longer timeout for dev mode compilation)
         const ready = await waitForHealth(`${internalBaseUrl}/health`, { timeoutMs: 60000 });
@@ -1799,8 +1765,8 @@ async function main(argv) {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       require(serverEntry);
 
-      const internalBaseUrl = buildInternalBaseUrl({ host: effectiveHost, port });
-      const displayUrl = buildDisplayUrls({ host: effectiveHost, port }).primary;
+      const internalBaseUrl = HostResolver.buildInternalBaseUrl({ host: effectiveHost, port });
+      const displayUrl = HostResolver.buildDisplayUrls({ host: effectiveHost, port }).primary;
       const ready = await waitForHealth(`${internalBaseUrl}/health`);
       if (!ready) {
         log('error', 'Server did not become ready in time', { url: internalBaseUrl });
@@ -1947,7 +1913,7 @@ async function main(argv) {
           process.exit(0);
         }
 
-        const baseUrl = resolveDevchainApiBaseUrlForRestart();
+        const baseUrl = await resolveDevchainApiBaseUrlForRestart();
         const ready = await waitForHealth(`${baseUrl}/health`, {
           timeoutMs: 5000,
           intervalMs: 250,
@@ -2037,13 +2003,6 @@ module.exports = {
   main,
   normalizeCliArgv,
   __test__: {
-    normalizeHost,
-    isWildcardHost,
-    isNonLoopbackHost,
-    connectableHost,
-    formatHostForUrl,
-    buildInternalBaseUrl,
-    buildDisplayUrls,
     ensureDockerAvailable,
     isDockerAvailable,
     deriveRepoRootFromGit,

@@ -6,10 +6,16 @@ import {
   DEFAULT_TERMINAL_SCROLLBACK,
   DEFAULT_TERMINAL_SEED_MAX_BYTES,
   MAX_TERMINAL_SEED_MAX_BYTES,
+  MIN_TERMINAL_SEED_MAX_BYTES,
   DEFAULT_TERMINAL_INPUT_MODE,
   MIN_TERMINAL_SCROLLBACK,
   MAX_TERMINAL_SCROLLBACK,
   DEFAULT_SKILLS_SYNC_ON_STARTUP,
+  DEFAULT_MESSAGE_POOL_ENABLED,
+  DEFAULT_MESSAGE_POOL_DELAY_MS,
+  DEFAULT_MESSAGE_POOL_MAX_WAIT_MS,
+  DEFAULT_MESSAGE_POOL_MAX_MESSAGES,
+  DEFAULT_MESSAGE_POOL_SEPARATOR,
 } from './settings.service';
 import { settingsTerminalChangedEvent } from '../../events/catalog';
 
@@ -917,6 +923,28 @@ describe('SettingsService (preset CRUD)', () => {
     });
   });
 
+  describe('renameProviderConfigInProjectPresets', () => {
+    it('passes through provider config preset renames to the preset delegate', async () => {
+      await service.setProjectPresets('proj-1', [
+        {
+          name: 'My Preset',
+          agentConfigs: [{ agentName: 'Agent1', providerConfigName: 'Config1' }],
+        },
+      ]);
+
+      await service.renameProviderConfigInProjectPresets('proj-1', {
+        profileId: 'profile-1',
+        oldName: 'config1',
+        newName: 'Config Renamed',
+        agents: [{ name: 'agent1', profileId: 'profile-1' }],
+      });
+
+      expect(service.getProjectPresets('proj-1')[0].agentConfigs[0].providerConfigName).toBe(
+        'Config Renamed',
+      );
+    });
+  });
+
   describe('updateProjectPreset', () => {
     beforeEach(async () => {
       await service.createProjectPreset('proj-1', validPreset);
@@ -1246,5 +1274,844 @@ describe('SettingsService (project active preset tracking)', () => {
       const settings = service.getSettings();
       expect(settings.projectActivePresets?.['proj-1']).toBe('Test Preset');
     });
+  });
+});
+
+// ==========================================================================
+// Characterization Tests — lock current SettingsService behavior for 4B.0
+// ==========================================================================
+
+function createTestDb(): Database.Database {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE settings (
+      id TEXT PRIMARY KEY,
+      key TEXT NOT NULL UNIQUE,
+      value TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+  return db;
+}
+
+function createTestService(
+  db: Database.Database,
+  emitter?: EventEmitter2 & { emit: jest.Mock },
+): { service: SettingsService; emitter: EventEmitter2 & { emit: jest.Mock } } {
+  const mockEmitter = emitter ?? createMockEventEmitter();
+  const service = new SettingsService(db as unknown as BetterSQLite3Database, mockEmitter);
+  return { service, emitter: mockEmitter };
+}
+
+describe('SettingsService — Characterization: getSettings() comprehensive', () => {
+  let db: Database.Database;
+  let service: SettingsService;
+
+  beforeEach(() => {
+    db = createTestDb();
+    ({ service } = createTestService(db));
+  });
+  afterEach(() => db.close());
+
+  it('returns empty SettingsDto with terminal defaults when DB is empty', () => {
+    const s = service.getSettings();
+    expect(s.terminal).toEqual({
+      scrollbackLines: DEFAULT_TERMINAL_SCROLLBACK,
+      seedingMaxBytes: DEFAULT_TERMINAL_SEED_MAX_BYTES,
+      inputMode: DEFAULT_TERMINAL_INPUT_MODE,
+    });
+    expect(s.claudeBinaryPath).toBeUndefined();
+    expect(s.codexBinaryPath).toBeUndefined();
+    expect(s.dbPath).toBeUndefined();
+    expect(s.events).toBeUndefined();
+    expect(s.activity).toBeUndefined();
+    expect(s.autoClean).toBeUndefined();
+    expect(s.messagePool).toBeUndefined();
+    expect(s.registry).toBeUndefined();
+    expect(s.skills).toBeUndefined();
+    expect(s.registryTemplates).toBeUndefined();
+    expect(s.projectPresets).toBeUndefined();
+    expect(s.projectActivePresets).toBeUndefined();
+  });
+
+  it('ignores legacy instanceMode and apiKey keys', () => {
+    db.exec(`
+      INSERT INTO settings VALUES ('1','instanceMode','local',datetime('now'),datetime('now'));
+      INSERT INTO settings VALUES ('2','apiKey','secret',datetime('now'),datetime('now'));
+    `);
+    const s = service.getSettings();
+    expect((s as Record<string, unknown>)['instanceMode']).toBeUndefined();
+    expect((s as Record<string, unknown>)['apiKey']).toBeUndefined();
+  });
+
+  it('ignores legacy terminal.seeding.mode and terminal.engine keys', () => {
+    db.exec(`
+      INSERT INTO settings VALUES ('1','terminal.seeding.mode','pty',datetime('now'),datetime('now'));
+      INSERT INTO settings VALUES ('2','terminal.engine','xterm',datetime('now'),datetime('now'));
+    `);
+    const s = service.getSettings();
+    expect(s.terminal).toEqual({
+      scrollbackLines: DEFAULT_TERMINAL_SCROLLBACK,
+      seedingMaxBytes: DEFAULT_TERMINAL_SEED_MAX_BYTES,
+      inputMode: DEFAULT_TERMINAL_INPUT_MODE,
+    });
+  });
+
+  it('reads claudeBinaryPath from storage', () => {
+    db.exec(
+      `INSERT INTO settings VALUES ('1','claudeBinaryPath','/usr/bin/claude',datetime('now'),datetime('now'))`,
+    );
+    expect(service.getSettings().claudeBinaryPath).toBe('/usr/bin/claude');
+  });
+
+  it('reads codexBinaryPath from storage', () => {
+    db.exec(
+      `INSERT INTO settings VALUES ('1','codexBinaryPath','/usr/bin/codex',datetime('now'),datetime('now'))`,
+    );
+    expect(service.getSettings().codexBinaryPath).toBe('/usr/bin/codex');
+  });
+
+  it('reads dbPath from storage', () => {
+    db.exec(
+      `INSERT INTO settings VALUES ('1','dbPath','/data/devchain.db',datetime('now'),datetime('now'))`,
+    );
+    expect(service.getSettings().dbPath).toBe('/data/devchain.db');
+  });
+
+  it('reads activity.idleTimeoutMs from storage', () => {
+    db.exec(
+      `INSERT INTO settings VALUES ('1','activity.idleTimeoutMs','60000',datetime('now'),datetime('now'))`,
+    );
+    expect(service.getSettings().activity?.idleTimeoutMs).toBe(60000);
+  });
+
+  it('reads autoClean.statusIds JSON map from storage', () => {
+    const map = { 'proj-1': ['status-a', 'status-b'] };
+    db.exec(
+      `INSERT INTO settings VALUES ('1','autoClean.statusIds','${JSON.stringify(map)}',datetime('now'),datetime('now'))`,
+    );
+    expect(service.getSettings().autoClean?.statusIds).toEqual(map);
+  });
+
+  it('reads all messagePool fields from storage', () => {
+    db.exec(`
+      INSERT INTO settings VALUES ('1','messagePool.enabled','true',datetime('now'),datetime('now'));
+      INSERT INTO settings VALUES ('2','messagePool.delayMs','5000',datetime('now'),datetime('now'));
+      INSERT INTO settings VALUES ('3','messagePool.maxWaitMs','15000',datetime('now'),datetime('now'));
+      INSERT INTO settings VALUES ('4','messagePool.maxMessages','20',datetime('now'),datetime('now'));
+      INSERT INTO settings VALUES ('5','messagePool.separator','"---"',datetime('now'),datetime('now'));
+    `);
+    const s = service.getSettings();
+    expect(s.messagePool?.enabled).toBe(true);
+    expect(s.messagePool?.delayMs).toBe(5000);
+    expect(s.messagePool?.maxWaitMs).toBe(15000);
+    expect(s.messagePool?.maxMessages).toBe(20);
+    expect(s.messagePool?.separator).toBe('---');
+  });
+
+  it('reads messagePool.projects JSON from storage', () => {
+    const projects = { 'proj-1': { enabled: false, delayMs: 2000 } };
+    db.exec(
+      `INSERT INTO settings VALUES ('1','messagePool.projects','${JSON.stringify(projects)}',datetime('now'),datetime('now'))`,
+    );
+    expect(service.getSettings().messagePool?.projects).toEqual(projects);
+  });
+
+  it('reads registry fields from storage', () => {
+    db.exec(`
+      INSERT INTO settings VALUES ('1','registry.url','"https://example.com"',datetime('now'),datetime('now'));
+      INSERT INTO settings VALUES ('2','registry.cacheDir','"/tmp/cache"',datetime('now'),datetime('now'));
+      INSERT INTO settings VALUES ('3','registry.checkUpdatesOnStartup','true',datetime('now'),datetime('now'));
+    `);
+    const s = service.getSettings();
+    expect(s.registry?.url).toBe('https://example.com');
+    expect(s.registry?.cacheDir).toBe('/tmp/cache');
+    expect(s.registry?.checkUpdatesOnStartup).toBe(true);
+  });
+
+  it('reads skills fields from storage', () => {
+    db.exec(`
+      INSERT INTO settings VALUES ('1','skills.syncOnStartup','false',datetime('now'),datetime('now'));
+      INSERT INTO settings VALUES ('2','skills.sources','{"openai":false,"anthropic":true}',datetime('now'),datetime('now'));
+    `);
+    const s = service.getSettings();
+    expect(s.skills?.syncOnStartup).toBe(false);
+    expect(s.skills?.sources).toEqual({ openai: false, anthropic: true });
+  });
+
+  it('reads initialSessionPromptIds JSON map', () => {
+    const map = { 'proj-1': 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' };
+    db.exec(
+      `INSERT INTO settings VALUES ('1','initialSessionPromptIds','${JSON.stringify(map)}',datetime('now'),datetime('now'))`,
+    );
+    expect(service.getSettings().initialSessionPromptIds).toEqual(map);
+  });
+
+  it('reads projectPresets and projectActivePresets JSON', () => {
+    const presets = {
+      'proj-1': [{ name: 'P', agentConfigs: [{ agentName: 'A', providerConfigName: 'C' }] }],
+    };
+    const actives = { 'proj-1': 'P' };
+    db.exec(`
+      INSERT INTO settings VALUES ('1','projectPresets','${JSON.stringify(presets)}',datetime('now'),datetime('now'));
+      INSERT INTO settings VALUES ('2','projectActivePresets','${JSON.stringify(actives)}',datetime('now'),datetime('now'));
+    `);
+    const s = service.getSettings();
+    expect(s.projectPresets).toEqual(presets);
+    expect(s.projectActivePresets).toEqual(actives);
+  });
+
+  it('gracefully ignores malformed JSON for JSON-parsed keys', () => {
+    db.exec(`
+      INSERT INTO settings VALUES ('1','initialSessionPromptIds','not-json',datetime('now'),datetime('now'));
+      INSERT INTO settings VALUES ('2','autoClean.statusIds','{bad',datetime('now'),datetime('now'));
+      INSERT INTO settings VALUES ('3','messagePool.projects','{bad',datetime('now'),datetime('now'));
+      INSERT INTO settings VALUES ('4','registryTemplates','{bad',datetime('now'),datetime('now'));
+      INSERT INTO settings VALUES ('5','projectPresets','{bad',datetime('now'),datetime('now'));
+      INSERT INTO settings VALUES ('6','projectActivePresets','{bad',datetime('now'),datetime('now'));
+      INSERT INTO settings VALUES ('7','skills.sources','{bad',datetime('now'),datetime('now'));
+    `);
+    const s = service.getSettings();
+    expect(s.initialSessionPromptIds).toBeUndefined();
+    expect(s.autoClean).toBeUndefined();
+    expect(s.messagePool?.projects).toBeUndefined();
+    expect(s.registryTemplates).toBeUndefined();
+    expect(s.projectPresets).toBeUndefined();
+    expect(s.projectActivePresets).toBeUndefined();
+    expect(s.skills?.sources).toBeUndefined();
+  });
+
+  it('clamps terminal.scrollbackLines to valid range on read', () => {
+    db.exec(
+      `INSERT INTO settings VALUES ('1','terminal.scrollback.lines','1',datetime('now'),datetime('now'))`,
+    );
+    expect(service.getSettings().terminal?.scrollbackLines).toBe(MIN_TERMINAL_SCROLLBACK);
+
+    db.exec(`UPDATE settings SET value = '999999' WHERE key = 'terminal.scrollback.lines'`);
+    expect(service.getSettings().terminal?.scrollbackLines).toBe(MAX_TERMINAL_SCROLLBACK);
+  });
+
+  it('clamps terminal.seedingMaxBytes to valid range on read', () => {
+    db.exec(
+      `INSERT INTO settings VALUES ('1','terminal.seeding.maxBytes','1',datetime('now'),datetime('now'))`,
+    );
+    expect(service.getSettings().terminal?.seedingMaxBytes).toBe(MIN_TERMINAL_SEED_MAX_BYTES);
+
+    db.exec(`UPDATE settings SET value = '999999999' WHERE key = 'terminal.seeding.maxBytes'`);
+    expect(service.getSettings().terminal?.seedingMaxBytes).toBe(MAX_TERMINAL_SEED_MAX_BYTES);
+  });
+
+  it('ignores unknown terminal.inputMode values', () => {
+    db.exec(
+      `INSERT INTO settings VALUES ('1','terminal.inputMode','unknown',datetime('now'),datetime('now'))`,
+    );
+    expect(service.getSettings().terminal?.inputMode).toBe(DEFAULT_TERMINAL_INPUT_MODE);
+  });
+});
+
+describe('SettingsService — Characterization: updateSettings() round-trip', () => {
+  let db: Database.Database;
+  let service: SettingsService;
+
+  beforeEach(() => {
+    db = createTestDb();
+    ({ service } = createTestService(db));
+  });
+  afterEach(() => db.close());
+
+  it('round-trips all domain settings through a single updateSettings call', async () => {
+    await service.updateSettings({
+      dbPath: '/data/db.sqlite',
+      terminal: {
+        scrollbackLines: 5000,
+        seedingMaxBytes: 512 * 1024,
+        inputMode: 'form',
+      },
+      activity: { idleTimeoutMs: 45000 },
+      autoClean: { statusIds: { 'proj-1': ['s1', 's2'] } },
+      messagePool: {
+        enabled: false,
+        delayMs: 3000,
+        maxWaitMs: 15000,
+        maxMessages: 5,
+        separator: '***',
+      },
+      registry: {
+        url: 'https://custom.example.com',
+        cacheDir: '/tmp/cache',
+        checkUpdatesOnStartup: false,
+      },
+      skills: {
+        syncOnStartup: false,
+        sources: { openai: false },
+      },
+      events: {
+        epicAssigned: { template: 'hello {{agent_name}}' },
+      },
+    });
+
+    const s = service.getSettings();
+    expect(s.dbPath).toBe('/data/db.sqlite');
+    expect(s.terminal?.scrollbackLines).toBe(5000);
+    expect(s.terminal?.seedingMaxBytes).toBe(512 * 1024);
+    expect(s.terminal?.inputMode).toBe('form');
+    expect(s.activity?.idleTimeoutMs).toBe(45000);
+    expect(s.autoClean?.statusIds?.['proj-1']).toEqual(['s1', 's2']);
+    expect(s.messagePool?.enabled).toBe(false);
+    expect(s.messagePool?.delayMs).toBe(3000);
+    expect(s.messagePool?.maxWaitMs).toBe(15000);
+    expect(s.messagePool?.maxMessages).toBe(5);
+    expect(s.messagePool?.separator).toBe('***');
+    expect(s.registry?.url).toBe('https://custom.example.com');
+    expect(s.registry?.cacheDir).toBe('/tmp/cache');
+    expect(s.registry?.checkUpdatesOnStartup).toBe(false);
+    expect(s.skills?.syncOnStartup).toBe(false);
+    expect(s.skills?.sources).toEqual({ openai: false });
+    expect(s.events?.epicAssigned?.template).toBe('hello {{agent_name}}');
+  });
+
+  it('clamps activity.idleTimeoutMs to [1000, 86400000]', async () => {
+    await service.updateSettings({ activity: { idleTimeoutMs: 500 } });
+    expect(service.getSettings().activity?.idleTimeoutMs).toBe(1000);
+
+    await service.updateSettings({ activity: { idleTimeoutMs: 100_000_000 } });
+    expect(service.getSettings().activity?.idleTimeoutMs).toBe(86400000);
+  });
+
+  it('stores invalid inputMode as default', async () => {
+    await service.updateSettings({
+      terminal: { inputMode: 'unknown-mode' as 'tty' },
+    });
+    expect(service.getSettings().terminal?.inputMode).toBe(DEFAULT_TERMINAL_INPUT_MODE);
+  });
+
+  it('handles initialSessionPromptId with projectId (per-project mapping)', async () => {
+    await service.updateSettings({
+      projectId: 'proj-1',
+      initialSessionPromptId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+    });
+    const s = service.getSettings();
+    expect(s.initialSessionPromptIds?.['proj-1']).toBe('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+  });
+
+  it('handles initialSessionPromptId without projectId (global default)', async () => {
+    await service.updateSettings({
+      initialSessionPromptId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+    });
+    const raw = service.getSetting('initialSessionPromptId');
+    expect(raw).toBe('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+  });
+
+  it('returns updated settings after updateSettings', async () => {
+    const result = await service.updateSettings({ dbPath: '/test.db' });
+    expect(result.dbPath).toBe('/test.db');
+    expect(result.terminal?.scrollbackLines).toBe(DEFAULT_TERMINAL_SCROLLBACK);
+  });
+});
+
+describe('SettingsService — Characterization: getSetting()', () => {
+  let db: Database.Database;
+  let service: SettingsService;
+
+  beforeEach(() => {
+    db = createTestDb();
+    ({ service } = createTestService(db));
+  });
+  afterEach(() => db.close());
+
+  it('returns undefined for key not in DB', () => {
+    expect(service.getSetting('nonexistent.key')).toBeUndefined();
+  });
+
+  it('returns raw value for non-JSON value', () => {
+    db.exec(`INSERT INTO settings VALUES ('1','mykey','rawvalue',datetime('now'),datetime('now'))`);
+    expect(service.getSetting('mykey')).toBe('rawvalue');
+  });
+
+  it('decodes JSON-encoded string value', () => {
+    db.exec(
+      `INSERT INTO settings VALUES ('1','mykey','"decoded"',datetime('now'),datetime('now'))`,
+    );
+    expect(service.getSetting('mykey')).toBe('decoded');
+  });
+
+  it('returns empty string for empty value', () => {
+    db.exec(`INSERT INTO settings VALUES ('1','mykey','',datetime('now'),datetime('now'))`);
+    expect(service.getSetting('mykey')).toBe('');
+  });
+});
+
+describe('SettingsService — Characterization: getAutoCleanStatusIds()', () => {
+  let db: Database.Database;
+  let service: SettingsService;
+
+  beforeEach(() => {
+    db = createTestDb();
+    ({ service } = createTestService(db));
+  });
+  afterEach(() => db.close());
+
+  it('returns empty array when autoClean not configured', () => {
+    expect(service.getAutoCleanStatusIds('proj-1')).toEqual([]);
+  });
+
+  it('returns empty array for unconfigured project', async () => {
+    await service.updateSettings({ autoClean: { statusIds: { 'proj-other': ['s1'] } } });
+    expect(service.getAutoCleanStatusIds('proj-1')).toEqual([]);
+  });
+
+  it('returns configured status IDs for project', async () => {
+    await service.updateSettings({ autoClean: { statusIds: { 'proj-1': ['s1', 's2'] } } });
+    expect(service.getAutoCleanStatusIds('proj-1')).toEqual(['s1', 's2']);
+  });
+
+  it('handles malformed JSON gracefully', () => {
+    db.exec(
+      `INSERT INTO settings VALUES ('1','autoClean.statusIds','{bad',datetime('now'),datetime('now'))`,
+    );
+    expect(service.getAutoCleanStatusIds('proj-1')).toEqual([]);
+  });
+});
+
+describe('SettingsService — Characterization: getProjectSettings() / setProjectSettings()', () => {
+  let db: Database.Database;
+  let service: SettingsService;
+
+  beforeEach(() => {
+    db = createTestDb();
+    ({ service } = createTestService(db));
+  });
+  afterEach(() => db.close());
+
+  it('returns empty object for unconfigured project', () => {
+    const ps = service.getProjectSettings('proj-1');
+    expect(ps).toEqual({});
+  });
+
+  it('returns all project-specific settings when configured', async () => {
+    await service.updateSettings({
+      projectId: 'proj-1',
+      initialSessionPromptId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+    });
+    await service.updateSettings({
+      autoClean: { statusIds: { 'proj-1': ['s1'] } },
+    });
+    await service.updateSettings({
+      events: { epicAssigned: { template: 'template-text' } },
+    });
+    await service.setProjectPoolSettings('proj-1', { enabled: false });
+
+    const ps = service.getProjectSettings('proj-1');
+    expect(ps.initialSessionPromptId).toBe('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+    expect(ps.autoCleanStatusIds).toEqual(['s1']);
+    expect(ps.epicAssignedTemplate).toBe('template-text');
+    expect(ps.messagePoolSettings).toEqual({ enabled: false });
+  });
+
+  it('sets multiple project settings atomically via setProjectSettings', async () => {
+    await service.setProjectSettings('proj-1', {
+      initialSessionPromptId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      autoCleanStatusIds: ['s1', 's2'],
+      epicAssignedTemplate: 'hello',
+      messagePoolSettings: { delayMs: 2000 },
+    });
+
+    const ps = service.getProjectSettings('proj-1');
+    expect(ps.initialSessionPromptId).toBe('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+    expect(ps.autoCleanStatusIds).toEqual(['s1', 's2']);
+    expect(ps.epicAssignedTemplate).toBe('hello');
+    expect(ps.messagePoolSettings).toEqual({ delayMs: 2000 });
+  });
+
+  it('skips updateSettings when no project settings fields provided', async () => {
+    const spy = jest.spyOn(service, 'updateSettings');
+    await service.setProjectSettings('proj-1', {});
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('merges autoClean statusIds with existing projects', async () => {
+    await service.updateSettings({ autoClean: { statusIds: { 'proj-other': ['x'] } } });
+    await service.setProjectSettings('proj-1', { autoCleanStatusIds: ['s1'] });
+
+    expect(service.getAutoCleanStatusIds('proj-other')).toEqual(['x']);
+    expect(service.getAutoCleanStatusIds('proj-1')).toEqual(['s1']);
+  });
+});
+
+describe('SettingsService — Characterization: setProjectPresets() / clearProjectPresets() / getAllProjectPresetsMap()', () => {
+  let db: Database.Database;
+  let service: SettingsService;
+
+  beforeEach(() => {
+    db = createTestDb();
+    ({ service } = createTestService(db));
+  });
+  afterEach(() => db.close());
+
+  it('setProjectPresets stores validated presets', async () => {
+    await service.setProjectPresets('proj-1', [
+      { name: 'P1', agentConfigs: [{ agentName: 'A', providerConfigName: 'C' }] },
+    ]);
+    const presets = service.getProjectPresets('proj-1');
+    expect(presets).toHaveLength(1);
+    expect(presets[0].name).toBe('P1');
+  });
+
+  it('setProjectPresets throws ValidationError for invalid preset data', async () => {
+    await expect(
+      service.setProjectPresets('proj-1', [{ name: '', agentConfigs: [] }]),
+    ).rejects.toThrow('Invalid preset data');
+  });
+
+  it('setProjectPresets overwrites existing presets for same project', async () => {
+    await service.setProjectPresets('proj-1', [
+      { name: 'Old', agentConfigs: [{ agentName: 'A', providerConfigName: 'C' }] },
+    ]);
+    await service.setProjectPresets('proj-1', [
+      { name: 'New', agentConfigs: [{ agentName: 'B', providerConfigName: 'D' }] },
+    ]);
+    const presets = service.getProjectPresets('proj-1');
+    expect(presets).toHaveLength(1);
+    expect(presets[0].name).toBe('New');
+  });
+
+  it('clearProjectPresets removes presets for project', async () => {
+    await service.setProjectPresets('proj-1', [
+      { name: 'P', agentConfigs: [{ agentName: 'A', providerConfigName: 'C' }] },
+    ]);
+    await service.clearProjectPresets('proj-1');
+    expect(service.getProjectPresets('proj-1')).toEqual([]);
+  });
+
+  it('clearProjectPresets does not affect other projects', async () => {
+    await service.setProjectPresets('proj-1', [
+      { name: 'P1', agentConfigs: [{ agentName: 'A', providerConfigName: 'C' }] },
+    ]);
+    await service.setProjectPresets('proj-2', [
+      { name: 'P2', agentConfigs: [{ agentName: 'B', providerConfigName: 'D' }] },
+    ]);
+    await service.clearProjectPresets('proj-1');
+
+    expect(service.getProjectPresets('proj-1')).toEqual([]);
+    expect(service.getProjectPresets('proj-2')).toHaveLength(1);
+  });
+
+  it('getAllProjectPresetsMap returns all projects with presets', async () => {
+    await service.setProjectPresets('proj-1', [
+      { name: 'P1', agentConfigs: [{ agentName: 'A', providerConfigName: 'C' }] },
+    ]);
+    await service.setProjectPresets('proj-2', [
+      { name: 'P2', agentConfigs: [{ agentName: 'B', providerConfigName: 'D' }] },
+    ]);
+
+    const map = service.getAllProjectPresetsMap();
+    expect(map.size).toBe(2);
+    expect(map.get('proj-1')).toHaveLength(1);
+    expect(map.get('proj-2')).toHaveLength(1);
+  });
+
+  it('getAllProjectPresetsMap returns empty map when no presets', () => {
+    const map = service.getAllProjectPresetsMap();
+    expect(map.size).toBe(0);
+  });
+});
+
+describe('SettingsService — Characterization: getAllProjectTemplateMetadataMap()', () => {
+  let db: Database.Database;
+  let service: SettingsService;
+
+  beforeEach(() => {
+    db = createTestDb();
+    ({ service } = createTestService(db));
+  });
+  afterEach(() => db.close());
+
+  it('returns empty map when no templates tracked', () => {
+    const map = service.getAllProjectTemplateMetadataMap();
+    expect(map.size).toBe(0);
+  });
+
+  it('returns map with all tracked projects', async () => {
+    const meta1 = {
+      templateSlug: 'a',
+      installedVersion: '1.0.0',
+      registryUrl: 'https://r.com',
+      installedAt: '2024-01-01T00:00:00Z',
+    };
+    const meta2 = {
+      templateSlug: 'b',
+      installedVersion: '2.0.0',
+      registryUrl: 'https://r.com',
+      installedAt: '2024-02-01T00:00:00Z',
+    };
+    await service.setProjectTemplateMetadata('proj-1', meta1);
+    await service.setProjectTemplateMetadata('proj-2', meta2);
+
+    const map = service.getAllProjectTemplateMetadataMap();
+    expect(map.size).toBe(2);
+    expect(map.get('proj-1')).toEqual(meta1);
+    expect(map.get('proj-2')).toEqual(meta2);
+  });
+});
+
+describe('SettingsService — Characterization: getProjectPresets() validation on read', () => {
+  let db: Database.Database;
+  let service: SettingsService;
+
+  beforeEach(() => {
+    db = createTestDb();
+    ({ service } = createTestService(db));
+  });
+  afterEach(() => db.close());
+
+  it('filters out invalid presets on read', () => {
+    const presets = {
+      'proj-1': [
+        { name: 'Valid', agentConfigs: [{ agentName: 'A', providerConfigName: 'C' }] },
+        { name: '', agentConfigs: [] },
+      ],
+    };
+    db.exec(
+      `INSERT INTO settings VALUES ('1','projectPresets','${JSON.stringify(presets)}',datetime('now'),datetime('now'))`,
+    );
+
+    const result = service.getProjectPresets('proj-1');
+    expect(result).toHaveLength(1);
+    expect(result[0].name).toBe('Valid');
+  });
+});
+
+describe('SettingsService — Characterization: getMessagePoolConfig() defaults', () => {
+  let db: Database.Database;
+  let service: SettingsService;
+
+  beforeEach(() => {
+    db = createTestDb();
+    ({ service } = createTestService(db));
+  });
+  afterEach(() => db.close());
+
+  it('returns all default values', () => {
+    const cfg = service.getMessagePoolConfig();
+    expect(cfg).toEqual({
+      enabled: DEFAULT_MESSAGE_POOL_ENABLED,
+      delayMs: DEFAULT_MESSAGE_POOL_DELAY_MS,
+      maxWaitMs: DEFAULT_MESSAGE_POOL_MAX_WAIT_MS,
+      maxMessages: DEFAULT_MESSAGE_POOL_MAX_MESSAGES,
+      separator: DEFAULT_MESSAGE_POOL_SEPARATOR,
+    });
+  });
+
+  it('merges stored values over defaults', async () => {
+    await service.updateSettings({
+      messagePool: { enabled: false, delayMs: 2000 },
+    });
+    const cfg = service.getMessagePoolConfig();
+    expect(cfg.enabled).toBe(false);
+    expect(cfg.delayMs).toBe(2000);
+    expect(cfg.maxWaitMs).toBe(DEFAULT_MESSAGE_POOL_MAX_WAIT_MS);
+  });
+});
+
+describe('SettingsService — Characterization: getMessagePoolConfigForProject()', () => {
+  let db: Database.Database;
+  let service: SettingsService;
+
+  beforeEach(() => {
+    db = createTestDb();
+    ({ service } = createTestService(db));
+  });
+  afterEach(() => db.close());
+
+  it('falls back to global config when project has no overrides', () => {
+    const cfg = service.getMessagePoolConfigForProject('proj-1');
+    expect(cfg).toEqual({
+      enabled: DEFAULT_MESSAGE_POOL_ENABLED,
+      delayMs: DEFAULT_MESSAGE_POOL_DELAY_MS,
+      maxWaitMs: DEFAULT_MESSAGE_POOL_MAX_WAIT_MS,
+      maxMessages: DEFAULT_MESSAGE_POOL_MAX_MESSAGES,
+      separator: DEFAULT_MESSAGE_POOL_SEPARATOR,
+    });
+  });
+
+  it('applies project overrides on top of global settings', async () => {
+    await service.updateSettings({ messagePool: { delayMs: 5000 } });
+    await service.setProjectPoolSettings('proj-1', { enabled: false, maxMessages: 3 });
+
+    const cfg = service.getMessagePoolConfigForProject('proj-1');
+    expect(cfg.enabled).toBe(false);
+    expect(cfg.delayMs).toBe(5000);
+    expect(cfg.maxMessages).toBe(3);
+    expect(cfg.maxWaitMs).toBe(DEFAULT_MESSAGE_POOL_MAX_WAIT_MS);
+    expect(cfg.separator).toBe(DEFAULT_MESSAGE_POOL_SEPARATOR);
+  });
+});
+
+// ==========================================================================
+// CRITICAL: Cross-delegate atomicity test
+// ==========================================================================
+
+describe('SettingsService — CRITICAL: updateSettings() cross-delegate atomicity', () => {
+  let db: Database.Database;
+  let service: SettingsService;
+
+  beforeEach(() => {
+    db = createTestDb();
+    ({ service } = createTestService(db));
+  });
+  afterEach(() => db.close());
+
+  it('atomically writes settings across multiple domains in one updateSettings call', async () => {
+    await service.updateSettings({
+      terminal: { scrollbackLines: 7777 },
+      messagePool: { enabled: false, delayMs: 2000 },
+      autoClean: { statusIds: { 'proj-1': ['s1'] } },
+      skills: { syncOnStartup: false },
+    });
+
+    expect(service.getSettings().terminal?.scrollbackLines).toBe(7777);
+    expect(service.getSettings().messagePool?.enabled).toBe(false);
+    expect(service.getSettings().messagePool?.delayMs).toBe(2000);
+    expect(service.getAutoCleanStatusIds('proj-1')).toEqual(['s1']);
+    expect(service.getSkillsSyncOnStartup()).toBe(false);
+  });
+
+  it('rolls back ALL writes when transaction body throws mid-way', async () => {
+    await service.updateSettings({ terminal: { scrollbackLines: 5000 } });
+    expect(service.getScrollbackLines()).toBe(5000);
+
+    const originalPrepare = db.prepare.bind(db);
+    let callCount = 0;
+    jest.spyOn(db, 'prepare').mockImplementation((sql: string) => {
+      const stmt = originalPrepare(sql);
+      if (sql.includes('INSERT INTO settings')) {
+        const originalRun = stmt.run.bind(stmt);
+        stmt.run = (...args: unknown[]) => {
+          callCount++;
+          if (callCount >= 3) {
+            throw new Error('Simulated mid-transaction failure');
+          }
+          return originalRun(...args);
+        };
+      }
+      return stmt;
+    });
+
+    await expect(
+      service.updateSettings({
+        terminal: { scrollbackLines: 9999 },
+        messagePool: { enabled: false },
+        skills: { syncOnStartup: false },
+      }),
+    ).rejects.toThrow('Simulated mid-transaction failure');
+
+    (db.prepare as jest.Mock).mockRestore();
+
+    expect(service.getScrollbackLines()).toBe(5000);
+    expect(service.getSettings().messagePool?.enabled).toBeUndefined();
+    expect(service.getSkillsSyncOnStartup()).toBe(DEFAULT_SKILLS_SYNC_ON_STARTUP);
+  });
+
+  it('preset rename + active-preset migration are atomic', async () => {
+    await service.createProjectPreset('proj-1', {
+      name: 'Original',
+      agentConfigs: [{ agentName: 'A', providerConfigName: 'C' }],
+    });
+    await service.setProjectActivePreset('proj-1', 'Original');
+
+    await service.updateProjectPreset('proj-1', 'Original', { name: 'Renamed' });
+
+    const presets = service.getProjectPresets('proj-1');
+    const active = service.getProjectActivePreset('proj-1');
+    expect(presets[0].name).toBe('Renamed');
+    expect(active).toBe('Renamed');
+  });
+
+  it('preset delete + active-preset cascade are atomic', async () => {
+    await service.createProjectPreset('proj-1', {
+      name: 'ToDelete',
+      agentConfigs: [{ agentName: 'A', providerConfigName: 'C' }],
+    });
+    await service.setProjectActivePreset('proj-1', 'ToDelete');
+
+    await service.deleteProjectPreset('proj-1', 'ToDelete');
+
+    expect(service.getProjectPresets('proj-1')).toHaveLength(0);
+    expect(service.getProjectActivePreset('proj-1')).toBeNull();
+  });
+
+  it('multi-domain setProjectSettings writes are committed together', async () => {
+    await service.setProjectSettings('proj-1', {
+      initialSessionPromptId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      autoCleanStatusIds: ['s1', 's2'],
+      epicAssignedTemplate: 'tmpl',
+      messagePoolSettings: { delayMs: 4000 },
+    });
+
+    const ps = service.getProjectSettings('proj-1');
+    expect(ps.initialSessionPromptId).toBe('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+    expect(ps.autoCleanStatusIds).toEqual(['s1', 's2']);
+    expect(ps.epicAssignedTemplate).toBe('tmpl');
+    expect(ps.messagePoolSettings?.delayMs).toBe(4000);
+  });
+});
+
+// ==========================================================================
+// API surface inventory — 32 public methods (thin facade after 4B.6)
+// ==========================================================================
+
+describe('SettingsService — API surface inventory', () => {
+  it('has exactly 32 public methods on prototype (no private methods — all logic in delegates)', () => {
+    const db = createTestDb();
+    const { service } = createTestService(db);
+
+    const proto = Object.getPrototypeOf(service);
+    const allMethods = Object.getOwnPropertyNames(proto).filter(
+      (name) => name !== 'constructor' && typeof proto[name] === 'function',
+    );
+
+    const expectedMethods = [
+      'getSettings',
+      'updateSettings',
+      'getSetting',
+      'getScrollbackLines',
+      'getSkillsSyncOnStartup',
+      'getSkillSourcesEnabled',
+      'setSkillSourceEnabled',
+      'getAutoCleanStatusIds',
+      'getMessagePoolConfig',
+      'getMessagePoolConfigForProject',
+      'getProjectPoolSettings',
+      'setProjectPoolSettings',
+      'getProjectSettings',
+      'setProjectSettings',
+      'getRegistryConfig',
+      'setRegistryConfig',
+      'getProjectTemplateMetadata',
+      'setProjectTemplateMetadata',
+      'clearProjectTemplateMetadata',
+      'getAllTrackedProjects',
+      'getAllProjectTemplateMetadataMap',
+      'updateLastUpdateCheck',
+      'getProjectPresets',
+      'setProjectPresets',
+      'clearProjectPresets',
+      'getAllProjectPresetsMap',
+      'renameProviderConfigInProjectPresets',
+      'createProjectPreset',
+      'updateProjectPreset',
+      'deleteProjectPreset',
+      'getProjectActivePreset',
+      'setProjectActivePreset',
+    ];
+
+    for (const method of expectedMethods) {
+      expect(allMethods).toContain(method);
+    }
+
+    expect(allMethods.length).toBe(expectedMethods.length);
+    db.close();
   });
 });

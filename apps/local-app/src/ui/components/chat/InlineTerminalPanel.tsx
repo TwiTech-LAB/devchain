@@ -65,7 +65,10 @@ export function InlineTerminalPanel({
   // Auto-focus inline terminal when it is rendered as the active view
   useEffect(() => {
     if (sessionId && !isWindowOpen && activeTab === 'terminal') {
-      const t = setTimeout(() => handleRef.current?.focus(), 0);
+      const t = setTimeout(() => {
+        handleRef.current?.fit();
+        handleRef.current?.focus();
+      }, 0);
       return () => clearTimeout(t);
     }
     return;

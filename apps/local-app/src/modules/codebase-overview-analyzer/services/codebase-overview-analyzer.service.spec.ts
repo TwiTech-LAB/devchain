@@ -12,7 +12,8 @@ import { OverviewScopeRepository } from '../repositories/overview-scope.reposito
 import type { Stats } from 'fs';
 import { existsSync } from 'fs';
 import * as fsPromises from 'fs/promises';
-import { execFile } from 'child_process';
+import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
+import { FakeProcessExecutor } from '../../terminal/services/process-executor/fake-process-executor';
 
 jest.mock('../repositories/overview-scope.repository', () => ({
   OverviewScopeRepository: class MockOverviewScopeRepository {},
@@ -29,27 +30,16 @@ jest.mock('fs/promises', () => ({
   readFile: jest.fn(),
 }));
 
-jest.mock('child_process', () => ({
-  execFile: jest.fn(),
-}));
-
 const mockExistsSync = existsSync as jest.MockedFunction<typeof existsSync>;
-const mockExecFile = execFile as unknown as jest.Mock;
 const mockStat = fsPromises.stat as jest.MockedFunction<typeof fsPromises.stat>;
 const mockReaddir = fsPromises.readdir as jest.MockedFunction<typeof fsPromises.readdir>;
 const mockReadFile = fsPromises.readFile as unknown as jest.Mock;
 
-type ExecFileCallback = (...args: unknown[]) => void;
+// Shared fake executor — assigned in beforeEach, used by helpers below.
+let fakeExecutor: FakeProcessExecutor;
 
 function mockGitCall(stdout: string) {
-  mockExecFile.mockImplementationOnce(
-    (_cmd: string, _args: string[], _opts: unknown, cb?: ExecFileCallback) => {
-      if (cb) {
-        cb(null, { stdout, stderr: '' });
-      }
-      return { stdout, stderr: '' };
-    },
-  );
+  fakeExecutor.enqueueResponse({ type: 'success', stdout });
 }
 
 /** Mock the 3 churn map git log calls (1d, 7d, 30d) + daily churn + windowed authors (7d, 30d) + authorship with empty output. */
@@ -67,6 +57,9 @@ describe('CodebaseOverviewAnalyzerService', () => {
   let service: CodebaseOverviewAnalyzerService;
 
   beforeEach(async () => {
+    fakeExecutor = new FakeProcessExecutor();
+    fakeExecutor.setDefaultResponse({ type: 'success', stdout: '' });
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         IdentityResolverService,
@@ -83,6 +76,10 @@ describe('CodebaseOverviewAnalyzerService', () => {
             readUserEntries: () => [],
             getStorageMode: () => 'local-only' as const,
           },
+        },
+        {
+          provide: ProcessExecutor,
+          useValue: fakeExecutor,
         },
         CodebaseOverviewAnalyzerService,
       ],
@@ -1827,17 +1824,13 @@ describe('CodebaseOverviewAnalyzerService', () => {
 
       await service.getSnapshot('/test/argv', 'test-project');
 
-      // Find the daily churn execFile call (4th in Promise.all)
-      const calls = mockExecFile.mock.calls;
-      const dailyChurnCall = calls.find((call: unknown[]) => {
-        const args = call[1] as string[];
-        return (
-          Array.isArray(args) &&
-          args.some((a) => typeof a === 'string' && a.includes('--format=COMMIT'))
-        );
+      // Find the daily churn executor call (4th in Promise.all)
+      const calls = fakeExecutor.calls;
+      const dailyChurnCall = calls.find((call) => {
+        return call.argv.some((a) => typeof a === 'string' && a.includes('--format=COMMIT'));
       });
       expect(dailyChurnCall).toBeDefined();
-      const args = (dailyChurnCall as unknown[])[1] as string[];
+      const args = dailyChurnCall!.argv;
       // The format arg must NOT contain shell quotes
       const formatArg = args.find((a) => typeof a === 'string' && a.includes('COMMIT'));
       expect(formatArg).toBeDefined();
@@ -1970,12 +1963,7 @@ describe('CodebaseOverviewAnalyzerService', () => {
       mockGitCall(''); // 30d
 
       // Daily churn call throws
-      mockExecFile.mockImplementationOnce(
-        (_cmd: string, _args: string[], _opts: unknown, cb?: ExecFileCallback) => {
-          if (cb) cb(new Error('git failed'), { stdout: '', stderr: 'fatal' });
-          return undefined as never;
-        },
-      );
+      fakeExecutor.enqueueResponse({ type: 'failure', exitCode: 1, stderr: 'fatal' });
       mockGitCall(''); // windowed authors 7d
       mockGitCall(''); // windowed authors 30d
       mockGitCall(''); // getFileAuthorMap
@@ -2282,12 +2270,11 @@ describe('CodebaseOverviewAnalyzerService', () => {
       await service.getSnapshot('/test/two-calls', 'test-project');
 
       // Verify that there are 2 separate calls with --since for windowed authors
-      const calls = mockExecFile.mock.calls;
-      const windowedCalls = calls.filter((call: unknown[]) => {
-        const args = call[1] as string[];
+      const calls = fakeExecutor.calls;
+      const windowedCalls = calls.filter((call) => {
+        const args = call.argv;
         return (
-          Array.isArray(args) &&
-          args[0] === 'log' &&
+          args.includes('log') &&
           args.some(
             (a) => typeof a === 'string' && a.startsWith('--since=') && a.includes('days ago'),
           ) &&
@@ -2297,9 +2284,8 @@ describe('CodebaseOverviewAnalyzerService', () => {
       // 1 daily churn + 2 windowed authors = 3 calls with COMMIT format
       // The windowed ones should have --since=7 and --since=30
       expect(windowedCalls.length).toBeGreaterThanOrEqual(3);
-      const sinceArgs = windowedCalls.map((call: unknown[]) => {
-        const args = call[1] as string[];
-        return args.find((a) => typeof a === 'string' && a.startsWith('--since='));
+      const sinceArgs = windowedCalls.map((call) => {
+        return call.argv.find((a) => typeof a === 'string' && a.startsWith('--since='));
       });
       expect(sinceArgs.filter((a) => a?.includes('14 days')).length).toBe(1); // daily churn
       expect(sinceArgs.filter((a) => a?.includes('7 days')).length).toBe(1); // windowed 7d

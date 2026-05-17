@@ -12,6 +12,7 @@ describe('RuntimeController', () => {
     delete process.env.DATABASE_URL;
     delete process.env.REPO_ROOT;
     delete process.env.RUNTIME_TOKEN;
+    delete process.env.DEVCHAIN_CLOUD_UI_ENABLED;
     resetEnvConfig();
     controller = new RuntimeController();
   });
@@ -27,7 +28,11 @@ describe('RuntimeController', () => {
     expect(result).toEqual({
       mode: 'normal',
       version: expect.any(String),
+      bootId: expect.any(String),
       dockerAvailable: false,
+      features: {
+        cloudUi: false,
+      },
     });
   });
 
@@ -41,8 +46,30 @@ describe('RuntimeController', () => {
     expect(result).toEqual({
       mode: 'main',
       version: expect.any(String),
+      bootId: expect.any(String),
       dockerAvailable: false,
+      features: {
+        cloudUi: false,
+      },
     });
+  });
+
+  it('returns the same bootId across multiple calls', async () => {
+    const result1 = await controller.getRuntime();
+    const result2 = await controller.getRuntime();
+
+    expect(result1.bootId).toBe(result2.bootId);
+    expect(typeof result1.bootId).toBe('string');
+    expect(result1.bootId.length).toBeGreaterThan(0);
+  });
+
+  it('reports Cloud UI feature status when enabled', async () => {
+    process.env.DEVCHAIN_CLOUD_UI_ENABLED = '1';
+    resetEnvConfig();
+
+    const result = await controller.getRuntime();
+
+    expect(result.features).toEqual({ cloudUi: true });
   });
 
   it('includes runtimeToken when RUNTIME_TOKEN is set', async () => {

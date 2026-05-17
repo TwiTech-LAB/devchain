@@ -1,4 +1,6 @@
+import Database from 'better-sqlite3';
 import type { SettingsService } from '../../settings/services/settings.service';
+import { PresetSettingsDelegate } from '../../settings/local/delegates/preset-settings.delegate';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import {
   applyPresetWithHelper,
@@ -257,6 +259,105 @@ describe('project-presets.helpers', () => {
   });
 
   describe('applyPresetWithHelper', () => {
+    it('applies a preset successfully after provider config rename cascade rewrites the stored config name', async () => {
+      const db = new Database(':memory:');
+      db.exec(`
+        CREATE TABLE settings (
+          id TEXT PRIMARY KEY,
+          key TEXT NOT NULL UNIQUE,
+          value TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+      `);
+      const presetDelegate = new PresetSettingsDelegate({ sqlite: db });
+
+      try {
+        await presetDelegate.setProjectPresets(projectId, [
+          {
+            name: 'default',
+            description: 'Default',
+            agentConfigs: [
+              {
+                agentName: 'Coder',
+                providerConfigName: 'Old Config',
+                modelOverride: 'openai/gpt-5',
+              },
+            ],
+          },
+        ]);
+        await presetDelegate.renameProviderConfigInProjectPresets(projectId, {
+          profileId: 'profile-1',
+          oldName: 'Old Config',
+          newName: 'New Config',
+          agents: [{ name: 'Coder', profileId: 'profile-1' }],
+        });
+
+        storage.listAgents.mockResolvedValue({
+          items: [
+            {
+              id: 'agent-1',
+              name: 'Coder',
+              profileId: 'profile-1',
+              providerConfigId: 'old-cfg',
+              modelOverride: null,
+            },
+          ],
+          total: 1,
+          limit: 1000,
+          offset: 0,
+        });
+        storage.listAgentProfiles.mockResolvedValue({
+          items: [
+            {
+              id: 'profile-1',
+              projectId,
+              name: 'Code Profile',
+              familySlug: null,
+              instructions: null,
+              temperature: null,
+              maxTokens: null,
+              createdAt: '',
+              updatedAt: '',
+            },
+          ],
+          total: 1,
+          limit: 1000,
+          offset: 0,
+        });
+        storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+          {
+            id: 'cfg-new',
+            profileId: 'profile-1',
+            providerId: 'provider-1',
+            name: 'New Config',
+            options: null,
+            env: null,
+            createdAt: '',
+            updatedAt: '',
+          },
+        ]);
+        storage.updateAgent.mockResolvedValue({} as never);
+
+        const result = await applyPresetWithHelper(projectId, 'default', {
+          storage: storage as unknown as StorageService,
+          settings: {
+            getProjectPresets: (id: string) => presetDelegate.getProjectPresets(id),
+            setProjectActivePreset: settings.setProjectActivePreset,
+          } as unknown as SettingsService,
+        });
+
+        expect(result).toEqual({ applied: 1, warnings: [] });
+        expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', {
+          providerConfigId: 'cfg-new',
+          modelOverride: 'openai/gpt-5',
+        });
+        expect(settings.setProjectActivePreset).toHaveBeenCalledWith(projectId, 'default');
+      } finally {
+        db.close();
+      }
+    });
+
     it('sets modelOverride only when explicitly defined by preset', async () => {
       const preset: ProjectPreset = {
         name: 'default',

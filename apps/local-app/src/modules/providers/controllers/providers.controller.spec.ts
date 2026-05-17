@@ -1,11 +1,14 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import Database from 'better-sqlite3';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { ProvidersController } from './providers.controller';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
-import { McpProviderRegistrationService } from '../../mcp/services/mcp-provider-registration.service';
-import { PreflightService } from '../../core/services/preflight.service';
-import { ProviderMcpEnsureService } from '../../core/services/provider-mcp-ensure.service';
+import { DB_CONNECTION } from '../../storage/db/db.provider';
+import { McpProviderRegistrationService } from '../services/mcp-provider-registration.service';
+import { ProviderMcpEnsureService } from '../services/provider-mcp-ensure.service';
 import { ProviderAdapterFactory } from '../adapters';
 import { ProbeProofService } from '../services/probe-proof.service';
+import { ProviderStateManager } from '../services/provider-state-manager.service';
 import { ProviderProjectSyncService } from '../services/provider-project-sync.service';
 import { ProviderDiscoveryService } from '../services/provider-discovery.service';
 import {
@@ -13,35 +16,26 @@ import {
   InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
-import * as fsPromises from 'fs/promises';
-import { Stats, constants } from 'fs';
+import { ValidationError } from '../../../common/errors/error-types';
 import {
   disableClaudeAutoCompact,
   enableClaudeAutoCompact,
 } from '../../sessions/utils/claude-config';
 import { probe1mSupport, ProbeOutcome } from '../utils/probe-1m';
+import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
+import { FakeProcessExecutor } from '../../terminal/services/process-executor/fake-process-executor';
 
-jest.mock('fs/promises', () => ({
-  stat: jest.fn(),
-  access: jest.fn(),
-}));
-
-jest.mock('child_process', () => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const actual = jest.requireActual('child_process');
-  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
-  const { promisify } = require('util');
-  const asyncMock = jest.fn().mockResolvedValue({ stdout: '', stderr: '' });
-  const mockFn = jest.fn();
-  Object.defineProperty(mockFn, promisify.custom, {
-    value: asyncMock,
-    writable: true,
-  });
-  return { ...actual, execFile: mockFn, __mockExecFileAsync: asyncMock };
-});
-
-// eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
-const mockExecFileAsync = require('child_process').__mockExecFileAsync as jest.Mock;
+function buildProofDb() {
+  const sqlite = new Database(':memory:');
+  sqlite.exec(`
+    CREATE TABLE provider_probe_proofs (
+      provider_id TEXT PRIMARY KEY,
+      bin_path TEXT NOT NULL,
+      recorded_at INTEGER NOT NULL
+    );
+  `);
+  return drizzle(sqlite);
+}
 
 jest.mock('../../sessions/utils/claude-config', () => ({
   disableClaudeAutoCompact: jest.fn(),
@@ -75,15 +69,14 @@ describe('ProvidersController', () => {
     registerProvider: jest.Mock;
     listRegistrations: jest.Mock;
     removeRegistration: jest.Mock;
-    runShellCommand: jest.Mock;
   };
   let mcpEnsureService: {
     ensureMcp: jest.Mock;
   };
   let probeProofService: ProbeProofService;
+  let providerStateManager: ProviderStateManager;
   let mockSyncService: { syncProviderToAllProjects: jest.Mock };
   let mockDiscoveryService: { discoverInstalledBinaries: jest.Mock };
-  let normalizeBinPathSpy: jest.SpyInstance;
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -100,7 +93,6 @@ describe('ProvidersController', () => {
       registerProvider: jest.fn(),
       listRegistrations: jest.fn(),
       removeRegistration: jest.fn(),
-      runShellCommand: jest.fn(),
     };
 
     mcpEnsureService = {
@@ -111,7 +103,6 @@ describe('ProvidersController', () => {
         alias: 'devchain',
       }),
     };
-    mockExecFileAsync.mockReset().mockResolvedValue({ stdout: '', stderr: '' });
     mockProbe1mSupport.mockReset();
     mockDisableClaudeAutoCompact.mockResolvedValue({ success: true });
 
@@ -138,12 +129,6 @@ describe('ProvidersController', () => {
         {
           provide: McpProviderRegistrationService,
           useValue: mcpRegistration,
-        },
-        {
-          provide: PreflightService,
-          useValue: {
-            clearCache: jest.fn(),
-          },
         },
         {
           provide: ProviderAdapterFactory,
@@ -174,18 +159,24 @@ describe('ProvidersController', () => {
           },
         },
         ProbeProofService,
+        ProviderStateManager,
+        { provide: DB_CONNECTION, useValue: buildProofDb() },
+        {
+          provide: ProcessExecutor,
+          useFactory: () => {
+            const fake = new FakeProcessExecutor();
+            fake.setDefaultResponse({ type: 'success', stdout: '' });
+            return fake;
+          },
+        },
       ],
     }).compile();
 
     controller = module.get(ProvidersController);
     probeProofService = module.get(ProbeProofService);
+    providerStateManager = module.get(ProviderStateManager);
     normalizeBinPathSpy = jest
-      .spyOn(
-        controller as unknown as {
-          normalizeBinPath: (p: string | null) => Promise<string | null>;
-        },
-        'normalizeBinPath',
-      )
+      .spyOn(providerStateManager, 'normalizeBinPath')
       .mockImplementation(async (value) => value);
   });
 
@@ -253,7 +244,7 @@ describe('ProvidersController', () => {
           binPath: '/usr/local/bin/claude',
           oneMillionContextEnabled: true,
         }),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(ValidationError);
 
       expect(storage.createProvider).not.toHaveBeenCalled();
     });
@@ -372,31 +363,6 @@ describe('ProvidersController', () => {
           oneMillionContextEnabled: undefined,
         }),
       );
-    });
-  });
-
-  describe('normalizeBinPath', () => {
-    it('preserves the provided absolute path without resolving symlinks', async () => {
-      normalizeBinPathSpy.mockRestore();
-
-      const statMock = fsPromises.stat as jest.Mock;
-      const accessMock = fsPromises.access as jest.Mock;
-      statMock.mockResolvedValue({ isFile: () => true } as unknown as Stats);
-      accessMock.mockResolvedValue(undefined);
-
-      const input = '/tmp/some/path/bin';
-      const result = await (
-        controller as unknown as {
-          normalizeBinPath: (p: string | null | undefined) => Promise<string | null>;
-        }
-      ).normalizeBinPath(input);
-
-      expect(statMock).toHaveBeenCalledWith(input);
-      expect(accessMock).toHaveBeenCalledWith(input, constants.X_OK);
-      expect(result).toBe(input);
-
-      statMock.mockReset();
-      accessMock.mockReset();
     });
   });
 
@@ -610,7 +576,7 @@ describe('ProvidersController', () => {
         controller.updateProvider('p1', {
           oneMillionContextEnabled: true,
         }),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(ValidationError);
 
       expect(storage.updateProvider).not.toHaveBeenCalled();
     });
@@ -637,7 +603,7 @@ describe('ProvidersController', () => {
           binPath: '/opt/new-claude/bin/claude',
           oneMillionContextEnabled: true,
         }),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(ValidationError);
 
       expect(storage.updateProvider).not.toHaveBeenCalled();
     });
@@ -661,7 +627,7 @@ describe('ProvidersController', () => {
           oneMillionContextEnabled: true,
           probeConfirmed: true, // forged client boolean
         } as Record<string, unknown>),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(ValidationError);
 
       expect(storage.updateProvider).not.toHaveBeenCalled();
     });
@@ -1050,7 +1016,7 @@ describe('ProvidersController', () => {
       // Attempt to enable 1M — should fail
       await expect(
         controller.updateProvider('p1', { oneMillionContextEnabled: true }),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(ValidationError);
     });
   });
 
@@ -1275,18 +1241,8 @@ describe('ProvidersController', () => {
         updatedAt: '',
       });
 
-      await expect(controller.disableAutoCompact('p1')).rejects.toThrow(BadRequestException);
+      await expect(controller.disableAutoCompact('p1')).rejects.toThrow(ValidationError);
       expect(mockDisableClaudeAutoCompact).not.toHaveBeenCalled();
-
-      try {
-        await controller.disableAutoCompact('p1');
-      } catch (error) {
-        expect((error as BadRequestException).getResponse()).toEqual(
-          expect.objectContaining({
-            message: 'Auto-compact configuration is only applicable to Claude provider',
-          }),
-        );
-      }
     });
 
     it('returns 400 when Claude config is malformed', async () => {
@@ -1386,7 +1342,7 @@ describe('ProvidersController', () => {
         updatedAt: '',
       });
 
-      await expect(controller.enableAutoCompact('p1')).rejects.toThrow(BadRequestException);
+      await expect(controller.enableAutoCompact('p1')).rejects.toThrow(ValidationError);
       expect(mockEnableClaudeAutoCompact).not.toHaveBeenCalled();
     });
 
@@ -1450,14 +1406,14 @@ describe('ProvidersController', () => {
     it('rejects non-Claude providers', async () => {
       storage.getProvider.mockResolvedValue({ ...claudeProvider, name: 'codex' });
 
-      await expect(controller.probe1mContext('p1')).rejects.toThrow(BadRequestException);
+      await expect(controller.probe1mContext('p1')).rejects.toThrow(ValidationError);
       expect(mockProbe1mSupport).not.toHaveBeenCalled();
     });
 
     it('rejects Claude provider without binPath', async () => {
       storage.getProvider.mockResolvedValue({ ...claudeProvider, binPath: null });
 
-      await expect(controller.probe1mContext('p1')).rejects.toThrow(BadRequestException);
+      await expect(controller.probe1mContext('p1')).rejects.toThrow(ValidationError);
       expect(mockProbe1mSupport).not.toHaveBeenCalled();
     });
 
@@ -1471,7 +1427,11 @@ describe('ProvidersController', () => {
 
       await controller.probe1mContext('p1');
 
-      expect(mockProbe1mSupport).toHaveBeenCalledWith('/usr/local/bin/claude', 30_000);
+      expect(mockProbe1mSupport).toHaveBeenCalledWith(
+        expect.any(FakeProcessExecutor),
+        '/usr/local/bin/claude',
+        30_000,
+      );
     });
 
     it('records proof when outcome is supported', async () => {

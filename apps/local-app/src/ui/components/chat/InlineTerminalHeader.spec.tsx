@@ -1,5 +1,6 @@
 import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { InlineTerminalHeader } from './InlineTerminalHeader';
 
 jest.mock('@/ui/components/session-reader/InlineSessionSummaryChip', () => ({
@@ -199,5 +200,83 @@ describe('InlineTerminalHeader', () => {
     render(<InlineTerminalHeader {...defaultProps} />);
 
     expect(screen.queryByTestId('session-chip')).not.toBeInTheDocument();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Session name/ID chip
+  // ---------------------------------------------------------------------------
+
+  const SESSION_ID = '550e8400-e29b-41d4-a716-446655440099';
+
+  function renderWithQueryClient(ui: React.ReactElement) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
+  }
+
+  it('renders session name chip with short ID when no name', () => {
+    renderWithQueryClient(
+      <InlineTerminalHeader {...defaultProps} sessionId={SESSION_ID} sessionName={null} />,
+    );
+
+    expect(screen.getByRole('button', { name: /Rename session/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Copy session ID/i })).toBeInTheDocument();
+  });
+
+  it('renders session name when provided', () => {
+    renderWithQueryClient(
+      <InlineTerminalHeader {...defaultProps} sessionId={SESSION_ID} sessionName="My Session" />,
+    );
+
+    expect(screen.getByText('My Session')).toBeInTheDocument();
+  });
+
+  it('hides session name chip when sessionId is omitted', () => {
+    renderWithQueryClient(<InlineTerminalHeader {...defaultProps} />);
+
+    expect(screen.queryByRole('button', { name: /Rename session/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Copy session ID/i })).not.toBeInTheDocument();
+  });
+
+  it('enters edit mode on chip click', () => {
+    renderWithQueryClient(
+      <InlineTerminalHeader
+        {...defaultProps}
+        sessionId={SESSION_ID}
+        sessionName="Test"
+        projectId="proj-1"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Rename session/i }));
+    expect(screen.getByRole('textbox', { name: /Session name/i })).toBeInTheDocument();
+  });
+
+  it('exits edit mode on Escape', () => {
+    renderWithQueryClient(
+      <InlineTerminalHeader
+        {...defaultProps}
+        sessionId={SESSION_ID}
+        sessionName="Test"
+        projectId="proj-1"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Rename session/i }));
+    const input = screen.getByRole('textbox', { name: /Session name/i });
+    fireEvent.keyDown(input, { key: 'Escape' });
+    expect(screen.queryByRole('textbox', { name: /Session name/i })).not.toBeInTheDocument();
+  });
+
+  it('truncates long session names at 16 chars', () => {
+    renderWithQueryClient(
+      <InlineTerminalHeader
+        {...defaultProps}
+        sessionId={SESSION_ID}
+        sessionName="This is a very long session name"
+      />,
+    );
+
+    const chipButton = screen.getByRole('button', { name: /Rename session/i });
+    expect(chipButton.textContent!.length).toBeLessThanOrEqual(17);
   });
 });

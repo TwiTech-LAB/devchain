@@ -4,7 +4,7 @@ import { createLogger } from '../../../common/logging/logger';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
 import type { Watcher, TriggerCondition } from '../../storage/models/domain.models';
 import { SessionsService } from '../../sessions/services/sessions.service';
-import { TmuxService } from '../../terminal/services/tmux.service';
+import { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
 import { EventsService } from '../../events/services/events.service';
 import type { SessionDto } from '../../sessions/dtos/sessions.dto';
 
@@ -46,7 +46,7 @@ export class WatcherRunnerService implements OnModuleInit, OnModuleDestroy {
   constructor(
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
     @Inject(forwardRef(() => SessionsService)) private readonly sessionsService: SessionsService,
-    @Inject(forwardRef(() => TmuxService)) private readonly tmuxService: TmuxService,
+    @Inject(forwardRef(() => TerminalIOService)) private readonly terminalIO: TerminalIOService,
     @Inject(forwardRef(() => EventsService)) private readonly eventsService: EventsService,
   ) {}
 
@@ -270,13 +270,7 @@ export class WatcherRunnerService implements OnModuleInit, OnModuleDestroy {
     // Idle gate: if configured, session must be idle long enough before viewport capture.
     if (watcher.idleAfterSeconds > 0) {
       if (session.activityState !== 'idle') {
-        const { viewportHash } = this.checkTriggerEligibility(
-          watcher,
-          sessionId,
-          'idle-gate:not-idle',
-          false,
-        );
-        return { skipped: false, matched: false, triggered: false, viewportHash };
+        return { skipped: false, matched: false, triggered: false };
       }
 
       if (!session.lastActivityAt) {
@@ -284,13 +278,7 @@ export class WatcherRunnerService implements OnModuleInit, OnModuleDestroy {
           { watcherId, sessionId },
           'Session idle gate failed: no lastActivityAt; treating as not matched',
         );
-        const { viewportHash } = this.checkTriggerEligibility(
-          watcher,
-          sessionId,
-          'idle-gate:no-timestamp',
-          false,
-        );
-        return { skipped: false, matched: false, triggered: false, viewportHash };
+        return { skipped: false, matched: false, triggered: false };
       }
 
       const lastActivityTs = Date.parse(session.lastActivityAt);
@@ -299,24 +287,12 @@ export class WatcherRunnerService implements OnModuleInit, OnModuleDestroy {
           { watcherId, sessionId, lastActivityAt: session.lastActivityAt },
           'Session idle gate failed: invalid lastActivityAt; treating as not matched',
         );
-        const { viewportHash } = this.checkTriggerEligibility(
-          watcher,
-          sessionId,
-          'idle-gate:no-timestamp',
-          false,
-        );
-        return { skipped: false, matched: false, triggered: false, viewportHash };
+        return { skipped: false, matched: false, triggered: false };
       }
 
       const idleDurationMs = Date.now() - lastActivityTs;
       if (idleDurationMs < watcher.idleAfterSeconds * 1000) {
-        const { viewportHash } = this.checkTriggerEligibility(
-          watcher,
-          sessionId,
-          'idle-gate:not-enough',
-          false,
-        );
-        return { skipped: false, matched: false, triggered: false, viewportHash };
+        return { skipped: false, matched: false, triggered: false };
       }
     }
 
@@ -575,10 +551,9 @@ export class WatcherRunnerService implements OnModuleInit, OnModuleDestroy {
     this.logger.debug({ tmuxSessionId, lines }, 'Cache miss, capturing viewport from tmux');
 
     try {
-      // false = strip ANSI codes for clean text matching
-      const text = await this.tmuxService.capturePane(tmuxSessionId, lines, false);
+      const result = await this.terminalIO.captureHistory({ name: tmuxSessionId }, lines, false);
+      const text = result.ok ? result.output : '';
 
-      // Store in cache
       this.captureCache.set(key, { text, ts: Date.now() });
 
       return text;
@@ -783,6 +758,15 @@ export class WatcherRunnerService implements OnModuleInit, OnModuleDestroy {
           );
           return { shouldTrigger: false, viewportHash };
         }
+
+        const lastHash = this.getLastTriggeredHash(watcherId, sessionId);
+        if (lastHash === viewportHash) {
+          this.logger.debug(
+            { watcherId, sessionId, viewportHash },
+            'Skipping trigger: until_clear mode, viewport unchanged since last trigger',
+          );
+          return { shouldTrigger: false, viewportHash };
+        }
       }
 
       // All checks passed - should trigger
@@ -798,7 +782,16 @@ export class WatcherRunnerService implements OnModuleInit, OnModuleDestroy {
     } else {
       // Condition is false
       if (watcher.cooldownMode === 'until_clear') {
-        // Clear the cooldown when condition becomes false
+        // Clear only after the configured hold window expires. Terminal capture can
+        // transiently miss a matched line while the same condition is still effectively active.
+        if (this.isOnCooldown(watcherId, sessionId)) {
+          this.logger.debug(
+            { watcherId, sessionId },
+            'Keeping cooldown: condition no longer matches but hold window is active',
+          );
+          return { shouldTrigger: false, viewportHash };
+        }
+
         this.clearCooldown(watcherId, sessionId);
         this.logger.debug(
           { watcherId, sessionId },

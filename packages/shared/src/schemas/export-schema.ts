@@ -271,6 +271,28 @@ export const ExportSchema = z
       )
       .optional()
       .default([]),
+    // Scheduled epics (definition only; runtime/run state excluded for portability)
+    scheduledEpics: z
+      .array(
+        z
+          .object({
+            name: z.string().min(1),
+            cronExpression: z.string().min(1),
+            timezone: z.string().min(1),
+            enabled: z.boolean(),
+            titleTemplate: z.string().min(1),
+            descriptionTemplate: z.string().nullable().optional(),
+            templateStatusLabel: z.string().nullable().optional(),
+            templateParentEpicTitle: z.string().nullable().optional(),
+            templateAgentName: z.string().nullable().optional(),
+            templateTags: z.array(z.string()).optional().default([]),
+            allowOverlap: z.boolean().optional().default(false),
+            missedRunPolicy: z.enum(['skip', 'run_once', 'run_all']).optional().default('skip'),
+          })
+          .strict(),
+      )
+      .optional()
+      .default([]),
     // Template manifest metadata (optional, for display/UX purposes)
     _manifest: ManifestSchema.optional(),
   })

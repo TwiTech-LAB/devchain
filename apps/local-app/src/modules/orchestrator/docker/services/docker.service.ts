@@ -1,11 +1,11 @@
 import { Injectable, Optional } from '@nestjs/common';
-import { execFileSync } from 'child_process';
 import Dockerode = require('dockerode');
 import { existsSync, readFileSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join, posix } from 'path';
 import { createLogger } from '../../../../common/logging/logger';
 import { resolveTemplatesDirectory } from '../../../../common/templates-directory';
+import { ProcessExecutor } from '../../../terminal/services/process-executor/process-executor.port';
 
 const logger = createLogger('OrchestratorDockerService');
 
@@ -88,22 +88,25 @@ interface ProviderAuthMount {
   bind: string;
 }
 
-function readGitConfig(worktreePath: string, key: string): string | null {
-  try {
-    return (
-      execFileSync('git', ['-C', worktreePath, 'config', key], { encoding: 'utf-8' }).trim() || null
-    );
-  } catch {
-    return null;
-  }
-}
-
 @Injectable()
 export class OrchestratorDockerService {
   constructor(
+    private readonly executor: ProcessExecutor,
     @Optional()
     private readonly docker: Dockerode = new Dockerode({ socketPath: DOCKER_SOCKET_PATH }),
   ) {}
+
+  private async readGitConfig(worktreePath: string, key: string): Promise<string | null> {
+    try {
+      const result = await this.executor.run({
+        argv: ['git', '-C', worktreePath, 'config', key],
+        mode: 'pipe',
+      });
+      return result.success ? result.stdout.trim() || null : null;
+    } catch {
+      return null;
+    }
+  }
 
   async createContainer(config: CreateContainerConfig): Promise<ContainerInfo> {
     const containerPort = config.containerPort ?? DEFAULT_CONTAINER_PORT;
@@ -115,8 +118,8 @@ export class OrchestratorDockerService {
     const envMap = this.buildEnvMap(config.env, worktreeName);
 
     // Resolve host git identity and inject into container env (don't clobber user-supplied values).
-    const gitUserName = readGitConfig(config.worktreePath, 'user.name');
-    const gitUserEmail = readGitConfig(config.worktreePath, 'user.email');
+    const gitUserName = await this.readGitConfig(config.worktreePath, 'user.name');
+    const gitUserEmail = await this.readGitConfig(config.worktreePath, 'user.email');
     if (gitUserName) {
       envMap.GIT_AUTHOR_NAME ??= gitUserName;
       envMap.GIT_COMMITTER_NAME ??= gitUserName;

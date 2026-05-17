@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Terminal, type TerminalHandle } from '@/ui/components/Terminal';
 import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
@@ -13,14 +13,21 @@ import {
   fetchProfileSummary,
   fetchProjectSummary,
   fetchProviderSummary,
+  renameSession,
   terminateSession,
 } from '@/ui/lib/sessions';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 import { getProviderIconDataUri } from '@/ui/lib/providers';
 import {
   useTerminalWindows,
   type TerminalWindowDetail,
   type TerminalWindowMenuItem,
 } from './TerminalWindowsContext';
+
+function shortSessionId(id: string): string {
+  if (id.length <= 12) return id;
+  return `${id.slice(0, 8)}…${id.slice(-4)}`;
+}
 
 interface TerminalSessionWindowContentProps {
   session: ActiveSession;
@@ -36,16 +43,49 @@ export function TerminalSessionWindowContent({
   const queryClient = useQueryClient();
   const { selectedProjectId } = useSelectedProject();
   const { updateWindowMeta, setWindowHandle } = useTerminalWindows();
+  const apiFetch = useFetchFactory();
   const [confirmTerminate, setConfirmTerminate] = useState(false);
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [draftName, setDraftName] = useState(session.name ?? '');
+  const [copiedId, setCopiedId] = useState(false);
   const closingRef = useRef(false);
-  const terminalSessionsQueryKey = [
-    ...TERMINAL_SESSIONS_QUERY_KEY,
-    selectedProjectId ?? 'all',
-  ] as const;
+  const renameInputRef = useRef<HTMLInputElement>(null);
+  const terminalSessionsQueryKey = useMemo(
+    () => [...TERMINAL_SESSIONS_QUERY_KEY, selectedProjectId ?? 'all'] as const,
+    [selectedProjectId],
+  );
+
+  // Local display name — source-of-truth for this window's rename UX.
+  // Cache is a sync channel for cross-surface updates, not the primary source.
+  // Remediation: R4 (epic 5b9c46e1) — local state avoids inserting into the
+  // dock cache which would create phantom entries.
+  const [windowName, setWindowName] = useState<string | null>(session.name ?? null);
+
+  const { data: cachedSessionName } = useQuery({
+    queryKey: terminalSessionsQueryKey,
+    queryFn: () => queryClient.getQueryData<ActiveSession[]>(terminalSessionsQueryKey) ?? [],
+    select: (data): string | null => {
+      const found = data.find((s) => s.id === session.id);
+      return found?.name ?? null;
+    },
+    enabled: true,
+    staleTime: Infinity,
+    gcTime: Infinity,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+
+  // Intentionally omit windowName from deps to avoid sync loops.
+  useEffect(() => {
+    if (cachedSessionName != null && cachedSessionName !== windowName) {
+      setWindowName(cachedSessionName);
+    }
+  }, [cachedSessionName]); // eslint-disable-line
 
   const { data: epic } = useQuery({
     queryKey: ['terminal-window', 'epic', session.epicId],
-    queryFn: () => fetchEpicSummary(session.epicId!),
+    queryFn: () => fetchEpicSummary(session.epicId!, apiFetch),
     enabled: Boolean(session.epicId),
     staleTime: 2 * 60 * 1000, // 2 minutes - epic titles can change
     gcTime: 5 * 60 * 1000,
@@ -53,7 +93,7 @@ export function TerminalSessionWindowContent({
 
   const { data: agent } = useQuery({
     queryKey: ['terminal-window', 'agent', session.agentId],
-    queryFn: () => fetchAgentSummary(session.agentId!),
+    queryFn: () => fetchAgentSummary(session.agentId!, apiFetch),
     enabled: Boolean(session.agentId),
     staleTime: 5 * 60 * 1000, // 5 minutes - agent data rarely changes
     gcTime: 10 * 60 * 1000,
@@ -63,7 +103,7 @@ export function TerminalSessionWindowContent({
   const needsProviderFetch = Boolean(agent?.profileId && !agent?.providerName);
   const { data: profile } = useQuery({
     queryKey: ['terminal-window', 'profile', agent?.profileId],
-    queryFn: () => fetchProfileSummary(agent!.profileId),
+    queryFn: () => fetchProfileSummary(agent!.profileId, apiFetch),
     enabled: needsProviderFetch,
     staleTime: 10 * 60 * 1000, // 10 minutes - profiles rarely change
     gcTime: 30 * 60 * 1000,
@@ -71,7 +111,7 @@ export function TerminalSessionWindowContent({
 
   const { data: provider } = useQuery({
     queryKey: ['terminal-window', 'provider', profile?.providerId],
-    queryFn: () => fetchProviderSummary(profile!.providerId),
+    queryFn: () => fetchProviderSummary(profile!.providerId, apiFetch),
     enabled: Boolean(profile?.providerId && !agent?.providerName),
     staleTime: 60 * 60 * 1000, // 1 hour - providers almost never change
     gcTime: 24 * 60 * 60 * 1000, // 24 hours
@@ -82,7 +122,7 @@ export function TerminalSessionWindowContent({
 
   const { data: project } = useQuery({
     queryKey: ['terminal-window', 'project', epic?.projectId],
-    queryFn: () => fetchProjectSummary(epic!.projectId),
+    queryFn: () => fetchProjectSummary(epic!.projectId, apiFetch),
     enabled: Boolean(epic?.projectId),
     staleTime: 10 * 60 * 1000, // 10 minutes - project names rarely change
     gcTime: 30 * 60 * 1000,
@@ -145,15 +185,79 @@ export function TerminalSessionWindowContent({
     }
   }, [session.tmuxSessionId, toast]);
 
+  const displayName = windowName ?? shortSessionId(session.id);
+
+  const handleCopySessionId = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(session.id);
+      setCopiedId(true);
+      toast({ description: 'Session ID copied.' });
+      setTimeout(() => setCopiedId(false), 2000);
+    } catch {
+      toast({ title: 'Copy failed', variant: 'destructive' });
+    }
+  }, [session.id, toast]);
+
+  const handleRenameSubmit = useCallback(
+    (value: string) => {
+      const trimmed = value.trim() || null;
+      setIsRenaming(false);
+
+      const previousName = windowName;
+      if (trimmed === previousName) return;
+
+      setWindowName(trimmed);
+
+      const queryKey = terminalSessionsQueryKey;
+      queryClient.setQueryData<ActiveSession[]>(queryKey, (old) => {
+        if (!old) return old;
+        return old.map((s) => (s.id === session.id ? { ...s, name: trimmed } : s));
+      });
+
+      renameSession(session.id, selectedProjectId ?? '', trimmed, apiFetch).catch((err) => {
+        setWindowName(previousName);
+        queryClient.setQueryData<ActiveSession[]>(queryKey, (old) => {
+          if (!old) return old;
+          return old.map((s) => (s.id === session.id ? { ...s, name: previousName } : s));
+        });
+        toast({
+          title: 'Rename failed',
+          description: err instanceof Error ? err.message : 'Could not rename session.',
+          variant: 'destructive',
+        });
+      });
+    },
+    [queryClient, selectedProjectId, session.id, windowName, terminalSessionsQueryKey, toast],
+  );
+
+  const handleRenameKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === 'Enter') {
+        handleRenameSubmit(draftName);
+      } else if (e.key === 'Escape') {
+        setIsRenaming(false);
+        setDraftName(windowName ?? '');
+      }
+    },
+    [draftName, handleRenameSubmit, windowName],
+  );
+
+  useEffect(() => {
+    if (isRenaming && renameInputRef.current) {
+      renameInputRef.current.focus();
+      renameInputRef.current.select();
+    }
+  }, [isRenaming]);
+
   const terminateMutation = useMutation({
     mutationFn: async () => {
-      await terminateSession(session.id);
+      await terminateSession(session.id, '', apiFetch);
       await queryClient.invalidateQueries({ queryKey: terminalSessionsQueryKey });
     },
     onSuccess: () => {
       toast({
         title: 'Session terminated',
-        description: `Session ${session.id.slice(0, 8)} has been terminated.`,
+        description: `Session ${displayName} has been terminated.`,
       });
       if (!closingRef.current) {
         closingRef.current = true;
@@ -175,27 +279,32 @@ export function TerminalSessionWindowContent({
 
   const requestTerminate = useCallback(() => setConfirmTerminate(true), []);
 
-  const publishWindowMeta = useCallback(
-    (handle: TerminalHandle | null) => {
-      const title = epic?.title ?? `Session ${session.id.slice(0, 8)}`;
-      const subtitleParts: string[] = [];
-      if (agent?.name) {
-        subtitleParts.push(agent.name);
-      } else {
-        subtitleParts.push('Unassigned agent');
-      }
-      if (project?.name) {
-        subtitleParts.push(project.name);
-      }
+  const providerIconUri = useMemo(
+    () => getProviderIconDataUri(resolvedProviderName),
+    [resolvedProviderName],
+  );
 
-      // Resolve provider icon from enriched agent.providerName or fallback chain
-      const providerIconUri = getProviderIconDataUri(resolvedProviderName);
-
-      const details = [
+  const details = useMemo(
+    () =>
+      [
         {
           label: 'Session',
-          value: session.id.slice(0, 8),
+          value: displayName,
           title: session.id,
+          interactive: true,
+          sessionId: session.id,
+          isRenaming,
+          draftName,
+          renameInputRef,
+          onRenameStart: () => {
+            setDraftName(windowName ?? '');
+            setIsRenaming(true);
+          },
+          onDraftChange: setDraftName,
+          onRenameKeyDown: handleRenameKeyDown,
+          onRenameBlur: () => handleRenameSubmit(draftName),
+          onCopyId: handleCopySessionId,
+          copiedId,
         },
         project?.name
           ? {
@@ -223,21 +332,63 @@ export function TerminalSessionWindowContent({
               hidden: true,
             }
           : null,
-      ].filter(Boolean) as TerminalWindowDetail[];
+      ].filter(Boolean) as TerminalWindowDetail[],
+    [
+      session.id,
+      displayName,
+      isRenaming,
+      draftName,
+      copiedId,
+      agent?.name,
+      project?.name,
+      epic?.title,
+      providerIconUri,
+      handleRenameKeyDown,
+      handleRenameSubmit,
+      handleCopySessionId,
+      windowName,
+    ],
+  );
 
-      const menuItems: TerminalWindowMenuItem[] = [
-        {
-          id: 'copy-tmux',
-          label: 'Copy tmux id',
-          onSelect: handleCopyTmux,
-          disabled: !session.tmuxSessionId,
-        },
-        {
-          id: 'copy-tmux-command',
-          label: 'Copy tmux attach command',
-          onSelect: handleCopyTmuxCommand,
-          disabled: !session.tmuxSessionId,
-        },
+  const menuItems: TerminalWindowMenuItem[] = useMemo(
+    () => [
+      {
+        id: 'copy-tmux',
+        label: 'Copy tmux id',
+        onSelect: handleCopyTmux,
+        disabled: !session.tmuxSessionId,
+      },
+      {
+        id: 'copy-tmux-command',
+        label: 'Copy tmux attach command',
+        onSelect: handleCopyTmuxCommand,
+        disabled: !session.tmuxSessionId,
+      },
+      {
+        id: 'terminate-session',
+        label: 'Terminate session',
+        tone: 'destructive',
+        onSelect: requestTerminate,
+      },
+    ],
+    [handleCopyTmux, handleCopyTmuxCommand, session.tmuxSessionId, requestTerminate],
+  );
+
+  const publishWindowMeta = useCallback(
+    (handle: TerminalHandle | null) => {
+      const title = epic?.title ?? displayName ?? `Session ${shortSessionId(session.id)}`;
+      const subtitleParts: string[] = [];
+      if (agent?.name) {
+        subtitleParts.push(agent.name);
+      } else {
+        subtitleParts.push('Unassigned agent');
+      }
+      if (project?.name) {
+        subtitleParts.push(project.name);
+      }
+
+      const effectiveMenuItems: TerminalWindowMenuItem[] = [
+        ...menuItems,
         {
           id: 'clear-buffer',
           label: 'Clear terminal buffer',
@@ -245,32 +396,24 @@ export function TerminalSessionWindowContent({
           disabled: !handle,
           shortcut: 'Ctrl+K',
         },
-        {
-          id: 'terminate-session',
-          label: 'Terminate session',
-          tone: 'destructive',
-          onSelect: requestTerminate,
-        },
       ];
 
       updateWindowMeta(session.id, {
         title,
         subtitle: subtitleParts.filter(Boolean).join(' • ') || undefined,
-        menuItems,
+        menuItems: effectiveMenuItems,
         details,
       });
     },
     [
       agent?.name,
+      displayName,
       epic?.title,
-      handleCopyTmux,
       project?.name,
-      resolvedProviderName,
-      requestTerminate,
       session.id,
-      session.tmuxSessionId,
+      details,
+      menuItems,
       updateWindowMeta,
-      handleCopyTmuxCommand,
     ],
   );
 
@@ -293,7 +436,7 @@ export function TerminalSessionWindowContent({
     }
     toast({
       title: 'Session ended',
-      description: `Session ${session.id.slice(0, 8)} has completed.`,
+      description: `Session ${displayName} has completed.`,
     });
     closingRef.current = true;
     onRequestClose();
@@ -312,7 +455,7 @@ export function TerminalSessionWindowContent({
         onOpenChange={setConfirmTerminate}
         onConfirm={() => terminateMutation.mutate()}
         title="Terminate session"
-        description={`Terminate session ${session.id.slice(0, 8)}? This will stop the underlying tmux pane.`}
+        description={`Terminate session ${displayName}? This will stop the underlying tmux pane.`}
         confirmText="Terminate"
         variant="destructive"
         loading={terminateMutation.isPending}
@@ -329,13 +472,13 @@ export function useTerminalWindowManager() {
       openWindow({
         id: session.id,
         sessionId: session.id,
-        title: `Session ${session.id.slice(0, 8)}`,
+        title: session.name ?? `Session ${shortSessionId(session.id)}`,
         subtitle: 'Loading metadata…',
         menuItems: [],
         details: [
           {
             label: 'Session',
-            value: session.id.slice(0, 8),
+            value: session.name ?? shortSessionId(session.id),
             title: session.id,
           },
         ],

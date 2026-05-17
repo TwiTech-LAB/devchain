@@ -3,15 +3,17 @@ import {
   SettingsService,
   DEFAULT_TERMINAL_SEED_MAX_BYTES,
 } from '../../settings/services/settings.service';
-import { PtyService } from './pty.service';
-import { ModuleRef } from '@nestjs/core';
+import { TerminalSessionRegistry } from './terminal-session/terminal-session-registry';
+import { TerminalIOService } from './terminal-io/terminal-io.service';
+import { SessionsService } from '../../sessions/services/sessions.service';
 import type { Socket } from 'socket.io';
 
 describe('TerminalSeedService', () => {
   let seedService: TerminalSeedService;
   let settingsService: jest.Mocked<Partial<SettingsService>>;
-  let ptyService: jest.Mocked<Partial<PtyService>>;
-  let moduleRef: jest.Mocked<Partial<ModuleRef>>;
+  let terminalSessionRegistry: jest.Mocked<Partial<TerminalSessionRegistry>>;
+  let terminalIO: jest.Mocked<Partial<TerminalIOService>>;
+  let sessionsService: jest.Mocked<Partial<SessionsService>>;
 
   beforeEach(() => {
     settingsService = {
@@ -19,18 +21,24 @@ describe('TerminalSeedService', () => {
       getScrollbackLines: jest.fn().mockReturnValue(10000),
     };
 
-    ptyService = {
-      getDimensions: jest.fn(),
+    terminalSessionRegistry = {
+      get: jest.fn().mockReturnValue(undefined),
     };
 
-    moduleRef = {
-      get: jest.fn(),
+    terminalIO = {
+      captureHistory: jest.fn().mockResolvedValue({ ok: true, output: '' }),
+      getCursorPosition: jest.fn().mockResolvedValue(null),
+    };
+
+    sessionsService = {
+      getSession: jest.fn().mockReturnValue(null),
     };
 
     seedService = new TerminalSeedService(
       settingsService as SettingsService,
-      ptyService as PtyService,
-      moduleRef as ModuleRef,
+      terminalSessionRegistry as unknown as TerminalSessionRegistry,
+      terminalIO as TerminalIOService,
+      sessionsService as SessionsService,
     );
   });
 
@@ -208,30 +216,20 @@ describe('TerminalSeedService', () => {
         emit: jest.fn(),
       };
 
-      // Mock SessionsService
-      const mockSessionsService = {
-        getSession: jest.fn().mockReturnValue({
-          id: 'session-123',
-          tmuxSessionId: 'tmux-123',
-        }),
-      };
+      sessionsService.getSession = jest.fn().mockReturnValue({
+        id: 'session-123',
+        tmuxSessionId: 'tmux-123',
+      }) as jest.Mock;
 
-      // Mock TmuxService
-      const mockTmuxService = {
-        capturePane: jest.fn().mockResolvedValue('captured-output\n'),
-        getCursorPosition: jest.fn().mockResolvedValue({ x: 10, y: 5 }),
-      };
+      terminalIO.captureHistory = jest.fn().mockResolvedValue({
+        ok: true,
+        output: 'captured-output\n',
+      });
+      terminalIO.getCursorPosition = jest.fn().mockResolvedValue({ x: 10, y: 5 });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      moduleRef.get = jest.fn((service: any) => {
-        const serviceName = typeof service === 'function' ? service.name : String(service);
-        if (serviceName === 'SessionsService') return mockSessionsService;
-        if (serviceName === 'TmuxService') return mockTmuxService;
-        return undefined;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      }) as any;
-
-      ptyService.getDimensions = jest.fn().mockReturnValue({ cols: 80, rows: 24 });
+      terminalSessionRegistry.get = jest
+        .fn()
+        .mockReturnValue({ getDimensions: () => ({ cols: 80, rows: 24 }) });
     });
 
     it('should emit seed snapshot to client', async () => {
@@ -243,31 +241,11 @@ describe('TerminalSeedService', () => {
         rows: 24,
       });
 
-      // Should emit at least one message
       expect(mockClient.emit).toHaveBeenCalled();
     });
 
     it('should handle empty snapshot gracefully', async () => {
-      const mockTmuxService = {
-        capturePane: jest.fn().mockResolvedValue(''),
-        getCursorPosition: jest.fn().mockResolvedValue({ x: 10, y: 5 }),
-      };
-
-      const mockSessionsService = {
-        getSession: jest.fn().mockReturnValue({
-          id: 'session-123',
-          tmuxSessionId: 'tmux-123',
-        }),
-      };
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      moduleRef.get = jest.fn((service: any) => {
-        const serviceName = typeof service === 'function' ? service.name : String(service);
-        if (serviceName === 'TmuxService') return mockTmuxService;
-        if (serviceName === 'SessionsService') return mockSessionsService;
-        return undefined;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      }) as any;
+      terminalIO.captureHistory = jest.fn().mockResolvedValue({ ok: true, output: '' });
 
       await seedService.emitSeedToClient({
         client: mockClient as Socket,
@@ -275,34 +253,11 @@ describe('TerminalSeedService', () => {
         maxBytes: 1024 * 1024,
       });
 
-      // Should not emit seed if snapshot is empty
       expect(mockClient.emit).not.toHaveBeenCalled();
     });
 
     it('should skip seed when tmux capture returns empty (graceful handling)', async () => {
-      // Setup: tmux capture returns empty - skip seed gracefully
-      const mockTmuxService = {
-        capturePane: jest.fn().mockResolvedValue(''),
-        getCursorPosition: jest.fn().mockResolvedValue({ x: 0, y: 0 }),
-      };
-
-      const mockSessionsService = {
-        getSession: jest.fn().mockReturnValue({
-          id: 'session-123',
-          tmuxSessionId: 'tmux-123',
-        }),
-      };
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      moduleRef.get = jest.fn((service: any) => {
-        const serviceName = typeof service === 'function' ? service.name : String(service);
-        if (serviceName === 'TmuxService') return mockTmuxService;
-        if (serviceName === 'SessionsService') return mockSessionsService;
-        return undefined;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      }) as any;
-
-      ptyService.getDimensions = jest.fn().mockReturnValue({ cols: 80, rows: 24 });
+      terminalIO.captureHistory = jest.fn().mockResolvedValue({ ok: true, output: '' });
 
       await seedService.emitSeedToClient({
         client: mockClient as Socket,

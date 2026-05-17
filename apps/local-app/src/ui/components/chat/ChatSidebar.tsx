@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { HelpButton } from '@/ui/components/shared';
 import { Button } from '@/ui/components/ui/button';
 import { Badge } from '@/ui/components/ui/badge';
@@ -16,7 +16,7 @@ import { useToast } from '@/ui/hooks/use-toast';
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { PresetPopover } from './PresetPopover';
 import { WorktreePresetButton } from './WorktreePresetButton';
-import { AgentRow } from './AgentRow';
+import { AgentIdentity, AgentRow } from './AgentRow';
 import { restartKeyForMain, restartKeyForWorktree } from '@/ui/lib/restart-keys';
 import {
   ContextMenu,
@@ -75,6 +75,10 @@ import { TeamQuickAddButton } from './TeamQuickAddButton';
 // ============================================
 
 const CHAT_THREADS_ENABLED = false;
+
+function formatSectionCount(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
 
 // ============================================
 // Types
@@ -645,7 +649,7 @@ export function ChatSidebar({
       let changed = false;
       for (const team of teams) {
         if (!(team.id in next)) {
-          next[team.id] = true;
+          next[team.id] = false;
           changed = true;
         }
       }
@@ -796,9 +800,12 @@ export function ChatSidebar({
       const label = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
       const aria = `Busy for ${label}`;
       return (
-        <Badge className="shrink-0" aria-label={aria}>
-          Busy {label}
-        </Badge>
+        <span
+          className="inline-flex h-4 shrink-0 items-center rounded-full border border-primary/40 bg-primary/10 px-1.5 text-[10px] font-medium leading-none text-primary"
+          aria-label={aria}
+        >
+          {label}
+        </span>
       );
     }
 
@@ -1055,54 +1062,75 @@ export function ChatSidebar({
     );
   }
 
-  return (
-    <div className="flex w-80 flex-col border-r bg-card">
-      <div className="flex items-center justify-between gap-2 p-4 pb-2">
-        <div className="flex items-center gap-1">
-          <h2 className="text-xl font-bold">Chat</h2>
-          <HelpButton featureId="chat" />
+  function renderVisualSectionHeader(label: string, countLabel: string, icon: ReactNode) {
+    return (
+      <div className="flex items-center justify-between gap-2 px-2 pb-2 pt-1">
+        <div className="flex min-w-0 items-center gap-2">
+          {icon}
+          <span className="truncate text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            {label}
+          </span>
         </div>
-        <div className="flex items-center gap-1.5">
-          <Button
-            variant="outline"
-            size="sm"
-            className="text-green-600 border-green-300 hover:bg-green-50 hover:text-green-700 hover:border-green-400 dark:text-green-500 dark:border-green-800 dark:hover:bg-green-950 dark:hover:text-green-400 dark:hover:border-green-600"
-            onClick={onStartAllAgents}
-            disabled={!presenceReady || offlineAgents.length === 0 || startingAll}
-            title="Launch sessions for all offline agents"
-          >
-            {startingAll ? (
-              <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-            ) : (
-              <Play className="mr-1 h-3 w-3" />
-            )}
-            Start{offlineAgents.length > 0 ? ` (${offlineAgents.length})` : ''}
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="text-muted-foreground hover:bg-red-50 hover:text-red-600 hover:border-red-300 dark:hover:bg-red-950 dark:hover:text-red-400 dark:hover:border-red-700"
-            onClick={onTerminateAllConfirm}
-            disabled={!presenceReady || agentsWithSessions.length === 0 || terminatingAll}
-            title="Terminate all running sessions"
-          >
-            {terminatingAll ? (
-              <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-            ) : (
-              <Square className="mr-1 h-3 w-3" />
-            )}
-            Stop{agentsWithSessions.length > 0 ? ` (${agentsWithSessions.length})` : ''}
-          </Button>
+        <Badge
+          variant="outline"
+          className="shrink-0 border-border bg-muted/40 px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
+        >
+          {countLabel}
+        </Badge>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full min-h-0 w-80 flex-col border-r border-border bg-card text-foreground">
+      <div className="border-b border-border/70 bg-muted/20 px-4 py-3">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1">
+            <h2 className="text-2xl font-semibold text-foreground">Agents</h2>
+            <HelpButton featureId="chat" />
+          </div>
+          <div className="flex items-center gap-1">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 border-emerald-500/60 bg-emerald-500/10 px-2 text-xs text-emerald-600 hover:border-emerald-500 hover:bg-emerald-500/15 hover:text-emerald-700"
+              onClick={onStartAllAgents}
+              disabled={!presenceReady || offlineAgents.length === 0 || startingAll}
+              title="Launch sessions for all offline agents"
+            >
+              {startingAll ? (
+                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+              ) : (
+                <Play className="mr-1 h-3 w-3" />
+              )}
+              Start{offlineAgents.length > 0 ? ` (${offlineAgents.length})` : ''}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 border-border bg-muted/30 px-2 text-xs text-muted-foreground hover:border-destructive/40 hover:bg-destructive/10 hover:text-destructive"
+              onClick={onTerminateAllConfirm}
+              disabled={!presenceReady || agentsWithSessions.length === 0 || terminatingAll}
+              title="Terminate all running sessions"
+            >
+              {terminatingAll ? (
+                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+              ) : (
+                <Square className="mr-1 h-3 w-3" />
+              )}
+              Stop{agentsWithSessions.length > 0 ? ` (${agentsWithSessions.length})` : ''}
+            </Button>
+          </div>
         </div>
       </div>
 
-      <ScrollArea className="flex-1">
+      <ScrollArea className="flex-1" hideScrollbar>
         {/* Agents Section */}
         <div className="px-4 py-4">
-          <div className="mb-2 flex w-full items-center gap-2 rounded-md px-1 py-1">
+          <div className="mb-3 flex w-full items-center gap-2 rounded-md border border-border/70 bg-muted/30 px-2 py-1.5">
             <button
               type="button"
-              className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1 text-left hover:bg-muted/40"
+              className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1 text-left hover:bg-muted/50"
               onClick={() => setMainExpanded((previous) => !previous)}
               aria-expanded={mainExpanded}
               aria-controls="chat-main-agents"
@@ -1112,7 +1140,8 @@ export function ChatSidebar({
               ) : (
                 <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
               )}
-              <span className="text-sm font-semibold text-muted-foreground">MAIN AGENTS</span>
+              <UsersRound className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <span className="text-sm font-semibold text-muted-foreground">MAIN</span>
             </button>
             <Tabs
               value={agentGroupMode}
@@ -1173,10 +1202,12 @@ export function ChatSidebar({
                       </div>
                       {teamSections.noTeamAgents.length > 0 && (
                         <div className="pt-2">
-                          <p className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                            No Team
-                          </p>
-                          <div className="space-y-1" role="list" aria-label="Agents with no team">
+                          {renderVisualSectionHeader(
+                            'INDEPENDENT',
+                            formatSectionCount(teamSections.noTeamAgents.length, 'agent'),
+                            <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />,
+                          )}
+                          <div className="space-y-1" role="list" aria-label="Independent agents">
                             {teamSections.noTeamAgents.map((agent) =>
                               renderMainAgentRow(agent, { keyPrefix: 'no-team' }),
                             )}
@@ -1200,13 +1231,13 @@ export function ChatSidebar({
                           return (
                             <div
                               key={team.id}
-                              className="overflow-hidden rounded-md border border-border/80 bg-background/60"
+                              className="overflow-hidden rounded-md border border-border bg-card/80 shadow-sm"
                             >
-                              <div className="flex w-full items-center gap-2 px-3 py-2 text-xs">
+                              <div className="flex w-full items-center gap-2 border-b border-border/70 bg-muted/20 px-3 py-2 text-xs">
                                 <button
                                   type="button"
                                   onClick={() => toggleTeamGroup(team.id)}
-                                  className="flex min-w-0 flex-1 items-center gap-2 rounded text-left hover:bg-muted/40"
+                                  className="flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-muted/50"
                                   aria-expanded={isExpanded}
                                   aria-controls={`chat-team-group-${team.id}`}
                                   aria-label={`Toggle ${team.name} members`}
@@ -1236,7 +1267,7 @@ export function ChatSidebar({
                               {isExpanded && (
                                 <div
                                   id={`chat-team-group-${team.id}`}
-                                  className="space-y-1 px-2 pb-2"
+                                  className="space-y-1 bg-muted/10 px-2 py-2"
                                   role="list"
                                   aria-label={`${team.name} agents`}
                                 >
@@ -1257,61 +1288,61 @@ export function ChatSidebar({
                         return (
                           <div
                             key={team.id}
-                            className="rounded-md border border-border/80 bg-background/60"
+                            className="overflow-hidden rounded-md border border-border bg-card/80 shadow-sm"
                           >
-                            <div className="flex items-center">
-                              <div className="min-w-0 flex-1">
-                                {renderMainAgentRow(leadAgent, {
-                                  isTeamLead: true,
-                                  keyPrefix: team.id,
-                                  teamId: team.id,
-                                  teamName: team.name,
-                                  maxMembers: detail.maxMembers,
-                                  maxConcurrentTasks: detail.maxConcurrentTasks,
-                                  allowTeamLeadCreateAgents: detail.allowTeamLeadCreateAgents,
-                                })}
-                                <p className="truncate px-3 pb-1 text-[10px] text-muted-foreground">
+                            <div className="bg-muted/10">
+                              {renderMainAgentRow(leadAgent, {
+                                isTeamLead: true,
+                                keyPrefix: team.id,
+                                teamId: team.id,
+                                teamName: team.name,
+                                maxMembers: detail.maxMembers,
+                                maxConcurrentTasks: detail.maxConcurrentTasks,
+                                allowTeamLeadCreateAgents: detail.allowTeamLeadCreateAgents,
+                              })}
+                              <div className="flex min-w-0 items-center gap-1 px-3 pb-1 text-[10px] text-muted-foreground">
+                                <span className="min-w-0 flex-1 truncate">
                                   {team.name}
                                   {otherMembers.length > 0
                                     ? ` · ${otherMembers.length} member${otherMembers.length !== 1 ? 's' : ''}`
                                     : ''}
-                                </p>
+                                </span>
+                                {onAddTeamAgent && (
+                                  <TeamQuickAddButton
+                                    teamId={team.id}
+                                    teamName={team.name}
+                                    teamLeadAgentId={detail.teamLeadAgentId}
+                                    profileIds={detail.profileIds ?? []}
+                                    profilesById={profilesById}
+                                    agents={agents}
+                                    onAddAgent={onAddTeamAgent}
+                                  />
+                                )}
+                                {hasExpandable && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      toggleTeamGroup(team.id);
+                                    }}
+                                    className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded hover:bg-muted/50"
+                                    aria-expanded={isExpanded}
+                                    aria-controls={`chat-team-group-${team.id}`}
+                                    aria-label={`Toggle ${team.name} members`}
+                                  >
+                                    {isExpanded ? (
+                                      <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                                    ) : (
+                                      <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                                    )}
+                                  </button>
+                                )}
                               </div>
-                              {onAddTeamAgent && (
-                                <TeamQuickAddButton
-                                  teamId={team.id}
-                                  teamName={team.name}
-                                  teamLeadAgentId={detail.teamLeadAgentId}
-                                  profileIds={detail.profileIds ?? []}
-                                  profilesById={profilesById}
-                                  agents={agents}
-                                  onAddAgent={onAddTeamAgent}
-                                />
-                              )}
-                              {hasExpandable && (
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    toggleTeamGroup(team.id);
-                                  }}
-                                  className="mr-1 shrink-0 rounded p-1 hover:bg-muted/40"
-                                  aria-expanded={isExpanded}
-                                  aria-controls={`chat-team-group-${team.id}`}
-                                  aria-label={`Toggle ${team.name} members`}
-                                >
-                                  {isExpanded ? (
-                                    <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                                  ) : (
-                                    <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                                  )}
-                                </button>
-                              )}
                             </div>
                             {hasExpandable && isExpanded && (
                               <div
                                 id={`chat-team-group-${team.id}`}
-                                className="space-y-1 pb-2 pl-4 pr-2"
+                                className="space-y-1 border-t border-border/70 bg-muted/10 py-2 pl-4 pr-0"
                                 role="list"
                                 aria-label={`${team.name} members`}
                               >
@@ -1330,10 +1361,12 @@ export function ChatSidebar({
                       })}
                       {teamSections.noTeamAgents.length > 0 && (
                         <div className="pt-2">
-                          <p className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                            No Team
-                          </p>
-                          <div className="space-y-1" role="list" aria-label="Agents with no team">
+                          {renderVisualSectionHeader(
+                            'INDEPENDENT',
+                            formatSectionCount(teamSections.noTeamAgents.length, 'agent'),
+                            <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />,
+                          )}
+                          <div className="space-y-1" role="list" aria-label="Independent agents">
                             {teamSections.noTeamAgents.map((agent) =>
                               renderMainAgentRow(agent, { keyPrefix: 'no-team' }),
                             )}
@@ -1396,13 +1429,13 @@ export function ChatSidebar({
                 return (
                   <div
                     key={group.id}
-                    className="overflow-hidden rounded-md border border-border/80 bg-background/60"
+                    className="overflow-hidden rounded-md border border-border bg-card/70 shadow-sm"
                   >
-                    <div className="flex w-full items-center gap-1 rounded-md px-3 py-2">
+                    <div className="flex w-full items-center gap-1 border-b border-border/70 bg-muted/20 px-3 py-2">
                       <button
                         type="button"
                         onClick={() => toggleWorktreeGroup(group.id)}
-                        className="flex min-w-0 flex-1 items-center justify-between gap-2 text-left hover:bg-muted/40 rounded-md px-0 py-0"
+                        className="flex min-w-0 flex-1 items-center justify-between gap-2 rounded-md px-1 py-0.5 text-left hover:bg-muted/50"
                         aria-expanded={isExpanded}
                         aria-controls={`worktree-group-${group.id}`}
                       >
@@ -1450,7 +1483,10 @@ export function ChatSidebar({
                       <WorktreePresetButton group={group} onMarkForRestart={onMarkForRestart} />
                     </div>
                     {isExpanded && (
-                      <div id={`worktree-group-${group.id}`} className="space-y-1 px-2 pb-2">
+                      <div
+                        id={`worktree-group-${group.id}`}
+                        className="space-y-1 bg-muted/10 px-2 py-2"
+                      >
                         {group.error ? (
                           <p className="px-2 py-1 text-xs text-destructive">{group.error}</p>
                         ) : !hasAgents ? (
@@ -1484,6 +1520,9 @@ export function ChatSidebar({
                             const worktreeContextMenuKey = `${group.apiBase}:${agent.id}`;
                             const worktreeContextMenuVersion =
                               worktreeContextMenuVersionByKey[worktreeContextMenuKey] ?? 0;
+                            const worktreeActivityBadge = renderActivityBadgeForPresence(
+                              group.agentPresence[agent.id],
+                            );
                             return (
                               <ContextMenu
                                 key={`${group.id}:${agent.id}:${worktreeContextMenuVersion}`}
@@ -1493,8 +1532,8 @@ export function ChatSidebar({
                                     onClick={() => onLaunchWorktreeAgentChat(group, agent.id)}
                                     disabled={isDisabled}
                                     className={cn(
-                                      'flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-muted',
-                                      isSelected && 'bg-secondary',
+                                      'flex w-full items-center gap-2 rounded-md border border-transparent bg-card/40 px-3 py-2 text-sm transition-colors hover:border-border hover:bg-muted/50',
+                                      isSelected && 'border-border bg-muted',
                                       isDisabled &&
                                         'cursor-not-allowed opacity-50 hover:bg-transparent',
                                     )}
@@ -1510,24 +1549,25 @@ export function ChatSidebar({
                                       aria-hidden="true"
                                     />
                                     {providerIcon && (
-                                      <img
-                                        src={providerIcon}
-                                        className="h-4 w-4 flex-shrink-0"
-                                        aria-hidden="true"
+                                      <span
+                                        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border bg-muted/40"
                                         title={`Provider: ${providerName}`}
-                                        alt=""
-                                      />
+                                      >
+                                        <img
+                                          src={providerIcon}
+                                          className="h-4 w-4"
+                                          aria-hidden="true"
+                                          alt=""
+                                        />
+                                      </span>
                                     )}
-                                    <span className="min-w-0 flex-1 truncate text-left">
-                                      {agent.name}
-                                      {getAgentConfigDisplayName(agent) && (
-                                        <span className="text-muted-foreground">
-                                          {' '}
-                                          ({getAgentConfigDisplayName(agent)})
-                                        </span>
-                                      )}
-                                    </span>
-                                    {renderActivityBadgeForPresence(group.agentPresence[agent.id])}
+                                    <AgentIdentity
+                                      agentName={agent.name}
+                                      configDisplayName={getAgentConfigDisplayName(agent)}
+                                    />
+                                    {worktreeActivityBadge && (
+                                      <span className="ml-1 shrink-0">{worktreeActivityBadge}</span>
+                                    )}
                                     {pendingRestartAgentIds.has(
                                       restartKeyForWorktree(group.apiBase, agent.id),
                                     ) &&
@@ -1674,9 +1714,11 @@ export function ChatSidebar({
           <>
             <Separator />
             <div className="px-4 py-4">
-              <div className="mb-2">
-                <h3 className="text-sm font-semibold text-muted-foreground">GUESTS</h3>
-              </div>
+              {renderVisualSectionHeader(
+                'GUESTS',
+                formatSectionCount(guests.length, 'guest'),
+                <Users className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />,
+              )}
               <div className="space-y-1" role="list" aria-label="Guest agents">
                 {guests.map((guest) => {
                   const isOnline = true;
@@ -1684,8 +1726,9 @@ export function ChatSidebar({
                   return (
                     <button
                       key={guest.id}
+                      type="button"
                       className={cn(
-                        'flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-muted cursor-default',
+                        'flex w-full cursor-default items-center gap-2 rounded-md border border-transparent bg-card/40 px-3 py-2 text-sm transition-colors hover:border-border hover:bg-muted/50',
                       )}
                       role="listitem"
                       aria-label={`Guest: ${guest.name}${isOnline ? ' (online)' : ' (offline)'}`}
@@ -1706,7 +1749,7 @@ export function ChatSidebar({
                           <span className="truncate">{guest.name}</span>
                           <Badge
                             variant="outline"
-                            className="text-[10px] uppercase"
+                            className="border-purple-500/40 bg-purple-500/10 text-[10px] uppercase text-purple-600"
                             aria-label="Guest type"
                           >
                             Guest

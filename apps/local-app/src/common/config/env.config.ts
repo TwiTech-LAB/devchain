@@ -5,6 +5,18 @@ import { resolve } from 'path';
 
 dotenv.config();
 
+const TRUE_ENV_VALUES = new Set(['1', 'true', 'yes', 'on']);
+
+const booleanEnvSchema = z.preprocess((value) => {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value !== 'string') {
+    return false;
+  }
+  return TRUE_ENV_VALUES.has(value.trim().toLowerCase());
+}, z.boolean());
+
 const envSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -29,6 +41,7 @@ const envSchema = z
     CONTAINER_PROJECT_ID: z.string().uuid().optional(),
     RUNTIME_TOKEN: z.string().optional(),
     RUNTIME_PORT_FILE: z.string().optional(),
+    DEVCHAIN_CLOUD_UI_ENABLED: booleanEnvSchema,
     TEMPLATES_DIR: z.string().optional(),
   })
   .superRefine((env, ctx) => {

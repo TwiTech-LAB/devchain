@@ -1,4 +1,4 @@
-import type { StorageService } from '../../storage/interfaces/storage.interface';
+import type { DocumentStorage, PromptStorage } from '../../storage/interfaces/storage.interface';
 import type { Document, Prompt } from '../../storage/models/domain.models';
 import type { DocumentInlineResolution, InstructionsResolved } from '../dtos/mcp.dto';
 import { renderTemplate } from '../../../common/template/handlebars-renderer';
@@ -42,7 +42,7 @@ interface Reference {
 
 export class InstructionsResolver {
   constructor(
-    private readonly storage: StorageService,
+    private readonly storage: DocumentStorage & PromptStorage,
     private readonly inlineResolver: InlineResolver,
   ) {}
 

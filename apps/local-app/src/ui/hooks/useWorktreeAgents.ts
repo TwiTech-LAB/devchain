@@ -6,6 +6,10 @@ import { fetchRuntimeInfo } from '@/ui/lib/runtime';
 import type { AgentPresenceMap } from '@/ui/lib/sessions';
 import type { AgentOrGuest } from '@/ui/hooks/useChatQueries';
 import { getWorktreeSocket, releaseWorktreeSocket, type WsEnvelope } from '@/ui/lib/socket';
+import {
+  dispatchRealtimeEnvelope,
+  type RealtimeInvalidationRegistry,
+} from '@/ui/lib/realtime-invalidation-registry';
 
 export interface WorktreeAgentGroup {
   id: string;
@@ -262,11 +266,34 @@ export function useWorktreeAgents(ownerProjectId?: string | null) {
     return invoke;
   }, [queryClient]);
 
-  // Incremental connect/disconnect — no cleanup return so sockets survive
-  // across worktreeGroups refetches triggered by presence events.
+  const presenceRegistry: RealtimeInvalidationRegistry = useMemo(
+    () => [
+      {
+        match: (t) => t.startsWith('agent/'),
+        type: 'presence',
+        entries: [
+          {
+            kind: 'custom-handler',
+            handler: () => debouncedInvalidate(),
+          },
+        ],
+      },
+      {
+        match: (t) => t.startsWith('session/'),
+        type: 'activity',
+        entries: [
+          {
+            kind: 'custom-handler',
+            handler: () => debouncedInvalidate(),
+          },
+        ],
+      },
+    ],
+    [debouncedInvalidate],
+  );
+
   useEffect(() => {
     if (!isMainMode) {
-      // Leaving main mode: release all tracked sockets and cancel pending debounce
       debouncedInvalidate.cancel();
       for (const [name, entry] of socketTracker.current) {
         entry.socket.off('message', entry.handler);
@@ -287,12 +314,7 @@ export function useWorktreeAgents(ownerProjectId?: string | null) {
       if (!socketTracker.current.has(name)) {
         const socket = getWorktreeSocket(name);
         const handler = (envelope: WsEnvelope) => {
-          if (
-            (envelope.topic.startsWith('agent/') && envelope.type === 'presence') ||
-            (envelope.topic.startsWith('session/') && envelope.type === 'activity')
-          ) {
-            debouncedInvalidate();
-          }
+          dispatchRealtimeEnvelope(envelope, presenceRegistry, queryClient);
         };
         socket.on('message', handler);
         socketTracker.current.set(name, { socket, handler });
@@ -307,7 +329,7 @@ export function useWorktreeAgents(ownerProjectId?: string | null) {
         socketTracker.current.delete(name);
       }
     }
-  }, [isMainMode, worktreeGroups, debouncedInvalidate]);
+  }, [isMainMode, worktreeGroups, presenceRegistry]);
 
   // Unmount-only cleanup: release all tracked sockets and cancel pending debounce
   useEffect(() => {
@@ -319,7 +341,7 @@ export function useWorktreeAgents(ownerProjectId?: string | null) {
       }
       socketTracker.current.clear();
     };
-  }, [debouncedInvalidate]);
+  }, [debouncedInvalidate, presenceRegistry]);
 
   return useMemo(
     () => ({

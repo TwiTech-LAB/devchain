@@ -16,6 +16,7 @@ import {
 import { useToast } from '@/ui/hooks/use-toast';
 import { X, Plus, Tag as TagIcon } from 'lucide-react';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
+import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
 
 interface PromptSummary {
   id: string;
@@ -241,6 +242,7 @@ export function PromptsPage() {
   const [filterTag, setFilterTag] = useState('');
   const [showPreview, setShowPreview] = useState(false);
   const [pendingTagInput, setPendingTagInput] = useState('');
+  const [pendingDeletePromptId, setPendingDeletePromptId] = useState<string | null>(null);
 
   const { data, isLoading } = useQuery({
     queryKey: ['prompts', selectedProjectId],
@@ -443,9 +445,15 @@ export function PromptsPage() {
   };
 
   const handleDelete = (id: string) => {
-    if (confirm('Are you sure you want to delete this prompt?')) {
-      deleteMutation.mutate(id);
+    setPendingDeletePromptId(id);
+  };
+
+  const handleConfirmDelete = () => {
+    if (!pendingDeletePromptId) {
+      return;
     }
+    deleteMutation.mutate(pendingDeletePromptId);
+    setPendingDeletePromptId(null);
   };
 
   const filteredPrompts = useMemo(() => {
@@ -653,6 +661,20 @@ export function PromptsPage() {
           </div>
         </DialogContent>
       </Dialog>
+      <ConfirmDialog
+        open={pendingDeletePromptId !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingDeletePromptId(null);
+          }
+        }}
+        onConfirm={handleConfirmDelete}
+        title="Delete prompt?"
+        description="Are you sure you want to delete this prompt?"
+        confirmText="Delete"
+        cancelText="Cancel"
+        variant="destructive"
+      />
     </div>
   );
 }

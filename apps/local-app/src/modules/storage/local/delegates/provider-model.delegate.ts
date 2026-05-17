@@ -1,9 +1,5 @@
 import type { CreateProviderModel, ProviderModel } from '../../models/domain.models';
-import {
-  ConflictError,
-  StorageError,
-  ValidationError,
-} from '../../../../common/errors/error-types';
+import { ConflictError, ValidationError } from '../../../../common/errors/error-types';
 import { createLogger } from '../../../../common/logging/logger';
 import { isSqliteUniqueConstraint } from '../helpers/storage-helpers';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
@@ -143,14 +139,7 @@ export class ProviderModelStorageDelegate extends BaseStorageDelegate {
       return { added: [], existing: [] };
     }
 
-    const sqlite = this.rawClient;
-    if (!sqlite || typeof sqlite.exec !== 'function') {
-      throw new StorageError('Unable to access underlying SQLite client for transaction control');
-    }
-
-    sqlite.exec('BEGIN IMMEDIATE TRANSACTION');
-
-    try {
+    return this.txRunner.runImmediateAsync(async () => {
       const existingRows = await this.db
         .select({ name: providerModels.name })
         .from(providerModels)
@@ -171,7 +160,6 @@ export class ProviderModelStorageDelegate extends BaseStorageDelegate {
         added.push(displayName);
       }
 
-      // Duplicate names in the same input payload are also skipped.
       for (const normalized of orderedNormalized) {
         if (!duplicateNormalized.has(normalized) || existingOutputNormalized.has(normalized)) {
           continue;
@@ -200,18 +188,13 @@ export class ProviderModelStorageDelegate extends BaseStorageDelegate {
         await this.db.insert(providerModels).values(rowsToInsert);
       }
 
-      sqlite.exec('COMMIT');
-
       logger.info(
         { providerId, addedCount: added.length, existingCount: existing.length },
         'Bulk created provider models',
       );
 
       return { added, existing };
-    } catch (error) {
-      sqlite.exec('ROLLBACK');
-      throw error;
-    }
+    });
   }
 
   private normalizeAndValidateName(name: string): string {

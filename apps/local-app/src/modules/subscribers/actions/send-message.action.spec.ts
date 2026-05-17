@@ -3,8 +3,8 @@ import type { ActionContext } from './action.interface';
 
 describe('SendMessageAction', () => {
   let mockContext: ActionContext;
-  let mockMessagePoolService: {
-    enqueue: jest.Mock;
+  let mockAmd: {
+    deliver: jest.Mock;
   };
   let mockLogger: {
     info: jest.Mock;
@@ -13,8 +13,11 @@ describe('SendMessageAction', () => {
   };
 
   beforeEach(() => {
-    mockMessagePoolService = {
-      enqueue: jest.fn().mockResolvedValue({ status: 'queued', poolSize: 1 }),
+    mockAmd = {
+      deliver: jest.fn().mockResolvedValue({
+        status: 'queued',
+        results: [{ agentId: 'agent-456', status: 'queued' }],
+      }),
     };
 
     mockLogger = {
@@ -24,11 +27,11 @@ describe('SendMessageAction', () => {
     };
 
     mockContext = {
-      tmuxService: {} as ActionContext['tmuxService'],
+      terminalIO: {} as ActionContext['terminalIO'],
       sessionsService: {} as ActionContext['sessionsService'],
+      sessionRuntime: {} as ActionContext['sessionRuntime'],
       sessionCoordinator: {} as ActionContext['sessionCoordinator'],
-      sendCoordinator: {} as ActionContext['sendCoordinator'],
-      messagePoolService: mockMessagePoolService as unknown as ActionContext['messagePoolService'],
+      amd: mockAmd as unknown as ActionContext['amd'],
       storage: {} as ActionContext['storage'],
       sessionId: 'session-123',
       agentId: 'agent-456',
@@ -113,54 +116,74 @@ describe('SendMessageAction', () => {
   });
 
   describe('execute', () => {
-    it('should enqueue message with Enter key by default (pooled)', async () => {
+    it('should deliver message with Enter key by default (pooled)', async () => {
       const inputs = { text: 'Hello, world!' };
 
       const result = await sendMessageAction.execute(mockContext, inputs);
 
       expect(result.success).toBe(true);
-      expect(mockMessagePoolService.enqueue).toHaveBeenCalledWith('agent-456', 'Hello, world!', {
-        source: 'subscriber.action',
-        submitKeys: ['Enter'],
-        immediate: false,
-        projectId: 'project-789',
-        agentName: 'Test Agent',
-      });
+      expect(mockAmd.deliver).toHaveBeenCalledWith(
+        ['agent-456'],
+        {
+          kind: 'pooled',
+          body: 'Hello, world!',
+          source: 'subscriber.action',
+          projectId: 'project-789',
+          senderName: 'Test Agent',
+        },
+        {
+          submitKeys: ['Enter'],
+          immediate: false,
+        },
+      );
       expect(result.data).toMatchObject({
         status: 'queued',
         immediate: false,
       });
     });
 
-    it('should enqueue message without Enter when submitKey is none', async () => {
+    it('should deliver message without Enter when submitKey is none', async () => {
       const inputs = { text: 'Paste only', submitKey: 'none' };
 
       const result = await sendMessageAction.execute(mockContext, inputs);
 
       expect(result.success).toBe(true);
-      expect(mockMessagePoolService.enqueue).toHaveBeenCalledWith('agent-456', 'Paste only', {
-        source: 'subscriber.action',
-        submitKeys: [],
-        immediate: false,
-        projectId: 'project-789',
-        agentName: 'Test Agent',
-      });
+      expect(mockAmd.deliver).toHaveBeenCalledWith(
+        ['agent-456'],
+        expect.objectContaining({
+          body: 'Paste only',
+          source: 'subscriber.action',
+          projectId: 'project-789',
+        }),
+        {
+          submitKeys: [],
+          immediate: false,
+        },
+      );
     });
 
     it('should deliver immediately when immediate flag is true', async () => {
-      mockMessagePoolService.enqueue.mockResolvedValue({ status: 'delivered' });
+      mockAmd.deliver.mockResolvedValue({
+        status: 'delivered',
+        results: [{ agentId: 'agent-456', status: 'delivered' }],
+      });
       const inputs = { text: 'Urgent command', immediate: true };
 
       const result = await sendMessageAction.execute(mockContext, inputs);
 
       expect(result.success).toBe(true);
-      expect(mockMessagePoolService.enqueue).toHaveBeenCalledWith('agent-456', 'Urgent command', {
-        source: 'subscriber.action',
-        submitKeys: ['Enter'],
-        immediate: true,
-        projectId: 'project-789',
-        agentName: 'Test Agent',
-      });
+      expect(mockAmd.deliver).toHaveBeenCalledWith(
+        ['agent-456'],
+        expect.objectContaining({
+          body: 'Urgent command',
+          source: 'subscriber.action',
+          projectId: 'project-789',
+        }),
+        {
+          submitKeys: ['Enter'],
+          immediate: true,
+        },
+      );
       expect(result.data).toMatchObject({
         status: 'delivered',
         immediate: true,
@@ -174,7 +197,7 @@ describe('SendMessageAction', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toBe('Text is required');
-      expect(mockMessagePoolService.enqueue).not.toHaveBeenCalled();
+      expect(mockAmd.deliver).not.toHaveBeenCalled();
     });
 
     it('should return error when text is whitespace only', async () => {
@@ -196,10 +219,10 @@ describe('SendMessageAction', () => {
       expect(result.error).toBe('No agent ID available');
     });
 
-    it('should handle enqueue failure', async () => {
-      mockMessagePoolService.enqueue.mockResolvedValue({
+    it('should handle delivery failure', async () => {
+      mockAmd.deliver.mockResolvedValue({
         status: 'failed',
-        error: 'No active session',
+        results: [{ agentId: 'agent-456', status: 'failed', error: 'No active session' }],
       });
       const inputs = { text: 'Test message' };
 
@@ -210,8 +233,8 @@ describe('SendMessageAction', () => {
       expect(result.error).toContain('No active session');
     });
 
-    it('should handle enqueue throwing error', async () => {
-      mockMessagePoolService.enqueue.mockRejectedValue(new Error('Connection failed'));
+    it('should handle delivery throwing error', async () => {
+      mockAmd.deliver.mockRejectedValue(new Error('Connection failed'));
       const inputs = { text: 'Test message' };
 
       const result = await sendMessageAction.execute(mockContext, inputs);
@@ -252,7 +275,10 @@ describe('SendMessageAction', () => {
     });
 
     it('should log successful execution with delivered status', async () => {
-      mockMessagePoolService.enqueue.mockResolvedValue({ status: 'delivered' });
+      mockAmd.deliver.mockResolvedValue({
+        status: 'delivered',
+        results: [{ agentId: 'agent-456', status: 'delivered' }],
+      });
       const inputs = { text: 'Test message', immediate: true };
 
       await sendMessageAction.execute(mockContext, inputs);
@@ -268,7 +294,7 @@ describe('SendMessageAction', () => {
     });
 
     it('should log errors on failure', async () => {
-      mockMessagePoolService.enqueue.mockRejectedValue(new Error('Connection failed'));
+      mockAmd.deliver.mockRejectedValue(new Error('Connection failed'));
       const inputs = { text: 'Test message' };
 
       await sendMessageAction.execute(mockContext, inputs);
@@ -284,10 +310,10 @@ describe('SendMessageAction', () => {
 
       await sendMessageAction.execute(mockContext, inputs);
 
-      expect(mockMessagePoolService.enqueue).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.any(String),
+      expect(mockAmd.deliver).toHaveBeenCalledWith(
+        expect.any(Array),
         expect.objectContaining({ source: 'subscriber.action' }),
+        expect.any(Object),
       );
     });
   });

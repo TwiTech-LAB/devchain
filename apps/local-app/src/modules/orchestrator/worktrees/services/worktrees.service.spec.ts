@@ -1,6 +1,5 @@
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import * as childProcess from 'child_process';
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -19,14 +18,7 @@ import {
   WorktreesStore,
 } from '../worktrees.store';
 import { WorktreesService } from './worktrees.service';
-
-jest.mock('child_process', () => {
-  const actual = jest.requireActual('child_process');
-  return {
-    ...actual,
-    spawn: jest.fn(),
-  };
-});
+import { FakeProcessExecutor } from '../../../terminal/services/process-executor/fake-process-executor';
 
 class InMemoryWorktreesStore implements WorktreesStore {
   private rows = new Map<string, WorktreeRecord>();
@@ -125,6 +117,7 @@ describe('WorktreesService', () => {
   let eventEmitter: jest.Mocked<Pick<EventEmitter2, 'emitAsync' | 'emit'>>;
   let eventLogService: jest.Mocked<Pick<EventLogService, 'recordPublished'>>;
   let storage: jest.Mocked<Pick<StorageService, 'getProject'>>;
+  let executor: FakeProcessExecutor;
   let service: WorktreesService;
   let dockerEventHandler:
     | ((event: { id?: string; status?: string; Action?: string }) => void)
@@ -226,6 +219,8 @@ describe('WorktreesService', () => {
       })) as jest.MockedFunction<StorageService['getProject']>,
     };
 
+    executor = new FakeProcessExecutor();
+
     service = new WorktreesService(
       store,
       docker as unknown as OrchestratorDockerService,
@@ -234,6 +229,7 @@ describe('WorktreesService', () => {
       eventEmitter as unknown as EventEmitter2,
       eventLogService as unknown as EventLogService,
       storage,
+      executor,
     );
 
     global.fetch = jest.fn(async (url: string, init?: RequestInit) => {
@@ -977,18 +973,7 @@ describe('WorktreesService', () => {
     const dataPath = join(repoPath, 'worktrees-data', 'feature-process', 'data');
     await mkdir(dataPath, { recursive: true });
 
-    const spawnMock = childProcess.spawn as unknown as jest.Mock;
-    spawnMock.mockReset();
-    spawnMock.mockReturnValue({
-      unref: jest.fn(),
-    } as unknown as childProcess.ChildProcess);
-
-    jest
-      .spyOn(
-        service as unknown as { awaitSpawn: (...args: unknown[]) => Promise<number> },
-        'awaitSpawn',
-      )
-      .mockResolvedValue(7777);
+    executor.enqueueDaemonPid(7777);
 
     const pid = await (
       service as unknown as {
@@ -1007,15 +992,15 @@ describe('WorktreesService', () => {
     });
 
     expect(pid).toBe(7777);
-    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(executor.daemonCalls).toHaveLength(1);
 
-    const args = spawnMock.mock.calls[0]?.[1] as string[];
-    expect(args).toEqual(expect.arrayContaining(['--worktree-runtime', 'process', '--port', '0']));
-
-    const env = spawnMock.mock.calls[0]?.[2]?.env as Record<string, string>;
-    expect(env.PORT).toBe('0');
-    expect(env.RUNTIME_TOKEN).toBe('runtime-token-test');
-    expect(env.RUNTIME_PORT_FILE).toContain('runtime-port.json');
+    const call = executor.daemonCalls[0]!;
+    expect(call.argv).toEqual(
+      expect.arrayContaining(['--worktree-runtime', 'process', '--port', '0']),
+    );
+    expect(call.env?.PORT).toBe('0');
+    expect(call.env?.RUNTIME_TOKEN).toBe('runtime-token-test');
+    expect(call.env?.RUNTIME_PORT_FILE).toContain('runtime-port.json');
   });
 
   it('stops process worktree runtime and clears runtime metadata', async () => {

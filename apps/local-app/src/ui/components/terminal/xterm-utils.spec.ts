@@ -1,4 +1,8 @@
-import { isTerminalInternalSequence, supportsWheelMouseTracking } from './xterm-utils';
+import {
+  decodeOsc52ClipboardPayload,
+  isTerminalInternalSequence,
+  supportsWheelMouseTracking,
+} from './xterm-utils';
 
 describe('xterm-utils', () => {
   describe('isTerminalInternalSequence', () => {
@@ -132,6 +136,20 @@ describe('xterm-utils', () => {
 
     it('returns false for empty string', () => {
       expect(supportsWheelMouseTracking('')).toBe(false);
+    });
+  });
+
+  describe('decodeOsc52ClipboardPayload', () => {
+    function encode(text: string): string {
+      return Buffer.from(text, 'utf-8').toString('base64');
+    }
+
+    it('decodes UTF-8 punctuation as one Unicode character', () => {
+      expect(decodeOsc52ClipboardPayload(encode('—'))).toBe('—');
+    });
+
+    it('decodes Cyrillic text without mojibake', () => {
+      expect(decodeOsc52ClipboardPayload(encode('Привет'))).toBe('Привет');
     });
   });
 });

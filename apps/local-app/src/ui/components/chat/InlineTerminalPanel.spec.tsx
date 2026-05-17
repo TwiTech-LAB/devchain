@@ -39,6 +39,7 @@ jest.mock('@/ui/lib/socket', () => ({
 }));
 
 let lastTerminalProps: Record<string, unknown> | null = null;
+let lastTerminalHandle: { focus: jest.Mock; clear: jest.Mock; fit: jest.Mock } | null = null;
 
 jest.mock('@/ui/components/Terminal', () => {
   const React = jest.requireActual('react') as typeof import('react');
@@ -54,6 +55,7 @@ jest.mock('@/ui/components/Terminal', () => {
         clear: jest.fn(),
         fit: jest.fn(),
       };
+      lastTerminalHandle = handle;
       if (typeof ref === 'function') {
         ref(handle);
       } else if (ref && typeof ref === 'object') {
@@ -80,6 +82,7 @@ describe('InlineTerminalPanel', () => {
   beforeEach(() => {
     activeWorktreeName = null;
     lastTerminalProps = null;
+    lastTerminalHandle = null;
     closeWindowMock.mockReset();
     jest.clearAllMocks();
 
@@ -156,6 +159,23 @@ describe('InlineTerminalPanel', () => {
     const terminalContainer = screen.getByTestId('inline-terminal').parentElement!;
     expect(terminalContainer.style.display).not.toBe('none');
     expect(screen.queryByTestId('session-tab-content')).not.toBeInTheDocument();
+  });
+
+  it('refits terminal when terminal tab becomes active', () => {
+    jest.useFakeTimers();
+    const { rerender } = render(
+      <InlineTerminalPanel sessionId="session-1" isWindowOpen={false} activeTab="session" />,
+    );
+
+    rerender(
+      <InlineTerminalPanel sessionId="session-1" isWindowOpen={false} activeTab="terminal" />,
+    );
+
+    jest.runOnlyPendingTimers();
+
+    expect(lastTerminalHandle?.fit).toHaveBeenCalled();
+    expect(lastTerminalHandle?.focus).toHaveBeenCalled();
+    jest.useRealTimers();
   });
 
   it('hides terminal via CSS and shows session content when activeTab is session', () => {

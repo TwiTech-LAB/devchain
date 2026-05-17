@@ -42,6 +42,28 @@ interface SubscribedPayload {
   currentSequence?: number;
 }
 
+function buildCursorPositionSequence(
+  cursorX: number | undefined,
+  cursorY: number | undefined,
+  cols: number,
+  rows: number,
+): string | null {
+  if (
+    cursorX === undefined ||
+    cursorY === undefined ||
+    !Number.isFinite(cursorX) ||
+    !Number.isFinite(cursorY)
+  ) {
+    return null;
+  }
+
+  const maxCol = Math.max(0, cols - 1);
+  const maxRow = Math.max(0, rows - 1);
+  const col = Math.min(Math.max(Math.floor(cursorX), 0), maxCol) + 1;
+  const row = Math.min(Math.max(Math.floor(cursorY), 0), maxRow) + 1;
+  return `\x1b[${row};${col}H`;
+}
+
 /**
  * Custom hook for handling terminal WebSocket message routing and handlers.
  * Extracts message handling logic to simplify the main component.
@@ -58,7 +80,6 @@ interface SubscribedPayload {
  * @param pendingHistoryFramesRef - Ref to buffer frames during in-flight for sequence-based dedup
  * @param expectingSeedRef - Ref tracking if we're expecting a seed
  * @param seedStateRef - Ref to current seed assembly state
- * @param pendingWritesRef - Ref to pending writes buffer
  * @param queueOrWrite - Function to write or queue terminal data
  * @param handleSeedChunk - Function to handle seed chunks
  * @param flushPendingWrites - Function to flush pending writes immediately
@@ -90,7 +111,6 @@ export function useTerminalMessageHandlers(
     cursorX?: number;
     cursorY?: number;
   } | null>,
-  pendingWritesRef: React.MutableRefObject<string[]>,
   queueOrWrite: (data: string) => void,
   handleSeedChunk: (payload: TerminalSeedPayload) => void,
   flushPendingWrites: () => void,
@@ -98,6 +118,7 @@ export function useTerminalMessageHandlers(
   onSessionEnded?: (payload: SessionStatePayload) => void,
   scrollbackLines: number = DEFAULT_TERMINAL_SCROLLBACK,
   socket?: Socket | null,
+  onSubscribed?: () => void,
 ) {
   const handleMessage = useCallback(
     (envelope: WsEnvelope) => {
@@ -213,6 +234,16 @@ export function useTerminalMessageHandlers(
           // Write complete history
           if (h.length > 0) {
             xterm.write(h, () => {
+              const cursorPositionSequence = buildCursorPositionSequence(
+                p.cursorX,
+                p.cursorY,
+                xterm.cols,
+                xterm.rows,
+              );
+              if (cursorPositionSequence) {
+                xterm.write(cursorPositionSequence);
+              }
+
               // SEQUENCE-BASED MERGE: Filter and flush buffered frames
               // Only include frames with sequence > capturedSequence (new frames after capture)
               // or frames with sequence === -1 (no sequence, include anyway as safety)
@@ -263,8 +294,6 @@ export function useTerminalMessageHandlers(
               // interacts. Sending SIGWINCH would cause TUI to redraw and potentially
               // add garbled content to the scrollback we just loaded.
 
-              // Clear pending writes (legacy) and finish loading
-              pendingWritesRef.current.length = 0;
               isLoadingHistoryRef.current = false;
 
               termLog('history_load_complete', { sessionId });
@@ -273,7 +302,6 @@ export function useTerminalMessageHandlers(
             // Empty history string but h was truthy (shouldn't happen)
             pendingHistoryFramesRef.current = [];
             isHistoryInFlightRef.current = false;
-            pendingWritesRef.current.length = 0;
             isLoadingHistoryRef.current = false;
           }
 
@@ -282,7 +310,6 @@ export function useTerminalMessageHandlers(
           // No history payload; clear all state and stop loading.
           pendingHistoryFramesRef.current = [];
           isHistoryInFlightRef.current = false;
-          pendingWritesRef.current.length = 0;
           isLoadingHistoryRef.current = false;
         }
       });
@@ -341,47 +368,6 @@ export function useTerminalMessageHandlers(
                 const removed = pendingHistoryFramesRef.current.shift();
                 if (removed) {
                   trimmedBytes -= removed.data.length;
-                }
-              }
-            }
-          }
-
-          // Legacy: While full history is being written into xterm, buffer incoming frames.
-          // This handles the case after history response arrives and xterm.write is in progress.
-          if (!handled && isLoadingHistoryRef.current) {
-            pendingWritesRef.current.push(terminalData.data);
-            handled = true;
-
-            // Guard: prevent unbounded growth during long history writes
-            const MAX_PENDING_WRITES = 1000;
-            const TARGET_SIZE_AFTER_TRIM = 500;
-            const MAX_PENDING_BYTES = 2 * 1024 * 1024; // 2MB
-
-            if (pendingWritesRef.current.length > MAX_PENDING_WRITES) {
-              termLog('pending_writes_overflow', {
-                sessionId,
-                count: pendingWritesRef.current.length,
-                action: 'trimming',
-              });
-              pendingWritesRef.current = pendingWritesRef.current.slice(-TARGET_SIZE_AFTER_TRIM);
-            }
-
-            const totalBytes = pendingWritesRef.current.reduce((sum, s) => sum + s.length, 0);
-            if (totalBytes > MAX_PENDING_BYTES) {
-              termLog('pending_writes_bytes_overflow', {
-                sessionId,
-                totalBytes,
-                action: 'dropping_oldest',
-              });
-              // Drop oldest writes until we're back under the target threshold.
-              let trimmedBytes = totalBytes;
-              while (
-                pendingWritesRef.current.length > TARGET_SIZE_AFTER_TRIM &&
-                trimmedBytes > MAX_PENDING_BYTES
-              ) {
-                const removed = pendingWritesRef.current.shift();
-                if (removed) {
-                  trimmedBytes -= removed.length;
                 }
               }
             }
@@ -455,6 +441,8 @@ export function useTerminalMessageHandlers(
           // Flush pending writes
           flushPendingWrites();
         }
+
+        onSubscribed?.();
       });
 
       // Simple router
@@ -505,7 +493,6 @@ export function useTerminalMessageHandlers(
       lastCapturedSequenceRef,
       expectingSeedRef,
       seedStateRef,
-      pendingWritesRef,
       queueOrWrite,
       handleSeedChunk,
       flushPendingWrites,
@@ -513,6 +500,7 @@ export function useTerminalMessageHandlers(
       onSessionEnded,
       scrollbackLines,
       socket,
+      onSubscribed,
     ],
   );
 

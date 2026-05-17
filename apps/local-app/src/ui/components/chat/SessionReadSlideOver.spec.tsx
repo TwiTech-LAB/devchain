@@ -7,6 +7,11 @@ jest.mock('@/ui/hooks/useSessionTranscript', () => ({
   useSessionTranscript: jest.fn(),
 }));
 
+// Legacy mode: explicitly mock paged flag to false (legacy full-transcript path)
+jest.mock('@/ui/hooks/usePagedTranscript', () => ({
+  isPagedTranscriptEnabled: jest.fn().mockReturnValue(false),
+}));
+
 // Mock SessionViewerPanel to keep the test surface minimal
 jest.mock('@/ui/components/session-reader/SessionViewerPanel', () => ({
   SessionViewerPanel: ({ sessionId }: { sessionId: string | null }) => (
@@ -31,7 +36,7 @@ function defaultTranscript(): ReturnType<typeof useSessionTranscript> {
   };
 }
 
-describe('SessionReadSlideOver', () => {
+describe('SessionReadSlideOver — Legacy full-transcript mode (devchain.pagedTranscript=false)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockUseSessionTranscript.mockReturnValue(defaultTranscript());

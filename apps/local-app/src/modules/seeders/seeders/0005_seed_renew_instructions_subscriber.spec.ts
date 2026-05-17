@@ -2,7 +2,7 @@ import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import type { CreateSubscriber, Project, Subscriber } from '../../storage/models/domain.models';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import type { WatchersService } from '../../watchers/services/watchers.service';
-import type { SeederContext } from '../services/data-seeder.service';
+import type { SeederContext } from '../types/seeder.types';
 import { runSeedRenewInstructionsSubscriber } from './0005_seed_renew_instructions_subscriber';
 
 function createProject(id: string, name: string): Project {

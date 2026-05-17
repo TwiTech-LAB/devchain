@@ -4,6 +4,8 @@ import {
   ChatAckParamsSchema,
   ChatListMembersParamsSchema,
   CreateEpicParamsSchema,
+  DeleteEpicParamsSchema,
+  DeleteEpicResponse,
   GetEpicByIdParamsSchema,
   SendMessageParamsSchema,
   SendMessageResponse,
@@ -416,6 +418,48 @@ describe('Epic ID prefix support — schema validation', () => {
       ).toThrow(ZodError);
     });
   });
+
+  describe('DeleteEpicParamsSchema.id', () => {
+    it('accepts a full UUID', () => {
+      expect(() =>
+        DeleteEpicParamsSchema.parse({ sessionId: 'abcd1234', id: FULL_UUID }),
+      ).not.toThrow();
+    });
+
+    it('accepts an 8-char hex prefix', () => {
+      expect(() =>
+        DeleteEpicParamsSchema.parse({ sessionId: 'abcd1234', id: PREFIX_8 }),
+      ).not.toThrow();
+    });
+
+    it('rejects strings shorter than 8 chars', () => {
+      expect(() => DeleteEpicParamsSchema.parse({ sessionId: 'abcd1234', id: TOO_SHORT })).toThrow(
+        ZodError,
+      );
+    });
+
+    it('rejects strings longer than 36 chars', () => {
+      expect(() => DeleteEpicParamsSchema.parse({ sessionId: 'abcd1234', id: TOO_LONG })).toThrow(
+        ZodError,
+      );
+    });
+
+    it('rejects SQL LIKE wildcards (% and _)', () => {
+      expect(() =>
+        DeleteEpicParamsSchema.parse({ sessionId: 'abcd1234', id: WITH_WILDCARDS }),
+      ).toThrow(ZodError);
+    });
+
+    it('rejects unknown keys such as version', () => {
+      expect(() =>
+        DeleteEpicParamsSchema.parse({
+          sessionId: 'abcd1234',
+          id: FULL_UUID,
+          version: 1,
+        }),
+      ).toThrow(ZodError);
+    });
+  });
 });
 
 describe('MCP epic DTO schemas - skillsRequired validation', () => {
@@ -448,5 +492,75 @@ describe('MCP epic DTO schemas - skillsRequired validation', () => {
         skillsRequired: ['../traversal'],
       }),
     ).toThrow(ZodError);
+  });
+
+  describe('UpdateEpicParamsSchema.assignment stringified-input compatibility', () => {
+    const base = {
+      sessionId: 'abcd1234',
+      id: '00000000-0000-0000-0000-000000000001',
+      version: 1,
+    };
+
+    it('accepts stringified assignment with agentName', () => {
+      const result = UpdateEpicParamsSchema.parse({
+        ...base,
+        assignment: '{"agentName":"Coder"}',
+      });
+      expect(result.assignment).toEqual({ agentName: 'Coder' });
+    });
+
+    it('accepts stringified assignment with clear:true', () => {
+      const result = UpdateEpicParamsSchema.parse({
+        ...base,
+        assignment: '{"clear":true}',
+      });
+      expect(result.assignment).toEqual({ clear: true });
+    });
+
+    it('accepts object assignment with agentName', () => {
+      const result = UpdateEpicParamsSchema.parse({
+        ...base,
+        assignment: { agentName: 'Coder' },
+      });
+      expect(result.assignment).toEqual({ agentName: 'Coder' });
+    });
+
+    it('accepts object assignment with clear:true', () => {
+      const result = UpdateEpicParamsSchema.parse({
+        ...base,
+        assignment: { clear: true },
+      });
+      expect(result.assignment).toEqual({ clear: true });
+    });
+
+    it('rejects invalid JSON string as assignment', () => {
+      expect(() =>
+        UpdateEpicParamsSchema.parse({
+          ...base,
+          assignment: 'not-json',
+        }),
+      ).toThrow(ZodError);
+    });
+
+    it('rejects valid JSON but wrong shape for assignment', () => {
+      expect(() =>
+        UpdateEpicParamsSchema.parse({
+          ...base,
+          assignment: '{"wrong":"field"}',
+        }),
+      ).toThrow(ZodError);
+    });
+  });
+});
+
+describe('MCP epic delete DTO response shape', () => {
+  it('supports the minimal delete response contract', () => {
+    const response: DeleteEpicResponse = {
+      id: '00000000-0000-0000-0000-000000000001',
+      deleted: true,
+    };
+
+    expect(response.id).toBe('00000000-0000-0000-0000-000000000001');
+    expect(response.deleted).toBe(true);
   });
 });

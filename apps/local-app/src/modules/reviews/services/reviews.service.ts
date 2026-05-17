@@ -511,6 +511,16 @@ export class ReviewsService {
         // Graceful degradation
       }
 
+      let agentName: string | undefined;
+      if (comment.authorType === 'agent' && comment.authorAgentId) {
+        try {
+          const agent = await this.storage.getAgent(comment.authorAgentId);
+          agentName = agent.name;
+        } catch {
+          // Graceful degradation
+        }
+      }
+
       await this.eventsService.publish('review.comment.created', {
         commentId: comment.id,
         reviewId: comment.reviewId,
@@ -525,7 +535,9 @@ export class ReviewsService {
         lineEnd: comment.lineEnd,
         parentId: comment.parentId,
         targetAgentIds: resolvedTargetAgentIds,
+        recipientIds: resolvedTargetAgentIds ?? [],
         projectName,
+        agentName,
         reviewTitle: review.title,
         // Review context for agents to locate the code
         reviewMode: review.mode,

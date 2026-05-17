@@ -4,12 +4,16 @@ import { ProjectsService } from '../services/projects.service';
 import { SettingsService } from '../../settings/services/settings.service';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
 import type { Project } from '../../storage/models/domain.models';
+import { ProjectRegistryImportService } from '../services/project-registry-import.service';
+import { ProjectTemplateUpgradeService } from '../services/project-template-upgrade.service';
 import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpStatus,
   NotFoundException,
 } from '@nestjs/common';
+import { HTTP_CODE_METADATA } from '@nestjs/common/constants';
 import { resetEnvConfig } from '../../../common/config/env.config';
 import { NotFoundError as StorageNotFoundError } from '../../../common/errors/error-types';
 
@@ -33,6 +37,8 @@ describe('ProjectsController', () => {
     >
   >;
   let projectsService: jest.Mocked<Partial<ProjectsService>>;
+  let templateUpgradeService: jest.Mocked<Partial<ProjectTemplateUpgradeService>>;
+  let registryImportService: jest.Mocked<Partial<ProjectRegistryImportService>>;
   let settingsService: jest.Mocked<
     Pick<
       SettingsService,
@@ -76,6 +82,17 @@ describe('ProjectsController', () => {
       getBundledUpgradesForProjects: jest.fn().mockReturnValue(new Map()),
     };
 
+    templateUpgradeService = {
+      upgradeProject: jest.fn(),
+      restoreBackup: jest.fn(),
+      getBackupInfo: jest.fn(),
+      getProjectBackups: jest.fn(),
+    };
+
+    registryImportService = {
+      createProjectFromRegistry: jest.fn(),
+    };
+
     settingsService = {
       getProjectTemplateMetadata: jest.fn().mockReturnValue(null),
       getAllProjectTemplateMetadataMap: jest.fn().mockReturnValue(new Map()),
@@ -97,6 +114,14 @@ describe('ProjectsController', () => {
         {
           provide: SettingsService,
           useValue: settingsService,
+        },
+        {
+          provide: ProjectTemplateUpgradeService,
+          useValue: templateUpgradeService,
+        },
+        {
+          provide: ProjectRegistryImportService,
+          useValue: registryImportService,
         },
       ],
     }).compile();
@@ -128,6 +153,149 @@ describe('ProjectsController', () => {
   }
 
   // Legacy POST /api/projects removed; creation is template-only now.
+
+  describe('POST /api/projects/from-registry', () => {
+    it('creates a project from a registry template through the projects-owned service', async () => {
+      registryImportService.createProjectFromRegistry!.mockResolvedValue({
+        project: { id: 'p1', name: 'Project One', rootPath: '/tmp/one' },
+        fromRegistry: true,
+        templateSlug: 'starter-project',
+        templateVersion: '1.2.3',
+        imported: { prompts: 1, profiles: 1, agents: 1, statuses: 1 },
+      });
+
+      const result = await controller.createProjectFromRegistry({
+        slug: 'starter-project',
+        version: '1.2.3',
+        projectName: 'Project One',
+        projectDescription: 'Created from registry',
+        rootPath: '/tmp/one',
+      });
+
+      expect(registryImportService.createProjectFromRegistry).toHaveBeenCalledWith({
+        slug: 'starter-project',
+        version: '1.2.3',
+        projectName: 'Project One',
+        projectDescription: 'Created from registry',
+        rootPath: '/tmp/one',
+      });
+      expect(result.project.id).toBe('p1');
+    });
+
+    it('throws BadRequestException for invalid registry create body', async () => {
+      await expect(
+        controller.createProjectFromRegistry({
+          slug: '',
+          version: 'bad-version',
+          projectName: '',
+          rootPath: '',
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(registryImportService.createProjectFromRegistry).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('template upgrade endpoints', () => {
+    it('returns HTTP 200 for result-envelope POST endpoints', () => {
+      expect(
+        Reflect.getMetadata(HTTP_CODE_METADATA, ProjectsController.prototype.upgradeTemplate),
+      ).toBe(HttpStatus.OK);
+      expect(
+        Reflect.getMetadata(HTTP_CODE_METADATA, ProjectsController.prototype.restoreTemplateBackup),
+      ).toBe(HttpStatus.OK);
+    });
+
+    it('upgrades a project through ProjectTemplateUpgradeService', async () => {
+      templateUpgradeService.upgradeProject!.mockResolvedValue({
+        success: true,
+        newVersion: '2.0.0',
+      });
+
+      const result = await controller.upgradeTemplate('p1', { targetVersion: '2.0.0' });
+
+      expect(templateUpgradeService.upgradeProject).toHaveBeenCalledWith({
+        projectId: 'p1',
+        targetVersion: '2.0.0',
+      });
+      expect(result).toEqual({ success: true, newVersion: '2.0.0' });
+    });
+
+    it('throws BadRequestException for invalid upgrade body', async () => {
+      await expect(controller.upgradeTemplate('p1', { targetVersion: '' })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(templateUpgradeService.upgradeProject).not.toHaveBeenCalled();
+    });
+
+    it('restores a scoped backup through ProjectTemplateUpgradeService', async () => {
+      templateUpgradeService.getBackupInfo!.mockReturnValue({
+        projectId: 'p1',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        fromVersion: '1.0.0',
+      });
+      templateUpgradeService.restoreBackup!.mockResolvedValue(undefined);
+
+      const result = await controller.restoreTemplateBackup('p1', { backupId: 'backup-p1-1' });
+
+      expect(templateUpgradeService.getBackupInfo).toHaveBeenCalledWith('backup-p1-1');
+      expect(templateUpgradeService.restoreBackup).toHaveBeenCalledWith('backup-p1-1');
+      expect(result).toEqual({ success: true, message: 'Backup restored successfully' });
+    });
+
+    it('throws NotFoundException when restore backup belongs to another project', async () => {
+      templateUpgradeService.getBackupInfo!.mockReturnValue({
+        projectId: 'p2',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        fromVersion: '1.0.0',
+      });
+
+      await expect(
+        controller.restoreTemplateBackup('p1', { backupId: 'backup-p2-1' }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(templateUpgradeService.restoreBackup).not.toHaveBeenCalled();
+    });
+
+    it('returns project-scoped backup info', async () => {
+      templateUpgradeService.getBackupInfo!.mockReturnValue({
+        projectId: 'p1',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        fromVersion: '1.0.0',
+      });
+
+      await expect(controller.getTemplateBackup('p1', 'backup-p1-1')).resolves.toEqual({
+        backupId: 'backup-p1-1',
+        found: true,
+        projectId: 'p1',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        fromVersion: '1.0.0',
+      });
+    });
+
+    it('does not leak backup info across projects', async () => {
+      templateUpgradeService.getBackupInfo!.mockReturnValue({
+        projectId: 'p2',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        fromVersion: '1.0.0',
+      });
+
+      await expect(controller.getTemplateBackup('p1', 'backup-p2-1')).resolves.toEqual({
+        backupId: 'backup-p2-1',
+        found: false,
+      });
+    });
+
+    it('lists project-scoped template backups', async () => {
+      templateUpgradeService.getProjectBackups!.mockReturnValue([
+        { backupId: 'backup-p1-1', createdAt: '2026-01-01T00:00:00.000Z' },
+      ]);
+
+      await expect(controller.getTemplateBackups('p1')).resolves.toEqual({
+        projectId: 'p1',
+        backups: [{ backupId: 'backup-p1-1', createdAt: '2026-01-01T00:00:00.000Z' }],
+      });
+      expect(templateUpgradeService.getProjectBackups).toHaveBeenCalledWith('p1');
+    });
+  });
 
   describe('GET /api/projects/:id', () => {
     it('returns project with templateMetadata for registry template', async () => {

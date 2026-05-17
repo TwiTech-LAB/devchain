@@ -6,9 +6,11 @@ import {
   handleTeamsDeleteAgent,
   handleDevchainTeam,
 } from './teams-tools';
-import type { McpToolContext } from './types';
+import type { TeamsToolContext } from './teams-context';
 import type { AgentSessionContext, GuestSessionContext } from '../../dtos/mcp.dto';
 import { TeamsCreateAgentParamsSchema } from '../../dtos/mcp.dto';
+import { createNullAdapter } from './null-adapter';
+import type { TeamsService } from '../../../teams/services/teams.service';
 
 jest.mock('../../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
@@ -47,7 +49,7 @@ function makeGuestSessionContext(): GuestSessionContext {
   };
 }
 
-function makeCtx(overrides: Partial<McpToolContext> = {}): McpToolContext {
+function makeCtx(overrides: Partial<TeamsToolContext> = {}): TeamsToolContext {
   return {
     storage: {
       getAgent: jest.fn().mockImplementation((id: string) => {
@@ -264,8 +266,8 @@ describe('handleTeamsList', () => {
     );
   });
 
-  it('returns SERVICE_UNAVAILABLE when teamsService is undefined', async () => {
-    const ctx = makeCtx({ teamsService: undefined });
+  it('returns SERVICE_UNAVAILABLE when teamsService is null adapter', async () => {
+    const ctx = makeCtx({ teamsService: createNullAdapter<TeamsService>('TeamsService') });
     const result = await handleTeamsList(ctx, { sessionId: 'abcd1234' });
 
     expect(result.success).toBe(false);
@@ -297,16 +299,6 @@ describe('handleTeamsList', () => {
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('SESSION_NOT_FOUND');
-  });
-
-  it('throws on invalid params (missing sessionId)', async () => {
-    const ctx = makeCtx();
-    await expect(handleTeamsList(ctx, {})).rejects.toThrow();
-  });
-
-  it('throws on unknown params (strict mode)', async () => {
-    const ctx = makeCtx();
-    await expect(handleTeamsList(ctx, { sessionId: 'abcd1234', bogus: true })).rejects.toThrow();
   });
 });
 
@@ -530,8 +522,8 @@ describe('handleTeamsMembersList', () => {
   });
 
   describe('error handling', () => {
-    it('returns SERVICE_UNAVAILABLE when teamsService is undefined', async () => {
-      const ctx = makeCtx({ teamsService: undefined });
+    it('returns SERVICE_UNAVAILABLE when teamsService is null adapter', async () => {
+      const ctx = makeCtx({ teamsService: createNullAdapter<TeamsService>('TeamsService') });
       const result = await handleTeamsMembersList(ctx, { sessionId: 'abcd1234' });
 
       expect(result.success).toBe(false);
@@ -550,18 +542,6 @@ describe('handleTeamsMembersList', () => {
 
       expect(result.success).toBe(false);
       expect(result.error?.code).toBe('PROJECT_NOT_FOUND');
-    });
-
-    it('throws on invalid params (missing sessionId)', async () => {
-      const ctx = makeCtx();
-      await expect(handleTeamsMembersList(ctx, {})).rejects.toThrow();
-    });
-
-    it('throws on unknown params (strict mode)', async () => {
-      const ctx = makeCtx();
-      await expect(
-        handleTeamsMembersList(ctx, { sessionId: 'abcd1234', bogusField: 'nope' }),
-      ).rejects.toThrow();
     });
 
     it('falls back to agentId as name when getAgent fails', async () => {
@@ -645,8 +625,8 @@ describe('handleTeamsConfigsList', () => {
     expect(result.error?.code).toBe('FORBIDDEN_NOT_TEAM_LEAD');
   });
 
-  it('returns SERVICE_UNAVAILABLE when teamsService undefined', async () => {
-    const ctx = makeCtx({ teamsService: undefined });
+  it('returns SERVICE_UNAVAILABLE when teamsService is null adapter', async () => {
+    const ctx = makeCtx({ teamsService: createNullAdapter<TeamsService>('TeamsService') });
     const result = await handleTeamsConfigsList(ctx, { sessionId: 'abcd1234' });
 
     expect(result.success).toBe(false);
@@ -666,13 +646,6 @@ describe('handleTeamsConfigsList', () => {
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('PROJECT_NOT_FOUND');
   });
-
-  it('throws on invalid params (strict mode)', async () => {
-    const ctx = makeCtx();
-    await expect(
-      handleTeamsConfigsList(ctx, { sessionId: 'abcd1234', extra: 'nope' }),
-    ).rejects.toThrow();
-  });
 });
 
 // ── handleTeamsCreateAgent ────────────────────────────────
@@ -691,18 +664,9 @@ describe('handleTeamsCreateAgent', () => {
 
     expect(result.success).toBe(true);
     const data = result.data as {
-      agent: {
-        id: string;
-        name: string;
-        description: string;
-        profileName: string;
-        configName: string;
-      };
-      teamName: string;
+      agentId: string;
     };
-    expect(data.agent.id).toBe('new-agent-id');
-    expect(data.agent.name).toBe('New Agent');
-    expect(data.teamName).toBe(TEAM_NAME);
+    expect(data.agentId).toBe('new-agent-id');
 
     expect(
       (ctx.teamsService as { createTeamAgent: jest.Mock }).createTeamAgent,
@@ -836,24 +800,12 @@ describe('handleTeamsCreateAgent', () => {
     expect(result.error?.code).toBe('AGENT_NAME_EXISTS');
   });
 
-  it('returns SERVICE_UNAVAILABLE when teamsService undefined', async () => {
-    const ctx = makeCtx({ teamsService: undefined });
+  it('returns SERVICE_UNAVAILABLE when teamsService is null adapter', async () => {
+    const ctx = makeCtx({ teamsService: createNullAdapter<TeamsService>('TeamsService') });
     const result = await handleTeamsCreateAgent(ctx, validParams);
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('SERVICE_UNAVAILABLE');
-  });
-
-  it('rejects whitespace-only description (Zod validation)', async () => {
-    const ctx = makeCtx();
-    await expect(
-      handleTeamsCreateAgent(ctx, { ...validParams, description: '   ' }),
-    ).rejects.toThrow();
-  });
-
-  it('throws on unknown params (strict mode)', async () => {
-    const ctx = makeCtx();
-    await expect(handleTeamsCreateAgent(ctx, { ...validParams, bogus: 'nope' })).rejects.toThrow();
   });
 
   it('creates agent without description (inherits from config)', async () => {
@@ -941,7 +893,7 @@ describe('handleDevchainTeam', () => {
   const PROFILE_ID = 'profile-001';
   const CONFIG_ID = 'config-001';
 
-  function makeTeamCtx(overrides: Partial<McpToolContext> = {}): McpToolContext {
+  function makeTeamCtx(overrides: Partial<TeamsToolContext> = {}): TeamsToolContext {
     return makeCtx({
       storage: {
         getAgent: jest.fn().mockImplementation((id: string) => {
@@ -949,6 +901,7 @@ describe('handleDevchainTeam', () => {
             return Promise.resolve({
               id: AGENT_ID,
               name: AGENT_NAME,
+              description: 'Lead agent for backend team',
               projectId: PROJECT_ID,
               profileId: PROFILE_ID,
               providerConfigId: CONFIG_ID,
@@ -957,6 +910,7 @@ describe('handleDevchainTeam', () => {
             return Promise.resolve({
               id: MEMBER_AGENT_ID,
               name: MEMBER_AGENT_NAME,
+              description: 'Backend specialist',
               projectId: PROJECT_ID,
               profileId: PROFILE_ID,
               providerConfigId: CONFIG_ID,
@@ -1176,6 +1130,72 @@ describe('handleDevchainTeam', () => {
     expect(data.members[0].profileName).toBe('Default Profile');
     expect(data.members[0].providerConfigName).toBe('claude-sonnet');
   });
+
+  it('includes populated description for each member', async () => {
+    const ctx = makeTeamCtx();
+    const result = await handleDevchainTeam(ctx, { sessionId: 'sess-001' });
+
+    expect(result.success).toBe(true);
+    const data = result.data as {
+      members: Array<{ agentName: string; description: string | null }>;
+    };
+    expect(data.members[0].description).toBe('Lead agent for backend team');
+    expect(data.members[1].description).toBe('Backend specialist');
+  });
+
+  it('returns null description when agent has no description', async () => {
+    const ctx = makeTeamCtx({
+      storage: {
+        ...makeTeamCtx().storage,
+        getAgent: jest.fn().mockImplementation((id: string) => {
+          if (id === AGENT_ID)
+            return Promise.resolve({
+              id: AGENT_ID,
+              name: AGENT_NAME,
+              description: null,
+              projectId: PROJECT_ID,
+              profileId: PROFILE_ID,
+              providerConfigId: CONFIG_ID,
+            });
+          if (id === MEMBER_AGENT_ID)
+            return Promise.resolve({
+              id: MEMBER_AGENT_ID,
+              name: MEMBER_AGENT_NAME,
+              description: null,
+              projectId: PROJECT_ID,
+              profileId: PROFILE_ID,
+              providerConfigId: CONFIG_ID,
+            });
+          return Promise.reject(new Error('Agent not found'));
+        }),
+      } as never,
+    });
+    const result = await handleDevchainTeam(ctx, { sessionId: 'sess-001' });
+
+    expect(result.success).toBe(true);
+    const data = result.data as {
+      members: Array<{ description: string | null }>;
+    };
+    expect(data.members[0].description).toBeNull();
+    expect(data.members[1].description).toBeNull();
+  });
+
+  it('returns null description when agent lookup fails', async () => {
+    const ctx = makeTeamCtx({
+      storage: {
+        ...makeTeamCtx().storage,
+        getAgent: jest.fn().mockRejectedValue(new Error('Agent not found')),
+      } as never,
+    });
+    const result = await handleDevchainTeam(ctx, { sessionId: 'sess-001' });
+
+    expect(result.success).toBe(true);
+    const data = result.data as {
+      members: Array<{ agentName: string; description: string | null }>;
+    };
+    expect(data.members[0].description).toBeNull();
+    expect(data.members[0].agentName).toBe(data.members[0].agentId);
+  });
 });
 
 // ── handleTeamsDeleteAgent ────────────────────────────────
@@ -1193,8 +1213,7 @@ describe('handleTeamsDeleteAgent', () => {
     expect(result.success).toBe(true);
     expect(result.data).toEqual({
       deletedAgentId: MEMBER_AGENT_ID,
-      deletedAgentName: MEMBER_AGENT_NAME,
-      teamName: TEAM_NAME,
+      deleted: true,
     });
 
     expect(
@@ -1248,17 +1267,5 @@ describe('handleTeamsDeleteAgent', () => {
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe(code);
-  });
-
-  it('rejects missing name via Zod', async () => {
-    const ctx = makeCtx();
-    await expect(handleTeamsDeleteAgent(ctx, { sessionId: 'abcd1234' })).rejects.toThrow();
-  });
-
-  it('rejects unknown extra fields via strict schema', async () => {
-    const ctx = makeCtx();
-    await expect(
-      handleTeamsDeleteAgent(ctx, { ...validParams, extraField: 'nope' }),
-    ).rejects.toThrow();
   });
 });

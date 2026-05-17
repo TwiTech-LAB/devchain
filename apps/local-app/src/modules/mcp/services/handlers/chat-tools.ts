@@ -1,190 +1,83 @@
 import { NotFoundException } from '@nestjs/common';
 import { createLogger } from '../../../../common/logging/logger';
 import { NotFoundError } from '../../../../common/errors/error-types';
-import { deliverWithConfirmation } from '../../../terminal/services/confirmed-delivery.helper';
+import { ServiceUnavailableError } from '../../../../common/errors/service-unavailable.error';
 import {
   McpResponse,
-  SendMessageParamsSchema,
   SendMessageResponse,
-  ChatAckParamsSchema,
   ChatAckResponse,
-  ChatListMembersParamsSchema,
   ChatListMembersResponse,
-  ChatReadHistoryParamsSchema,
   SessionContext,
+  type SendMessageParams,
+  type ChatAckParams,
+  type ChatListMembersParams,
+  type ChatReadHistoryParams,
 } from '../../dtos/mcp.dto';
-import type { McpToolContext } from './types';
+import type { ChatToolContext } from './chat-context';
+import { resolveSessionContext, getActorFromContext } from '../utils/session-context-helpers';
+import { redactParams } from '../utils/redact';
+import {
+  resolveRecipientByName,
+  getAvailableRecipientNames,
+  type ResolvedRecipient,
+} from './chat-tools/recipient-resolution';
 
 const logger = createLogger('McpService');
 
-interface ResolvedRecipient {
-  type: 'agent' | 'guest';
-  id: string;
-  name: string;
-  tmuxSessionId?: string;
-}
-
-function getActorFromContext(
-  ctx: SessionContext,
-): { id: string; name: string; projectId: string } | null {
-  if (ctx.type === 'agent') {
-    return ctx.agent;
-  }
-  if (ctx.type === 'guest') {
-    return {
-      id: ctx.guest.id,
-      name: ctx.guest.name,
-      projectId: ctx.guest.projectId,
-    };
-  }
-  return null;
-}
-
-function redactSessionId(sessionId: string | undefined): string {
-  if (!sessionId) return '(none)';
-  return sessionId.slice(0, 4) + '****';
-}
-
-function redactParams(params: unknown): unknown {
-  if (!params || typeof params !== 'object') return params;
-  const obj = params as Record<string, unknown>;
-  if ('sessionId' in obj && typeof obj.sessionId === 'string') {
-    return { ...obj, sessionId: redactSessionId(obj.sessionId) };
-  }
-  return params;
-}
-
-function missingSessionResolver(): McpResponse {
-  return {
-    success: false,
-    error: {
-      code: 'SERVICE_UNAVAILABLE',
-      message:
-        'Session resolution requires full app context (not available in standalone MCP mode)',
-    },
-  };
-}
-
-async function resolveSessionContext(ctx: McpToolContext, sessionId: string): Promise<McpResponse> {
-  if (!ctx.resolveSessionContext) {
-    return missingSessionResolver();
-  }
-  return ctx.resolveSessionContext(sessionId);
-}
-
-async function resolveRecipientByName(
-  ctx: McpToolContext,
-  projectId: string,
-  name: string,
-): Promise<ResolvedRecipient | null> {
-  try {
-    const agent = await ctx.storage.getAgentByName(projectId, name);
-    return {
-      type: 'agent',
-      id: agent.id,
-      name: agent.name,
-    };
-  } catch (error) {
-    if (!(error instanceof NotFoundError)) {
-      throw error;
-    }
-  }
-
-  const guest = await ctx.storage.getGuestByName(projectId, name);
-  if (guest) {
-    return {
-      type: 'guest',
-      id: guest.id,
-      name: guest.name,
-      tmuxSessionId: guest.tmuxSessionId,
-    };
-  }
-
-  return null;
-}
-
-async function getAvailableRecipientNames(
-  ctx: McpToolContext,
-  projectId: string,
-): Promise<string[]> {
-  const [agentsResult, guests] = await Promise.all([
-    ctx.storage.listAgents(projectId, { limit: 100, offset: 0 }),
-    ctx.storage.listGuests(projectId),
-  ]);
-
-  const agentNames = agentsResult.items.map((a) => a.name);
-  const guestNames = guests.map((g) => `${g.name} (guest)`);
-
-  return [...agentNames, ...guestNames];
-}
-
 export async function handleSendMessage(
-  ctx: McpToolContext,
+  ctx: ChatToolContext,
   params: unknown,
 ): Promise<McpResponse> {
-  if (!ctx.sessionsService) {
-    return {
-      success: false,
-      error: {
-        code: 'SERVICE_UNAVAILABLE',
-        message:
-          'Chat functionality requires full app context (not available in standalone MCP mode)',
-      },
-    };
-  }
-
-  const validated = SendMessageParamsSchema.parse(params);
-
-  const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
-  if (!sessionCtxResult.success) return sessionCtxResult;
-  const sessionCtx = sessionCtxResult.data as SessionContext;
-  const sender = getActorFromContext(sessionCtx);
-  const project = sessionCtx.project;
-
-  if (!sender) {
-    return {
-      success: false,
-      error: {
-        code: 'AGENT_REQUIRED',
-        message: 'Session must be associated with an agent or guest to send messages',
-      },
-    };
-  }
-
-  if (!project) {
-    return {
-      success: false,
-      error: {
-        code: 'PROJECT_NOT_FOUND',
-        message: 'No project associated with this session',
-      },
-    };
-  }
-
-  if (sessionCtx.type === 'guest') {
-    if (validated.threadId) {
-      return {
-        success: false,
-        error: {
-          code: 'GUEST_THREAD_NOT_ALLOWED',
-          message:
-            'Guests cannot use threaded messaging. Use recipientAgentNames for direct messaging.',
-        },
-      };
-    }
-    if (validated.recipient === 'user' && !validated.teamName) {
-      return {
-        success: false,
-        error: {
-          code: 'GUEST_USER_DM_NOT_ALLOWED',
-          message: 'Guests cannot send direct messages to users.',
-        },
-      };
-    }
-  }
+  const validated = params as SendMessageParams;
 
   try {
-    const autoLaunchSessions = process.env.NODE_ENV !== 'test';
+    const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
+    if (!sessionCtxResult.success) return sessionCtxResult;
+    const sessionCtx = sessionCtxResult.data as SessionContext;
+    const sender = getActorFromContext(sessionCtx);
+    const project = sessionCtx.project;
+
+    if (!sender) {
+      return {
+        success: false,
+        error: {
+          code: 'AGENT_REQUIRED',
+          message: 'Session must be associated with an agent or guest to send messages',
+        },
+      };
+    }
+
+    if (!project) {
+      return {
+        success: false,
+        error: {
+          code: 'PROJECT_NOT_FOUND',
+          message: 'No project associated with this session',
+        },
+      };
+    }
+
+    if (sessionCtx.type === 'guest') {
+      if (validated.threadId) {
+        return {
+          success: false,
+          error: {
+            code: 'GUEST_THREAD_NOT_ALLOWED',
+            message:
+              'Guests cannot use threaded messaging. Use recipientAgentNames for direct messaging.',
+          },
+        };
+      }
+      if (validated.recipient === 'user' && !validated.teamName) {
+        return {
+          success: false,
+          error: {
+            code: 'GUEST_USER_DM_NOT_ALLOWED',
+            message: 'Guests cannot send direct messages to users.',
+          },
+        };
+      }
+    }
 
     const senderId = sender.id;
     const senderName = sender.name;
@@ -199,7 +92,7 @@ export async function handleSendMessage(
       validated.recipient !== 'user'
     ) {
       const senderAgentId = sessionCtx.type === 'agent' ? sessionCtx.agent?.id : undefined;
-      if (!senderAgentId || !ctx.teamsService) {
+      if (!senderAgentId) {
         return {
           success: false,
           error: {
@@ -245,17 +138,6 @@ export async function handleSendMessage(
     let teamDeliveryMode: 'lead' | 'lead_excluded' | 'no_lead' | undefined;
 
     if (effectiveTeamName) {
-      if (!ctx.teamsService) {
-        return {
-          success: false,
-          error: {
-            code: 'SERVICE_UNAVAILABLE',
-            message:
-              'Team routing requires full app context (not available in standalone MCP mode)',
-          },
-        };
-      }
-
       const matchedTeam = await ctx.teamsService.findTeamByExactName(project.id, effectiveTeamName);
 
       if (!matchedTeam) {
@@ -352,17 +234,6 @@ export async function handleSendMessage(
     }
 
     if (!validated.threadId && senderId && recipientType !== 'user') {
-      if (!ctx.messagePoolService || !ctx.settingsService) {
-        return {
-          success: false,
-          error: {
-            code: 'SERVICE_UNAVAILABLE',
-            message:
-              'Message pool functionality requires full app context (not available in standalone MCP mode)',
-          },
-        };
-      }
-
       if (uniqueRecipients.length === 0) {
         return {
           success: false,
@@ -379,114 +250,94 @@ export async function handleSendMessage(
         status: 'queued' | 'launched' | 'delivered' | 'unconfirmed' | 'failed';
         error?: string;
       }> = [];
-      const poolConfig = ctx.settingsService.getMessagePoolConfigForProject(project.id);
 
-      const activeSessions = ctx.sessionsService
-        ? await ctx.sessionsService.listActiveSessions()
-        : [];
+      const agentRecipients = uniqueRecipients.filter((r) => r.type === 'agent');
+      const guestRecipients = uniqueRecipients.filter((r) => r.type === 'guest');
 
-      for (const recipient of uniqueRecipients) {
-        const injectionText = `\n[This message is sent from "${senderName}" ${senderType} use devchain_send_message tool for communication]\n${validated.message}\n`;
-
-        if (recipient.type === 'agent') {
-          let session = activeSessions.find((s) => s.agentId === recipient.id);
-          let wasLaunched = false;
-
-          if (!session && autoLaunchSessions && ctx.sessionsService) {
-            try {
-              const launched = await ctx.sessionsService.launchSession({
-                projectId: project.id,
-                agentId: recipient.id,
-                options: { silent: true },
-              });
-              session = launched;
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              activeSessions.push(launched as any);
-              wasLaunched = true;
-            } catch {
-              // Continue with queueing - agent will receive when online
-            }
-          }
-
-          await ctx.messagePoolService.enqueue(recipient.id, injectionText, {
+      if (agentRecipients.length > 0) {
+        const outcome = await ctx.agentMessageDelivery.deliver(
+          agentRecipients.map((r) => r.id),
+          {
+            kind: 'mcp.direct',
+            body: validated.message,
             source: 'mcp.send_message',
-            submitKeys: ['Enter'],
-            senderAgentId: senderId,
             projectId: project.id,
-            agentName: recipient.name,
-          });
+            senderName,
+            senderType: senderType as 'agent' | 'guest',
+            senderAgentId: senderId,
+          },
+          { submitKeys: ['Enter'] },
+        );
 
+        for (const result of outcome.results) {
+          const recipient = agentRecipients.find((r) => r.id === result.agentId);
           queued.push({
-            name: recipient.name,
+            name: recipient?.name ?? result.agentId,
             type: 'agent',
-            status: wasLaunched ? 'launched' : 'queued',
+            status: result.status === 'failed' ? 'failed' : 'queued',
+            error: result.error,
           });
-        } else {
-          const isOnline = ctx.tmuxService
-            ? await ctx.tmuxService.hasSession(recipient.tmuxSessionId!)
-            : false;
-
-          if (!isOnline) {
-            queued.push({
-              name: recipient.name,
-              type: 'guest',
-              status: 'failed',
-              error: 'Recipient offline',
-            });
-          } else if (ctx.tmuxService) {
-            try {
-              const delivery = await deliverWithConfirmation(ctx.tmuxService, null, {
-                tmuxSessionId: recipient.tmuxSessionId!,
-                text: injectionText,
-              });
-              queued.push({
-                name: recipient.name,
-                type: 'guest',
-                status: delivery.confirmed ? 'delivered' : 'unconfirmed',
-              });
-            } catch (error) {
-              logger.warn(
-                { guestId: recipient.id, tmuxSessionId: recipient.tmuxSessionId, error },
-                'Failed to deliver message to guest',
-              );
-              queued.push({
-                name: recipient.name,
-                type: 'guest',
-                status: 'failed',
-                error: error instanceof Error ? error.message : 'Delivery failed',
-              });
-            }
-          } else {
-            queued.push({
-              name: recipient.name,
-              type: 'guest',
-              status: 'failed',
-              error: 'Tmux service unavailable',
-            });
-          }
         }
       }
+
+      for (const recipient of guestRecipients) {
+        if (!recipient.tmuxSessionId) {
+          queued.push({
+            name: recipient.name,
+            type: 'guest',
+            status: 'failed',
+            error: 'No session',
+          });
+          continue;
+        }
+
+        try {
+          const guestText = ctx.agentMessageDelivery.formatMessage({
+            kind: 'mcp.direct',
+            body: validated.message,
+            source: 'mcp.send_message',
+            projectId: project.id,
+            senderName,
+            senderType: senderType as 'agent' | 'guest',
+          });
+          const result = await ctx.agentMessageDelivery.deliverToGuest(
+            recipient.tmuxSessionId,
+            guestText,
+            ['Enter'],
+          );
+          queued.push({
+            name: recipient.name,
+            type: 'guest',
+            status: result.delivered ? 'delivered' : 'failed',
+            error: result.error,
+          });
+        } catch (error) {
+          if (error instanceof ServiceUnavailableError) {
+            queued.push({
+              name: recipient.name,
+              type: 'guest',
+              status: 'failed',
+              error: 'Delivery service unavailable',
+            });
+            continue;
+          }
+          throw error;
+        }
+      }
+
+      const estimatedDeliveryMs = ctx.settingsService.getMessagePoolConfigForProject(
+        project.id,
+      ).delayMs;
 
       const response: SendMessageResponse = {
         mode: 'pooled',
         queuedCount: queued.length,
         queued,
-        estimatedDeliveryMs: poolConfig.delayMs,
+        estimatedDeliveryMs,
         ...(teamDelivery ? { teamDelivery } : {}),
       };
 
       return { success: true, data: response };
-    }
-
-    if (!ctx.chatService) {
-      return {
-        success: false,
-        error: {
-          code: 'SERVICE_UNAVAILABLE',
-          message:
-            'Chat functionality requires full app context (not available in standalone MCP mode)',
-        },
-      };
     }
 
     let threadId = validated.threadId;
@@ -524,7 +375,6 @@ export async function handleSendMessage(
       targetAgentIds = thread.members.filter((id) => id !== senderId);
     }
 
-    const activeSessions = await ctx.sessionsService.listActiveSessions();
     const delivered: Array<{
       agentName: string;
       agentId: string;
@@ -532,43 +382,35 @@ export async function handleSendMessage(
       status: 'delivered' | 'queued' | 'unconfirmed';
     }> = [];
 
-    for (const agentId of targetAgentIds) {
-      const agent = await ctx.storage.getAgent(agentId);
-      let session = activeSessions.find((s) => s.agentId === agentId);
-
-      if (!session && autoLaunchSessions) {
-        try {
-          const launched = await ctx.sessionsService.launchSession({
-            projectId: project.id,
-            agentId,
-            options: { silent: true },
-          });
-          session = launched;
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          activeSessions.push(launched as any);
-        } catch {
-          // fall back to queued
-        }
-      }
-
-      if (!session) {
-        delivered.push({ agentId, agentName: agent.name, sessionId: '', status: 'queued' });
-        continue;
-      }
-
-      const injectionText = `\n[CHAT] From: ${senderName} • Thread: ${threadId}\n${validated.message}\n[ACK] tools/call { name: "devchain_chat_ack", arguments: { sessionId: "${session.id}", thread_id: "${threadId}", message_id: "${message.id}" } }\n`;
-
-      const injectResult = await ctx.sessionsService.injectTextIntoSession(
-        session.id,
-        injectionText,
+    if (targetAgentIds.length > 0) {
+      const outcome = await ctx.agentMessageDelivery.deliver(
+        targetAgentIds,
+        {
+          kind: 'mcp.thread',
+          body: validated.message,
+          source: 'mcp.chat_thread',
+          projectId: project.id,
+          senderName,
+          senderType: 'agent',
+          threadId,
+          messageId: message.id,
+          senderAgentId: senderId,
+        },
+        { submitKeys: ['Enter'], immediate: true },
       );
 
-      delivered.push({
-        agentId,
-        agentName: agent.name,
-        sessionId: session.id,
-        status: injectResult.confirmed ? 'delivered' : 'unconfirmed',
-      });
+      for (const result of outcome.results) {
+        const agent = await ctx.storage.getAgent(result.agentId);
+        delivered.push({
+          agentId: result.agentId,
+          agentName: agent.name,
+          sessionId: '',
+          status:
+            result.status === 'failed'
+              ? 'queued'
+              : (result.status as 'delivered' | 'queued' | 'unconfirmed'),
+        });
+      }
     }
 
     const response: SendMessageResponse = {
@@ -581,7 +423,13 @@ export async function handleSendMessage(
 
     return { success: true, data: response };
   } catch (error) {
-    logger.error({ error, params: redactParams(validated) }, 'sendMessage failed');
+    if (error instanceof ServiceUnavailableError) {
+      return { success: false, error: { code: 'SERVICE_UNAVAILABLE', message: error.message } };
+    }
+    logger.error(
+      { error, params: redactParams(params as SendMessageParams) },
+      'sendMessage failed',
+    );
     return {
       success: false,
       error: {
@@ -592,39 +440,28 @@ export async function handleSendMessage(
   }
 }
 
-export async function handleChatAck(ctx: McpToolContext, params: unknown): Promise<McpResponse> {
-  if (!ctx.chatService || !ctx.terminalGateway) {
-    return {
-      success: false,
-      error: {
-        code: 'SERVICE_UNAVAILABLE',
-        message:
-          'Chat acknowledgment requires full app context (not available in standalone MCP mode)',
-      },
-    };
-  }
-
-  const validated = ChatAckParamsSchema.parse(params);
+export async function handleChatAck(ctx: ChatToolContext, params: unknown): Promise<McpResponse> {
+  const validated = params as ChatAckParams;
   const { thread_id: threadId, message_id: messageId } = validated;
 
-  const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
-  if (!sessionCtxResult.success) return sessionCtxResult;
-  const sessionCtx = sessionCtxResult.data as SessionContext;
-  const agent = getActorFromContext(sessionCtx);
-
-  if (!agent) {
-    return {
-      success: false,
-      error: {
-        code: 'AGENT_NOT_FOUND',
-        message: 'No agent associated with this session',
-      },
-    };
-  }
-
-  const agentId = agent.id;
-
   try {
+    const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
+    if (!sessionCtxResult.success) return sessionCtxResult;
+    const sessionCtx = sessionCtxResult.data as SessionContext;
+    const agent = getActorFromContext(sessionCtx);
+
+    if (!agent) {
+      return {
+        success: false,
+        error: {
+          code: 'AGENT_NOT_FOUND',
+          message: 'No agent associated with this session',
+        },
+      };
+    }
+
+    const agentId = agent.id;
+
     const thread = await ctx.chatService.getThread(threadId);
     const memberIds = thread.members ?? [];
     if (!memberIds.includes(agentId)) {
@@ -637,28 +474,18 @@ export async function handleChatAck(ctx: McpToolContext, params: unknown): Promi
       };
     }
 
-    const now = new Date().toISOString();
+    await ctx.chatService.markMessageAsRead(messageId, agentId);
 
-    await ctx.storage.markMessageAsRead(messageId, agentId, now);
-
-    if (ctx.sessionsService) {
-      const activeSessions = await ctx.sessionsService.listActiveSessions();
-      const agentSession = activeSessions.find((s) => s.agentId === agentId);
-      if (agentSession && agentSession.tmuxSessionId) {
-        await ctx.chatService.acknowledgeInvite(
-          threadId,
-          messageId,
-          agentId,
-          agentSession.tmuxSessionId,
-        );
-      }
+    const activeSessions = await ctx.sessionsService.listActiveSessions();
+    const agentSession = activeSessions.find((s) => s.agentId === agentId);
+    if (agentSession && agentSession.tmuxSessionId) {
+      await ctx.chatService.acknowledgeInvite(
+        threadId,
+        messageId,
+        agentId,
+        agentSession.tmuxSessionId,
+      );
     }
-
-    ctx.terminalGateway.broadcastEvent(`chat/${threadId}`, 'message.read', {
-      messageId,
-      agentId,
-      readAt: now,
-    });
 
     const response: ChatAckResponse = {
       threadId,
@@ -670,6 +497,9 @@ export async function handleChatAck(ctx: McpToolContext, params: unknown): Promi
 
     return { success: true, data: response };
   } catch (error) {
+    if (error instanceof ServiceUnavailableError) {
+      return { success: false, error: { code: 'SERVICE_UNAVAILABLE', message: error.message } };
+    }
     logger.error({ error, params: redactParams(validated) }, 'chatAck failed');
     return {
       success: false,
@@ -682,21 +512,10 @@ export async function handleChatAck(ctx: McpToolContext, params: unknown): Promi
 }
 
 export async function handleChatListMembers(
-  ctx: McpToolContext,
+  ctx: ChatToolContext,
   params: unknown,
 ): Promise<McpResponse> {
-  if (!ctx.chatService || !ctx.sessionsService) {
-    return {
-      success: false,
-      error: {
-        code: 'SERVICE_UNAVAILABLE',
-        message:
-          'Chat members listing requires full app context (not available in standalone MCP mode)',
-      },
-    };
-  }
-
-  const validated = ChatListMembersParamsSchema.parse(params);
+  const validated = params as ChatListMembersParams;
 
   try {
     const thread = await ctx.chatService.getThread(validated.thread_id);
@@ -749,6 +568,9 @@ export async function handleChatListMembers(
 
     return { success: true, data: response };
   } catch (error) {
+    if (error instanceof ServiceUnavailableError) {
+      return { success: false, error: { code: 'SERVICE_UNAVAILABLE', message: error.message } };
+    }
     if (error instanceof NotFoundException || error instanceof NotFoundError) {
       return {
         success: false,
@@ -771,20 +593,10 @@ export async function handleChatListMembers(
 }
 
 export async function handleChatReadHistory(
-  ctx: McpToolContext,
+  ctx: ChatToolContext,
   params: unknown,
 ): Promise<McpResponse> {
-  if (!ctx.chatService) {
-    return {
-      success: false,
-      error: {
-        code: 'SERVICE_UNAVAILABLE',
-        message: 'Chat history requires full app context (not available in standalone MCP mode)',
-      },
-    };
-  }
-
-  const validated = ChatReadHistoryParamsSchema.parse(params);
+  const validated = params as ChatReadHistoryParams;
 
   try {
     const thread = await ctx.chatService.getThread(validated.thread_id);
@@ -864,6 +676,9 @@ export async function handleChatReadHistory(
 
     return { success: true, data: response };
   } catch (error) {
+    if (error instanceof ServiceUnavailableError) {
+      return { success: false, error: { code: 'SERVICE_UNAVAILABLE', message: error.message } };
+    }
     if (error instanceof NotFoundException || error instanceof NotFoundError) {
       return {
         success: false,

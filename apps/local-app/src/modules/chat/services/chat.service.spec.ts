@@ -10,7 +10,7 @@ import {
   CreateMessageSchema,
 } from '../dtos/chat.dto';
 import type { ChatSettingsService } from './chat-settings.service';
-import type { SessionsService } from '../../sessions/services/sessions.service';
+import type { ChatSessionInviteService } from './chat-session-invite.service';
 import { DEFAULT_INVITE_TEMPLATE } from './invite-template.util';
 
 // Mock the schema module
@@ -52,6 +52,9 @@ describe('ChatService', () => {
     getStoredInviteTemplate: jest.Mock;
     updateInviteTemplate: jest.Mock;
   };
+  let mockChatSessionInviteService: {
+    ensureSessionInvites: jest.Mock;
+  };
 
   beforeEach(() => {
     mockDb = {
@@ -71,15 +74,15 @@ describe('ChatService', () => {
       updateInviteTemplate: jest.fn(),
     };
 
-    const mockSessionsService = {
-      listActiveSessions: jest.fn().mockResolvedValue([]),
+    mockChatSessionInviteService = {
+      ensureSessionInvites: jest.fn().mockResolvedValue(undefined),
     };
 
     service = new ChatService(
       mockDb as unknown as BetterSQLite3Database,
       mockEventEmitter as unknown as EventEmitter2,
       mockChatSettingsService as unknown as ChatSettingsService,
-      mockSessionsService as unknown as SessionsService,
+      mockChatSessionInviteService as unknown as ChatSessionInviteService,
     );
   });
 
@@ -564,6 +567,65 @@ describe('ChatService', () => {
 
       expect(result).toBeDefined();
       expect(result.content).toBe('Test message');
+    });
+
+    it('ensureSessionInvites is called before the message insert (ordering invariant)', async () => {
+      const threadId = randomUUID();
+      const projectId = randomUUID();
+      const now = new Date().toISOString();
+
+      const callOrder: string[] = [];
+
+      const getThreadChain = {
+        from: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockResolvedValue([
+          {
+            id: threadId,
+            projectId,
+            title: 'Test',
+            isGroup: false,
+            createdByType: 'user',
+            createdByUserId: null,
+            createdByAgentId: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ]),
+      };
+      const getMembersChain = {
+        from: jest.fn().mockReturnThis(),
+        where: jest.fn().mockResolvedValue([]),
+      };
+      const insertMessageChain = {
+        values: jest.fn().mockImplementation(() => {
+          callOrder.push('insert');
+          return Promise.resolve(undefined);
+        }),
+      };
+      const updateThreadChain = {
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockResolvedValue(undefined),
+      };
+
+      mockChatSessionInviteService.ensureSessionInvites.mockImplementation(() => {
+        callOrder.push('ensureSessionInvites');
+        return Promise.resolve(undefined);
+      });
+
+      mockDb.select.mockReturnValueOnce(getThreadChain).mockReturnValueOnce(getMembersChain);
+      mockDb.insert.mockReturnValue(insertMessageChain);
+      mockDb.update.mockReturnValue(updateThreadChain);
+
+      await service.createMessage(threadId, { content: 'Hi', authorType: 'user' });
+
+      expect(callOrder[0]).toBe('ensureSessionInvites');
+      expect(callOrder[1]).toBe('insert');
+      expect(mockChatSessionInviteService.ensureSessionInvites).toHaveBeenCalledWith(
+        threadId,
+        projectId,
+        expect.any(Array),
+      );
     });
   });
 

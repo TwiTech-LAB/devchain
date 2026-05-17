@@ -9,6 +9,11 @@ export const teamMemberAddedEvent = {
     teamName: z.string().min(1),
     addedAgentId: z.string().min(1),
     addedAgentName: z.string().nullable(),
+    addedAgentDescription: z.string().nullable().optional(),
+    projectName: z.string().min(1).optional(),
+    recipientIds: z.array(z.string().min(1)).optional(),
+    agentName: z.string().min(1).optional(),
+    teamLeadAgentName: z.string().min(1).optional(),
   }),
 } as const;
 

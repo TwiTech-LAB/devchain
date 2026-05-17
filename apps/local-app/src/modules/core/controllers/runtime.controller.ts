@@ -4,6 +4,7 @@ import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { getEnvConfig } from '../../../common/config/env.config';
+import { PROCESS_BOOT_ID } from '../../../common/process-identity';
 import { OrchestratorDockerService } from '../../orchestrator/docker/services/docker.service';
 
 function getVersion(): string {
@@ -55,7 +56,11 @@ export class RuntimeController {
     return {
       mode: env.DEVCHAIN_MODE,
       version: getVersion(),
+      bootId: PROCESS_BOOT_ID,
       dockerAvailable: await this.resolveDockerAvailability(env.DEVCHAIN_MODE),
+      features: {
+        cloudUi: env.DEVCHAIN_CLOUD_UI_ENABLED,
+      },
       ...(runtimeToken ? { runtimeToken } : {}),
     };
   }

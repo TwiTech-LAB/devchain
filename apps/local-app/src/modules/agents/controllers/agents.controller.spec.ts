@@ -7,6 +7,7 @@ import { NotFoundError } from '../../../common/errors/error-types';
 import { SessionsService } from '../../sessions/services/sessions.service';
 import { SessionCoordinatorService } from '../../sessions/services/session-coordinator.service';
 import { EventsService } from '../../events/services/events.service';
+import { SessionRuntime } from '../../sessions/services/session-runtime';
 
 jest.mock('../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
@@ -34,6 +35,10 @@ describe('AgentsController', () => {
   };
   let sessionCoordinator: {
     withAgentLock: jest.Mock;
+  };
+  let mockSessionRuntime: {
+    launch: jest.Mock;
+    restore: jest.Mock;
   };
   let eventsService: {
     publish: jest.Mock;
@@ -111,6 +116,10 @@ describe('AgentsController', () => {
       terminateSession: jest.fn(),
       launchSession: jest.fn(),
     };
+    mockSessionRuntime = {
+      launch: jest.fn(),
+      restore: jest.fn(),
+    };
 
     sessionCoordinator = {
       withAgentLock: jest.fn().mockImplementation((_agentId, fn) => fn()),
@@ -138,6 +147,10 @@ describe('AgentsController', () => {
         {
           provide: EventsService,
           useValue: eventsService,
+        },
+        {
+          provide: SessionRuntime,
+          useValue: mockSessionRuntime,
         },
       ],
     }).compile();
@@ -602,13 +615,13 @@ describe('AgentsController', () => {
     it('restarts agent with no existing session (terminateStatus: not_found)', async () => {
       storage.getAgent.mockResolvedValue(mockAgent);
       sessionsService.listActiveSessions.mockResolvedValue([]);
-      sessionsService.launchSession.mockResolvedValue(mockNewSession);
+      mockSessionRuntime.launch.mockResolvedValue(mockNewSession);
 
       const result = await controller.restartAgent('agent-1', { projectId: 'project-1' });
 
       // Note: No outer withAgentLock - launchSession handles locking internally
       expect(sessionsService.terminateSession).not.toHaveBeenCalled();
-      expect(sessionsService.launchSession).toHaveBeenCalledWith({
+      expect(mockSessionRuntime.launch).toHaveBeenCalledWith({
         agentId: 'agent-1',
         projectId: 'project-1',
       });
@@ -626,7 +639,7 @@ describe('AgentsController', () => {
       storage.getAgent.mockResolvedValue(mockAgent);
       sessionsService.listActiveSessions.mockResolvedValue([existingSession]);
       sessionsService.terminateSession.mockResolvedValue(undefined);
-      sessionsService.launchSession.mockResolvedValue(mockNewSession);
+      mockSessionRuntime.launch.mockResolvedValue(mockNewSession);
 
       const result = await controller.restartAgent('agent-1', { projectId: 'project-1' });
 
@@ -645,7 +658,7 @@ describe('AgentsController', () => {
       storage.getAgent.mockResolvedValue(mockAgent);
       sessionsService.listActiveSessions.mockResolvedValue([existingSession]);
       sessionsService.terminateSession.mockRejectedValue(new Error('Terminate failed'));
-      sessionsService.launchSession.mockResolvedValue(mockNewSession);
+      mockSessionRuntime.launch.mockResolvedValue(mockNewSession);
 
       const result = await controller.restartAgent('agent-1', { projectId: 'project-1' });
 
@@ -670,7 +683,7 @@ describe('AgentsController', () => {
     it('does not use outer withAgentLock (launchSession handles locking internally)', async () => {
       storage.getAgent.mockResolvedValue(mockAgent);
       sessionsService.listActiveSessions.mockResolvedValue([]);
-      sessionsService.launchSession.mockResolvedValue(mockNewSession);
+      mockSessionRuntime.launch.mockResolvedValue(mockNewSession);
 
       await controller.restartAgent('agent-1', { projectId: 'project-1' });
 

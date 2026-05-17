@@ -15,11 +15,7 @@ import type {
   UpdateReview,
   UpdateReviewComment,
 } from '../../models/domain.models';
-import {
-  NotFoundError,
-  OptimisticLockError,
-  StorageError,
-} from '../../../../common/errors/error-types';
+import { NotFoundError, OptimisticLockError } from '../../../../common/errors/error-types';
 import { createLogger } from '../../../../common/logging/logger';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 
@@ -210,33 +206,26 @@ export class ReviewStorageDelegate extends BaseStorageDelegate {
     const now = new Date().toISOString();
     const { reviewComments, reviewCommentTargets } = await import('../../db/schema');
 
-    const sqlite = this.rawClient;
-    if (!sqlite || typeof sqlite.exec !== 'function') {
-      throw new StorageError('Unable to access underlying SQLite client');
-    }
+    const comment: ReviewComment = {
+      id: randomUUID(),
+      reviewId: data.reviewId,
+      filePath: data.filePath,
+      parentId: data.parentId,
+      lineStart: data.lineStart,
+      lineEnd: data.lineEnd,
+      side: data.side,
+      content: data.content,
+      commentType: data.commentType,
+      status: data.status,
+      authorType: data.authorType,
+      authorAgentId: data.authorAgentId,
+      version: 1,
+      editedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    };
 
-    sqlite.exec('BEGIN IMMEDIATE TRANSACTION');
-
-    try {
-      const comment: ReviewComment = {
-        id: randomUUID(),
-        reviewId: data.reviewId,
-        filePath: data.filePath,
-        parentId: data.parentId,
-        lineStart: data.lineStart,
-        lineEnd: data.lineEnd,
-        side: data.side,
-        content: data.content,
-        commentType: data.commentType,
-        status: data.status,
-        authorType: data.authorType,
-        authorAgentId: data.authorAgentId,
-        version: 1,
-        editedAt: null,
-        createdAt: now,
-        updatedAt: now,
-      };
-
+    await this.txRunner.runImmediateAsync(async () => {
       await this.db.insert(reviewComments).values({
         id: comment.id,
         reviewId: comment.reviewId,
@@ -256,7 +245,6 @@ export class ReviewStorageDelegate extends BaseStorageDelegate {
         updatedAt: comment.updatedAt,
       });
 
-      // Add targets if provided
       if (targetAgentIds && targetAgentIds.length > 0) {
         for (const agentId of targetAgentIds) {
           await this.db.insert(reviewCommentTargets).values({
@@ -267,22 +255,13 @@ export class ReviewStorageDelegate extends BaseStorageDelegate {
           });
         }
       }
+    });
 
-      sqlite.exec('COMMIT');
-      logger.info(
-        { commentId: comment.id, reviewId: comment.reviewId, targets: targetAgentIds?.length ?? 0 },
-        'Created review comment',
-      );
-      return comment;
-    } catch (error) {
-      try {
-        sqlite.exec('ROLLBACK');
-        logger.info('Transaction rolled back successfully');
-      } catch (rollbackError) {
-        logger.error({ rollbackError }, 'Failed to rollback transaction');
-      }
-      throw error;
-    }
+    logger.info(
+      { commentId: comment.id, reviewId: comment.reviewId, targets: targetAgentIds?.length ?? 0 },
+      'Created review comment',
+    );
+    return comment;
   }
 
   async getReviewComment(id: string): Promise<ReviewComment> {

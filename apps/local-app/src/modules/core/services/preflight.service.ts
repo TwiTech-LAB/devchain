@@ -1,6 +1,4 @@
-import { Injectable, Inject, forwardRef } from '@nestjs/common';
-import { exec } from 'child_process';
-import { promisify } from 'util';
+import { Injectable, Inject } from '@nestjs/common';
 import { access, mkdir, constants } from 'fs/promises';
 import { createLogger } from '../../../common/logging/logger';
 import * as path from 'path';
@@ -15,11 +13,11 @@ import {
   validateEnvValue,
   EnvBuilderError,
 } from '../../sessions/utils/env-builder';
-import { McpProviderRegistrationService } from '../../mcp/services/mcp-provider-registration.service';
+import { McpProviderRegistrationService } from '../../providers/services/mcp-provider-registration.service';
 import { parseProfileOptions, ProfileOptionsError } from '../../sessions/utils/profile-options';
-import { ProviderAdapterFactory } from '../../providers/adapters';
+import { ProviderAdapterFactory, isMcpCli } from '../../providers/adapters';
+import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 
-const execAsync = promisify(exec);
 const logger = createLogger('PreflightService');
 
 export interface PreflightCheck {
@@ -71,9 +69,9 @@ export interface PreflightResult {
 export class PreflightService {
   constructor(
     @Inject('STORAGE_SERVICE') private readonly storage: StorageService,
-    @Inject(forwardRef(() => McpProviderRegistrationService))
     private readonly mcpRegistration: McpProviderRegistrationService,
     private readonly adapterFactory: ProviderAdapterFactory,
+    private readonly executor: ProcessExecutor,
   ) {}
 
   /**
@@ -352,7 +350,7 @@ export class PreflightService {
             try {
               requiresProjectContext =
                 this.isMcpSupported(info.provider.name) &&
-                this.adapterFactory.getAdapter(info.provider.name).mcpMode === 'project_config'
+                !isMcpCli(this.adapterFactory.getAdapter(info.provider.name))
                   ? true
                   : undefined;
             } catch {
@@ -463,7 +461,7 @@ export class PreflightService {
 
     // Config-file providers require project context to verify MCP status
     const adapter = this.adapterFactory.getAdapter(provider.name);
-    if (adapter.mcpMode === 'project_config' && !projectPath) {
+    if (!isMcpCli(adapter) && !projectPath) {
       return {
         mcpStatus: 'warn',
         mcpMessage: `${provider.name} MCP requires project context — select a project to verify.`,
@@ -472,9 +470,9 @@ export class PreflightService {
 
     // Compute expected endpoint using runtime config
     const { getEnvConfig } = await import('../../../common/config/env.config');
-    const { getRuntimeInternalBaseUrl } = await import('../../../common/config/host-helpers');
+    const { HostResolver } = await import('@devchain/shared');
     const env = getEnvConfig();
-    const expectedEndpoint = `${getRuntimeInternalBaseUrl(env)}/mcp`;
+    const expectedEndpoint = `${HostResolver.buildInternalBaseUrl({ host: env.HOST, port: env.PORT })}/mcp`;
     const expectedAlias = 'devchain';
 
     const listResult = await this.mcpRegistration.listRegistrations(provider, {
@@ -523,8 +521,17 @@ export class PreflightService {
    */
   private async checkTmux(): Promise<PreflightCheck> {
     try {
-      const { stdout } = await execAsync('tmux -V');
-      const version = stdout.trim();
+      const result = await this.executor.run({ argv: ['tmux', '-V'], mode: 'pipe' });
+      if (!result.success) {
+        return {
+          name: 'tmux',
+          status: 'fail',
+          message: 'tmux not found',
+          details:
+            'Install tmux: apt-get install tmux (Debian/Ubuntu) or brew install tmux (macOS)',
+        };
+      }
+      const version = result.stdout.trim();
 
       // Parse version number with improved handling for non-semver formats
       // Handles: "tmux 3.2", "tmux 3.2a", "tmux next-3.3", "tmux 3.4-rc"
@@ -627,8 +634,7 @@ export class PreflightService {
     const combinedDetails = [binaryDetails, mcpDetails].filter(Boolean).join(' | ') || undefined;
 
     const requiresProjectContext =
-      this.isMcpSupported(provider.name) &&
-      this.adapterFactory.getAdapter(provider.name).mcpMode === 'project_config'
+      this.isMcpSupported(provider.name) && !isMcpCli(this.adapterFactory.getAdapter(provider.name))
         ? true
         : undefined;
 
@@ -825,14 +831,5 @@ export class PreflightService {
       throw new Error(`Check not found: ${checkName}`);
     }
     return check;
-  }
-
-  /**
-   * No-op - cache has been removed.
-   * Kept for backward compatibility with callers.
-   */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  clearCache(_projectPath?: string): void {
-    // No-op - preflight no longer uses caching
   }
 }

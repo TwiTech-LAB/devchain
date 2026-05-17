@@ -16,6 +16,7 @@ import type { Team, TeamMember, CreateTeam, UpdateTeam } from '../../storage/mod
 import { TeamsStore, type TeamsListOptions } from '../storage/teams.store';
 import { EventsService } from '../../events/services/events.service';
 import { createLogger } from '../../../common/logging/logger';
+import type { RecipientContext } from '../dtos/recipient-context.dto';
 
 const logger = createLogger('TeamsService');
 
@@ -40,6 +41,35 @@ export class TeamsService {
       this.sessionsServiceRef = this.moduleRef.get(SessionsService, { strict: false });
     }
     return this.sessionsServiceRef;
+  }
+
+  private async resolveTeamEventNames(
+    projectId: string,
+    teamLeadAgentId: string | null,
+  ): Promise<{ projectName?: string; teamLeadAgentName?: string }> {
+    const result: { projectName?: string; teamLeadAgentName?: string } = {};
+
+    try {
+      const project = await this.storage.getProject(projectId);
+      result.projectName = project.name;
+    } catch {
+      // Event enrichment is best-effort.
+    }
+
+    if (teamLeadAgentId) {
+      try {
+        const teamLeadAgent = await this.storage.getAgent(teamLeadAgentId);
+        result.teamLeadAgentName = teamLeadAgent.name;
+      } catch {
+        // Event enrichment is best-effort.
+      }
+    }
+
+    return result;
+  }
+
+  private buildLeadRecipientIds(teamLeadAgentId: string | null): string[] {
+    return teamLeadAgentId ? [teamLeadAgentId] : [];
   }
 
   async createTeam(data: CreateTeam): Promise<Team> {
@@ -220,6 +250,8 @@ export class TeamsService {
     const previousMaxConcurrentTasks = current.maxConcurrentTasks;
     const previousAllowTeamLeadCreateAgents = current.allowTeamLeadCreateAgents;
     const result = await this.teamsStore.updateTeam(id, storeData);
+    const eventNames = await this.resolveTeamEventNames(current.projectId, result.teamLeadAgentId);
+    const leadRecipientIds = this.buildLeadRecipientIds(result.teamLeadAgentId);
 
     if (
       result.maxMembers !== previousMaxMembers ||
@@ -232,6 +264,9 @@ export class TeamsService {
           projectId: current.projectId,
           teamLeadAgentId: result.teamLeadAgentId,
           teamName: result.name,
+          projectName: eventNames.projectName,
+          recipientIds: leadRecipientIds,
+          agentName: eventNames.teamLeadAgentName,
           previous: {
             maxMembers: previousMaxMembers,
             maxConcurrentTasks: previousMaxConcurrentTasks,
@@ -264,6 +299,11 @@ export class TeamsService {
             teamName: result.name,
             addedAgentId: agentId,
             addedAgentName: agent?.name ?? null,
+            addedAgentDescription: agent?.description ?? null,
+            projectName: eventNames.projectName,
+            recipientIds: leadRecipientIds,
+            agentName: agent?.name,
+            teamLeadAgentName: eventNames.teamLeadAgentName,
           });
         } catch {
           // Best-effort
@@ -280,6 +320,10 @@ export class TeamsService {
             teamName: result.name,
             removedAgentId: agentId,
             removedAgentName: agent?.name ?? null,
+            projectName: eventNames.projectName,
+            recipientIds: leadRecipientIds,
+            agentName: agent?.name,
+            teamLeadAgentName: eventNames.teamLeadAgentName,
           });
         } catch {
           // Best-effort
@@ -305,6 +349,30 @@ export class TeamsService {
 
   async listTeamsByAgent(agentId: string): Promise<Team[]> {
     return this.teamsStore.listTeamsByAgent(agentId);
+  }
+
+  async getRecipientContext(agentId: string, projectId: string): Promise<RecipientContext> {
+    const agent = await this.storage.getAgent(agentId);
+    if (agent.projectId !== projectId) {
+      throw new ValidationError('Agent belongs to a different project', {
+        agentId,
+        projectId,
+        agentProjectId: agent.projectId,
+      });
+    }
+
+    const teams = (await this.teamsStore.listTeamsByAgent(agentId)).filter(
+      (team) => team.projectId === projectId,
+    );
+    const teamNames = teams.map((team) => team.name).sort((a, b) => a.localeCompare(b));
+    const isTeamLead = teams.some((team) => team.teamLeadAgentId === agentId);
+    const memberRole = isTeamLead ? 'lead' : teamNames.length > 0 ? 'member' : null;
+
+    return {
+      isTeamLead,
+      teamNames,
+      memberRole,
+    };
   }
 
   async countBusyTeamMembers(teamId: string, teamLeadAgentId: string | null): Promise<number> {
@@ -567,6 +635,7 @@ export class TeamsService {
 
     // 7. Publish team.member.added event (best-effort)
     try {
+      const eventNames = await this.resolveTeamEventNames(input.projectId, team.teamLeadAgentId);
       await this.eventsService?.publish('team.member.added', {
         teamId: team.id,
         projectId: input.projectId,
@@ -574,6 +643,11 @@ export class TeamsService {
         teamName: team.name,
         addedAgentId: agent.id,
         addedAgentName: agent.name,
+        addedAgentDescription: agent.description ?? null,
+        projectName: eventNames.projectName,
+        recipientIds: this.buildLeadRecipientIds(team.teamLeadAgentId),
+        agentName: agent.name,
+        teamLeadAgentName: eventNames.teamLeadAgentName,
       });
     } catch (error) {
       logger.error(
@@ -673,6 +747,7 @@ export class TeamsService {
     }
 
     try {
+      const eventNames = await this.resolveTeamEventNames(input.projectId, team.teamLeadAgentId);
       await this.eventsService?.publish('team.member.added', {
         teamId: input.teamId,
         projectId: input.projectId,
@@ -680,6 +755,11 @@ export class TeamsService {
         teamName: team.name,
         addedAgentId: agent.id,
         addedAgentName: agent.name,
+        addedAgentDescription: agent.description ?? null,
+        projectName: eventNames.projectName,
+        recipientIds: this.buildLeadRecipientIds(team.teamLeadAgentId),
+        agentName: agent.name,
+        teamLeadAgentName: eventNames.teamLeadAgentName,
       });
     } catch {
       // Best-effort
@@ -819,6 +899,10 @@ export class TeamsService {
 
     // 7. Publish events (best-effort)
     try {
+      const eventNames = await this.resolveTeamEventNames(
+        input.projectId,
+        preDeleteData.teamLeadAgentId,
+      );
       await this.eventsService?.publish('team.member.removed', {
         teamId: preDeleteData.teamId,
         projectId: input.projectId,
@@ -826,6 +910,10 @@ export class TeamsService {
         teamName: preDeleteData.teamName,
         removedAgentId: preDeleteData.removedAgentId,
         removedAgentName: preDeleteData.removedAgentName,
+        projectName: eventNames.projectName,
+        recipientIds: this.buildLeadRecipientIds(preDeleteData.teamLeadAgentId),
+        agentName: preDeleteData.removedAgentName,
+        teamLeadAgentName: eventNames.teamLeadAgentName,
       });
     } catch (error) {
       logger.error(

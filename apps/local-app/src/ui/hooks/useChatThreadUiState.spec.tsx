@@ -24,6 +24,18 @@ const THREADS: Thread[] = [
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
   },
+  {
+    id: 'thread-second',
+    projectId: 'project-main',
+    title: 'Second Thread',
+    isGroup: false,
+    createdByType: 'user',
+    createdByUserId: 'user-1',
+    createdByAgentId: null,
+    members: ['agent-2'],
+    createdAt: '2026-01-02T00:00:00.000Z',
+    updatedAt: '2026-01-02T00:00:00.000Z',
+  },
 ];
 
 const AGENT_PRESENCE: AgentPresenceMap = {
@@ -44,6 +56,10 @@ function buildWrapper(initialEntries: string[]) {
 }
 
 describe('useChatThreadUiState', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
   it('returns null thread and inline terminal session during project transition render', async () => {
     const snapshots: Array<{
       selectedThreadId: string | null;
@@ -125,6 +141,126 @@ describe('useChatThreadUiState', () => {
       expect(result.current.selectedThreadId).toBe('thread-main');
     });
     expect(result.current.currentThread?.id).toBe('thread-main');
+  });
+
+  describe('last selected thread persistence', () => {
+    it('persists selected thread per project', async () => {
+      const { result } = renderHook(
+        () =>
+          useChatThreadUiState({
+            projectId: 'project-main',
+            agentPresence: AGENT_PRESENCE,
+            allThreads: THREADS,
+            agents: AGENTS,
+          }),
+        {
+          wrapper: buildWrapper(['/chat']),
+        },
+      );
+
+      act(() => {
+        result.current.handleSelectThread('thread-main');
+      });
+
+      await waitFor(() => {
+        expect(result.current.selectedThreadId).toBe('thread-main');
+      });
+      expect(window.localStorage.getItem('devchain:chat:lastThread:project-main')).toBe(
+        'thread-main',
+      );
+    });
+
+    it('restores stored thread when chat opens without thread query', async () => {
+      window.localStorage.setItem('devchain:chat:lastThread:project-main', 'thread-main');
+
+      const { result } = renderHook(
+        () =>
+          useChatThreadUiState({
+            projectId: 'project-main',
+            agentPresence: AGENT_PRESENCE,
+            allThreads: THREADS,
+            agents: AGENTS,
+          }),
+        {
+          wrapper: buildWrapper(['/chat']),
+        },
+      );
+
+      await waitFor(() => {
+        expect(result.current.selectedThreadId).toBe('thread-main');
+      });
+      expect(result.current.currentThread?.id).toBe('thread-main');
+    });
+
+    it('uses explicit URL thread before stored thread and updates storage', async () => {
+      window.localStorage.setItem('devchain:chat:lastThread:project-main', 'thread-main');
+
+      const { result } = renderHook(
+        () =>
+          useChatThreadUiState({
+            projectId: 'project-main',
+            agentPresence: AGENT_PRESENCE,
+            allThreads: THREADS,
+            agents: AGENTS,
+          }),
+        {
+          wrapper: buildWrapper(['/chat?thread=thread-second']),
+        },
+      );
+
+      await waitFor(() => {
+        expect(result.current.selectedThreadId).toBe('thread-second');
+      });
+      expect(window.localStorage.getItem('devchain:chat:lastThread:project-main')).toBe(
+        'thread-second',
+      );
+    });
+
+    it('clears stale stored thread instead of selecting it', async () => {
+      window.localStorage.setItem('devchain:chat:lastThread:project-main', 'thread-stale');
+
+      const { result } = renderHook(
+        () =>
+          useChatThreadUiState({
+            projectId: 'project-main',
+            agentPresence: AGENT_PRESENCE,
+            allThreads: THREADS,
+            agents: AGENTS,
+          }),
+        {
+          wrapper: buildWrapper(['/chat']),
+        },
+      );
+
+      await waitFor(() => {
+        expect(window.localStorage.getItem('devchain:chat:lastThread:project-main')).toBeNull();
+      });
+      expect(result.current.selectedThreadId).toBeNull();
+    });
+
+    it('does not restore another project thread', async () => {
+      window.localStorage.setItem('devchain:chat:lastThread:project-other', 'thread-main');
+
+      const { result } = renderHook(
+        () =>
+          useChatThreadUiState({
+            projectId: 'project-main',
+            agentPresence: AGENT_PRESENCE,
+            allThreads: THREADS,
+            agents: AGENTS,
+          }),
+        {
+          wrapper: buildWrapper(['/chat']),
+        },
+      );
+
+      await waitFor(() => {
+        expect(result.current.selectedThreadId).toBeNull();
+      });
+      expect(window.localStorage.getItem('devchain:chat:lastThread:project-other')).toBe(
+        'thread-main',
+      );
+    });
   });
 
   describe('attachInlineTerminalForSelectedThread', () => {

@@ -1,7 +1,11 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { WsEnvelope } from '@/ui/lib/socket';
 import { useAppSocket } from './useAppSocket';
+import {
+  type RealtimeInvalidationRegistry,
+  dispatchRealtimeEnvelope,
+} from '@/ui/lib/realtime-invalidation-registry';
 
 type EpicEventPayload = {
   epic?: { parentId?: string | null } | null;
@@ -13,36 +17,50 @@ export interface UseBoardSyncArgs {
   parentFilter: string | undefined;
 }
 
+function extractParentId(payload: Record<string, unknown>): string | null {
+  const typed = payload as unknown as EpicEventPayload;
+  return typed.epic?.parentId ?? typed.parentId ?? null;
+}
+
 export function useBoardSync({ selectedProjectId, parentFilter }: UseBoardSyncArgs): void {
   const queryClient = useQueryClient();
+
+  const registry: RealtimeInvalidationRegistry = useMemo(() => {
+    if (!selectedProjectId) return [];
+    const topic = `project/${selectedProjectId}/epics`;
+    const entries = [
+      { kind: 'invalidate' as const, queryKey: ['epics', selectedProjectId] },
+      {
+        kind: 'custom-handler' as const,
+        handler: (
+          payload: Record<string, unknown>,
+          qc: import('@tanstack/react-query').QueryClient,
+        ) => {
+          const pid = extractParentId(payload);
+          if (pid) {
+            qc.invalidateQueries({ queryKey: ['epics', pid, 'sub-counts'] });
+            if (parentFilter === pid) {
+              qc.invalidateQueries({ queryKey: ['epics', 'parent', parentFilter] });
+            }
+          } else if (parentFilter) {
+            qc.invalidateQueries({ queryKey: ['epics', 'parent', parentFilter] });
+          }
+        },
+      },
+    ];
+    return ['created', 'updated', 'deleted'].map((type) => ({
+      match: (t: string) => t === topic,
+      type,
+      entries,
+    }));
+  }, [selectedProjectId, parentFilter]);
 
   const handleBoardEnvelope = useCallback(
     (envelope: WsEnvelope) => {
       if (!selectedProjectId || !envelope) return;
-      const topic = `project/${selectedProjectId}/epics` as const;
-      if (envelope.topic !== topic) return;
-      const lifecycle =
-        envelope.type === 'created' || envelope.type === 'updated' || envelope.type === 'deleted';
-      if (!lifecycle) return;
-
-      // Always refresh project epics list for all filter variants
-      queryClient.invalidateQueries({ queryKey: ['epics', selectedProjectId] });
-
-      const payload = (envelope.payload ?? {}) as EpicEventPayload;
-      const parentId = payload.epic?.parentId ?? payload.parentId ?? null;
-
-      // If a sub-epic changed, refresh its parent's sub-epic counts and list (when filtered)
-      if (parentId) {
-        queryClient.invalidateQueries({ queryKey: ['epics', parentId, 'sub-counts'] });
-        if (parentFilter === parentId) {
-          queryClient.invalidateQueries({ queryKey: ['epics', 'parent', parentFilter] });
-        }
-      } else if (parentFilter) {
-        // Fallback: if parent filter is active, ensure its list stays fresh
-        queryClient.invalidateQueries({ queryKey: ['epics', 'parent', parentFilter] });
-      }
+      dispatchRealtimeEnvelope(envelope, registry, queryClient);
     },
-    [queryClient, selectedProjectId, parentFilter],
+    [queryClient, selectedProjectId, registry],
   );
 
   const handleSocketConnect = useCallback(() => {
@@ -58,7 +76,6 @@ export function useBoardSync({ selectedProjectId, parentFilter }: UseBoardSyncAr
     handleSocketConnect,
   ]);
 
-  // Safety net: periodic refresh to recover from missed envelopes during reconnects
   useEffect(() => {
     if (!selectedProjectId) return;
     const interval = setInterval(() => {

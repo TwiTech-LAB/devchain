@@ -188,6 +188,28 @@ export const EVENT_FIELDS_CATALOG: Record<string, SubscribableEventDefinition> =
     ],
   },
 
+  'scheduled_epic.executed': {
+    name: 'scheduled_epic.executed',
+    label: 'Scheduled Epic Executed',
+    description: 'Fired when a scheduled epic run completes, fails, or is skipped',
+    category: 'epic',
+    fields: [
+      { field: 'scheduleId', label: 'Schedule ID', type: 'string' },
+      { field: 'runId', label: 'Run ID', type: 'string' },
+      { field: 'projectId', label: 'Project ID', type: 'string' },
+      { field: 'scheduleName', label: 'Schedule Name', type: 'string' },
+      { field: 'triggerSource', label: 'Trigger Source', type: 'string' },
+      { field: 'status', label: 'Run Status', type: 'string' },
+      { field: 'plannedFor', label: 'Planned For', type: 'string' },
+      { field: 'finishedAt', label: 'Finished At', type: 'string' },
+      { field: 'lagMs', label: 'Lag (ms)', type: 'number', nullable: true },
+      { field: 'createdEpicId', label: 'Created Epic ID', type: 'string', nullable: true },
+      { field: 'createdEpicTitle', label: 'Created Epic Title', type: 'string', nullable: true },
+      { field: 'errorCode', label: 'Error Code', type: 'string', nullable: true },
+      { field: 'errorMessage', label: 'Error Message', type: 'string', nullable: true },
+    ],
+  },
+
   'epic.created': {
     name: 'epic.created',
     label: 'Epic Created',
@@ -233,6 +255,7 @@ export const EVENT_FIELDS_CATALOG: Record<string, SubscribableEventDefinition> =
       { field: 'epicId', label: 'Epic ID', type: 'string', nullable: true },
       { field: 'agentId', label: 'Agent ID', type: 'string' },
       { field: 'tmuxSessionName', label: 'Tmux Session Name', type: 'string' },
+      { field: 'providerName', label: 'Provider Name', type: 'string' },
     ],
   },
 

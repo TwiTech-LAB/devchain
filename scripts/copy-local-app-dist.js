@@ -62,7 +62,9 @@ function main() {
     const sharedPkg = {
       name: '@devchain/shared',
       version: '0.0.0',
+      type: 'module',
       main: 'index.js',
+      module: 'index.js',
       types: 'index.d.ts',
     };
     writeFileSync(join(sharedDest, 'package.json'), JSON.stringify(sharedPkg, null, 2));

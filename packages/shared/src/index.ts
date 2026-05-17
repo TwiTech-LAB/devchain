@@ -1,5 +1,8 @@
 // @devchain/shared - Shared types and utilities for Devchain services
 
+// Host utilities
+export { HostResolver } from './host-resolver.js';
+
 // Schemas
 export {
   EnvVarsSchema,

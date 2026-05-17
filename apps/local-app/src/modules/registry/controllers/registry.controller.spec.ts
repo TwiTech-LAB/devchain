@@ -2,7 +2,6 @@ import { RegistryController } from './registry.controller';
 import { RegistryClientService } from '../services/registry-client.service';
 import { TemplateCacheService } from '../services/template-cache.service';
 import { RegistryOrchestrationService } from '../services/registry-orchestration.service';
-import { TemplateUpgradeService } from '../services/template-upgrade.service';
 import { SettingsService } from '../../settings/services/settings.service';
 import { StorageService } from '../../storage/interfaces/storage.interface';
 
@@ -11,7 +10,6 @@ describe('RegistryController', () => {
   let mockRegistryClient: jest.Mocked<Partial<RegistryClientService>>;
   let mockCacheService: jest.Mocked<Partial<TemplateCacheService>>;
   let mockOrchestrationService: jest.Mocked<Partial<RegistryOrchestrationService>>;
-  let mockUpgradeService: jest.Mocked<Partial<TemplateUpgradeService>>;
   let mockSettingsService: jest.Mocked<Partial<SettingsService>>;
   let mockStorageService: jest.Mocked<Partial<StorageService>>;
 
@@ -24,8 +22,6 @@ describe('RegistryController', () => {
     mockCacheService = {};
 
     mockOrchestrationService = {};
-
-    mockUpgradeService = {};
 
     mockSettingsService = {
       getAllTrackedProjects: jest.fn(),
@@ -41,7 +37,6 @@ describe('RegistryController', () => {
       mockRegistryClient as RegistryClientService,
       mockCacheService as TemplateCacheService,
       mockOrchestrationService as RegistryOrchestrationService,
-      mockUpgradeService as TemplateUpgradeService,
       mockSettingsService as SettingsService,
       mockStorageService as StorageService,
     );

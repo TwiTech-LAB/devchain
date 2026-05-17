@@ -18,6 +18,7 @@ import {
 import { getDefaultFilterId, getFilterById } from '@/ui/lib/saved-filters';
 import { fetchSubEpics } from '@/ui/pages/board/lib/board-api';
 import type { Epic, Status } from '@/ui/types';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 interface BoardViewPreferences {
   collapsedStatusIds: string[];
@@ -66,6 +67,7 @@ export function useBoardPageController() {
   const { toast } = useToast();
   const { selectedProjectId, selectedProject: activeProject } = useSelectedProject();
   const { activeWorktree, worktrees } = useOptionalWorktreeTab();
+  const apiFetch = useFetchFactory();
   const hasRunningWorktrees =
     activeWorktree === null && worktrees.some((wt) => wt.status === 'running');
   const [showDialog, setShowDialog] = useState(false);
@@ -589,7 +591,7 @@ export function useBoardPageController() {
 
     (async () => {
       try {
-        const subEpics = await fetchSubEpics(bulkTarget.id);
+        const subEpics = await fetchSubEpics(bulkTarget.id, apiFetch);
         if (cancelled) return;
         const children = Array.isArray(subEpics?.items) ? (subEpics.items as Epic[]) : [];
         const rows: BulkEditRow[] = [

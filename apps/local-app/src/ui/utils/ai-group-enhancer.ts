@@ -11,11 +11,24 @@ export type EnhancerStep = Omit<UnifiedSemanticStep, 'startTime'> & {
   startTime: Date | string;
 };
 
-export type DisplayItem = {
+export type SingleDisplayItem = {
   type: 'thinking' | 'tool' | 'output' | 'subagent';
   step: EnhancerStep;
   linkedResult?: EnhancerStep;
 };
+
+export type ToolGroupDisplayItem = {
+  type: 'tool-group';
+  toolName: string;
+  count: number;
+  items: SingleDisplayItem[];
+  totalTokens: number;
+  totalDurationMs: number;
+  errorCount: number;
+  commonPathPrefix?: string;
+};
+
+export type DisplayItem = SingleDisplayItem | ToolGroupDisplayItem;
 
 export interface HeaderTokens {
   input: number;
@@ -85,11 +98,109 @@ export function findLastOutput(steps: EnhancerStep[]): LastOutput | null {
   return null;
 }
 
+function computeCommonPathPrefix(items: SingleDisplayItem[]): string | undefined {
+  const paths = items
+    .map((item) => {
+      const filePath = item.step.content.toolInput?.file_path;
+      return typeof filePath === 'string' ? filePath : undefined;
+    })
+    .filter((p): p is string => p !== undefined);
+
+  if (paths.length === 0) return undefined;
+  if (paths.length === 1) return paths[0];
+
+  const segments = paths.map((p) => p.split('/'));
+  const minLen = Math.min(...segments.map((s) => s.length));
+  const commonParts: string[] = [];
+
+  for (let i = 0; i < minLen; i++) {
+    const segment = segments[0][i];
+    if (segments.every((s) => s[i] === segment)) {
+      commonParts.push(segment);
+    } else {
+      break;
+    }
+  }
+
+  if (commonParts.length === 0) return undefined;
+  return commonParts.join('/');
+}
+
+function getItemDurationMs(item: SingleDisplayItem): number {
+  if (item.linkedResult?.startTime && item.step.startTime) {
+    const diff =
+      new Date(item.linkedResult.startTime).getTime() - new Date(item.step.startTime).getTime();
+    return Number.isFinite(diff) ? Math.max(0, diff) : (item.step.durationMs ?? 0);
+  }
+  return item.step.durationMs ?? 0;
+}
+
+function groupConsecutiveSameType(items: DisplayItem[]): DisplayItem[] {
+  const result: DisplayItem[] = [];
+  let i = 0;
+
+  while (i < items.length) {
+    const item = items[i];
+
+    if (item.type === 'tool' && item.step.type === 'tool_call' && item.step.content.toolName) {
+      const toolName = item.step.content.toolName;
+      const group: SingleDisplayItem[] = [item];
+      let j = i + 1;
+      while (j < items.length) {
+        const next = items[j];
+        if (
+          next.type === 'tool' &&
+          (next as SingleDisplayItem).step.type === 'tool_call' &&
+          (next as SingleDisplayItem).step.content.toolName === toolName
+        ) {
+          group.push(next as SingleDisplayItem);
+          j++;
+        } else {
+          break;
+        }
+      }
+
+      if (group.length >= 2) {
+        let totalTokens = 0;
+        let totalDurationMs = 0;
+        let errorCount = 0;
+
+        for (const g of group) {
+          totalTokens += (g.step.estimatedTokens ?? 0) + (g.linkedResult?.estimatedTokens ?? 0);
+          totalDurationMs += getItemDurationMs(g);
+          if (g.linkedResult?.content.isError) errorCount++;
+        }
+
+        result.push({
+          type: 'tool-group',
+          toolName,
+          count: group.length,
+          items: group,
+          totalTokens,
+          totalDurationMs,
+          errorCount,
+          commonPathPrefix: toolName === 'Read' ? computeCommonPathPrefix(group) : undefined,
+        });
+
+        i = j;
+      } else {
+        result.push(item);
+        i++;
+      }
+    } else {
+      result.push(item);
+      i++;
+    }
+  }
+
+  return result;
+}
+
 export function buildDisplayItems(
   steps: EnhancerStep[],
   lastOutputId: string | null,
 ): DisplayItem[] {
-  const displayItems: DisplayItem[] = [];
+  const displayItems: SingleDisplayItem[] = [];
   const pendingToolCallIndexes = new Map<string, number[]>();
 
   for (const step of steps) {
@@ -142,7 +253,7 @@ export function buildDisplayItems(
     }
   }
 
-  return displayItems;
+  return groupConsecutiveSameType(displayItems);
 }
 
 function pluralize(count: number, singular: string, plural: string): string {
@@ -158,7 +269,11 @@ export function buildSummary(displayItems: DisplayItem[]): string {
   };
 
   for (const item of displayItems) {
-    counts[item.type] += 1;
+    if (item.type === 'tool-group') {
+      counts.tool += item.count;
+    } else {
+      counts[item.type] += 1;
+    }
   }
 
   const parts: string[] = [];

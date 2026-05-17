@@ -1,4 +1,3 @@
-import type Database from 'better-sqlite3';
 import type {
   CommunitySkillSource,
   CreateCommunitySkillSource,
@@ -131,13 +130,7 @@ export class SkillSourceStorageDelegate extends BaseStorageDelegate {
       return;
     }
 
-    const sqlite = this.rawClient as Database.Database | null;
-    if (!sqlite || typeof sqlite.exec !== 'function') {
-      throw new StorageError('Unable to access underlying SQLite client');
-    }
-
-    sqlite.exec('BEGIN IMMEDIATE TRANSACTION');
-    try {
+    await this.txRunner.runImmediateAsync(async () => {
       const { sourceProjectEnabled } = await import('../../db/schema');
       const { and, eq, inArray } = await import('drizzle-orm');
       const existingRows = await this.db
@@ -168,16 +161,7 @@ export class SkillSourceStorageDelegate extends BaseStorageDelegate {
           })),
         );
       }
-
-      sqlite.exec('COMMIT');
-    } catch (error) {
-      try {
-        sqlite.exec('ROLLBACK');
-      } catch (rollbackError) {
-        logger.error({ rollbackError }, 'Failed to rollback seedSourceProjectDisabled transaction');
-      }
-      throw error;
-    }
+    });
   }
 
   async deleteSourceProjectEnabledBySource(sourceName: string): Promise<void> {

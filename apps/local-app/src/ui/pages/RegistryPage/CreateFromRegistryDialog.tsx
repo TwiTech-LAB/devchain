@@ -45,7 +45,7 @@ interface CreateProjectResult {
 }
 
 async function createProjectFromRegistry(input: CreateProjectInput): Promise<CreateProjectResult> {
-  const res = await fetch('/api/registry/create-project', {
+  const res = await fetch('/api/projects/from-registry', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),

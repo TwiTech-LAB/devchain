@@ -5,19 +5,10 @@ import { GeminiAdapter } from './gemini.adapter';
 import { OpencodeAdapter } from './opencode.adapter';
 import { ProviderAdapterFactory } from './provider-adapter.factory';
 import { StorageModule } from '../../storage/storage.module';
+import { GeminiTrustedFoldersModule } from '../../core/services/gemini-trusted-folders.module';
 
-/**
- * ProviderAdaptersModule
- *
- * Encapsulates provider adapters and factory to break the circular dependency
- * between CoreNormalModule and ProvidersModule. Both modules can import this module
- * without creating a dependency cycle.
- *
- * StorageModule is imported because ProviderAdapterFactory injects STORAGE_SERVICE
- * for the getPostPasteDelayMsForAgent resolver (agent → config → provider chain).
- */
 @Module({
-  imports: [StorageModule],
+  imports: [StorageModule, GeminiTrustedFoldersModule],
   providers: [ClaudeAdapter, CodexAdapter, GeminiAdapter, OpencodeAdapter, ProviderAdapterFactory],
   exports: [ProviderAdapterFactory],
 })

@@ -1,9 +1,8 @@
-import { Controller, Get, Post, Param, Query, Body, Inject } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiQuery, ApiBody } from '@nestjs/swagger';
+import { Controller, Get, Post, Param, Query, Inject } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiResponse, ApiQuery } from '@nestjs/swagger';
 import { RegistryClientService } from '../services/registry-client.service';
 import { TemplateCacheService } from '../services/template-cache.service';
 import { RegistryOrchestrationService } from '../services/registry-orchestration.service';
-import { TemplateUpgradeService } from '../services/template-upgrade.service';
 import { SettingsService } from '../../settings/services/settings.service';
 import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import {
@@ -11,7 +10,6 @@ import {
   TemplateDetailResponse,
   ListTemplatesQuery,
 } from '../interfaces/registry.interface';
-import { RestoreBackupDto, UpgradeProjectDto } from '../dtos/registry.dto';
 
 @ApiTags('registry')
 @Controller('api/registry')
@@ -20,7 +18,6 @@ export class RegistryController {
     private readonly registryClient: RegistryClientService,
     private readonly cacheService: TemplateCacheService,
     private readonly orchestrationService: RegistryOrchestrationService,
-    private readonly upgradeService: TemplateUpgradeService,
     private readonly settingsService: SettingsService,
     @Inject(STORAGE_SERVICE) private readonly storageService: StorageService,
   ) {}
@@ -184,42 +181,6 @@ export class RegistryController {
     };
   }
 
-  @Post('create-project')
-  @ApiOperation({ summary: 'Create a new project from a registry template' })
-  @ApiBody({
-    schema: {
-      type: 'object',
-      required: ['slug', 'version', 'projectName', 'rootPath'],
-      properties: {
-        slug: { type: 'string', description: 'Template slug' },
-        version: { type: 'string', description: 'Template version' },
-        projectName: { type: 'string', description: 'New project name' },
-        projectDescription: { type: 'string', description: 'Project description' },
-        rootPath: { type: 'string', description: 'Project root path' },
-      },
-    },
-  })
-  @ApiResponse({ status: 201, description: 'Project created successfully' })
-  @ApiResponse({ status: 400, description: 'Invalid input or template not found' })
-  async createProjectFromRegistry(
-    @Body()
-    body: {
-      slug: string;
-      version: string;
-      projectName: string;
-      projectDescription?: string;
-      rootPath: string;
-    },
-  ) {
-    return this.orchestrationService.createProjectFromRegistry({
-      slug: body.slug,
-      version: body.version,
-      projectName: body.projectName,
-      projectDescription: body.projectDescription,
-      rootPath: body.rootPath,
-    });
-  }
-
   @Post('check-updates/:projectId')
   @ApiOperation({ summary: 'Check for available updates for a project' })
   @ApiResponse({ status: 200, description: 'Update check result' })
@@ -256,53 +217,6 @@ export class RegistryController {
         latestVersion: result.latestVersion,
         changelog: result.changelog,
       })),
-    };
-  }
-
-  @Post('upgrade-project')
-  @ApiOperation({ summary: 'Upgrade a project to a newer template version' })
-  @ApiResponse({
-    status: 200,
-    description: 'Upgrade result (success or failure with error message in response body)',
-  })
-  @ApiResponse({ status: 400, description: 'Invalid request body' })
-  async upgradeProject(@Body() body: UpgradeProjectDto) {
-    return this.upgradeService.upgradeProject({
-      projectId: body.projectId,
-      targetVersion: body.targetVersion,
-    });
-  }
-
-  @Post('restore-backup')
-  @ApiOperation({ summary: 'Restore project from backup after failed upgrade' })
-  @ApiResponse({ status: 200, description: 'Backup restored successfully' })
-  @ApiResponse({ status: 400, description: 'Invalid request body' })
-  @ApiResponse({ status: 404, description: 'Backup not found or expired' })
-  async restoreBackup(@Body() body: RestoreBackupDto) {
-    await this.upgradeService.restoreBackup(body.backupId);
-    return { success: true, message: 'Backup restored successfully' };
-  }
-
-  @Get('backup/:backupId')
-  @ApiOperation({ summary: 'Get backup info' })
-  @ApiResponse({ status: 200, description: 'Backup info' })
-  async getBackupInfo(@Param('backupId') backupId: string) {
-    const info = this.upgradeService.getBackupInfo(backupId);
-    return {
-      backupId,
-      found: !!info,
-      ...info,
-    };
-  }
-
-  @Get('project-backups/:projectId')
-  @ApiOperation({ summary: 'List active backups for a project' })
-  @ApiResponse({ status: 200, description: 'Project backups list' })
-  async getProjectBackups(@Param('projectId') projectId: string) {
-    const backups = this.upgradeService.getProjectBackups(projectId);
-    return {
-      projectId,
-      backups,
     };
   }
 }

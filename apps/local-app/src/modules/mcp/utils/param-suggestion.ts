@@ -6,7 +6,11 @@
  */
 import { ZodSchema, ZodObject, ZodOptional, ZodUnion, ZodEffects } from 'zod';
 
-import { toolSchemaRegistry } from '../dtos/schema-registry';
+import { allMetadata } from '../tool-descriptors';
+
+const toolSchemaRegistry: ReadonlyMap<string, ZodSchema> = new Map(
+  allMetadata.filter((m) => m.paramsSchema !== null).map((m) => [m.name, m.paramsSchema!]),
+);
 
 /**
  * Result of a nested key search.

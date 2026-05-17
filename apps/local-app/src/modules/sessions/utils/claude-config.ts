@@ -41,7 +41,7 @@ function isJsonParseError(error: unknown): boolean {
   return error instanceof SyntaxError;
 }
 
-export async function checkClaudeAutoCompact(): Promise<ClaudeAutoCompactStatus> {
+export async function checkAutoCompactConfig(): Promise<ClaudeAutoCompactStatus> {
   const configPath = getClaudeConfigPath();
 
   try {

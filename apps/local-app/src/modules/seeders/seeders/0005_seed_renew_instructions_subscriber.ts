@@ -1,5 +1,5 @@
 import type { CreateSubscriber } from '../../storage/models/domain.models';
-import type { DataSeeder, SeederContext } from '../services/data-seeder.service';
+import type { DataSeeder, SeederContext } from '../types/seeder.types';
 
 const SEEDER_NAME = '0005_seed_renew_instructions_subscriber';
 const SEEDER_VERSION = 1;

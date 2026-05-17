@@ -1,6 +1,18 @@
-import { render, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PresetSelector } from './PresetSelector';
+
+const mockUseQuery = jest.fn();
+const mockInvalidateQueries = jest.fn();
+
+jest.mock('@tanstack/react-query', () => {
+  const actual = jest.requireActual('@tanstack/react-query');
+  return {
+    ...actual,
+    useQuery: (options: unknown) => mockUseQuery(options),
+    useQueryClient: () => ({ invalidateQueries: mockInvalidateQueries }),
+  };
+});
 
 // ResizeObserver mock for Radix components
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -19,6 +31,8 @@ jest.mock('@/ui/hooks/use-toast', () => ({
 // Mock fetch
 const mockFetch = jest.fn() as jest.Mock;
 global.fetch = mockFetch;
+globalThis.fetch = mockFetch;
+window.fetch = mockFetch;
 
 // Mock validatePresetAvailability
 jest.mock('@/ui/lib/preset-validation', () => ({
@@ -27,6 +41,75 @@ jest.mock('@/ui/lib/preset-validation', () => ({
     available: preset.agentConfigs.length > 0,
     missingConfigs: [],
   }),
+}));
+
+jest.mock('@/ui/components/ui/select', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const React = require('react');
+  const SelectContext = React.createContext({
+    value: '',
+    onValueChange: (_value: string) => {},
+  });
+
+  return {
+    Select: ({
+      value,
+      onValueChange,
+      children,
+    }: {
+      value: string;
+      onValueChange: (value: string) => void;
+      children: React.ReactNode;
+    }) => (
+      <SelectContext.Provider value={{ value, onValueChange }}>
+        <div>{children}</div>
+      </SelectContext.Provider>
+    ),
+    SelectTrigger: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+    SelectContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+    SelectValue: ({ placeholder }: { placeholder: string }) => {
+      const { value } = React.useContext(SelectContext);
+      return <span>{value || placeholder}</span>;
+    },
+    SelectItem: ({ value, children }: { value: string; children: React.ReactNode }) => {
+      const { onValueChange } = React.useContext(SelectContext);
+      return (
+        <button type="button" onClick={() => onValueChange(value)}>
+          {children}
+        </button>
+      );
+    },
+  };
+});
+
+jest.mock('@/ui/components/shared/ConfirmDialog', () => ({
+  ConfirmDialog: ({
+    open,
+    title,
+    description,
+    confirmText,
+    onOpenChange,
+    onConfirm,
+  }: {
+    open: boolean;
+    title: string;
+    description: string;
+    confirmText: string;
+    onOpenChange: (open: boolean) => void;
+    onConfirm: () => void;
+  }) =>
+    open ? (
+      <div data-testid="active-session-confirm-dialog">
+        <h2>{title}</h2>
+        <p>{description}</p>
+        <button type="button" onClick={() => onOpenChange(false)}>
+          Cancel
+        </button>
+        <button type="button" onClick={onConfirm}>
+          {confirmText}
+        </button>
+      </div>
+    ) : null,
 }));
 
 function createTestQueryClient() {
@@ -76,6 +159,15 @@ describe('PresetSelector', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockUseQuery.mockImplementation((options: { queryKey: unknown[] }) => {
+      if (options.queryKey[0] === 'project-presets') {
+        return { data: { presets: mockPresets, activePreset: null }, isLoading: false };
+      }
+      if (options.queryKey[0] === 'provider-configs-by-profile') {
+        return { data: new Map(), isLoading: false };
+      }
+      return { data: undefined, isLoading: false };
+    });
     mockFetch.mockResolvedValue({
       ok: true,
       json: () => Promise.resolve({ presets: mockPresets }),
@@ -84,9 +176,14 @@ describe('PresetSelector', () => {
 
   describe('rendering', () => {
     it('renders nothing when no presets available', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({ presets: [] }),
+      mockUseQuery.mockImplementation((options: { queryKey: unknown[] }) => {
+        if (options.queryKey[0] === 'project-presets') {
+          return { data: { presets: [], activePreset: null }, isLoading: false };
+        }
+        if (options.queryKey[0] === 'provider-configs-by-profile') {
+          return { data: new Map(), isLoading: false };
+        }
+        return { data: undefined, isLoading: false };
       });
 
       const { container } = renderWithQueryClient(<PresetSelector {...defaultProps} />);
@@ -96,9 +193,9 @@ describe('PresetSelector', () => {
       });
     });
 
-    it.skip('shows loading state while fetching presets', async () => {
-      // TODO: Fix loading state test
-    });
+    // TODO(test-strategy-overhaul): SKIPPED — loading state not captured due to immediate query resolution in test.
+    // Needs delayed query mock or Playwright for loading state verification.
+    it.skip('shows loading state while fetching presets', async () => {});
   });
 
   describe('callback handling', () => {
@@ -152,10 +249,75 @@ describe('PresetSelector', () => {
     });
   });
 
-  // Active session confirmation test skipped due to timing issues
   describe('active session confirmation', () => {
-    it.skip('shows confirmation when agents have active sessions', async () => {
-      // TODO: Fix timing issues
+    it('shows themed confirmation without native confirm when applying a preset to agents with active sessions', async () => {
+      const confirmSpy = jest.spyOn(window, 'confirm');
+      mockUseQuery.mockImplementation((options: { queryKey: unknown[] }) => {
+        if (options.queryKey[0] === 'project-presets') {
+          return { data: { presets: mockPresets, activePreset: 'minimal' }, isLoading: false };
+        }
+        if (options.queryKey[0] === 'provider-configs-by-profile') {
+          return { data: new Map(), isLoading: false };
+        }
+        return { data: undefined, isLoading: false };
+      });
+      mockFetch.mockImplementation((input: RequestInfo | URL) => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        if (url.endsWith('/presets')) {
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve({ presets: mockPresets, activePreset: 'minimal' }),
+          });
+        }
+        if (url.endsWith('/presets/apply')) {
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve({ applied: 1, warnings: [], agents: [] }),
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve([]),
+        });
+      });
+
+      renderWithQueryClient(
+        <PresetSelector
+          {...defaultProps}
+          agentPresence={{
+            ...mockAgentPresence,
+            'agent-1': { ...mockAgentPresence['agent-1'], online: true },
+          }}
+        />,
+      );
+
+      await waitFor(() => {
+        expect(screen.getAllByText('minimal').length).toBeGreaterThan(0);
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: /default/i }));
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: 'Apply' })).not.toBeDisabled();
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+
+      expect(await screen.findByText('Active sessions detected')).toBeInTheDocument();
+      expect(screen.getByText(/Coder/)).toBeInTheDocument();
+      expect(confirmSpy).not.toHaveBeenCalled();
+      expect(mockFetch).not.toHaveBeenCalledWith(
+        '/api/projects/project-123/presets/apply',
+        expect.anything(),
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      expect(screen.queryByTestId('active-session-confirm-dialog')).not.toBeInTheDocument();
+      expect(mockFetch).not.toHaveBeenCalledWith(
+        '/api/projects/project-123/presets/apply',
+        expect.anything(),
+      );
+
+      confirmSpy.mockRestore();
     });
   });
 });

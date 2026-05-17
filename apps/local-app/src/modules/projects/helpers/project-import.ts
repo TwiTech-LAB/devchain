@@ -138,6 +138,10 @@ interface ImportProjectDeps {
     deleteTeamsByProject: (projectId: string) => Promise<void>;
     deleteTeamsByIds: (ids: string[]) => Promise<void>;
   };
+  scheduledEpicsRefresh?: {
+    refreshScheduleWindow: () => void;
+  };
+  computeNextRunAt?: (cronExpression: string, timezone: string) => Date | null;
 }
 
 export async function importProjectWithHelper(
@@ -222,7 +226,27 @@ export async function importProjectWithHelper(
         input.teamOverrides,
         context.selectedProfilesByFamily.profileNameRemapMap,
       );
-      teamsImported = await createImportedTeams(input.projectId, teamsToImport, deps);
+      const teamsWithAvailableConfigs = pruneUnavailableTeamProfileSelections(
+        teamsToImport,
+        context.selectedProfilesByFamily.profilesToCreate,
+        profileIdMap,
+        configLookupMap,
+      );
+      teamsImported = await createImportedTeams(input.projectId, teamsWithAvailableConfigs, deps);
+    }
+
+    // Import scheduled epics (after agents and statuses are created)
+    let scheduledEpicsImported = 0;
+    if (context.payload.scheduledEpics?.length) {
+      scheduledEpicsImported = await createImportedScheduledEpics(
+        input.projectId,
+        context.payload.scheduledEpics,
+        {
+          agentNameToId: mappingResults.agentNameToId,
+          statusLabelToId: templateLabelToStatusId,
+        },
+        deps,
+      );
     }
 
     const epicResult = await remapEpicAgentAssignments(
@@ -267,6 +291,7 @@ export async function importProjectWithHelper(
       epicsRemapped: epicResult.epicsRemapped,
       epicsCleared: epicResult.epicsCleared,
       teamsImported,
+      scheduledEpicsImported,
     });
   } catch (error) {
     logger.error({ error, projectId: input.projectId }, 'Import failed');
@@ -321,16 +346,18 @@ async function prepareImportContext(
 }
 
 async function loadExistingProjectData(projectId: string, storage: StorageService) {
-  const [prompts, profiles, agents, statuses, watchers, subscribers] = await Promise.all([
-    storage.listPrompts({ projectId, limit: 10000, offset: 0 }),
-    storage.listAgentProfiles({ projectId, limit: 10000, offset: 0 }),
-    storage.listAgents(projectId, { limit: 10000, offset: 0 }),
-    storage.listStatuses(projectId, { limit: 10000, offset: 0 }),
-    storage.listWatchers(projectId),
-    storage.listSubscribers(projectId),
-  ]);
+  const [prompts, profiles, agents, statuses, watchers, subscribers, scheduledEpics] =
+    await Promise.all([
+      storage.listPrompts({ projectId, limit: 10000, offset: 0 }),
+      storage.listAgentProfiles({ projectId, limit: 10000, offset: 0 }),
+      storage.listAgents(projectId, { limit: 10000, offset: 0 }),
+      storage.listStatuses(projectId, { limit: 10000, offset: 0 }),
+      storage.listWatchers(projectId),
+      storage.listSubscribers(projectId),
+      storage.listScheduledEpics(projectId, { limit: 10000 }),
+    ]);
 
-  return { prompts, profiles, agents, statuses, watchers, subscribers };
+  return { prompts, profiles, agents, statuses, watchers, subscribers, scheduledEpics };
 }
 
 async function collectUnmatchedStatuses(
@@ -382,6 +409,7 @@ function buildDryRunResponse(context: ImportPreparation) {
         statuses: number;
         watchers: number;
         subscribers: number;
+        scheduledEpics: number;
       };
       toDelete: {
         prompts: number;
@@ -390,6 +418,7 @@ function buildDryRunResponse(context: ImportPreparation) {
         statuses: number;
         watchers: number;
         subscribers: number;
+        scheduledEpics: number;
       };
     };
   } = {
@@ -408,6 +437,7 @@ function buildDryRunResponse(context: ImportPreparation) {
         statuses: context.payload.statuses.length,
         watchers: context.payload.watchers.length,
         subscribers: context.payload.subscribers.length,
+        scheduledEpics: context.payload.scheduledEpics?.length ?? 0,
       },
       toDelete: {
         prompts: context.existing.prompts.total,
@@ -416,6 +446,7 @@ function buildDryRunResponse(context: ImportPreparation) {
         statuses: context.existing.statuses.total,
         watchers: context.existing.watchers.length,
         subscribers: context.existing.subscribers.length,
+        scheduledEpics: context.existing.scheduledEpics?.total ?? 0,
       },
     },
   };
@@ -515,6 +546,9 @@ async function clearExistingProjectData(
   }
   for (const subscriber of existing.subscribers) {
     await deps.storage.deleteSubscriber(subscriber.id);
+  }
+  for (const schedule of existing.scheduledEpics.items) {
+    await deps.storage.deleteScheduledEpic(schedule.id);
   }
 
   await deps.settings.updateSettings({
@@ -1370,6 +1404,189 @@ export async function createImportedTeams(
   }
 }
 
+export function pruneUnavailableTeamProfileSelections<
+  TTeam extends {
+    name: string;
+    profileNames?: string[];
+    profileSelections?: Array<{ profileName: string; configNames: string[] }>;
+  },
+>(
+  exportedTeams: TTeam[],
+  profiles: Array<{
+    id?: string;
+    name: string;
+    providerConfigs?: Array<{ name: string }>;
+  }>,
+  profileIdMap: Record<string, string>,
+  configLookupMap: Map<string, string>,
+): TTeam[] {
+  const profileNameToNewId = new Map<string, string>();
+  const knownConfigNamesByNewProfileId = new Map<string, Set<string>>();
+
+  for (const profile of profiles) {
+    if (!profile.id) continue;
+    const newProfileId = profileIdMap[profile.id];
+    if (!newProfileId) continue;
+
+    profileNameToNewId.set(profile.name.trim().toLowerCase(), newProfileId);
+    knownConfigNamesByNewProfileId.set(
+      newProfileId,
+      new Set((profile.providerConfigs ?? []).map((config) => config.name.trim().toLowerCase())),
+    );
+  }
+
+  return exportedTeams.map((team) => {
+    if (!team.profileSelections || team.profileSelections.length === 0) {
+      return team;
+    }
+
+    const profileSelections: Array<{ profileName: string; configNames: string[] }> = [];
+    const profilesWithNoAvailableConfigs = new Set<string>();
+    for (const selection of team.profileSelections) {
+      if (selection.configNames.length === 0) {
+        profileSelections.push(selection);
+        continue;
+      }
+
+      const newProfileId = profileNameToNewId.get(selection.profileName.trim().toLowerCase());
+      if (!newProfileId) {
+        profileSelections.push(selection);
+        continue;
+      }
+
+      const knownConfigNames = knownConfigNamesByNewProfileId.get(newProfileId) ?? new Set();
+      const availableConfigNames: string[] = [];
+      for (const configName of selection.configNames) {
+        const lookupKey = buildProviderConfigLookupKey(newProfileId, configName);
+        if (configLookupMap.has(lookupKey)) {
+          availableConfigNames.push(configName);
+          continue;
+        }
+
+        if (knownConfigNames.has(configName.trim().toLowerCase())) {
+          logger.warn(
+            {
+              teamName: team.name,
+              profileName: selection.profileName,
+              configName,
+            },
+            'Team profile config unavailable after provider filtering; skipping config',
+          );
+          continue;
+        }
+
+        availableConfigNames.push(configName);
+      }
+
+      if (availableConfigNames.length > 0) {
+        profileSelections.push({ ...selection, configNames: availableConfigNames });
+      } else {
+        profilesWithNoAvailableConfigs.add(selection.profileName.trim().toLowerCase());
+        logger.warn(
+          {
+            teamName: team.name,
+            profileName: selection.profileName,
+          },
+          'Team profile selection has no available configs after provider filtering; skipping selection',
+        );
+      }
+    }
+
+    const profileNames =
+      profilesWithNoAvailableConfigs.size > 0
+        ? team.profileNames?.filter(
+            (profileName) => !profilesWithNoAvailableConfigs.has(profileName.trim().toLowerCase()),
+          )
+        : team.profileNames;
+
+    const nextTeam =
+      profileNames !== team.profileNames
+        ? ({
+            ...team,
+            ...(profileNames !== undefined ? { profileNames } : {}),
+          } as TTeam)
+        : team;
+
+    if (profileSelections.length > 0) {
+      return { ...nextTeam, profileSelections };
+    }
+
+    const { profileSelections: _profileSelections, ...teamWithoutSelections } = nextTeam;
+    return teamWithoutSelections as TTeam;
+  });
+}
+
+export type ScheduledEpicImportDeps = Pick<
+  ImportProjectDeps,
+  'storage' | 'scheduledEpicsRefresh' | 'computeNextRunAt'
+>;
+
+export async function createImportedScheduledEpics(
+  projectId: string,
+  scheduledEpics: ParsedTemplatePayload['scheduledEpics'],
+  maps: {
+    agentNameToId: Map<string, string>;
+    statusLabelToId: Map<string, string>;
+  },
+  deps: ScheduledEpicImportDeps,
+): Promise<number> {
+  let created = 0;
+
+  // Build epic title→id map for resolving templateParentEpicTitle
+  const epicTitleToId = new Map<string, string>();
+  const { items: existingEpics } = await deps.storage.listEpics(projectId, {
+    limit: 100000,
+    offset: 0,
+  });
+  for (const epic of existingEpics) {
+    epicTitleToId.set(epic.title.trim().toLowerCase(), epic.id);
+  }
+
+  for (const schedule of scheduledEpics) {
+    const templateStatusId = schedule.templateStatusLabel
+      ? (maps.statusLabelToId.get(schedule.templateStatusLabel.trim().toLowerCase()) ?? null)
+      : null;
+
+    const templateAgentId = schedule.templateAgentName
+      ? (maps.agentNameToId.get(schedule.templateAgentName.trim().toLowerCase()) ?? null)
+      : null;
+
+    const templateParentEpicId = schedule.templateParentEpicTitle
+      ? (epicTitleToId.get(schedule.templateParentEpicTitle.trim().toLowerCase()) ?? null)
+      : null;
+
+    const nextRunAt = deps.computeNextRunAt
+      ? deps.computeNextRunAt(schedule.cronExpression, schedule.timezone)
+      : null;
+
+    await deps.storage.createScheduledEpic({
+      projectId,
+      name: schedule.name,
+      cronExpression: schedule.cronExpression,
+      timezone: schedule.timezone,
+      enabled: schedule.enabled,
+      titleTemplate: schedule.titleTemplate,
+      descriptionTemplate: schedule.descriptionTemplate ?? null,
+      templateStatusId,
+      templateParentEpicId,
+      templateAgentId,
+      templateTags: schedule.templateTags,
+      allowOverlap: schedule.allowOverlap,
+      missedRunPolicy: schedule.missedRunPolicy,
+      nextRunAt: nextRunAt?.toISOString() ?? null,
+    });
+
+    created++;
+  }
+
+  if (created > 0 && deps.scheduledEpicsRefresh) {
+    deps.scheduledEpicsRefresh.refreshScheduleWindow();
+  }
+
+  logger.info({ projectId, created }, 'Scheduled epics imported');
+  return created;
+}
+
 function buildImportSuccessResponse(args: {
   payload: ParsedTemplatePayload;
   existing: ExistingProjectData;
@@ -1384,6 +1601,7 @@ function buildImportSuccessResponse(args: {
   epicsRemapped: number;
   epicsCleared: number;
   teamsImported?: number;
+  scheduledEpicsImported?: number;
 }) {
   return {
     success: true,
@@ -1399,6 +1617,7 @@ function buildImportSuccessResponse(args: {
         watchers: args.payload.watchers.length,
         subscribers: args.payload.subscribers.length,
         teams: args.teamsImported ?? 0,
+        scheduledEpics: args.scheduledEpicsImported ?? 0,
       },
       deleted: {
         prompts: args.existing.prompts.total,
@@ -1407,6 +1626,7 @@ function buildImportSuccessResponse(args: {
         statuses: 0,
         watchers: args.existing.watchers.length,
         subscribers: args.existing.subscribers.length,
+        scheduledEpics: args.existing.scheduledEpics?.total ?? 0,
       },
       epics: {
         preserved: args.epicsTotal,

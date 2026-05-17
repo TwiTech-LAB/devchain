@@ -21,6 +21,12 @@ describe('ClaudeAdapter', () => {
     });
   });
 
+  describe('terminalOutputBehavior', () => {
+    it('uses normalized LF handling for live terminal output', () => {
+      expect(adapter.terminalOutputBehavior).toEqual({ rawLineEndings: false });
+    });
+  });
+
   describe('addMcpServer', () => {
     it('builds command with default alias', () => {
       const args = adapter.addMcpServer({

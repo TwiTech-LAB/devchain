@@ -89,7 +89,7 @@ devchain start --project /path/to/your/project
 # Run in foreground with logs
 devchain start --foreground
 
-# Bind to all interfaces for VM/remote browser access (prints loud security warning)
+# Bind to all interfaces for VM/remote browser access
 devchain start --host 0.0.0.0
 
 # Stop the server

@@ -61,6 +61,10 @@ jest.mock('./terminal-dock', () => ({
   OPEN_TERMINAL_DOCK_EVENT: 'devchain:terminal-dock:open',
 }));
 
+jest.mock('./cloud/CloudStatusIndicator', () => ({
+  CloudStatusIndicator: () => null,
+}));
+
 jest.mock('./shared/AutoCompactEnableModal', () => ({
   AutoCompactEnableModal: (props: {
     open: boolean;

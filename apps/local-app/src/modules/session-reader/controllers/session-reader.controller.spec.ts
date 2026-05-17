@@ -10,8 +10,9 @@ import type { UnifiedChunk } from '../dtos/unified-chunk.types';
 import type {
   SessionReaderService,
   TranscriptSummary,
-  ChunkedTranscriptResponse,
-  TranscriptChunk,
+  UnifiedChunkedResponse,
+  TranscriptIndex,
+  TranscriptTimingData,
 } from '../services/session-reader.service';
 
 // ---------------------------------------------------------------------------
@@ -56,20 +57,66 @@ function makeMetrics(overrides?: Partial<UnifiedMetrics>): UnifiedMetrics {
   };
 }
 
+function makeAiChunk(id: string, messages: UnifiedMessage[]): UnifiedChunk {
+  return {
+    id,
+    type: 'ai',
+    startTime: messages[0]?.timestamp ?? new Date('2026-01-01T10:00:00.000Z'),
+    endTime: messages[messages.length - 1]?.timestamp ?? new Date('2026-01-01T10:00:00.000Z'),
+    messages,
+    metrics: {
+      inputTokens: 100,
+      outputTokens: 50,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      totalTokens: 150,
+      messageCount: messages.length,
+      durationMs: 0,
+      costUsd: 0,
+    },
+    semanticSteps: [
+      {
+        id: `step-${id}`,
+        type: 'output',
+        startTime: messages[0]?.timestamp ?? new Date('2026-01-01T10:00:00.000Z'),
+        durationMs: 0,
+        content: { outputText: 'test output' },
+        context: 'main',
+      },
+    ],
+    turns: [],
+  };
+}
+
+const DEFAULT_TIMING: TranscriptTimingData = {
+  resolveMs: 1,
+  parseOrCacheHitMs: 10,
+  buildChunksMs: 2,
+  applyToolResultTruncationMs: 0.5,
+  cacheHit: false,
+  fileSizeBytes: 1024,
+  fileMtimeMs: 1700000000000,
+  providerName: 'claude',
+};
+
 const mockService: jest.Mocked<
   Pick<
     SessionReaderService,
     | 'getTranscript'
+    | 'getTranscriptWithTimings'
     | 'getTranscriptSummary'
-    | 'getTranscriptChunks'
-    | 'getTranscriptChunk'
+    | 'getUnifiedTranscriptChunks'
+    | 'getUnifiedTranscriptChunk'
+    | 'getTranscriptIndex'
     | 'getToolResult'
   >
 > = {
   getTranscript: jest.fn(),
+  getTranscriptWithTimings: jest.fn(),
   getTranscriptSummary: jest.fn(),
-  getTranscriptChunks: jest.fn(),
-  getTranscriptChunk: jest.fn(),
+  getUnifiedTranscriptChunks: jest.fn(),
+  getUnifiedTranscriptChunk: jest.fn(),
+  getTranscriptIndex: jest.fn(),
   getToolResult: jest.fn(),
 };
 
@@ -152,7 +199,10 @@ describe('SessionReaderController', () => {
         metrics: makeMetrics(),
         isOngoing: false,
       };
-      mockService.getTranscript.mockResolvedValue(session);
+      mockService.getTranscriptWithTimings.mockResolvedValue({
+        session,
+        timing: DEFAULT_TIMING,
+      });
 
       const result = await controller.getTranscript(VALID_UUID);
 
@@ -163,13 +213,9 @@ describe('SessionReaderController', () => {
       expect(result!.chunks?.[0].endTime).toBe('2026-01-01T10:00:05.000Z');
       expect(result!.chunks?.[0].messages[0].timestamp).toBe('2026-01-01T10:00:05.000Z');
       expect(result!.chunks?.[0].semanticSteps[0].startTime).toBe('2026-01-01T10:00:05.000Z');
-      expect(result!.chunks?.[0].turns?.[0].timestamp).toBe('2026-01-01T10:00:05.000Z');
-      expect(result!.chunks?.[0].turns?.[0].steps[0].startTime).toBe('2026-01-01T10:00:05.000Z');
       expect(typeof result!.chunks?.[0].startTime).toBe('string');
       expect(typeof result!.chunks?.[0].semanticSteps[0].startTime).toBe('string');
-      expect(typeof result!.chunks?.[0].turns?.[0].timestamp).toBe('string');
-      expect(typeof result!.chunks?.[0].turns?.[0].steps[0].startTime).toBe('string');
-      expect(mockService.getTranscript).toHaveBeenCalledWith(VALID_UUID, {
+      expect(mockService.getTranscriptWithTimings).toHaveBeenCalledWith(VALID_UUID, {
         maxToolResultLength: 2000,
       });
     });
@@ -183,11 +229,14 @@ describe('SessionReaderController', () => {
         metrics: makeMetrics(),
         isOngoing: false,
       };
-      mockService.getTranscript.mockResolvedValue(session);
+      mockService.getTranscriptWithTimings.mockResolvedValue({
+        session,
+        timing: DEFAULT_TIMING,
+      });
 
       await controller.getTranscript(VALID_UUID, '4096');
 
-      expect(mockService.getTranscript).toHaveBeenCalledWith(VALID_UUID, {
+      expect(mockService.getTranscriptWithTimings).toHaveBeenCalledWith(VALID_UUID, {
         maxToolResultLength: 4096,
       });
     });
@@ -203,13 +252,15 @@ describe('SessionReaderController', () => {
     });
 
     it('should throw NotFoundException when session not found', async () => {
-      mockService.getTranscript.mockRejectedValue(new NotFoundError('Session', VALID_UUID));
+      mockService.getTranscriptWithTimings.mockRejectedValue(
+        new NotFoundError('Session', VALID_UUID),
+      );
 
       await expect(controller.getTranscript(VALID_UUID)).rejects.toThrow(NotFoundException);
     });
 
     it('should throw BadRequestException for ValidationError', async () => {
-      mockService.getTranscript.mockRejectedValue(
+      mockService.getTranscriptWithTimings.mockRejectedValue(
         new ValidationError('Session does not have a transcript path'),
       );
 
@@ -226,7 +277,10 @@ describe('SessionReaderController', () => {
         isOngoing: false,
         warnings: ['Skipped 2 oversized lines (>10MB each)'],
       };
-      mockService.getTranscript.mockResolvedValue(session);
+      mockService.getTranscriptWithTimings.mockResolvedValue({
+        session,
+        timing: DEFAULT_TIMING,
+      });
 
       const result = await controller.getTranscript(VALID_UUID);
 
@@ -243,7 +297,10 @@ describe('SessionReaderController', () => {
         metrics: makeMetrics(),
         isOngoing: false,
       };
-      mockService.getTranscript.mockResolvedValue(session);
+      mockService.getTranscriptWithTimings.mockResolvedValue({
+        session,
+        timing: DEFAULT_TIMING,
+      });
 
       const result = await controller.getTranscript(VALID_UUID);
 
@@ -252,7 +309,7 @@ describe('SessionReaderController', () => {
     });
 
     it('should throw UnprocessableEntityException for file-access category errors', async () => {
-      mockService.getTranscript.mockRejectedValue(
+      mockService.getTranscriptWithTimings.mockRejectedValue(
         new ValidationError('Transcript file does not exist or is not accessible', {
           category: 'file-access',
           path: '/some/path',
@@ -265,11 +322,44 @@ describe('SessionReaderController', () => {
     });
 
     it('should throw BadRequestException for ValidationError without file-access category', async () => {
-      mockService.getTranscript.mockRejectedValue(
+      mockService.getTranscriptWithTimings.mockRejectedValue(
         new ValidationError('Some other validation issue', { someDetail: true }),
       );
 
       await expect(controller.getTranscript(VALID_UUID)).rejects.toThrow(BadRequestException);
+    });
+
+    it('should invalidate DTO cache when contextWindowTokens changes (1M toggle)', async () => {
+      const session200k: UnifiedSession = {
+        id: 'test',
+        providerName: 'claude',
+        filePath: '/some/path.jsonl',
+        messages: [makeMessage('m1', 'user', '2026-01-01T10:00:00.000Z')],
+        metrics: makeMetrics({ contextWindowTokens: 200_000 }),
+        isOngoing: false,
+      };
+      const session1M: UnifiedSession = {
+        id: 'test',
+        providerName: 'claude',
+        filePath: '/some/path.jsonl',
+        messages: [makeMessage('m1', 'user', '2026-01-01T10:00:00.000Z')],
+        metrics: makeMetrics({ contextWindowTokens: 1_000_000 }),
+        isOngoing: false,
+      };
+
+      mockService.getTranscriptWithTimings.mockResolvedValueOnce({
+        session: session200k,
+        timing: DEFAULT_TIMING,
+      });
+      const result1 = await controller.getTranscript(VALID_UUID);
+      expect(result1!.metrics.contextWindowTokens).toBe(200_000);
+
+      mockService.getTranscriptWithTimings.mockResolvedValueOnce({
+        session: session1M,
+        timing: DEFAULT_TIMING,
+      });
+      const result2 = await controller.getTranscript(VALID_UUID);
+      expect(result2!.metrics.contextWindowTokens).toBe(1_000_000);
     });
   });
 
@@ -327,68 +417,116 @@ describe('SessionReaderController', () => {
     });
   });
 
-  describe('GET /api/sessions/:id/transcript/chunks', () => {
-    it('should return paginated chunks with ISO timestamps', async () => {
-      const response: ChunkedTranscriptResponse = {
-        chunks: [
-          {
-            chunkId: 'chunk-0',
-            index: 0,
-            messages: [makeMessage('m1', 'user', '2026-01-01T10:00:00.000Z')],
-            messageCount: 1,
-            startTimestamp: '2026-01-01T10:00:00.000Z',
-            endTimestamp: '2026-01-01T10:00:00.000Z',
-          },
-        ],
-        nextCursor: '1',
-        hasMore: true,
-        totalChunks: 3,
+  describe('GET /api/sessions/:id/transcript/index', () => {
+    it('should return transcript index', async () => {
+      const index: TranscriptIndex = {
+        totals: { messageCount: 10, chunkCount: 3 },
+        chunkIds: ['chunk-0', 'chunk-1', 'chunk-2'],
+        latestOutputPreview: 'test output',
+        providerName: 'claude',
+        isOngoing: false,
       };
-      mockService.getTranscriptChunks.mockResolvedValue(response);
+      mockService.getTranscriptIndex.mockResolvedValue(index);
 
-      const result = await controller.getTranscriptChunks(VALID_UUID, undefined, undefined);
+      const result = await controller.getTranscriptIndex(VALID_UUID);
+
+      expect(result).toBe(index);
+      expect(mockService.getTranscriptIndex).toHaveBeenCalledWith(VALID_UUID);
+    });
+
+    it('should throw BadRequestException for invalid UUID', async () => {
+      await expect(controller.getTranscriptIndex('bad')).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw NotFoundException when session not found', async () => {
+      mockService.getTranscriptIndex.mockRejectedValue(new NotFoundError('Session', VALID_UUID));
+
+      await expect(controller.getTranscriptIndex(VALID_UUID)).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('GET /api/sessions/:id/transcript/chunks', () => {
+    it('should return paginated UnifiedChunks with serialized dates', async () => {
+      const msg = makeMessage('m1', 'assistant', '2026-01-01T10:00:00.000Z');
+      const response: UnifiedChunkedResponse = {
+        chunks: [makeAiChunk('chunk-0', [msg])],
+        nextCursor: 'chunk-1',
+        prevCursor: null,
+        totalCount: 3,
+      };
+      mockService.getUnifiedTranscriptChunks.mockResolvedValue(response);
+
+      const result = await controller.getTranscriptChunks(VALID_UUID);
 
       expect(result).toBeDefined();
       expect(result!.chunks[0].messages[0].timestamp).toBe('2026-01-01T10:00:00.000Z');
-      expect(result!.hasMore).toBe(true);
+      expect(result!.chunks[0].startTime).toBe('2026-01-01T10:00:00.000Z');
+      expect(result!.nextCursor).toBe('chunk-1');
+      expect(result!.prevCursor).toBeNull();
+      expect(result!.totalCount).toBe(3);
     });
 
-    it('should pass cursor and limit to service', async () => {
-      mockService.getTranscriptChunks.mockResolvedValue({
+    it('should pass cursor, limit, and direction to service', async () => {
+      mockService.getUnifiedTranscriptChunks.mockResolvedValue({
         chunks: [],
         nextCursor: null,
-        hasMore: false,
-        totalChunks: 0,
+        prevCursor: null,
+        totalCount: 0,
       });
 
-      await controller.getTranscriptChunks(VALID_UUID, '5', '10');
+      await controller.getTranscriptChunks(VALID_UUID, 'chunk-5', '10', 'backward');
 
-      expect(mockService.getTranscriptChunks).toHaveBeenCalledWith(VALID_UUID, '5', 10);
+      expect(mockService.getUnifiedTranscriptChunks).toHaveBeenCalledWith(
+        VALID_UUID,
+        'chunk-5',
+        10,
+        'backward',
+      );
+    });
+
+    it('should default direction to forward', async () => {
+      mockService.getUnifiedTranscriptChunks.mockResolvedValue({
+        chunks: [],
+        nextCursor: null,
+        prevCursor: null,
+        totalCount: 0,
+      });
+
+      await controller.getTranscriptChunks(VALID_UUID);
+
+      expect(mockService.getUnifiedTranscriptChunks).toHaveBeenCalledWith(
+        VALID_UUID,
+        undefined,
+        undefined,
+        'forward',
+      );
     });
 
     it('should throw BadRequestException for invalid cursor format', async () => {
-      await expect(controller.getTranscriptChunks(VALID_UUID, 'abc', undefined)).rejects.toThrow(
+      await expect(controller.getTranscriptChunks(VALID_UUID, 'abc')).rejects.toThrow(
         BadRequestException,
       );
+    });
+
+    it('should throw BadRequestException for invalid direction', async () => {
+      await expect(
+        controller.getTranscriptChunks(VALID_UUID, undefined, undefined, 'sideways'),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 
   describe('GET /api/sessions/:id/transcript/chunks/:chunkId', () => {
-    it('should return a single chunk with ISO timestamps', async () => {
-      const chunk: TranscriptChunk = {
-        chunkId: 'chunk-0',
-        index: 0,
-        messages: [makeMessage('m1', 'user', '2026-01-01T10:00:00.000Z')],
-        messageCount: 1,
-        startTimestamp: '2026-01-01T10:00:00.000Z',
-        endTimestamp: '2026-01-01T10:00:00.000Z',
-      };
-      mockService.getTranscriptChunk.mockResolvedValue(chunk);
+    it('should return a single UnifiedChunk with serialized dates', async () => {
+      const msg = makeMessage('m1', 'assistant', '2026-01-01T10:00:05.000Z');
+      const chunk = makeAiChunk('chunk-0', [msg]);
+      mockService.getUnifiedTranscriptChunk.mockResolvedValue(chunk);
 
       const result = await controller.getTranscriptChunk(VALID_UUID, 'chunk-0');
 
       expect(result).toBeDefined();
-      expect(result!.messages[0].timestamp).toBe('2026-01-01T10:00:00.000Z');
+      expect(result!.messages[0].timestamp).toBe('2026-01-01T10:00:05.000Z');
+      expect(result!.startTime).toBe('2026-01-01T10:00:05.000Z');
+      expect(result!.semanticSteps[0].startTime).toBe('2026-01-01T10:00:05.000Z');
     });
 
     it('should throw BadRequestException for invalid chunkId format', async () => {
@@ -398,79 +536,13 @@ describe('SessionReaderController', () => {
     });
 
     it('should throw NotFoundException for missing chunk', async () => {
-      mockService.getTranscriptChunk.mockRejectedValue(
+      mockService.getUnifiedTranscriptChunk.mockRejectedValue(
         new NotFoundError('TranscriptChunk', 'chunk-99'),
       );
 
       await expect(controller.getTranscriptChunk(VALID_UUID, 'chunk-99')).rejects.toThrow(
         NotFoundException,
       );
-    });
-
-    it('should pass valid limit to service', async () => {
-      const chunk: TranscriptChunk = {
-        chunkId: 'chunk-0',
-        index: 0,
-        messages: [makeMessage('m1', 'user', '2026-01-01T10:00:00.000Z')],
-        messageCount: 1,
-        startTimestamp: '2026-01-01T10:00:00.000Z',
-        endTimestamp: '2026-01-01T10:00:00.000Z',
-      };
-      mockService.getTranscriptChunk.mockResolvedValue(chunk);
-
-      await controller.getTranscriptChunk(VALID_UUID, 'chunk-0', '50');
-
-      expect(mockService.getTranscriptChunk).toHaveBeenCalledWith(VALID_UUID, 'chunk-0', 50);
-    });
-
-    it('should pass undefined limit when not provided', async () => {
-      const chunk: TranscriptChunk = {
-        chunkId: 'chunk-0',
-        index: 0,
-        messages: [],
-        messageCount: 0,
-        startTimestamp: null,
-        endTimestamp: null,
-      };
-      mockService.getTranscriptChunk.mockResolvedValue(chunk);
-
-      await controller.getTranscriptChunk(VALID_UUID, 'chunk-0');
-
-      expect(mockService.getTranscriptChunk).toHaveBeenCalledWith(VALID_UUID, 'chunk-0', undefined);
-    });
-
-    it('should throw BadRequestException for non-numeric limit', async () => {
-      await expect(controller.getTranscriptChunk(VALID_UUID, 'chunk-0', 'abc')).rejects.toThrow(
-        BadRequestException,
-      );
-    });
-
-    it('should throw BadRequestException for limit=0', async () => {
-      await expect(controller.getTranscriptChunk(VALID_UUID, 'chunk-0', '0')).rejects.toThrow(
-        BadRequestException,
-      );
-    });
-
-    it('should throw BadRequestException for limit exceeding max', async () => {
-      await expect(controller.getTranscriptChunk(VALID_UUID, 'chunk-0', '101')).rejects.toThrow(
-        BadRequestException,
-      );
-    });
-
-    it('should treat empty string limit as undefined (default)', async () => {
-      const chunk: TranscriptChunk = {
-        chunkId: 'chunk-0',
-        index: 0,
-        messages: [],
-        messageCount: 0,
-        startTimestamp: null,
-        endTimestamp: null,
-      };
-      mockService.getTranscriptChunk.mockResolvedValue(chunk);
-
-      await controller.getTranscriptChunk(VALID_UUID, 'chunk-0', '');
-
-      expect(mockService.getTranscriptChunk).toHaveBeenCalledWith(VALID_UUID, 'chunk-0', undefined);
     });
   });
 
@@ -494,19 +566,20 @@ describe('SessionReaderController', () => {
     });
 
     it('should treat empty string limit as undefined (default)', async () => {
-      mockService.getTranscriptChunks.mockResolvedValue({
+      mockService.getUnifiedTranscriptChunks.mockResolvedValue({
         chunks: [],
         nextCursor: null,
-        hasMore: false,
-        totalChunks: 0,
+        prevCursor: null,
+        totalCount: 0,
       });
 
       await controller.getTranscriptChunks(VALID_UUID, undefined, '');
 
-      expect(mockService.getTranscriptChunks).toHaveBeenCalledWith(
+      expect(mockService.getUnifiedTranscriptChunks).toHaveBeenCalledWith(
         VALID_UUID,
         undefined,
         undefined,
+        'forward',
       );
     });
   });

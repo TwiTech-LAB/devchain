@@ -1,7 +1,7 @@
 import { GuestHealthService } from './guest-health.service';
 import { GuestsService } from './guests.service';
 import { StorageService } from '../../storage/interfaces/storage.interface';
-import { TmuxService } from '../../terminal/services/tmux.service';
+import { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
 import { EventsService } from '../../events/services/events.service';
 import { Guest } from '../../storage/models/domain.models';
 
@@ -11,7 +11,7 @@ jest.useFakeTimers();
 describe('GuestHealthService', () => {
   let healthService: GuestHealthService;
   let mockStorage: jest.Mocked<Partial<StorageService>>;
-  let mockTmuxService: jest.Mocked<Partial<TmuxService>>;
+  let mockTerminalIO: jest.Mocked<Partial<TerminalIOService>>;
   let mockEventsService: jest.Mocked<Partial<EventsService>>;
   let mockGuestsService: jest.Mocked<Partial<GuestsService>>;
 
@@ -30,8 +30,8 @@ describe('GuestHealthService', () => {
       listAllGuests: jest.fn(),
     };
 
-    mockTmuxService = {
-      hasSession: jest.fn(),
+    mockTerminalIO = {
+      sessionExists: jest.fn(),
     };
 
     mockEventsService = {
@@ -47,7 +47,7 @@ describe('GuestHealthService', () => {
 
     healthService = new GuestHealthService(
       mockStorage as StorageService,
-      mockTmuxService as TmuxService,
+      mockTerminalIO as unknown as TerminalIOService,
       mockEventsService as EventsService,
       mockGuestsService as GuestsService,
     );
@@ -81,17 +81,17 @@ describe('GuestHealthService', () => {
 
     it('should resume monitoring for existing guests with alive sessions', async () => {
       mockStorage.listAllGuests!.mockResolvedValueOnce([mockGuest]);
-      mockTmuxService.hasSession!.mockResolvedValueOnce(true);
+      mockTerminalIO.sessionExists!.mockResolvedValueOnce(true);
 
       await healthService.onModuleInit();
 
       // Verify monitoring was started (interval was set)
-      expect(mockTmuxService.hasSession).toHaveBeenCalledWith('tmux-session-123');
+      expect(mockTerminalIO.sessionExists).toHaveBeenCalledWith({ name: 'tmux-session-123' });
     });
 
     it('should clean up guests with dead sessions on startup', async () => {
       mockStorage.listAllGuests!.mockResolvedValueOnce([mockGuest]);
-      mockTmuxService.hasSession!.mockResolvedValueOnce(false);
+      mockTerminalIO.sessionExists!.mockResolvedValueOnce(false);
       mockGuestsService.deleteGuest!.mockResolvedValueOnce(undefined);
       mockEventsService.publish!.mockResolvedValueOnce(undefined);
 
@@ -111,7 +111,7 @@ describe('GuestHealthService', () => {
   describe('onModuleDestroy', () => {
     it('should clear all health check intervals', async () => {
       // Start monitoring for a guest
-      mockTmuxService.hasSession!.mockResolvedValue(true);
+      mockTerminalIO.sessionExists!.mockResolvedValue(true);
       healthService.startMonitoring(mockGuest);
 
       // Destroy module
@@ -120,13 +120,13 @@ describe('GuestHealthService', () => {
       // Verify interval was cleared by checking that advancing timers does nothing
       jest.advanceTimersByTime(60000);
       // hasSession should only have been called during startMonitoring setup, not from interval
-      expect(mockTmuxService.hasSession).not.toHaveBeenCalled();
+      expect(mockTerminalIO.sessionExists).not.toHaveBeenCalled();
     });
   });
 
   describe('startMonitoring', () => {
     it('should start periodic health checks', async () => {
-      mockTmuxService.hasSession!.mockResolvedValue(true);
+      mockTerminalIO.sessionExists!.mockResolvedValue(true);
       mockGuestsService.updateGuestLastSeen!.mockResolvedValue(mockGuest);
 
       healthService.startMonitoring(mockGuest);
@@ -137,7 +137,7 @@ describe('GuestHealthService', () => {
       // Wait for async operations
       await Promise.resolve();
 
-      expect(mockTmuxService.hasSession).toHaveBeenCalledWith('tmux-session-123');
+      expect(mockTerminalIO.sessionExists).toHaveBeenCalledWith({ name: 'tmux-session-123' });
     });
 
     it('should stop existing monitoring before starting new one', () => {
@@ -156,7 +156,7 @@ describe('GuestHealthService', () => {
 
       // Verify interval was cleared
       jest.advanceTimersByTime(60000);
-      expect(mockTmuxService.hasSession).not.toHaveBeenCalled();
+      expect(mockTerminalIO.sessionExists).not.toHaveBeenCalled();
     });
 
     it('should handle stopping non-existent monitoring gracefully', () => {
@@ -166,7 +166,7 @@ describe('GuestHealthService', () => {
 
   describe('health check behavior', () => {
     it('should update lastSeen when tmux session is alive', async () => {
-      mockTmuxService.hasSession!.mockResolvedValue(true);
+      mockTerminalIO.sessionExists!.mockResolvedValue(true);
       mockGuestsService.updateGuestLastSeen!.mockResolvedValue(mockGuest);
 
       healthService.startMonitoring(mockGuest);
@@ -182,7 +182,7 @@ describe('GuestHealthService', () => {
     });
 
     it('should clean up guest when tmux session dies', async () => {
-      mockTmuxService.hasSession!.mockResolvedValueOnce(false);
+      mockTerminalIO.sessionExists!.mockResolvedValueOnce(false);
       mockGuestsService.deleteGuest!.mockResolvedValueOnce(undefined);
       mockEventsService.publish!.mockResolvedValueOnce(undefined);
 

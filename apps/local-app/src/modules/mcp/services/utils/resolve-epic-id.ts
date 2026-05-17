@@ -1,11 +1,11 @@
 import { z } from 'zod';
-import type { StorageService } from '../../../storage/interfaces/storage.interface';
+import type { EpicStorage } from '../../../storage/interfaces/storage.interface';
 import type { McpResponse } from '../../dtos/mcp.dto';
 
 const uuidCheck = z.string().uuid();
 
 export async function resolveEpicId(
-  storage: StorageService,
+  storage: EpicStorage,
   projectId: string,
   idOrPrefix: string,
 ): Promise<McpResponse> {

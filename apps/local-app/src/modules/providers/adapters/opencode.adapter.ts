@@ -1,19 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import {
+import type {
   ProviderAdapter,
   AddMcpServerOptions,
   McpServerEntry,
   BuildLaunchArgsInput,
 } from './provider-adapter.interface';
 
-/**
- * OpenCode provider adapter
- *
- * Implements MCP command building and output parsing for the OpenCode CLI.
- * OpenCode manages MCP via project config file (opencode.json), not CLI commands.
- * CLI methods return safe fallback commands; actual MCP management is handled
- * by the registration service's config-file mode.
- */
 @Injectable()
 export class OpencodeAdapter implements ProviderAdapter {
   readonly providerName = 'opencode';

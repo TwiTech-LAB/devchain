@@ -64,6 +64,15 @@ export const providers = sqliteTable('providers', {
   updatedAt: text('updated_at').notNull(),
 });
 
+// Provider Probe Proofs (persisted 1M context capability proof per provider)
+export const providerProbeProofs = sqliteTable('provider_probe_proofs', {
+  providerId: text('provider_id')
+    .primaryKey()
+    .references(() => providers.id, { onDelete: 'cascade' }),
+  binPath: text('bin_path').notNull(),
+  recordedAt: integer('recorded_at').notNull(), // epoch ms
+});
+
 // Provider Models (supported model variants per provider)
 export const providerModels = sqliteTable(
   'provider_models',
@@ -208,6 +217,93 @@ export const epics = sqliteTable(
       onDelete: 'set null',
       name: 'epics_agent_id_fk',
     })),
+  }),
+);
+
+// Scheduled Epic templates.
+// Nullable template references use `on delete set null` because schedules should survive
+// deletion of optional defaults. Generated epics still require epics.statusId to be
+// non-null, so services must validate/choose a concrete status when materializing a run.
+export const scheduledEpics = sqliteTable(
+  'scheduled_epics',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    cronExpression: text('cron_expression').notNull(),
+    timezone: text('timezone').notNull(),
+    enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+    titleTemplate: text('title_template').notNull(),
+    descriptionTemplate: text('description_template'),
+    templateStatusId: text('template_status_id').references(() => statuses.id, {
+      onDelete: 'set null',
+    }),
+    templateParentEpicId: text('template_parent_epic_id').references(() => epics.id, {
+      onDelete: 'set null',
+    }),
+    templateAgentId: text('template_agent_id').references(() => agents.id, {
+      onDelete: 'set null',
+    }),
+    templateTags: text('template_tags', { mode: 'json' })
+      .$type<string[]>()
+      .default(sql`'[]'`),
+    allowOverlap: integer('allow_overlap', { mode: 'boolean' }).notNull().default(false),
+    missedRunPolicy: text('missed_run_policy').notNull().default('skip'),
+    configVersion: integer('config_version').notNull().default(1),
+    nextRunAt: text('next_run_at'),
+    lastRunAt: text('last_run_at'),
+    lastRunStatus: text('last_run_status'),
+    lastError: text('last_error'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    projectIdIdx: index('scheduled_epics_project_id_idx').on(table.projectId),
+    projectEnabledNextRunIdx: index('scheduled_epics_project_enabled_next_run_idx').on(
+      table.projectId,
+      table.enabled,
+      table.nextRunAt,
+    ),
+    templateStatusIdIdx: index('scheduled_epics_template_status_id_idx').on(table.templateStatusId),
+    templateParentEpicIdIdx: index('scheduled_epics_template_parent_epic_id_idx').on(
+      table.templateParentEpicId,
+    ),
+    templateAgentIdIdx: index('scheduled_epics_template_agent_id_idx').on(table.templateAgentId),
+  }),
+);
+
+export const scheduledEpicRuns = sqliteTable(
+  'scheduled_epic_runs',
+  {
+    id: text('id').primaryKey(),
+    scheduleId: text('schedule_id')
+      .notNull()
+      .references(() => scheduledEpics.id, { onDelete: 'cascade' }),
+    plannedFor: text('planned_for').notNull(),
+    source: text('source').notNull().default('scheduler'),
+    status: text('status').notNull().default('pending'),
+    createdEpicId: text('created_epic_id').references(() => epics.id, {
+      onDelete: 'set null',
+    }),
+    startedAt: text('started_at'),
+    finishedAt: text('finished_at'),
+    errorMessage: text('error_message'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    schedulePlannedForUnique: uniqueIndex('scheduled_epic_runs_schedule_planned_for_idx').on(
+      table.scheduleId,
+      table.plannedFor,
+    ),
+    scheduleStatusPlannedForIdx: index('scheduled_epic_runs_schedule_status_planned_for_idx').on(
+      table.scheduleId,
+      table.status,
+      table.plannedFor,
+    ),
+    createdEpicIdIdx: index('scheduled_epic_runs_created_epic_id_idx').on(table.createdEpicId),
   }),
 );
 
@@ -556,6 +652,7 @@ export const sessions = sqliteTable(
     activityState: text('activity_state'), // 'idle' | 'busy'
     busySince: text('busy_since'),
     transcriptPath: text('transcript_path'),
+    name: text('name'),
     providerSessionId: text('provider_session_id'),
     providerNameAtLaunch: text('provider_name_at_launch'),
     sizeBytes: integer('size_bytes'),

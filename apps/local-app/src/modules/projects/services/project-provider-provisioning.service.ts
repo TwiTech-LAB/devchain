@@ -1,6 +1,6 @@
 import { Injectable, Inject } from '@nestjs/common';
 import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
-import { ProviderMcpEnsureService } from '../../core/services/provider-mcp-ensure.service';
+import { ProviderMcpEnsureService } from '../../providers/services/provider-mcp-ensure.service';
 import { createLogger } from '../../../common/logging/logger';
 
 const logger = createLogger('ProjectProviderProvisioning');

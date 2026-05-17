@@ -76,31 +76,35 @@ function assistantLine(
   });
 }
 
+const realSetTimeout = globalThis.setTimeout;
+
 /**
  * Flush real I/O microtasks by yielding to the event loop repeatedly.
- * setImmediate is NOT faked by jest.useFakeTimers() with doNotFake config.
- * Extra iterations help when under load (e.g., full suite concurrency).
+ * Combines setImmediate (not faked) with a small real delay to ensure
+ * libuv I/O callbacks complete even under heavy load.
  */
 async function flush(): Promise<void> {
   for (let i = 0; i < 200; i++) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  await new Promise<void>((resolve) => realSetTimeout(resolve, 5));
+  for (let i = 0; i < 50; i++) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
 }
 
 /**
  * Advance through a full stat-poll + debounce cycle using sync timer
- * advancement + real I/O flushing. Runs the cycle twice to ensure
- * all async work from the first poll completes even under heavy load.
+ * advancement + real I/O flushing. Runs two full poll+debounce rounds
+ * to ensure all async work completes even under heavy load.
  */
 async function advancePollCycle(): Promise<void> {
-  // Fire stat-poll (3s interval)
-  jest.advanceTimersByTime(3000);
-  // Let checkStatPoll's real I/O (fsPromises.stat) complete
-  await flush();
-  // Fire debounce timeout (100ms) if one was scheduled
-  jest.advanceTimersByTime(200);
-  // Let handleFileChanged's real I/O (stat + parse + file read) complete
-  await flush();
+  for (let round = 0; round < 2; round++) {
+    jest.advanceTimersByTime(3000);
+    await flush();
+    jest.advanceTimersByTime(200);
+    await flush();
+  }
 }
 
 describe('Watcher → Parser → Broadcast pipeline integration', () => {
@@ -166,12 +170,16 @@ describe('Watcher → Parser → Broadcast pipeline integration', () => {
       expect.objectContaining({
         sessionId: 'test-session',
         transcriptPath: filePath,
-        newMessageCount: 4,
+        newMessageCount: 2,
         metrics: expect.objectContaining({
           messageCount: 4,
           inputTokens: expect.any(Number),
           outputTokens: expect.any(Number),
         }),
+        cursor: expect.any(String),
+        prevCursor: expect.any(String),
+        deltaChunks: expect.any(Array),
+        deltaMessages: expect.any(Array),
       }),
     );
   }, 15_000);
@@ -190,13 +198,17 @@ describe('Watcher → Parser → Broadcast pipeline integration', () => {
 
     await advancePollCycle();
 
-    // Should publish transcript.updated with all 5 messages (2 initial + 3 appended)
+    // Should publish transcript.updated with delta message count (3 appended) and full metrics (5 total)
     expect(mockEvents.publish).toHaveBeenCalledWith(
       'session.transcript.updated',
       expect.objectContaining({
         sessionId: 'test-session',
-        newMessageCount: 5,
+        newMessageCount: 3,
         metrics: expect.objectContaining({ messageCount: 5 }),
+        cursor: expect.any(String),
+        prevCursor: expect.any(String),
+        deltaChunks: expect.any(Array),
+        deltaMessages: expect.any(Array),
       }),
     );
 

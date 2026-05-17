@@ -1,22 +1,39 @@
 import { Injectable } from '@nestjs/common';
-import {
+import type {
   ProviderAdapter,
   AddMcpServerOptions,
   McpServerEntry,
   LaunchInitialPromptBehavior,
   BuildLaunchArgsInput,
 } from './provider-adapter.interface';
+import type {
+  McpCliCapability,
+  ProjectProvisioningCapability,
+  ProvisioningResult,
+  TranscriptDiscoveryCapability,
+} from './capabilities';
+import { GeminiTrustedFoldersService } from '../../core/services/gemini-trusted-folders.service';
+import { createLogger } from '../../../common/logging/logger';
 
-/**
- * Gemini provider adapter
- *
- * Implements MCP command building and output parsing for the Gemini CLI.
- */
+const logger = createLogger('GeminiAdapter');
+
 @Injectable()
-export class GeminiAdapter implements ProviderAdapter {
+export class GeminiAdapter
+  implements
+    ProviderAdapter,
+    McpCliCapability,
+    ProjectProvisioningCapability,
+    TranscriptDiscoveryCapability
+{
   readonly providerName = 'gemini';
   readonly mcpListSpawnMode = 'pty' as const;
   readonly mcpProjectRegistrationStrategy = 'upsert' as const;
+  readonly requiresProjectProvisioning = true as const;
+  readonly transcriptDiscoveryStrategy = 'all' as const;
+  readonly transcriptContentSearchMaxBytes = 32_768;
+  readonly providerSessionIdRequiredForRestore = true;
+
+  constructor(private readonly trustedFolders: GeminiTrustedFoldersService) {}
   // Verification (2026-05-03): `gemini mcp add` and `gemini mcp remove` are
   // pipe-safe — they exit 0/non-zero reliably even with empty stdout/stderr.
   // Only `mcp list` requires PTY (see mcpListSpawnMode).
@@ -96,5 +113,39 @@ export class GeminiAdapter implements ProviderAdapter {
     }
 
     return entries;
+  }
+
+  async provisionProjectPath(projectPath: string): Promise<ProvisioningResult> {
+    const warnings: ProvisioningResult['warnings'] = [];
+
+    try {
+      const trustResult = await this.trustedFolders.ensure(projectPath);
+      if (trustResult.action === 'distrusted_warning') {
+        warnings.push({
+          source: 'trusted_folders',
+          level: 'warn',
+          message: trustResult.message,
+          code: 'GEMINI_PATH_DISTRUSTED',
+        });
+      } else if (trustResult.action === 'malformed_warning') {
+        warnings.push({
+          source: 'trusted_folders',
+          level: 'warn',
+          message: trustResult.message,
+          code: 'GEMINI_TRUST_FILE_MALFORMED',
+        });
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Unknown error';
+      logger.warn({ error, projectPath }, 'Failed to ensure Gemini trusted folders (non-fatal)');
+      warnings.push({
+        source: 'trusted_folders',
+        level: 'warn',
+        message: msg,
+        code: 'GEMINI_TRUST_WRITE_FAILED',
+      });
+    }
+
+    return { success: true, warnings };
   }
 }

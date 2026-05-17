@@ -28,7 +28,7 @@ export const LastOutputDisplay = memo(function LastOutputDisplay({
 
   return (
     <div
-      className="rounded-md border border-border/40 bg-card/60"
+      className="rounded-md border border-border/40 border-l-2 border-l-emerald-400/40 bg-card/60"
       data-testid="last-output-display"
     >
       <div className="border-b border-border/40 px-3 py-1.5 text-[10px] text-muted-foreground">
@@ -43,7 +43,7 @@ export const LastOutputDisplay = memo(function LastOutputDisplay({
       <div className="max-h-96 overflow-y-auto px-3 py-2" data-testid="last-output-content">
         <MarkdownRenderer
           content={lastOutput.text}
-          className="text-xs leading-relaxed [&_p]:my-1 [&_pre]:text-[11px]"
+          className="text-sm leading-relaxed [&_p]:my-1 [&_pre]:text-[11px]"
         />
       </div>
     </div>

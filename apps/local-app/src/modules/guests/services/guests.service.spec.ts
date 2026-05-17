@@ -1,15 +1,16 @@
 import { GuestsService } from './guests.service';
 import { StorageService } from '../../storage/interfaces/storage.interface';
-import { TmuxService } from '../../terminal/services/tmux.service';
+import { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
 import { EventsService } from '../../events/services/events.service';
 import { ValidationError, ConflictError, NotFoundError } from '../../../common/errors/error-types';
 import { GUEST_SANDBOX_PROJECT_NAME, GUEST_SANDBOX_ROOT_PATH } from '../constants';
-import { Project, Agent, Guest } from '../../storage/models/domain.models';
+import type { Guest } from '../../storage/models/domain.models';
+import { createMockProject, createMockAgent } from '../../../../test/factories';
 
 describe('GuestsService', () => {
   let guestsService: GuestsService;
   let mockStorage: jest.Mocked<Partial<StorageService>>;
-  let mockTmuxService: jest.Mocked<Partial<TmuxService>>;
+  let mockTerminalIO: jest.Mocked<Partial<TerminalIOService>>;
   let mockEventsService: jest.Mocked<Partial<EventsService>>;
 
   beforeEach(() => {
@@ -29,8 +30,8 @@ describe('GuestsService', () => {
       getAgentByName: jest.fn(),
     };
 
-    mockTmuxService = {
-      hasSession: jest.fn(),
+    mockTerminalIO = {
+      sessionExists: jest.fn(),
       getSessionCwd: jest.fn(),
     };
 
@@ -40,7 +41,7 @@ describe('GuestsService', () => {
 
     guestsService = new GuestsService(
       mockStorage as StorageService,
-      mockTmuxService as TmuxService,
+      mockTerminalIO as unknown as TerminalIOService,
       mockEventsService as EventsService,
     );
   });
@@ -56,8 +57,8 @@ describe('GuestsService', () => {
 
   describe('initializeAndCleanup', () => {
     it('should clean up sandbox project from previous run', async () => {
-      const mockSandbox: Partial<Project> = { id: 'sandbox-id', name: GUEST_SANDBOX_PROJECT_NAME };
-      mockStorage.getProjectByRootPath!.mockResolvedValueOnce(mockSandbox as Project);
+      const mockSandbox = createMockProject({ id: 'sandbox-id', name: GUEST_SANDBOX_PROJECT_NAME });
+      mockStorage.getProjectByRootPath!.mockResolvedValueOnce(mockSandbox);
       mockStorage.deleteProject!.mockResolvedValueOnce(undefined);
 
       await guestsService.initializeAndCleanup();
@@ -76,8 +77,8 @@ describe('GuestsService', () => {
 
   describe('getOrCreateSandboxProject', () => {
     it('should return existing sandbox if it exists', async () => {
-      const mockSandbox: Partial<Project> = { id: 'sandbox-id', name: GUEST_SANDBOX_PROJECT_NAME };
-      mockStorage.getProjectByRootPath!.mockResolvedValueOnce(mockSandbox as Project);
+      const mockSandbox = createMockProject({ id: 'sandbox-id', name: GUEST_SANDBOX_PROJECT_NAME });
+      mockStorage.getProjectByRootPath!.mockResolvedValueOnce(mockSandbox);
 
       const result = await guestsService.getOrCreateSandboxProject();
 
@@ -86,13 +87,13 @@ describe('GuestsService', () => {
     });
 
     it('should create sandbox if it does not exist', async () => {
-      const newSandbox: Partial<Project> = {
+      const newSandbox = createMockProject({
         id: 'new-sandbox-id',
         name: GUEST_SANDBOX_PROJECT_NAME,
         rootPath: GUEST_SANDBOX_ROOT_PATH,
-      };
+      });
       mockStorage.getProjectByRootPath!.mockResolvedValueOnce(null);
-      mockStorage.createProject!.mockResolvedValueOnce(newSandbox as Project);
+      mockStorage.createProject!.mockResolvedValueOnce(newSandbox);
 
       const result = await guestsService.getOrCreateSandboxProject();
 
@@ -112,11 +113,10 @@ describe('GuestsService', () => {
       tmuxSessionId: 'tmux-session-123',
     };
 
-    const mockProject: Partial<Project> = {
+    const mockProject = createMockProject({
       id: 'project-1',
-      name: 'Test Project',
       rootPath: '/home/user/project',
-    };
+    });
 
     const mockGuest: Guest = {
       id: 'guest-1',
@@ -129,10 +129,10 @@ describe('GuestsService', () => {
     };
 
     it('should successfully register a guest with matching project', async () => {
-      mockTmuxService.hasSession!.mockResolvedValueOnce(true);
+      mockTerminalIO.sessionExists!.mockResolvedValueOnce(true);
       mockStorage.getGuestByTmuxSessionId!.mockResolvedValueOnce(null);
-      mockTmuxService.getSessionCwd!.mockResolvedValueOnce('/home/user/project/src');
-      mockStorage.findProjectContainingPath!.mockResolvedValueOnce(mockProject as Project);
+      mockTerminalIO.getSessionCwd!.mockResolvedValueOnce('/home/user/project/src');
+      mockStorage.findProjectContainingPath!.mockResolvedValueOnce(mockProject);
       mockStorage.getAgentByName!.mockRejectedValueOnce(new NotFoundError('Agent', 'TestGuest'));
       mockStorage.getGuestByName!.mockResolvedValueOnce(null);
       mockStorage.createGuest!.mockResolvedValueOnce(mockGuest);
@@ -143,7 +143,7 @@ describe('GuestsService', () => {
       expect(result).toEqual({
         guestId: 'guest-1',
         projectId: 'project-1',
-        projectName: 'Test Project',
+        projectName: mockProject.name,
         isSandbox: false,
       });
       expect(mockEventsService.publish).toHaveBeenCalledWith(
@@ -153,14 +153,14 @@ describe('GuestsService', () => {
     });
 
     it('should register guest with sandbox when no matching project', async () => {
-      const mockSandbox: Partial<Project> = { id: 'sandbox-id', name: GUEST_SANDBOX_PROJECT_NAME };
+      const mockSandbox = createMockProject({ id: 'sandbox-id', name: GUEST_SANDBOX_PROJECT_NAME });
 
-      mockTmuxService.hasSession!.mockResolvedValueOnce(true);
+      mockTerminalIO.sessionExists!.mockResolvedValueOnce(true);
       mockStorage.getGuestByTmuxSessionId!.mockResolvedValueOnce(null);
-      mockTmuxService.getSessionCwd!.mockResolvedValueOnce('/tmp/random');
+      mockTerminalIO.getSessionCwd!.mockResolvedValueOnce('/tmp/random');
       mockStorage.findProjectContainingPath!.mockResolvedValueOnce(null);
       mockStorage.getProjectByRootPath!.mockResolvedValueOnce(null);
-      mockStorage.createProject!.mockResolvedValueOnce(mockSandbox as Project);
+      mockStorage.createProject!.mockResolvedValueOnce(mockSandbox);
       mockStorage.getAgentByName!.mockRejectedValueOnce(new NotFoundError('Agent', 'TestGuest'));
       mockStorage.getGuestByName!.mockResolvedValueOnce(null);
       mockStorage.createGuest!.mockResolvedValueOnce({ ...mockGuest, projectId: 'sandbox-id' });
@@ -173,43 +173,43 @@ describe('GuestsService', () => {
     });
 
     it('should throw ValidationError if tmux session does not exist', async () => {
-      mockTmuxService.hasSession!.mockResolvedValueOnce(false);
+      mockTerminalIO.sessionExists!.mockResolvedValueOnce(false);
 
       await expect(guestsService.register(mockRegisterDto)).rejects.toThrow(ValidationError);
     });
 
     it('should throw ConflictError if tmux session already registered', async () => {
-      mockTmuxService.hasSession!.mockResolvedValueOnce(true);
+      mockTerminalIO.sessionExists!.mockResolvedValueOnce(true);
       mockStorage.getGuestByTmuxSessionId!.mockResolvedValueOnce(mockGuest);
 
       await expect(guestsService.register(mockRegisterDto)).rejects.toThrow(ConflictError);
     });
 
     it('should throw ValidationError if cannot get tmux cwd', async () => {
-      mockTmuxService.hasSession!.mockResolvedValueOnce(true);
+      mockTerminalIO.sessionExists!.mockResolvedValueOnce(true);
       mockStorage.getGuestByTmuxSessionId!.mockResolvedValueOnce(null);
-      mockTmuxService.getSessionCwd!.mockResolvedValueOnce(null);
+      mockTerminalIO.getSessionCwd!.mockResolvedValueOnce(null);
 
       await expect(guestsService.register(mockRegisterDto)).rejects.toThrow(ValidationError);
     });
 
     it('should throw ConflictError if name already used by agent', async () => {
-      const existingAgent: Partial<Agent> = { id: 'agent-1', name: 'TestGuest' };
-      mockTmuxService.hasSession!.mockResolvedValueOnce(true);
+      const existingAgent = createMockAgent({ id: 'agent-1', name: 'TestGuest' });
+      mockTerminalIO.sessionExists!.mockResolvedValueOnce(true);
       mockStorage.getGuestByTmuxSessionId!.mockResolvedValueOnce(null);
-      mockTmuxService.getSessionCwd!.mockResolvedValueOnce('/home/user/project/src');
-      mockStorage.findProjectContainingPath!.mockResolvedValueOnce(mockProject as Project);
-      mockStorage.getAgentByName!.mockResolvedValueOnce(existingAgent as Agent);
+      mockTerminalIO.getSessionCwd!.mockResolvedValueOnce('/home/user/project/src');
+      mockStorage.findProjectContainingPath!.mockResolvedValueOnce(mockProject);
+      mockStorage.getAgentByName!.mockResolvedValueOnce(existingAgent);
 
       await expect(guestsService.register(mockRegisterDto)).rejects.toThrow(ConflictError);
     });
 
     it('should throw ConflictError if name already used by guest', async () => {
       const existingGuest: Partial<Guest> = { id: 'existing-guest', name: 'TestGuest' };
-      mockTmuxService.hasSession!.mockResolvedValueOnce(true);
+      mockTerminalIO.sessionExists!.mockResolvedValueOnce(true);
       mockStorage.getGuestByTmuxSessionId!.mockResolvedValueOnce(null);
-      mockTmuxService.getSessionCwd!.mockResolvedValueOnce('/home/user/project/src');
-      mockStorage.findProjectContainingPath!.mockResolvedValueOnce(mockProject as Project);
+      mockTerminalIO.getSessionCwd!.mockResolvedValueOnce('/home/user/project/src');
+      mockStorage.findProjectContainingPath!.mockResolvedValueOnce(mockProject);
       mockStorage.getAgentByName!.mockRejectedValueOnce(new NotFoundError('Agent', 'TestGuest'));
       mockStorage.getGuestByName!.mockResolvedValueOnce(existingGuest as Guest);
 

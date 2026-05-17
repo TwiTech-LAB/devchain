@@ -1,7 +1,7 @@
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import type { Provider } from '../../storage/models/domain.models';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
-import type { SeederContext } from '../services/data-seeder.service';
+import type { SeederContext } from '../types/seeder.types';
 import { runSeedClaudeNoFlickerEnv } from './0007_seed_claude_no_flicker_env';
 
 function makeProvider(overrides: Partial<Provider> = {}): Provider {

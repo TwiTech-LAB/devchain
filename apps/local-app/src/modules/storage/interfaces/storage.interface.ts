@@ -61,6 +61,14 @@ import {
   CreateCommunitySkillSource,
   LocalSkillSource,
   CreateLocalSkillSource,
+  ScheduledEpic,
+  CreateScheduledEpic,
+  UpdateScheduledEpic,
+  UpdateScheduledEpicRuntimeState,
+  ScheduledEpicRun,
+  CreateScheduledEpicRun,
+  UpdateScheduledEpicRun,
+  ScheduledEpicRunStatus,
 } from '../models/domain.models';
 
 export interface ListOptions {
@@ -174,6 +182,10 @@ export interface ListSubEpicsForParentsOptions {
    * Maximum sub-epics to return per parent. Default: 50.
    */
   limitPerParent?: number;
+}
+
+export interface ListParentChildrenOptions extends ListOptions {
+  statusId?: string;
 }
 
 export interface CreateEpicForProjectInput {
@@ -309,6 +321,10 @@ export interface EpicStorage {
   updateEpic(id: string, data: UpdateEpic, expectedVersion: number): Promise<Epic>;
   deleteEpic(id: string): Promise<void>;
   listSubEpics(parentId: string, options?: ListOptions): Promise<ListResult<Epic>>;
+  listParentChildren(
+    parentId: string,
+    options?: ListParentChildrenOptions,
+  ): Promise<ListResult<Epic>>;
   listSubEpicsForParents(
     projectId: string,
     parentIds: string[],
@@ -492,6 +508,47 @@ export interface SubscriberStorage {
   findSubscribersByEventName(projectId: string, eventName: string): Promise<Subscriber[]>;
 }
 
+export interface ListScheduledEpicsOptions extends ListOptions {
+  enabled?: boolean;
+}
+
+export interface ListScheduledEpicRunsOptions extends ListOptions {
+  status?: ScheduledEpicRunStatus;
+}
+
+export interface ClaimRunResult {
+  claimed: boolean;
+  run: ScheduledEpicRun;
+}
+
+export interface ScheduledEpicStorage {
+  createScheduledEpic(data: CreateScheduledEpic): Promise<ScheduledEpic>;
+  getScheduledEpic(id: string): Promise<ScheduledEpic>;
+  listScheduledEpics(
+    projectId: string,
+    options?: ListScheduledEpicsOptions,
+  ): Promise<ListResult<ScheduledEpic>>;
+  updateScheduledEpic(
+    id: string,
+    data: UpdateScheduledEpic,
+    expectedVersion: number,
+  ): Promise<ScheduledEpic>;
+  deleteScheduledEpic(id: string): Promise<void>;
+  updateScheduledEpicRuntimeState(
+    id: string,
+    data: UpdateScheduledEpicRuntimeState,
+  ): Promise<ScheduledEpic>;
+  listDueScheduledEpics(projectId: string, before: string): Promise<ScheduledEpic[]>;
+  createScheduledEpicRun(data: CreateScheduledEpicRun): Promise<ClaimRunResult>;
+  getScheduledEpicRun(id: string): Promise<ScheduledEpicRun>;
+  listScheduledEpicRuns(
+    scheduleId: string,
+    options?: ListScheduledEpicRunsOptions,
+  ): Promise<ListResult<ScheduledEpicRun>>;
+  updateScheduledEpicRun(id: string, data: UpdateScheduledEpicRun): Promise<ScheduledEpicRun>;
+  claimScheduledEpicRun(runId: string): Promise<ClaimRunResult>;
+}
+
 export interface ReviewStorage {
   createReview(data: CreateReview): Promise<Review>;
   getReview(id: string): Promise<Review>;
@@ -532,6 +589,7 @@ export interface StorageService
     GuestStorage,
     WatcherStorage,
     SubscriberStorage,
-    ReviewStorage {}
+    ReviewStorage,
+    ScheduledEpicStorage {}
 
 export const STORAGE_SERVICE = 'STORAGE_SERVICE';

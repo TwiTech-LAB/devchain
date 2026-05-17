@@ -8,6 +8,7 @@ import {
   updateEpic,
 } from '@/ui/pages/board/lib/board-api';
 import type { Epic, EpicsQueryData } from '@/ui/types';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 type ToastFn = (args: { title: string; description: string; variant?: 'destructive' }) => void;
 
@@ -82,9 +83,10 @@ export function useBoardMutations({
   onBulkError,
 }: UseBoardMutationsArgs): UseBoardMutationsResult {
   const queryClient = useQueryClient();
+  const apiFetch = useFetchFactory();
 
   const createMutation = useMutation({
-    mutationFn: createEpic,
+    mutationFn: (data: Partial<Epic>) => createEpic(data, apiFetch),
     onMutate: async (newEpic) => {
       await queryClient.cancelQueries({ queryKey: ['epics'] });
       const previousData = queryClient.getQueryData(epicsKey);
@@ -126,7 +128,7 @@ export function useBoardMutations({
   });
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, data }: UpdateEpicMutationVars) => updateEpic(id, data),
+    mutationFn: ({ id, data }: UpdateEpicMutationVars) => updateEpic(id, data, apiFetch),
     onMutate: async ({ id, data }) => {
       await queryClient.cancelQueries({ queryKey: ['epics'] });
       const previousData = queryClient.getQueryData(epicsKey);
@@ -163,7 +165,7 @@ export function useBoardMutations({
   });
 
   const deleteMutation = useMutation({
-    mutationFn: deleteEpic,
+    mutationFn: (id: string) => deleteEpic(id, apiFetch),
     onMutate: async (id) => {
       await queryClient.cancelQueries({ queryKey: ['epics'] });
       const previousData = queryClient.getQueryData(epicsKey);
@@ -227,7 +229,7 @@ export function useBoardMutations({
         return { updated: [], parentId };
       }
 
-      const updated = await bulkUpdateEpicsApi({ parentId: parentId ?? null, updates });
+      const updated = await bulkUpdateEpicsApi({ parentId: parentId ?? null, updates }, apiFetch);
       return { updated, parentId };
     },
     onSuccess: (_result, variables) => {

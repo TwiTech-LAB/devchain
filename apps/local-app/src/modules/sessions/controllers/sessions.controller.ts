@@ -1,17 +1,21 @@
 import {
   Controller,
   Post,
+  Patch,
   Delete,
   Get,
+  Inject,
   Body,
   Param,
   Query,
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
 import { z } from 'zod';
 import { SessionsService } from '../services/sessions.service';
+import { SessionRuntime } from '../services/session-runtime';
 import {
   SessionsMessagePoolService,
   type MessageLogEntry,
@@ -25,6 +29,7 @@ import {
   AgentPresenceResponseDto,
   SessionHistoryResponseDto,
 } from '../dtos/sessions.dto';
+import { STORAGE_SERVICE, StorageService } from '../../storage/interfaces/storage.interface';
 import { createLogger } from '../../../common/logging/logger';
 
 const logger = createLogger('SessionsController');
@@ -54,6 +59,17 @@ const PoolsQuerySchema = z.object({
 /** Query params for GET /sessions and GET /sessions/agents/presence */
 const ProjectIdQuerySchema = z.object({
   projectId: z.string().uuid('projectId must be a valid UUID').optional(),
+});
+
+/** Body schema for PATCH /sessions/:id (rename) */
+const RenameSessionSchema = z.object({
+  projectId: z.string().uuid('projectId must be a valid UUID'),
+  name: z.string().trim().max(120).nullable(),
+});
+
+/** Query params for DELETE /sessions/:id/record */
+const DeleteRecordQuerySchema = z.object({
+  projectId: z.string().uuid('projectId must be a valid UUID'),
 });
 
 /** Query params for GET /sessions/agents/:agentId/history */
@@ -114,6 +130,8 @@ export class SessionsController {
   constructor(
     private readonly sessionsService: SessionsService,
     private readonly messagePoolService: SessionsMessagePoolService,
+    private readonly sessionRuntime: SessionRuntime,
+    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
   ) {}
 
   /**
@@ -123,7 +141,73 @@ export class SessionsController {
   async launchSession(@Body() body: unknown): Promise<SessionDetailDto> {
     logger.info('POST /api/sessions/launch');
     const data = LaunchSessionSchema.parse(body);
-    return this.sessionsService.launchSession(data);
+    return this.sessionRuntime.launch(data);
+  }
+
+  /**
+   * Rename a session.
+   */
+  @Patch(':id')
+  async renameSession(@Param('id') id: string, @Body() body: unknown): Promise<SessionDto> {
+    logger.info({ sessionId: id }, 'PATCH /api/sessions/:id');
+
+    const parsed = RenameSessionSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.errors.map((e) => e.message).join(', '));
+    }
+
+    const session = this.sessionsService.getSession(id);
+    if (!session) {
+      throw new NotFoundException(`Session ${id} not found`);
+    }
+
+    if (!session.agentId) {
+      throw new ForbiddenException('PROJECT_MISMATCH');
+    }
+
+    const agent = await this.storage.getAgent(session.agentId);
+    if (agent.projectId !== parsed.data.projectId) {
+      throw new ForbiddenException('PROJECT_MISMATCH');
+    }
+
+    return this.sessionsService.updateName(id, parsed.data.name);
+  }
+
+  /**
+   * Delete a session history record (DB row only — transcript files stay on disk).
+   * MUST be declared before DELETE ':id' to avoid route shadowing.
+   */
+  @Delete(':id/record')
+  async deleteSessionRecord(
+    @Param('id') id: string,
+    @Query('projectId') projectId?: string,
+  ): Promise<{ deleted: boolean }> {
+    logger.info({ sessionId: id }, 'DELETE /api/sessions/:id/record');
+
+    const query = DeleteRecordQuerySchema.safeParse({ projectId });
+    if (!query.success) {
+      throw new BadRequestException(query.error.errors.map((e) => e.message).join(', '));
+    }
+
+    const session = this.sessionsService.getSession(id);
+    if (!session) {
+      throw new NotFoundException(`Session ${id} not found`);
+    }
+
+    if (!session.agentId) {
+      throw new ForbiddenException('PROJECT_MISMATCH');
+    }
+
+    const agent = await this.storage.getAgent(session.agentId);
+    if (agent.projectId !== query.data.projectId) {
+      throw new ForbiddenException('PROJECT_MISMATCH');
+    }
+
+    if (session.status === 'running') {
+      throw new ConflictException('STATUS_RUNNING');
+    }
+
+    return this.sessionsService.hardDeleteRecord(id);
   }
 
   /**
@@ -339,7 +423,7 @@ export class SessionsController {
       throw new BadRequestException(parsed.error.errors.map((e) => e.message).join(', '));
     }
 
-    return this.sessionsService.restoreSession(id, parsed.data.projectId);
+    return this.sessionRuntime.restore(id, parsed.data.projectId);
   }
 
   /**

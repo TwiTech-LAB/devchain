@@ -8,17 +8,33 @@ export interface WsEnvelope {
   ts: string;
 }
 
-interface WorktreeSocketEntry {
+export type SocketAddress = 'main' | { worktree: string };
+
+interface PoolEntry {
   socket: Socket;
   refCount: number;
+  pingPongHandler: (envelope: unknown) => void;
 }
 
-let socketRef: Socket | null = null;
-let socketRefCount = 0;
-const worktreeSocketPool = new Map<string, WorktreeSocketEntry>();
+const pool = new Map<string, PoolEntry>();
 
-function resolveWorktreeSocketPath(worktreeName: string): string {
-  return `/wt/${encodeURIComponent(worktreeName)}/socket.io`;
+function addressKey(address: SocketAddress): string {
+  return address === 'main' ? '__main__' : `wt:${address.worktree}`;
+}
+
+function addressPath(address: SocketAddress): string {
+  return address === 'main'
+    ? '/socket.io'
+    : `/wt/${encodeURIComponent(address.worktree)}/socket.io`;
+}
+
+function createPingPongHandler(socket: Socket): (envelope: unknown) => void {
+  return (envelope: unknown) => {
+    const maybe = envelope as { topic?: string; type?: string };
+    if (maybe?.topic === 'system' && maybe?.type === 'ping') {
+      socket.emit('pong');
+    }
+  };
 }
 
 function normalizeWorktreeName(worktreeName: string): string {
@@ -29,58 +45,22 @@ function normalizeWorktreeName(worktreeName: string): string {
   return normalized;
 }
 
-/**
- * Test hook: allow components to inject a socket instance.
- * In production, this is unused and the singleton is created via io().
- */
-export function setAppSocket(socket: Socket | null) {
-  socketRef = socket;
-  socketRefCount = socket ? 1 : 0;
-}
+export function getSocket(address: SocketAddress): Socket {
+  const key = addressKey(address);
+  const existing = pool.get(key);
 
-export function getAppSocket(): Socket {
-  // Always reuse the existing instance to preserve single-connection invariant
-  if (socketRef) {
-    socketRefCount++;
-    return socketRef;
+  if (existing) {
+    if (existing.refCount <= 0) {
+      console.warn(`[socket] pool entry "${key}" had non-positive refCount; recovering to 1`);
+      existing.refCount = 1;
+    } else {
+      existing.refCount++;
+    }
+    return existing.socket;
   }
 
   const url = getWsBaseUrl();
-  socketRef = io(url, {
-    path: '/socket.io',
-    transports: ['websocket'],
-    reconnection: true,
-    reconnectionDelay: 1000,
-    reconnectionAttempts: 10,
-  });
-  // Respond to server heartbeat pings so long-lived pages (e.g., Board) stay connected
-  socketRef.on('message', (envelope: unknown) => {
-    const maybe = envelope as { topic?: string; type?: string };
-    if (maybe?.topic === 'system' && maybe?.type === 'ping') {
-      socketRef?.emit('pong');
-    }
-  });
-  socketRefCount = 1;
-  return socketRef;
-}
-
-export function getWorktreeSocket(worktreeName: string): Socket {
-  const normalizedName = normalizeWorktreeName(worktreeName);
-  const existingEntry = worktreeSocketPool.get(normalizedName);
-  if (existingEntry) {
-    if (existingEntry.refCount <= 0) {
-      console.warn(
-        `[socket] worktree socket "${normalizedName}" had non-positive refCount; recovering to 1`,
-      );
-      existingEntry.refCount = 1;
-      return existingEntry.socket;
-    }
-    existingEntry.refCount++;
-    return existingEntry.socket;
-  }
-
-  const url = getWsBaseUrl();
-  const path = resolveWorktreeSocketPath(normalizedName);
+  const path = addressPath(address);
   const socket = io(url, {
     path,
     transports: ['websocket'],
@@ -89,56 +69,61 @@ export function getWorktreeSocket(worktreeName: string): Socket {
     reconnectionAttempts: 10,
   });
 
-  socket.on('message', (envelope: unknown) => {
-    const maybe = envelope as { topic?: string; type?: string };
-    if (maybe?.topic === 'system' && maybe?.type === 'ping') {
-      socket.emit('pong');
-    }
-  });
+  const pingPongHandler = createPingPongHandler(socket);
+  socket.on('message', pingPongHandler);
 
-  worktreeSocketPool.set(normalizedName, {
-    socket,
-    refCount: 1,
-  });
+  pool.set(key, { socket, refCount: 1, pingPongHandler });
 
   return socket;
 }
 
-export function releaseWorktreeSocket(worktreeName: string): void {
-  const normalizedName = normalizeWorktreeName(worktreeName);
-  const entry = worktreeSocketPool.get(normalizedName);
-  if (!entry) {
-    return;
-  }
+export function releaseSocket(address: SocketAddress): void {
+  const key = addressKey(address);
+  const entry = pool.get(key);
+  if (!entry) return;
 
   if (entry.refCount <= 0) {
-    console.warn(
-      `[socket] worktree socket "${normalizedName}" had non-positive refCount on release`,
-    );
+    console.warn(`[socket] pool entry "${key}" had non-positive refCount on release`);
   }
 
   entry.refCount--;
 
-  if (entry.refCount > 0) {
-    return;
-  }
+  if (entry.refCount > 0) return;
 
+  entry.socket.off('message', entry.pingPongHandler);
   entry.socket.disconnect();
-  worktreeSocketPool.delete(normalizedName);
+  pool.delete(key);
 }
 
-/**
- * Release a reference to the socket. When all references are released,
- * disconnect and clean up. This prevents phantom connections in React Strict Mode.
- */
-export function releaseAppSocket(): void {
-  if (!socketRef) return;
-
-  socketRefCount--;
-
-  if (socketRefCount <= 0) {
-    socketRef.disconnect();
-    socketRef = null;
-    socketRefCount = 0;
+export function setAppSocket(socket: Socket | null) {
+  const key = addressKey('main');
+  const existing = pool.get(key);
+  if (existing) {
+    existing.socket.off('message', existing.pingPongHandler);
   }
+
+  if (socket) {
+    const pingPongHandler = createPingPongHandler(socket);
+    pool.set(key, { socket, refCount: 1, pingPongHandler });
+  } else {
+    pool.delete(key);
+  }
+}
+
+export function getAppSocket(): Socket {
+  return getSocket('main');
+}
+
+export function releaseAppSocket(): void {
+  releaseSocket('main');
+}
+
+export function getWorktreeSocket(worktreeName: string): Socket {
+  const normalizedName = normalizeWorktreeName(worktreeName);
+  return getSocket({ worktree: normalizedName });
+}
+
+export function releaseWorktreeSocket(worktreeName: string): void {
+  const normalizedName = normalizeWorktreeName(worktreeName);
+  releaseSocket({ worktree: normalizedName });
 }

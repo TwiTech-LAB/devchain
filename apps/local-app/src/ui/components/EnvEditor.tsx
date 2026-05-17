@@ -1,15 +1,19 @@
-import { useState } from 'react';
+import { forwardRef, useCallback, useImperativeHandle, useState } from 'react';
 import { Button } from '@/ui/components/ui/button';
 import { Input } from '@/ui/components/ui/input';
 import { Plus, X } from 'lucide-react';
 
-export function EnvEditor({
-  env,
-  onChange,
-}: {
-  env: Record<string, string>;
-  onChange: (env: Record<string, string>) => void;
-}) {
+export interface EnvEditorHandle {
+  commitPending: () => Record<string, string> | null;
+}
+
+export const EnvEditor = forwardRef<
+  EnvEditorHandle,
+  {
+    env: Record<string, string>;
+    onChange: (env: Record<string, string>) => void;
+  }
+>(function EnvEditor({ env, onChange }, ref) {
   const [newKey, setNewKey] = useState('');
   const [newValue, setNewValue] = useState('');
   const [keyError, setKeyError] = useState<string | null>(null);
@@ -21,26 +25,38 @@ export function EnvEditor({
     return pattern.test(key);
   };
 
-  const handleAddEntry = () => {
+  const commitPending = useCallback((): Record<string, string> | null => {
     const trimmedKey = newKey.trim();
+    if (!trimmedKey && !newValue) {
+      setKeyError(null);
+      return env;
+    }
     if (!trimmedKey) {
       setKeyError('Key is required');
-      return;
+      return null;
     }
     if (!validateKey(trimmedKey)) {
       setKeyError(
         'Key must be alphanumeric with underscores, starting with a letter or underscore',
       );
-      return;
+      return null;
     }
     if (env[trimmedKey] !== undefined) {
       setKeyError('Key already exists');
-      return;
+      return null;
     }
     setKeyError(null);
-    onChange({ ...env, [trimmedKey]: newValue });
+    const nextEnv = { ...env, [trimmedKey]: newValue };
+    onChange(nextEnv);
     setNewKey('');
     setNewValue('');
+    return nextEnv;
+  }, [env, newKey, newValue, onChange]);
+
+  useImperativeHandle(ref, () => ({ commitPending }), [commitPending]);
+
+  const handleAddEntry = () => {
+    commitPending();
   };
 
   const handleRemoveEntry = (key: string) => {
@@ -104,7 +120,13 @@ export function EnvEditor({
             }
           }}
         />
-        <Button type="button" variant="outline" size="sm" onClick={handleAddEntry}>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={handleAddEntry}
+          aria-label="Add environment variable"
+        >
           <Plus className="h-4 w-4" />
         </Button>
       </div>
@@ -115,4 +137,4 @@ export function EnvEditor({
       )}
     </div>
   );
-}
+});

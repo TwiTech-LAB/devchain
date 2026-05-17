@@ -3,7 +3,8 @@ import { GitService } from './git.service';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { ValidationError, IOError } from '../../../common/errors/error-types';
 import { existsSync, statSync } from 'fs';
-import { execFile } from 'child_process';
+import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
+import { FakeProcessExecutor } from '../../terminal/services/process-executor/fake-process-executor';
 
 // Mock fs module
 jest.mock('fs', () => ({
@@ -12,17 +13,12 @@ jest.mock('fs', () => ({
   statSync: jest.fn(),
 }));
 
-// Mock child_process
-jest.mock('child_process', () => ({
-  execFile: jest.fn(),
-}));
-
 const mockExistsSync = existsSync as jest.MockedFunction<typeof existsSync>;
 const mockStatSync = statSync as jest.MockedFunction<typeof statSync>;
-const mockExecFile = execFile as unknown as jest.Mock;
 
 describe('GitService', () => {
   let service: GitService;
+  let fakeExecutor: FakeProcessExecutor;
   let mockStorage: {
     getProject: jest.Mock;
   };
@@ -38,12 +34,19 @@ describe('GitService', () => {
       getProject: jest.fn().mockResolvedValue(mockProject),
     };
 
+    fakeExecutor = new FakeProcessExecutor();
+    fakeExecutor.setDefaultResponse({ type: 'success', stdout: '' });
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         GitService,
         {
           provide: STORAGE_SERVICE,
           useValue: mockStorage,
+        },
+        {
+          provide: ProcessExecutor,
+          useValue: fakeExecutor,
         },
       ],
     }).compile();
@@ -52,8 +55,7 @@ describe('GitService', () => {
   });
 
   afterEach(() => {
-    // Use resetAllMocks to clear both call history AND mock implementations
-    // This prevents order-dependent behavior from persistent mockImplementation calls
+    fakeExecutor.reset();
     jest.resetAllMocks();
   });
 
@@ -78,10 +80,7 @@ describe('GitService', () => {
 
     it('should accept paths within project root', async () => {
       mockExistsSync.mockReturnValue(true);
-      // Mock git command to return file content (validation should pass)
-      mockExecFile.mockImplementationOnce((cmd, args, opts, cb) => {
-        cb(null, { stdout: 'file content' });
-      });
+      fakeExecutor.enqueueResponse({ type: 'success', stdout: 'file content' });
 
       // This should not throw ValidationError for a valid path within project
       const result = await service.getFileContent('project-1', 'main', 'src/index.ts');
@@ -153,28 +152,13 @@ describe('GitService', () => {
     });
 
     it('should return staged, unstaged, and untracked files', async () => {
-      // Mock staged changes
-      mockExecFile
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // staged numstat
-          cb(null, { stdout: '10\t5\tsrc/file1.ts\n' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // staged name-status
-          cb(null, { stdout: 'M\tsrc/file1.ts\n' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // unstaged numstat
-          cb(null, { stdout: '3\t2\tsrc/file2.ts\n' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // unstaged name-status
-          cb(null, { stdout: 'M\tsrc/file2.ts\n' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // untracked
-          cb(null, { stdout: 'new-file.ts\nanother-file.ts\n' });
-        });
+      fakeExecutor.enqueueResponse(
+        { type: 'success', stdout: '10\t5\tsrc/file1.ts\n' }, // staged numstat
+        { type: 'success', stdout: 'M\tsrc/file1.ts\n' }, // staged name-status
+        { type: 'success', stdout: '3\t2\tsrc/file2.ts\n' }, // unstaged numstat
+        { type: 'success', stdout: 'M\tsrc/file2.ts\n' }, // unstaged name-status
+        { type: 'success', stdout: 'new-file.ts\nanother-file.ts\n' }, // untracked
+      );
 
       const result = await service.getWorkingTreeChanges('project-1');
 
@@ -196,9 +180,7 @@ describe('GitService', () => {
     });
 
     it('should return empty arrays when working tree is clean', async () => {
-      mockExecFile.mockImplementation((cmd, args, opts, cb) => {
-        cb(null, { stdout: '' });
-      });
+      // default response is { type: 'success', stdout: '' }
 
       const result = await service.getWorkingTreeChanges('project-1');
 
@@ -208,13 +190,10 @@ describe('GitService', () => {
     });
 
     it('should filter to staged only', async () => {
-      mockExecFile
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: '10\t5\tsrc/file1.ts\n' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: 'M\tsrc/file1.ts\n' });
-        });
+      fakeExecutor.enqueueResponse(
+        { type: 'success', stdout: '10\t5\tsrc/file1.ts\n' },
+        { type: 'success', stdout: 'M\tsrc/file1.ts\n' },
+      );
 
       const result = await service.getWorkingTreeChanges('project-1', 'staged');
 
@@ -224,13 +203,10 @@ describe('GitService', () => {
     });
 
     it('should filter to unstaged only', async () => {
-      mockExecFile
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: '3\t2\tsrc/file2.ts\n' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: 'M\tsrc/file2.ts\n' });
-        });
+      fakeExecutor.enqueueResponse(
+        { type: 'success', stdout: '3\t2\tsrc/file2.ts\n' },
+        { type: 'success', stdout: 'M\tsrc/file2.ts\n' },
+      );
 
       const result = await service.getWorkingTreeChanges('project-1', 'unstaged');
 
@@ -247,46 +223,17 @@ describe('GitService', () => {
     });
 
     it('should return combined changes and diff with single git ls-files call', async () => {
-      mockExecFile
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // staged numstat
-          cb(null, { stdout: '10\t5\tsrc/file1.ts\n' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // staged name-status
-          cb(null, { stdout: 'M\tsrc/file1.ts\n' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // staged diff
-          cb(null, { stdout: 'diff --git a/staged.ts b/staged.ts\n...\n' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // unstaged numstat
-          cb(null, { stdout: '3\t2\tsrc/file2.ts\n' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // unstaged name-status
-          cb(null, { stdout: 'M\tsrc/file2.ts\n' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // unstaged diff
-          cb(null, { stdout: 'diff --git a/unstaged.ts b/unstaged.ts\n...\n' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // ls-files --others (ONLY ONE CALL)
-          cb(null, { stdout: 'new-file.ts\n' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // git diff --no-index --numstat (binary check)
-          cb(null, { stdout: '10\t0\tnew-file.ts\n' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // git diff --no-index for actual diff (exits with code 1 for differences)
-          const error = new Error('exit 1') as Error & { stdout: string; code: number };
-          error.code = 1;
-          error.stdout = 'diff --git a/new-file.ts b/new-file.ts\n...\n';
-          cb(error);
-        });
+      fakeExecutor.enqueueResponse(
+        { type: 'success', stdout: '10\t5\tsrc/file1.ts\n' }, // staged numstat
+        { type: 'success', stdout: 'M\tsrc/file1.ts\n' }, // staged name-status
+        { type: 'success', stdout: 'diff --git a/staged.ts b/staged.ts\n...\n' }, // staged diff
+        { type: 'success', stdout: '3\t2\tsrc/file2.ts\n' }, // unstaged numstat
+        { type: 'success', stdout: 'M\tsrc/file2.ts\n' }, // unstaged name-status
+        { type: 'success', stdout: 'diff --git a/unstaged.ts b/unstaged.ts\n...\n' }, // unstaged diff
+        { type: 'success', stdout: 'new-file.ts\n' }, // ls-files --others
+        { type: 'success', stdout: '10\t0\tnew-file.ts\n' }, // binary check
+        { type: 'failure', exitCode: 1, stdout: 'diff --git a/new-file.ts b/new-file.ts\n...\n' }, // diff --no-index (exit 1)
+      );
 
       const result = await service.getWorkingTreeData('project-1');
 
@@ -302,23 +249,16 @@ describe('GitService', () => {
       expect(result.diff).toContain('unstaged.ts');
 
       // Verify ls-files was called only ONCE
-      const lsFilesCalls = mockExecFile.mock.calls.filter(
-        (call) => call[1] && call[1].includes('ls-files'),
-      );
+      const lsFilesCalls = fakeExecutor.calls.filter((call) => call.argv.includes('ls-files'));
       expect(lsFilesCalls).toHaveLength(1);
     });
 
     it('should handle filter=staged without calling ls-files', async () => {
-      mockExecFile
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: '10\t5\tsrc/file1.ts\n' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: 'M\tsrc/file1.ts\n' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: 'diff --git a/staged.ts\n' });
-        });
+      fakeExecutor.enqueueResponse(
+        { type: 'success', stdout: '10\t5\tsrc/file1.ts\n' },
+        { type: 'success', stdout: 'M\tsrc/file1.ts\n' },
+        { type: 'success', stdout: 'diff --git a/staged.ts\n' },
+      );
 
       const result = await service.getWorkingTreeData('project-1', 'staged');
 
@@ -327,9 +267,7 @@ describe('GitService', () => {
       expect(result.changes.untracked).toEqual([]);
 
       // ls-files should NOT be called for staged filter
-      const lsFilesCalls = mockExecFile.mock.calls.filter(
-        (call) => call[1] && call[1].includes('ls-files'),
-      );
+      const lsFilesCalls = fakeExecutor.calls.filter((call) => call.argv.includes('ls-files'));
       expect(lsFilesCalls).toHaveLength(0);
     });
   });
@@ -341,17 +279,11 @@ describe('GitService', () => {
     });
 
     it('should return combined staged and unstaged diff', async () => {
-      mockExecFile
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: 'diff --git a/staged.ts b/staged.ts\n...\n' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: 'diff --git a/unstaged.ts b/unstaged.ts\n...\n' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // ls-files --others for untracked
-          cb(null, { stdout: '' });
-        });
+      fakeExecutor.enqueueResponse(
+        { type: 'success', stdout: 'diff --git a/staged.ts b/staged.ts\n...\n' },
+        { type: 'success', stdout: 'diff --git a/unstaged.ts b/unstaged.ts\n...\n' },
+        { type: 'success', stdout: '' }, // ls-files --others
+      );
 
       const result = await service.getWorkingTreeDiff('project-1');
 
@@ -361,8 +293,9 @@ describe('GitService', () => {
     });
 
     it('should return only staged diff with filter', async () => {
-      mockExecFile.mockImplementationOnce((cmd, args, opts, cb) => {
-        cb(null, { stdout: 'diff --git a/staged.ts b/staged.ts\n...\n' });
+      fakeExecutor.enqueueResponse({
+        type: 'success',
+        stdout: 'diff --git a/staged.ts b/staged.ts\n...\n',
       });
 
       const result = await service.getWorkingTreeDiff('project-1', 'staged');
@@ -371,31 +304,18 @@ describe('GitService', () => {
     });
 
     it('should include untracked file diffs when filter is all', async () => {
-      mockExecFile
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // staged diff
-          cb(null, { stdout: '' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // unstaged diff
-          cb(null, { stdout: '' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // ls-files --others for untracked
-          cb(null, { stdout: 'new-file.ts\n' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // git diff --no-index --numstat (binary check)
-          cb(null, { stdout: '10\t0\tnew-file.ts\n' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // git diff --no-index for actual diff (exits with code 1 for differences)
-          const error = new Error('exit 1') as Error & { stdout: string; code: number };
-          error.code = 1;
-          error.stdout =
-            'diff --git a/new-file.ts b/new-file.ts\nnew file mode 100644\n--- /dev/null\n+++ b/new-file.ts\n@@ -0,0 +1 @@\n+content\n';
-          cb(error);
-        });
+      fakeExecutor.enqueueResponse(
+        { type: 'success', stdout: '' }, // staged diff
+        { type: 'success', stdout: '' }, // unstaged diff
+        { type: 'success', stdout: 'new-file.ts\n' }, // ls-files --others
+        { type: 'success', stdout: '10\t0\tnew-file.ts\n' }, // binary check
+        {
+          type: 'failure',
+          exitCode: 1,
+          stdout:
+            'diff --git a/new-file.ts b/new-file.ts\nnew file mode 100644\n--- /dev/null\n+++ b/new-file.ts\n@@ -0,0 +1 @@\n+content\n',
+        },
+      );
 
       const result = await service.getWorkingTreeDiff('project-1');
 
@@ -407,20 +327,12 @@ describe('GitService', () => {
     });
 
     it('should generate placeholder diff for binary untracked files', async () => {
-      mockExecFile
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: '' }); // staged
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: '' }); // unstaged
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: 'image.png\n' }); // ls-files --others
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // Binary file detection: numstat shows -\t-\t for binary
-          cb(null, { stdout: '-\t-\timage.png\n' });
-        });
+      fakeExecutor.enqueueResponse(
+        { type: 'success', stdout: '' }, // staged
+        { type: 'success', stdout: '' }, // unstaged
+        { type: 'success', stdout: 'image.png\n' }, // ls-files --others
+        { type: 'success', stdout: '-\t-\timage.png\n' }, // binary detection
+      );
 
       const result = await service.getWorkingTreeDiff('project-1');
 
@@ -432,16 +344,11 @@ describe('GitService', () => {
       // Mock large file (2MB)
       mockStatSync.mockReturnValue({ size: 2 * 1024 * 1024 } as ReturnType<typeof statSync>);
 
-      mockExecFile
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: '' }); // staged
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: '' }); // unstaged
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: 'large-file.ts\n' }); // ls-files --others
-        });
+      fakeExecutor.enqueueResponse(
+        { type: 'success', stdout: '' }, // staged
+        { type: 'success', stdout: '' }, // unstaged
+        { type: 'success', stdout: 'large-file.ts\n' }, // ls-files --others
+      );
 
       const result = await service.getWorkingTreeDiff('project-1');
 
@@ -451,40 +358,37 @@ describe('GitService', () => {
     });
 
     it('should not include untracked diffs when filter is staged', async () => {
-      mockExecFile.mockImplementationOnce((cmd, args, opts, cb) => {
-        cb(null, { stdout: 'diff --git a/staged.ts b/staged.ts\n...\n' });
+      fakeExecutor.enqueueResponse({
+        type: 'success',
+        stdout: 'diff --git a/staged.ts b/staged.ts\n...\n',
       });
 
       const result = await service.getWorkingTreeDiff('project-1', 'staged');
 
       // Should only have the staged diff call, not ls-files for untracked
-      expect(mockExecFile).toHaveBeenCalledTimes(1);
+      expect(fakeExecutor.calls).toHaveLength(1);
       expect(result.diff).toContain('staged.ts');
     });
 
     it('should not include untracked diffs when filter is unstaged', async () => {
-      mockExecFile.mockImplementationOnce((cmd, args, opts, cb) => {
-        cb(null, { stdout: 'diff --git a/unstaged.ts b/unstaged.ts\n...\n' });
+      fakeExecutor.enqueueResponse({
+        type: 'success',
+        stdout: 'diff --git a/unstaged.ts b/unstaged.ts\n...\n',
       });
 
       const result = await service.getWorkingTreeDiff('project-1', 'unstaged');
 
       // Should only have the unstaged diff call, not ls-files for untracked
-      expect(mockExecFile).toHaveBeenCalledTimes(1);
+      expect(fakeExecutor.calls).toHaveLength(1);
       expect(result.diff).toContain('unstaged.ts');
     });
 
     it('should skip untracked files that no longer exist', async () => {
-      mockExecFile
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: '' }); // staged
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: '' }); // unstaged
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: 'deleted-file.ts\n' }); // ls-files --others
-        });
+      fakeExecutor.enqueueResponse(
+        { type: 'success', stdout: '' }, // staged
+        { type: 'success', stdout: '' }, // unstaged
+        { type: 'success', stdout: 'deleted-file.ts\n' }, // ls-files --others
+      );
 
       // File no longer exists (deleted after ls-files ran)
       mockExistsSync.mockImplementation((path: string) => {
@@ -501,38 +405,13 @@ describe('GitService', () => {
     });
 
     it('should skip file gracefully when exit code 2 occurs (IOError caught per-file)', async () => {
-      // This test verifies that:
-      // 1. Exit code 2 causes IOError to be thrown by execGit (not swallowed by allowNonZero)
-      // 2. The per-file error handling catches it gracefully
-      // 3. The problematic file is skipped, method completes without crashing
-      mockExecFile
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: '' }); // staged diff
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: '' }); // unstaged diff
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // ls-files returns untracked file
-          cb(null, { stdout: 'problem-file.ts\n' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // Binary check succeeds (not binary)
-          cb(null, { stdout: '10\t0\tproblem-file.ts\n' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // git diff --no-index exits with code 2 (real error, e.g., file not found)
-          // This should cause IOError to be thrown (not swallowed by allowNonZero)
-          // But the per-file try/catch handles it gracefully
-          const error = new Error('fatal: unable to read file') as Error & {
-            code: number;
-            stdout?: string;
-            stderr?: string;
-          };
-          error.code = 2;
-          error.stderr = 'fatal: unable to read file';
-          cb(error);
-        });
+      fakeExecutor.enqueueResponse(
+        { type: 'success', stdout: '' }, // staged diff
+        { type: 'success', stdout: '' }, // unstaged diff
+        { type: 'success', stdout: 'problem-file.ts\n' }, // ls-files
+        { type: 'success', stdout: '10\t0\tproblem-file.ts\n' }, // binary check
+        { type: 'failure', exitCode: 2, stderr: 'fatal: unable to read file' }, // diff --no-index exit 2
+      );
 
       // Method completes without throwing (per-file errors are caught)
       const result = await service.getWorkingTreeDiff('project-1');
@@ -550,19 +429,15 @@ describe('GitService', () => {
     });
 
     it('should return diff for a valid commit', async () => {
-      mockExecFile.mockImplementationOnce((cmd, args, opts, cb) => {
-        cb(null, { stdout: 'diff --git a/file.ts b/file.ts\n+++ added line\n' });
+      fakeExecutor.enqueueResponse({
+        type: 'success',
+        stdout: 'diff --git a/file.ts b/file.ts\n+++ added line\n',
       });
 
       const result = await service.getCommitDiff('project-1', 'abc1234');
 
       expect(result).toContain('diff --git');
-      expect(mockExecFile).toHaveBeenCalledWith(
-        'git',
-        ['show', 'abc1234', '--format='],
-        expect.any(Object),
-        expect.any(Function),
-      );
+      expect(fakeExecutor.calls[0].argv).toEqual(['git', 'show', 'abc1234', '--format=']);
     });
 
     it('should throw ValidationError for invalid SHA format', async () => {
@@ -575,9 +450,7 @@ describe('GitService', () => {
     });
 
     it('should accept full 40-char SHA', async () => {
-      mockExecFile.mockImplementationOnce((cmd, args, opts, cb) => {
-        cb(null, { stdout: 'diff content' });
-      });
+      fakeExecutor.enqueueResponse({ type: 'success', stdout: 'diff content' });
 
       const sha = 'a'.repeat(40);
       await expect(service.getCommitDiff('project-1', sha)).resolves.toBeDefined();
@@ -590,15 +463,10 @@ describe('GitService', () => {
     });
 
     it('should return changed files for a commit', async () => {
-      mockExecFile
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // numstat
-          cb(null, { stdout: '15\t3\tsrc/component.tsx\n' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // name-status
-          cb(null, { stdout: 'A\tsrc/component.tsx\n' });
-        });
+      fakeExecutor.enqueueResponse(
+        { type: 'success', stdout: '15\t3\tsrc/component.tsx\n' }, // numstat
+        { type: 'success', stdout: 'A\tsrc/component.tsx\n' }, // name-status
+      );
 
       const result = await service.getCommitChangedFiles('project-1', 'abc1234');
 
@@ -625,38 +493,20 @@ describe('GitService', () => {
     });
 
     it('should handle CRLF line endings in untracked file list', async () => {
-      // Helper to create binary check and diff mocks for a file
-      const addFileMocks = (fileName: string) => {
-        mockExecFile
-          .mockImplementationOnce((cmd, args, opts, cb) => {
-            // Binary check (numstat)
-            cb(null, { stdout: `10\t0\t${fileName}\n` });
-          })
-          .mockImplementationOnce((cmd, args, opts, cb) => {
-            // Actual diff (exits with code 1)
-            const error = new Error('exit 1') as Error & { stdout: string; code: number };
-            error.code = 1;
-            error.stdout = `diff --git a/${fileName} b/${fileName}\n+content\n`;
-            cb(error);
-          });
-      };
-
-      mockExecFile
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: '' }); // staged diff
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: '' }); // unstaged diff
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // Windows-style CRLF line endings
-          cb(null, { stdout: 'file1.ts\r\nfile2.ts\r\nfile3.ts\r\n' });
-        });
-
-      // Add mocks for each of the 3 files
-      addFileMocks('file1.ts');
-      addFileMocks('file2.ts');
-      addFileMocks('file3.ts');
+      fakeExecutor.enqueueResponse(
+        { type: 'success', stdout: '' }, // staged diff
+        { type: 'success', stdout: '' }, // unstaged diff
+        { type: 'success', stdout: 'file1.ts\r\nfile2.ts\r\nfile3.ts\r\n' }, // CRLF in ls-files
+        // file1.ts
+        { type: 'success', stdout: '10\t0\tfile1.ts\n' },
+        { type: 'failure', exitCode: 1, stdout: 'diff --git a/file1.ts b/file1.ts\n+content\n' },
+        // file2.ts
+        { type: 'success', stdout: '10\t0\tfile2.ts\n' },
+        { type: 'failure', exitCode: 1, stdout: 'diff --git a/file2.ts b/file2.ts\n+content\n' },
+        // file3.ts
+        { type: 'success', stdout: '10\t0\tfile3.ts\n' },
+        { type: 'failure', exitCode: 1, stdout: 'diff --git a/file3.ts b/file3.ts\n+content\n' },
+      );
 
       const result = await service.getWorkingTreeDiff('project-1');
 
@@ -665,34 +515,20 @@ describe('GitService', () => {
     });
 
     it('should handle mixed line endings in git output', async () => {
-      const addFileMocks = (fileName: string) => {
-        mockExecFile
-          .mockImplementationOnce((cmd, args, opts, cb) => {
-            cb(null, { stdout: `10\t0\t${fileName}\n` });
-          })
-          .mockImplementationOnce((cmd, args, opts, cb) => {
-            const error = new Error('exit 1') as Error & { stdout: string; code: number };
-            error.code = 1;
-            error.stdout = `diff --git a/${fileName} b/${fileName}\n+content\n`;
-            cb(error);
-          });
-      };
-
-      mockExecFile
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: '' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: '' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // Mixed: some lines with CRLF, some with just LF
-          cb(null, { stdout: 'file1.ts\r\nfile2.ts\nfile3.ts\r\n' });
-        });
-
-      addFileMocks('file1.ts');
-      addFileMocks('file2.ts');
-      addFileMocks('file3.ts');
+      fakeExecutor.enqueueResponse(
+        { type: 'success', stdout: '' },
+        { type: 'success', stdout: '' },
+        { type: 'success', stdout: 'file1.ts\r\nfile2.ts\nfile3.ts\r\n' },
+        // file1.ts
+        { type: 'success', stdout: '10\t0\tfile1.ts\n' },
+        { type: 'failure', exitCode: 1, stdout: 'diff --git a/file1.ts b/file1.ts\n+content\n' },
+        // file2.ts
+        { type: 'success', stdout: '10\t0\tfile2.ts\n' },
+        { type: 'failure', exitCode: 1, stdout: 'diff --git a/file2.ts b/file2.ts\n+content\n' },
+        // file3.ts
+        { type: 'success', stdout: '10\t0\tfile3.ts\n' },
+        { type: 'failure', exitCode: 1, stdout: 'diff --git a/file3.ts b/file3.ts\n+content\n' },
+      );
 
       const result = await service.getWorkingTreeDiff('project-1');
 
@@ -700,33 +536,17 @@ describe('GitService', () => {
     });
 
     it('should filter empty lines from git output', async () => {
-      const addFileMocks = (fileName: string) => {
-        mockExecFile
-          .mockImplementationOnce((cmd, args, opts, cb) => {
-            cb(null, { stdout: `10\t0\t${fileName}\n` });
-          })
-          .mockImplementationOnce((cmd, args, opts, cb) => {
-            const error = new Error('exit 1') as Error & { stdout: string; code: number };
-            error.code = 1;
-            error.stdout = `diff --git a/${fileName} b/${fileName}\n+content\n`;
-            cb(error);
-          });
-      };
-
-      mockExecFile
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: '' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: '' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // Output with empty lines that could result from trailing newlines
-          cb(null, { stdout: 'file1.ts\n\nfile2.ts\n\n' });
-        });
-
-      addFileMocks('file1.ts');
-      addFileMocks('file2.ts');
+      fakeExecutor.enqueueResponse(
+        { type: 'success', stdout: '' },
+        { type: 'success', stdout: '' },
+        { type: 'success', stdout: 'file1.ts\n\nfile2.ts\n\n' },
+        // file1.ts
+        { type: 'success', stdout: '10\t0\tfile1.ts\n' },
+        { type: 'failure', exitCode: 1, stdout: 'diff --git a/file1.ts b/file1.ts\n+content\n' },
+        // file2.ts
+        { type: 'success', stdout: '10\t0\tfile2.ts\n' },
+        { type: 'failure', exitCode: 1, stdout: 'diff --git a/file2.ts b/file2.ts\n+content\n' },
+      );
 
       const result = await service.getWorkingTreeDiff('project-1');
 
@@ -735,23 +555,13 @@ describe('GitService', () => {
     });
 
     it('should handle CRLF in getWorkingTreeChanges untracked files', async () => {
-      mockExecFile
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: '' }); // staged numstat
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: '' }); // staged name-status
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: '' }); // unstaged numstat
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          cb(null, { stdout: '' }); // unstaged name-status
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // CRLF line endings in untracked list
-          cb(null, { stdout: 'new-file.ts\r\nanother-file.ts\r\n' });
-        });
+      fakeExecutor.enqueueResponse(
+        { type: 'success', stdout: '' }, // staged numstat
+        { type: 'success', stdout: '' }, // staged name-status
+        { type: 'success', stdout: '' }, // unstaged numstat
+        { type: 'success', stdout: '' }, // unstaged name-status
+        { type: 'success', stdout: 'new-file.ts\r\nanother-file.ts\r\n' }, // untracked
+      );
 
       const result = await service.getWorkingTreeChanges('project-1');
 
@@ -760,15 +570,10 @@ describe('GitService', () => {
     });
 
     it('should handle CRLF in changed files parsing', async () => {
-      mockExecFile
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // numstat with CRLF
-          cb(null, { stdout: '10\t5\tsrc/file1.ts\r\n3\t2\tsrc/file2.ts\r\n' });
-        })
-        .mockImplementationOnce((cmd, args, opts, cb) => {
-          // name-status with CRLF
-          cb(null, { stdout: 'M\tsrc/file1.ts\r\nA\tsrc/file2.ts\r\n' });
-        });
+      fakeExecutor.enqueueResponse(
+        { type: 'success', stdout: '10\t5\tsrc/file1.ts\r\n3\t2\tsrc/file2.ts\r\n' }, // numstat
+        { type: 'success', stdout: 'M\tsrc/file1.ts\r\nA\tsrc/file2.ts\r\n' }, // name-status
+      );
 
       const result = await service.getCommitChangedFiles('project-1', 'abc1234');
 
@@ -783,22 +588,15 @@ describe('GitService', () => {
     // allowNonZero option should only tolerate exit code 1, not 2+
 
     it('should throw IOError for exit code 2 even with allowNonZero and stdout present', async () => {
-      // exit code 2 = git error (e.g., invalid argument, ambiguous ref, file not found)
-      // allowNonZero only tolerates exit code 1 (diff found)
-      const error = new Error('Command failed') as Error & {
-        code: number;
-        stdout: string;
-        stderr: string;
-      };
-      error.code = 2;
-      error.stdout = 'some output that should be ignored';
-      error.stderr = 'fatal: some error';
-
       mockExistsSync.mockReturnValue(true);
-      mockExecFile.mockImplementationOnce((cmd, args, opts, cb) => {
-        cb(error);
-      });
       mockStorage.getProject.mockResolvedValueOnce({ rootPath: '/project' });
+
+      fakeExecutor.enqueueResponse({
+        type: 'failure',
+        exitCode: 2,
+        stdout: 'some output that should be ignored',
+        stderr: 'fatal: some error',
+      });
 
       await expect(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- accessing private method for testing
@@ -811,20 +609,15 @@ describe('GitService', () => {
     });
 
     it('should include exit code in IOError metadata', async () => {
-      const error = new Error('Command failed') as Error & {
-        code: number;
-        stdout: string;
-        stderr: string;
-      };
-      error.code = 2;
-      error.stdout = '';
-      error.stderr = 'fatal: error';
-
       mockExistsSync.mockReturnValue(true);
-      mockExecFile.mockImplementationOnce((cmd, args, opts, cb) => {
-        cb(error);
-      });
       mockStorage.getProject.mockResolvedValueOnce({ rootPath: '/project' });
+
+      fakeExecutor.enqueueResponse({
+        type: 'failure',
+        exitCode: 2,
+        stdout: '',
+        stderr: 'fatal: error',
+      });
 
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- accessing private method for testing
@@ -837,21 +630,15 @@ describe('GitService', () => {
     });
 
     it('should NOT throw for exit code 1 when allowNonZero is true', async () => {
-      // exit code 1 = diff found, not an error
-      const error = new Error('Command failed') as Error & {
-        code: number;
-        stdout: string;
-        stderr: string;
-      };
-      error.code = 1;
-      error.stdout = 'diff --git a/file.txt b/file.txt\n-old\n+new';
-      error.stderr = '';
-
       mockExistsSync.mockReturnValue(true);
-      mockExecFile.mockImplementationOnce((cmd, args, opts, cb) => {
-        cb(error);
-      });
       mockStorage.getProject.mockResolvedValueOnce({ rootPath: '/project' });
+
+      fakeExecutor.enqueueResponse({
+        type: 'failure',
+        exitCode: 1,
+        stdout: 'diff --git a/file.txt b/file.txt\n-old\n+new',
+        stderr: '',
+      });
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- accessing private method for testing
       const result = await (service as any).execGit('project-id', ['diff'], {
@@ -861,21 +648,15 @@ describe('GitService', () => {
     });
 
     it('should throw IOError for exit code 128 (fatal git error)', async () => {
-      // exit code 128 = fatal error (e.g., not a git repo, invalid object)
-      const error = new Error('Command failed') as Error & {
-        code: number;
-        stdout: string;
-        stderr: string;
-      };
-      error.code = 128;
-      error.stdout = '';
-      error.stderr = 'fatal: not a git repository';
-
       mockExistsSync.mockReturnValue(true);
-      mockExecFile.mockImplementationOnce((cmd, args, opts, cb) => {
-        cb(error);
-      });
       mockStorage.getProject.mockResolvedValueOnce({ rootPath: '/project' });
+
+      fakeExecutor.enqueueResponse({
+        type: 'failure',
+        exitCode: 128,
+        stdout: '',
+        stderr: 'fatal: not a git repository',
+      });
 
       await expect(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- accessing private method for testing
@@ -883,10 +664,15 @@ describe('GitService', () => {
       ).rejects.toThrow(IOError);
 
       mockExistsSync.mockReturnValue(true);
-      mockExecFile.mockImplementationOnce((cmd, args, opts, cb) => {
-        cb(error);
-      });
       mockStorage.getProject.mockResolvedValueOnce({ rootPath: '/project' });
+
+      fakeExecutor.enqueueResponse({
+        type: 'failure',
+        exitCode: 128,
+        stdout: '',
+        stderr: 'fatal: not a git repository',
+      });
+
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- accessing private method for testing
         await (service as any).execGit('project-id', ['status'], { allowNonZero: true });

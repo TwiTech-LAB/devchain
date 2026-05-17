@@ -8,6 +8,7 @@ import { Button } from '@/ui/components/ui/button';
 import '@xterm/xterm/css/xterm.css';
 import { termLog } from '@/ui/lib/debug';
 import { useAppSocket } from '@/ui/hooks/useAppSocket';
+import { useAppTheme } from '@/ui/hooks/useAppTheme';
 import { DEFAULT_TERMINAL_SCROLLBACK } from '@/common/constants/terminal';
 import {
   useXterm,
@@ -16,10 +17,12 @@ import {
   useSeedManager,
   useTerminalMessageHandlers,
   useTerminalFocus,
+  useTerminalThemeSync,
 } from './hooks';
-import { useScrollbackHistory } from './useScrollbackHistory';
 import { connectionReducer } from './connectionReducer';
 import { resolveTerminalSocket } from './socket';
+import { resolveTerminalTheme } from './terminal-themes';
+import { normalizeTerminalEnvelopeForTheme } from './terminal-output-theme';
 import type { ChatTerminalProps } from './types';
 
 export interface ChatTerminalHandle {
@@ -39,6 +42,7 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
   }: ChatTerminalProps,
   ref,
 ) {
+  const appTheme = useAppTheme();
   const [input, setInput] = useState<string>('');
   const [inputMode, setInputMode] = useState<'form' | 'tty' | null>(null); // null = loading
   const [scrollbackLines, setScrollbackLines] = useState<number>(DEFAULT_TERMINAL_SCROLLBACK); // Default until loaded
@@ -106,6 +110,9 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
   const { lastSequenceRef, isSubscribedRef, expectingSeedRef, attemptSubscription } =
     useTerminalSubscription(sessionId, xtermRef, dispatchConn, socket);
 
+  // Theme sync: emits terminal:theme after subscribe confirmation and on theme changes
+  const { notifySubscribed } = useTerminalThemeSync(sessionId, appTheme, isSubscribedRef, socket);
+
   // Initialize xterm terminal with onReady callback that triggers subscription.
   // Defer creation until inputMode is loaded so we can honor the configured mode.
   useXterm(
@@ -122,6 +129,7 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
     pendingHistoryFramesRef,
     scrollbackLines,
     socket,
+    appTheme,
   );
 
   // Seed management
@@ -161,16 +169,6 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
     socket,
   );
 
-  // Scrollback history (container scroll fallback; xterm's internal scroll is handled in useXterm)
-  useScrollbackHistory(
-    terminalRef,
-    sessionId,
-    hasHistoryRef,
-    isHistoryInFlightRef,
-    scrollbackLines,
-    socket,
-  );
-
   // Focus handling
   useTerminalFocus(containerRef, sessionId, isSubscribedRef, socket);
 
@@ -191,7 +189,6 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
     lastCapturedSequenceRef,
     expectingSeedRef,
     seedStateRef,
-    pendingWritesRef,
     queueOrWrite,
     handleSeedChunk,
     flushPendingWrites,
@@ -199,6 +196,7 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
     onSessionEnded,
     scrollbackLines,
     socket,
+    notifySubscribed,
   );
 
   // Socket connection and message handling
@@ -213,9 +211,9 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
         dispatchConn({ type: 'SOCKET_DISCONNECT' });
         isSubscribedRef.current = false;
       },
-      message: handleMessage,
+      message: (envelope) => handleMessage(normalizeTerminalEnvelopeForTheme(envelope, appTheme)),
     },
-    [attemptSubscription, handleMessage, sessionId, isSubscribedRef],
+    [attemptSubscription, handleMessage, sessionId, isSubscribedRef, appTheme],
     _providedSocket,
   );
 
@@ -301,7 +299,7 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
         {!isTerminalReady && (
           <div
             className="absolute inset-0 z-10"
-            style={{ backgroundColor: '#1a1a1a' }}
+            style={{ backgroundColor: resolveTerminalTheme(appTheme).xtermTheme.background }}
             aria-hidden="true"
           />
         )}

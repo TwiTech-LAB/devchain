@@ -26,6 +26,7 @@ import {
   useDefaultLayout,
 } from '@/ui/components/ui/resizable';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
+import { useProjectActivityReporter } from '@/ui/hooks/useProjectActivityReporter';
 import {
   FolderOpen,
   FileCode,
@@ -49,6 +50,7 @@ import { ReviewCommentsSection } from '@/ui/components/review/ReviewCommentsSect
 import { KeyboardShortcutsHelp } from '@/ui/components/review/KeyboardShortcutsHelp';
 import { HelpButton } from '@/ui/components/shared';
 import { useReviewSubscription } from '@/ui/hooks/useReviewSubscription';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 import {
   useCreateComment,
   useReplyToComment,
@@ -140,6 +142,8 @@ export function ReviewsPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { selectedProject, selectedProjectId, projectsLoading } = useSelectedProject();
+  const { projectActivityHandlers } = useProjectActivityReporter(selectedProjectId);
+  const apiFetch = useFetchFactory();
 
   // UI state
   const [mode, setMode] = useState<ReviewMode>('working-tree');
@@ -241,7 +245,7 @@ export function ReviewsPage() {
   // Fetch agent presence for terminal integration
   const { data: agentPresence = {} as AgentPresenceMap } = useQuery({
     queryKey: ['agent-presence', selectedProjectId],
-    queryFn: () => fetchAgentPresence(selectedProjectId!),
+    queryFn: () => fetchAgentPresence(selectedProjectId!, apiFetch),
     enabled: !!selectedProjectId,
     refetchInterval: 10000, // Refresh every 10 seconds
   });
@@ -610,7 +614,7 @@ export function ReviewsPage() {
   const hasChanges = changedFiles.length > 0;
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full" {...projectActivityHandlers}>
       {/* Header */}
       <div className="border-b px-4 py-3 bg-card">
         <div className="flex items-center gap-4">

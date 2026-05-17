@@ -1,7 +1,4 @@
-import { execFile } from 'child_process';
-import { promisify } from 'util';
-
-const execFileAsync = promisify(execFile);
+import type { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 
 export type ProbeOutcome = {
   supported: boolean;
@@ -17,24 +14,26 @@ const CAPTURE_LIMIT = 5000;
 const MODEL_ERROR_PATTERN =
   /\bmodel\b.*\b(not[_ ]found|invalid|unsupported|not[_ ]available|does[_ ]not[_ ]exist|unknown)\b|\b(unsupported|invalid|unknown)\b.*\bmodel\b|\bdoes not support\b/;
 
-export async function probe1mSupport(binPath: string, timeoutMs = 30_000): Promise<ProbeOutcome> {
-  // execFile dual-path: Claude CLI exits non-zero on is_error:true
-  // but still emits valid JSON on stdout
-  let stdout = '';
-  try {
-    const result = await execFileAsync(binPath, PROBE_ARGS, { timeout: timeoutMs });
-    stdout = result.stdout;
-  } catch (err: unknown) {
-    const execErr = err as { killed?: boolean; signal?: string; stdout?: string };
-    if (execErr.killed || execErr.signal === 'SIGTERM') {
-      return {
-        supported: false,
-        status: 'timeout',
-        detail: `Timed out after ${timeoutMs}ms waiting for Claude output`,
-      };
-    }
-    stdout = execErr.stdout ?? '';
+export async function probe1mSupport(
+  executor: ProcessExecutor,
+  binPath: string,
+  timeoutMs = 30_000,
+): Promise<ProbeOutcome> {
+  const result = await executor.run({
+    argv: [binPath, ...PROBE_ARGS],
+    mode: 'pipe',
+    timeout: timeoutMs,
+  });
+
+  if (result.timedOut) {
+    return {
+      supported: false,
+      status: 'timeout',
+      detail: `Timed out after ${timeoutMs}ms waiting for Claude output`,
+    };
   }
+
+  const stdout = result.stdout;
 
   if (!stdout.trim()) {
     return {

@@ -4,13 +4,19 @@ import { FitAddon } from '@xterm/addon-fit';
 import type { Socket } from 'socket.io-client';
 import { termLog } from '@/ui/lib/debug';
 import { toast } from '@/ui/hooks/use-toast';
-import { isTerminalInternalSequence, supportsWheelMouseTracking } from '../xterm-utils';
+import {
+  decodeOsc52ClipboardPayload,
+  isTerminalInternalSequence,
+  supportsWheelMouseTracking,
+} from '../xterm-utils';
 import {
   DEFAULT_TERMINAL_SCROLLBACK,
   MIN_TERMINAL_SCROLLBACK,
   MAX_TERMINAL_SCROLLBACK,
 } from '@/common/constants/terminal';
 import { resolveTerminalSocket } from '../socket';
+import { resolveTerminalTheme } from '../terminal-themes';
+import type { ThemeValue } from '@/ui/components/ThemeSelect';
 
 /**
  * Buffered frame for sequence-based history deduplication
@@ -65,6 +71,7 @@ export function useXterm(
   pendingHistoryFramesRef?: React.MutableRefObject<BufferedFrame[]>,
   scrollbackLines: number = DEFAULT_TERMINAL_SCROLLBACK,
   socket?: Socket | null,
+  appTheme: ThemeValue = 'dark',
 ) {
   useEffect(() => {
     // C1: Clamp scrollbackLines to valid range before using
@@ -97,42 +104,14 @@ export function useXterm(
     const activeSocket = resolveTerminalSocket(socket);
 
     const terminal = new Terminal({
-      convertEol: true,
+      convertEol: false,
       scrollback: clampedScrollback,
       cursorBlink: false, // Disable cursor blink
       disableStdin: inputMode === 'form', // Enable stdin for TTY mode
       // Dampen scroll aggressiveness
       fastScrollSensitivity: 1,
       scrollSensitivity: 1,
-      theme: {
-        // Dark terminal theme - works well with ANSI colors
-        background: '#1a1a1a',
-        foreground: '#c9d1d9',
-        cursor: '#58a6ff',
-        cursorAccent: '#0d1117',
-        selectionBackground: '#1f6feb',
-        selectionForeground: '#ffffff',
-
-        // Standard ANSI colors - adjusted for better readability on dark background
-        black: '#484f58',
-        red: '#ff7b72',
-        green: '#3fb950',
-        yellow: '#d29922',
-        blue: '#58a6ff',
-        magenta: '#bc8cff',
-        cyan: '#39c5cf',
-        white: '#b1bac4',
-
-        // Bright ANSI colors
-        brightBlack: '#6e7681',
-        brightRed: '#ffa198',
-        brightGreen: '#56d364',
-        brightYellow: '#e3b341',
-        brightBlue: '#79c0ff',
-        brightMagenta: '#d2a8ff',
-        brightCyan: '#56d4dd',
-        brightWhite: '#f0f6fc',
-      },
+      theme: resolveTerminalTheme(appTheme).xtermTheme,
     });
 
     const fitAddon = new FitAddon();
@@ -140,10 +119,9 @@ export function useXterm(
 
     terminal.open(terminalRef.current);
 
-    // OSC 52 clipboard relay. Inner apps (e.g. Claude TUI) emit ESC]52;c;<base64>BEL
-    // to set the system clipboard. tmux is configured with `set-clipboard external`,
-    // so it forwards these unchanged to xterm.js. Register a handler that decodes
-    // and writes to the browser clipboard via the async Clipboard API.
+    // OSC 52 clipboard relay. Inner apps (e.g. Claude TUI) emit ESC]52;c;<base64>BEL.
+    // tmux 3.x default (`set-clipboard external` + `terminal-features xterm*:clipboard`)
+    // forwards these unchanged to xterm.js.
     terminal.parser.registerOscHandler(52, (data: string) => {
       const semi = data.indexOf(';');
       if (semi < 0) return false;
@@ -151,25 +129,56 @@ export function useXterm(
       // "?" is a clipboard read query — refuse silently for security.
       if (payload === '?') return true;
       try {
-        const text =
-          typeof atob === 'function'
-            ? atob(payload)
-            : Buffer.from(payload, 'base64').toString('utf-8');
+        const text = decodeOsc52ClipboardPayload(payload);
         if (text && navigator.clipboard?.writeText) {
           void navigator.clipboard
             .writeText(text)
             .then(() => {
+              const characterCount = Array.from(text).length;
               toast({
                 title: 'Copied to clipboard',
-                description: `${text.length} character${text.length === 1 ? '' : 's'} from the terminal`,
+                description: `${characterCount} character${characterCount === 1 ? '' : 's'} from the terminal`,
               });
             })
-            .catch(() => {});
+            .catch((err: unknown) => {
+              const reason = err instanceof Error ? err.message : String(err);
+              termLog('osc52_writeText_failed', { sessionId, reason, textLen: text.length });
+              toast({
+                title: 'Clipboard write blocked',
+                description: `${reason} — focus the terminal and try again`,
+                variant: 'destructive',
+              });
+            });
         }
       } catch {
         // malformed base64 — ignore
       }
       return true;
+    });
+
+    // Auto-copy on selection. xterm.js exposes only a highlight by default, and
+    // Ctrl+C is forwarded to the TUI as an interrupt in TTY mode, so without
+    // this the user's highlighted text never reaches the OS clipboard. The
+    // debounce coalesces the many onSelectionChange events fired during a drag
+    // so we write once when the selection settles.
+    let selectionCopyTimer: ReturnType<typeof setTimeout> | undefined;
+    let lastCopiedSelection = '';
+    const selectionDisposable = terminal.onSelectionChange(() => {
+      if (selectionCopyTimer) clearTimeout(selectionCopyTimer);
+      selectionCopyTimer = setTimeout(() => {
+        const text = terminal.getSelection();
+        if (!text || text === lastCopiedSelection) return;
+        if (!navigator.clipboard?.writeText) return;
+        void navigator.clipboard
+          .writeText(text)
+          .then(() => {
+            lastCopiedSelection = text;
+          })
+          .catch((err: unknown) => {
+            const reason = err instanceof Error ? err.message : String(err);
+            termLog('selection_copy_failed', { sessionId, reason, textLen: text.length });
+          });
+      }, 150);
     });
 
     // Attach a custom wheel handler that respects TUI mouse tracking and dampens scrolling
@@ -384,6 +393,8 @@ export function useXterm(
 
     return () => {
       clearTimeout(timeoutId);
+      if (selectionCopyTimer) clearTimeout(selectionCopyTimer);
+      selectionDisposable.dispose();
       scrollDisposable?.dispose();
       termLog('terminal_dispose', { sessionId });
       terminal.dispose();
@@ -403,4 +414,11 @@ export function useXterm(
     scrollbackLines,
     socket,
   ]);
+
+  // Live theme update — runs independently of the initialization effect so
+  // that switching the app theme does not dispose/recreate the terminal.
+  useEffect(() => {
+    if (!xtermRef.current) return;
+    xtermRef.current.options.theme = resolveTerminalTheme(appTheme).xtermTheme;
+  }, [appTheme, xtermRef]);
 }

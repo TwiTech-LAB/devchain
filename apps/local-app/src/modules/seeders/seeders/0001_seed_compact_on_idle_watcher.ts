@@ -1,5 +1,5 @@
 import type { CreateWatcher } from '../../storage/models/domain.models';
-import type { DataSeeder, SeederContext } from '../services/data-seeder.service';
+import type { DataSeeder, SeederContext } from '../types/seeder.types';
 
 const SEEDER_NAME = '0001_seed_compact_on_idle_watcher';
 const SEEDER_VERSION = 2;

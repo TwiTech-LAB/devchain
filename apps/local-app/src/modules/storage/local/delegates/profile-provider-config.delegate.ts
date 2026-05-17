@@ -3,11 +3,7 @@ import {
   type ProfileProviderConfig,
   type UpdateProfileProviderConfig,
 } from '../../models/domain.models';
-import {
-  NotFoundError,
-  StorageError,
-  ValidationError,
-} from '../../../../common/errors/error-types';
+import { NotFoundError, ValidationError } from '../../../../common/errors/error-types';
 import { createLogger } from '../../../../common/logging/logger';
 import { isSqliteUniqueConstraint, parseProviderConfigEnv } from '../helpers/storage-helpers';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
@@ -99,14 +95,7 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
     const { profileProviderConfigs } = await import('../../db/schema');
     const { eq, and, sql } = await import('drizzle-orm');
 
-    const sqlite = this.rawClient;
-    if (!sqlite || typeof sqlite.exec !== 'function') {
-      throw new StorageError('Unable to access underlying SQLite client for transaction control');
-    }
-
-    sqlite.exec('BEGIN IMMEDIATE TRANSACTION');
-
-    try {
+    return this.txRunner.runImmediateAsync(async () => {
       const existing = await this.db
         .select()
         .from(profileProviderConfigs)
@@ -132,7 +121,6 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
           createdAt: row.createdAt,
           updatedAt: row.updatedAt,
         };
-        sqlite.exec('COMMIT');
         return {
           inserted: false,
           reason:
@@ -166,7 +154,6 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
           updatedAt: now,
         });
 
-        sqlite.exec('COMMIT');
         logger.info(
           { configId: id, profileId: input.profileId, position: nextPosition },
           'Created profile provider config (createIfMissing)',
@@ -202,7 +189,6 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
             createdAt: row.createdAt,
             updatedAt: row.updatedAt,
           };
-          sqlite.exec('COMMIT');
           return {
             inserted: false,
             reason:
@@ -225,21 +211,12 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
           .limit(1);
 
         if (posConflict[0]) {
-          sqlite.exec('COMMIT');
           return { inserted: false, reason: 'position_conflict' };
         }
 
-        sqlite.exec('COMMIT');
         return { inserted: false, reason: 'unknown_constraint' };
       }
-    } catch (error) {
-      try {
-        sqlite.exec('ROLLBACK');
-      } catch (rollbackError) {
-        logger.error({ rollbackError }, 'Failed to rollback createIfMissing transaction');
-      }
-      throw error;
-    }
+    });
   }
 
   async getProfileProviderConfig(id: string): Promise<ProfileProviderConfig> {
@@ -410,17 +387,7 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
     const { profileProviderConfigs } = await import('../../db/schema');
     const { eq } = await import('drizzle-orm');
 
-    // Use raw SQL transaction for guaranteed atomicity
-    const sqlite = this.rawClient;
-    if (!sqlite || typeof sqlite.exec !== 'function') {
-      throw new StorageError('Unable to access underlying SQLite client for transaction control');
-    }
-
-    try {
-      // Start transaction
-      sqlite.exec('BEGIN IMMEDIATE TRANSACTION');
-
-      // Compute tempBase from max position to avoid conflicts
+    await this.txRunner.runImmediateAsync(async () => {
       const configs = await this.db
         .select({ position: profileProviderConfigs.position })
         .from(profileProviderConfigs)
@@ -429,7 +396,6 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
       const maxPosition = Math.max(0, ...configs.map((c) => c.position ?? 0));
       const tempBase = maxPosition + 1000;
 
-      // First pass: set all to temporary high positions
       for (let i = 0; i < configIds.length; i++) {
         await this.db
           .update(profileProviderConfigs)
@@ -437,25 +403,14 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
           .where(eq(profileProviderConfigs.id, configIds[i]));
       }
 
-      // Second pass: set them to their final positions
       for (let i = 0; i < configIds.length; i++) {
         await this.db
           .update(profileProviderConfigs)
           .set({ position: i })
           .where(eq(profileProviderConfigs.id, configIds[i]));
       }
+    });
 
-      // Commit transaction
-      sqlite.exec('COMMIT');
-      logger.info({ profileId, configIds }, 'Reordered provider configs');
-    } catch (error) {
-      // Rollback transaction on any error
-      sqlite.exec('ROLLBACK');
-      logger.error(
-        { error, profileId, configIds },
-        'Failed to reorder provider configs, rolled back',
-      );
-      throw error;
-    }
+    logger.info({ profileId, configIds }, 'Reordered provider configs');
   }
 }

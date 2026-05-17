@@ -1,8 +1,8 @@
 import { createPortal } from 'react-dom';
 import { useEffect, useMemo, useState } from 'react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
+import { Check, ClipboardCopy, MoreVertical } from 'lucide-react';
 import { Rnd } from 'react-rnd';
-import { MoreVertical } from 'lucide-react';
 import { cn } from '@/ui/lib/utils';
 import { useTerminalWindows, type TerminalWindowState } from './TerminalWindowsContext';
 import { SessionSwitcher } from './SessionSwitcher';
@@ -154,25 +154,70 @@ function FloatingWindow({
           <div className="flex flex-1 flex-col items-center justify-center text-center">
             <span className="sr-only">{window.title}</span>
             {window.subtitle && <span className="sr-only">{window.subtitle}</span>}
-            {window.details &&
-            window.details.some(
-              (detail) => !detail.hidden && !['Session', 'Epic'].includes(detail.label),
-            ) ? (
+            {window.details && window.details.some((detail) => !detail.hidden) ? (
               <div className="mt-1 flex flex-wrap justify-center gap-1">
                 {window.details
-                  .filter((detail) => !detail.hidden && !['Session', 'Epic'].includes(detail.label))
-                  .map((detail) => (
-                    <span
-                      key={`${window.id}-${detail.label}`}
-                      className="rounded bg-muted px-2 py-0.5 text-[11px] text-muted-foreground"
-                      title={detail.title ?? detail.value}
-                    >
-                      {detail.label !== 'Agent' && (
-                        <span className="mr-1 text-muted-foreground/70">{detail.label}:</span>
-                      )}
-                      <span className="font-medium text-foreground">{detail.value}</span>
-                    </span>
-                  ))}
+                  .filter((detail) => !detail.hidden)
+                  .map((detail) => {
+                    const isSession = detail.label === 'Session';
+                    if (isSession && detail.interactive) {
+                      return (
+                        <span
+                          key={`${window.id}-${detail.label}`}
+                          className="inline-flex items-center gap-1 rounded bg-muted px-2 py-0.5 text-[11px]"
+                        >
+                          {detail.isRenaming ? (
+                            <input
+                              ref={detail.renameInputRef as React.LegacyRef<HTMLInputElement>}
+                              type="text"
+                              value={detail.draftName ?? ''}
+                              maxLength={120}
+                              className="w-28 rounded border border-border bg-background px-1.5 py-0.5 text-[11px] font-mono text-foreground outline-none focus:ring-1 focus:ring-ring"
+                              onChange={(e) => detail.onDraftChange?.(e.target.value)}
+                              onKeyDown={detail.onRenameKeyDown}
+                              onBlur={detail.onRenameBlur}
+                            />
+                          ) : (
+                            <button
+                              type="button"
+                              className="font-mono font-medium text-foreground hover:text-primary cursor-pointer"
+                              title={detail.title ?? detail.value}
+                              onClick={() => detail.onRenameStart?.()}
+                            >
+                              {detail.value}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            aria-label="Copy session ID"
+                            className="flex-shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                            onClick={() => detail.onCopyId?.()}
+                          >
+                            {detail.copiedId ? (
+                              <Check className="h-3 w-3 text-emerald-500" />
+                            ) : (
+                              <ClipboardCopy className="h-3 w-3" />
+                            )}
+                          </button>
+                        </span>
+                      );
+                    }
+                    if (['Session', 'Epic'].includes(detail.label)) {
+                      return null;
+                    }
+                    return (
+                      <span
+                        key={`${window.id}-${detail.label}`}
+                        className="rounded bg-muted px-2 py-0.5 text-[11px] text-muted-foreground"
+                        title={detail.title ?? detail.value}
+                      >
+                        {detail.label !== 'Agent' && (
+                          <span className="mr-1 text-muted-foreground/70">{detail.label}:</span>
+                        )}
+                        <span className="font-medium text-foreground">{detail.value}</span>
+                      </span>
+                    );
+                  })}
               </div>
             ) : null}
           </div>

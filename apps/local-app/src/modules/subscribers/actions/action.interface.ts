@@ -10,11 +10,11 @@
  */
 
 import type { Logger } from 'pino';
-import type { TmuxService } from '../../terminal/services/tmux.service';
+import type { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
 import type { SessionsService } from '../../sessions/services/sessions.service';
+import type { SessionRuntime } from '../../sessions/services/session-runtime';
 import type { SessionCoordinatorService } from '../../sessions/services/session-coordinator.service';
-import type { TerminalSendCoordinatorService } from '../../terminal/services/terminal-send-coordinator.service';
-import type { SessionsMessagePoolService } from '../../sessions/services/sessions-message-pool.service';
+import type { AgentMessageDeliveryService } from '../../agent-message-delivery/agent-message-delivery.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 
 // ============================================
@@ -119,20 +119,20 @@ export interface ActionInputDefinition {
  * Contains services and data needed to perform the action.
  */
 export interface ActionContext {
-  /** Tmux service for terminal operations */
-  tmuxService: TmuxService;
+  /** Terminal IO service for terminal operations */
+  terminalIO: TerminalIOService;
 
   /** Sessions service for session management */
   sessionsService: SessionsService;
 
+  /** Session runtime for launching/restoring sessions */
+  sessionRuntime: SessionRuntime;
+
   /** Session coordinator for agent-level locking */
   sessionCoordinator: SessionCoordinatorService;
 
-  /** Coordinator for sending messages to terminals */
-  sendCoordinator: TerminalSendCoordinatorService;
-
-  /** Message pool service for batched message delivery */
-  messagePoolService: SessionsMessagePoolService;
+  /** Agent message delivery facade for pooled/immediate message delivery */
+  amd: AgentMessageDeliveryService;
 
   /** Storage service for data access (e.g., agent resolution) */
   storage: StorageService;

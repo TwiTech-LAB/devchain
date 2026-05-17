@@ -39,6 +39,12 @@ jest.mock('@tanstack/react-virtual', () => ({
   }),
 }));
 
+// Legacy mode: explicitly mock paged flag to false (legacy full-transcript path)
+jest.mock('@/ui/hooks/usePagedTranscript', () => ({
+  usePagedTranscriptFlag: () => [false, jest.fn()],
+  isPagedTranscriptEnabled: () => false,
+}));
+
 jest.mock('@/ui/lib/sessions', () => ({
   ...jest.requireActual('@/ui/lib/sessions'),
   fetchJsonOrThrow: jest.fn(),

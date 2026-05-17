@@ -2,6 +2,7 @@ import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { ThinkingBlock } from './ThinkingBlock';
 import type { SerializedSemanticStep } from '@/ui/hooks/useSessionTranscript';
+import { renderWithMode } from './__tests__/test-utils';
 
 function makeStep(overrides: Partial<SerializedSemanticStep> = {}): SerializedSemanticStep {
   return {
@@ -147,8 +148,8 @@ describe('ThinkingBlock', () => {
   // Step-level hotspot visual treatment
   // ---------------------------------------------------------------------------
 
-  it('shows amber border, flame icon, and percentage when isStepHot=true', () => {
-    render(<ThinkingBlock step={makeStep()} isStepHot percentOfChunk={45} />);
+  it('shows amber border, flame icon, and percentage when isStepHot=true (diagnostic mode)', () => {
+    renderWithMode(<ThinkingBlock step={makeStep()} isStepHot percentOfChunk={45} />, 'diagnostic');
 
     const wrapper = screen.getByTestId('thinking-block-wrapper');
     expect(wrapper.className).toContain('border-amber-500');
@@ -158,6 +159,13 @@ describe('ThinkingBlock', () => {
 
     const pct = screen.getByTestId('step-hotspot-pct');
     expect(pct).toHaveTextContent('45%');
+  });
+
+  it('hides hotspot indicators in Reader mode even when isStepHot=true', () => {
+    render(<ThinkingBlock step={makeStep()} isStepHot percentOfChunk={45} />);
+
+    expect(screen.queryByTestId('step-hotspot-flame')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('step-hotspot-pct')).not.toBeInTheDocument();
   });
 
   it('does not show hotspot indicators when isStepHot is false or undefined', () => {
@@ -170,8 +178,8 @@ describe('ThinkingBlock', () => {
     expect(screen.queryByTestId('step-hotspot-pct')).not.toBeInTheDocument();
   });
 
-  it('does not show percentage badge when percentOfChunk is 0', () => {
-    render(<ThinkingBlock step={makeStep()} isStepHot percentOfChunk={0} />);
+  it('does not show percentage badge when percentOfChunk is 0 (diagnostic mode)', () => {
+    renderWithMode(<ThinkingBlock step={makeStep()} isStepHot percentOfChunk={0} />, 'diagnostic');
 
     expect(screen.getByTestId('step-hotspot-flame')).toBeInTheDocument();
     expect(screen.queryByTestId('step-hotspot-pct')).not.toBeInTheDocument();

@@ -12,14 +12,22 @@ import {
   useSelectedProject,
 } from './useProjectSelection';
 import { getAppSocket, releaseAppSocket } from '@/ui/lib/socket';
+import { useRealtimeDispatch } from '@/ui/hooks/useRealtimeDispatch';
 
 jest.mock('@/ui/lib/socket', () => ({
   getAppSocket: jest.fn(),
   releaseAppSocket: jest.fn(),
 }));
 
+jest.mock('@/ui/hooks/useRealtimeDispatch', () => ({
+  useRealtimeDispatch: jest.fn(),
+}));
+
 const getAppSocketMock = getAppSocket as jest.MockedFunction<typeof getAppSocket>;
 const releaseAppSocketMock = releaseAppSocket as jest.MockedFunction<typeof releaseAppSocket>;
+const useRealtimeDispatchMock = useRealtimeDispatch as jest.MockedFunction<
+  typeof useRealtimeDispatch
+>;
 
 interface MockSocket {
   on: jest.Mock;
@@ -658,22 +666,33 @@ describe('WorktreeTabProvider', () => {
   });
 
   describe('WebSocket worktrees listener', () => {
-    let mockSocket: MockSocket;
-
-    beforeEach(() => {
-      mockSocket = createMockSocket();
-      getAppSocketMock.mockReturnValue(mockSocket as unknown as Socket);
-    });
-
-    it('connects app socket and listens for worktrees WebSocket events in main mode', async () => {
+    it('calls useRealtimeDispatch with worktrees registry in main mode', async () => {
       setupFetchMock('main');
       renderTracker();
       await act(async () => await flushPromises());
 
       await waitFor(() => {
-        expect(getAppSocketMock).toHaveBeenCalled();
+        expect(useRealtimeDispatchMock).toHaveBeenCalled();
       });
-      expect(mockSocket.on).toHaveBeenCalledWith('message', expect.any(Function));
+
+      const registry = useRealtimeDispatchMock.mock.calls.at(-1)?.[0];
+      expect(registry).toHaveLength(1);
+      expect(registry[0].match('worktrees')).toBe(true);
+      expect(registry[0].entries).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: 'invalidate', queryKey: ['worktree-tabs-worktrees'] }),
+          expect.objectContaining({ kind: 'invalidate', queryKey: ['chat-worktree-agent-groups'] }),
+          expect.objectContaining({ kind: 'invalidate', queryKey: ['orchestrator-worktrees'] }),
+          expect.objectContaining({
+            kind: 'invalidate',
+            queryKey: ['orchestrator-worktree-overview'],
+          }),
+          expect.objectContaining({
+            kind: 'invalidate',
+            queryKey: ['orchestrator-worktree-activity'],
+          }),
+        ]),
+      );
     });
 
     it('invalidates all worktree-related query keys on worktrees topic message', async () => {
@@ -683,20 +702,34 @@ describe('WorktreeTabProvider', () => {
       await act(async () => await flushPromises());
 
       await waitFor(() => {
-        expect(getAppSocketMock).toHaveBeenCalled();
+        expect(useRealtimeDispatchMock).toHaveBeenCalled();
       });
+
+      const registry = useRealtimeDispatchMock.mock.calls.at(-1)?.[0];
+      const matchEntry = registry?.find((e: { match: (t: string) => boolean }) =>
+        e.match('worktrees'),
+      );
+      expect(matchEntry).toBeDefined();
+
+      for (const entry of matchEntry.entries) {
+        queryClient.setQueryData(entry.queryKey, { stub: true });
+      }
 
       invalidateSpy.mockClear();
+      for (const entry of matchEntry.entries) {
+        invalidateSpy.mockClear();
+        queryClient.invalidateQueries({ queryKey: entry.queryKey });
+        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: entry.queryKey });
+      }
 
-      act(() => {
-        simulateMessage(mockSocket, { topic: 'worktrees', type: 'changed' });
-      });
-
-      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['worktree-tabs-worktrees'] });
-      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['chat-worktree-agent-groups'] });
-      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['orchestrator-worktrees'] });
-      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['orchestrator-worktree-overview'] });
-      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['orchestrator-worktree-activity'] });
+      const allKeys = matchEntry.entries.map((e: { queryKey: string[] }) => e.queryKey);
+      expect(allKeys).toEqual([
+        ['worktree-tabs-worktrees'],
+        ['chat-worktree-agent-groups'],
+        ['orchestrator-worktrees'],
+        ['orchestrator-worktree-overview'],
+        ['orchestrator-worktree-activity'],
+      ]);
 
       invalidateSpy.mockRestore();
     });
@@ -708,25 +741,13 @@ describe('WorktreeTabProvider', () => {
       await act(async () => await flushPromises());
 
       await waitFor(() => {
-        expect(getAppSocketMock).not.toHaveBeenCalled();
-      });
-    });
-
-    it('releases app socket on unmount', async () => {
-      setupFetchMock('main');
-      renderTracker();
-      await act(async () => await flushPromises());
-
-      await waitFor(() => {
-        expect(getAppSocketMock).toHaveBeenCalled();
+        expect(useRealtimeDispatchMock).toHaveBeenCalled();
       });
 
-      await act(async () => {
-        root.unmount();
-      });
+      expect(getAppSocketMock).not.toHaveBeenCalled();
 
-      expect(mockSocket.off).toHaveBeenCalledWith('message', expect.any(Function));
-      expect(releaseAppSocketMock).toHaveBeenCalled();
+      const registry = useRealtimeDispatchMock.mock.calls.at(-1)?.[0];
+      expect(registry).toHaveLength(0);
     });
   });
 });

@@ -136,7 +136,7 @@ describe('UpgradeDialog', () => {
 
     global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.includes('/api/registry/upgrade-project') && init?.method === 'POST') {
+      if (url.includes('/api/projects/proj-123/upgrade-template') && init?.method === 'POST') {
         await upgradePromise;
         return { ok: true, json: async () => ({ success: true, newVersion: '2.0.0' }) };
       }
@@ -159,7 +159,7 @@ describe('UpgradeDialog', () => {
   it('transitions to done step on successful upgrade', async () => {
     global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.includes('/api/registry/upgrade-project') && init?.method === 'POST') {
+      if (url.includes('/api/projects/proj-123/upgrade-template') && init?.method === 'POST') {
         return {
           ok: true,
           json: async () => ({ success: true, newVersion: '2.0.0' }),
@@ -185,7 +185,7 @@ describe('UpgradeDialog', () => {
     const onClose = jest.fn();
     global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.includes('/api/registry/upgrade-project') && init?.method === 'POST') {
+      if (url.includes('/api/projects/proj-123/upgrade-template') && init?.method === 'POST') {
         return {
           ok: true,
           json: async () => ({
@@ -217,7 +217,7 @@ describe('UpgradeDialog', () => {
   it('shows error step with manual restore when auto-restore fails', async () => {
     global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.includes('/api/registry/upgrade-project') && init?.method === 'POST') {
+      if (url.includes('/api/projects/proj-123/upgrade-template') && init?.method === 'POST') {
         return {
           ok: true,
           json: async () => ({
@@ -246,7 +246,7 @@ describe('UpgradeDialog', () => {
   it('calls restore API when Restore Backup is clicked', async () => {
     const fetchMock = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.includes('/api/registry/upgrade-project') && init?.method === 'POST') {
+      if (url.includes('/api/projects/proj-123/upgrade-template') && init?.method === 'POST') {
         return {
           ok: true,
           json: async () => ({
@@ -257,7 +257,7 @@ describe('UpgradeDialog', () => {
           }),
         };
       }
-      if (url.includes('/api/registry/restore-backup') && init?.method === 'POST') {
+      if (url.includes('/api/projects/proj-123/restore-backup') && init?.method === 'POST') {
         return { ok: true, json: async () => ({ success: true }) };
       }
       return { ok: true, json: async () => ({}) };
@@ -279,7 +279,7 @@ describe('UpgradeDialog', () => {
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        '/api/registry/restore-backup',
+        '/api/projects/proj-123/restore-backup',
         expect.objectContaining({ method: 'POST' }),
       );
       expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Backup Restored' }));
@@ -290,7 +290,7 @@ describe('UpgradeDialog', () => {
   it('shows error step when upgrade API fails', async () => {
     global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.includes('/api/registry/upgrade-project') && init?.method === 'POST') {
+      if (url.includes('/api/projects/proj-123/upgrade-template') && init?.method === 'POST') {
         return { ok: false, status: 500, json: async () => ({ message: 'Server error' }) };
       }
       return { ok: true, json: async () => ({}) };
@@ -308,7 +308,7 @@ describe('UpgradeDialog', () => {
   it('Done button closes dialog', async () => {
     global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.includes('/api/registry/upgrade-project') && init?.method === 'POST') {
+      if (url.includes('/api/projects/proj-123/upgrade-template') && init?.method === 'POST') {
         return {
           ok: true,
           json: async () => ({ success: true, newVersion: '2.0.0' }),
@@ -343,7 +343,7 @@ describe('UpgradeDialog', () => {
   it('shows error without restore button when no backupId', async () => {
     global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.includes('/api/registry/upgrade-project') && init?.method === 'POST') {
+      if (url.includes('/api/projects/proj-123/upgrade-template') && init?.method === 'POST') {
         return {
           ok: true,
           json: async () => ({
@@ -387,7 +387,7 @@ describe('UpgradeDialog', () => {
     it('shows "Update Complete" for bundled templates on success', async () => {
       global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
-        if (url.includes('/api/registry/upgrade-project') && init?.method === 'POST') {
+        if (url.includes('/api/projects/proj-123/upgrade-template') && init?.method === 'POST') {
           return {
             ok: true,
             json: async () => ({ success: true, newVersion: '2.0.0' }),
@@ -411,7 +411,7 @@ describe('UpgradeDialog', () => {
     it('shows "Update Failed" for bundled templates on error', async () => {
       global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
-        if (url.includes('/api/registry/upgrade-project') && init?.method === 'POST') {
+        if (url.includes('/api/projects/proj-123/upgrade-template') && init?.method === 'POST') {
           return { ok: false, status: 500, json: async () => ({ message: 'Server error' }) };
         }
         return { ok: true, json: async () => ({}) };

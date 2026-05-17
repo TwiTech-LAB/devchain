@@ -63,6 +63,49 @@ interface AgentRowProps {
   onToggleContextTracking: () => void;
 }
 
+interface AgentIdentityProps {
+  agentName: string;
+  configDisplayName: string | null;
+  currentActivityTitle?: string | null;
+  isTeamLead?: boolean;
+}
+
+export function AgentIdentity({
+  agentName,
+  configDisplayName,
+  currentActivityTitle,
+  isTeamLead = false,
+}: AgentIdentityProps) {
+  return (
+    <div className="min-w-0 flex-1 overflow-hidden text-left">
+      <div className="flex min-w-0 items-baseline gap-1.5 leading-5">
+        <span
+          className={cn(
+            'min-w-0 truncate font-medium text-foreground',
+            isTeamLead && 'text-[#8f4f39] dark:text-[#d08a67]',
+          )}
+          title={agentName}
+        >
+          {agentName}
+        </span>
+        {configDisplayName && (
+          <span
+            className="max-w-[45%] shrink truncate text-[11px] font-normal text-muted-foreground"
+            title={configDisplayName}
+          >
+            {configDisplayName}
+          </span>
+        )}
+      </div>
+      {currentActivityTitle && (
+        <div className="truncate text-xs text-muted-foreground" title={currentActivityTitle}>
+          {currentActivityTitle}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function AgentRow({
   agent,
   isSelected,
@@ -83,6 +126,7 @@ export function AgentRow({
   isLaunchingChat,
   activityBadge,
   providerConfigSubmenu,
+  isTeamLead = false,
   canClone = false,
   onClone,
   canDelete = false,
@@ -105,44 +149,55 @@ export function AgentRow({
           onClick={onClick}
           disabled={isLaunchingChat}
           className={cn(
-            'flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-muted',
-            isSelected && 'bg-secondary',
+            'flex w-full items-center gap-2 rounded-md border border-r-2 border-transparent border-r-transparent bg-card/40 px-3 py-2 text-sm transition-colors hover:border-border hover:bg-muted/50',
+            isTeamLead && 'bg-primary/5 hover:bg-primary/10',
+            isSelected && 'border-border border-r-primary bg-muted hover:border-r-primary',
             isLaunchingChat && 'cursor-not-allowed opacity-50',
           )}
           role="listitem"
           aria-label={`Chat with ${agent.name}${isOnline ? ' (online)' : ' (offline)'}`}
           aria-current={isSelected ? 'true' : undefined}
         >
-          <Circle
-            className={cn(
-              'h-2 w-2 fill-current',
-              isOnline ? 'text-green-500' : 'text-muted-foreground',
-            )}
-            aria-hidden="true"
-          />
-          {providerIconUri && (
-            <img
-              src={providerIconUri}
-              className="h-4 w-4 flex-shrink-0"
+          {providerIconUri ? (
+            <span
+              className={cn(
+                'flex h-6 w-6 shrink-0 items-center justify-center rounded-md border transition-colors',
+                isOnline ? 'border-border bg-muted/40' : 'border-border/60 bg-muted/20',
+              )}
+              title={
+                providerName
+                  ? `Provider: ${providerName} (${isOnline ? 'online' : 'offline'})`
+                  : undefined
+              }
+            >
+              <img
+                src={providerIconUri}
+                className={cn(
+                  'h-4 w-4 transition-[filter,opacity]',
+                  !isOnline && 'grayscale opacity-50',
+                )}
+                aria-hidden="true"
+                alt=""
+              />
+            </span>
+          ) : (
+            <Circle
+              className={cn(
+                'h-2 w-2 shrink-0 fill-current',
+                isOnline ? 'text-green-500' : 'text-muted-foreground',
+              )}
               aria-hidden="true"
-              title={providerName ? `Provider: ${providerName}` : undefined}
-              alt=""
             />
           )}
-          <div className="min-w-0 flex-1 overflow-hidden text-left">
-            <div className="truncate">
-              {agent.name}
-              {configDisplayName && (
-                <span className="text-muted-foreground"> ({configDisplayName})</span>
-              )}
-            </div>
-            {isOnline && activityState === 'busy' && currentActivityTitle && (
-              <div className="truncate text-xs text-muted-foreground" title={currentActivityTitle}>
-                {currentActivityTitle}
-              </div>
-            )}
-          </div>
-          {activityBadge}
+          <AgentIdentity
+            agentName={agent.name}
+            configDisplayName={configDisplayName}
+            isTeamLead={isTeamLead}
+            currentActivityTitle={
+              isOnline && activityState === 'busy' ? currentActivityTitle : null
+            }
+          />
+          {activityBadge && <span className="ml-1 shrink-0">{activityBadge}</span>}
           {pendingRestart && isOnline && (
             <TooltipProvider>
               <Tooltip>

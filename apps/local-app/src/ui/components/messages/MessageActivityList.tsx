@@ -1,11 +1,17 @@
 import { useCallback, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { type WsEnvelope } from '@/ui/lib/socket';
+import type { WsEnvelope } from '@/ui/lib/socket';
 import { useAppSocket } from '@/ui/hooks/useAppSocket';
+import {
+  type RealtimeInvalidationRegistry,
+  dispatchRealtimeEnvelope,
+  exactTopic,
+} from '@/ui/lib/realtime-invalidation-registry';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/ui/components/ui/card';
 import { Badge } from '@/ui/components/ui/badge';
 import { ScrollArea } from '@/ui/components/ui/scroll-area';
 import { cn } from '@/ui/lib/utils';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 /** Message log preview from the list API (truncated content) */
 export interface MessageLogPreview {
@@ -56,16 +62,19 @@ interface MessageGroup {
   agentName: string;
 }
 
+type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
 async function fetchMessages(
   projectId: string,
-  filters?: MessageFilters,
+  filters: MessageFilters | undefined,
+  fetchFn: FetchFn,
 ): Promise<MessagesResponse> {
   const params = new URLSearchParams({ projectId });
   if (filters?.status) params.set('status', filters.status);
   if (filters?.agentId) params.set('agentId', filters.agentId);
   if (filters?.source) params.set('source', filters.source);
 
-  const res = await fetch(`/api/sessions/messages?${params.toString()}`);
+  const res = await fetchFn(`/api/sessions/messages?${params.toString()}`);
   if (!res.ok) {
     throw new Error('Failed to fetch messages');
   }
@@ -196,23 +205,46 @@ export function MessageActivityList({
   onMessageClick,
 }: MessageActivityListProps) {
   const queryClient = useQueryClient();
+  const apiFetch = useFetchFactory();
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['messages', projectId, filters],
-    queryFn: () => fetchMessages(projectId, filters),
+    queryFn: () => fetchMessages(projectId, filters, apiFetch),
     refetchInterval: 10000, // Poll every 10 seconds as fallback
     staleTime: 2000,
   });
 
+  const activityRegistry: RealtimeInvalidationRegistry = useMemo(
+    () => [
+      {
+        match: exactTopic('messages/activity'),
+        type: 'enqueued',
+        entries: [{ kind: 'invalidate' as const, queryKey: ['messages', projectId] }],
+      },
+      {
+        match: exactTopic('messages/activity'),
+        type: 'delivered',
+        entries: [{ kind: 'invalidate' as const, queryKey: ['messages', projectId] }],
+      },
+      {
+        match: exactTopic('messages/activity'),
+        type: 'unconfirmed',
+        entries: [{ kind: 'invalidate' as const, queryKey: ['messages', projectId] }],
+      },
+      {
+        match: exactTopic('messages/activity'),
+        type: 'failed',
+        entries: [{ kind: 'invalidate' as const, queryKey: ['messages', projectId] }],
+      },
+    ],
+    [projectId],
+  );
+
   const handleEnvelope = useCallback(
     (envelope: WsEnvelope) => {
-      if (!envelope) return;
-      const { topic } = envelope;
-      if (topic === 'messages/activity') {
-        queryClient.invalidateQueries({ queryKey: ['messages', projectId] });
-      }
+      dispatchRealtimeEnvelope(envelope, activityRegistry, queryClient);
     },
-    [queryClient, projectId],
+    [activityRegistry, queryClient],
   );
 
   useAppSocket({ message: handleEnvelope }, [handleEnvelope]);

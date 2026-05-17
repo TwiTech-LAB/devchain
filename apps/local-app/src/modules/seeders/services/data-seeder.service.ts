@@ -14,22 +14,12 @@ import { seedDisableMicrosoftSourceDefaultSeeder } from '../seeders/0004_seed_di
 import { seedRenewInstructionsSubscriberSeeder } from '../seeders/0005_seed_renew_instructions_subscriber';
 import { seedRenameTemplateSlugsSeeder } from '../seeders/0006_seed_rename_template_slugs';
 import { seedClaudeNoFlickerEnvSeeder } from '../seeders/0007_seed_claude_no_flicker_env';
+import { seedRemoveClaudeNoFlickerEnvSeeder } from '../seeders/0008_seed_remove_claude_no_flicker_env';
+import type { DataSeeder, SeederContext } from '../types/seeder.types';
 
 export const DATA_SEEDERS = 'DATA_SEEDERS';
+export type { DataSeeder, SeederContext } from '../types/seeder.types';
 const JOURNAL_KEY = 'seeders.journal';
-
-export interface SeederContext {
-  storage: StorageService;
-  watchersService: WatchersService;
-  db: BetterSQLite3Database;
-  logger: ReturnType<typeof createLogger>;
-}
-
-export interface DataSeeder {
-  name: string;
-  version: number;
-  run: (ctx: SeederContext) => Promise<void>;
-}
 
 export const REGISTERED_DATA_SEEDERS: DataSeeder[] = [
   seedCompactOnIdleWatcherSeeder,
@@ -39,6 +29,7 @@ export const REGISTERED_DATA_SEEDERS: DataSeeder[] = [
   seedRenewInstructionsSubscriberSeeder,
   seedRenameTemplateSlugsSeeder,
   seedClaudeNoFlickerEnvSeeder,
+  seedRemoveClaudeNoFlickerEnvSeeder,
 ];
 
 interface SeederJournalEntry {

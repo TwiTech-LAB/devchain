@@ -12,9 +12,10 @@ import { ScopeResolverService } from './services/scope-resolver.service';
 import { ScopeAutoDetectorService } from './services/scope-auto-detector.service';
 import { OverviewScopeRepository } from './repositories/overview-scope.repository';
 import { CodebaseOverviewController } from './controllers/codebase-overview.controller';
+import { ProcessExecutorModule } from '../terminal/services/process-executor/process-executor.module';
 
 @Module({
-  imports: [StorageModule, SettingsModule],
+  imports: [StorageModule, SettingsModule, ProcessExecutorModule],
   controllers: [CodebaseOverviewController],
   providers: [
     IdentityResolverService,

@@ -3,10 +3,10 @@ import { GuestsService } from './services/guests.service';
 import { GuestHealthService } from './services/guest-health.service';
 import { StorageModule } from '../storage/storage.module';
 import { TerminalModule } from '../terminal/terminal.module';
-import { EventsDomainModule } from '../events/events-domain.module';
+import { EventsCoreModule } from '../events/events-core.module';
 
 @Module({
-  imports: [StorageModule, forwardRef(() => TerminalModule), forwardRef(() => EventsDomainModule)],
+  imports: [StorageModule, forwardRef(() => TerminalModule), EventsCoreModule],
   providers: [GuestsService, GuestHealthService],
   exports: [GuestsService, GuestHealthService],
 })

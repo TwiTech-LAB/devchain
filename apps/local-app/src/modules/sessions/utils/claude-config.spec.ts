@@ -13,7 +13,7 @@ jest.mock('fs/promises', () => ({
 import { readFile, rename, stat, unlink, writeFile } from 'fs/promises';
 import { homedir } from 'os';
 import {
-  checkClaudeAutoCompact,
+  checkAutoCompactConfig,
   disableClaudeAutoCompact,
   enableClaudeAutoCompact,
 } from './claude-config';
@@ -47,7 +47,7 @@ describe('claude-config utils', () => {
     mockUnlink.mockResolvedValue(undefined);
   });
 
-  describe('checkClaudeAutoCompact', () => {
+  describe('checkAutoCompactConfig', () => {
     it('returns true with configState valid when autoCompactEnabled is true', async () => {
       mockReadFile.mockResolvedValue(
         JSON.stringify({
@@ -56,7 +56,7 @@ describe('claude-config utils', () => {
         }),
       );
 
-      const result = await checkClaudeAutoCompact();
+      const result = await checkAutoCompactConfig();
 
       expect(result).toEqual({ autoCompactEnabled: true, configState: 'valid' });
       expect(mockReadFile).toHaveBeenCalledWith(CLAUDE_CONFIG_PATH, 'utf-8');
@@ -64,7 +64,7 @@ describe('claude-config utils', () => {
 
     it('returns false with configState valid when autoCompactEnabled is explicitly false', async () => {
       mockReadFile.mockResolvedValue(JSON.stringify({ autoCompactEnabled: false }));
-      await expect(checkClaudeAutoCompact()).resolves.toEqual({
+      await expect(checkAutoCompactConfig()).resolves.toEqual({
         autoCompactEnabled: false,
         configState: 'valid',
       });
@@ -72,7 +72,7 @@ describe('claude-config utils', () => {
 
     it('returns true with configState valid when key is missing (Claude default is enabled)', async () => {
       mockReadFile.mockResolvedValue(JSON.stringify({ anotherField: true }));
-      await expect(checkClaudeAutoCompact()).resolves.toEqual({
+      await expect(checkAutoCompactConfig()).resolves.toEqual({
         autoCompactEnabled: true,
         configState: 'valid',
       });
@@ -81,7 +81,7 @@ describe('claude-config utils', () => {
     it('returns true with configState missing when file is missing (Claude default is enabled)', async () => {
       mockReadFile.mockRejectedValue(createEnoentError());
 
-      await expect(checkClaudeAutoCompact()).resolves.toEqual({
+      await expect(checkAutoCompactConfig()).resolves.toEqual({
         autoCompactEnabled: true,
         configState: 'missing',
       });
@@ -90,7 +90,7 @@ describe('claude-config utils', () => {
     it('returns false with configState malformed on malformed JSON', async () => {
       mockReadFile.mockResolvedValue('{ not valid json');
 
-      await expect(checkClaudeAutoCompact()).resolves.toEqual({
+      await expect(checkAutoCompactConfig()).resolves.toEqual({
         autoCompactEnabled: false,
         configState: 'malformed',
       });
@@ -99,7 +99,7 @@ describe('claude-config utils', () => {
     it('returns configState malformed when top-level JSON is not an object', async () => {
       mockReadFile.mockResolvedValue(JSON.stringify(['not', 'an', 'object']));
 
-      await expect(checkClaudeAutoCompact()).resolves.toEqual({
+      await expect(checkAutoCompactConfig()).resolves.toEqual({
         autoCompactEnabled: false,
         configState: 'malformed',
       });
@@ -108,7 +108,7 @@ describe('claude-config utils', () => {
     it('returns configState malformed on non-ENOENT I/O errors', async () => {
       mockReadFile.mockRejectedValue(new Error('EACCES: permission denied'));
 
-      await expect(checkClaudeAutoCompact()).resolves.toEqual({
+      await expect(checkAutoCompactConfig()).resolves.toEqual({
         autoCompactEnabled: false,
         configState: 'malformed',
       });

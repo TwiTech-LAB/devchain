@@ -9,10 +9,15 @@ import {
 } from '@nestjs/common';
 import { z } from 'zod';
 import { SessionReaderService } from '../services/session-reader.service';
+import { encodeCursor } from '../services/transcript-cursor';
+import { DEFAULT_MAX_TOOL_RESULT_LENGTH } from '../services/transcript-truncation';
+import {
+  serializeChunk as serializeChunkToWire,
+  serializeMessage as serializeMessageToWire,
+} from '../services/transcript-serialization';
 import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
-import type { UnifiedMessage, UnifiedSession } from '../dtos/unified-session.types';
-import type { UnifiedChunk, UnifiedSemanticStep, UnifiedTurn } from '../dtos/unified-chunk.types';
+import type { UnifiedSession } from '../dtos/unified-session.types';
 
 const logger = createLogger('SessionReaderController');
 
@@ -22,7 +27,6 @@ const logger = createLogger('SessionReaderController');
 
 const SessionIdParamSchema = z.string().uuid('Session ID must be a valid UUID');
 const ToolCallIdParamSchema = z.string().min(1, 'toolCallId is required');
-const DEFAULT_MAX_TOOL_RESULT_LENGTH = 2_000;
 
 /** Shared limit schema — reused by both /chunks and /chunks/:chunkId endpoints.
  *  Empty string ("") treated as absent (undefined); non-numeric strings rejected with 400. */
@@ -38,15 +42,15 @@ const LimitSchema = z.union([
 ]);
 
 const ChunksQuerySchema = z.object({
-  cursor: z.string().regex(/^\d+$/, 'cursor must be a non-negative integer').optional(),
+  cursor: z
+    .string()
+    .regex(/^chunk-\d+$/, 'cursor must match format "chunk-N"')
+    .optional(),
   limit: LimitSchema.optional(),
+  direction: z.enum(['forward', 'backward']).optional(),
 });
 
 const ChunkIdParamSchema = z.string().regex(/^chunk-\d+$/, 'chunkId must match format "chunk-N"');
-
-const ChunkIdQuerySchema = z.object({
-  limit: LimitSchema.optional(),
-});
 
 const TranscriptQuerySchema = z.object({
   maxToolResultLength: z
@@ -65,8 +69,25 @@ const TranscriptQuerySchema = z.object({
 // Controller
 // ---------------------------------------------------------------------------
 
+const DTO_CACHE_MAX_ENTRIES = 20;
+
+interface DtoCacheEntry {
+  result: Record<string, unknown>;
+  responseBytes: number;
+  lastSize: number;
+  lastMtime: number;
+  maxToolResultLength: number;
+  enrichmentFingerprint: string;
+}
+
+function enrichmentFingerprint(session: UnifiedSession): string {
+  return `${session.providerName}:${session.metrics.contextWindowTokens ?? 0}`;
+}
+
 @Controller('api/sessions')
 export class SessionReaderController {
+  private readonly dtoCache = new Map<string, DtoCacheEntry>();
+
   constructor(private readonly sessionReaderService: SessionReaderService) {}
 
   /**
@@ -81,11 +102,109 @@ export class SessionReaderController {
 
     try {
       const query = TranscriptQuerySchema.parse({ maxToolResultLength: maxLen });
-      const session = await this.sessionReaderService.getTranscript(sessionId, {
-        maxToolResultLength: query.maxToolResultLength ?? DEFAULT_MAX_TOOL_RESULT_LENGTH,
-      });
+      const maxToolResultLength = query.maxToolResultLength ?? DEFAULT_MAX_TOOL_RESULT_LENGTH;
+      const tTotal = performance.now();
 
-      return this.serializeTranscript(session);
+      const { session, timing } = await this.sessionReaderService.getTranscriptWithTimings(
+        sessionId,
+        { maxToolResultLength },
+      );
+
+      const fingerprint = enrichmentFingerprint(session);
+      const dtoCached = this.dtoCache.get(sessionId);
+      if (
+        dtoCached &&
+        dtoCached.lastSize === timing.fileSizeBytes &&
+        dtoCached.lastMtime === timing.fileMtimeMs &&
+        dtoCached.maxToolResultLength === maxToolResultLength &&
+        dtoCached.enrichmentFingerprint === fingerprint
+      ) {
+        const totalMs = performance.now() - tTotal;
+        logger.info(
+          {
+            sessionId,
+            provider: timing.providerName,
+            durationMs: {
+              resolve: round2(timing.resolveMs),
+              parseOrCacheHit: round2(timing.parseOrCacheHitMs),
+              buildChunks: round2(timing.buildChunksMs),
+              applyToolResultTruncation: round2(timing.applyToolResultTruncationMs),
+              serializeTranscript: 0,
+              total: round2(totalMs),
+            },
+            cacheHit: timing.cacheHit,
+            dtoCacheHit: true,
+            fileSizeBytes: timing.fileSizeBytes,
+            responseBytes: dtoCached.responseBytes,
+            messageCount: session.messages.length,
+            chunkCount: (session.chunks ?? []).length,
+            semanticStepCount: 0,
+            truncationApplied: false,
+          },
+          'transcript.timing',
+        );
+        return dtoCached.result;
+      }
+
+      const tSerialize = performance.now();
+      const chunks = session.chunks ?? [];
+      const cursor = encodeCursor(timing.fileSizeBytes, session.messages.length, chunks.length);
+      const result = { ...this.serializeTranscript(session), cursor };
+      const serializeTranscriptMs = performance.now() - tSerialize;
+
+      const serializedJson = JSON.stringify(result);
+      const responseBytes = Buffer.byteLength(serializedJson, 'utf8');
+      const totalMs = performance.now() - tTotal;
+
+      this.dtoCache.set(sessionId, {
+        result: result as Record<string, unknown>,
+        responseBytes,
+        lastSize: timing.fileSizeBytes,
+        lastMtime: timing.fileMtimeMs,
+        maxToolResultLength,
+        enrichmentFingerprint: fingerprint,
+      });
+      if (this.dtoCache.size > DTO_CACHE_MAX_ENTRIES) {
+        const oldest = this.dtoCache.keys().next().value;
+        if (oldest !== undefined) this.dtoCache.delete(oldest);
+      }
+
+      const semanticStepCount = chunks.reduce((sum, chunk) => {
+        if (chunk.type === 'ai' && 'semanticSteps' in chunk) {
+          return sum + chunk.semanticSteps.length;
+        }
+        return sum;
+      }, 0);
+
+      const truncationApplied = session.messages.some((m) =>
+        m.toolResults.some((tr) => tr.isTruncated),
+      );
+
+      logger.info(
+        {
+          sessionId,
+          provider: timing.providerName,
+          durationMs: {
+            resolve: round2(timing.resolveMs),
+            parseOrCacheHit: round2(timing.parseOrCacheHitMs),
+            buildChunks: round2(timing.buildChunksMs),
+            applyToolResultTruncation: round2(timing.applyToolResultTruncationMs),
+            serializeTranscript: round2(serializeTranscriptMs),
+            total: round2(totalMs),
+          },
+          cacheHit: timing.cacheHit,
+          dtoCacheHit: false,
+          fileSizeBytes: timing.fileSizeBytes,
+          responseBytes,
+          messageCount: session.messages.length,
+          chunkCount: chunks.length,
+          semanticStepCount,
+          truncationApplied,
+        },
+        'transcript.timing',
+      );
+
+      return result;
     } catch (error) {
       if (error instanceof z.ZodError) {
         throw new BadRequestException(error.errors.map((e) => e.message).join(', '));
@@ -112,37 +231,52 @@ export class SessionReaderController {
   }
 
   /**
+   * GET /api/sessions/:id/transcript/index
+   * Returns lightweight metadata for initial-load summary + virtualizer total count.
+   */
+  @Get(':id/transcript/index')
+  async getTranscriptIndex(@Param('id') id: string) {
+    logger.info({ sessionId: id }, 'GET /api/sessions/:id/transcript/index');
+
+    const sessionId = this.validateSessionId(id);
+
+    try {
+      return await this.sessionReaderService.getTranscriptIndex(sessionId);
+    } catch (error) {
+      this.handleServiceError(error);
+    }
+  }
+
+  /**
    * GET /api/sessions/:id/transcript/chunks
-   * Returns paginated chunks with cursor-based pagination.
+   * Returns paginated UnifiedChunk[] with cursor-stable chunk IDs.
    */
   @Get(':id/transcript/chunks')
   async getTranscriptChunks(
     @Param('id') id: string,
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
+    @Query('direction') direction?: string,
   ) {
-    logger.info({ sessionId: id, cursor, limit }, 'GET /api/sessions/:id/transcript/chunks');
+    logger.info(
+      { sessionId: id, cursor, limit, direction },
+      'GET /api/sessions/:id/transcript/chunks',
+    );
 
     const sessionId = this.validateSessionId(id);
 
     try {
-      const query = ChunksQuerySchema.parse({ cursor, limit });
-      const response = await this.sessionReaderService.getTranscriptChunks(
+      const query = ChunksQuerySchema.parse({ cursor, limit, direction });
+      const response = await this.sessionReaderService.getUnifiedTranscriptChunks(
         sessionId,
         query.cursor,
         query.limit,
+        (query.direction as 'forward' | 'backward') ?? 'forward',
       );
 
-      // Serialize Date objects in chunk messages
       return {
         ...response,
-        chunks: response.chunks.map((chunk) => ({
-          ...chunk,
-          messages: chunk.messages.map((msg) => ({
-            ...msg,
-            timestamp: msg.timestamp.toISOString(),
-          })),
-        })),
+        chunks: response.chunks.map((chunk) => serializeChunkToWire(chunk)),
       };
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -154,39 +288,54 @@ export class SessionReaderController {
 
   /**
    * GET /api/sessions/:id/transcript/chunks/:chunkId
-   * Returns a single chunk with messages.
+   * Returns a single UnifiedChunk by chunk ID.
    */
   @Get(':id/transcript/chunks/:chunkId')
-  async getTranscriptChunk(
-    @Param('id') id: string,
-    @Param('chunkId') chunkId: string,
-    @Query('limit') limit?: string,
-  ) {
+  async getTranscriptChunk(@Param('id') id: string, @Param('chunkId') chunkId: string) {
     logger.info({ sessionId: id, chunkId }, 'GET /api/sessions/:id/transcript/chunks/:chunkId');
 
     const sessionId = this.validateSessionId(id);
 
     try {
       ChunkIdParamSchema.parse(chunkId);
-      const query = ChunkIdQuerySchema.parse({ limit });
-
-      const chunk = await this.sessionReaderService.getTranscriptChunk(
-        sessionId,
-        chunkId,
-        query.limit,
-      );
-
-      return {
-        ...chunk,
-        messages: chunk.messages.map((msg) => ({
-          ...msg,
-          timestamp: msg.timestamp.toISOString(),
-        })),
-      };
+      const chunk = await this.sessionReaderService.getUnifiedTranscriptChunk(sessionId, chunkId);
+      return serializeChunkToWire(chunk);
     } catch (error) {
       if (error instanceof z.ZodError) {
         throw new BadRequestException(error.errors.map((e) => e.message).join(', '));
       }
+      this.handleServiceError(error);
+    }
+  }
+
+  /**
+   * GET /api/sessions/:id/transcript/tail?since=<cursor>
+   * Returns chunks and messages after the cursor position.
+   * Used for cursor-mismatch recovery in the WS push-delta protocol.
+   */
+  @Get(':id/transcript/tail')
+  async getTranscriptTail(@Param('id') id: string, @Query('since') since?: string) {
+    logger.info({ sessionId: id, since }, 'GET /api/sessions/:id/transcript/tail');
+
+    const sessionId = this.validateSessionId(id);
+
+    if (!since) {
+      throw new BadRequestException('Query parameter "since" is required');
+    }
+
+    try {
+      const result = await this.sessionReaderService.getTranscriptTail(sessionId, since);
+
+      if (result === null) {
+        throw new NotFoundException('Cursor expired — full transcript fetch required');
+      }
+
+      return {
+        ...result,
+        deltaChunks: result.deltaChunks.map((chunk) => serializeChunkToWire(chunk)),
+        deltaMessages: result.deltaMessages.map((msg) => serializeMessageToWire(msg)),
+      };
+    } catch (error) {
       this.handleServiceError(error);
     }
   }
@@ -231,6 +380,9 @@ export class SessionReaderController {
    * Map domain exceptions to HTTP exceptions.
    */
   private handleServiceError(error: unknown): never {
+    if (error instanceof NotFoundException) {
+      throw error;
+    }
     if (error instanceof NotFoundError) {
       throw new NotFoundException(error.message);
     }
@@ -246,49 +398,12 @@ export class SessionReaderController {
   private serializeTranscript(session: UnifiedSession) {
     return {
       ...session,
-      messages: session.messages.map((message) => this.serializeMessage(message)),
-      chunks: session.chunks?.map((chunk) => this.serializeChunk(chunk)),
+      messages: session.messages.map(serializeMessageToWire),
+      chunks: session.chunks?.map(serializeChunkToWire),
     };
   }
+}
 
-  private serializeMessage(message: UnifiedMessage) {
-    return {
-      ...message,
-      timestamp: message.timestamp.toISOString(),
-    };
-  }
-
-  private serializeSemanticStep(step: UnifiedSemanticStep) {
-    return {
-      ...step,
-      startTime: step.startTime.toISOString(),
-    };
-  }
-
-  private serializeTurn(turn: UnifiedTurn) {
-    return {
-      ...turn,
-      timestamp: turn.timestamp.toISOString(),
-      steps: turn.steps.map((step) => this.serializeSemanticStep(step)),
-    };
-  }
-
-  private serializeChunk(chunk: UnifiedChunk) {
-    const base = {
-      ...chunk,
-      startTime: chunk.startTime.toISOString(),
-      endTime: chunk.endTime.toISOString(),
-      messages: chunk.messages.map((message) => this.serializeMessage(message)),
-    };
-
-    if (chunk.type !== 'ai') {
-      return base;
-    }
-
-    return {
-      ...base,
-      semanticSteps: chunk.semanticSteps.map((step) => this.serializeSemanticStep(step)),
-      turns: chunk.turns.map((turn) => this.serializeTurn(turn)),
-    };
-  }
+function round2(ms: number): number {
+  return Math.round(ms * 100) / 100;
 }

@@ -1,4 +1,4 @@
-import { Injectable, Inject } from '@nestjs/common';
+import { Injectable, Inject, Optional } from '@nestjs/common';
 import { type ManifestData } from '@devchain/shared';
 import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { SessionsService } from '../../sessions/services/sessions.service';
@@ -7,6 +7,11 @@ import { WatchersService } from '../../watchers/services/watchers.service';
 import { WatcherRunnerService } from '../../watchers/services/watcher-runner.service';
 import { UnifiedTemplateService } from '../../registry/services/unified-template.service';
 import { TeamsService } from '../../teams/services/teams.service';
+import {
+  SCHEDULED_EPIC_RUNNER_REFRESH,
+  type ScheduledEpicRunnerRefresh,
+} from '../../scheduled-epics/services/scheduled-epics.service';
+import { getNextRunAt } from '../../scheduled-epics/helpers/cron-helpers';
 import {
   ProjectProviderProvisioningService,
   type ProvisioningWarning,
@@ -33,6 +38,7 @@ import {
   normalizeProfileOptions,
 } from '../helpers/project-runtime.helpers';
 import { probe1mSupport } from '../../providers/utils/probe-1m';
+import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import {
   getTemplateManifestForProjectWithHelper,
   getBundledUpgradeVersionWithHelper,
@@ -105,6 +111,10 @@ export class ProjectsService {
     private readonly unifiedTemplateService: UnifiedTemplateService,
     private readonly teamsService: TeamsService,
     private readonly provisioning: ProjectProviderProvisioningService,
+    private readonly executor: ProcessExecutor,
+    @Optional()
+    @Inject(SCHEDULED_EPIC_RUNNER_REFRESH)
+    private readonly scheduledEpicRunnerRefresh?: ScheduledEpicRunnerRefresh,
   ) {}
 
   async listTemplates(): Promise<TemplateInfo[]> {
@@ -136,8 +146,10 @@ export class ProjectsService {
         createWatchersFromPayloadWithHelper(projectId, watchers, maps, this.watchersService),
       createSubscribersFromPayload: (projectId, subscribers) =>
         createSubscribersFromPayloadWithHelper(projectId, subscribers, this.storage),
-      probe1m: probe1mSupport,
+      probe1m: (binPath: string) => probe1mSupport(this.executor, binPath),
       teamsService: this.teamsService,
+      scheduledEpicsRefresh: this.scheduledEpicRunnerRefresh,
+      computeNextRunAt: getNextRunAt,
       applyPreset: (projectId, presetName, nameMaps) =>
         applyPresetWithHelper(
           projectId,
@@ -231,8 +243,10 @@ export class ProjectsService {
           this.settings,
         ),
       getImportErrorMessage,
-      probe1m: probe1mSupport,
+      probe1m: (binPath: string) => probe1mSupport(this.executor, binPath),
       teamsService: this.teamsService,
+      scheduledEpicsRefresh: this.scheduledEpicRunnerRefresh,
+      computeNextRunAt: getNextRunAt,
     });
 
     if (result && 'success' in result && result.success && !input.dryRun) {

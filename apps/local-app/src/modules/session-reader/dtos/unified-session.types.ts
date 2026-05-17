@@ -6,106 +6,33 @@
  * so the service layer and UI can consume data uniformly.
  */
 
-// ---------------------------------------------------------------------------
-// Token Usage
-// ---------------------------------------------------------------------------
+import type {
+  TokenUsage,
+  TextContentBlock,
+  ThinkingContentBlock,
+  ToolCallContentBlock,
+  ToolResultContentBlock,
+  ImageContentBlock,
+  UnifiedContentBlock,
+  UnifiedToolCall,
+  UnifiedToolResult,
+  UnifiedMessageRole,
+  UnifiedMessage,
+} from './unified-message.types';
 
-/** Per-message token usage breakdown */
-export interface TokenUsage {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheCreation: number;
-}
-
-// ---------------------------------------------------------------------------
-// Content Blocks (discriminated union)
-// ---------------------------------------------------------------------------
-
-export interface TextContentBlock {
-  type: 'text';
-  text: string;
-}
-
-export interface ThinkingContentBlock {
-  type: 'thinking';
-  thinking: string;
-  signature?: string;
-}
-
-export interface ToolCallContentBlock {
-  type: 'tool_call';
-  toolCallId: string;
-  toolName: string;
-  input: Record<string, unknown>;
-}
-
-export interface ToolResultContentBlock {
-  type: 'tool_result';
-  toolCallId: string;
-  content: string | unknown[];
-  isError: boolean;
-  isTruncated?: boolean;
-  fullLength?: number;
-}
-
-export interface ImageContentBlock {
-  type: 'image';
-  mediaType: string;
-  data: string;
-}
-
-/** Discriminated union of all content block types */
-export type UnifiedContentBlock =
-  | TextContentBlock
-  | ThinkingContentBlock
-  | ToolCallContentBlock
-  | ToolResultContentBlock
-  | ImageContentBlock;
-
-// ---------------------------------------------------------------------------
-// Tool Call / Tool Result
-// ---------------------------------------------------------------------------
-
-export interface UnifiedToolCall {
-  id: string;
-  name: string;
-  input: Record<string, unknown>;
-  isTask: boolean;
-  taskDescription?: string;
-  taskSubagentType?: string;
-}
-
-export interface UnifiedToolResult {
-  toolCallId: string;
-  content: string | unknown[];
-  isError: boolean;
-  isTruncated?: boolean;
-  fullLength?: number;
-}
-
-// ---------------------------------------------------------------------------
-// Message
-// ---------------------------------------------------------------------------
-
-export type UnifiedMessageRole = 'user' | 'assistant' | 'system';
-
-export interface UnifiedMessage {
-  id: string;
-  parentId: string | null;
-  role: UnifiedMessageRole;
-  timestamp: Date;
-  content: UnifiedContentBlock[];
-  usage?: TokenUsage;
-  model?: string;
-  toolCalls: UnifiedToolCall[];
-  toolResults: UnifiedToolResult[];
-  isMeta: boolean;
-  isSidechain: boolean;
-  isCompactSummary?: boolean;
-  /** Links subagent's first user message back to parent's Task tool_use ID */
-  sourceToolUseId?: string;
-}
+export type {
+  TokenUsage,
+  TextContentBlock,
+  ThinkingContentBlock,
+  ToolCallContentBlock,
+  ToolResultContentBlock,
+  ImageContentBlock,
+  UnifiedContentBlock,
+  UnifiedToolCall,
+  UnifiedToolResult,
+  UnifiedMessageRole,
+  UnifiedMessage,
+} from './unified-message.types';
 
 // ---------------------------------------------------------------------------
 // Metrics

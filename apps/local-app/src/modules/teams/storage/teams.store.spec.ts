@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { readFileSync } from 'fs';
 import Database from 'better-sqlite3';
 import { eq } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
@@ -22,6 +23,7 @@ import {
   TeamMemberCapReachedError,
 } from '../../../common/errors/error-types';
 import { TeamsStore } from './teams.store';
+import { TransactionRunner } from '../../storage/db/transaction-runner';
 
 /** Insert a project and return its id */
 async function seedProject(db: BetterSQLite3Database, name = 'test-project'): Promise<string> {
@@ -154,10 +156,10 @@ describe('TeamsStore', () => {
 
   beforeEach(async () => {
     sqlite = new Database(':memory:');
-    sqlite.pragma('foreign_keys = ON');
     db = drizzle(sqlite);
     const migrationsFolder = join(__dirname, '../../../../drizzle');
     migrate(db, { migrationsFolder });
+    sqlite.pragma('foreign_keys = ON');
     store = new TeamsStore(db);
 
     // Seed prerequisite data
@@ -274,16 +276,24 @@ describe('TeamsStore', () => {
     });
 
     it('rolls back on member insert failure (no partial writes)', async () => {
-      const invalidAgentId = randomUUID(); // Does not exist in agents table
+      const origPrepare = sqlite.prepare.bind(sqlite);
+      jest.spyOn(sqlite, 'prepare').mockImplementation((sql: string) => {
+        if (sql.includes('team_members')) {
+          throw new Error('Simulated member insert failure');
+        }
+        return origPrepare(sql);
+      });
 
       await expect(
         store.createTeam({
           projectId,
           name: 'Broken Team',
           teamLeadAgentId: agentA,
-          memberAgentIds: [invalidAgentId],
+          memberAgentIds: [agentA],
         }),
       ).rejects.toThrow();
+
+      (sqlite.prepare as jest.Mock).mockRestore();
 
       // Team should NOT exist (transaction rolled back)
       const listed = await store.listTeams(projectId);
@@ -632,14 +642,26 @@ describe('TeamsStore', () => {
         memberAgentIds: [agentA],
       });
 
-      const invalidAgentId = randomUUID();
+      const origPrepare = sqlite.prepare.bind(sqlite);
+      let memberInsertCount = 0;
+      jest.spyOn(sqlite, 'prepare').mockImplementation((sql: string) => {
+        if (sql.includes('team_members') && sql.toLowerCase().includes('insert')) {
+          memberInsertCount++;
+          if (memberInsertCount > 0) {
+            throw new Error('Simulated member replace failure');
+          }
+        }
+        return origPrepare(sql);
+      });
 
       await expect(
         store.updateTeam(created.id, {
           name: 'Should Not Persist',
-          memberAgentIds: [invalidAgentId],
+          memberAgentIds: [agentA],
         }),
       ).rejects.toThrow();
+
+      (sqlite.prepare as jest.Mock).mockRestore();
 
       // Team name should be unchanged (transaction rolled back)
       const fetched = await store.getTeam(created.id);
@@ -1537,6 +1559,165 @@ describe('TeamsStore', () => {
 
       const count = await store.countBusyTeamMembers(leadlessTeam.id, null);
       expect(count).toBe(2);
+    });
+  });
+
+  describe('TransactionRunner.runImmediateAsync usage', () => {
+    it('createTeam invokes runImmediateAsync', async () => {
+      const spy = jest.spyOn(TransactionRunner.prototype, 'runImmediateAsync');
+      await store.createTeam({
+        projectId,
+        name: 'RunnerTest-Create',
+        memberAgentIds: [agentA],
+      });
+      expect(spy).toHaveBeenCalledTimes(1);
+      spy.mockRestore();
+    });
+
+    it('updateTeam invokes runImmediateAsync', async () => {
+      const team = await store.createTeam({
+        projectId,
+        name: 'RunnerTest-Update',
+        memberAgentIds: [agentA],
+      });
+      const spy = jest.spyOn(TransactionRunner.prototype, 'runImmediateAsync');
+      await store.updateTeam(team.id, { name: 'RunnerTest-Updated' });
+      expect(spy).toHaveBeenCalledTimes(1);
+      spy.mockRestore();
+    });
+
+    it('deleteTeamsByIds invokes runImmediateAsync', async () => {
+      const team = await store.createTeam({
+        projectId,
+        name: 'RunnerTest-DeleteIds',
+        memberAgentIds: [agentA],
+      });
+      const spy = jest.spyOn(TransactionRunner.prototype, 'runImmediateAsync');
+      await store.deleteTeamsByIds([team.id]);
+      expect(spy).toHaveBeenCalledTimes(1);
+      spy.mockRestore();
+    });
+
+    it('createTeamAgentAtomicCapped invokes runImmediateAsync', async () => {
+      const team = await store.createTeam({
+        projectId,
+        name: 'RunnerTest-AtomicCapped',
+        memberAgentIds: [agentA],
+        maxMembers: 5,
+      });
+      const newAgentId = await seedAgent(db, projectId, 'RunnerCapAgent');
+      const spy = jest.spyOn(TransactionRunner.prototype, 'runImmediateAsync');
+      await store.createTeamAgentAtomicCapped({
+        teamId: team.id,
+        maxMembers: 5,
+        teamLeadAgentId: null,
+        createAgentFn: async () => ({
+          id: newAgentId,
+          projectId,
+          profileId: 'p',
+          providerConfigId: 'c',
+          modelOverride: null,
+          name: 'RunnerCapAgent',
+          description: null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }),
+      });
+      expect(spy).toHaveBeenCalledTimes(1);
+      spy.mockRestore();
+    });
+
+    it('replaceTeamProfileConfigs invokes runImmediateAsync', async () => {
+      const profileA = await seedProfile(db, projectId, 'RunnerProfile');
+      const team = await store.createTeam({
+        projectId,
+        name: 'RunnerTest-ReplaceConfigs',
+        memberAgentIds: [agentA],
+        profileIds: [profileA],
+      });
+      const spy = jest.spyOn(TransactionRunner.prototype, 'runImmediateAsync');
+      await store.replaceTeamProfileConfigs(team.id, [{ profileId: profileA, configIds: [] }]);
+      expect(spy).toHaveBeenCalledTimes(1);
+      spy.mockRestore();
+    });
+
+    it('ConflictError on unique-constraint triggers rollback (no partial writes)', async () => {
+      await store.createTeam({
+        projectId,
+        name: 'ConflictRollback',
+        memberAgentIds: [agentA],
+      });
+
+      const spy = jest.spyOn(TransactionRunner.prototype, 'runImmediateAsync');
+
+      await expect(
+        store.createTeam({
+          projectId,
+          name: 'ConflictRollback',
+          memberAgentIds: [agentB],
+        }),
+      ).rejects.toThrow(ConflictError);
+
+      expect(spy).toHaveBeenCalledTimes(1);
+      spy.mockRestore();
+
+      const all = await store.listTeams(projectId);
+      const matches = all.items.filter((t) => t.name === 'ConflictRollback');
+      expect(matches).toHaveLength(1);
+      expect(matches[0].memberCount).toBe(1);
+    });
+
+    it('TeamMemberCapReachedError triggers rollback (no partial member insert)', async () => {
+      const agentLead = await seedAgent(db, projectId, 'CapErrLead');
+      const agentM1 = await seedAgent(db, projectId, 'CapErrM1');
+      const agentM2 = await seedAgent(db, projectId, 'CapErrM2');
+
+      const team = await store.createTeam({
+        projectId,
+        name: 'CapErrTeam',
+        memberAgentIds: [agentLead, agentM1, agentM2],
+        teamLeadAgentId: agentLead,
+        maxMembers: 2,
+        maxConcurrentTasks: 2,
+      });
+
+      const newAgentId = await seedAgent(db, projectId, 'CapErrNew');
+      const spy = jest.spyOn(TransactionRunner.prototype, 'runImmediateAsync');
+
+      await expect(
+        store.createTeamAgentAtomicCapped({
+          teamId: team.id,
+          maxMembers: 2,
+          teamLeadAgentId: agentLead,
+          createAgentFn: async () => ({
+            id: newAgentId,
+            projectId,
+            profileId: 'p',
+            providerConfigId: 'c',
+            modelOverride: null,
+            name: 'CapErrNew',
+            description: null,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          }),
+        }),
+      ).rejects.toThrow(TeamMemberCapReachedError);
+
+      expect(spy).toHaveBeenCalledTimes(1);
+      spy.mockRestore();
+
+      const fetched = await store.getTeam(team.id);
+      expect(fetched!.members).toHaveLength(3);
+      expect(fetched!.members.map((m) => m.agentId)).not.toContain(newAgentId);
+    });
+  });
+
+  describe('No raw transaction literals in source (grep-clean)', () => {
+    it('teams.store.ts contains no sqlite.exec BEGIN/COMMIT/ROLLBACK literals', () => {
+      const source = readFileSync(join(__dirname, 'teams.store.ts'), 'utf8');
+      expect(source).not.toMatch(/sqlite\.exec\(['"]BEGIN IMMEDIATE TRANSACTION['"]\)/);
+      expect(source).not.toMatch(/sqlite\.exec\(['"]COMMIT['"]\)/);
+      expect(source).not.toMatch(/sqlite\.exec\(['"]ROLLBACK['"]\)/);
     });
   });
 });

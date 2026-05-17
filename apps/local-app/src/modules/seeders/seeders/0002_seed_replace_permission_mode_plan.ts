@@ -1,5 +1,5 @@
 import { getRawSqliteClient } from '../../storage/db/sqlite-raw';
-import type { DataSeeder, SeederContext } from '../services/data-seeder.service';
+import type { DataSeeder, SeederContext } from '../types/seeder.types';
 
 const SEEDER_NAME = '0002_seed_replace_permission_mode_plan';
 const SEEDER_VERSION = 1;

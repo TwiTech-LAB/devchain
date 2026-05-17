@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { WatcherRunnerService } from './watcher-runner.service';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { SessionsService } from '../../sessions/services/sessions.service';
-import { TmuxService } from '../../terminal/services/tmux.service';
+import { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
 import { EventsService } from '../../events/services/events.service';
 import type { Watcher } from '../../storage/models/domain.models';
 import type { SessionDto } from '../../sessions/dtos/sessions.dto';
@@ -20,8 +20,8 @@ describe('WatcherRunnerService', () => {
   let mockSessionsService: {
     listActiveSessions: jest.Mock;
   };
-  let mockTmuxService: {
-    capturePane: jest.Mock;
+  let mockTerminalIO: {
+    captureHistory: jest.Mock;
   };
   let mockEventsService: {
     publish: jest.Mock;
@@ -35,6 +35,7 @@ describe('WatcherRunnerService', () => {
     status: 'running',
     startedAt: '2024-01-01T00:00:00Z',
     endedAt: null,
+    name: null,
     createdAt: '2024-01-01T00:00:00Z',
     updatedAt: '2024-01-01T00:00:00Z',
     ...overrides,
@@ -75,8 +76,8 @@ describe('WatcherRunnerService', () => {
       listActiveSessions: jest.fn().mockResolvedValue([]),
     };
 
-    mockTmuxService = {
-      capturePane: jest.fn().mockResolvedValue(''),
+    mockTerminalIO = {
+      captureHistory: jest.fn().mockResolvedValue({ ok: true, output: '' }),
     };
 
     mockEventsService = {
@@ -95,8 +96,8 @@ describe('WatcherRunnerService', () => {
           useValue: mockSessionsService,
         },
         {
-          provide: TmuxService,
-          useValue: mockTmuxService,
+          provide: TerminalIOService,
+          useValue: mockTerminalIO,
         },
         {
           provide: EventsService,
@@ -609,18 +610,22 @@ describe('WatcherRunnerService', () => {
     describe('cache miss', () => {
       it('should call tmux and cache result on cache miss', async () => {
         const capturedText = 'Hello, terminal world!';
-        mockTmuxService.capturePane.mockResolvedValue(capturedText);
+        mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: capturedText });
 
         const result = await service.captureViewport(tmuxSessionId, lines);
 
         expect(result).toBe(capturedText);
-        expect(mockTmuxService.capturePane).toHaveBeenCalledWith(tmuxSessionId, lines, false);
-        expect(mockTmuxService.capturePane).toHaveBeenCalledTimes(1);
+        expect(mockTerminalIO.captureHistory).toHaveBeenCalledWith(
+          { name: tmuxSessionId },
+          lines,
+          false,
+        );
+        expect(mockTerminalIO.captureHistory).toHaveBeenCalledTimes(1);
       });
 
       it('should store captured text in cache', async () => {
         const capturedText = 'Cached content';
-        mockTmuxService.capturePane.mockResolvedValue(capturedText);
+        mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: capturedText });
 
         await service.captureViewport(tmuxSessionId, lines);
 
@@ -638,7 +643,7 @@ describe('WatcherRunnerService', () => {
         const result = await service.captureViewport(tmuxSessionId, lines);
 
         expect(result).toBe(cachedText);
-        expect(mockTmuxService.capturePane).not.toHaveBeenCalled();
+        expect(mockTerminalIO.captureHistory).not.toHaveBeenCalled();
       });
 
       it('should use different cache keys for different line counts', async () => {
@@ -650,7 +655,7 @@ describe('WatcherRunnerService', () => {
 
         expect(result50).toBe('Content for 50 lines');
         expect(result100).toBe('Content for 100 lines');
-        expect(mockTmuxService.capturePane).not.toHaveBeenCalled();
+        expect(mockTerminalIO.captureHistory).not.toHaveBeenCalled();
       });
     });
 
@@ -663,18 +668,18 @@ describe('WatcherRunnerService', () => {
         (service as any).captureCache.set(key, { text: 'Old content', ts: Date.now() - 3000 });
 
         const freshText = 'Fresh content';
-        mockTmuxService.capturePane.mockResolvedValue(freshText);
+        mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: freshText });
 
         const result = await service.captureViewport(tmuxSessionId, lines);
 
         expect(result).toBe(freshText);
-        expect(mockTmuxService.capturePane).toHaveBeenCalledTimes(1);
+        expect(mockTerminalIO.captureHistory).toHaveBeenCalledTimes(1);
       });
     });
 
     describe('error handling', () => {
       it('should return empty string on tmux error', async () => {
-        mockTmuxService.capturePane.mockRejectedValue(new Error('tmux not found'));
+        mockTerminalIO.captureHistory.mockRejectedValue(new Error('tmux not found'));
 
         const result = await service.captureViewport(tmuxSessionId, lines);
 
@@ -682,7 +687,7 @@ describe('WatcherRunnerService', () => {
       });
 
       it('should not cache failed captures', async () => {
-        mockTmuxService.capturePane.mockRejectedValue(new Error('tmux error'));
+        mockTerminalIO.captureHistory.mockRejectedValue(new Error('tmux error'));
 
         await service.captureViewport(tmuxSessionId, lines);
 
@@ -693,12 +698,16 @@ describe('WatcherRunnerService', () => {
 
     describe('ANSI stripping', () => {
       it('should call capturePane with includeEscapes=false', async () => {
-        mockTmuxService.capturePane.mockResolvedValue('text');
+        mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'text' });
 
         await service.captureViewport(tmuxSessionId, lines);
 
         // Third argument should be false to strip ANSI codes
-        expect(mockTmuxService.capturePane).toHaveBeenCalledWith(tmuxSessionId, lines, false);
+        expect(mockTerminalIO.captureHistory).toHaveBeenCalledWith(
+          { name: tmuxSessionId },
+          lines,
+          false,
+        );
       });
     });
   });
@@ -996,7 +1005,7 @@ describe('WatcherRunnerService', () => {
       });
 
       it('should trigger again after condition clears (true->false->true)', () => {
-        const watcher = createTestWatcher({ cooldownMode: 'until_clear' });
+        const watcher = createTestWatcher({ cooldownMode: 'until_clear', cooldownMs: 0 });
         // First trigger (false -> true)
         service.checkTriggerEligibility(watcher, 'session-1', 'error 1', true);
         // Condition becomes false - clears cooldown
@@ -1007,16 +1016,61 @@ describe('WatcherRunnerService', () => {
       });
 
       it('should clear cooldown when condition becomes false', () => {
-        const watcher = createTestWatcher({ cooldownMode: 'until_clear' });
+        const watcher = createTestWatcher({ cooldownMode: 'until_clear', cooldownMs: 0 });
         // Trigger
         service.checkTriggerEligibility(watcher, 'session-1', 'error', true);
         // Verify cooldown is set
-        expect(service.isOnCooldown('watcher-1', 'session-1')).toBe(true);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        expect((service as any).cooldowns.has('watcher-1:session-1')).toBe(true);
         // Condition becomes false
         service.checkTriggerEligibility(watcher, 'session-1', 'no error', false);
         // Cooldown should be cleared
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         expect((service as any).cooldowns.has('watcher-1:session-1')).toBe(false);
+      });
+
+      it('should not clear cooldown during the until_clear hold window', () => {
+        const watcher = createTestWatcher({ cooldownMode: 'until_clear', cooldownMs: 30000 });
+
+        service.checkTriggerEligibility(watcher, 'session-1', 'Context compacted', true);
+        service.checkTriggerEligibility(
+          watcher,
+          'session-1',
+          'terminal redraw without match',
+          false,
+        );
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        expect((service as any).cooldowns.has('watcher-1:session-1')).toBe(true);
+
+        const result = service.checkTriggerEligibility(
+          watcher,
+          'session-1',
+          'Context compacted',
+          true,
+        );
+        expect(result.shouldTrigger).toBe(false);
+      });
+
+      it('should not retrigger the identical viewport after a clear', () => {
+        const watcher = createTestWatcher({ cooldownMode: 'until_clear', cooldownMs: 0 });
+
+        service.checkTriggerEligibility(watcher, 'session-1', 'Context compacted', true);
+        service.checkTriggerEligibility(
+          watcher,
+          'session-1',
+          'terminal redraw without match',
+          false,
+        );
+
+        const result = service.checkTriggerEligibility(
+          watcher,
+          'session-1',
+          'Context compacted',
+          true,
+        );
+
+        expect(result.shouldTrigger).toBe(false);
       });
     });
 
@@ -1103,7 +1157,7 @@ describe('WatcherRunnerService', () => {
       });
 
       it('should skip session with empty viewport', async () => {
-        mockTmuxService.capturePane.mockResolvedValue('');
+        mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: '' });
         const watcher = createTestWatcher();
         const session = createMockSession({ tmuxSessionId: 'tmux-1' });
 
@@ -1116,7 +1170,7 @@ describe('WatcherRunnerService', () => {
 
     describe('condition matching', () => {
       it('should capture viewport and match condition', async () => {
-        mockTmuxService.capturePane.mockResolvedValue('An error occurred');
+        mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'An error occurred' });
         const watcher = createTestWatcher({ condition: { type: 'contains', pattern: 'error' } });
         const session = createMockSession({ tmuxSessionId: 'tmux-1' });
 
@@ -1124,11 +1178,11 @@ describe('WatcherRunnerService', () => {
 
         expect(result.skipped).toBe(false);
         expect(result.matched).toBe(true);
-        expect(mockTmuxService.capturePane).toHaveBeenCalledWith('tmux-1', 50, false);
+        expect(mockTerminalIO.captureHistory).toHaveBeenCalledWith({ name: 'tmux-1' }, 50, false);
       });
 
       it('should not trigger when condition does not match', async () => {
-        mockTmuxService.capturePane.mockResolvedValue('Everything is fine');
+        mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'Everything is fine' });
         const watcher = createTestWatcher({ condition: { type: 'contains', pattern: 'error' } });
         const session = createMockSession({ tmuxSessionId: 'tmux-1' });
 
@@ -1151,7 +1205,7 @@ describe('WatcherRunnerService', () => {
       });
 
       it('should pass idle gate and continue to viewport capture + pattern match', async () => {
-        mockTmuxService.capturePane.mockResolvedValue('An error occurred');
+        mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'An error occurred' });
         const watcher = createTestWatcher({
           idleAfterSeconds: 60,
           condition: { type: 'contains', pattern: 'error' },
@@ -1169,7 +1223,7 @@ describe('WatcherRunnerService', () => {
         expect(result.skipped).toBe(false);
         expect(result.matched).toBe(true);
         expect(result.triggered).toBe(true);
-        expect(mockTmuxService.capturePane).toHaveBeenCalledWith('tmux-1', 50, false);
+        expect(mockTerminalIO.captureHistory).toHaveBeenCalledWith({ name: 'tmux-1' }, 50, false);
         expect(mockEventsService.publish).toHaveBeenCalledTimes(1);
       });
 
@@ -1190,7 +1244,7 @@ describe('WatcherRunnerService', () => {
         expect(result.skipped).toBe(false);
         expect(result.matched).toBe(false);
         expect(result.triggered).toBe(false);
-        expect(mockTmuxService.capturePane).not.toHaveBeenCalled();
+        expect(mockTerminalIO.captureHistory).not.toHaveBeenCalled();
       });
 
       it('should fail idle gate when lastActivityAt is missing', async () => {
@@ -1210,7 +1264,7 @@ describe('WatcherRunnerService', () => {
         expect(result.skipped).toBe(false);
         expect(result.matched).toBe(false);
         expect(result.triggered).toBe(false);
-        expect(mockTmuxService.capturePane).not.toHaveBeenCalled();
+        expect(mockTerminalIO.captureHistory).not.toHaveBeenCalled();
       });
 
       it('should fail idle gate when lastActivityAt is invalid', async () => {
@@ -1230,7 +1284,7 @@ describe('WatcherRunnerService', () => {
         expect(result.skipped).toBe(false);
         expect(result.matched).toBe(false);
         expect(result.triggered).toBe(false);
-        expect(mockTmuxService.capturePane).not.toHaveBeenCalled();
+        expect(mockTerminalIO.captureHistory).not.toHaveBeenCalled();
       });
 
       it('should fail idle gate when idle duration is below threshold', async () => {
@@ -1250,11 +1304,11 @@ describe('WatcherRunnerService', () => {
         expect(result.skipped).toBe(false);
         expect(result.matched).toBe(false);
         expect(result.triggered).toBe(false);
-        expect(mockTmuxService.capturePane).not.toHaveBeenCalled();
+        expect(mockTerminalIO.captureHistory).not.toHaveBeenCalled();
       });
 
-      it('should clear until_clear cooldown when idle gate fails and trigger again after recovery', async () => {
-        mockTmuxService.capturePane.mockResolvedValue('error');
+      it('should preserve until_clear cooldown when idle gate fails before capture', async () => {
+        mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'error' });
         const watcher = createTestWatcher({
           idleAfterSeconds: 60,
           condition: { type: 'contains', pattern: 'error' },
@@ -1276,23 +1330,23 @@ describe('WatcherRunnerService', () => {
         const first = await service.checkSession(watcher, matchingSession);
         expect(first.triggered).toBe(true);
         expect(service.isOnCooldown('watcher-1', 'session-idle-gate-5')).toBe(true);
-        expect(mockTmuxService.capturePane).toHaveBeenCalledTimes(1);
+        expect(mockTerminalIO.captureHistory).toHaveBeenCalledTimes(1);
 
         const second = await service.checkSession(watcher, busySession);
         expect(second.skipped).toBe(false);
         expect(second.matched).toBe(false);
         expect(second.triggered).toBe(false);
-        expect(service.isOnCooldown('watcher-1', 'session-idle-gate-5')).toBe(false);
-        expect(mockTmuxService.capturePane).toHaveBeenCalledTimes(1);
+        expect(service.isOnCooldown('watcher-1', 'session-idle-gate-5')).toBe(true);
+        expect(mockTerminalIO.captureHistory).toHaveBeenCalledTimes(1);
 
         const third = await service.checkSession(watcher, matchingSession);
-        expect(third.triggered).toBe(true);
-        expect(mockTmuxService.capturePane).toHaveBeenCalledTimes(1);
-        expect(mockEventsService.publish).toHaveBeenCalledTimes(2);
+        expect(third.triggered).toBe(false);
+        expect(mockTerminalIO.captureHistory).toHaveBeenCalledTimes(1);
+        expect(mockEventsService.publish).toHaveBeenCalledTimes(1);
       });
 
       it('should not apply idle gate when idleAfterSeconds is zero', async () => {
-        mockTmuxService.capturePane.mockResolvedValue('An error occurred');
+        mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'An error occurred' });
         const watcher = createTestWatcher({
           idleAfterSeconds: 0,
           condition: { type: 'contains', pattern: 'error' },
@@ -1309,14 +1363,14 @@ describe('WatcherRunnerService', () => {
         expect(result.skipped).toBe(false);
         expect(result.matched).toBe(true);
         expect(result.triggered).toBe(true);
-        expect(mockTmuxService.capturePane).toHaveBeenCalledWith('tmux-1', 50, false);
+        expect(mockTerminalIO.captureHistory).toHaveBeenCalledWith({ name: 'tmux-1' }, 50, false);
         expect(mockEventsService.publish).toHaveBeenCalledTimes(1);
       });
     });
 
     describe('trigger flow', () => {
       it('should trigger when condition matches and eligible', async () => {
-        mockTmuxService.capturePane.mockResolvedValue('An error occurred');
+        mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'An error occurred' });
         const watcher = createTestWatcher({ cooldownMs: 0 });
         const session = createMockSession({ id: 'session-1', tmuxSessionId: 'tmux-1' });
 
@@ -1327,7 +1381,7 @@ describe('WatcherRunnerService', () => {
       });
 
       it('should increment trigger count when triggered', async () => {
-        mockTmuxService.capturePane.mockResolvedValue('An error occurred');
+        mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'An error occurred' });
         const watcher = createTestWatcher({ cooldownMs: 0 });
         const session = createMockSession({ id: 'session-1', tmuxSessionId: 'tmux-1' });
 
@@ -1337,7 +1391,7 @@ describe('WatcherRunnerService', () => {
       });
 
       it('should not trigger on duplicate content (hash dedup)', async () => {
-        mockTmuxService.capturePane.mockResolvedValue('An error occurred');
+        mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'An error occurred' });
         const watcher = createTestWatcher({ cooldownMs: 0 });
         const session = createMockSession({ id: 'session-1', tmuxSessionId: 'tmux-1' });
 
@@ -1351,19 +1405,19 @@ describe('WatcherRunnerService', () => {
       });
 
       it('should use watcher.viewportLines for capture', async () => {
-        mockTmuxService.capturePane.mockResolvedValue('error');
+        mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'error' });
         const watcher = createTestWatcher({ viewportLines: 100 });
         const session = createMockSession({ tmuxSessionId: 'tmux-1' });
 
         await service.checkSession(watcher, session);
 
-        expect(mockTmuxService.capturePane).toHaveBeenCalledWith('tmux-1', 100, false);
+        expect(mockTerminalIO.captureHistory).toHaveBeenCalledWith({ name: 'tmux-1' }, 100, false);
       });
     });
 
     describe('error handling', () => {
       it('should handle capturePane errors gracefully', async () => {
-        mockTmuxService.capturePane.mockRejectedValue(new Error('tmux error'));
+        mockTerminalIO.captureHistory.mockRejectedValue(new Error('tmux error'));
         const watcher = createTestWatcher();
         const session = createMockSession({ tmuxSessionId: 'tmux-1' });
 
@@ -1595,7 +1649,7 @@ describe('WatcherRunnerService', () => {
         createMockSession({ id: 'session-1', tmuxSessionId: 'tmux-1', agentId: 'agent-1' }),
       ];
       mockSessionsService.listActiveSessions.mockResolvedValue(sessions);
-      mockTmuxService.capturePane.mockResolvedValue('An error occurred');
+      mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'An error occurred' });
 
       const results = await service.testWatcher(watcher);
 
@@ -1634,7 +1688,7 @@ describe('WatcherRunnerService', () => {
       const watcher = createTestWatcher();
       const sessions = [createMockSession({ tmuxSessionId: 'tmux-1' })];
       mockSessionsService.listActiveSessions.mockResolvedValue(sessions);
-      mockTmuxService.capturePane.mockResolvedValue('error text');
+      mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'error text' });
 
       await service.testWatcher(watcher);
 
@@ -1646,7 +1700,7 @@ describe('WatcherRunnerService', () => {
       const watcher = createTestWatcher();
       const sessions = [createMockSession({ id: 'session-1', tmuxSessionId: 'tmux-1' })];
       mockSessionsService.listActiveSessions.mockResolvedValue(sessions);
-      mockTmuxService.capturePane.mockRejectedValue(new Error('tmux error'));
+      mockTerminalIO.captureHistory.mockRejectedValue(new Error('tmux error'));
 
       const results = await service.testWatcher(watcher);
 
@@ -1662,9 +1716,9 @@ describe('WatcherRunnerService', () => {
         createMockSession({ id: 'session-2', tmuxSessionId: 'tmux-2' }),
       ];
       mockSessionsService.listActiveSessions.mockResolvedValue(sessions);
-      mockTmuxService.capturePane
-        .mockResolvedValueOnce('error here')
-        .mockResolvedValueOnce('all good');
+      mockTerminalIO.captureHistory
+        .mockResolvedValueOnce({ ok: true, output: 'error here' })
+        .mockResolvedValueOnce({ ok: true, output: 'all good' });
 
       const results = await service.testWatcher(watcher);
 
@@ -1698,7 +1752,7 @@ describe('WatcherRunnerService', () => {
         expect(results[0].viewport).toBe('[idle gate: session busy]');
         expect(results[0].viewportHash).toHaveLength(16);
         expect(results[0].conditionMatched).toBe(false);
-        expect(mockTmuxService.capturePane).not.toHaveBeenCalled();
+        expect(mockTerminalIO.captureHistory).not.toHaveBeenCalled();
       } finally {
         jest.useRealTimers();
       }
@@ -1722,7 +1776,7 @@ describe('WatcherRunnerService', () => {
           }),
         ];
         mockSessionsService.listActiveSessions.mockResolvedValue(sessions);
-        mockTmuxService.capturePane.mockResolvedValue('An error occurred');
+        mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'An error occurred' });
 
         const results = await service.testWatcher(watcher);
 
@@ -1730,7 +1784,7 @@ describe('WatcherRunnerService', () => {
         expect(results[0].viewport).toBe('An error occurred');
         expect(results[0].conditionMatched).toBe(true);
         expect(results[0].viewportHash).toHaveLength(16);
-        expect(mockTmuxService.capturePane).toHaveBeenCalledWith('tmux-1', 50, false);
+        expect(mockTerminalIO.captureHistory).toHaveBeenCalledWith({ name: 'tmux-1' }, 50, false);
       } finally {
         jest.useRealTimers();
       }
@@ -1800,7 +1854,7 @@ describe('WatcherRunnerService', () => {
       // Populate some state by running a check
       const session = createMockSession({ tmuxSessionId: 'tmux-1' });
       mockSessionsService.listActiveSessions.mockResolvedValue([session]);
-      mockTmuxService.capturePane.mockResolvedValue('error found');
+      mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'error found' });
 
       // Trigger a poll cycle to populate state
       jest.advanceTimersByTime(1000);
@@ -1902,7 +1956,7 @@ describe('WatcherRunnerService', () => {
       // Set up session and trigger some state
       const session = createMockSession({ id: 'session-1', tmuxSessionId: 'tmux-1' });
       mockSessionsService.listActiveSessions.mockResolvedValue([session]);
-      mockTmuxService.capturePane.mockResolvedValue('error found');
+      mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'error found' });
 
       // Run a poll cycle to populate state
       jest.advanceTimersByTime(1000);

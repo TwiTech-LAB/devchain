@@ -1,35 +1,20 @@
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { execFile } from 'child_process';
 import { getRawSqliteClient } from '../../storage/db/sqlite-raw';
 import { NormalReadinessCheckerService } from './normal-readiness-checker.service';
+import { FakeProcessExecutor } from '../../terminal/services/process-executor/fake-process-executor';
 
 jest.mock('../../storage/db/sqlite-raw', () => ({
   getRawSqliteClient: jest.fn(),
 }));
 
-jest.mock('child_process', () => ({
-  execFile: jest.fn(),
-}));
-
 describe('NormalReadinessCheckerService', () => {
   let service: NormalReadinessCheckerService;
+  let fakeExecutor: FakeProcessExecutor;
   const mockGetRawSqliteClient = jest.mocked(getRawSqliteClient);
-  const mockExecFile = jest.mocked(execFile);
-
-  const mockTmuxCheck = (ok: boolean) => {
-    mockExecFile.mockImplementation((...args) => {
-      const callback = args.find((arg) => typeof arg === 'function') as (
-        error: Error | null,
-        stdout: string,
-        stderr: string,
-      ) => void;
-      callback(ok ? null : new Error('tmux missing'), ok ? 'tmux 3.3a' : '', '');
-      return {} as ReturnType<typeof execFile>;
-    });
-  };
 
   beforeEach(() => {
-    service = new NormalReadinessCheckerService({} as BetterSQLite3Database);
+    fakeExecutor = new FakeProcessExecutor();
+    service = new NormalReadinessCheckerService(fakeExecutor, {} as BetterSQLite3Database);
     jest.clearAllMocks();
   });
 
@@ -39,7 +24,7 @@ describe('NormalReadinessCheckerService', () => {
     mockGetRawSqliteClient.mockReturnValue({ prepare } as unknown as ReturnType<
       typeof getRawSqliteClient
     >);
-    mockTmuxCheck(true);
+    fakeExecutor.enqueueResponse({ type: 'success', stdout: 'tmux 3.3a' });
 
     service.onModuleInit();
     const first = await service.getChecks();
@@ -50,7 +35,7 @@ describe('NormalReadinessCheckerService', () => {
       tmux: 'ok',
     });
     expect(second).toEqual(first);
-    expect(mockExecFile).toHaveBeenCalledTimes(1);
+    expect(fakeExecutor.calls).toHaveLength(1);
     expect(prepare).toHaveBeenCalledTimes(2);
     expect(get).toHaveBeenCalledTimes(2);
   });
@@ -59,7 +44,7 @@ describe('NormalReadinessCheckerService', () => {
     mockGetRawSqliteClient.mockImplementation(() => {
       throw new Error('db unavailable');
     });
-    mockTmuxCheck(true);
+    fakeExecutor.enqueueResponse({ type: 'success', stdout: 'tmux 3.3a' });
 
     const result = await service.getChecks();
 
@@ -74,7 +59,7 @@ describe('NormalReadinessCheckerService', () => {
     mockGetRawSqliteClient.mockReturnValue({ prepare } as unknown as ReturnType<
       typeof getRawSqliteClient
     >);
-    mockTmuxCheck(false);
+    fakeExecutor.enqueueResponse({ type: 'failure', exitCode: 127, stderr: 'tmux: not found' });
 
     const result = await service.getChecks();
 

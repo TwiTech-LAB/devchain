@@ -16,6 +16,7 @@ describe('env.config', () => {
     delete process.env.WORKTREES_DATA_ROOT;
     delete process.env.CONTAINER_PROJECT_ID;
     delete process.env.RUNTIME_TOKEN;
+    delete process.env.DEVCHAIN_CLOUD_UI_ENABLED;
     tempRepoRoot = mkdtempSync(join(tmpdir(), 'devchain-env-config-'));
     resetEnvConfig();
   });
@@ -94,6 +95,23 @@ describe('env.config', () => {
 
     expect(config.RUNTIME_TOKEN).toBe('runtime-token-123');
   });
+
+  it('disables Cloud UI features by default', () => {
+    const config = getEnvConfig();
+
+    expect(config.DEVCHAIN_CLOUD_UI_ENABLED).toBe(false);
+  });
+
+  it.each(['1', 'true', 'TRUE', 'yes', 'on'])(
+    'enables Cloud UI features when DEVCHAIN_CLOUD_UI_ENABLED=%s',
+    (value) => {
+      process.env.DEVCHAIN_CLOUD_UI_ENABLED = value;
+
+      const config = getEnvConfig();
+
+      expect(config.DEVCHAIN_CLOUD_UI_ENABLED).toBe(true);
+    },
+  );
 
   it('throws when CONTAINER_PROJECT_ID is not a valid UUID', () => {
     process.env.CONTAINER_PROJECT_ID = 'not-a-uuid';

@@ -1,7 +1,8 @@
 import { Module, OnModuleInit } from '@nestjs/common';
 import { StorageModule } from '../storage/storage.module';
-import { EventsDomainModule } from '../events/events-domain.module';
+import { EventsCoreModule } from '../events/events-core.module';
 import { SessionsModule } from '../sessions/sessions.module';
+import { ProviderAdaptersModule } from '../providers/adapters';
 import { SessionReaderAdapterFactory } from './adapters/session-reader-adapter.factory';
 import { TranscriptPathValidator } from './services/transcript-path-validator.service';
 import { TranscriptPersistenceListener } from './services/transcript-persistence.listener';
@@ -16,13 +17,15 @@ import { TranscriptWatcherService } from './services/transcript-watcher.service'
 import { SubagentLocator } from './services/subagent-locator.service';
 import { SubagentResolver } from './services/subagent-resolver.service';
 import { SessionReaderController } from './controllers/session-reader.controller';
+import { CodexProviderSessionIdBackfillService } from './services/codex-provider-session-id-backfill.service';
 
 @Module({
-  imports: [StorageModule, EventsDomainModule, SessionsModule],
+  imports: [StorageModule, EventsCoreModule, SessionsModule, ProviderAdaptersModule],
   providers: [
     SessionReaderAdapterFactory,
     TranscriptPathValidator,
     TranscriptPersistenceListener,
+    CodexProviderSessionIdBackfillService,
     ClaudeSessionReaderAdapter,
     CodexSessionReaderAdapter,
     GeminiSessionReaderAdapter,
@@ -37,6 +40,7 @@ import { SessionReaderController } from './controllers/session-reader.controller
   exports: [
     SessionReaderAdapterFactory,
     TranscriptPathValidator,
+    CodexProviderSessionIdBackfillService,
     ClaudeSessionReaderAdapter,
     CodexSessionReaderAdapter,
     GeminiSessionReaderAdapter,

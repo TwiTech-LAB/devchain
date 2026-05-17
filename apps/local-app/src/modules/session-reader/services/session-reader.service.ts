@@ -1,17 +1,17 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { SessionReaderAdapterFactory } from '../adapters/session-reader-adapter.factory';
 import { TranscriptPathValidator } from './transcript-path-validator.service';
+import { SessionCacheService } from './session-cache.service';
 import { SessionsService } from '../../sessions/services/sessions.service';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import { stat } from 'node:fs/promises';
 import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
 import { buildChunks } from '../builders/chunk-builder';
-import { detectClaudeModelFamily } from '../../sessions/utils/profile-options';
-import type {
-  UnifiedSession,
-  UnifiedMetrics,
-  UnifiedMessage,
-  UnifiedToolResult,
-} from '../dtos/unified-session.types';
+import { decodeCursor, encodeCursor } from './transcript-cursor';
+import { truncateMessages, truncateChunks } from './transcript-truncation';
+import { ProviderAdapterFactory, isContextWindowCapable } from '../../providers/adapters';
+import type { UnifiedSession, UnifiedMetrics, UnifiedMessage } from '../dtos/unified-session.types';
+import type { UnifiedChunk } from '../dtos/unified-chunk.types';
 
 /** Transcript summary (metrics + session-level metadata) */
 export interface TranscriptSummary {
@@ -22,7 +22,27 @@ export interface TranscriptSummary {
   isOngoing: boolean;
 }
 
-/** Paginated chunk response */
+/** Paginated UnifiedChunk response with cursor-stable IDs */
+export interface UnifiedChunkedResponse {
+  chunks: UnifiedChunk[];
+  nextCursor: string | null;
+  prevCursor: string | null;
+  totalCount: number;
+}
+
+/** Lightweight transcript index for initial load */
+export interface TranscriptIndex {
+  totals: {
+    messageCount: number;
+    chunkCount: number;
+  };
+  chunkIds: string[];
+  latestOutputPreview: string | null;
+  providerName: string;
+  isOngoing: boolean;
+}
+
+/** @deprecated Use UnifiedChunkedResponse. Retained for backward compatibility during migration. */
 export interface ChunkedTranscriptResponse {
   chunks: TranscriptChunk[];
   nextCursor: string | null;
@@ -30,7 +50,7 @@ export interface ChunkedTranscriptResponse {
   totalChunks: number;
 }
 
-/** A single chunk of messages */
+/** @deprecated Use UnifiedChunk. Retained for backward compatibility during migration. */
 export interface TranscriptChunk {
   chunkId: string;
   index: number;
@@ -44,6 +64,17 @@ export interface GetTranscriptOptions {
   maxToolResultLength?: number;
 }
 
+export interface TranscriptTimingData {
+  resolveMs: number;
+  parseOrCacheHitMs: number;
+  buildChunksMs: number;
+  applyToolResultTruncationMs: number;
+  cacheHit: boolean;
+  fileSizeBytes: number;
+  fileMtimeMs: number;
+  providerName: string;
+}
+
 export interface TranscriptToolResult {
   sessionId: string;
   toolCallId: string;
@@ -52,38 +83,43 @@ export interface TranscriptToolResult {
   fullLength: number;
 }
 
+export interface TranscriptTailResponse {
+  cursor: string;
+  replaceFromChunkIndex: number;
+  deltaChunks: UnifiedChunk[];
+  deltaMessages: UnifiedMessage[];
+  metrics: UnifiedMetrics;
+  totalChunkCount: number;
+  totalMessageCount: number;
+}
+
 const DEFAULT_CHUNK_SIZE = 20;
 const MAX_CHUNK_SIZE = 100;
 
-/** Default cache TTL in milliseconds (30 seconds) */
-const DEFAULT_CACHE_TTL_MS = 30_000;
-/** Cache TTL for large transcripts in milliseconds (120 seconds) */
-const LARGE_SESSION_CACHE_TTL_MS = 120_000;
-/** Transcript size threshold for large-session cache behavior */
-const LARGE_SESSION_MESSAGE_THRESHOLD = 1_000;
+const CHUNKS_CACHE_MAX_ENTRIES = 20;
 
-/** Maximum number of cached transcript entries */
-const CACHE_MAX_ENTRIES = 20;
-
-/** Context window override for Claude providers with 1M context enabled */
-const CLAUDE_1M_CONTEXT_WINDOW_TOKENS = 1_000_000;
-
-interface TranscriptCacheEntry {
-  session: UnifiedSession;
-  cachedAt: number;
-  ttlMs: number;
+interface ParseTimingData {
+  resolveMs: number;
+  parseOrCacheHitMs: number;
+  buildChunksMs: number;
+  cacheHit: boolean;
+  fileSizeBytes: number;
+  fileMtimeMs: number;
+  providerName: string;
 }
 
 @Injectable()
 export class SessionReaderService {
   private readonly logger = new Logger(SessionReaderService.name);
-  private readonly transcriptCache = new Map<string, TranscriptCacheEntry>();
+  private readonly chunksCache = new Map<string, { chunks: UnifiedChunk[]; lastOffset: number }>();
 
   constructor(
     private readonly adapterFactory: SessionReaderAdapterFactory,
     private readonly pathValidator: TranscriptPathValidator,
+    private readonly sessionCacheService: SessionCacheService,
     private readonly sessionsService: SessionsService,
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    private readonly providerAdapterFactory: ProviderAdapterFactory,
   ) {}
 
   /**
@@ -92,7 +128,7 @@ export class SessionReaderService {
    * Resolution chain: session → agent → providerConfig → provider → adapter → parse
    */
   async getTranscript(sessionId: string, options?: GetTranscriptOptions): Promise<UnifiedSession> {
-    const session = await this.getParsedSession(sessionId);
+    const { session } = await this.getParsedSession(sessionId);
     const maxToolResultLength = options?.maxToolResultLength;
     if (maxToolResultLength === undefined) {
       return session;
@@ -100,11 +136,34 @@ export class SessionReaderService {
     return this.applyToolResultTruncation(session, maxToolResultLength);
   }
 
+  async getTranscriptWithTimings(
+    sessionId: string,
+    options?: GetTranscriptOptions,
+  ): Promise<{ session: UnifiedSession; timing: TranscriptTimingData }> {
+    const { session: parsedSession, parseTiming } = await this.getParsedSession(sessionId);
+
+    const maxToolResultLength = options?.maxToolResultLength;
+    const tTrunc = performance.now();
+    const session =
+      maxToolResultLength !== undefined
+        ? this.applyToolResultTruncation(parsedSession, maxToolResultLength)
+        : parsedSession;
+    const applyToolResultTruncationMs = performance.now() - tTrunc;
+
+    return {
+      session,
+      timing: {
+        ...parseTiming,
+        applyToolResultTruncationMs,
+      },
+    };
+  }
+
   /**
    * Get summary metrics for a session transcript.
    */
   async getTranscriptSummary(sessionId: string): Promise<TranscriptSummary> {
-    const session = await this.getParsedSession(sessionId);
+    const { session } = await this.getParsedSession(sessionId);
     const metrics: UnifiedMetrics = session.metrics;
 
     return {
@@ -216,10 +275,149 @@ export class SessionReaderService {
   }
 
   /**
+   * Get paginated UnifiedChunk[] with cursor-stable chunk IDs.
+   * Does NOT call getTranscript() — uses getParsedSession() directly.
+   */
+  async getUnifiedTranscriptChunks(
+    sessionId: string,
+    cursor?: string,
+    limit?: number,
+    direction: 'forward' | 'backward' = 'forward',
+  ): Promise<UnifiedChunkedResponse> {
+    const chunkSize = Math.min(Math.max(limit ?? DEFAULT_CHUNK_SIZE, 1), MAX_CHUNK_SIZE);
+
+    const { session } = await this.getParsedSession(sessionId);
+    const allChunks = session.chunks ?? buildChunks(session.messages);
+
+    let startIndex: number;
+
+    if (!cursor) {
+      startIndex = direction === 'forward' ? 0 : Math.max(0, allChunks.length - chunkSize);
+    } else {
+      const cursorIndex = allChunks.findIndex((c) => c.id === cursor);
+      if (cursorIndex === -1) {
+        throw new ValidationError(`Invalid cursor: chunk "${cursor}" not found`);
+      }
+      if (direction === 'forward') {
+        startIndex = cursorIndex;
+      } else {
+        startIndex = Math.max(0, cursorIndex - chunkSize + 1);
+      }
+    }
+
+    const endIndex = Math.min(startIndex + chunkSize, allChunks.length);
+    const windowChunks = allChunks.slice(startIndex, endIndex);
+
+    const nextCursor = endIndex < allChunks.length ? allChunks[endIndex].id : null;
+    const prevCursor = startIndex > 0 ? allChunks[startIndex - 1].id : null;
+
+    return {
+      chunks: truncateChunks(windowChunks),
+      nextCursor,
+      prevCursor,
+      totalCount: allChunks.length,
+    };
+  }
+
+  /**
+   * Get a single UnifiedChunk by chunk ID.
+   * Does NOT call getTranscript() — uses getParsedSession() directly.
+   */
+  async getUnifiedTranscriptChunk(sessionId: string, chunkId: string): Promise<UnifiedChunk> {
+    const { session } = await this.getParsedSession(sessionId);
+    const allChunks = session.chunks ?? buildChunks(session.messages);
+
+    const chunk = allChunks.find((c) => c.id === chunkId);
+    if (!chunk) {
+      throw new NotFoundError('TranscriptChunk', chunkId);
+    }
+
+    return truncateChunks([chunk])[0];
+  }
+
+  /**
+   * Get lightweight transcript index for initial-load summary.
+   * Returns chunk IDs and metadata without semantic-step content.
+   */
+  async getTranscriptIndex(sessionId: string): Promise<TranscriptIndex> {
+    const { session } = await this.getParsedSession(sessionId);
+    const chunks = session.chunks ?? buildChunks(session.messages);
+
+    let latestOutputPreview: string | null = null;
+    for (let i = chunks.length - 1; i >= 0; i--) {
+      const chunk = chunks[i];
+      if (chunk.type === 'ai' && 'semanticSteps' in chunk) {
+        const outputStep = [...chunk.semanticSteps].reverse().find((s) => s.type === 'output');
+        if (outputStep?.content.outputText) {
+          latestOutputPreview = outputStep.content.outputText.slice(0, 200);
+          break;
+        }
+      }
+    }
+
+    return {
+      totals: {
+        messageCount: session.messages.length,
+        chunkCount: chunks.length,
+      },
+      chunkIds: chunks.map((c) => c.id),
+      latestOutputPreview,
+      providerName: session.providerName,
+      isOngoing: session.metrics.isOngoing,
+    };
+  }
+
+  /**
+   * Get transcript tail since a cursor position.
+   * Returns delta chunks and messages after the cursor's message count.
+   * Returns null if the cursor is expired (message count exceeds current total).
+   */
+  async getTranscriptTail(
+    sessionId: string,
+    sinceCursor: string,
+  ): Promise<TranscriptTailResponse | null> {
+    const cursorData = decodeCursor(sinceCursor);
+    if (!cursorData) {
+      throw new ValidationError('Invalid cursor format');
+    }
+
+    const { session } = await this.getParsedSession(sessionId);
+    const chunks = session.chunks ?? buildChunks(session.messages);
+
+    if (cursorData.messageCount > session.messages.length) {
+      return null;
+    }
+
+    const replaceFromChunkIndex = Math.max(0, cursorData.chunkCount - 1);
+    const deltaMessages = truncateMessages(session.messages.slice(cursorData.messageCount));
+    const deltaChunks = truncateChunks(chunks.slice(replaceFromChunkIndex));
+
+    let fileSizeBytes = 0;
+    try {
+      const { transcriptPath } = await this.resolveAdapter(sessionId);
+      fileSizeBytes = (await stat(transcriptPath)).size;
+    } catch {
+      /* best effort */
+    }
+
+    const cursor = encodeCursor(fileSizeBytes, session.messages.length, chunks.length);
+
+    return {
+      cursor,
+      replaceFromChunkIndex,
+      deltaChunks,
+      deltaMessages,
+      metrics: session.metrics,
+      totalChunkCount: chunks.length,
+      totalMessageCount: session.messages.length,
+    };
+  }
+
+  /**
    * Get full (untruncated) tool result content by tool call id.
    */
   async getToolResult(sessionId: string, toolCallId: string): Promise<TranscriptToolResult> {
-    const session = await this.getParsedSession(sessionId);
+    const { session } = await this.getParsedSession(sessionId);
 
     for (const message of session.messages) {
       const match = message.toolResults.find((result) => result.toolCallId === toolCallId);
@@ -241,59 +439,61 @@ export class SessionReaderService {
   // Private: Caching & Resolution
   // ---------------------------------------------------------------------------
 
-  /**
-   * Get or parse a session transcript with in-memory LRU caching.
-   * Avoids full file reparse when paginating through chunks.
-   */
-  private async getParsedSession(sessionId: string): Promise<UnifiedSession> {
-    const now = Date.now();
-    const cached = this.transcriptCache.get(sessionId);
-
-    if (cached && now - cached.cachedAt < cached.ttlMs) {
-      this.logger.debug({ sessionId }, 'Transcript cache hit');
-      // LRU: move to end of insertion order
-      this.transcriptCache.delete(sessionId);
-      this.transcriptCache.set(sessionId, cached);
-      return cached.session;
-    }
-
+  private async getParsedSession(
+    sessionId: string,
+  ): Promise<{ session: UnifiedSession; parseTiming: ParseTimingData }> {
+    const tResolve = performance.now();
     const { adapter, transcriptPath, providerName, oneMillionContextEnabled } =
       await this.resolveAdapter(sessionId);
-    const session = await adapter.parseFullSession(transcriptPath);
+    const resolveMs = performance.now() - tResolve;
 
-    session.chunks = buildChunks(session.messages);
+    const tParse = performance.now();
+    const { session, cacheHit, lastOffset, lastSize, lastMtime } =
+      await this.sessionCacheService.getOrParseWithMeta(sessionId, transcriptPath, adapter);
+    const parseOrCacheHitMs = performance.now() - tParse;
 
-    // Claude-only: override context window when 1M context is enabled and model is opus.
-    // Only opus is rewritten to [1m] at launch; sonnet/haiku run at default context.
-    if (
-      providerName === 'claude' &&
-      oneMillionContextEnabled &&
-      detectClaudeModelFamily(session.metrics.primaryModel) === 'opus'
-    ) {
-      session.metrics.contextWindowTokens = CLAUDE_1M_CONTEXT_WINDOW_TOKENS;
-    }
-
-    // Evict oldest entry if at capacity
-    if (this.transcriptCache.size >= CACHE_MAX_ENTRIES && !this.transcriptCache.has(sessionId)) {
-      const oldestKey = this.transcriptCache.keys().next().value;
-      if (oldestKey !== undefined) {
-        this.transcriptCache.delete(oldestKey);
+    const cachedChunks = this.chunksCache.get(sessionId);
+    let buildChunksMs = 0;
+    if (cachedChunks && cachedChunks.lastOffset === lastOffset) {
+      session.chunks = cachedChunks.chunks;
+    } else {
+      const tBuild = performance.now();
+      session.chunks = buildChunks(session.messages);
+      buildChunksMs = performance.now() - tBuild;
+      this.chunksCache.set(sessionId, { chunks: session.chunks, lastOffset });
+      if (this.chunksCache.size > CHUNKS_CACHE_MAX_ENTRIES) {
+        const oldest = this.chunksCache.keys().next().value;
+        if (oldest !== undefined) this.chunksCache.delete(oldest);
       }
     }
 
-    // Insert (or replace stale entry)
-    const ttlMs = this.getCacheTtlMs(session);
+    let enrichedSession = session;
+    const providerAdapter = this.providerAdapterFactory.getAdapter(providerName);
+    if (isContextWindowCapable(providerAdapter)) {
+      const overrideWindow = providerAdapter.getReadTimeContextWindow(
+        session.metrics.primaryModel,
+        oneMillionContextEnabled,
+      );
+      if (overrideWindow != null) {
+        enrichedSession = {
+          ...session,
+          metrics: { ...session.metrics, contextWindowTokens: overrideWindow },
+        };
+      }
+    }
 
-    this.transcriptCache.delete(sessionId);
-    this.transcriptCache.set(sessionId, { session, cachedAt: now, ttlMs });
-
-    return session;
-  }
-
-  private getCacheTtlMs(session: UnifiedSession): number {
-    return session.messages.length > LARGE_SESSION_MESSAGE_THRESHOLD
-      ? LARGE_SESSION_CACHE_TTL_MS
-      : DEFAULT_CACHE_TTL_MS;
+    return {
+      session: enrichedSession,
+      parseTiming: {
+        resolveMs,
+        parseOrCacheHitMs,
+        buildChunksMs,
+        cacheHit,
+        fileSizeBytes: lastSize,
+        fileMtimeMs: lastMtime,
+        providerName,
+      },
+    };
   }
 
   private applyToolResultTruncation(session: UnifiedSession, maxLength: number): UnifiedSession {
@@ -301,97 +501,12 @@ export class SessionReaderService {
       throw new ValidationError('maxToolResultLength must be a positive integer');
     }
 
-    const truncatedByToolCallId = new Map<string, UnifiedToolResult>();
+    const messages = truncateMessages(session.messages, maxLength);
+    const chunks = session.chunks ? truncateChunks(session.chunks, maxLength, messages) : undefined;
 
-    const messages = session.messages.map((message) => {
-      const truncatedToolResults = message.toolResults.map((result) => {
-        const truncated = this.truncateToolResult(result, maxLength);
-        truncatedByToolCallId.set(result.toolCallId, truncated);
-        return truncated;
-      });
+    if (messages === session.messages && chunks === session.chunks) return session;
 
-      const content = message.content.map((block) => {
-        if (block.type !== 'tool_result') return block;
-        const truncated = truncatedByToolCallId.get(block.toolCallId);
-        if (!truncated) return block;
-        return {
-          ...block,
-          content: truncated.content,
-          isTruncated: truncated.isTruncated,
-          fullLength: truncated.fullLength,
-        };
-      });
-
-      return {
-        ...message,
-        content,
-        toolResults: truncatedToolResults,
-      };
-    });
-
-    const serializedMessageById = new Map(messages.map((message) => [message.id, message]));
-    const chunks = session.chunks?.map((chunk) => {
-      const chunkMessages = chunk.messages.map(
-        (message) => serializedMessageById.get(message.id) ?? message,
-      );
-
-      if (chunk.type !== 'ai' || !('semanticSteps' in chunk) || !chunk.semanticSteps) {
-        return { ...chunk, messages: chunkMessages };
-      }
-
-      const truncateToolResultStep = (step: (typeof chunk.semanticSteps)[number]) => {
-        if (step.type !== 'tool_result' || !step.content.toolCallId) {
-          return step;
-        }
-
-        const truncated = truncatedByToolCallId.get(step.content.toolCallId);
-        if (!truncated || !truncated.isTruncated) {
-          return step;
-        }
-
-        return {
-          ...step,
-          content: {
-            ...step.content,
-            toolResultContent: truncated.content,
-            isTruncated: true,
-            fullLength: truncated.fullLength,
-          },
-        };
-      };
-
-      const semanticSteps = chunk.semanticSteps.map(truncateToolResultStep);
-      const turns = chunk.turns.map((turn) => ({
-        ...turn,
-        steps: turn.steps.map(truncateToolResultStep),
-      }));
-
-      return { ...chunk, messages: chunkMessages, semanticSteps, turns };
-    });
-
-    return {
-      ...session,
-      messages,
-      chunks,
-    };
-  }
-
-  private truncateToolResult(result: UnifiedToolResult, maxLength: number): UnifiedToolResult {
-    if (typeof result.content !== 'string') {
-      return result;
-    }
-
-    const fullLength = result.content.length;
-    if (fullLength <= maxLength) {
-      return result;
-    }
-
-    return {
-      ...result,
-      content: result.content.slice(0, maxLength) + '…',
-      isTruncated: true,
-      fullLength,
-    };
+    return { ...session, messages, chunks };
   }
 
   private getToolResultContentLength(content: string | unknown[]): number {

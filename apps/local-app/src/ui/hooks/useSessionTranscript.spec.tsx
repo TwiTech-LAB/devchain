@@ -5,11 +5,12 @@ import type { Socket } from 'socket.io-client';
 import {
   useSessionTranscript,
   transcriptQueryKeys,
+  computeAdaptiveDebounceMs,
   type SerializedSession,
   type TranscriptSummary,
 } from './useSessionTranscript';
 import { useAppSocket } from '@/ui/hooks/useAppSocket';
-import { fetchJsonOrThrow, fetchTranscriptSummary } from '@/ui/lib/sessions';
+import { fetchTranscriptSummary, fetchTranscriptTail } from '@/ui/lib/sessions';
 import type { WsEnvelope } from '@/ui/lib/socket';
 
 // ---------------------------------------------------------------------------
@@ -22,15 +23,19 @@ jest.mock('@/ui/hooks/useAppSocket', () => ({
 
 jest.mock('@/ui/lib/sessions', () => ({
   ...jest.requireActual('@/ui/lib/sessions'),
-  fetchJsonOrThrow: jest.fn(),
   fetchTranscriptSummary: jest.fn(),
+  fetchTranscriptTail: jest.fn(),
 }));
 
 const useAppSocketMock = useAppSocket as jest.MockedFunction<typeof useAppSocket>;
-const fetchJsonOrThrowMock = fetchJsonOrThrow as jest.MockedFunction<typeof fetchJsonOrThrow>;
 const fetchTranscriptSummaryMock = fetchTranscriptSummary as jest.MockedFunction<
   typeof fetchTranscriptSummary
 >;
+const fetchTranscriptTailMock = fetchTranscriptTail as jest.MockedFunction<
+  typeof fetchTranscriptTail
+>;
+
+const fetchMock = jest.fn() as jest.MockedFunction<typeof fetch>;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -57,6 +62,23 @@ function createWrapper(queryClient: QueryClient) {
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
   };
+}
+
+function mockTranscriptResponse(session: SerializedSession): void {
+  fetchMock.mockResolvedValue({
+    ok: true,
+    status: 200,
+    text: () => Promise.resolve(JSON.stringify(session)),
+    json: () => Promise.resolve(session),
+  } as Response);
+}
+
+function mockTranscriptError(status: number, message: string): void {
+  fetchMock.mockResolvedValue({
+    ok: false,
+    status,
+    json: () => Promise.resolve({ message }),
+  } as Response);
 }
 
 function makeSession(overrides: Partial<SerializedSession> = {}): SerializedSession {
@@ -151,6 +173,31 @@ function captureWsHandler(): (envelope: WsEnvelope) => void {
 // Tests
 // ---------------------------------------------------------------------------
 
+describe('computeAdaptiveDebounceMs', () => {
+  it('returns base 250ms for small sessions (count < 200)', () => {
+    expect(computeAdaptiveDebounceMs(0)).toBe(250);
+    expect(computeAdaptiveDebounceMs(50)).toBe(250);
+    expect(computeAdaptiveDebounceMs(199)).toBe(250);
+  });
+
+  it('scales debounce with message count for medium sessions', () => {
+    expect(computeAdaptiveDebounceMs(200)).toBe(750);
+    expect(computeAdaptiveDebounceMs(400)).toBe(1250);
+    expect(computeAdaptiveDebounceMs(600)).toBe(1750);
+    expect(computeAdaptiveDebounceMs(1000)).toBe(2750);
+  });
+
+  it('caps at 5000ms for large sessions', () => {
+    expect(computeAdaptiveDebounceMs(2000)).toBe(5000);
+    expect(computeAdaptiveDebounceMs(5000)).toBe(5000);
+    expect(computeAdaptiveDebounceMs(100000)).toBe(5000);
+  });
+
+  it('returns base 250ms when messageCount is undefined', () => {
+    expect(computeAdaptiveDebounceMs(undefined)).toBe(250);
+  });
+});
+
 describe('useSessionTranscript', () => {
   let queryClient: QueryClient;
 
@@ -158,6 +205,8 @@ describe('useSessionTranscript', () => {
     jest.clearAllMocks();
     queryClient = createQueryClient();
     useAppSocketMock.mockReturnValue(createMockSocket());
+    global.fetch = fetchMock;
+    fetchMock.mockClear();
   });
 
   afterEach(() => {
@@ -173,7 +222,7 @@ describe('useSessionTranscript', () => {
       wrapper: createWrapper(queryClient),
     });
 
-    expect(fetchJsonOrThrowMock).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('should return empty defaults when sessionId is null', () => {
@@ -198,7 +247,7 @@ describe('useSessionTranscript', () => {
     const summary = makeSummary();
 
     fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    fetchJsonOrThrowMock.mockResolvedValue(session);
+    mockTranscriptResponse(session);
 
     const { result } = renderHook(() => useSessionTranscript('session-1'), {
       wrapper: createWrapper(queryClient),
@@ -231,8 +280,8 @@ describe('useSessionTranscript', () => {
       expect(result.current.metrics).toEqual(summary.metrics);
     });
 
-    expect(fetchTranscriptSummaryMock).toHaveBeenCalledWith('session-1');
-    expect(fetchJsonOrThrowMock).not.toHaveBeenCalled();
+    expect(fetchTranscriptSummaryMock).toHaveBeenCalledWith('session-1', '', expect.any(Function));
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(result.current.session).toBeUndefined();
     expect(result.current.messages).toEqual([]);
     expect(result.current.chunks).toEqual([]);
@@ -244,7 +293,7 @@ describe('useSessionTranscript', () => {
     const summary = makeSummary();
 
     fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    fetchJsonOrThrowMock.mockResolvedValue(session);
+    mockTranscriptResponse(session);
 
     const { result, rerender } = renderHook(
       ({ enableTranscript }: { enableTranscript: boolean }) =>
@@ -259,7 +308,7 @@ describe('useSessionTranscript', () => {
       expect(result.current.metrics).toEqual(summary.metrics);
     });
 
-    const urlsBeforeActivation = fetchJsonOrThrowMock.mock.calls.map(([url]) => String(url));
+    const urlsBeforeActivation = fetchMock.mock.calls.map(([url]) => String(url));
     expect(urlsBeforeActivation.some((url) => url.endsWith('/transcript'))).toBe(false);
 
     rerender({ enableTranscript: true });
@@ -268,7 +317,7 @@ describe('useSessionTranscript', () => {
       expect(result.current.session).toEqual(session);
     });
 
-    const urlsAfterActivation = fetchJsonOrThrowMock.mock.calls.map(([url]) => String(url));
+    const urlsAfterActivation = fetchMock.mock.calls.map(([url]) => String(url));
     expect(urlsAfterActivation.some((url) => url.endsWith('/transcript'))).toBe(true);
     expect(result.current.messages).toHaveLength(session.messages.length);
   });
@@ -288,7 +337,7 @@ describe('useSessionTranscript', () => {
     });
 
     fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    fetchJsonOrThrowMock.mockResolvedValue(session);
+    mockTranscriptResponse(session);
 
     const { result } = renderHook(() => useSessionTranscript('session-1'), {
       wrapper: createWrapper(queryClient),
@@ -305,7 +354,7 @@ describe('useSessionTranscript', () => {
     const session = makeSession();
 
     fetchTranscriptSummaryMock.mockRejectedValue(new Error('Not found'));
-    fetchJsonOrThrowMock.mockResolvedValue(session);
+    mockTranscriptResponse(session);
 
     const { result } = renderHook(() => useSessionTranscript('session-1'), {
       wrapper: createWrapper(queryClient),
@@ -343,7 +392,7 @@ describe('useSessionTranscript', () => {
     const summary = makeSummary();
 
     fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    fetchJsonOrThrowMock.mockResolvedValue(session);
+    mockTranscriptResponse(session);
 
     const { result } = renderHook(() => useSessionTranscript('session-1'), {
       wrapper: createWrapper(queryClient),
@@ -366,7 +415,7 @@ describe('useSessionTranscript', () => {
     });
 
     fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    fetchJsonOrThrowMock.mockResolvedValue(session);
+    mockTranscriptResponse(session);
 
     const { result } = renderHook(() => useSessionTranscript('session-1'), {
       wrapper: createWrapper(queryClient),
@@ -403,7 +452,7 @@ describe('useSessionTranscript', () => {
   // -------------------------------------------------------------------------
 
   it('should expose error when transcript fetch fails', async () => {
-    fetchJsonOrThrowMock.mockRejectedValue(new Error('Network error'));
+    mockTranscriptError(500, 'Network error');
 
     const { result } = renderHook(() => useSessionTranscript('session-1'), {
       wrapper: createWrapper(queryClient),
@@ -420,7 +469,7 @@ describe('useSessionTranscript', () => {
     const session = makeSession();
 
     fetchTranscriptSummaryMock.mockRejectedValue(new Error('500 Internal Server Error'));
-    fetchJsonOrThrowMock.mockResolvedValue(session);
+    mockTranscriptResponse(session);
 
     const { result } = renderHook(() => useSessionTranscript('session-1'), {
       wrapper: createWrapper(queryClient),
@@ -443,7 +492,7 @@ describe('useSessionTranscript', () => {
   // -------------------------------------------------------------------------
 
   it('should register a WS message handler via useAppSocket', () => {
-    fetchJsonOrThrowMock.mockResolvedValue(makeSession());
+    mockTranscriptResponse(makeSession());
 
     renderHook(() => useSessionTranscript('session-1'), {
       wrapper: createWrapper(queryClient),
@@ -460,7 +509,7 @@ describe('useSessionTranscript', () => {
     const summary = makeSummary();
 
     fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    fetchJsonOrThrowMock.mockResolvedValue(session);
+    mockTranscriptResponse(session);
 
     const { result } = renderHook(
       () => useSessionTranscript('session-1', { wsInvalidationDebounceMs: 10 }),
@@ -500,7 +549,7 @@ describe('useSessionTranscript', () => {
     const summary = makeSummary();
 
     fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    fetchJsonOrThrowMock.mockResolvedValue(session);
+    mockTranscriptResponse(session);
 
     const { result } = renderHook(
       () => useSessionTranscript('session-1', { wsInvalidationDebounceMs: 10 }),
@@ -547,7 +596,7 @@ describe('useSessionTranscript', () => {
     const summary = makeSummary();
 
     fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    fetchJsonOrThrowMock.mockResolvedValue(session);
+    mockTranscriptResponse(session);
 
     const { result } = renderHook(() => useSessionTranscript('session-1'), {
       wrapper: createWrapper(queryClient),
@@ -582,7 +631,7 @@ describe('useSessionTranscript', () => {
     const summary = makeSummary();
 
     fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    fetchJsonOrThrowMock.mockResolvedValue(session);
+    mockTranscriptResponse(session);
 
     const { result } = renderHook(() => useSessionTranscript('session-1'), {
       wrapper: createWrapper(queryClient),
@@ -617,7 +666,7 @@ describe('useSessionTranscript', () => {
     const summary = makeSummary();
 
     fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    fetchJsonOrThrowMock.mockResolvedValue(session);
+    mockTranscriptResponse(session);
 
     const { result } = renderHook(() => useSessionTranscript('session-1'), {
       wrapper: createWrapper(queryClient),
@@ -651,7 +700,7 @@ describe('useSessionTranscript', () => {
     const summary = makeSummary({ isOngoing: true });
 
     fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    fetchJsonOrThrowMock.mockResolvedValue(session);
+    mockTranscriptResponse(session);
 
     const { result } = renderHook(() => useSessionTranscript('session-1'), {
       wrapper: createWrapper(queryClient),
@@ -667,7 +716,7 @@ describe('useSessionTranscript', () => {
     const summary = makeSummary({ isOngoing: false });
 
     fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    fetchJsonOrThrowMock.mockResolvedValue(session);
+    mockTranscriptResponse(session);
 
     const { result } = renderHook(() => useSessionTranscript('session-1'), {
       wrapper: createWrapper(queryClient),
@@ -699,7 +748,7 @@ describe('useSessionTranscript', () => {
     const summary = makeSummary();
 
     fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    fetchJsonOrThrowMock.mockResolvedValue(session);
+    mockTranscriptResponse(session);
 
     const { result } = renderHook(() => useSessionTranscript('session-1'), {
       wrapper: createWrapper(queryClient),
@@ -727,5 +776,319 @@ describe('useSessionTranscript', () => {
     });
 
     expect(() => result.current.refetch()).not.toThrow();
+  });
+
+  // -------------------------------------------------------------------------
+  // WS push-delta: cursor-match → inline merge (zero HTTP refetch)
+  // -------------------------------------------------------------------------
+
+  describe('WS push-delta cursor paths', () => {
+    const INITIAL_CURSOR = 'aW5pdGlhbC1jdXJzb3I';
+    const NEXT_CURSOR = 'bmV4dC1jdXJzb3I';
+
+    function makeSessionWithCursor(): SerializedSession {
+      return makeSession({
+        cursor: INITIAL_CURSOR,
+        chunks: [
+          {
+            id: 'chunk-0',
+            type: 'user',
+            startTime: '2026-02-24T10:00:00.000Z',
+            endTime: '2026-02-24T10:00:00.000Z',
+            messages: [
+              {
+                id: 'msg-1',
+                parentId: null,
+                role: 'user',
+                timestamp: '2026-02-24T10:00:00.000Z',
+                content: [{ type: 'text', text: 'Hello' }],
+                toolCalls: [],
+                toolResults: [],
+                isMeta: false,
+                isSidechain: false,
+              },
+            ],
+            metrics: {
+              inputTokens: 50,
+              outputTokens: 0,
+              cacheReadTokens: 0,
+              cacheCreationTokens: 0,
+              totalTokens: 50,
+              messageCount: 1,
+              durationMs: 0,
+              costUsd: 0,
+            },
+          },
+          {
+            id: 'chunk-1',
+            type: 'ai',
+            startTime: '2026-02-24T10:00:05.000Z',
+            endTime: '2026-02-24T10:00:05.000Z',
+            messages: [
+              {
+                id: 'msg-2',
+                parentId: 'msg-1',
+                role: 'assistant',
+                timestamp: '2026-02-24T10:00:05.000Z',
+                content: [{ type: 'text', text: 'Hi there!' }],
+                model: 'claude-sonnet-4-6',
+                toolCalls: [],
+                toolResults: [],
+                isMeta: false,
+                isSidechain: false,
+              },
+            ],
+            semanticSteps: [],
+            metrics: {
+              inputTokens: 50,
+              outputTokens: 200,
+              cacheReadTokens: 50,
+              cacheCreationTokens: 10,
+              totalTokens: 310,
+              messageCount: 1,
+              durationMs: 5000,
+              costUsd: 0.004,
+            },
+          },
+        ],
+      });
+    }
+
+    function makeDeltaPayload(prevCursor: string) {
+      return {
+        sessionId: 'session-1',
+        cursor: NEXT_CURSOR,
+        prevCursor,
+        replaceFromChunkIndex: 1,
+        deltaChunks: [
+          {
+            id: 'chunk-1',
+            type: 'ai',
+            startTime: '2026-02-24T10:00:05.000Z',
+            endTime: '2026-02-24T10:00:10.000Z',
+            messages: [
+              {
+                id: 'msg-2',
+                parentId: 'msg-1',
+                role: 'assistant',
+                timestamp: '2026-02-24T10:00:05.000Z',
+                content: [{ type: 'text', text: 'Hi there!' }],
+                toolCalls: [],
+                toolResults: [],
+                isMeta: false,
+                isSidechain: false,
+              },
+              {
+                id: 'msg-3',
+                parentId: 'msg-2',
+                role: 'assistant',
+                timestamp: '2026-02-24T10:00:10.000Z',
+                content: [{ type: 'text', text: 'How can I help?' }],
+                toolCalls: [],
+                toolResults: [],
+                isMeta: false,
+                isSidechain: false,
+              },
+            ],
+            semanticSteps: [],
+            metrics: {
+              inputTokens: 50,
+              outputTokens: 300,
+              cacheReadTokens: 50,
+              cacheCreationTokens: 10,
+              totalTokens: 410,
+              messageCount: 2,
+              durationMs: 5000,
+              costUsd: 0.005,
+            },
+          },
+        ],
+        deltaMessages: [
+          {
+            id: 'msg-3',
+            parentId: 'msg-2',
+            role: 'assistant',
+            timestamp: '2026-02-24T10:00:10.000Z',
+            content: [{ type: 'text', text: 'How can I help?' }],
+            toolCalls: [],
+            toolResults: [],
+            isMeta: false,
+            isSidechain: false,
+          },
+        ],
+        newMessageCount: 1,
+        metrics: {
+          totalTokens: 500,
+          inputTokens: 150,
+          outputTokens: 300,
+          costUsd: 0.01,
+          messageCount: 3,
+        },
+      };
+    }
+
+    async function renderWithInitialSession() {
+      const session = makeSessionWithCursor();
+      const summary = makeSummary();
+      fetchTranscriptSummaryMock.mockResolvedValue(summary);
+      mockTranscriptResponse(session);
+
+      const hook = renderHook(() => useSessionTranscript('session-1'), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      await waitFor(() => {
+        expect(hook.result.current.session).toBeDefined();
+        expect(hook.result.current.session?.cursor).toBe(INITIAL_CURSOR);
+      });
+
+      fetchMock.mockClear();
+      return hook;
+    }
+
+    it('cursor match → applies delta merge via setQueryData (zero full-refetch)', async () => {
+      const { result } = await renderWithInitialSession();
+
+      const setQueryDataSpy = jest.spyOn(queryClient, 'setQueryData');
+      const handler = captureWsHandler();
+
+      act(() => {
+        handler({
+          topic: 'session/session-1/transcript',
+          type: 'updated',
+          payload: makeDeltaPayload(INITIAL_CURSOR),
+          ts: new Date().toISOString(),
+        });
+      });
+
+      await waitFor(() => {
+        expect(setQueryDataSpy).toHaveBeenCalled();
+      });
+
+      expect(result.current.messages).toHaveLength(3);
+      expect(result.current.chunks).toHaveLength(2);
+      expect(result.current.chunks[0].id).toBe('chunk-0');
+      expect(result.current.chunks[1].id).toBe('chunk-1');
+      expect(result.current.session?.cursor).toBe(NEXT_CURSOR);
+
+      const transcriptFetches = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes('/transcript'),
+      );
+      expect(transcriptFetches).toHaveLength(0);
+    });
+
+    it('cursor match preserves identity for unchanged chunks', async () => {
+      const { result } = await renderWithInitialSession();
+
+      const chunk0Before = result.current.chunks[0];
+      const handler = captureWsHandler();
+
+      act(() => {
+        handler({
+          topic: 'session/session-1/transcript',
+          type: 'updated',
+          payload: makeDeltaPayload(INITIAL_CURSOR),
+          ts: new Date().toISOString(),
+        });
+      });
+
+      await waitFor(() => {
+        expect(result.current.messages).toHaveLength(3);
+      });
+
+      expect(result.current.chunks[0]).toBe(chunk0Before);
+    });
+
+    it('consecutive cursor-match events produce zero full-transcript refetches', async () => {
+      await renderWithInitialSession();
+
+      const handler = captureWsHandler();
+      let currentCursor = INITIAL_CURSOR;
+
+      for (let i = 0; i < 10; i++) {
+        const nextCursor = `cursor-${i + 1}`;
+        const delta = makeDeltaPayload(currentCursor);
+        delta.cursor = nextCursor;
+        delta.prevCursor = currentCursor;
+
+        act(() => {
+          handler({
+            topic: 'session/session-1/transcript',
+            type: 'updated',
+            payload: delta,
+            ts: new Date().toISOString(),
+          });
+        });
+
+        currentCursor = nextCursor;
+      }
+
+      const transcriptFetches = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes('/transcript'),
+      );
+      expect(transcriptFetches).toHaveLength(0);
+    });
+
+    it('cursor mismatch → fetches tail endpoint', async () => {
+      await renderWithInitialSession();
+
+      fetchTranscriptTailMock.mockResolvedValue({
+        cursor: NEXT_CURSOR,
+        replaceFromChunkIndex: 1,
+        deltaChunks: [],
+        deltaMessages: [],
+        metrics: makeSession().metrics,
+        totalChunkCount: 2,
+        totalMessageCount: 3,
+      });
+
+      const handler = captureWsHandler();
+
+      act(() => {
+        handler({
+          topic: 'session/session-1/transcript',
+          type: 'updated',
+          payload: makeDeltaPayload('wrong-cursor'),
+          ts: new Date().toISOString(),
+        });
+      });
+
+      await waitFor(() => {
+        expect(fetchTranscriptTailMock).toHaveBeenCalledWith(
+          'session-1',
+          INITIAL_CURSOR,
+          expect.any(Function),
+        );
+      });
+
+      const transcriptFetches = fetchMock.mock.calls.filter(([url]) =>
+        String(url).endsWith('/transcript'),
+      );
+      expect(transcriptFetches).toHaveLength(0);
+    });
+
+    it('tail failure → falls back to full-transcript invalidation', async () => {
+      await renderWithInitialSession();
+
+      fetchTranscriptTailMock.mockRejectedValue(new Error('Cursor expired'));
+
+      const invalidateSpy = jest.spyOn(queryClient, 'invalidateQueries');
+      const handler = captureWsHandler();
+
+      act(() => {
+        handler({
+          topic: 'session/session-1/transcript',
+          type: 'updated',
+          payload: makeDeltaPayload('wrong-cursor'),
+          ts: new Date().toISOString(),
+        });
+      });
+
+      await waitFor(() => {
+        expect(invalidateSpy).toHaveBeenCalledWith({
+          queryKey: transcriptQueryKeys.transcript('session-1'),
+        });
+      });
+    });
   });
 });

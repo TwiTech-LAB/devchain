@@ -4,9 +4,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { ChatSidebar, normalizeModelOverrideSelection, type ChatSidebarProps } from './ChatSidebar';
 import type { AgentOrGuest } from '@/ui/hooks/useChatQueries';
+import type { WorktreeAgentGroup } from '@/ui/hooks/useWorktreeAgents';
+
+const mockToast = jest.fn();
 
 jest.mock('@/ui/hooks/use-toast', () => ({
-  useToast: () => ({ toast: jest.fn() }),
+  useToast: () => ({ toast: mockToast }),
 }));
 
 jest.mock('@/ui/components/ui/context-menu', () => ({
@@ -173,6 +176,106 @@ describe('normalizeModelOverrideSelection', () => {
   });
 });
 
+describe('ChatSidebar header controls', () => {
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    mockToast.mockClear();
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ items: [], total: 0, limit: 50, offset: 0 }),
+    })) as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    if (originalFetch) {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it('renders the agents panel actions with theme-safe bulk control styles and preset options', async () => {
+    const onStartAllAgents = jest.fn();
+    const onTerminateAllConfirm = jest.fn();
+
+    renderSidebar({
+      offlineAgents: [agent],
+      agentsWithSessions: [agent],
+      onStartAllAgents,
+      onTerminateAllConfirm,
+      validatedPresets: [
+        {
+          preset: { name: 'Tier A', agentConfigs: [] },
+          available: true,
+          missingConfigs: [],
+        },
+      ],
+    });
+
+    expect(screen.getByRole('heading', { name: 'Agents' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Select preset' })).toBeInTheDocument();
+
+    const startButton = screen.getByRole('button', { name: /Start \(1\)/i });
+    const stopButton = screen.getByRole('button', { name: /Stop \(1\)/i });
+
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: 'All' })).toHaveAttribute('aria-selected', 'true');
+    });
+
+    expect(startButton).toHaveAttribute('title', 'Launch sessions for all offline agents');
+    expect(stopButton).toHaveAttribute('title', 'Terminate all running sessions');
+    expect(startButton).toHaveClass('h-7', 'px-2', 'text-xs');
+    expect(stopButton).toHaveClass('h-7', 'px-2', 'text-xs');
+    expect(startButton.className).not.toContain('dark:');
+    expect(stopButton.className).not.toContain('dark:');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select preset' }));
+    expect(await screen.findByText('Presets')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Tier A/i })).toBeEnabled();
+
+    fireEvent.click(startButton);
+    fireEvent.click(stopButton);
+
+    expect(onStartAllAgents).toHaveBeenCalledTimes(1);
+    expect(onTerminateAllConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables bulk controls and shows loading indicators while bulk actions are running', async () => {
+    renderSidebar({
+      offlineAgents: [agent],
+      agentsWithSessions: [agent],
+      startingAll: true,
+      terminatingAll: true,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: 'All' })).toHaveAttribute('aria-selected', 'true');
+    });
+
+    const startButton = screen.getByRole('button', { name: /Start \(1\)/i });
+    const stopButton = screen.getByRole('button', { name: /Stop \(1\)/i });
+
+    expect(startButton).toBeDisabled();
+    expect(stopButton).toBeDisabled();
+    expect(startButton.querySelector('.animate-spin')).not.toBeNull();
+    expect(stopButton.querySelector('.animate-spin')).not.toBeNull();
+  });
+
+  it('disables bulk controls when presence is not ready even with available counts', async () => {
+    renderSidebar({
+      offlineAgents: [agent],
+      agentsWithSessions: [agent],
+      presenceReady: false,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: 'All' })).toHaveAttribute('aria-selected', 'true');
+    });
+
+    expect(screen.getByRole('button', { name: /Start \(1\)/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /Stop \(1\)/i })).toBeDisabled();
+  });
+});
+
 describe('ChatSidebar agent grouping toggle', () => {
   const originalFetch = global.fetch;
   const PROJECT_ID = 'project-1';
@@ -220,6 +323,7 @@ describe('ChatSidebar agent grouping toggle', () => {
   }
 
   beforeEach(() => {
+    mockToast.mockClear();
     window.localStorage.removeItem(TAB_KEY);
     global.fetch = mockFetchWithTeams(0);
   });
@@ -270,6 +374,9 @@ describe('ChatSidebar agent grouping toggle', () => {
     });
     expect(window.localStorage.getItem(TAB_KEY)).toBe('teams');
     expect(screen.getByRole('link', { name: /Open Teams/i })).toHaveAttribute('href', '/teams');
+    expect(screen.queryByText('MAIN TEAMS')).not.toBeInTheDocument();
+    expect(screen.getByText('INDEPENDENT')).toBeInTheDocument();
+    expect(screen.queryByText('No Team')).not.toBeInTheDocument();
   });
 
   it('initializes from project-scoped localStorage on first render', async () => {
@@ -305,6 +412,75 @@ describe('ChatSidebar agent grouping toggle', () => {
       expect(screen.getByRole('tab', { name: 'Teams' })).toHaveAttribute('aria-selected', 'true');
     });
   });
+
+  it('falls back to All tab and shows a toast when the Teams query fails', async () => {
+    window.localStorage.setItem(TAB_KEY, 'teams');
+    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.startsWith('/api/teams?')) {
+        return {
+          ok: false,
+          status: 500,
+          json: async () => ({ message: 'Teams service unavailable' }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+
+    renderSidebar();
+
+    await waitFor(() => {
+      expect(mockToast).toHaveBeenCalledWith({
+        title: 'Unable to load teams view',
+        description: 'Teams service unavailable Falling back to All agents.',
+        variant: 'destructive',
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: 'All' })).toHaveAttribute('aria-selected', 'true');
+    });
+  });
+});
+
+describe('ChatSidebar activity badges', () => {
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ items: [], total: 0, limit: 50, offset: 0 }),
+    })) as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    if (originalFetch) {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it('shows only the busy timer text while preserving the accessible busy label', async () => {
+    renderSidebar({
+      agentPresence: {
+        [agent.id]: {
+          online: true,
+          sessionId: 'session-1',
+          activityState: 'busy',
+          busySince: new Date(Date.now()).toISOString(),
+        },
+      } as unknown as ChatSidebarProps['agentPresence'],
+      agentsWithSessions: [agent],
+      offlineAgents: [],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: 'All' })).toHaveAttribute('aria-selected', 'true');
+    });
+
+    const badge = screen.getByLabelText(/Busy for/i);
+    expect(badge).toHaveTextContent(/^\d+s$/);
+    expect(badge).not.toHaveTextContent(/Busy/i);
+    expect(badge).toHaveClass('h-4', 'text-[10px]', 'font-medium', 'bg-primary/10');
+  });
 });
 
 describe('ChatSidebar team lead-as-header rendering', () => {
@@ -323,6 +499,20 @@ describe('ChatSidebar team lead-as-header rendering', () => {
     id: 'agent-member',
     name: 'Member Agent',
     profileId: 'profile-1',
+    projectId: 'project-1',
+  } as AgentOrGuest;
+
+  const agentIndependent: AgentOrGuest = {
+    id: 'agent-independent',
+    name: 'Independent Agent',
+    profileId: 'profile-1',
+    projectId: 'project-1',
+  } as AgentOrGuest;
+
+  const guestAgent: AgentOrGuest = {
+    id: 'guest-1',
+    name: 'Guest Agent',
+    profileId: 'profile-guest',
     projectId: 'project-1',
   } as AgentOrGuest;
 
@@ -417,7 +607,11 @@ describe('ChatSidebar team lead-as-header rendering', () => {
       ],
     });
 
-    renderSidebar({ agents: [agentLead, agentMember], offlineAgents: [agentLead, agentMember] });
+    renderSidebar({
+      agents: [agentLead, agentMember],
+      offlineAgents: [agentLead, agentMember],
+      onAddTeamAgent: jest.fn(),
+    });
 
     await waitFor(() => {
       expect(screen.getByRole('tab', { name: 'Teams' })).toHaveAttribute('aria-selected', 'true');
@@ -427,7 +621,47 @@ describe('ChatSidebar team lead-as-header rendering', () => {
       expect(screen.getByText(/Alpha Team/)).toBeInTheDocument();
     });
 
-    expect(screen.getByLabelText(/Toggle Alpha Team members/)).toBeInTheDocument();
+    const teamCard = screen.getByText(/Alpha Team/).closest('[class*="shadow-sm"]');
+    expect(teamCard).toHaveClass('border-border', 'bg-card/80', 'shadow-sm');
+    const teamMetaLine = screen.getByText('Alpha Team · 1 member').parentElement;
+    const addButton = screen.getByRole('button', { name: /Add agent to Alpha Team/i });
+    const toggleButton = screen.getByLabelText(/Toggle Alpha Team members/);
+    expect(teamMetaLine).toContainElement(addButton);
+    expect(teamMetaLine).toContainElement(toggleButton);
+  });
+
+  it('renders secondary Teams-mode section headers without adding section collapse controls', async () => {
+    global.fetch = mockTeamFetch({
+      teamLeadAgentId: 'agent-lead',
+      members: [
+        { agentId: 'agent-lead', agentName: 'Lead Agent' },
+        { agentId: 'agent-member', agentName: 'Member Agent' },
+      ],
+    });
+
+    renderSidebar({
+      agents: [agentLead, agentMember, agentIndependent],
+      guests: [guestAgent],
+      offlineAgents: [agentLead, agentMember, agentIndependent],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: 'Teams' })).toHaveAttribute('aria-selected', 'true');
+    });
+
+    expect(screen.queryByText('TEAMS')).not.toBeInTheDocument();
+    expect(screen.queryByText('1 team')).not.toBeInTheDocument();
+    expect(screen.getByText('INDEPENDENT')).toBeInTheDocument();
+    expect(screen.getByText('1 agent')).toBeInTheDocument();
+    expect(screen.getByText('GUESTS')).toBeInTheDocument();
+    expect(screen.getByText('1 guest')).toBeInTheDocument();
+    expect(screen.queryByText('No Team')).not.toBeInTheDocument();
+    expect(screen.getByText('INDEPENDENT').closest('button')).toBeNull();
+    expect(screen.getByText('GUESTS').closest('button')).toBeNull();
+    expect(screen.getByRole('button', { name: /^MAIN$/i })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
   });
 
   it('hides chevron on lone-lead team but shows team name sub-label', async () => {
@@ -489,7 +723,7 @@ describe('ChatSidebar team lead-as-header rendering', () => {
     expect(nestedButtons).toHaveLength(0);
   });
 
-  it('no-lead toggle button expands/collapses team group', async () => {
+  it('opens no-lead team groups by default and preserves toggle behavior', async () => {
     global.fetch = mockTeamFetch({
       teamLeadAgentId: null,
       members: [
@@ -509,16 +743,16 @@ describe('ChatSidebar team lead-as-header rendering', () => {
     });
 
     const toggleBtn = screen.getByRole('button', { name: /Toggle Toggle Team members/i });
-    expect(toggleBtn).toHaveAttribute('aria-expanded', 'false');
+    expect(toggleBtn).toHaveAttribute('aria-expanded', 'true');
 
     fireEvent.click(toggleBtn);
 
     await waitFor(() => {
-      expect(toggleBtn).toHaveAttribute('aria-expanded', 'true');
+      expect(toggleBtn).toHaveAttribute('aria-expanded', 'false');
     });
   });
 
-  it('expands to show indented member rows when chevron is clicked', async () => {
+  it('shows indented member rows by default for lead-as-header teams', async () => {
     global.fetch = mockTeamFetch({
       teamLeadAgentId: 'agent-lead',
       members: [
@@ -533,13 +767,32 @@ describe('ChatSidebar team lead-as-header rendering', () => {
       expect(screen.getByText(/Alpha Team/)).toBeInTheDocument();
     });
 
-    expect(screen.queryByLabelText(/Chat with Member Agent/i)).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByLabelText(/Toggle Alpha Team members/));
-
     await waitFor(() => {
       expect(screen.getByLabelText(/Chat with Member Agent/i)).toBeInTheDocument();
     });
+  });
+
+  it('preserves persisted collapsed team group state', async () => {
+    window.localStorage.setItem(TEAM_GROUPS_KEY, JSON.stringify({ 'team-1': true }));
+    global.fetch = mockTeamFetch({
+      teamLeadAgentId: 'agent-lead',
+      members: [
+        { agentId: 'agent-lead', agentName: 'Lead Agent' },
+        { agentId: 'agent-member', agentName: 'Member Agent' },
+      ],
+    });
+
+    renderSidebar({ agents: [agentLead, agentMember], offlineAgents: [agentLead, agentMember] });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Alpha Team/)).toBeInTheDocument();
+    });
+
+    expect(screen.getByLabelText(/Toggle Alpha Team members/)).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    expect(screen.queryByLabelText(/Chat with Member Agent/i)).not.toBeInTheDocument();
   });
 
   it('onEditTeam payload includes allowTeamLeadCreateAgents=true from team detail', async () => {
@@ -604,5 +857,115 @@ describe('ChatSidebar team lead-as-header rendering', () => {
       maxConcurrentTasks: 2,
       allowTeamLeadCreateAgents: false,
     });
+  });
+});
+
+describe('ChatSidebar guest and worktree compatibility', () => {
+  const originalFetch = global.fetch;
+
+  const guestAgent: AgentOrGuest = {
+    id: 'guest-1',
+    name: 'Guest Agent',
+    profileId: null,
+    projectId: 'project-1',
+    type: 'guest',
+  } as AgentOrGuest;
+
+  const worktreeAgent: AgentOrGuest = {
+    id: 'agent-wt-1',
+    name: 'Worktree Agent',
+    profileId: 'profile-wt-1',
+    projectId: 'project-wt-1',
+    providerConfigId: 'config-wt-1',
+    providerConfig: {
+      id: 'config-wt-1',
+      name: 'WT Config',
+      providerId: 'provider-claude',
+      providerName: 'Claude',
+    },
+  } as AgentOrGuest;
+
+  const worktreeGroup: WorktreeAgentGroup = {
+    id: 'worktree-1',
+    name: 'feature-auth',
+    status: 'running',
+    runtimeType: 'process',
+    devchainProjectId: 'project-wt-1',
+    apiBase: '/wt/feature-auth',
+    agents: [worktreeAgent],
+    agentPresence: {
+      [worktreeAgent.id]: {
+        online: true,
+        sessionId: 'session-wt-1',
+        activityState: 'idle',
+      },
+    } as WorktreeAgentGroup['agentPresence'],
+    disabled: false,
+    error: null,
+  };
+
+  beforeEach(() => {
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ items: [], total: 0, limit: 50, offset: 0 }),
+    })) as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    if (originalFetch) {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it('keeps guest rows non-actionable with theme-safe guest styling', async () => {
+    const onLaunchChat = jest.fn();
+    renderSidebar({
+      agents: [],
+      offlineAgents: [],
+      guests: [guestAgent],
+      onLaunchChat,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('GUESTS')).toBeInTheDocument();
+    });
+
+    const guestRow = screen.getByRole('listitem', { name: 'Guest: Guest Agent (online)' });
+    expect(guestRow).toHaveAttribute('type', 'button');
+    expect(guestRow).toHaveClass('cursor-default', 'bg-card/40');
+
+    fireEvent.click(guestRow);
+    expect(onLaunchChat).not.toHaveBeenCalled();
+
+    const badge = screen.getByLabelText('Guest type');
+    expect(badge).toHaveTextContent('Guest');
+    expect(badge).toHaveClass('border-purple-500/40', 'bg-purple-500/10', 'text-purple-600');
+  });
+
+  it('keeps worktree rows clickable while applying restrained row polish', async () => {
+    const onLaunchWorktreeAgentChat = jest.fn();
+    const onRestartWorktreeSession = jest.fn(async () => {});
+    const onTerminateWorktreeSession = jest.fn(async () => {});
+
+    renderSidebar({
+      worktreeAgentGroups: [worktreeGroup],
+      onLaunchWorktreeAgentChat,
+      onRestartWorktreeSession,
+      onTerminateWorktreeSession,
+    });
+
+    const worktreeRow = await screen.findByRole('listitem', {
+      name: 'Open terminal for Worktree Agent in feature-auth (online)',
+    });
+    expect(worktreeRow).toHaveClass('bg-card/40', 'hover:border-border');
+
+    const providerIconFrame = screen.getByTitle('Provider: Claude');
+    expect(providerIconFrame).toHaveClass('h-6', 'w-6', 'bg-muted/40', 'border-border');
+
+    fireEvent.click(worktreeRow);
+    expect(onLaunchWorktreeAgentChat).toHaveBeenCalledWith(worktreeGroup, worktreeAgent.id);
+
+    expect(onRestartWorktreeSession).not.toHaveBeenCalled();
+    expect(onTerminateWorktreeSession).not.toHaveBeenCalled();
   });
 });

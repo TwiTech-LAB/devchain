@@ -14,7 +14,8 @@ import {
   installWorktreeFetchInterceptor,
   MAIN_INSTANCE_API_PREFIXES,
 } from '@/ui/lib/worktree-fetch-interceptor';
-import { getAppSocket, releaseAppSocket, type WsEnvelope } from '@/ui/lib/socket';
+import { useRealtimeDispatch } from '@/ui/hooks/useRealtimeDispatch';
+import type { RealtimeInvalidationRegistry } from '@/ui/lib/realtime-invalidation-registry';
 
 const WORKTREE_QUERY_PARAM = 'wt';
 const WORKTREE_TAB_REFRESH_MS = 15_000;
@@ -224,22 +225,28 @@ export function WorktreeTabProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!isMainMode) return;
-    const socket = getAppSocket();
-    const handler = (envelope: WsEnvelope) => {
-      if (envelope.topic === 'worktrees') {
-        queryClient.invalidateQueries({ queryKey: ['worktree-tabs-worktrees'] });
-        queryClient.invalidateQueries({ queryKey: ['chat-worktree-agent-groups'] });
-        queryClient.invalidateQueries({ queryKey: ['orchestrator-worktrees'] });
-        queryClient.invalidateQueries({ queryKey: ['orchestrator-worktree-overview'] });
-        queryClient.invalidateQueries({ queryKey: ['orchestrator-worktree-activity'] });
-      }
-    };
-    socket.on('message', handler);
-    return () => {
-      socket.off('message', handler);
-      releaseAppSocket();
-    };
-  }, [isMainMode, queryClient]);
+  }, [isMainMode]);
+
+  const worktreeRegistry: RealtimeInvalidationRegistry = useMemo(
+    () =>
+      isMainMode
+        ? [
+            {
+              match: (t: string) => t === 'worktrees',
+              type: 'changed',
+              entries: [
+                { kind: 'invalidate', queryKey: ['worktree-tabs-worktrees'] },
+                { kind: 'invalidate', queryKey: ['chat-worktree-agent-groups'] },
+                { kind: 'invalidate', queryKey: ['orchestrator-worktrees'] },
+                { kind: 'invalidate', queryKey: ['orchestrator-worktree-overview'] },
+                { kind: 'invalidate', queryKey: ['orchestrator-worktree-activity'] },
+              ],
+            },
+          ]
+        : [],
+    [isMainMode],
+  );
+  useRealtimeDispatch(worktreeRegistry);
 
   useEffect(() => {
     if (typeof window === 'undefined') {

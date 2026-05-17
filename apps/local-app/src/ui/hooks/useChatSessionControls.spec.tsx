@@ -5,6 +5,7 @@ import {
   useChatSessionControls,
   type UseChatSessionControlsOptions,
 } from './useChatSessionControls';
+import { chatQueryKeys } from './useChatQueries';
 
 // ============================================
 // Mocks
@@ -294,7 +295,7 @@ describe('useChatSessionControls', () => {
         await result.current.handleRestoreSession(sessionId, agentId);
       });
 
-      expect(mockRestore).toHaveBeenCalledWith(sessionId, 'proj-1');
+      expect(mockRestore).toHaveBeenCalledWith(sessionId, 'proj-1', '', expect.any(Function));
     });
 
     it('shows success toast after restore', async () => {
@@ -330,6 +331,53 @@ describe('useChatSessionControls', () => {
       });
 
       expect(canAttachInlineTerminal).toHaveBeenCalledWith(agentId);
+      expect(onInlineTerminalAttach).toHaveBeenCalledWith(agentId, sessionId);
+    });
+
+    it('primes presence and active-session cache before attaching restored terminal', async () => {
+      const onInlineTerminalAttach = jest.fn();
+      const canAttachInlineTerminal = jest.fn().mockReturnValue(true);
+      const restoredSess = makeSession({ id: sessionId, agentId, tmuxSessionId: 'tmux-restored' });
+      mockRestore.mockResolvedValue(restoredSess);
+
+      const { wrapper, queryClient } = createWrapper();
+      queryClient.setQueryData(chatQueryKeys.agentPresence('proj-1'), {
+        [agentId]: { online: false, sessionId: undefined },
+      });
+      queryClient.setQueryData(chatQueryKeys.activeSessions('proj-1'), []);
+
+      const attachOrder: string[] = [];
+      onInlineTerminalAttach.mockImplementation(() => {
+        const presence = queryClient.getQueryData(chatQueryKeys.agentPresence('proj-1'));
+        const activeSessions = queryClient.getQueryData(chatQueryKeys.activeSessions('proj-1'));
+        if (presence && activeSessions) {
+          attachOrder.push('cache-primed');
+        }
+      });
+
+      const { result } = renderHook(
+        () =>
+          useChatSessionControls(
+            buildOptions({
+              agentPresence: { [agentId]: { online: false, sessionId: undefined } },
+              canAttachInlineTerminal,
+              onInlineTerminalAttach,
+            }),
+          ),
+        { wrapper },
+      );
+
+      await act(async () => {
+        await result.current.handleRestoreSession(sessionId, agentId);
+      });
+
+      expect(queryClient.getQueryData(chatQueryKeys.agentPresence('proj-1'))).toMatchObject({
+        [agentId]: { online: true, sessionId },
+      });
+      expect(queryClient.getQueryData(chatQueryKeys.activeSessions('proj-1'))).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: sessionId, agentId })]),
+      );
+      expect(attachOrder).toEqual(['cache-primed']);
       expect(onInlineTerminalAttach).toHaveBeenCalledWith(agentId, sessionId);
     });
 

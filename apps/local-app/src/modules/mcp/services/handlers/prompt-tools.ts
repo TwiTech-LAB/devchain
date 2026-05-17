@@ -1,79 +1,29 @@
 import type { Prompt } from '../../../storage/models/domain.models';
 import {
   McpResponse,
-  ListPromptsParamsSchema,
-  GetPromptParamsSchema,
   ListPromptsResponse,
   GetPromptResponse,
   SessionContext,
+  type ListPromptsParams,
+  type GetPromptParams,
 } from '../../dtos/mcp.dto';
 import { mapPromptSummary, mapPromptDetail } from '../mappers/dto-mappers';
 import { renderTemplate } from '../../../../common/template/handlebars-renderer';
-import { loadAgentRecipientContext } from '../../../../common/template/agent-recipient-context';
-import type { McpToolContext } from './types';
-
-function missingSessionResolver(): McpResponse {
-  return {
-    success: false,
-    error: {
-      code: 'SERVICE_UNAVAILABLE',
-      message:
-        'Session resolution requires full app context (not available in standalone MCP mode)',
-    },
-  };
-}
-
-async function resolveSessionContext(ctx: McpToolContext, sessionId: string): Promise<McpResponse> {
-  if (!ctx.resolveSessionContext) {
-    return missingSessionResolver();
-  }
-  return ctx.resolveSessionContext(sessionId);
-}
-
-async function buildRenderVars(
-  ctx: McpToolContext,
-  sessionContext: SessionContext,
-): Promise<{ vars: Record<string, unknown>; legacyVariables: string[] }> {
-  const agentId = sessionContext.type === 'agent' ? sessionContext.agent?.id : undefined;
-  const teamCtx =
-    agentId && ctx.teamsService
-      ? await loadAgentRecipientContext(ctx.teamsService, agentId)
-      : { team_name: '', team_names: '', is_team_lead: false };
-  const vars: Record<string, unknown> = {
-    agent_name: sessionContext.type === 'agent' ? (sessionContext.agent?.name ?? '') : '',
-    project_name: sessionContext.project?.name ?? '',
-    ...teamCtx,
-  };
-  return { vars, legacyVariables: Object.keys(vars) };
-}
-
-function renderPromptContent(
-  content: string,
-  vars: Record<string, unknown>,
-  legacyVariables: string[],
-): string {
-  return renderTemplate(content, vars, legacyVariables);
-}
+import { buildPromptRenderContext } from '../../../../common/template/prompt-render-context';
+import type { PromptToolContext } from './prompt-context';
+import { resolveSessionContext } from '../utils/session-context-helpers';
+import { requireProject } from '../utils/require-project';
 
 export async function handleListPrompts(
-  ctx: McpToolContext,
+  ctx: PromptToolContext,
   params: unknown,
 ): Promise<McpResponse> {
-  const validated = ListPromptsParamsSchema.parse(params);
+  const validated = params as ListPromptsParams;
 
   const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
-  if (!sessionCtxResult.success) return sessionCtxResult;
-  const { project } = sessionCtxResult.data as SessionContext;
-
-  if (!project) {
-    return {
-      success: false,
-      error: {
-        code: 'PROJECT_NOT_FOUND',
-        message: 'No project associated with this session',
-      },
-    };
-  }
+  const projectResult = requireProject(sessionCtxResult);
+  if (!('project' in projectResult)) return projectResult;
+  const { project } = projectResult;
 
   const projectId = project.id;
 
@@ -95,8 +45,11 @@ export async function handleListPrompts(
   return { success: true, data: response };
 }
 
-export async function handleGetPrompt(ctx: McpToolContext, params: unknown): Promise<McpResponse> {
-  const validated = GetPromptParamsSchema.parse(params);
+export async function handleGetPrompt(
+  ctx: PromptToolContext,
+  params: unknown,
+): Promise<McpResponse> {
+  const validated = params as GetPromptParams;
   let prompt: Prompt | undefined;
   let sessionContext: SessionContext | undefined;
 
@@ -162,10 +115,18 @@ export async function handleGetPrompt(ctx: McpToolContext, params: unknown): Pro
   }
 
   if (sessionContext) {
-    const { vars, legacyVariables } = await buildRenderVars(ctx, sessionContext);
+    const agentId = sessionContext.type === 'agent' ? sessionContext.agent?.id : undefined;
+    const { vars } = await buildPromptRenderContext({
+      recipientAgentId: agentId,
+      teams: ctx.teamsService,
+      extras: {
+        agent_name: sessionContext.type === 'agent' ? (sessionContext.agent?.name ?? '') : '',
+        project_name: sessionContext.project?.name ?? '',
+      },
+    });
     prompt = {
       ...prompt,
-      content: renderPromptContent(prompt.content, vars, legacyVariables),
+      content: renderTemplate(prompt.content, vars, Object.keys(vars)),
     };
   }
 

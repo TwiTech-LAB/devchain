@@ -19,6 +19,12 @@ import type {
   SkillUsageLog as SkillUsageLogModel,
 } from '../../storage/models/domain.models';
 import { SkillSourceRegistryService, type SkillSourceKind } from './skill-source-registry.service';
+import {
+  parseSearchQuery,
+  buildSearchCondition,
+  sortByRelevance,
+  type ParsedSearchQuery,
+} from './skill-search.utils';
 
 const logger = createLogger('SkillsService');
 
@@ -130,19 +136,9 @@ export class SkillsService {
     if (options.status) {
       conditions.push(eq(skills.status, options.status));
     }
-    const searchTerm = options.q?.trim().toLowerCase();
-    if (searchTerm) {
-      const likePattern = `%${searchTerm}%`;
-      conditions.push(
-        sql`(
-          lower(${skills.slug}) LIKE ${likePattern}
-          OR lower(${skills.name}) LIKE ${likePattern}
-          OR lower(${skills.displayName}) LIKE ${likePattern}
-          OR lower(coalesce(${skills.description}, '')) LIKE ${likePattern}
-          OR lower(coalesce(${skills.shortDescription}, '')) LIKE ${likePattern}
-          OR lower(coalesce(${skills.compatibility}, '')) LIKE ${likePattern}
-        )`,
-      );
+    const parsed = options.q ? parseSearchQuery(options.q) : null;
+    if (parsed) {
+      conditions.push(buildSearchCondition(parsed));
     }
 
     const whereClause = this.combineConditions(conditions);
@@ -152,7 +148,12 @@ export class SkillsService {
     }
 
     const rows = await query.orderBy(asc(skills.name), asc(skills.slug));
-    return rows.map((row) => this.mapSkillRow(row));
+    const mapped = rows.map((row) => this.mapSkillRow(row));
+
+    if (parsed) {
+      return sortByRelevance(mapped, parsed);
+    }
+    return mapped;
   }
 
   async listAllForProject(
@@ -180,7 +181,7 @@ export class SkillsService {
       );
 
     const conditions: SQL<unknown>[] = [inArray(skills.source, enabledSources)];
-    this.appendProjectSkillFilterConditions(conditions, options);
+    const parsed = this.appendProjectSkillFilterConditions(conditions, options);
 
     const whereClause = this.combineConditions(conditions);
     if (whereClause) {
@@ -188,10 +189,15 @@ export class SkillsService {
     }
 
     const rows = await query.orderBy(asc(skills.name), asc(skills.slug));
-    return rows.map((row) => ({
+    const mapped = rows.map((row) => ({
       ...this.mapSkillRow(row.skill),
       disabled: Number(row.disabled) === 1,
     }));
+
+    if (parsed) {
+      return sortByRelevance(mapped, parsed);
+    }
+    return mapped;
   }
 
   async listDiscoverable(
@@ -217,7 +223,7 @@ export class SkillsService {
 
     const conditions: SQL<unknown>[] = [isNull(skillProjectDisabled.id)];
     conditions.push(inArray(skills.source, enabledSources));
-    this.appendProjectSkillFilterConditions(conditions, options);
+    const parsed = this.appendProjectSkillFilterConditions(conditions, options);
 
     const whereClause = this.combineConditions(conditions);
     if (whereClause) {
@@ -225,7 +231,12 @@ export class SkillsService {
     }
 
     const rows = await query.orderBy(asc(skills.name), asc(skills.slug));
-    return rows.map((row) => this.mapSkillRow(row.skill));
+    const mapped = rows.map((row) => this.mapSkillRow(row.skill));
+
+    if (parsed) {
+      return sortByRelevance(mapped, parsed);
+    }
+    return mapped;
   }
 
   async getSkill(id: string): Promise<Skill> {
@@ -829,20 +840,10 @@ export class SkillsService {
   private appendProjectSkillFilterConditions(
     conditions: SQL<unknown>[],
     options: ListProjectSkillsOptions,
-  ): void {
-    const searchTerm = options.q?.trim().toLowerCase();
-    if (searchTerm) {
-      const likePattern = `%${searchTerm}%`;
-      conditions.push(
-        sql`(
-          lower(${skills.slug}) LIKE ${likePattern}
-          OR lower(${skills.name}) LIKE ${likePattern}
-          OR lower(${skills.displayName}) LIKE ${likePattern}
-          OR lower(coalesce(${skills.description}, '')) LIKE ${likePattern}
-          OR lower(coalesce(${skills.shortDescription}, '')) LIKE ${likePattern}
-          OR lower(coalesce(${skills.compatibility}, '')) LIKE ${likePattern}
-        )`,
-      );
+  ): ParsedSearchQuery | null {
+    const parsed = options.q ? parseSearchQuery(options.q) : null;
+    if (parsed) {
+      conditions.push(buildSearchCondition(parsed));
     }
     if (options.source) {
       conditions.push(eq(skills.source, options.source.trim().toLowerCase()));
@@ -850,6 +851,7 @@ export class SkillsService {
     if (options.category) {
       conditions.push(eq(skills.category, options.category));
     }
+    return parsed;
   }
 
   private mapSkillRow(row: typeof skills.$inferSelect): Skill {

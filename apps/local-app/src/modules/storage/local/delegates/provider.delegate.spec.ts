@@ -22,17 +22,17 @@ function createDelegate() {
   return { delegate };
 }
 
-describe('ProviderStorageDelegate.createProvider — CLAUDE_CODE_NO_FLICKER default', () => {
-  it('adds CLAUDE_CODE_NO_FLICKER=1 when Claude provider has no env', async () => {
+describe('ProviderStorageDelegate.createProvider — provider env defaults', () => {
+  it('does not add CLAUDE_CODE_NO_FLICKER when Claude provider has no env', async () => {
     const { delegate } = createDelegate();
     const result = await delegate.createProvider({ name: 'claude' });
-    expect(result.env).toEqual({ CLAUDE_CODE_NO_FLICKER: '1' });
+    expect(result.env).toBeNull();
   });
 
-  it('merges CLAUDE_CODE_NO_FLICKER=1 when Claude provider has other env keys', async () => {
+  it('preserves caller env keys without adding CLAUDE_CODE_NO_FLICKER', async () => {
     const { delegate } = createDelegate();
     const result = await delegate.createProvider({ name: 'claude', env: { OTHER_KEY: 'x' } });
-    expect(result.env).toEqual({ OTHER_KEY: 'x', CLAUDE_CODE_NO_FLICKER: '1' });
+    expect(result.env).toEqual({ OTHER_KEY: 'x' });
   });
 
   it('preserves caller value when CLAUDE_CODE_NO_FLICKER is explicitly set', async () => {

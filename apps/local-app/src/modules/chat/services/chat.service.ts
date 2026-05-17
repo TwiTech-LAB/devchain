@@ -1,4 +1,4 @@
-import { Injectable, Inject, NotFoundException, forwardRef } from '@nestjs/common';
+import { Injectable, Inject, NotFoundException } from '@nestjs/common';
 import { ValidationError } from '../../../common/errors/error-types';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DB_CONNECTION } from '../../storage/db/db.provider';
@@ -13,6 +13,7 @@ import {
   chatMessageTargets,
   chatThreadSessionInvites,
   chatActivities,
+  chatMessageReads,
   agents as agentsTable,
 } from '../../storage/db/schema';
 import type {
@@ -30,10 +31,11 @@ import type {
   PurgeThreadHistoryDto,
 } from '../dtos/chat.dto';
 import { ChatSettingsService } from './chat-settings.service';
+import { ChatSessionInviteService } from './chat-session-invite.service';
 import { renderInviteTemplate } from './invite-template.util';
-import { SessionsService } from '../../sessions/services/sessions.service';
 
 const logger = createLogger('ChatService');
+
 const DEFAULT_INVITER_NAME = 'You';
 
 @Injectable()
@@ -42,8 +44,7 @@ export class ChatService {
     @Inject(DB_CONNECTION) private readonly db: BetterSQLite3Database,
     private readonly eventEmitter: EventEmitter2,
     private readonly chatSettingsService: ChatSettingsService,
-    @Inject(forwardRef(() => SessionsService))
-    private readonly sessionsService: SessionsService,
+    private readonly chatSessionInviteService: ChatSessionInviteService,
   ) {
     logger.info('ChatService initialized');
   }
@@ -138,9 +139,36 @@ export class ChatService {
       createdAt,
     };
 
+    let projectId: string | undefined;
+    let recipientIds: string[] | undefined;
+    try {
+      const threadRow = await this.db
+        .select({ projectId: chatThreads.projectId })
+        .from(chatThreads)
+        .where(eq(chatThreads.id, threadId))
+        .limit(1);
+      projectId = threadRow[0]?.projectId;
+
+      if (data.authorType === 'user') {
+        if (effectiveTargets.length > 0) {
+          recipientIds = effectiveTargets;
+        } else {
+          const members = await this.db
+            .select({ agentId: chatMembers.agentId })
+            .from(chatMembers)
+            .where(eq(chatMembers.threadId, threadId));
+          recipientIds = members.map((m) => m.agentId);
+        }
+      }
+    } catch {
+      // Enrichment failure is non-fatal; emit with available data
+    }
+
     try {
       this.eventEmitter.emit('chat.message.created', {
         threadId,
+        projectId,
+        recipientIds,
         message,
       });
     } catch (error) {
@@ -589,153 +617,6 @@ export class ChatService {
   }
 
   /**
-   * Check and send session-aware invites for targeted agents with active sessions
-   */
-  private async ensureSessionInvites(
-    threadId: string,
-    projectId: string,
-    targetedAgentIds: string[],
-  ): Promise<void> {
-    if (targetedAgentIds.length === 0) {
-      return;
-    }
-
-    // Get active sessions for the project
-    const activeSessions = await this.sessionsService.listActiveSessions(projectId);
-    const sessionsByAgent = new Map<string, string>();
-    for (const session of activeSessions) {
-      if (session.agentId && session.tmuxSessionId) {
-        sessionsByAgent.set(session.agentId, session.tmuxSessionId);
-      }
-    }
-
-    // For each targeted agent with an active session, ensure invite exists
-    for (const agentId of targetedAgentIds) {
-      const sessionId = sessionsByAgent.get(agentId);
-      if (!sessionId) {
-        continue; // Agent has no active session, skip
-      }
-
-      // Check if invite already exists for this (thread, agent, session)
-      const existingInvites = await this.db
-        .select()
-        .from(chatThreadSessionInvites)
-        .where(
-          and(
-            eq(chatThreadSessionInvites.threadId, threadId),
-            eq(chatThreadSessionInvites.agentId, agentId),
-            eq(chatThreadSessionInvites.sessionId, sessionId),
-          ),
-        )
-        .limit(1);
-
-      if (existingInvites.length > 0) {
-        logger.debug(
-          { threadId, agentId, sessionId },
-          'Invite already exists for this session, skipping',
-        );
-        continue; // Invite already sent for this session
-      }
-
-      // Get agent details
-      const agentRows = await this.db
-        .select({ name: agentsTable.name })
-        .from(agentsTable)
-        .where(eq(agentsTable.id, agentId))
-        .limit(1);
-
-      if (agentRows.length === 0) {
-        logger.warn({ agentId }, 'Agent not found, skipping invite');
-        continue;
-      }
-
-      const agentName = agentRows[0].name;
-
-      // Get thread details for invite template
-      const threadRows = await this.db
-        .select()
-        .from(chatThreads)
-        .where(eq(chatThreads.id, threadId))
-        .limit(1);
-
-      if (threadRows.length === 0) {
-        logger.warn({ threadId }, 'Thread not found during invite creation');
-        continue;
-      }
-
-      // Get all members for participant names
-      const membersRows = await this.db
-        .select()
-        .from(chatMembers)
-        .where(eq(chatMembers.threadId, threadId));
-
-      const memberAgentIds = membersRows.map((m) => m.agentId);
-      const memberAgents = await this.db
-        .select({ id: agentsTable.id, name: agentsTable.name })
-        .from(agentsTable)
-        .where(inArray(agentsTable.id, memberAgentIds));
-
-      const participantNames = memberAgents
-        .map((a) => a.name)
-        .sort()
-        .join(', ');
-      const threadTitle = this.deriveThreadTitle(
-        { ...threadRows[0], members: memberAgentIds } as ThreadDto,
-        participantNames,
-      );
-
-      // Create invite message
-      const inviteTemplate = await this.chatSettingsService.getInviteTemplate(projectId);
-      const inviteMessageId = randomUUID();
-      const messageTimestamp = new Date().toISOString();
-
-      const renderedTemplate = renderInviteTemplate(inviteTemplate, {
-        threadId,
-        threadTitle,
-        inviterName: DEFAULT_INVITER_NAME,
-        participantNames,
-        invitedAgentName: agentName,
-        createdAt: messageTimestamp,
-        messageId: inviteMessageId,
-      });
-
-      try {
-        // Persist invite message
-        await this.persistMessage(threadId, {
-          messageId: inviteMessageId,
-          authorType: 'system',
-          content: renderedTemplate,
-          createdAt: messageTimestamp,
-        });
-
-        // Store invite record
-        await this.db.insert(chatThreadSessionInvites).values({
-          id: randomUUID(),
-          threadId,
-          agentId,
-          sessionId,
-          inviteMessageId,
-          sentAt: messageTimestamp,
-          acknowledgedAt: null,
-        });
-
-        logger.info({ threadId, agentId, sessionId, inviteMessageId }, 'Sent session-aware invite');
-      } catch (error) {
-        // Handle unique constraint violation idempotently
-        if (error instanceof Error && error.message.includes('UNIQUE constraint')) {
-          logger.debug(
-            { threadId, agentId, sessionId },
-            'Invite already exists (race condition), continuing',
-          );
-        } else {
-          logger.error({ error, threadId, agentId, sessionId }, 'Failed to create session invite');
-          throw error;
-        }
-      }
-    }
-  }
-
-  /**
    * Create a message in a thread
    */
   async createMessage(threadId: string, data: CreateMessageDto): Promise<MessageDto> {
@@ -772,8 +653,12 @@ export class ChatService {
         ? data.targets
         : (thread.members ?? []);
 
-    // Ensure session-aware invites are sent before the user message
-    await this.ensureSessionInvites(threadId, thread.projectId, targetedAgentIds);
+    // Ensure session-aware invites are sent before the user message (synchronous await preserves ordering)
+    await this.chatSessionInviteService.ensureSessionInvites(
+      threadId,
+      thread.projectId,
+      targetedAgentIds,
+    );
 
     // Then deliver the authored message
     return this.persistMessage(threadId, data);
@@ -1030,5 +915,51 @@ export class ChatService {
       finishedAt: now,
       status,
     };
+  }
+
+  /**
+   * Mark a chat message as read by an agent. Insert-if-not-exists semantics.
+   * Returns the persisted readAt timestamp for use in broadcast payloads.
+   *
+   * No-recursion invariant: this method MUST NOT call any delivery ACK path that could
+   * re-enter ChatService.acknowledgeInvite() in a loop.
+   * Signature: (messageId, agentId) — preserves current behavior without thread-membership check.
+   */
+  async markMessageAsRead(messageId: string, agentId: string): Promise<{ readAt: string }> {
+    const readAt = new Date().toISOString();
+
+    const existing = await this.db
+      .select()
+      .from(chatMessageReads)
+      .where(and(eq(chatMessageReads.messageId, messageId), eq(chatMessageReads.agentId, agentId)))
+      .limit(1);
+
+    if (!existing[0]) {
+      await this.db.insert(chatMessageReads).values({
+        messageId,
+        agentId,
+        readAt,
+      });
+      logger.info({ messageId, agentId }, 'Marked message as read');
+    } else {
+      logger.debug({ messageId, agentId }, 'Message already marked as read');
+    }
+
+    const message = await this.db
+      .select({ threadId: chatMessages.threadId })
+      .from(chatMessages)
+      .where(eq(chatMessages.id, messageId))
+      .limit(1);
+
+    if (message[0]) {
+      this.eventEmitter.emit('chat.message.read', {
+        threadId: message[0].threadId,
+        messageId,
+        agentId,
+        readAt,
+      });
+    }
+
+    return { readAt };
   }
 }

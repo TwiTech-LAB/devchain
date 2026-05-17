@@ -2,6 +2,7 @@ import React from 'react';
 import { render, screen } from '@testing-library/react';
 import { AIGroupCard, type AIGroupCardProps } from './AIGroupCard';
 import type { SerializedChunk, SerializedMessage } from '@/ui/hooks/useSessionTranscript';
+import { renderWithMode } from './__tests__/test-utils';
 
 // ---------------------------------------------------------------------------
 // Factories
@@ -71,13 +72,27 @@ function renderCard(overrides: Partial<AIGroupCardProps> = {}) {
 // ---------------------------------------------------------------------------
 
 describe('AIGroupCard input delta rendering', () => {
-  it('renders delta element with data-testid when inputDelta > 0', () => {
-    renderCard({ inputDelta: 13_000 });
+  it('renders delta element with data-testid when inputDelta > 0 (diagnostic mode)', () => {
+    renderWithMode(
+      <AIGroupCard
+        chunk={makeAiChunk()}
+        isExpanded={false}
+        inputDelta={13_000}
+        onToggle={jest.fn()}
+      />,
+      'diagnostic',
+    );
 
     const deltaEl = screen.getByTestId('ai-group-input-delta');
     expect(deltaEl).toBeInTheDocument();
     // formatTokensCompact(13000) → "13k"
     expect(deltaEl).toHaveTextContent('(+13k)');
+  });
+
+  it('hides delta element in Reader mode even when inputDelta > 0', () => {
+    renderCard({ inputDelta: 13_000 });
+
+    expect(screen.queryByTestId('ai-group-input-delta')).not.toBeInTheDocument();
   });
 
   it('does not render delta element when inputDelta is undefined', () => {
@@ -158,9 +173,26 @@ describe('AIGroupCard step-level hotspot rendering', () => {
     expect(screen.queryByTestId('step-hotspot-flame')).not.toBeInTheDocument();
   });
 
-  it('computes and renders step hotspots when expanded with threshold', () => {
+  it('computes and renders step hotspots when expanded with threshold (diagnostic mode)', () => {
     // displayItems after buildDisplayItems: [thinking(100), tool(800+200=1000)]
     // threshold=500 → tool(1000) > 500 → hot
+    renderWithMode(
+      <AIGroupCard
+        chunk={makeStepsChunk()}
+        isExpanded={true}
+        stepHotspotThreshold={500}
+        onToggle={jest.fn()}
+      />,
+      'diagnostic',
+    );
+
+    expect(screen.getByTestId('semantic-step-list')).toBeInTheDocument();
+    // Flame icon present on the hot tool step
+    expect(screen.getByTestId('step-hotspot-flame')).toBeInTheDocument();
+    expect(screen.getByTestId('step-hotspot-pct')).toBeInTheDocument();
+  });
+
+  it('hides step hotspots in Reader mode even when expanded with threshold', () => {
     renderCard({
       chunk: makeStepsChunk(),
       isExpanded: true,
@@ -168,8 +200,7 @@ describe('AIGroupCard step-level hotspot rendering', () => {
     });
 
     expect(screen.getByTestId('semantic-step-list')).toBeInTheDocument();
-    // Flame icon present on the hot tool step
-    expect(screen.getByTestId('step-hotspot-flame')).toBeInTheDocument();
-    expect(screen.getByTestId('step-hotspot-pct')).toBeInTheDocument();
+    expect(screen.queryByTestId('step-hotspot-flame')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('step-hotspot-pct')).not.toBeInTheDocument();
   });
 });

@@ -2,10 +2,12 @@ import { Injectable, OnModuleDestroy, Inject, forwardRef } from '@nestjs/common'
 import * as pty from 'node-pty';
 import { createLogger } from '../../../common/logging/logger';
 import { TerminalGateway } from '../gateways/terminal.gateway';
-import { TerminalActivityService } from '../../mcp/services/terminal-activity.service';
-import { TmuxService } from './tmux.service';
+import { TerminalActivityService } from './terminal-activity.service';
+import { TerminalIOService } from './terminal-io/terminal-io.service';
 import { SettingsService } from '../../settings/services/settings.service';
-import { AltAwareAnsiSanitizer, stripAlternateScreenSequences } from '../utils/ansi-sanitizer';
+import { SessionsService } from '../../sessions/services/sessions.service';
+import { stripAlternateScreenSequences } from '../utils/ansi-sanitizer';
+import { normalizeLineEndings } from '../utils/normalize-line-endings';
 
 const logger = createLogger('PtyService');
 
@@ -16,12 +18,8 @@ interface PtySession {
   sessionId: string;
   tmuxSessionName: string;
   ptyProcess: pty.IPty;
-  cols: number;
-  rows: number;
-  sanitizer: AltAwareAnsiSanitizer;
-  sanitizeMode: 'off' | 'strip_alt' | 'normalize';
+  needsLfNormalize: boolean;
   loggedPath?: boolean;
-  suppressActivityUntil: number;
 }
 
 /**
@@ -32,37 +30,23 @@ interface PtySession {
 @Injectable()
 export class PtyService implements OnModuleDestroy {
   private activeSessions: Map<string, PtySession> = new Map();
-  // Enable PTY resizing so server matches client terminal size
-  private readonly RESIZE_DISABLED: boolean = false;
-  private readonly sanitizerMode: 'off' | 'strip_alt' | 'normalize';
 
   constructor(
     @Inject(forwardRef(() => TerminalGateway))
     private readonly terminalGateway: TerminalGateway,
-    @Inject(forwardRef(() => TerminalActivityService))
     private readonly terminalActivity: TerminalActivityService,
-    @Inject(forwardRef(() => TmuxService))
-    private readonly tmuxService: TmuxService,
+    @Inject(forwardRef(() => TerminalIOService))
+    private readonly terminalIO: TerminalIOService,
     private readonly settingsService: SettingsService,
+    @Inject(forwardRef(() => SessionsService))
+    private readonly sessionsService: SessionsService,
   ) {
-    // Strip alt-screen toggles before data reaches the browser terminal so TUIs
-    // write into a single scrollback buffer. We leave scroll regions unchanged
-    // to avoid breaking apps that rely heavily on DECSTBM layout.
-    this.sanitizerMode = 'strip_alt';
     let engine = 'xterm';
     try {
       const stored = this.settingsService.getSetting('terminal.engine');
       if (stored && typeof stored === 'string') engine = stored.trim().toLowerCase();
     } catch {}
-    logger.info(
-      { engine, sanitizerMode: this.sanitizerMode },
-      'PtyService initialized with ANSI sanitization (strip_alt)',
-    );
-  }
-
-  /** Expose whether server-side ANSI sanitization is enabled globally. */
-  isSanitizerEnabled(): boolean {
-    return this.sanitizerMode !== 'off';
+    logger.info({ engine }, 'PtyService initialized with ANSI sanitization (strip_alt)');
   }
 
   onModuleDestroy() {
@@ -76,43 +60,51 @@ export class PtyService implements OnModuleDestroy {
    * Start streaming terminal output from a tmux session
    * Attaches to the tmux session and pipes output through MarkerParser
    */
-  async startStreaming(sessionId: string, tmuxSessionName: string): Promise<void> {
+  async startStreaming(
+    sessionId: string,
+    tmuxSessionName: string,
+    options?: { cols?: number; rows?: number },
+  ): Promise<void> {
     if (this.activeSessions.has(sessionId)) {
       logger.warn({ sessionId }, 'PTY session already active');
       return;
     }
 
+    const initialCols = options?.cols && options.cols > 0 ? options.cols : 80;
+    const initialRows = options?.rows && options.rows > 0 ? options.rows : 24;
+
     try {
-      logger.info({ sessionId, tmuxSessionName }, 'Starting PTY streaming');
+      logger.info(
+        { sessionId, tmuxSessionName, cols: initialCols, rows: initialRows },
+        'Starting PTY streaming',
+      );
 
       // Spawn a process that attaches to the tmux session in interactive mode
       // Use = prefix for exact match to avoid colon interpretation
       const ptyProcess = pty.spawn('tmux', ['attach-session', '-t', `=${tmuxSessionName}`], {
         name: 'xterm-256color',
-        cols: 80,
-        rows: 24,
+        cols: initialCols,
+        rows: initialRows,
         cwd: process.cwd(),
         env: process.env as { [key: string]: string },
       });
 
       // Store the session
-      const useMode = this.sanitizerMode;
       this.activeSessions.set(sessionId, {
         sessionId,
         tmuxSessionName,
         ptyProcess,
-        cols: 80,
-        rows: 24,
-        sanitizer: new AltAwareAnsiSanitizer(useMode === 'normalize' ? 'normalize' : 'strip_alt'),
-        sanitizeMode: useMode,
+        needsLfNormalize: this.sessionsService.shouldNormalizeLfFor(sessionId),
         loggedPath: false,
-        suppressActivityUntil: Date.now() + ACTIVITY_SUPPRESSION_MS,
       });
 
       // NOTE: We DO NOT disable tmux alternate-screen anymore.
       // Allowing alt-screen to work properly preserves the separation between
       // primary buffer (command history) and alternate buffer (TUI apps).
       // This prevents TUI apps from overwriting scrollback history.
+
+      // Subscribe to FrameStream for activity detection (data frames drive busy/idle state)
+      this.terminalActivity.watchSession(sessionId, Date.now() + ACTIVITY_SUPPRESSION_MS);
 
       // Listen to data from the PTY
       ptyProcess.onData((data: string) => {
@@ -123,28 +115,17 @@ export class PtyService implements OnModuleDestroy {
         }
         if (!sess.loggedPath) {
           logger.info(
-            { sessionId, sanitizeMode: sess.sanitizeMode },
-            'PTY data path selected (sanitize indicates server-side ANSI transform)',
+            { sessionId, lfNormalize: sess.needsLfNormalize },
+            'PTY data flowing (strip_alt sanitization active)',
           );
           sess.loggedPath = true;
         }
-        try {
-          // Observe activity based on non-empty output, but suppress during suppression window
-          if (Date.now() >= sess.suppressActivityUntil) {
-            this.terminalActivity.observeChunk(sessionId, data);
-          }
-        } catch (error) {
-          logger.warn({ sessionId, error }, 'Activity observer failed');
+        let processed = stripAlternateScreenSequences(data);
+        if (sess.needsLfNormalize) {
+          processed = normalizeLineEndings(processed);
         }
-        // Sanitize based on mode
-        const sanitized =
-          sess.sanitizeMode === 'normalize'
-            ? sess.sanitizer.process(data)
-            : sess.sanitizeMode === 'strip_alt'
-              ? stripAlternateScreenSequences(data)
-              : data;
-        // Broadcast sanitized data so client xterm also preserves scrollback
-        this.terminalGateway.broadcastTerminalData(sessionId, sanitized);
+        // Broadcast so client xterm also preserves scrollback
+        this.terminalGateway.broadcastTerminalData(sessionId, processed);
       });
 
       // Handle PTY exit
@@ -198,43 +179,12 @@ export class PtyService implements OnModuleDestroy {
     }
 
     try {
-      // Allow ONE initial resize to set correct size, then disable to avoid duplicates
-      const isInitialResize = session.cols === 80 && session.rows === 24;
-
-      if (this.RESIZE_DISABLED && !isInitialResize) {
-        logger.info({ sessionId, cols, rows }, 'Dynamic resize disabled; skipping PTY resize');
-        return;
-      }
-
-      if (session.cols === cols && session.rows === rows) {
-        logger.debug({ sessionId, cols, rows }, 'Skip PTY resize (dimensions unchanged)');
-      } else {
-        session.ptyProcess.resize(cols, rows);
-        session.cols = cols;
-        session.rows = rows;
-        // Suppress activity after resize to ignore tmux redraw burst
-        session.suppressActivityUntil = Date.now() + ACTIVITY_SUPPRESSION_MS;
-        logger.info({ sessionId, cols, rows, isInitial: isInitialResize }, 'PTY resized');
-      }
+      session.ptyProcess.resize(cols, rows);
+      // Suppress activity after resize to ignore tmux redraw burst
+      this.terminalActivity.updateSuppression(sessionId, Date.now() + ACTIVITY_SUPPRESSION_MS);
+      logger.info({ sessionId, cols, rows }, 'PTY resized');
     } catch (error) {
       logger.error({ sessionId, cols, rows, error }, 'Error resizing PTY');
-    }
-  }
-
-  /**
-   * Send input to the PTY (for future use if needed)
-   */
-  write(sessionId: string, data: string): void {
-    const session = this.activeSessions.get(sessionId);
-    if (!session) {
-      logger.warn({ sessionId }, 'Cannot write: no active PTY session');
-      return;
-    }
-
-    try {
-      session.ptyProcess.write(data);
-    } catch (error) {
-      logger.error({ sessionId, error }, 'Error writing to PTY');
     }
   }
 
@@ -246,20 +196,26 @@ export class PtyService implements OnModuleDestroy {
   }
 
   /**
-   * Get active session count for monitoring
+   * Send a brief resize jiggle (shrink then restore) to prompt the TUI to repaint with
+   * the new theme colors. Best-effort: skipped when dimensions are unavailable, errors
+   * are logged and swallowed. Note: some TUIs that do not honor SIGWINCH may still require
+   * a manual redraw or restart to adopt the new theme.
    */
-  getActiveSessionCount(): number {
-    return this.activeSessions.size;
-  }
-
-  /**
-   * Get current dimensions (cols/rows) for a session
-   */
-  getDimensions(sessionId: string): { cols: number; rows: number } | null {
+  async triggerRedraw(sessionId: string): Promise<void> {
     const session = this.activeSessions.get(sessionId);
-    if (!session) {
-      return null;
+    if (!session) return;
+
+    const { cols, rows } = session.ptyProcess;
+    if (!cols || cols <= 0 || !rows || rows <= 0) return;
+
+    try {
+      session.ptyProcess.resize(cols, Math.max(1, rows - 1));
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      session.ptyProcess.resize(cols, rows);
+      this.terminalActivity.updateSuppression(sessionId, Date.now() + ACTIVITY_SUPPRESSION_MS);
+      logger.debug({ sessionId, cols, rows }, 'terminal_theme_redraw_triggered');
+    } catch (error) {
+      logger.debug({ sessionId, error: String(error) }, 'terminal_theme_redraw_failed');
     }
-    return { cols: session.cols, rows: session.rows };
   }
 }

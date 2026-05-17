@@ -2,7 +2,6 @@ import { ProfileProviderConfigStorageDelegate } from './profile-provider-config.
 import type { StorageDelegateContext } from './base-storage.delegate';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import type Database from 'better-sqlite3';
-import { StorageError } from '../../../../common/errors/error-types';
 
 function createMockChain() {
   return {
@@ -79,9 +78,7 @@ describe('ProfileProviderConfigStorageDelegate.createIfMissing', () => {
       const result = await delegate.createIfMissing(baseInput);
 
       expect(result).toEqual({ inserted: true });
-      expect((mockRawClient.exec as jest.Mock).mock.calls[0][0]).toBe(
-        'BEGIN IMMEDIATE TRANSACTION',
-      );
+      expect((mockRawClient.exec as jest.Mock).mock.calls[0][0]).toBe('BEGIN IMMEDIATE');
       expect((mockRawClient.exec as jest.Mock).mock.calls[1][0]).toBe('COMMIT');
     });
 
@@ -609,25 +606,25 @@ describe('ProfileProviderConfigStorageDelegate.createIfMissing', () => {
 
       await expect(delegate.createIfMissing(baseInput)).rejects.toThrow('disk I/O error');
       expect((mockRawClient.exec as jest.Mock).mock.calls).toEqual([
-        ['BEGIN IMMEDIATE TRANSACTION'],
+        ['BEGIN IMMEDIATE'],
         ['ROLLBACK'],
       ]);
     });
   });
 
   describe('rawClient validation', () => {
-    it('throws StorageError when rawClient is null', async () => {
+    it('throws when rawClient is null', async () => {
       const { delegate } = createDelegate({ rawClient: null });
 
-      await expect(delegate.createIfMissing(baseInput)).rejects.toThrow(StorageError);
+      await expect(delegate.createIfMissing(baseInput)).rejects.toThrow(TypeError);
     });
 
-    it('throws StorageError when rawClient has no exec method', async () => {
+    it('throws when rawClient has no exec method', async () => {
       const { delegate } = createDelegate({
         rawClient: {} as unknown as Database.Database,
       });
 
-      await expect(delegate.createIfMissing(baseInput)).rejects.toThrow(StorageError);
+      await expect(delegate.createIfMissing(baseInput)).rejects.toThrow(TypeError);
     });
   });
 
@@ -659,7 +656,7 @@ describe('ProfileProviderConfigStorageDelegate.createIfMissing', () => {
       await delegate.createIfMissing(baseInput);
 
       expect((mockRawClient.exec as jest.Mock).mock.calls).toEqual([
-        ['BEGIN IMMEDIATE TRANSACTION'],
+        ['BEGIN IMMEDIATE'],
         ['COMMIT'],
       ]);
     });
@@ -718,7 +715,7 @@ describe('ProfileProviderConfigStorageDelegate.createIfMissing', () => {
       await delegate.createIfMissing(baseInput);
 
       expect((mockRawClient.exec as jest.Mock).mock.calls).toEqual([
-        ['BEGIN IMMEDIATE TRANSACTION'],
+        ['BEGIN IMMEDIATE'],
         ['COMMIT'],
       ]);
     });

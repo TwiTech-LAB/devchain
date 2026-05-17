@@ -2,64 +2,34 @@ import type { Document } from '../../../storage/models/domain.models';
 import { createLogger } from '../../../../common/logging/logger';
 import {
   McpResponse,
-  ListDocumentsParamsSchema,
-  GetDocumentParamsSchema,
-  CreateDocumentParamsSchema,
-  UpdateDocumentParamsSchema,
   ListDocumentsResponse,
   GetDocumentResponse,
   CreateDocumentResponse,
   UpdateDocumentResponse,
-  SessionContext,
+  type ListDocumentsParams,
+  type GetDocumentParams,
+  type CreateDocumentParams,
+  type UpdateDocumentParams,
 } from '../../dtos/mcp.dto';
 import { mapDocumentSummary, mapDocumentDetail } from '../mappers/dto-mappers';
 import { collectDocumentLinks, buildInlineResolution } from '../utils/document-link-resolver';
-import type { McpToolContext } from './types';
+import type { DocumentToolContext } from './document-context';
+import { resolveSessionContext } from '../utils/session-context-helpers';
+import { redactSessionId } from '../utils/redact';
+import { requireProject } from '../utils/require-project';
 
 const logger = createLogger('McpService');
 
-function redactSessionId(sessionId: string | undefined): string {
-  if (!sessionId) return '(none)';
-  return sessionId.slice(0, 4) + '****';
-}
-
-function missingSessionResolver(): McpResponse {
-  return {
-    success: false,
-    error: {
-      code: 'SERVICE_UNAVAILABLE',
-      message:
-        'Session resolution requires full app context (not available in standalone MCP mode)',
-    },
-  };
-}
-
-async function resolveSessionContext(ctx: McpToolContext, sessionId: string): Promise<McpResponse> {
-  if (!ctx.resolveSessionContext) {
-    return missingSessionResolver();
-  }
-  return ctx.resolveSessionContext(sessionId);
-}
-
 export async function handleListDocuments(
-  ctx: McpToolContext,
+  ctx: DocumentToolContext,
   params: unknown,
 ): Promise<McpResponse> {
-  const validated = ListDocumentsParamsSchema.parse(params);
+  const validated = params as ListDocumentsParams;
 
   const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
-  if (!sessionCtxResult.success) return sessionCtxResult;
-  const { project } = sessionCtxResult.data as SessionContext;
-
-  if (!project) {
-    return {
-      success: false,
-      error: {
-        code: 'PROJECT_NOT_FOUND',
-        message: 'No project associated with this session',
-      },
-    };
-  }
+  const projectResult = requireProject(sessionCtxResult);
+  if (!('project' in projectResult)) return projectResult;
+  const { project } = projectResult;
 
   logger.debug(
     { sessionId: redactSessionId(validated.sessionId), projectId: project.id },
@@ -101,10 +71,10 @@ export async function handleListDocuments(
 }
 
 export async function handleGetDocument(
-  ctx: McpToolContext,
+  ctx: DocumentToolContext,
   params: unknown,
 ): Promise<McpResponse> {
-  const validated = GetDocumentParamsSchema.parse(params);
+  const validated = params as GetDocumentParams;
   const includeLinks = validated.includeLinks ?? 'meta';
 
   let document: Document;
@@ -132,7 +102,7 @@ export async function handleGetDocument(
         document,
         cache,
         validated.maxDepth ?? 1,
-        validated.maxBytes ?? ctx.defaultInlineMaxBytes ?? 64 * 1024,
+        validated.maxBytes ?? ctx.defaultInlineMaxBytes,
       );
       response.resolved = inline;
     }
@@ -142,24 +112,15 @@ export async function handleGetDocument(
 }
 
 export async function handleCreateDocument(
-  ctx: McpToolContext,
+  ctx: DocumentToolContext,
   params: unknown,
 ): Promise<McpResponse> {
-  const validated = CreateDocumentParamsSchema.parse(params);
+  const validated = params as CreateDocumentParams;
 
   const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
-  if (!sessionCtxResult.success) return sessionCtxResult;
-  const { project } = sessionCtxResult.data as SessionContext;
-
-  if (!project) {
-    return {
-      success: false,
-      error: {
-        code: 'PROJECT_NOT_FOUND',
-        message: 'No project associated with this session',
-      },
-    };
-  }
+  const projectResult = requireProject(sessionCtxResult);
+  if (!('project' in projectResult)) return projectResult;
+  const { project } = projectResult;
 
   logger.debug(
     { sessionId: redactSessionId(validated.sessionId), projectId: project.id },
@@ -174,17 +135,18 @@ export async function handleCreateDocument(
   });
 
   const response: CreateDocumentResponse = {
-    document: mapDocumentDetail(document),
+    id: document.id,
+    version: document.version,
   };
 
   return { success: true, data: response };
 }
 
 export async function handleUpdateDocument(
-  ctx: McpToolContext,
+  ctx: DocumentToolContext,
   params: unknown,
 ): Promise<McpResponse> {
-  const validated = UpdateDocumentParamsSchema.parse(params);
+  const validated = params as UpdateDocumentParams;
   const document = await ctx.storage.updateDocument(validated.id, {
     title: validated.title,
     slug: validated.slug,
@@ -195,7 +157,8 @@ export async function handleUpdateDocument(
   });
 
   const response: UpdateDocumentResponse = {
-    document: mapDocumentDetail(document),
+    id: document.id,
+    version: document.version,
   };
 
   return { success: true, data: response };

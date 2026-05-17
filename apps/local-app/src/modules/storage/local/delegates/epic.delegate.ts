@@ -2,6 +2,7 @@ import type { SQL } from 'drizzle-orm';
 import {
   type CreateEpicForProjectInput,
   type ListAssignedEpicsOptions,
+  type ListParentChildrenOptions,
   type ListOptions,
   type ListProjectEpicsOptions,
   type ListResult,
@@ -285,7 +286,7 @@ export class EpicStorageDelegate extends BaseStorageDelegate {
       .from(epics)
       .innerJoin(statuses, eq(statuses.id, epics.statusId))
       .where(whereClause)
-      .orderBy(desc(epics.updatedAt))
+      .orderBy(desc(epics.updatedAt), desc(epics.id))
       .limit(limit)
       .offset(offset);
 
@@ -510,6 +511,51 @@ export class EpicStorageDelegate extends BaseStorageDelegate {
       limit,
       offset,
     };
+  }
+
+  async listParentChildren(
+    parentId: string,
+    options: ListParentChildrenOptions = {},
+  ): Promise<ListResult<Epic>> {
+    const parent = await this.getEpic(parentId);
+    const { epics } = await import('../../db/schema');
+    const { eq, and, sql, desc } = await import('drizzle-orm');
+    const limit = options.limit ?? 50;
+    const offset = options.offset ?? 0;
+    const statusId = options.statusId;
+
+    const conditions = [eq(epics.parentId, parentId)];
+    if (typeof statusId === 'string' && statusId.length > 0) {
+      conditions.push(eq(epics.statusId, statusId));
+    }
+    const whereClause = and(...conditions);
+
+    const totalResult = await this.db
+      .select({ count: sql<number>`count(*)` })
+      .from(epics)
+      .where(whereClause);
+    const total = Number(totalResult[0]?.count ?? 0);
+
+    const rows = await this.db
+      .select()
+      .from(epics)
+      .where(whereClause)
+      .orderBy(desc(epics.updatedAt), desc(epics.id))
+      .limit(limit)
+      .offset(offset);
+
+    const epicIds = rows.map((row) => row.id);
+    const tagsMap = await this.batchFetchTags(epicIds);
+
+    const items: Epic[] = rows.map((row) => ({
+      ...row,
+      projectId: parent.projectId,
+      data: row.data as Record<string, unknown> | null,
+      skillsRequired: parseSkillsRequired(row.skillsRequired),
+      tags: tagsMap.get(row.id) ?? [],
+    }));
+
+    return { items, total, limit, offset };
   }
 
   async listSubEpicsForParents(
