@@ -67,6 +67,11 @@ import {
   Subscriber,
   CreateSubscriber,
   UpdateSubscriber,
+  ScheduledEpic,
+  CreateScheduledEpic,
+  UpdateScheduledEpic,
+  ScheduledEpicRun,
+  CreateScheduledEpicRun,
   Review,
   CreateReview,
   UpdateReview,
@@ -103,6 +108,7 @@ import { ReviewStorageDelegate } from './delegates/review.delegate';
 import { SkillSourceStorageDelegate } from './delegates/skill-source.delegate';
 import { StatusStorageDelegate } from './delegates/status.delegate';
 import { SubscriberStorageDelegate } from './delegates/subscriber.delegate';
+import { ScheduledEpicStorageDelegate } from './delegates/scheduled-epic.delegate';
 import { TagStorageDelegate } from './delegates/tag.delegate';
 import { WatcherStorageDelegate } from './delegates/watcher.delegate';
 
@@ -132,6 +138,7 @@ export class LocalStorageService implements StorageService {
   private readonly recordDelegate: RecordStorageDelegate;
   private readonly watcherDelegate: WatcherStorageDelegate;
   private readonly subscriberDelegate: SubscriberStorageDelegate;
+  private readonly scheduledEpicDelegate: ScheduledEpicStorageDelegate;
   private readonly guestDelegate: GuestStorageDelegate;
   private readonly reviewDelegate: ReviewStorageDelegate;
   private readonly providerModelDelegate: ProviderModelStorageDelegate;
@@ -189,6 +196,7 @@ export class LocalStorageService implements StorageService {
     });
     this.watcherDelegate = new WatcherStorageDelegate(context);
     this.subscriberDelegate = new SubscriberStorageDelegate(context);
+    this.scheduledEpicDelegate = new ScheduledEpicStorageDelegate(context);
     this.guestDelegate = new GuestStorageDelegate(context);
     this.reviewDelegate = new ReviewStorageDelegate(context, {
       getReview: (id) => this.getReview(id),
@@ -785,6 +793,42 @@ export class LocalStorageService implements StorageService {
 
   async findSubscribersByEventName(projectId: string, eventName: string): Promise<Subscriber[]> {
     return this.subscriberDelegate.findSubscribersByEventName(projectId, eventName);
+  }
+
+  // ============================================
+  // SCHEDULED EPICS - Cron-based recurring epic creation
+  // ============================================
+
+  async listScheduledEpics(projectId: string): Promise<ScheduledEpic[]> {
+    return this.scheduledEpicDelegate.listScheduledEpics(projectId);
+  }
+
+  async getScheduledEpic(id: string): Promise<ScheduledEpic | null> {
+    return this.scheduledEpicDelegate.getScheduledEpic(id);
+  }
+
+  async createScheduledEpic(data: CreateScheduledEpic): Promise<ScheduledEpic> {
+    return this.scheduledEpicDelegate.createScheduledEpic(data);
+  }
+
+  async updateScheduledEpic(id: string, data: UpdateScheduledEpic): Promise<ScheduledEpic> {
+    return this.scheduledEpicDelegate.updateScheduledEpic(id, data);
+  }
+
+  async deleteScheduledEpic(id: string): Promise<void> {
+    return this.scheduledEpicDelegate.deleteScheduledEpic(id);
+  }
+
+  async listDueScheduledEpics(): Promise<ScheduledEpic[]> {
+    return this.scheduledEpicDelegate.listDueScheduledEpics();
+  }
+
+  async createScheduledEpicRun(data: CreateScheduledEpicRun): Promise<ScheduledEpicRun> {
+    return this.scheduledEpicDelegate.createScheduledEpicRun(data);
+  }
+
+  async listScheduledEpicRuns(scheduledEpicId: string): Promise<ScheduledEpicRun[]> {
+    return this.scheduledEpicDelegate.listScheduledEpicRuns(scheduledEpicId);
   }
 
   // ============================================

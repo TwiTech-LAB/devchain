@@ -1,6 +1,7 @@
 packages:
   - 'apps/local-app'
   - 'packages/shared'
+  - 'packages/codebase-overview'
 
 ignoredBuiltDependencies:
   - '@nestjs/core'

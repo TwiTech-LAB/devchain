@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { Eye, Bell } from 'lucide-react';
+import { Eye, Bell, Clock } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/ui/components/ui/tabs';
 import { WatchersTab } from '@/ui/components/automation/WatchersTab';
 import { SubscribersTab } from '@/ui/components/automation/SubscribersTab';
+import { ScheduledTab } from '@/ui/components/automation/ScheduledTab';
 
-type TabValue = 'watchers' | 'subscribers';
+type TabValue = 'watchers' | 'subscribers' | 'scheduled';
 
 export function AutomationPage() {
   const [activeTab, setActiveTab] = useState<TabValue>('watchers');
@@ -25,6 +26,10 @@ export function AutomationPage() {
             <Bell className="w-4 h-4 mr-2" />
             Subscribers
           </TabsTrigger>
+          <TabsTrigger value="scheduled">
+            <Clock className="w-4 h-4 mr-2" />
+            Scheduled
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="watchers">
@@ -32,6 +37,9 @@ export function AutomationPage() {
         </TabsContent>
         <TabsContent value="subscribers">
           <SubscribersTab />
+        </TabsContent>
+        <TabsContent value="scheduled">
+          <ScheduledTab />
         </TabsContent>
       </Tabs>
     </div>

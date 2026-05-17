@@ -567,3 +567,57 @@ export type CreateReviewComment = Omit<
 export type UpdateReviewComment = Partial<Pick<ReviewComment, 'content' | 'status'>>;
 
 export type CreateReviewCommentTarget = Omit<ReviewCommentTarget, 'id' | 'createdAt'>;
+
+// ============================================
+// SCHEDULED EPICS - Cron-based recurring epic creation
+// ============================================
+
+export interface ScheduledEpic {
+  id: string;
+  projectId: string;
+  name: string;
+  description: string | null;
+  enabled: boolean;
+  cronExpression: string;
+  timezone: string;
+  lastRunAt: string | null;
+  nextRunAt: string | null;
+  templateTitle: string;
+  templateDescription: string | null;
+  templateStatusId: string | null;
+  templateAgentId: string | null;
+  templateParentId: string | null;
+  templateTags: string[] | null;
+  templateSkillsRequired: string[] | null;
+  templateData: Record<string, unknown> | null;
+  maxOccurrences: number | null;
+  occurrenceCount: number;
+  cooldownMs: number;
+  position: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type CreateScheduledEpic = Omit<
+  ScheduledEpic,
+  'id' | 'lastRunAt' | 'nextRunAt' | 'occurrenceCount' | 'createdAt' | 'updatedAt'
+> & {
+  lastRunAt?: string | null;
+  nextRunAt?: string | null;
+};
+
+export type UpdateScheduledEpic = Partial<
+  Omit<ScheduledEpic, 'id' | 'projectId' | 'createdAt' | 'updatedAt'>
+>;
+
+export interface ScheduledEpicRun {
+  id: string;
+  scheduledEpicId: string;
+  epicId: string | null;
+  status: 'success' | 'failed' | 'skipped';
+  error: string | null;
+  scheduledAt: string;
+  executedAt: string;
+}
+
+export type CreateScheduledEpicRun = Omit<ScheduledEpicRun, 'id'>;

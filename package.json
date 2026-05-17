@@ -316,6 +316,7 @@
     "@xterm/xterm": "5.5.0",
     "ansi-to-html": "0.7.2",
     "better-sqlite3": "11.5.0",
+    "croner": "^9.0.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
     "class-variance-authority": "0.7.1",

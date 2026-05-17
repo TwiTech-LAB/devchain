@@ -39,7 +39,7 @@ export interface SubscribableEventDefinition {
   description: string;
 
   /** Category for UI organization */
-  category: 'terminal' | 'session' | 'epic' | 'chat';
+  category: 'terminal' | 'session' | 'epic' | 'chat' | 'schedule';
 
   /** Available fields in the event payload */
   fields: EventFieldDefinition[];
@@ -272,6 +272,20 @@ export const EVENT_FIELDS_CATALOG: Record<string, SubscribableEventDefinition> =
       { field: 'agentName', label: 'Agent Name', type: 'string', nullable: true },
       { field: 'sessionId', label: 'DevChain Session ID', type: 'string', nullable: true },
       { field: 'transcriptPath', label: 'Transcript Path', type: 'string', nullable: true },
+    ],
+  },
+
+  'scheduled_epic.executed': {
+    name: 'scheduled_epic.executed',
+    label: 'Scheduled Epic Executed',
+    description: 'Fired when a scheduled/recurring epic creates a new epic',
+    category: 'schedule',
+    fields: [
+      { field: 'scheduledEpicId', label: 'Scheduled Epic ID', type: 'string' },
+      { field: 'epicId', label: 'Created Epic ID', type: 'string' },
+      { field: 'projectId', label: 'Project ID', type: 'string' },
+      { field: 'templateTitle', label: 'Epic Title', type: 'string' },
+      { field: 'occurrenceCount', label: 'Occurrence Count', type: 'number' },
     ],
   },
 };

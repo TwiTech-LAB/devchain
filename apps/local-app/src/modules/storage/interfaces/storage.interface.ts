@@ -47,6 +47,11 @@ import {
   Subscriber,
   CreateSubscriber,
   UpdateSubscriber,
+  ScheduledEpic,
+  CreateScheduledEpic,
+  UpdateScheduledEpic,
+  ScheduledEpicRun,
+  CreateScheduledEpicRun,
   Review,
   CreateReview,
   UpdateReview,
@@ -492,6 +497,17 @@ export interface SubscriberStorage {
   findSubscribersByEventName(projectId: string, eventName: string): Promise<Subscriber[]>;
 }
 
+export interface ScheduledEpicStorage {
+  listScheduledEpics(projectId: string): Promise<ScheduledEpic[]>;
+  getScheduledEpic(id: string): Promise<ScheduledEpic | null>;
+  createScheduledEpic(data: CreateScheduledEpic): Promise<ScheduledEpic>;
+  updateScheduledEpic(id: string, data: UpdateScheduledEpic): Promise<ScheduledEpic>;
+  deleteScheduledEpic(id: string): Promise<void>;
+  listDueScheduledEpics(): Promise<ScheduledEpic[]>;
+  createScheduledEpicRun(data: CreateScheduledEpicRun): Promise<ScheduledEpicRun>;
+  listScheduledEpicRuns(scheduledEpicId: string): Promise<ScheduledEpicRun[]>;
+}
+
 export interface ReviewStorage {
   createReview(data: CreateReview): Promise<Review>;
   getReview(id: string): Promise<Review>;
@@ -532,6 +548,7 @@ export interface StorageService
     GuestStorage,
     WatcherStorage,
     SubscriberStorage,
+    ScheduledEpicStorage,
     ReviewStorage {}
 
 export const STORAGE_SERVICE = 'STORAGE_SERVICE';

@@ -1141,3 +1141,66 @@ export const automationSubscribers = sqliteTable(
     enabledIdx: index('automation_subscribers_enabled_idx').on(table.enabled),
   }),
 );
+
+// ============================================
+// SCHEDULED EPICS - Cron-based recurring epic creation
+// ============================================
+export const scheduledEpics = sqliteTable(
+  'scheduled_epics',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    description: text('description'),
+    enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+
+    cronExpression: text('cron_expression').notNull(),
+    timezone: text('timezone').notNull().default('UTC'),
+    lastRunAt: text('last_run_at'),
+    nextRunAt: text('next_run_at'),
+
+    templateTitle: text('template_title').notNull(),
+    templateDescription: text('template_description'),
+    templateStatusId: text('template_status_id'),
+    templateAgentId: text('template_agent_id'),
+    templateParentId: text('template_parent_id'),
+    templateTags: text('template_tags', { mode: 'json' }),
+    templateSkillsRequired: text('template_skills_required', { mode: 'json' }),
+    templateData: text('template_data', { mode: 'json' }),
+
+    maxOccurrences: integer('max_occurrences'),
+    occurrenceCount: integer('occurrence_count').notNull().default(0),
+    cooldownMs: integer('cooldown_ms').notNull().default(0),
+    position: integer('position').notNull().default(0),
+
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    projectIdIdx: index('scheduled_epics_project_id_idx').on(table.projectId),
+    enabledIdx: index('scheduled_epics_enabled_idx').on(table.enabled),
+    nextRunAtIdx: index('scheduled_epics_next_run_at_idx').on(table.nextRunAt),
+  }),
+);
+
+export const scheduledEpicRuns = sqliteTable(
+  'scheduled_epic_runs',
+  {
+    id: text('id').primaryKey(),
+    scheduledEpicId: text('scheduled_epic_id')
+      .notNull()
+      .references(() => scheduledEpics.id, { onDelete: 'cascade' }),
+    epicId: text('epic_id'),
+    status: text('status').notNull(),
+    error: text('error'),
+    scheduledAt: text('scheduled_at').notNull(),
+    executedAt: text('executed_at').notNull(),
+  },
+  (table) => ({
+    scheduledEpicIdIdx: index('scheduled_epic_runs_scheduled_epic_id_idx').on(
+      table.scheduledEpicId,
+    ),
+  }),
+);
