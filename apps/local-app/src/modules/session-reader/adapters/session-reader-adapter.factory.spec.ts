@@ -4,7 +4,7 @@ import type { SessionReaderAdapter } from './session-reader-adapter.interface';
 function makeMockAdapter(name: string, roots?: string[]): SessionReaderAdapter {
   return {
     providerName: name,
-    incrementalMode: name === 'gemini' ? 'snapshot' : 'delta',
+    incrementalMode: name === 'copilot' ? 'snapshot' : 'delta',
     allowedRoots: roots ?? [`/home/user/.${name}/`],
     discoverSessionFile: jest.fn(),
     parseSessionFile: jest.fn(),
@@ -41,12 +41,12 @@ describe('SessionReaderAdapterFactory', () => {
     it('should register all three provider adapters', () => {
       factory.registerAdapter(makeMockAdapter('claude'));
       factory.registerAdapter(makeMockAdapter('codex'));
-      factory.registerAdapter(makeMockAdapter('gemini'));
+      factory.registerAdapter(makeMockAdapter('copilot'));
 
       expect(factory.getSupportedProviders()).toHaveLength(3);
       expect(factory.isSupported('claude')).toBe(true);
       expect(factory.isSupported('codex')).toBe(true);
-      expect(factory.isSupported('gemini')).toBe(true);
+      expect(factory.isSupported('copilot')).toBe(true);
     });
 
     it('should overwrite existing adapter for same provider', () => {
@@ -85,10 +85,10 @@ describe('SessionReaderAdapterFactory', () => {
     it('should match adapter by file path prefix', () => {
       const claude = makeMockAdapter('claude', ['/home/user/.claude/projects/']);
       const codex = makeMockAdapter('codex', ['/home/user/.codex/sessions/']);
-      const gemini = makeMockAdapter('gemini', ['/home/user/.gemini/tmp/']);
+      const copilot = makeMockAdapter('copilot', ['/home/user/.copilot/']);
       factory.registerAdapter(claude);
       factory.registerAdapter(codex);
-      factory.registerAdapter(gemini);
+      factory.registerAdapter(copilot);
 
       expect(factory.getAdapterForPath('/home/user/.claude/projects/abc/session.jsonl')).toBe(
         claude,
@@ -96,9 +96,9 @@ describe('SessionReaderAdapterFactory', () => {
       expect(factory.getAdapterForPath('/home/user/.codex/sessions/2026/01/01/rollout.jsonl')).toBe(
         codex,
       );
-      expect(
-        factory.getAdapterForPath('/home/user/.gemini/tmp/my-project/chats/session.json'),
-      ).toBe(gemini);
+      expect(factory.getAdapterForPath('/home/user/.copilot/session-state/abc/events.jsonl')).toBe(
+        copilot,
+      );
     });
 
     it('should return undefined when no adapter matches path', () => {
@@ -128,7 +128,7 @@ describe('SessionReaderAdapterFactory', () => {
     });
 
     it('should return false for unregistered provider', () => {
-      expect(factory.isSupported('gemini')).toBe(false);
+      expect(factory.isSupported('nonexistent')).toBe(false);
     });
 
     it('should be case-insensitive', () => {
@@ -145,13 +145,13 @@ describe('SessionReaderAdapterFactory', () => {
     it('should return all registered provider names', () => {
       factory.registerAdapter(makeMockAdapter('claude'));
       factory.registerAdapter(makeMockAdapter('codex'));
-      factory.registerAdapter(makeMockAdapter('gemini'));
+      factory.registerAdapter(makeMockAdapter('copilot'));
 
       const providers = factory.getSupportedProviders();
       expect(providers).toHaveLength(3);
       expect(providers).toContain('claude');
       expect(providers).toContain('codex');
-      expect(providers).toContain('gemini');
+      expect(providers).toContain('copilot');
     });
   });
 });

@@ -413,4 +413,44 @@ describe('SessionRestorePipeline', () => {
       );
     });
   });
+
+  // Scenario 11: restore re-emits providerSessionId in the discovered event.
+  // DB-source watchers (agy/opencode) SKIP without it (transcript-watcher.service.ts DB
+  // branch), so a restored DB conversation would otherwise never receive live updates.
+  // This is the Phase-1 DoD "restore + live-update" seam. The watcher's own consumption of
+  // payload.providerSessionId is covered by transcript-watcher specs; this proves the
+  // restore pipeline threads the id into the event.
+  describe('Scenario 11: discovered event re-emits providerSessionId (DB-source watcher fix)', () => {
+    it('includes providerSessionId from the session row in session.transcript.discovered', async () => {
+      const { pipeline, stoppedSessionRow, mocks } = createRestorePipelineHarness();
+      // A transcript_path is required for the discovered event to fire at all.
+      stoppedSessionRow.transcript_path = '/tmp/project/.devchain/transcripts/ses_agy.db';
+      const sesId = 'ses_agy-restore-123';
+      stoppedSessionRow.provider_session_id = sesId;
+
+      await pipeline.restore(sessionId, projectId);
+
+      expect(mocks.eventsService.publish).toHaveBeenCalledWith(
+        'session.transcript.discovered',
+        expect.objectContaining({
+          sessionId,
+          transcriptPath: '/tmp/project/.devchain/transcripts/ses_agy.db',
+          providerSessionId: sesId,
+          providerName: 'test-provider',
+        }),
+      );
+    });
+
+    it('does not emit session.transcript.discovered when transcript_path is absent', async () => {
+      const { pipeline, stoppedSessionRow, mocks } = createRestorePipelineHarness();
+      stoppedSessionRow.transcript_path = null;
+
+      await pipeline.restore(sessionId, projectId);
+
+      expect(mocks.eventsService.publish).not.toHaveBeenCalledWith(
+        'session.transcript.discovered',
+        expect.anything(),
+      );
+    });
+  });
 });

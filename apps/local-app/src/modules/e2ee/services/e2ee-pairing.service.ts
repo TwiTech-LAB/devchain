@@ -43,6 +43,12 @@ export interface CompleteQrPairingInput {
   pairingMac: string;
   /** Optional human label for the paired device. */
   label?: string;
+  /**
+   * Optional stable per-install id of the pairing phone (relayed through the QR channel by
+   * identity-service, M2 `paired-device-dedup`). Opaque here — the device store validates it
+   * as a canonical UUID before storing/evicting. Absent for old phones (append as today).
+   */
+  installId?: string;
 }
 
 export interface CompleteQrPairingResult {
@@ -158,14 +164,20 @@ export class E2eePairingService {
     // (re-derivable from the PC private key + the stored peer public key in Phase 2+).
     deriveSharedKey(pc.privateKey, devicePublicKey);
 
-    const record = this.deviceStore.add({
-      kid: input.deviceEncKid,
-      publicKeyB64: input.deviceEncPubKey,
-      trust: 'verified',
-      verifiedVia: 'qr',
-      verifiedAt: new Date().toISOString(),
-      ...(input.label !== undefined ? { label: input.label } : {}),
-    });
+    const record = this.deviceStore.add(
+      {
+        kid: input.deviceEncKid,
+        publicKeyB64: input.deviceEncPubKey,
+        trust: 'verified',
+        verifiedVia: 'qr',
+        verifiedAt: new Date().toISOString(),
+        ...(input.label !== undefined ? { label: input.label } : {}),
+        ...(input.installId !== undefined ? { installId: input.installId } : {}),
+      },
+      // QR pairing is MAC-authenticated, so a re-pair may supersede the phone's prior rows
+      // EVEN if a stale one was verified — this device is the live, freshly-verified one.
+      { evictVerified: true },
+    );
 
     this.pending.delete(input.channelId);
     logger.info(

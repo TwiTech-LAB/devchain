@@ -595,13 +595,13 @@ describe('ProjectsService', () => {
       storage.getInitialSessionPrompt.mockResolvedValue(null);
       storage.getProvider.mockImplementation(async (id) => {
         if (id === 'prov-1') return { id: 'prov-1', name: 'claude' };
-        if (id === 'prov-2') return { id: 'prov-2', name: 'gemini' };
+        if (id === 'prov-2') return { id: 'prov-2', name: 'agy' };
         throw new Error(`Provider not found: ${id}`);
       });
       // Bulk fetch providers (used by optimized export)
       storage.listProvidersByIds.mockResolvedValue([
         { id: 'prov-1', name: 'claude' },
-        { id: 'prov-2', name: 'gemini' },
+        { id: 'prov-2', name: 'agy' },
       ]);
 
       // Mock provider configs for the profile (name column added in Phase 5)
@@ -618,8 +618,8 @@ describe('ProjectsService', () => {
           id: 'config-2',
           profileId: 'prof-1',
           providerId: 'prov-2',
-          name: 'gemini',
-          options: '--model gemini-pro',
+          name: 'agy',
+          options: '--model agy-pro',
           env: { GOOGLE_API_KEY: 'xxx' },
         },
       ]);
@@ -640,9 +640,9 @@ describe('ProjectsService', () => {
       );
       expect(result.profiles[0].providerConfigs[1]).toEqual(
         expect.objectContaining({
-          name: 'gemini',
-          providerName: 'gemini',
-          options: '--model gemini-pro',
+          name: 'agy',
+          providerName: 'agy',
+          options: '--model agy-pro',
           env: { GOOGLE_API_KEY: '***' },
         }),
       );
@@ -972,7 +972,7 @@ describe('ProjectsService', () => {
           id: 'config-2',
           profileId: 'prof-1',
           providerId: 'prov-2',
-          name: 'gemini-default',
+          name: 'agy-default',
           options: null,
           env: null,
           position: 1,
@@ -982,7 +982,7 @@ describe('ProjectsService', () => {
       ]);
       storage.listProvidersByIds.mockResolvedValue([
         { id: 'prov-1', name: 'claude', autoCompactThreshold: null },
-        { id: 'prov-2', name: 'gemini', autoCompactThreshold: null },
+        { id: 'prov-2', name: 'agy', autoCompactThreshold: null },
       ]);
       storage.listProviderModelsByProviderIds.mockResolvedValue([
         {
@@ -1189,7 +1189,7 @@ describe('ProjectsService', () => {
             },
             {
               agentName: 'Reviewer',
-              providerConfigName: 'gemini-config',
+              providerConfigName: 'agy-config',
               modelOverride: null,
             },
           ],

@@ -55,7 +55,7 @@ function makeGroup(overrides?: Partial<WorktreeAgentGroup>): WorktreeAgentGroup 
         name: 'Reviewer',
         profileId: 'profile-1',
         providerConfigId: 'config-old-2',
-        providerConfig: { id: 'config-old-2', name: 'gemini-config', providerId: 'p2' },
+        providerConfig: { id: 'config-old-2', name: 'codex-config', providerId: 'p2' },
       },
     ],
     agentPresence: {
@@ -75,7 +75,7 @@ const presetsPayload = {
       description: 'All opus',
       agentConfigs: [
         { agentName: 'Coder', providerConfigName: 'claude-config' },
-        { agentName: 'Reviewer', providerConfigName: 'gemini-config' },
+        { agentName: 'Reviewer', providerConfigName: 'codex-config' },
       ],
     },
   ],
@@ -84,7 +84,7 @@ const presetsPayload = {
 
 const providerConfigsPayload = [
   { id: 'config-1', name: 'claude-config', profileId: 'profile-1', providerId: 'p1' },
-  { id: 'config-2', name: 'gemini-config', profileId: 'profile-1', providerId: 'p2' },
+  { id: 'config-2', name: 'codex-config', profileId: 'profile-1', providerId: 'p2' },
 ];
 
 const applySuccessPayload = {

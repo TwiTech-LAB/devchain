@@ -8,8 +8,9 @@ import { TranscriptPathValidator } from './services/transcript-path-validator.se
 import { TranscriptPersistenceListener } from './services/transcript-persistence.listener';
 import { ClaudeSessionReaderAdapter } from './adapters/claude-session-reader.adapter';
 import { CodexSessionReaderAdapter } from './adapters/codex-session-reader.adapter';
-import { GeminiSessionReaderAdapter } from './adapters/gemini-session-reader.adapter';
 import { OpenCodeSessionReaderAdapter } from './adapters/opencode-session-reader.adapter';
+import { AntigravitySessionReaderAdapter } from './adapters/antigravity-session-reader.adapter';
+import { CopilotSessionReaderAdapter } from './adapters/copilot-session-reader.adapter';
 import { PRICING_SERVICE } from './services/pricing.interface';
 import { PricingService } from './services/pricing.service';
 import { SessionReaderService } from './services/session-reader.service';
@@ -30,8 +31,9 @@ import { CodexProviderSessionIdBackfillService } from './services/codex-provider
     CodexProviderSessionIdBackfillService,
     ClaudeSessionReaderAdapter,
     CodexSessionReaderAdapter,
-    GeminiSessionReaderAdapter,
     OpenCodeSessionReaderAdapter,
+    AntigravitySessionReaderAdapter,
+    CopilotSessionReaderAdapter,
     { provide: PRICING_SERVICE, useClass: PricingService },
     SessionReaderService,
     SessionCacheService,
@@ -47,8 +49,9 @@ import { CodexProviderSessionIdBackfillService } from './services/codex-provider
     CodexProviderSessionIdBackfillService,
     ClaudeSessionReaderAdapter,
     CodexSessionReaderAdapter,
-    GeminiSessionReaderAdapter,
     OpenCodeSessionReaderAdapter,
+    AntigravitySessionReaderAdapter,
+    CopilotSessionReaderAdapter,
     PRICING_SERVICE,
     SessionReaderService,
     SessionCacheService,
@@ -62,14 +65,16 @@ export class SessionReaderModule implements OnModuleInit {
     private readonly adapterFactory: SessionReaderAdapterFactory,
     private readonly claudeAdapter: ClaudeSessionReaderAdapter,
     private readonly codexAdapter: CodexSessionReaderAdapter,
-    private readonly geminiAdapter: GeminiSessionReaderAdapter,
     private readonly opencodeAdapter: OpenCodeSessionReaderAdapter,
+    private readonly antigravityAdapter: AntigravitySessionReaderAdapter,
+    private readonly copilotAdapter: CopilotSessionReaderAdapter,
   ) {}
 
   onModuleInit() {
     this.adapterFactory.registerAdapter(this.claudeAdapter);
     this.adapterFactory.registerAdapter(this.codexAdapter);
-    this.adapterFactory.registerAdapter(this.geminiAdapter);
     this.adapterFactory.registerAdapter(this.opencodeAdapter);
+    this.adapterFactory.registerAdapter(this.antigravityAdapter);
+    this.adapterFactory.registerAdapter(this.copilotAdapter);
   }
 }

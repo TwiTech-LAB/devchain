@@ -151,6 +151,44 @@ describe('HooksConfigService', () => {
       expect(command).toContain('.claude/hooks/devchain-relay.sh');
     });
 
+    it('fresh-install settings.local.json is byte-stable and Copilot-schema-free (Claude golden)', async () => {
+      // Safety net for the P3 hook generalization: the Claude installer output
+      // must be byte-for-byte unchanged — exact matcher groups + `command`/
+      // `timeout` keys — with NO Copilot schema keys (`bash`/`timeoutSec`) and
+      // no Copilot-only event keys leaking into the Claude config.
+      await service.ensureHooksConfig(tempDir);
+      const settings = JSON.parse(
+        await readFile(join(tempDir, '.claude', 'settings.local.json'), 'utf-8'),
+      );
+
+      const relayCmd = `"${join(tempDir, '.claude', 'hooks', 'devchain-relay.sh')}"`;
+      const expectDevchainEntry = (group: string, matcher?: string) => {
+        expect(settings.hooks[group]).toHaveLength(1);
+        const groupEntry = settings.hooks[group][0];
+        if (matcher !== undefined) {
+          expect(groupEntry.matcher).toBe(matcher);
+        } else {
+          expect(groupEntry).not.toHaveProperty('matcher');
+        }
+        expect(groupEntry.hooks).toHaveLength(1);
+        const hook = groupEntry.hooks[0];
+        expect(hook).toEqual({ type: 'command', command: relayCmd, timeout: 10 });
+        // Copilot schema keys must NOT appear in the Claude config.
+        expect(hook).not.toHaveProperty('bash');
+        expect(hook).not.toHaveProperty('timeoutSec');
+      };
+
+      expectDevchainEntry('SessionStart');
+      expectDevchainEntry('PreToolUse', 'AskUserQuestion');
+      expectDevchainEntry('PostToolUse', 'AskUserQuestion');
+      // Exactly the three Claude event groups — no Copilot-only keys.
+      expect(Object.keys(settings.hooks).sort()).toEqual([
+        'PostToolUse',
+        'PreToolUse',
+        'SessionStart',
+      ]);
+    });
+
     it('should not throw on errors (non-fatal)', async () => {
       // Pass a path that will fail (read-only scenarios handled by the service)
       // The service wraps everything in try/catch, so this should not throw

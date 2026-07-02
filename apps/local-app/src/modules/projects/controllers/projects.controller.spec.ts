@@ -568,7 +568,7 @@ describe('ProjectsController', () => {
           },
           {
             profileId: 'profile1',
-            providerId: 'gemini',
+            providerId: 'agy',
             id: 'c2',
             options: null,
             env: null,
@@ -722,7 +722,7 @@ describe('ProjectsController', () => {
           },
           {
             profileId: 'profile1',
-            providerId: 'gemini',
+            providerId: 'agy',
             id: 'c2',
             options: null,
             env: null,
@@ -1073,12 +1073,12 @@ describe('ProjectsController', () => {
         name: 'New Project',
         rootPath: '/tmp/new',
         slug: 'my-template',
-        familyProviderMappings: { Coder: 'CLAUDE', Reviewer: 'Gemini' },
+        familyProviderMappings: { Coder: 'CLAUDE', Reviewer: 'Agy' },
       });
 
       expect(projectsService.createFromTemplate).toHaveBeenCalledWith(
         expect.objectContaining({
-          familyProviderMappings: { coder: 'claude', reviewer: 'gemini' },
+          familyProviderMappings: { coder: 'claude', reviewer: 'agy' },
         }),
       );
     });
@@ -1385,12 +1385,12 @@ describe('ProjectsController', () => {
       (projectsService.importProject as jest.Mock).mockResolvedValue(mockResult);
 
       await controller.importProject('p1', undefined, {
-        familyProviderMappings: { Coder: 'CLAUDE', Reviewer: 'Gemini' },
+        familyProviderMappings: { Coder: 'CLAUDE', Reviewer: 'Agy' },
       });
 
       expect(projectsService.importProject).toHaveBeenCalledWith(
         expect.objectContaining({
-          familyProviderMappings: { coder: 'claude', reviewer: 'gemini' },
+          familyProviderMappings: { coder: 'claude', reviewer: 'agy' },
         }),
       );
     });
@@ -1576,7 +1576,7 @@ describe('ProjectsController', () => {
           description: 'Default configuration',
           agentConfigs: [
             { agentName: 'Coder', providerConfigName: 'claude-config' },
-            { agentName: 'Reviewer', providerConfigName: 'gemini-config' },
+            { agentName: 'Reviewer', providerConfigName: 'agy-config' },
           ],
         },
         {
@@ -1845,7 +1845,7 @@ describe('ProjectsController', () => {
       description: 'A test preset',
       agentConfigs: [
         { agentName: 'Coder', providerConfigName: 'claude-config' },
-        { agentName: 'Reviewer', providerConfigName: 'gemini-config' },
+        { agentName: 'Reviewer', providerConfigName: 'agy-config' },
       ],
     };
 
@@ -2021,7 +2021,7 @@ describe('ProjectsController', () => {
             },
             {
               agentName: 'Reviewer',
-              providerConfigName: 'gemini-config',
+              providerConfigName: 'agy-config',
               modelOverride: null,
             },
           ],
@@ -2040,7 +2040,7 @@ describe('ProjectsController', () => {
             },
             {
               agentName: 'Reviewer',
-              providerConfigName: 'gemini-config',
+              providerConfigName: 'agy-config',
               modelOverride: null,
             },
           ],
@@ -2056,7 +2056,7 @@ describe('ProjectsController', () => {
           },
           {
             agentName: 'Reviewer',
-            providerConfigName: 'gemini-config',
+            providerConfigName: 'agy-config',
             modelOverride: null,
           },
         ],

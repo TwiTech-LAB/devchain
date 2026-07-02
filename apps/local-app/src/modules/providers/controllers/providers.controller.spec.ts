@@ -2048,7 +2048,7 @@ describe('ProvidersController', () => {
           { name: 'claude', binPath: '/usr/bin/claude' },
           { name: 'codex', binPath: '/usr/bin/codex' },
         ],
-        alreadyPresent: ['gemini'],
+        alreadyPresent: ['agy'],
         notFound: ['opencode'],
       });
 
@@ -2083,7 +2083,7 @@ describe('ProvidersController', () => {
       const result = await controller.rescanProviders();
 
       expect(result.discovered).toHaveLength(2);
-      expect(result.alreadyPresent).toEqual(['gemini']);
+      expect(result.alreadyPresent).toEqual(['agy']);
       expect(result.notFound).toEqual(['opencode']);
       expect(result.syncResults).toEqual([syncResult1, syncResult2]);
       expect(storage.createProvider).toHaveBeenCalledTimes(2);
@@ -2095,7 +2095,7 @@ describe('ProvidersController', () => {
       mockDiscoveryService.discoverInstalledBinaries.mockResolvedValue({
         discovered: [],
         alreadyPresent: ['claude', 'codex'],
-        notFound: ['gemini'],
+        notFound: ['agy'],
       });
 
       const result = await controller.rescanProviders();

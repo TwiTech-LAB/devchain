@@ -320,14 +320,14 @@ describe('ProjectsService', () => {
       storage.listProviders.mockResolvedValue({
         items: [
           { id: 'p1', name: 'claude' },
-          { id: 'p2', name: 'gemini' },
-        ], // codex is missing but gemini is available
+          { id: 'p2', name: 'agy' },
+        ], // codex is missing but agy is available
         total: 2,
         limit: 100,
         offset: 0,
       });
 
-      // Coder family has profiles for both codex (default) and gemini (alternative)
+      // Coder family has profiles for both codex (default) and agy (alternative)
       const profiles = [
         {
           id: coderProfileId,
@@ -337,8 +337,8 @@ describe('ProjectsService', () => {
         },
         {
           id: '55555555-5555-5555-5555-555555555555',
-          name: 'Coder Gemini',
-          provider: { name: 'gemini' },
+          name: 'Coder Agy',
+          provider: { name: 'agy' },
           familySlug: 'coder',
         },
       ];
@@ -352,7 +352,7 @@ describe('ProjectsService', () => {
       const coderFamily = result.alternatives.find((a) => a.familySlug === 'coder');
       expect(coderFamily?.defaultProvider).toBe('codex');
       expect(coderFamily?.defaultProviderAvailable).toBe(false);
-      expect(coderFamily?.availableProviders).toContain('gemini');
+      expect(coderFamily?.availableProviders).toContain('agy');
       expect(coderFamily?.hasAlternatives).toBe(true);
     });
 
@@ -466,10 +466,10 @@ describe('ProjectsService', () => {
         {
           id: reviewerProfileId,
           name: 'Code Reviewer',
-          provider: { name: 'gemini' },
+          provider: { name: 'agy' },
           familySlug: 'code reviewer',
           providerConfigs: [
-            { providerName: 'gemini' },
+            { providerName: 'agy' },
             { providerName: 'codex' },
             { providerName: 'claude' },
           ],
@@ -479,11 +479,11 @@ describe('ProjectsService', () => {
 
       const result = await service.computeFamilyAlternatives(profiles, agents);
 
-      expect(result.missingProviders).toContain('gemini');
+      expect(result.missingProviders).toContain('agy');
       expect(result.missingProviders).toContain('codex');
       const reviewerFamily = result.alternatives.find((a) => a.familySlug === 'code reviewer');
       expect(reviewerFamily).toBeDefined();
-      expect(reviewerFamily!.defaultProvider).toBe('gemini');
+      expect(reviewerFamily!.defaultProvider).toBe('agy');
       expect(reviewerFamily!.defaultProviderAvailable).toBe(false);
       expect(reviewerFamily!.availableProviders).toContain('claude');
       expect(reviewerFamily!.hasAlternatives).toBe(true);
@@ -534,10 +534,10 @@ describe('ProjectsService', () => {
         {
           id: reviewerProfileId,
           name: 'Code Reviewer',
-          provider: { name: 'gemini' },
+          provider: { name: 'agy' },
           familySlug: 'code reviewer',
           providerConfigs: [
-            { providerName: 'gemini' },
+            { providerName: 'agy' },
             { providerName: 'codex' },
             { providerName: 'claude' },
           ],
@@ -608,7 +608,7 @@ describe('ProjectsService', () => {
       storage.listProviders.mockResolvedValue({
         items: [
           { id: 'p1', name: 'claude' },
-          { id: 'p2', name: 'gemini' },
+          { id: 'p2', name: 'agy' },
         ],
         total: 2,
         limit: 100,
@@ -616,7 +616,7 @@ describe('ProjectsService', () => {
       });
 
       // coder family: codex (missing) + claude (available) → has alternative
-      // reviewer family: codex (missing) + gemini (available) → has alternative
+      // reviewer family: codex (missing) + agy (available) → has alternative
       const profiles = [
         {
           id: coderProfileId,
@@ -638,8 +638,8 @@ describe('ProjectsService', () => {
         },
         {
           id: '66666666-6666-6666-6666-666666666666',
-          name: 'Reviewer Gemini',
-          provider: { name: 'gemini' },
+          name: 'Reviewer Agy',
+          provider: { name: 'agy' },
           familySlug: 'reviewer',
         },
       ];
@@ -672,7 +672,7 @@ describe('ProjectsService', () => {
         description: 'Default preset',
         agentConfigs: [
           { agentName: 'Coder', providerConfigName: 'claude-config' },
-          { agentName: 'Reviewer', providerConfigName: 'gemini-config' },
+          { agentName: 'Reviewer', providerConfigName: 'agy-config' },
         ],
       };
 
@@ -680,7 +680,7 @@ describe('ProjectsService', () => {
 
       const profileId = 'profile-1';
       const claudeConfigId = 'config-claude';
-      const geminiConfigId = 'config-gemini';
+      const agyConfigId = 'config-agy';
 
       storage.listAgentProfiles.mockResolvedValue({
         items: [
@@ -725,10 +725,10 @@ describe('ProjectsService', () => {
           updatedAt: '',
         },
         {
-          id: geminiConfigId,
+          id: agyConfigId,
           profileId,
-          providerId: 'gemini',
-          name: 'gemini-config',
+          providerId: 'agy',
+          name: 'agy-config',
           options: null,
           env: null,
           createdAt: '',
@@ -748,7 +748,7 @@ describe('ProjectsService', () => {
       expect(result.warnings).toHaveLength(0);
       expect(updatedAgents).toHaveLength(2);
       expect(updatedAgents[0].providerConfigId).toBe(claudeConfigId);
-      expect(updatedAgents[1].providerConfigId).toBe(geminiConfigId);
+      expect(updatedAgents[1].providerConfigId).toBe(agyConfigId);
     });
 
     it('should apply preset and forward explicit modelOverride values to updateAgent', async () => {
@@ -761,7 +761,7 @@ describe('ProjectsService', () => {
             providerConfigName: 'claude-config',
             modelOverride: 'openai/gpt-5',
           },
-          { agentName: 'Reviewer', providerConfigName: 'gemini-config', modelOverride: null },
+          { agentName: 'Reviewer', providerConfigName: 'agy-config', modelOverride: null },
         ],
       };
 
@@ -769,7 +769,7 @@ describe('ProjectsService', () => {
 
       const profileId = 'profile-1';
       const claudeConfigId = 'config-claude';
-      const geminiConfigId = 'config-gemini';
+      const agyConfigId = 'config-agy';
 
       storage.listAgentProfiles.mockResolvedValue({
         items: [
@@ -820,10 +820,10 @@ describe('ProjectsService', () => {
           updatedAt: '',
         },
         {
-          id: geminiConfigId,
+          id: agyConfigId,
           profileId,
-          providerId: 'gemini',
-          name: 'gemini-config',
+          providerId: 'agy',
+          name: 'agy-config',
           options: null,
           env: null,
           createdAt: '',
@@ -840,7 +840,7 @@ describe('ProjectsService', () => {
         modelOverride: 'openai/gpt-5',
       });
       expect(storage.updateAgent).toHaveBeenNthCalledWith(2, 'agent-2', {
-        providerConfigId: geminiConfigId,
+        providerConfigId: agyConfigId,
         modelOverride: null,
       });
     });
@@ -1078,7 +1078,7 @@ describe('ProjectsService', () => {
         description: 'Default preset',
         agentConfigs: [
           { agentName: 'Coder', providerConfigName: 'claude-config' },
-          { agentName: 'Reviewer', providerConfigName: 'gemini-config' },
+          { agentName: 'Reviewer', providerConfigName: 'agy-config' },
         ],
       };
 
@@ -1087,7 +1087,7 @@ describe('ProjectsService', () => {
 
       const profileId = 'profile-1';
       const claudeConfigId = 'config-claude';
-      const geminiConfigId = 'config-gemini';
+      const agyConfigId = 'config-agy';
 
       storage.listAgentProfiles.mockResolvedValue({
         items: [
@@ -1132,10 +1132,10 @@ describe('ProjectsService', () => {
           updatedAt: '',
         },
         {
-          id: geminiConfigId,
+          id: agyConfigId,
           profileId,
-          providerId: 'gemini',
-          name: 'gemini-config',
+          providerId: 'agy',
+          name: 'agy-config',
           options: null,
           env: null,
           createdAt: '',

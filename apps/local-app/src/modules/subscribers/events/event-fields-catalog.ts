@@ -280,12 +280,14 @@ export const EVENT_FIELDS_CATALOG: Record<string, SubscribableEventDefinition> =
 
   'claude.hooks.session.started': {
     name: 'claude.hooks.session.started',
-    label: 'Claude Hook: Session Started',
+    label: 'Hook: Session Started',
     description:
-      'Fired when Claude Code reports a session start via hook relay (startup, resume, clear, or compact)',
+      'Fired when a provider (Claude or Copilot) reports a session start via hook relay (Claude: startup/resume/clear/compact; Copilot: new/resume/startup)',
     category: 'session',
     fields: [
-      { field: 'claudeSessionId', label: 'Claude Session ID', type: 'string' },
+      { field: 'claudeSessionId', label: 'Provider Session ID (legacy)', type: 'string' },
+      { field: 'providerName', label: 'Provider Name', type: 'string', nullable: true },
+      { field: 'providerSessionId', label: 'Provider Session ID', type: 'string', nullable: true },
       { field: 'source', label: 'Source', type: 'string' },
       { field: 'model', label: 'Model', type: 'string', nullable: true },
       { field: 'permissionMode', label: 'Permission Mode', type: 'string', nullable: true },

@@ -2,15 +2,16 @@ import { Inject, Injectable } from '@nestjs/common';
 import { ProviderAdapter } from './provider-adapter.interface';
 import { ClaudeAdapter } from './claude.adapter';
 import { CodexAdapter } from './codex.adapter';
-import { GeminiAdapter } from './gemini.adapter';
 import { OpencodeAdapter } from './opencode.adapter';
+import { AntigravityAdapter } from './antigravity.adapter';
+import { CopilotAdapter } from './copilot.adapter';
 import { UnsupportedProviderError } from '../../../common/errors/error-types';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
 
 /**
  * Factory for resolving ProviderAdapter instances by provider name
  *
- * Supports known providers only (claude, codex, gemini, opencode).
+ * Supports known providers only (claude, codex, opencode, agy, copilot).
  * Throws an error for unsupported provider names.
  */
 @Injectable()
@@ -21,14 +22,16 @@ export class ProviderAdapterFactory {
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
     claudeAdapter: ClaudeAdapter,
     codexAdapter: CodexAdapter,
-    geminiAdapter: GeminiAdapter,
     opencodeAdapter: OpencodeAdapter,
+    antigravityAdapter: AntigravityAdapter,
+    copilotAdapter: CopilotAdapter,
   ) {
     this.adapters = new Map<string, ProviderAdapter>([
       ['claude', claudeAdapter],
       ['codex', codexAdapter],
-      ['gemini', geminiAdapter],
       ['opencode', opencodeAdapter],
+      ['agy', antigravityAdapter],
+      ['copilot', copilotAdapter],
     ]);
   }
 

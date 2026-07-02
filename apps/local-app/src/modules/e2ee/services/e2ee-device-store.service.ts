@@ -44,6 +44,15 @@ export interface E2eePeerDevice {
   verifiedAt?: string;
   /** Optional human label (device name); populated when known. */
   label?: string;
+  /**
+   * Stable per-install id of the mobile app that adopted this key (M2 `paired-device-dedup`).
+   * Survives logout on the phone (it is NOT key material), so re-login mints a fresh kid but
+   * carries the SAME installId — the supersede sweep uses it to evict the phone's prior row.
+   * UNAUTHENTICATED grouping metadata only (never a trust signal); carried BESIDE the shared
+   * `E2eeTrustRecord` (deliberately NOT part of `@devchain/shared`). Absent on pre-M2 records
+   * and old-client adopts. Never logged (minimize unauthenticated metadata).
+   */
+  installId?: string;
 }
 
 interface StoredDirectory {
@@ -52,6 +61,19 @@ interface StoredDirectory {
 }
 
 const STORE_VERSION = 1;
+
+/**
+ * Canonical RFC-4122/9562 UUID (lowercase, hyphenated, version 1–8, variant 8–b). The
+ * mobile install id is minted as a canonical UUID; we validate it BEFORE storing OR
+ * evicting so a malformed/hostile value can neither be persisted nor drive an eviction
+ * (invalid/absent ⇒ store nothing, evict nothing — indistinguishable from an old client).
+ */
+const CANONICAL_UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+function isCanonicalUuid(value: unknown): value is string {
+  return typeof value === 'string' && CANONICAL_UUID_RE.test(value);
+}
 
 /**
  * PC-side directory of peer (mobile / other) device public X25519 keys, keyed by the
@@ -78,6 +100,7 @@ export class E2eeDeviceStoreService {
       addedAt?: string;
       trust?: E2eeTrustStatus;
     },
+    opts: { evictVerified?: boolean } = {},
   ): E2eePeerDevice {
     const dir = this.load();
     const record: E2eePeerDevice = {
@@ -89,10 +112,23 @@ export class E2eeDeviceStoreService {
       ...(device.verifiedVia !== undefined ? { verifiedVia: device.verifiedVia } : {}),
       ...(device.verifiedAt !== undefined ? { verifiedAt: device.verifiedAt } : {}),
       ...(device.label !== undefined ? { label: device.label } : {}),
+      // Persist installId only when it is a canonical UUID (validate BEFORE storing).
+      ...(isCanonicalUuid(device.installId) ? { installId: device.installId } : {}),
     };
     dir.devices[record.kid] = record;
+    // Supersede the same phone's prior rows in the SAME load/save (no add-then-evict window).
+    // QR complete passes evictVerified:true (MAC-authenticated); a plaintext seam must not.
+    const superseded = this.supersedeByInstallId(
+      dir.devices,
+      record.installId,
+      record.kid,
+      opts.evictVerified ?? false,
+    );
     this.save(dir);
-    logger.info({ kid: record.kid, trust: record.trust }, 'Peer E2EE device public key added');
+    logger.info(
+      { kid: record.kid, trust: record.trust, superseded },
+      'Peer E2EE device public key added',
+    );
     return record;
   }
 
@@ -104,7 +140,11 @@ export class E2eeDeviceStoreService {
    * (keeps a prior `'verified'`); a CHANGED key silently reverts to `'unverified'`
    * (verification dropped — never auto-trust a rotated key). Returns the stored record.
    */
-  reconcile(incoming: IncomingPeerKey, now: string = new Date().toISOString()): E2eePeerDevice {
+  reconcile(
+    incoming: IncomingPeerKey,
+    now: string = new Date().toISOString(),
+    opts: { installId?: string; evictVerified?: boolean } = {},
+  ): E2eePeerDevice {
     const dir = this.load();
     const existing = (dir.devices[incoming.kid] ?? null) as E2eeTrustRecord | null;
     // A key change keeps the same logical device but a new kid — find any prior record
@@ -114,11 +154,27 @@ export class E2eeDeviceStoreService {
       Object.values(dir.devices).find((d) => d.publicKeyB64 === incoming.publicKeyB64) ??
       null;
     const reconciled = reconcilePeerKey(prior as E2eeTrustRecord | null, incoming, now);
-    const record = this.toDevice(reconciled);
+    // `toDevice` preserves any installId already on an unchanged record; a fresh/rotated
+    // record has none. Then backfill from the adopt: a same-key adopt carrying a valid
+    // installId writes it onto the record EVEN when reconcile returned the prior unchanged,
+    // so a pre-installId row gains one and dedupes on its next rotation.
+    const record = this.toDevice(reconciled as E2eeTrustRecord & { installId?: string });
+    if (isCanonicalUuid(opts.installId)) {
+      record.installId = opts.installId;
+    }
     dir.devices[record.kid] = record;
+    // Single load/save: supersede the phone's prior rows here, not in a second store call.
+    // TOFU adopt (this path) MUST NOT evict verified rows — an unauthenticated plaintext
+    // bootstrap adopt must never force-unpair a QR-verified device (see supersedeByInstallId).
+    const superseded = this.supersedeByInstallId(
+      dir.devices,
+      record.installId,
+      record.kid,
+      opts.evictVerified ?? false,
+    );
     this.save(dir);
     logger.info(
-      { kid: record.kid, trust: record.trust, adoptedVia: record.adoptedVia },
+      { kid: record.kid, trust: record.trust, adoptedVia: record.adoptedVia, superseded },
       'Peer E2EE device reconciled (TOFU adopt / rotation)',
     );
     return record;
@@ -139,8 +195,13 @@ export class E2eeDeviceStoreService {
     return record;
   }
 
-  /** Project a shared `E2eeTrustRecord` onto the persisted device shape (drop undefineds). */
-  private toDevice(rec: E2eeTrustRecord): E2eePeerDevice {
+  /**
+   * Project a shared `E2eeTrustRecord` onto the persisted device shape (drop undefineds).
+   * `installId` is carried BESIDE the shared record (not a `@devchain/shared` field), so the
+   * param is widened to preserve it: an unchanged same-key reconcile returns the prior record,
+   * and without this projection its installId would be silently dropped on every re-adopt.
+   */
+  private toDevice(rec: E2eeTrustRecord & { installId?: string }): E2eePeerDevice {
     return {
       kid: rec.kid,
       publicKeyB64: rec.publicKeyB64,
@@ -150,7 +211,46 @@ export class E2eeDeviceStoreService {
       ...(rec.verifiedVia !== undefined ? { verifiedVia: rec.verifiedVia } : {}),
       ...(rec.verifiedAt !== undefined ? { verifiedAt: rec.verifiedAt } : {}),
       ...(rec.label !== undefined ? { label: rec.label } : {}),
+      ...(rec.installId !== undefined ? { installId: rec.installId } : {}),
     };
+  }
+
+  /**
+   * The ONE place the re-login supersede rule lives: evict every stored device that shares
+   * `installId` with the just-adopted device but has a DIFFERENT kid (the phone's dead
+   * pre-logout rows). Mutates the in-memory directory in place and returns the eviction
+   * count — the caller folds it into a SINGLE load/save so no intermediate state ever
+   * persists the new entry alongside the rows it supersedes.
+   *
+   * SECURITY INVARIANT (not a style choice): with `evictVerified === false` a
+   * `trust === 'verified'` row is NEVER evicted. `e2ee.adoptDeviceKey` arrives PLAINTEXT
+   * (unauthenticated bridge-position bootstrap) — allowing it to drop a QR-verified device
+   * would be a force-unpair attack. Only the MAC-authenticated QR-complete seam passes
+   * `evictVerified: true`. The guard is written `trust !== 'verified'` (not
+   * `=== 'unverified'`) so any future/unknown trust value also stays protected by default.
+   *
+   * The installId is validated canonical BEFORE any eviction; an invalid/absent installId
+   * evicts nothing (old-client append behavior). installId values are never logged.
+   *
+   * Accepted residue (M3's case): an OFFLINE logout + email re-login leaves the phone's prior
+   * VERIFIED row in place (this guard forbids evicting it) until QR re-pair or manual unpair.
+   */
+  private supersedeByInstallId(
+    devices: Record<string, E2eePeerDevice>,
+    installId: string | undefined,
+    keepKid: string,
+    evictVerified: boolean,
+  ): number {
+    if (!isCanonicalUuid(installId)) return 0;
+    let evicted = 0;
+    for (const [kid, device] of Object.entries(devices)) {
+      if (kid === keepKid) continue;
+      if (device.installId !== installId) continue;
+      if (!evictVerified && device.trust === 'verified') continue;
+      delete devices[kid];
+      evicted++;
+    }
+    return evicted;
   }
 
   /** Look up a peer device by `kid`. `null` if unknown (e.g. wiped, never paired). */

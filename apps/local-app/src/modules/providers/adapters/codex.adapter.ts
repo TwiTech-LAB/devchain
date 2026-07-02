@@ -22,6 +22,25 @@ export class CodexAdapter
     preDelayMs: 2000,
   };
 
+  /**
+   * Config overrides forced onto every interactive Codex launch via the global
+   * `-c/--config <key=value>` flag (parsed as TOML, so a bare `false` is a boolean).
+   *
+   * `check_for_update_on_startup` defaults to `true` in `~/.codex/config.toml`,
+   * which makes Codex self-update on startup and can break a session mid-launch.
+   * `-c` overrides the value that would otherwise be read from config.toml WITHOUT
+   * mutating that user-owned file — it is per-launch and reversible.
+   *
+   * Placed at the FRONT of argv (top-level global flag, before any subcommand) so
+   * it always beats the config.toml value; a profile that explicitly re-adds
+   * `-c check_for_update_on_startup=true` still wins under Codex's last-wins
+   * duplicate-`-c` resolution, preserving a power-user escape hatch.
+   */
+  private static readonly LAUNCH_CONFIG_OVERRIDES: readonly string[] = [
+    '-c',
+    'check_for_update_on_startup=false',
+  ];
+
   addMcpServer(options: AddMcpServerOptions): string[] {
     const alias = options.alias ?? this.providerName;
     const args = ['mcp', 'add', '--url', options.endpoint, alias];
@@ -46,11 +65,13 @@ export class CodexAdapter
   buildLaunchArgs({ mode, providerSessionId, profileOptionArgs }: BuildLaunchArgsInput): {
     argv: string[];
   } {
+    const overrides = CodexAdapter.LAUNCH_CONFIG_OVERRIDES;
     if (mode === 'restore') {
       // Codex uses a `resume` subcommand; session ID goes LAST after profile args.
-      return { argv: ['resume', ...profileOptionArgs, providerSessionId!] };
+      // Config overrides lead as top-level global flags, before the subcommand.
+      return { argv: [...overrides, 'resume', ...profileOptionArgs, providerSessionId!] };
     }
-    return { argv: [...profileOptionArgs] };
+    return { argv: [...overrides, ...profileOptionArgs] };
   }
 
   parseListOutput(stdout: string, _stderr?: string): McpServerEntry[] {

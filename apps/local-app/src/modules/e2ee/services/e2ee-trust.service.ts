@@ -132,8 +132,16 @@ export class E2eeTrustService {
     return { kid, removed };
   }
 
-  /** Email-TOFU adopt sink / re-pair seam — reconcile a relayed peer key into the store. */
-  adoptPeerKeyTofu(incoming: IncomingPeerKey): DeviceTrustResult {
+  /**
+   * Email-TOFU adopt sink / re-pair seam — reconcile a relayed peer key into the store.
+   *
+   * `installId` (M2 `paired-device-dedup`) is carried as a SEPARATE param, never folded into
+   * the shared `IncomingPeerKey` type. It supersedes the phone's prior rows on re-login, but
+   * ONLY non-verified ones (`evictVerified: false`): this adopt arrives PLAINTEXT over the
+   * unauthenticated bootstrap lane, so it must never force-unpair a QR-verified device. The
+   * store validates installId as a canonical UUID before storing/evicting; opaque here.
+   */
+  adoptPeerKeyTofu(incoming: IncomingPeerKey, installId?: string): DeviceTrustResult {
     if (!incoming?.kid || !incoming.publicKeyB64) {
       throw new ValidationError('kid and publicKeyB64 are required');
     }
@@ -158,7 +166,10 @@ export class E2eeTrustService {
       );
       throw new ValidationError('kid does not match public key');
     }
-    const record = this.deviceStore.reconcile(incoming);
+    const record = this.deviceStore.reconcile(incoming, undefined, {
+      installId,
+      evictVerified: false,
+    });
     return {
       kid: record.kid,
       trust: record.trust,

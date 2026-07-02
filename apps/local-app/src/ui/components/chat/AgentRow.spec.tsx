@@ -132,6 +132,17 @@ describe('AgentRow', () => {
     expect(screen.queryByText('Reviewing code')).not.toBeInTheDocument();
   });
 
+  it('Copilot provider icon is decorative (alt="" + aria-hidden) — the adjacent agent name is the accessible label', () => {
+    renderAgentRow({ providerName: 'copilot' });
+
+    const providerIconFrame = screen.getByTitle('Provider: copilot (online)');
+    const img = providerIconFrame.querySelector('img');
+    expect(img).toHaveAttribute('alt', '');
+    expect(img).toHaveAttribute('aria-hidden', 'true');
+    // The agent name is rendered as adjacent visible text — the row is not icon-only.
+    expect(screen.getByText('Alpha')).toBeInTheDocument();
+  });
+
   it('fires onClick when the row is clicked', () => {
     const { onClick } = renderAgentRow();
 

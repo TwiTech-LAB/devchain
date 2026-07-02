@@ -20,7 +20,7 @@ describe('ProviderDiscoveryService', () => {
     };
 
     mockAdapterFactory = {
-      getSupportedProviders: jest.fn().mockReturnValue(['claude', 'codex', 'gemini', 'opencode']),
+      getSupportedProviders: jest.fn().mockReturnValue(['claude', 'codex', 'agy', 'opencode']),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -48,7 +48,7 @@ describe('ProviderDiscoveryService', () => {
       { name: 'claude', binPath: '/usr/bin/claude' },
       { name: 'codex', binPath: '/usr/bin/codex' },
     ]);
-    expect(result.notFound).toEqual(['gemini', 'opencode']);
+    expect(result.notFound).toEqual(['agy', 'opencode']);
     expect(result.alreadyPresent).toEqual([]);
   });
 
@@ -66,7 +66,7 @@ describe('ProviderDiscoveryService', () => {
 
     expect(result.alreadyPresent).toEqual(['claude', 'codex']);
     expect(result.discovered).toEqual([]);
-    expect(result.notFound).toEqual(['gemini', 'opencode']);
+    expect(result.notFound).toEqual(['agy', 'opencode']);
     expect(mockResolveBinary).toHaveBeenCalledTimes(2);
   });
 
@@ -101,7 +101,7 @@ describe('ProviderDiscoveryService', () => {
       items: [
         { id: 'p1', name: 'claude' },
         { id: 'p2', name: 'codex' },
-        { id: 'p3', name: 'gemini' },
+        { id: 'p3', name: 'agy' },
         { id: 'p4', name: 'opencode' },
       ],
     });

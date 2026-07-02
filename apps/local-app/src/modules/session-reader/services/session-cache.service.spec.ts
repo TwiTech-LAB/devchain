@@ -565,12 +565,12 @@ describe('SessionCacheService', () => {
 
   it('should replace messages and metrics in snapshot incremental mode', async () => {
     adapter = makeAdapter({
-      providerName: 'gemini',
+      providerName: 'copilot',
       incrementalMode: 'snapshot',
     });
 
     const initialSession = makeSession({
-      providerName: 'gemini',
+      providerName: 'copilot',
       messages: [makeMessage('m1', 1706000000000), makeMessage('m2', 1706000005000)],
       metrics: makeMetrics({
         inputTokens: 100,
@@ -625,12 +625,12 @@ describe('SessionCacheService', () => {
 
   it('should avoid duplicate accumulation across consecutive snapshot incremental updates', async () => {
     adapter = makeAdapter({
-      providerName: 'gemini',
+      providerName: 'copilot',
       incrementalMode: 'snapshot',
     });
 
     const initialSession = makeSession({
-      providerName: 'gemini',
+      providerName: 'copilot',
       messages: [makeMessage('m1', 1706000000000), makeMessage('m2', 1706000005000)],
       metrics: makeMetrics({ messageCount: 2, isOngoing: true }),
     });
@@ -1193,7 +1193,7 @@ describe('SessionCacheService', () => {
 
   it('should merge warnings in snapshot incremental mode', async () => {
     adapter = makeAdapter({
-      providerName: 'gemini',
+      providerName: 'copilot',
       incrementalMode: 'snapshot',
     });
 
@@ -1293,6 +1293,37 @@ describe('SessionCacheService', () => {
       const result = await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
       expect(result.sourceVersion).toBe(4096);
       expect(service.getEntry(SESSION_ID)!.sourceVersion).toBe(4096);
+    });
+
+    // ⭐ KEYSTONE (deferred from P1-3): for a DB source (agy/opencode), `sourceVersion`
+    // keys on the freshness token's `maxUpdated` (dbSourceVersion), NOT the container file
+    // size. So a same-byte-size in-place edit (constant size, advancing maxUpdated) ADVANCES
+    // sourceVersion = the transcript cursor's first component. A size-keyed version would
+    // freeze here → a stale read on exactly the in-place-rewrite case the watcher must surface.
+    it('⭐ for a DB source, sourceVersion tracks the token maxUpdated (advances on a same-size rewrite)', async () => {
+      const getFreshnessToken = jest
+        .fn()
+        .mockResolvedValueOnce({ maxUpdated: 1_700_000_000 })
+        .mockResolvedValueOnce({ maxUpdated: 1_700_000_060 });
+      adapter = makeAdapter({ sourceKind: 'db', getFreshnessToken });
+      (adapter.parseFullSession as jest.Mock).mockResolvedValue(makeSession());
+      const sourceRef = {
+        filePath: FILE_PATH,
+        providerName: 'agy',
+        providerSessionId: 'conv-1',
+        kind: 'db' as const,
+      };
+      // CONSTANT file size across both reads — the rewrite changes no bytes.
+      mockedFsStat.mockResolvedValue(makeStat(4096, 1706000000000));
+      dateSpy.mockReturnValue(1706000000000);
+
+      const first = await service.getOrParseWithMeta(SESSION_ID, sourceRef, adapter);
+      expect(first.sourceVersion).toBe(1_700_000_000);
+
+      dateSpy.mockReturnValue(1706000010000); // 10s later — within TTL; only the token changed
+      const second = await service.getOrParseWithMeta(SESSION_ID, sourceRef, adapter);
+      expect(second.sourceVersion).toBe(1_700_000_060); // advances with maxUpdated, not size
+      expect(service.getEntry(SESSION_ID)!.sourceVersion).toBe(1_700_000_060);
     });
 
     it('should use adapter.getFreshnessToken for staleness when provided', async () => {

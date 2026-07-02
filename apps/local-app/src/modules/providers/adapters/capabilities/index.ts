@@ -1,4 +1,6 @@
 export type {
+  AuthProbeCapability,
+  AuthProbeResult,
   ConfigFileMcpCapability,
   McpCliCapability,
   ContextWindowCapability,
@@ -11,10 +13,13 @@ export type {
   ProvisioningWarningItem,
   ProjectMcpSettingsCapability,
   TranscriptDiscoveryCapability,
+  GlobalMcpConfigCapability,
 } from './type-guards';
 export {
+  isAuthProbeCapable,
   isConfigFileMcpCapable,
   isMcpCli,
+  isGlobalMcpConfigCapable,
   isContextWindowCapable,
   isHookCapable,
   isProjectProvisioningCapable,

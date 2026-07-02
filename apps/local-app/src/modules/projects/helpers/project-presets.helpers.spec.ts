@@ -370,7 +370,7 @@ describe('project-presets.helpers', () => {
           },
           {
             agentName: 'Reviewer',
-            providerConfigName: 'gemini-config',
+            providerConfigName: 'agy-config',
           },
         ],
       };
@@ -429,10 +429,10 @@ describe('project-presets.helpers', () => {
           updatedAt: '',
         },
         {
-          id: 'cfg-gemini',
+          id: 'cfg-agy',
           profileId: 'profile-1',
           providerId: 'provider-2',
-          name: 'gemini-config',
+          name: 'agy-config',
           options: null,
           env: null,
           createdAt: '',
@@ -460,7 +460,7 @@ describe('project-presets.helpers', () => {
         | undefined;
       expect(secondCallPayload).toEqual(
         expect.objectContaining({
-          providerConfigId: 'cfg-gemini',
+          providerConfigId: 'cfg-agy',
         }),
       );
       expect(secondCallPayload).toEqual(

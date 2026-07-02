@@ -81,6 +81,34 @@ describe('ProvidersPage - Provider Type presets and command previews', () => {
     expect(binInput.value).toBe('mybin');
   });
 
+  it('includes Antigravity CLI as a provider type with the agy default binPath', async () => {
+    renderWithQuery(<ProvidersPage />);
+
+    await waitFor(() => expect(screen.getByText('Providers')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByText('Add Provider')[0]);
+
+    fireEvent.click(screen.getByLabelText('Provider Type'));
+    const agyOptions = await screen.findAllByText('Antigravity CLI');
+    fireEvent.click(agyOptions[agyOptions.length - 1]);
+
+    const binInput = screen.getByLabelText('Binary Path') as HTMLInputElement;
+    expect(binInput.value).toBe('agy');
+  });
+
+  it('includes Copilot CLI as a provider type with the copilot default binPath', async () => {
+    renderWithQuery(<ProvidersPage />);
+
+    await waitFor(() => expect(screen.getByText('Providers')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByText('Add Provider')[0]);
+
+    fireEvent.click(screen.getByLabelText('Provider Type'));
+    const copilotOptions = await screen.findAllByText('Copilot CLI');
+    fireEvent.click(copilotOptions[copilotOptions.length - 1]);
+
+    const binInput = screen.getByLabelText('Binary Path') as HTMLInputElement;
+    expect(binInput.value).toBe('copilot');
+  });
+
   it('calls ensure endpoint when Configure MCP is clicked', async () => {
     // Mock providers list with one provider
     const mockProvider = {
@@ -122,7 +150,7 @@ describe('ProvidersPage - Provider Type presets and command previews', () => {
                   mcpMessage: 'MCP not configured',
                 },
               ],
-              supportedMcpProviders: ['claude', 'codex', 'gemini'],
+              supportedMcpProviders: ['claude', 'codex', 'opencode'],
               timestamp: new Date().toISOString(),
             }),
           });
@@ -219,7 +247,7 @@ describe('ProvidersPage - autoCompactThreshold display and edit', () => {
                 id: p.id,
                 mcpStatus: p.mcpConfigured ? 'pass' : 'warn',
               })),
-              supportedMcpProviders: ['claude', 'codex', 'gemini'],
+              supportedMcpProviders: ['claude', 'codex', 'opencode'],
               timestamp: new Date().toISOString(),
             }),
           });
@@ -488,7 +516,7 @@ describe('ProvidersPage - autoCompactThreshold display and edit', () => {
               overall: 'pass',
               checks: [],
               providers: [],
-              supportedMcpProviders: ['claude', 'codex', 'gemini'],
+              supportedMcpProviders: ['claude', 'codex', 'opencode'],
               timestamp: new Date().toISOString(),
             }),
           });
@@ -614,7 +642,7 @@ describe('ProvidersPage - 1M context controls', () => {
                 id: p.id,
                 mcpStatus: p.mcpConfigured ? 'pass' : 'warn',
               })),
-              supportedMcpProviders: ['claude', 'codex', 'gemini'],
+              supportedMcpProviders: ['claude', 'codex', 'opencode'],
               timestamp: new Date().toISOString(),
             }),
           });
@@ -661,23 +689,26 @@ describe('ProvidersPage - 1M context controls', () => {
     await waitFor(() => expect(screen.getByLabelText('1M context')).toBeInTheDocument());
   });
 
-  it('hides 1M context checkbox for non-Claude providers', async () => {
-    setupFetch([
-      {
-        ...claudeProvider,
-        id: 'p-codex',
-        name: 'codex',
-        binPath: '/usr/local/bin/codex',
-      },
-    ]);
-    renderWithQuery(<ProvidersPage />);
-    await waitFor(() => expect(screen.getByText('codex')).toBeInTheDocument());
+  it.each(['codex', 'opencode', 'agy', 'copilot'])(
+    'hides 1M context checkbox for non-Claude provider (%s)',
+    async (providerName) => {
+      setupFetch([
+        {
+          ...claudeProvider,
+          id: `p-${providerName}`,
+          name: providerName,
+          binPath: `/usr/local/bin/${providerName}`,
+        },
+      ]);
+      renderWithQuery(<ProvidersPage />);
+      await waitFor(() => expect(screen.getByText(providerName)).toBeInTheDocument());
 
-    fireEvent.click(screen.getByText('Edit'));
+      fireEvent.click(screen.getByText('Edit'));
 
-    await waitFor(() => expect(screen.getByText('Edit Provider')).toBeInTheDocument());
-    expect(screen.queryByLabelText('1M context')).not.toBeInTheDocument();
-  });
+      await waitFor(() => expect(screen.getByText('Edit Provider')).toBeInTheDocument());
+      expect(screen.queryByLabelText('1M context')).not.toBeInTheDocument();
+    },
+  );
 
   it('runs probe and sets supported status on checkbox toggle for existing provider', async () => {
     setupFetch([claudeProvider], { supported: true, status: 'supported' });
@@ -911,7 +942,7 @@ describe('ProvidersPage - 1M context controls', () => {
             overall: 'pass',
             checks: [],
             providers: [{ id: updatedProvider.id, mcpStatus: 'pass' }],
-            supportedMcpProviders: ['claude', 'codex', 'gemini'],
+            supportedMcpProviders: ['claude', 'codex', 'opencode'],
             timestamp: new Date().toISOString(),
           }),
         });
@@ -979,7 +1010,7 @@ describe('ProvidersPage - 1M context controls', () => {
               overall: 'pass',
               checks: [],
               providers: [],
-              supportedMcpProviders: ['claude', 'codex', 'gemini'],
+              supportedMcpProviders: ['claude', 'codex', 'opencode'],
               timestamp: new Date().toISOString(),
             }),
           });
@@ -1125,7 +1156,7 @@ describe('ProvidersPage - provider type select disabled in edit mode', () => {
                 id: p.id,
                 mcpStatus: p.mcpConfigured ? 'pass' : 'warn',
               })),
-              supportedMcpProviders: ['claude', 'codex', 'gemini'],
+              supportedMcpProviders: ['claude', 'codex', 'opencode'],
               timestamp: new Date().toISOString(),
             }),
           });
@@ -1279,7 +1310,7 @@ describe('ProvidersPage - provider models management', () => {
                 id: p.id,
                 mcpStatus: p.mcpConfigured ? 'pass' : 'warn',
               })),
-              supportedMcpProviders: ['claude', 'codex', 'gemini', 'opencode'],
+              supportedMcpProviders: ['claude', 'codex', 'opencode'],
               timestamp: new Date().toISOString(),
             }),
           });
@@ -1591,7 +1622,7 @@ describe('ProvidersPage - create provider auto-propagation', () => {
               overall: 'pass',
               checks: [],
               providers: [],
-              supportedMcpProviders: ['claude', 'codex', 'gemini'],
+              supportedMcpProviders: ['claude', 'codex', 'opencode'],
               timestamp: new Date().toISOString(),
             }),
           });
@@ -1669,7 +1700,7 @@ describe('ProvidersPage - Rescan', () => {
               overall: 'pass',
               checks: [],
               providers: [],
-              supportedMcpProviders: ['claude', 'codex', 'gemini'],
+              supportedMcpProviders: ['claude', 'codex', 'opencode'],
               timestamp: new Date().toISOString(),
             }),
           });
@@ -1681,7 +1712,7 @@ describe('ProvidersPage - Rescan', () => {
               rescanResult ?? {
                 discovered: [{ name: 'claude', binPath: '/usr/bin/claude' }],
                 alreadyPresent: ['codex'],
-                notFound: ['gemini'],
+                notFound: ['opencode'],
                 syncResults: [{ providerId: 'p1', insertedCount: 3 }],
               },
           });
@@ -1828,7 +1859,7 @@ describe('ProvidersPage - MCP badge and Configure MCP button states', () => {
               overall: 'pass',
               checks: [],
               providers: preflightProviders,
-              supportedMcpProviders: ['codex', 'claude', 'gemini'],
+              supportedMcpProviders: ['codex', 'claude', 'opencode'],
               timestamp: new Date().toISOString(),
             }),
           });
@@ -2016,7 +2047,7 @@ describe('ProvidersPage - CRUD mutations invalidate preflight query', () => {
                 binaryMessage: 'OK',
                 mcpStatus: p.mcpConfigured ? ('pass' as const) : ('warn' as const),
               })),
-              supportedMcpProviders: ['codex', 'claude', 'gemini'],
+              supportedMcpProviders: ['codex', 'claude', 'opencode'],
               timestamp: new Date().toISOString(),
             }),
           });
@@ -2157,7 +2188,7 @@ describe('ProvidersPage - aggregate-fail MCP badge guard', () => {
               overall: 'fail',
               checks: [],
               providers: preflightProviders,
-              supportedMcpProviders: ['codex', 'claude', 'gemini'],
+              supportedMcpProviders: ['codex', 'claude', 'opencode'],
               timestamp: new Date().toISOString(),
             }),
           });

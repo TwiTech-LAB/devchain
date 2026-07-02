@@ -7,6 +7,7 @@ import type {
   PostToolUseHookEvent,
   PreToolUseHookEvent,
   SessionStartHookEvent,
+  StopHookEvent,
 } from '../dtos/hook-event.dto';
 import { ASK_USER_QUESTION_TOOL, normalizeAskUserQuestions } from '../dtos/ask-user-question.dto';
 import { PendingAskUserQuestionService } from './pending-ask-user-question.service';
@@ -45,6 +46,8 @@ export class HooksService {
     switch (hookEventName) {
       case 'SessionStart':
         return this.handleSessionStart(data);
+      case 'Stop':
+        return this.handleStop(data);
       case 'PreToolUse':
         return this.handlePreToolUse(data);
       case 'PostToolUse':
@@ -53,6 +56,23 @@ export class HooksService {
         logger.info({ hookEventName }, 'Unhandled hook event type — returning ok');
         return { ok: true, handled: false, data: {} };
     }
+  }
+
+  /**
+   * Stop (Copilot `agentStop`): the agent finished a turn. Accepted + dispatched
+   * here so the ingestion path tolerates the 2nd provider; the final-metrics
+   * capture listener lands in a later phase (P3-4). No-op for now.
+   */
+  private async handleStop(data: StopHookEvent): Promise<HookEventResponse> {
+    logger.debug(
+      {
+        providerName: data.providerName ?? 'claude',
+        sessionId: data.sessionId,
+        stopReason: data.stopReason,
+      },
+      'Stop hook received — final-metrics handling deferred to a later phase',
+    );
+    return { ok: true, handled: false, data: {} };
   }
 
   /**
@@ -156,10 +176,28 @@ export class HooksService {
       }
     }
 
+    // Provider-neutral session identity: Claude relays send `claudeSessionId`,
+    // provider-neutral relays (Copilot) send `providerSessionId`. The downstream
+    // event still keys on `claudeSessionId`, so resolve it from whichever the
+    // relay provided (Claude is unchanged — it always sets `claudeSessionId`).
+    const providerSessionId = data.claudeSessionId ?? data.providerSessionId;
+    if (!providerSessionId) {
+      logger.warn(
+        { projectId: data.projectId, providerName: data.providerName ?? 'claude' },
+        'SessionStart hook missing both claudeSessionId and providerSessionId — skipping publish',
+      );
+      return { ok: true, handled: true, data: {} };
+    }
+
     // Publish the internal event — errors must not fail the response
     try {
       await this.events.publish('claude.hooks.session.started', {
-        claudeSessionId: data.claudeSessionId,
+        claudeSessionId: providerSessionId,
+        // Provider-aware fields (additive; absent ⇒ Claude). These let the
+        // transcript-persistence listener branch by provider without the
+        // "claude id" semantic confusion of the resolved `claudeSessionId`.
+        providerName: data.providerName,
+        providerSessionId: data.providerSessionId,
         source: data.source,
         model: data.model,
         permissionMode: data.permissionMode,

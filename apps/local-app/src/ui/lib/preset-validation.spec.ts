@@ -23,8 +23,8 @@ describe('validatePresetAvailability', () => {
     [
       'profile-2',
       [
-        { id: 'config-4', name: 'gemini-config', profileId: 'profile-2', providerId: 'provider-3' },
-        { id: 'config-5', name: 'gemini-fast', profileId: 'profile-2', providerId: 'provider-3' },
+        { id: 'config-4', name: 'codex-config', profileId: 'profile-2', providerId: 'provider-3' },
+        { id: 'config-5', name: 'codex-fast', profileId: 'profile-2', providerId: 'provider-3' },
       ],
     ],
   ]);
@@ -40,7 +40,7 @@ describe('validatePresetAvailability', () => {
       const preset = createPreset('All Available', [
         { agentName: 'Brainstormer', providerConfigName: 'claude-config' },
         { agentName: 'Coder', providerConfigName: 'codex-config' },
-        { agentName: 'Reviewer', providerConfigName: 'gemini-config' },
+        { agentName: 'Reviewer', providerConfigName: 'codex-config' },
       ]);
 
       const result = validatePresetAvailability(preset, mockAgents, mockConfigsByProfile);
@@ -128,7 +128,7 @@ describe('validatePresetAvailability', () => {
       const preset = createPreset('Case Insensitive Agent', [
         { agentName: 'BRAINSTORMER', providerConfigName: 'claude-config' },
         { agentName: 'coder', providerConfigName: 'claude-config' },
-        { agentName: '  ReViewEr  ', providerConfigName: 'gemini-config' },
+        { agentName: '  ReViewEr  ', providerConfigName: 'codex-config' },
       ]);
 
       const result = validatePresetAvailability(preset, mockAgents, mockConfigsByProfile);
@@ -241,14 +241,14 @@ describe('validatePresetAvailability', () => {
 
   describe('partial provider coverage (relaxed import scenario)', () => {
     // After a relaxed template import where only claude is installed,
-    // presets referencing codex/gemini configs should be unavailable.
+    // presets referencing codex configs should be unavailable.
     const partialAgents: Agent[] = [
       { id: 'agent-1', name: 'Brainstormer', profileId: 'profile-arch' },
       { id: 'agent-2', name: 'Coder', profileId: 'profile-coder' },
       { id: 'agent-3', name: 'Code Reviewer', profileId: 'profile-reviewer' },
     ];
 
-    // Only claude configs exist (codex/gemini not installed)
+    // Only claude configs exist (codex not installed)
     const partialConfigs = new Map<string, ProviderConfig[]>([
       [
         'profile-arch',

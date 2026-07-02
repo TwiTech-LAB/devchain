@@ -29,6 +29,10 @@ describe('OrchestratorDockerService', () => {
   const originalFetch = global.fetch;
   const originalOrchestratorContainerImage = process.env.ORCHESTRATOR_CONTAINER_IMAGE;
   const originalDevchainMode = process.env.DEVCHAIN_MODE;
+  // Copilot auth tokens are read from the orchestrator's env; isolate them so tests are
+  // deterministic regardless of the host/CI environment (GitHub Actions sets GITHUB_TOKEN).
+  const COPILOT_TOKEN_ENV_KEYS = ['COPILOT_GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'] as const;
+  const originalCopilotTokens = COPILOT_TOKEN_ENV_KEYS.map((key) => process.env[key]);
 
   let tempHome: string;
   let dockerMock: {
@@ -52,6 +56,9 @@ describe('OrchestratorDockerService', () => {
     process.env.HOME = tempHome;
     process.env.ORCHESTRATOR_CONTAINER_IMAGE = 'ghcr.io/twitech-lab/devchain:test';
     delete process.env.DEVCHAIN_MODE;
+    for (const key of COPILOT_TOKEN_ENV_KEYS) {
+      delete process.env[key];
+    }
 
     dockerMock = {
       createContainer: jest.fn(),
@@ -86,6 +93,14 @@ describe('OrchestratorDockerService', () => {
     } else {
       process.env.DEVCHAIN_MODE = originalDevchainMode;
     }
+    COPILOT_TOKEN_ENV_KEYS.forEach((key, index) => {
+      const original = originalCopilotTokens[index];
+      if (original === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = original;
+      }
+    });
     global.fetch = originalFetch;
     jest.restoreAllMocks();
     await rm(tempHome, { recursive: true, force: true });
@@ -231,7 +246,7 @@ describe('OrchestratorDockerService', () => {
     expect(dockerMock.createNetwork).not.toHaveBeenCalled();
   });
 
-  it('supports partial provider auth discovery (gemini only)', async () => {
+  it('supports partial provider auth discovery (agy only, from ~/.gemini creds)', async () => {
     const worktreePath = join(tempHome, 'worktree');
     const dataPath = join(tempHome, 'data');
     await mkdir(worktreePath, { recursive: true });
@@ -244,7 +259,7 @@ describe('OrchestratorDockerService', () => {
       id: 'container-123',
       start: jest.fn().mockResolvedValue(undefined),
       inspect: jest.fn().mockResolvedValue({
-        Name: '/devchain-wt-feature-gemini',
+        Name: '/devchain-wt-feature-agy',
         State: { Status: 'running' },
         NetworkSettings: {
           Ports: {
@@ -260,17 +275,23 @@ describe('OrchestratorDockerService', () => {
       dockerMock as unknown as Dockerode,
     );
     await service.createContainer({
-      name: 'devchain-wt-feature-gemini',
+      name: 'devchain-wt-feature-agy',
       worktreePath,
       dataPath,
     });
 
     const createInput = dockerMock.createContainer.mock.calls[0][0];
-    expect(createInput.Env).toContain('ENABLED_PROVIDERS=gemini');
-    expect(createInput.Env).toContain('COMPOSE_PROJECT_NAME=feature-gemini');
-    expect(createInput.HostConfig.Binds).toContain(
-      `${join(tempHome, '.gemini', 'oauth_creds.json')}:/home/node/.gemini/oauth_creds.json:ro`,
+    // agy is now the sole owner of the ~/.gemini OAuth creds mount (the gemini CLI was retired),
+    // so the creds file enables agy only.
+    const enabledProviders = createInput.Env.find((entry: string) =>
+      entry.startsWith('ENABLED_PROVIDERS='),
     );
+    expect(enabledProviders).toContain('agy');
+    expect(enabledProviders).not.toContain('gemini');
+    expect(createInput.Env).toContain('COMPOSE_PROJECT_NAME=feature-agy');
+    // The shared OAuth creds file must mount exactly once (no duplicate bind target).
+    const oauthBind = `${join(tempHome, '.gemini', 'oauth_creds.json')}:/home/node/.gemini/oauth_creds.json:ro`;
+    expect(createInput.HostConfig.Binds.filter((b: string) => b === oauthBind)).toHaveLength(1);
   });
 
   it('gracefully handles zero discovered providers', async () => {
@@ -314,6 +335,96 @@ describe('OrchestratorDockerService', () => {
       ]),
     );
     expect(createInput.HostConfig.Binds.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('enables copilot via a forwarded token env var with no host bind mount', async () => {
+    const worktreePath = join(tempHome, 'worktree');
+    const dataPath = join(tempHome, 'data');
+    await mkdir(worktreePath, { recursive: true });
+    await mkdir(dataPath, { recursive: true });
+
+    // Copilot's host credential lives in the OS keyring (no mountable file); a token env
+    // var is the only way to authenticate the containerized CLI (spike S1).
+    process.env.GH_TOKEN = 'ghu_test_token';
+
+    const containerMock = {
+      id: 'container-123',
+      start: jest.fn().mockResolvedValue(undefined),
+      inspect: jest.fn().mockResolvedValue({
+        Name: '/devchain-wt-feature-copilot',
+        State: { Status: 'running' },
+        NetworkSettings: {
+          Ports: {
+            '3000/tcp': [{ HostIp: '127.0.0.1', HostPort: '49158' }],
+          },
+        },
+      }),
+    };
+    dockerMock.createContainer.mockResolvedValue(containerMock);
+
+    const service = new OrchestratorDockerService(
+      new FakeProcessExecutor(),
+      dockerMock as unknown as Dockerode,
+    );
+    await service.createContainer({
+      name: 'devchain-wt-feature-copilot',
+      worktreePath,
+      dataPath,
+    });
+
+    const createInput = dockerMock.createContainer.mock.calls[0][0];
+    // copilot is enabled (preflight will validate it in-container)…
+    const enabledProviders = createInput.Env.find((entry: string) =>
+      entry.startsWith('ENABLED_PROVIDERS='),
+    );
+    expect(enabledProviders).toContain('copilot');
+    // …the token is forwarded under its own name…
+    expect(createInput.Env).toContain('GH_TOKEN=ghu_test_token');
+    // …COPILOT_HOME is never set (R4 preflight-rejects a relocated store)…
+    expect(createInput.Env.some((entry: string) => entry.startsWith('COPILOT_HOME='))).toBe(false);
+    // …and there is NO ~/.copilot bind mount (session-state stays container-local).
+    expect(createInput.HostConfig.Binds.some((bind: string) => bind.includes('/.copilot'))).toBe(
+      false,
+    );
+  });
+
+  it('does not enable copilot when no token env var is present', async () => {
+    const worktreePath = join(tempHome, 'worktree');
+    const dataPath = join(tempHome, 'data');
+    await mkdir(worktreePath, { recursive: true });
+    await mkdir(dataPath, { recursive: true });
+
+    const containerMock = {
+      id: 'container-123',
+      start: jest.fn().mockResolvedValue(undefined),
+      inspect: jest.fn().mockResolvedValue({
+        Name: '/devchain-wt-no-copilot',
+        State: { Status: 'running' },
+        NetworkSettings: {
+          Ports: {
+            '3000/tcp': [{ HostIp: '127.0.0.1', HostPort: '49159' }],
+          },
+        },
+      }),
+    };
+    dockerMock.createContainer.mockResolvedValue(containerMock);
+
+    const service = new OrchestratorDockerService(
+      new FakeProcessExecutor(),
+      dockerMock as unknown as Dockerode,
+    );
+    await service.createContainer({
+      name: 'devchain-wt-no-copilot',
+      worktreePath,
+      dataPath,
+    });
+
+    const createInput = dockerMock.createContainer.mock.calls[0][0];
+    const enabledProviders = createInput.Env.find((entry: string) =>
+      entry.startsWith('ENABLED_PROVIDERS='),
+    );
+    // ENABLED_PROVIDERS is empty (no creds, no token) and copilot is absent.
+    expect(enabledProviders).toBe('ENABLED_PROVIDERS=');
   });
 
   it('includes git identity env vars when host has git config', async () => {

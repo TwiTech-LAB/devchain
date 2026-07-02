@@ -50,6 +50,34 @@ describe('E2eePairingController', () => {
     expect(res.trust).toBe('verified');
   });
 
+  it('complete forwards an optional installId (M2 dedup) when present', async () => {
+    await controller.complete({
+      channelId: 'chan-1',
+      deviceEncPubKey: 'dpub',
+      deviceEncKid: 'dkid',
+      pairingMac: 'mac',
+      installId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    });
+    expect(service.completeQrPairing).toHaveBeenCalledWith({
+      channelId: 'chan-1',
+      deviceEncPubKey: 'dpub',
+      deviceEncKid: 'dkid',
+      pairingMac: 'mac',
+      installId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    });
+  });
+
+  it('complete omits installId from the forwarded input when the body has none (old client)', async () => {
+    await controller.complete({
+      channelId: 'chan-1',
+      deviceEncPubKey: 'dpub',
+      deviceEncKid: 'dkid',
+      pairingMac: 'mac',
+    });
+    const forwarded = service.completeQrPairing.mock.calls[0][0];
+    expect('installId' in forwarded).toBe(false);
+  });
+
   it('complete rejects when the device key/MAC fields are missing', async () => {
     await expect(controller.complete({ channelId: 'chan-1' })).rejects.toBeInstanceOf(
       ValidationError,

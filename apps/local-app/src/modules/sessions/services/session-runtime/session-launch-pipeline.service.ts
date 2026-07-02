@@ -22,6 +22,7 @@ import { getEnvConfig } from '../../../../common/config/env.config';
 import { HostResolver } from '@devchain/shared';
 import { SessionCoordinatorService } from '../session-coordinator.service';
 import { ProviderAdapterFactory } from '../../../providers/adapters/provider-adapter.factory';
+import type { ProviderAdapter } from '../../../providers/adapters/provider-adapter.interface';
 import {
   isContextWindowCapable,
   isHookCapable,
@@ -32,6 +33,10 @@ import { TerminalIOService } from '../../../terminal/services/terminal-io/termin
 import { PtyService } from '../../../terminal/services/pty.service';
 import { TerminalSessionRegistry } from '../../../terminal/services/terminal-session/terminal-session-registry';
 import { HooksConfigService } from '../../../hooks/services/hooks-config.service';
+import {
+  CopilotHooksConfigService,
+  type HookConfigInstaller,
+} from '../../../hooks/services/copilot-hooks-config.service';
 import { PreflightService } from '../../../core/services/preflight.service';
 import { ProviderMcpEnsureService } from '../../../providers/services/provider-mcp-ensure.service';
 import { EventsService } from '../../../events/services/events.service';
@@ -58,6 +63,7 @@ export class SessionLaunchPipeline {
     private readonly ptyService: PtyService,
     private readonly terminalSessionRegistry: TerminalSessionRegistry,
     private readonly hooksConfigService: HooksConfigService,
+    private readonly copilotHooksConfigService: CopilotHooksConfigService,
     private readonly preflightService: PreflightService,
     private readonly mcpEnsureService: ProviderMcpEnsureService,
     private readonly eventsService: EventsService,
@@ -109,9 +115,31 @@ export class SessionLaunchPipeline {
         const epicSegment = epicId ?? 'independent';
         tmuxSessionName = buildTmuxSessionName(projectSlug, epicSegment, agentId, sessionId);
 
+        // Opt-in initial-prompt seeding (e.g. agy's full-screen TUI): render the
+        // prompt BEFORE resolveLaunchConfig so `argv`-mode adapters can embed it
+        // in the launch args and the fragile post-launch paste can be skipped.
+        // Default providers leave `initialPromptSeedMode` undefined and keep the
+        // existing post-launch paste path untouched (seededPrompt stays null).
+        const seedMode = adapter.initialPromptSeedMode;
+        const seededPrompt = seedMode
+          ? await this.renderInitialPromptText({
+              sessionId,
+              project: { id: project.id, name: project.name },
+              agent,
+              epic,
+              profile,
+              provider,
+            })
+          : null;
+
         // Re-resolve with real sessionId + tmuxSessionName for hook env
         const finalConfig = resolveLaunchConfig({
           mode: 'new',
+          // Thread devchain's freshly-minted sessions.id (line ~103) so a
+          // deterministic-binding adapter (Copilot) can pass it as the provider
+          // session UUID via `--session-id`, making the transcript path derivable
+          // without a post-launch scan. Other adapters ignore it.
+          sessionId,
           adapter,
           profileOptions: options,
           modelOverride: agent.modelOverride,
@@ -119,6 +147,7 @@ export class SessionLaunchPipeline {
           providerEnv: this.storage.getProviderEnvForProject(provider.id, projectId),
           configEnv,
           provider,
+          initialPrompt: seededPrompt ?? undefined,
           hookContext: isHookCapable(adapter)
             ? {
                 apiUrl: HostResolver.buildInternalBaseUrl({ host: env.HOST, port: env.PORT }),
@@ -193,6 +222,8 @@ export class SessionLaunchPipeline {
           epic,
           profile,
           provider,
+          seedMode,
+          seededPrompt,
         });
 
         await this.eventsService.publish('session.started', {
@@ -404,10 +435,26 @@ export class SessionLaunchPipeline {
     try {
       const adapter = this.providerAdapterFactory.getAdapter(provider.name);
       if (!isHookCapable(adapter)) return;
-      await this.hooksConfigService.ensureHooksConfig(projectRootPath);
+      await this.resolveHookInstaller(adapter).ensureHooksConfig(projectRootPath);
     } catch (error) {
       logger.warn({ error }, 'Failed to ensure hooks config (non-fatal)');
     }
+  }
+
+  /**
+   * Pick the per-provider hook-config installer for a hook-capable adapter. The
+   * Claude path (and any future adopter) uses the default `HooksConfigService`;
+   * Copilot uses its dedicated user-level installer. Keyed on the adapter's own
+   * `providerName` (its stable identity, compared against the Copilot installer's
+   * own constant) rather than a literal sprinkled through the pipeline — a single
+   * localized dispatch that defaults to the Claude installer, so that path stays
+   * byte-identical.
+   */
+  private resolveHookInstaller(adapter: ProviderAdapter): HookConfigInstaller {
+    if (adapter.providerName === this.copilotHooksConfigService.providerName) {
+      return this.copilotHooksConfigService;
+    }
+    return this.hooksConfigService;
   }
 
   private createSessionRow(
@@ -446,6 +493,8 @@ export class SessionLaunchPipeline {
       epic: Epic | null;
       profile: AgentProfile;
       provider: Provider;
+      seedMode?: 'argv' | 'stdin';
+      seededPrompt: string | null;
     },
   ): Promise<void> {
     await this.terminalIO.typeCommand({ name: tmuxSessionName }, config.commandArgs);
@@ -463,6 +512,20 @@ export class SessionLaunchPipeline {
       await new Promise((resolve) => setTimeout(resolve, MIN_LAUNCH_DELAY_MS - elapsed));
     }
 
+    // Opt-in seeding adapters: the prompt was already rendered before launch.
+    // `argv` adapters embedded it in the launch command (nothing to do here);
+    // `stdin` adapters get it piped to the process as literal input (no
+    // bracketed paste). Either way the fragile post-launch paste is skipped.
+    if (context.seedMode) {
+      if (context.seedMode === 'stdin' && context.seededPrompt) {
+        await this.terminalIO.deliverImmediate({ name: tmuxSessionName }, context.seededPrompt, {
+          bracketed: false,
+          confirm: false,
+        });
+      }
+      return;
+    }
+
     await this.renderAndPasteInitialPrompt({
       sessionId,
       tmuxSessionName,
@@ -476,19 +539,22 @@ export class SessionLaunchPipeline {
     });
   }
 
-  private async renderAndPasteInitialPrompt(params: {
+  /**
+   * Resolve and render the project's initial prompt to its final text, or null
+   * when none is configured / it renders empty. Shared by both seeding paths:
+   * pre-launch (opt-in `initialPromptSeedMode` adapters render BEFORE
+   * `resolveLaunchConfig()`) and the default post-launch paste.
+   */
+  private async renderInitialPromptText(params: {
     sessionId: string;
-    tmuxSessionName: string;
-    agentId: string;
     project: { id: string; name: string };
     agent: Agent;
     epic: Epic | null;
     profile: AgentProfile;
     provider: Provider;
-    launchHandshake?: { preKeys?: string[]; preDelayMs?: number };
-  }): Promise<void> {
+  }): Promise<string | null> {
     const initialPrompt = await this.storage.getInitialSessionPrompt(params.project.id);
-    if (!initialPrompt) return;
+    if (!initialPrompt) return null;
 
     let renderResult: {
       vars: Record<string, unknown>;
@@ -535,7 +601,22 @@ export class SessionLaunchPipeline {
       renderResult.vars,
       Object.keys(renderResult.vars),
     );
-    if (!rendered.trim()) return;
+    return rendered.trim() ? rendered : null;
+  }
+
+  private async renderAndPasteInitialPrompt(params: {
+    sessionId: string;
+    tmuxSessionName: string;
+    agentId: string;
+    project: { id: string; name: string };
+    agent: Agent;
+    epic: Epic | null;
+    profile: AgentProfile;
+    provider: Provider;
+    launchHandshake?: { preKeys?: string[]; preDelayMs?: number };
+  }): Promise<void> {
+    const rendered = await this.renderInitialPromptText(params);
+    if (!rendered) return;
 
     await this.terminalIO.deliver({ name: params.tmuxSessionName }, rendered, {
       agentId: params.agentId,

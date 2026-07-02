@@ -41,6 +41,13 @@ const COMPOSE_DEFAULT_NETWORK_SUFFIX = '_default';
 const HEALTH_POLL_INTERVAL_MS = 1000;
 const HEALTH_REQUEST_TIMEOUT_MS = 1500;
 
+// GitHub Copilot auth tokens, in copilot's documented precedence order (spike S1,
+// epic 3be9ec57). Unlike claude/codex/agy — which store a plaintext credential
+// FILE that we mount read-only — copilot keeps its host credential in the OS keyring,
+// so there is NO file to mount. The containerized `copilot` CLI must instead receive a
+// token via env; we forward whichever of these the orchestrator has set.
+const COPILOT_TOKEN_ENV_KEYS = ['COPILOT_GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'] as const;
+
 export interface CreateContainerConfig {
   name: string;
   worktreePath: string;
@@ -85,7 +92,12 @@ export interface DockerContainerEvent {
 
 interface ProviderAuthMount {
   provider: string;
-  bind: string;
+  /**
+   * Host→container bind string (`src:dst:ro`). Omitted for providers that are
+   * enabled but have no mountable credential file (e.g. copilot authenticates via
+   * a forwarded token env var, not a file — see COPILOT_TOKEN_ENV_KEYS).
+   */
+  bind?: string;
 }
 
 @Injectable()
@@ -132,6 +144,18 @@ export class OrchestratorDockerService {
     const authMounts = this.discoverProviderAuthMounts();
     if (!envMap.ENABLED_PROVIDERS) {
       envMap.ENABLED_PROVIDERS = authMounts.map((mount) => mount.provider).join(',');
+    }
+
+    // Forward the GitHub Copilot token(s) so the containerized `copilot` CLI can
+    // authenticate — it cannot reach the host OS keyring where copilot stores its
+    // credential (spike S1). Each set var is passed through under its own name so the
+    // CLI applies its own precedence; an explicit config.env value is never clobbered.
+    // NOTE: COPILOT_HOME is deliberately NOT set (R4 preflight-rejects a relocated store).
+    for (const key of COPILOT_TOKEN_ENV_KEYS) {
+      const value = process.env[key];
+      if (value && value.trim().length > 0) {
+        envMap[key] ??= value;
+      }
     }
 
     const binds = this.buildBindMounts(config, authMounts);
@@ -449,7 +473,17 @@ export class OrchestratorDockerService {
     const binds = [
       `${config.worktreePath}:${containerProjectPath}:rw`,
       `${config.dataPath}:${containerDataPath}:rw`,
-      ...authMounts.map((mount) => mount.bind),
+      // De-dupe bind strings before mounting: agy is now the SOLE owner of the
+      // ~/.gemini/oauth_creds.json mount (the gemini CLI was retired), so this Set normally
+      // passes a single element through. It is retained as a safeguard against any future
+      // provider sharing a credential target — Docker rejects duplicate mount targets.
+      // Mountless providers (copilot) contribute no bind — they are enabled via a
+      // forwarded token env var, not a file mount.
+      ...[
+        ...new Set(
+          authMounts.map((mount) => mount.bind).filter((bind): bind is string => Boolean(bind)),
+        ),
+      ],
       ...(config.additionalBinds ?? []),
       `${DOCKER_SOCKET_PATH}:${DOCKER_CONTAINER_SOCKET_PATH}:rw`,
     ];
@@ -553,18 +587,32 @@ export class OrchestratorDockerService {
         target: `${DEFAULT_CONTAINER_HOME_PATH}/.codex/auth.json`,
       },
       {
-        provider: 'gemini',
+        // agy (Antigravity CLI) authenticates via the OAuth creds stored under ~/.gemini.
+        // The shared ~/.gemini home dir is retained after the gemini CLI was retired; agy is
+        // now the sole owner of this mount target.
+        provider: 'agy',
         source: join(home, '.gemini', 'oauth_creds.json'),
         target: `${DEFAULT_CONTAINER_HOME_PATH}/.gemini/oauth_creds.json`,
       },
     ];
 
-    return providers
+    const mounts: ProviderAuthMount[] = providers
       .filter((provider) => existsSync(provider.source))
       .map((provider) => ({
         provider: provider.provider,
         bind: `${provider.source}:${provider.target}:ro`,
       }));
+
+    // Copilot has no mountable credential file (keyring-only; spike S1). Enable it for
+    // the container — so it lands in ENABLED_PROVIDERS and the in-container preflight
+    // validates it — whenever a forwardable token is present. No bind: session-state is
+    // written to the container's own writable ~/.copilot and read there by the co-located
+    // session-reader, so no host mount of ~/.copilot is needed (auth-only, env-token model).
+    if (COPILOT_TOKEN_ENV_KEYS.some((key) => (process.env[key] ?? '').trim().length > 0)) {
+      mounts.push({ provider: 'copilot' });
+    }
+
+    return mounts;
   }
 
   private discoverSkillsSeedMount(): string | null {

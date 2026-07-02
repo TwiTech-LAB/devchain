@@ -34,12 +34,15 @@ function getManualCommand(providerName: string, endpoint: string): string {
   switch (name) {
     case 'claude':
       return `claude mcp add --transport http ${alias} ${endpoint}`;
+    case 'copilot':
+      return `copilot mcp add --transport http ${alias} ${endpoint}`;
     case 'codex':
       return `codex mcp add --url ${endpoint} ${alias}`;
-    case 'gemini':
-      return `gemini mcp add -t http ${alias} ${endpoint}`;
     case 'opencode':
       return `# Add to opencode.json in your project root:\n# "mcp": { "${alias}": { "type": "remote", "url": "${endpoint}" } }`;
+    case 'agy':
+      // agy has no `mcp add` subcommand; MCP servers live in a HOME-global file.
+      return `# Add to ~/.gemini/config/mcp_config.json:\n# "mcpServers": { "${alias}": { "serverUrl": "${endpoint}" } }`;
     default:
       return `# Manual MCP configuration for ${providerName}`;
   }

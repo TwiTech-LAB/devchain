@@ -11,6 +11,7 @@ describe('ProviderAdaptersModule', () => {
     const factory = module.get(ProviderAdapterFactory);
     expect(factory).toBeDefined();
     expect(factory.getAdapter('claude')).toBeDefined();
+    expect(factory.getAdapter('copilot')).toBeDefined();
     expect(typeof factory.getPostPasteDelayMsForAgent).toBe('function');
 
     await module.close();

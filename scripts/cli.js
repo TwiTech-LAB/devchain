@@ -348,12 +348,14 @@ function detectInstalledProviders() {
   const detected = new Map();
   const codexPath = isBinaryInstalled('codex');
   const claudePath = isBinaryInstalled('claude');
-  const geminiPath = isBinaryInstalled('gemini');
   const opencodePath = isBinaryInstalled('opencode');
+  const agyPath = isBinaryInstalled('agy');
+  const copilotPath = isBinaryInstalled('copilot');
   if (codexPath) detected.set('codex', codexPath);
   if (claudePath) detected.set('claude', claudePath);
-  if (geminiPath) detected.set('gemini', geminiPath);
   if (opencodePath) detected.set('opencode', opencodePath);
+  if (agyPath) detected.set('agy', agyPath);
+  if (copilotPath) detected.set('copilot', copilotPath);
   return detected; // Map<name, absolutePath>
 }
 
@@ -1214,17 +1216,23 @@ async function runHostPreflightChecks(
     if (providersDetected.size === 0) {
       const guide = [
         'No provider binaries detected on PATH. Install at least one provider and retry.',
-        'Checked: "which codex", "which claude", "which gemini", and "which opencode"',
+        'Checked: "which codex", "which claude", "which opencode", "which agy", and "which copilot"',
         'Examples:',
         '  - Install Codex:    npm i -g @openai/codex (example) or follow provider docs',
         '  - Install Claude:   npm i -g @anthropic-ai/claude-code (example) or follow provider docs',
-        '  - Install Gemini:   npm i -g @google/gemini-cli (example) or follow provider docs',
+        '  - Install agy:      curl -fsSL https://antigravity.google/cli/install.sh | bash or follow provider docs',
         '  - Install OpenCode: go install github.com/opencode-ai/opencode@latest or follow provider docs',
         'Advanced: bypass with DEVCHAIN_SKIP_PROVIDER_CHECK=1',
       ].join('\n');
       if (opts.foreground) {
         log('error', 'No providers found; aborting startup', {
-          checked: ['which codex', 'which claude', 'which gemini', 'which opencode'],
+          checked: [
+            'which codex',
+            'which claude',
+            'which opencode',
+            'which agy',
+            'which copilot',
+          ],
         });
       } else {
         cli.stepDone('✗ none found');
@@ -2020,5 +2028,6 @@ module.exports = {
     normalizeWorktreeRuntimeType,
     isWorktreeRuntimeModeEnabled,
     detectGlobalPackageManager,
+    detectInstalledProviders,
   },
 };

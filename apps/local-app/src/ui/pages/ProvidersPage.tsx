@@ -52,13 +52,14 @@ import { providerModelQueryKeys } from '@/ui/lib/provider-model-query-keys';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import { getMcpEndpointUrl } from '@/ui/lib/mcp-endpoint';
 
-type ProviderType = 'codex' | 'claude' | 'gemini' | 'opencode';
+type ProviderType = 'codex' | 'claude' | 'opencode' | 'agy' | 'copilot';
 
 function getDefaultBinPathForType(t: ProviderType) {
   if (t === 'codex') return 'codex';
   if (t === 'claude') return 'claude';
-  if (t === 'gemini') return 'gemini';
   if (t === 'opencode') return 'opencode';
+  if (t === 'agy') return 'agy';
+  if (t === 'copilot') return 'copilot';
   return '';
 }
 
@@ -908,11 +909,13 @@ export function ProvidersPage() {
         ? 'codex'
         : provider.name === 'claude'
           ? 'claude'
-          : provider.name === 'gemini'
-            ? 'gemini'
-            : provider.name === 'opencode'
-              ? 'opencode'
-              : 'codex'
+          : provider.name === 'opencode'
+            ? 'opencode'
+            : provider.name === 'agy'
+              ? 'agy'
+              : provider.name === 'copilot'
+                ? 'copilot'
+                : 'codex'
     ) as ProviderType;
     setProviderType(t);
     setBinPathTouched(false);
@@ -1265,8 +1268,9 @@ export function ProvidersPage() {
                 <SelectContent>
                   <SelectItem value="codex">Codex</SelectItem>
                   <SelectItem value="claude">Claude</SelectItem>
-                  <SelectItem value="gemini">Gemini</SelectItem>
                   <SelectItem value="opencode">OpenCode</SelectItem>
+                  <SelectItem value="agy">Antigravity CLI</SelectItem>
+                  <SelectItem value="copilot">Copilot CLI</SelectItem>
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground mt-1">

@@ -65,14 +65,15 @@ describe('McpConfigurationModal', () => {
     expect(screen.getByText(/claude mcp add --transport http devchain/)).toBeInTheDocument();
   });
 
+  it('displays correct manual command for Copilot provider (no --header)', () => {
+    render(<McpConfigurationModal {...defaultProps} providerName="Copilot" />);
+    expect(screen.getByText(/copilot mcp add --transport http devchain/)).toBeInTheDocument();
+    expect(screen.queryByText(/--header/)).not.toBeInTheDocument();
+  });
+
   it('displays correct manual command for Codex provider', () => {
     render(<McpConfigurationModal {...defaultProps} providerName="Codex" />);
     expect(screen.getByText(/codex mcp add --url.*devchain/)).toBeInTheDocument();
-  });
-
-  it('displays correct manual command for Gemini provider', () => {
-    render(<McpConfigurationModal {...defaultProps} providerName="Gemini" />);
-    expect(screen.getByText(/gemini mcp add -t http devchain/)).toBeInTheDocument();
   });
 
   it('displays file-edit instructions for OpenCode provider', () => {
@@ -200,6 +201,29 @@ describe('McpConfigurationModal', () => {
         screen.getByText(/If your MCP provider runs on the DevChain host/),
       ).toBeInTheDocument();
       expect(screen.getByText(/http:\/\/127\.0\.0\.1:\d+\/mcp/)).toBeInTheDocument();
+    });
+  });
+
+  describe('Antigravity (agy) MCP command (P2-1)', () => {
+    it('shows the manual config command for the HOME-global mcp_config.json with serverUrl', () => {
+      render(<McpConfigurationModal {...defaultProps} providerName="agy" />);
+
+      // Standard manual-config modal (no longer a "not available" deferral screen).
+      expect(screen.getByText('Manual MCP Configuration Required')).toBeInTheDocument();
+      expect(screen.getByText('Run in Terminal')).toBeInTheDocument();
+      // agy has no `mcp add` — the command points at the global config file.
+      expect(screen.getByText(/~\/\.gemini\/config\/mcp_config\.json/)).toBeInTheDocument();
+      expect(screen.getByText(/"mcpServers"/)).toBeInTheDocument();
+      expect(screen.getByText(/"serverUrl"/)).toBeInTheDocument();
+    });
+
+    it('still renders the Verify button and local-provider hint for agy', () => {
+      render(<McpConfigurationModal {...defaultProps} providerName="agy" onVerify={jest.fn()} />);
+
+      expect(screen.getByRole('button', { name: /Verify Configuration/i })).toBeInTheDocument();
+      expect(
+        screen.getByText(/If your MCP provider runs on the DevChain host/),
+      ).toBeInTheDocument();
     });
   });
 });

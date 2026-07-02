@@ -258,7 +258,7 @@ describe('PreviousSessionsTable', () => {
   it('disables Restore button when provider has changed', () => {
     const items = [makeItem({ providerSessionId: 'prov-1', providerNameAtLaunch: 'claude' })];
     mockUseAgentSessionHistory.mockReturnValue(defaultHookReturn({ items, total: 1 }));
-    render(<PreviousSessionsTable {...defaultProps} currentProviderName="gemini" />);
+    render(<PreviousSessionsTable {...defaultProps} currentProviderName="codex" />);
     const btn = screen.getByRole('button', { name: /cannot restore/i });
     expect(btn).toBeDisabled();
   });

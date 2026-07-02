@@ -443,7 +443,7 @@ describe('ExportSchema', () => {
       description: 'Default preset',
       agentConfigs: [
         { agentName: 'coder', providerConfigName: 'claude-config' },
-        { agentName: 'reviewer', providerConfigName: 'gemini-config' },
+        { agentName: 'reviewer', providerConfigName: 'agy-config' },
       ],
     };
 

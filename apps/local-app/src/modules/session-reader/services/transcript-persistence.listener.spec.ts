@@ -270,9 +270,9 @@ describe('TranscriptPersistenceListener', () => {
             providerSessionIdRequiredForRestore: true,
           };
         }
-        if (name === 'gemini') {
+        if (name === 'agy') {
           return {
-            providerName: 'gemini',
+            providerName: 'agy',
             transcriptDiscoveryStrategy: 'all',
             transcriptContentSearchMaxBytes: 32_768,
             providerSessionIdRequiredForRestore: true,
@@ -389,6 +389,131 @@ describe('TranscriptPersistenceListener', () => {
       mockEvents.publish.mockRejectedValue(new Error('Event bus down'));
 
       await expect(listener.handleHookSessionStarted(hookPayload)).resolves.not.toThrow();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Copilot hook lifecycle CONFIRMATION (HookCapability adopter #2)
+  // Phase-1 owns binding; the hook never (re)binds — it confirms + warns.
+  // -------------------------------------------------------------------------
+
+  describe('handleHookSessionStarted — Copilot confirmation path', () => {
+    const SID = '33333333-3333-3333-3333-333333333333';
+    const COPILOT_TRANSCRIPT = '/home/user/.copilot/session-state/33333333/events.jsonl';
+
+    const copilotSessionStart: ClaudeHooksSessionStartedEventPayload = {
+      // Publisher mirrors providerSessionId into claudeSessionId (P3-2 bridge).
+      claudeSessionId: 'copilot-sess-1',
+      providerName: 'copilot',
+      providerSessionId: 'copilot-sess-1',
+      source: 'new',
+      tmuxSessionName: 'agent-session',
+      projectId: '11111111-1111-1111-1111-111111111111',
+      agentId: '22222222-2222-2222-2222-222222222222',
+      sessionId: SID,
+      // NOTE: Copilot SessionStart carries NO transcriptPath.
+    };
+
+    it('confirms (idempotent no-op) when the bound provider_session_id matches — no overwrite, no publish', async () => {
+      mockGetTranscriptPath.mockReturnValue({
+        transcript_path: COPILOT_TRANSCRIPT,
+        provider_session_id: 'copilot-sess-1',
+      });
+
+      await listener.handleHookSessionStarted(copilotSessionStart);
+
+      // Never (re)binds and never re-discovers — Phase-1 already bound it.
+      expect(mockRun).not.toHaveBeenCalled();
+      expect(mockValidator.validateShape).not.toHaveBeenCalled();
+      expect(mockEvents.publish).not.toHaveBeenCalled();
+    });
+
+    it('WARNS on provider_session_id mismatch and does NOT overwrite the bound session', async () => {
+      const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+      mockGetTranscriptPath.mockReturnValue({
+        transcript_path: COPILOT_TRANSCRIPT,
+        provider_session_id: 'a-different-bound-id',
+      });
+
+      try {
+        await listener.handleHookSessionStarted(copilotSessionStart);
+
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            sessionId: SID,
+            providerName: 'copilot',
+            bound: 'a-different-bound-id',
+            incoming: 'copilot-sess-1',
+          }),
+          expect.stringContaining('provider_session_id mismatch'),
+        );
+        expect(mockRun).not.toHaveBeenCalled();
+        expect(mockEvents.publish).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('WARNS on transcript_path mismatch when a Stop hook carries a divergent path', async () => {
+      const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+      mockGetTranscriptPath.mockReturnValue({
+        transcript_path: COPILOT_TRANSCRIPT,
+        provider_session_id: 'copilot-sess-1',
+      });
+      const stopHook: ClaudeHooksSessionStartedEventPayload = {
+        ...copilotSessionStart,
+        transcriptPath: '/home/user/.copilot/session-state/OTHER/events.jsonl',
+      };
+
+      try {
+        await listener.handleHookSessionStarted(stopHook);
+
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ sessionId: SID, providerName: 'copilot' }),
+          expect.stringContaining('transcript_path mismatch'),
+        );
+        expect(mockRun).not.toHaveBeenCalled();
+        expect(mockEvents.publish).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('WARNS and skips when the session is unknown (no rebind)', async () => {
+      const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+      mockGetTranscriptPath.mockReturnValue(undefined);
+
+      try {
+        await listener.handleHookSessionStarted(copilotSessionStart);
+
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ sessionId: SID, providerName: 'copilot' }),
+          expect.stringContaining('unknown session'),
+        );
+        expect(mockRun).not.toHaveBeenCalled();
+        expect(mockEvents.publish).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('never runs the Claude hook-binding UPDATE for Copilot, even with a transcriptPath present', async () => {
+      // Regression guard: the provider branch must short-circuit BEFORE the
+      // Claude path's validateShape + UPDATE, so a Copilot hook can never
+      // overwrite a deterministically-bound session.
+      mockGetTranscriptPath.mockReturnValue({
+        transcript_path: COPILOT_TRANSCRIPT,
+        provider_session_id: 'copilot-sess-1',
+      });
+      const stopHookMatching: ClaudeHooksSessionStartedEventPayload = {
+        ...copilotSessionStart,
+        transcriptPath: COPILOT_TRANSCRIPT,
+      };
+
+      await listener.handleHookSessionStarted(stopHookMatching);
+
+      expect(mockValidator.validateShape).not.toHaveBeenCalled();
+      expect(mockRun).not.toHaveBeenCalled();
     });
   });
 
@@ -632,8 +757,12 @@ describe('TranscriptPersistenceListener', () => {
       expect(mockStorage.getProvider).toHaveBeenCalledWith('provider-1');
       expect(mockStorage.getProject).toHaveBeenCalledWith('project-1');
 
+      // File adapters now also receive `sessionId` in the discovery context
+      // (backward-compatible widening for deterministic-binding adapters like
+      // Copilot). Claude/Codex ignore it — behavior is unchanged.
       expect(mockAdapter.discoverSessionFile).toHaveBeenCalledWith({
         projectRoot: '/home/user/my-project',
+        sessionId: sessionStartedPayload.sessionId,
       });
       expect(mockAdapter.discoverSessionFile).toHaveBeenCalledTimes(1);
 
@@ -1128,40 +1257,6 @@ describe('TranscriptPersistenceListener', () => {
       ).resolves.toBe(path.normalize(path.resolve('relative/missing.jsonl')));
     });
 
-    it('should use short-id matching and 32KB search window for Gemini', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'gemini',
-        binPath: null,
-        mcpConfigured: false,
-      });
-
-      const geminiFile = makeFileInfo({
-        filePath: '/home/user/.gemini/tmp/proj/chats/session-2026-02-25T10-00-00-abcdef01.json',
-        providerName: 'gemini',
-        providerSessionId: 'gemini-session-1',
-      });
-      mockAdapter.discoverSessionFile.mockResolvedValue([geminiFile]);
-
-      const shortId = sessionStartedPayload.sessionId.slice(0, 8);
-      mockReadFileHead.mockResolvedValue(
-        `{"startTime":"2026-02-25T10:00:00.000Z","title":"Session ${shortId}"}`,
-      );
-
-      const promise = listener.handleSessionStarted(sessionStartedPayload);
-      await jest.advanceTimersByTimeAsync(0);
-      await promise;
-
-      expect(mockReadFileHead).toHaveBeenCalledWith(geminiFile.filePath, 32_768);
-      expect(mockValidator.validateShape).toHaveBeenCalledWith(geminiFile.filePath, 'gemini');
-      expect(mockEvents.publish).toHaveBeenCalledWith(
-        'session.transcript.discovered',
-        expect.objectContaining({
-          providerName: 'gemini',
-        }),
-      );
-    });
-
     it('should match non-Claude transcript by bare short prefix content', async () => {
       mockStorage.getProvider.mockResolvedValue({
         id: 'provider-1',
@@ -1322,14 +1417,14 @@ describe('TranscriptPersistenceListener', () => {
     it('should not run timestamp heuristic on non-final retries', async () => {
       mockStorage.getProvider.mockResolvedValue({
         id: 'provider-1',
-        name: 'gemini',
+        name: 'agy',
         binPath: null,
         mcpConfigured: false,
       });
       mockAdapter.discoverSessionFile
         .mockResolvedValue([])
-        .mockResolvedValueOnce([makeFileInfo({ providerName: 'gemini' })])
-        .mockResolvedValueOnce([makeFileInfo({ providerName: 'gemini' })]);
+        .mockResolvedValueOnce([makeFileInfo({ providerName: 'agy' })])
+        .mockResolvedValueOnce([makeFileInfo({ providerName: 'agy' })]);
       mockReadFileHead.mockResolvedValue('no id no timestamp');
 
       const promise = listener.handleSessionStarted(sessionStartedPayload);
@@ -1401,38 +1496,6 @@ describe('TranscriptPersistenceListener', () => {
       await promise;
 
       expect(mockEvents.publish).not.toHaveBeenCalled();
-    });
-
-    it('should parse Gemini startTime timestamps for final-attempt heuristic', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'gemini',
-        binPath: null,
-        mcpConfigured: false,
-      });
-      const geminiFile = makeFileInfo({
-        filePath: '/home/user/.gemini/tmp/proj/chats/session-one.json',
-        providerName: 'gemini',
-        providerSessionId: 'gemini-session-1',
-      });
-      mockAdapter.discoverSessionFile.mockResolvedValue([geminiFile]);
-      mockReadFileHead.mockResolvedValue(`{"startTime":"2026-01-29T11:50:56.120Z","title":"x"}`);
-      mockGetTranscriptPath
-        .mockReturnValueOnce({ transcript_path: null })
-        .mockReturnValueOnce({ transcript_path: null })
-        .mockReturnValueOnce({ transcript_path: null });
-      mockGetStartedAt.mockReturnValueOnce({ started_at: '2026-01-29T11:49:56.120Z' });
-
-      const promise = listener.handleSessionStarted(sessionStartedPayload);
-      await jest.advanceTimersByTimeAsync(0);
-      await advanceAllDiscoveryRetries();
-      await promise;
-
-      expect(mockValidator.validateShape).toHaveBeenCalledWith(geminiFile.filePath, 'gemini');
-      expect(mockEvents.publish).toHaveBeenCalledWith(
-        'session.transcript.discovered',
-        expect.objectContaining({ providerName: 'gemini' }),
-      );
     });
 
     it('should skip unreadable files (readFileHead=null) and continue discovery safely', async () => {

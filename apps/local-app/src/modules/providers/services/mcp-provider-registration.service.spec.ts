@@ -1,12 +1,14 @@
 import { McpProviderRegistrationService } from './mcp-provider-registration.service';
 import type { Provider } from '../../storage/models/domain.models';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
-import { ProviderAdapterFactory, ClaudeAdapter, CodexAdapter, GeminiAdapter } from '../adapters';
+import { ProviderAdapterFactory, ClaudeAdapter, CodexAdapter } from '../adapters';
 import { OpencodeAdapter } from '../adapters/opencode.adapter';
+import { AntigravityAdapter } from '../adapters/antigravity.adapter';
 import { FakeProcessExecutor } from '../../terminal/services/process-executor/fake-process-executor';
 import { McpRegistrationPort } from './mcp-registration/mcp-registration.port';
 import { CliMcpRegistrationAdapter } from './mcp-registration/cli-mcp-registration.adapter';
 import { ConfigFileMcpRegistrationAdapter } from './mcp-registration/config-file-mcp-registration.adapter';
+import { AntigravityMcpRegistrationAdapter } from './mcp-registration/antigravity-mcp-registration.adapter';
 
 jest.mock('fs/promises', () => ({
   access: jest.fn(),
@@ -45,17 +47,6 @@ describe('McpProviderRegistrationService', () => {
     updatedAt: new Date().toISOString(),
   };
 
-  const geminiProvider: Provider = {
-    id: 'provider-gem',
-    name: 'gemini',
-    binPath: '/usr/local/bin/gemini',
-    mcpConfigured: false,
-    mcpEndpoint: null,
-    mcpRegisteredAt: null,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-
   const codexProvider: Provider = {
     id: 'provider-cdx',
     name: 'codex',
@@ -87,13 +78,19 @@ describe('McpProviderRegistrationService', () => {
       storage as unknown as StorageService,
       new ClaudeAdapter(),
       new CodexAdapter(),
-      new GeminiAdapter(),
       opencodeAdapter,
+      new AntigravityAdapter(),
     );
     fakeExecutor = new FakeProcessExecutor();
     const cliAdapter = new CliMcpRegistrationAdapter(factory, fakeExecutor);
     const configFileAdapter = new ConfigFileMcpRegistrationAdapter(factory);
-    const port = new McpRegistrationPort(cliAdapter, configFileAdapter, factory);
+    const antigravityAdapter = new AntigravityMcpRegistrationAdapter(factory);
+    const port = new McpRegistrationPort(
+      cliAdapter,
+      configFileAdapter,
+      antigravityAdapter,
+      factory,
+    );
     service = new McpProviderRegistrationService(
       port,
       cliAdapter,
@@ -662,25 +659,9 @@ describe('McpProviderRegistrationService', () => {
     });
   });
 
-  describe('PTY-based MCP list (Gemini)', () => {
+  describe('pipe-mode MCP list (Claude/Codex)', () => {
     beforeEach(() => {
       accessMock.mockResolvedValue(undefined);
-    });
-
-    it('Gemini list uses pty mode via ProcessExecutor', async () => {
-      fakeExecutor.enqueueResponse({
-        type: 'success',
-        stdout:
-          'Configured MCP servers:\r\n\r\n\x1b[32m✓\x1b[39m devchain: http://127.0.0.1:3000/mcp (http) - Connected\r\n',
-      });
-
-      const result = await service.listRegistrations(geminiProvider);
-      expect(result.success).toBe(true);
-      expect(result.entries).toEqual([
-        { alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp', transport: 'HTTP' },
-      ]);
-      expect(fakeExecutor.calls[0].mode).toBe('pty');
-      expect(fakeExecutor.calls[0].argv).toEqual([geminiProvider.binPath, 'mcp', 'list']);
     });
 
     it('Claude list uses pipe mode via ProcessExecutor', async () => {
@@ -688,59 +669,6 @@ describe('McpProviderRegistrationService', () => {
 
       await service.listRegistrations(baseProvider);
       expect(fakeExecutor.calls[0].mode).toBe('pipe');
-    });
-
-    it('PTY output with CSI cursor/clear sequences is stripped', async () => {
-      fakeExecutor.enqueueResponse({
-        type: 'success',
-        stdout: '\x1b[2K\x1b[H\x1b[32m✓\x1b[39m myalias: http://10.0.0.1:4000/mcp (http)\r\n',
-      });
-
-      const result = await service.listRegistrations(geminiProvider);
-      expect(result.entries).toEqual([
-        { alias: 'myalias', endpoint: 'http://10.0.0.1:4000/mcp', transport: 'HTTP' },
-      ]);
-    });
-
-    it('PTY output with OSC title sequence is stripped', async () => {
-      fakeExecutor.enqueueResponse({
-        type: 'success',
-        stdout: '\x1b]0;gemini mcp list\x07✓ devchain: http://127.0.0.1:3000/mcp (http)\r\n',
-      });
-
-      const result = await service.listRegistrations(geminiProvider);
-      expect(result.entries).toEqual([
-        { alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp', transport: 'HTTP' },
-      ]);
-    });
-
-    it('PTY non-zero exit returns success=false', async () => {
-      fakeExecutor.enqueueResponse({ type: 'failure', exitCode: 1, stdout: 'error output' });
-
-      const result = await service.listRegistrations(geminiProvider);
-      expect(result.success).toBe(false);
-    });
-
-    it('executor failure returns success=false', async () => {
-      fakeExecutor.enqueueResponse({ type: 'failure', exitCode: null as unknown as number });
-
-      const result = await service.listRegistrations(geminiProvider);
-      expect(result.success).toBe(false);
-    });
-
-    it('PTY timeout returns success=false via ProcessExecutor', async () => {
-      fakeExecutor.enqueueResponse({ type: 'timeout' });
-
-      const result = await service.listRegistrations(geminiProvider, { timeoutMs: 5000 });
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('timed out');
-    });
-
-    it('successful PTY output is returned in stdout', async () => {
-      fakeExecutor.enqueueResponse({ type: 'success', stdout: 'initial data' });
-
-      const result = await service.listRegistrations(geminiProvider);
-      expect(result.stdout).toContain('initial data');
     });
 
     it('Codex list uses pipe mode via ProcessExecutor', async () => {
@@ -753,18 +681,8 @@ describe('McpProviderRegistrationService', () => {
     it('logger.warn called when command exits with error', async () => {
       fakeExecutor.enqueueResponse({ type: 'failure', exitCode: 1, stderr: 'error' });
 
-      await service.listRegistrations(geminiProvider);
+      await service.listRegistrations(baseProvider);
       expect(mockLogger.warn).toHaveBeenCalled();
-    });
-
-    it('successful command does not trigger timeout message', async () => {
-      fakeExecutor.enqueueResponse({
-        type: 'success',
-        stdout: '✓ devchain: http://127.0.0.1:3000/mcp (http)\r\n',
-      });
-
-      const result = await service.listRegistrations(geminiProvider, { timeoutMs: 5000 });
-      expect(result.success).toBe(true);
     });
   });
 });

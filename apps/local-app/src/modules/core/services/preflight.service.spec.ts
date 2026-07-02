@@ -86,6 +86,7 @@ describe('PreflightService', () => {
     getSupportedProviders: jest.Mock;
     getAdapter: jest.Mock;
   };
+  let mockCopilotProbeAuth: jest.Mock;
   let fakeExecutor: FakeProcessExecutor;
 
   beforeEach(async () => {
@@ -115,16 +116,35 @@ describe('PreflightService', () => {
       listRegistrations: jest.fn(),
     };
 
+    mockCopilotProbeAuth = jest
+      .fn()
+      .mockResolvedValue({ authenticated: true, remediation: 'run `copilot login`' });
     mockAdapterFactory = {
       isSupported: jest
         .fn()
         .mockImplementation((name: string) =>
-          ['claude', 'codex', 'gemini', 'opencode'].includes(name),
+          ['claude', 'codex', 'opencode', 'agy', 'copilot'].includes(name),
         ),
-      getSupportedProviders: jest.fn().mockReturnValue(['claude', 'codex', 'gemini', 'opencode']),
+      getSupportedProviders: jest
+        .fn()
+        .mockReturnValue(['claude', 'codex', 'opencode', 'agy', 'copilot']),
       getAdapter: jest.fn().mockImplementation((name: string) => {
         if (name === 'opencode') {
           return { providerName: 'opencode', mcpMode: 'project_config' };
+        }
+        if (name === 'agy') {
+          // P2-1: agy is real-MCP (HOME-global config). No `mcpMode='project_config'`
+          // → isMcpCli=true (no project context required) → routed by the port via
+          // isGlobalMcpConfigCapable, not the CLI adapter.
+          return {
+            providerName: 'agy',
+            parseGlobalMcpConfig: jest.fn().mockReturnValue([]),
+            buildGlobalMcpServerEntry: jest.fn(),
+          };
+        }
+        if (name === 'copilot') {
+          // Copilot declares AuthProbeCapability (best-effort, non-blocking).
+          return { providerName: 'copilot', probeAuth: mockCopilotProbeAuth };
         }
         return { providerName: name };
       }),
@@ -525,6 +545,65 @@ describe('PreflightService', () => {
       expect(result.overall).toBe('pass');
       expect(result.providers).toHaveLength(0);
       expect(mockMcpRegistration.listRegistrations).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Copilot auth probe (best-effort, non-blocking)', () => {
+    const seedCopilotProvider = () => {
+      mockStorage.listProviders.mockResolvedValue({
+        items: [
+          {
+            id: 'p-copilot',
+            name: 'copilot',
+            binPath: '/usr/bin/copilot',
+            mcpConfigured: true,
+            mcpEndpoint: null,
+            mcpRegisteredAt: null,
+            createdAt: '',
+            updatedAt: '',
+          },
+        ],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      mockMcpRegistration.listRegistrations.mockResolvedValue({
+        success: true,
+        message: 'OK',
+        entries: [{ alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp', transport: 'HTTP' }],
+      });
+    };
+
+    it('warns (never fails) when not authenticated, surfacing the remediation', async () => {
+      seedCopilotProvider();
+      mockCopilotProbeAuth.mockResolvedValue({
+        authenticated: false,
+        remediation: 'run `copilot login`',
+      });
+
+      const result = await service.runChecks();
+
+      expect(result.overall).toBe('warn');
+      expect(result.providers[0].status).toBe('warn');
+      expect(result.providers[0].details).toContain('run `copilot login`');
+    });
+
+    it('passes auth when the probe reports authenticated', async () => {
+      seedCopilotProvider();
+      mockCopilotProbeAuth.mockResolvedValue({ authenticated: true, remediation: 'x' });
+
+      const result = await service.runChecks();
+
+      expect(result.providers[0].status).toBe('pass');
+    });
+
+    it('does not block (no fail) even if the auth probe throws', async () => {
+      seedCopilotProvider();
+      mockCopilotProbeAuth.mockRejectedValue(new Error('probe boom'));
+
+      const result = await service.runChecks();
+
+      expect(result.providers[0].status).not.toBe('fail');
     });
   });
 
@@ -1133,6 +1212,92 @@ describe('PreflightService', () => {
       expect(mockMcpRegistration.listRegistrations).toHaveBeenCalledWith(opencodeProvider, {
         cwd: '/test/project',
       });
+    });
+  });
+
+  describe('Antigravity (agy) MCP preflight (P2-1 — HOME-global config)', () => {
+    const agyProvider = {
+      id: 'p-agy',
+      name: 'agy',
+      binPath: '/usr/local/bin/agy',
+      mcpConfigured: false,
+      mcpEndpoint: null,
+      mcpRegisteredAt: null,
+      createdAt: '',
+      updatedAt: '',
+    };
+
+    beforeEach(() => {
+      mockExec.mockImplementation(
+        (
+          cmd: string,
+          optionsOrCallback?: unknown,
+          maybeCallback?: unknown,
+        ): ReturnType<typeof mockExec> => {
+          const callback = (
+            typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback
+          ) as ExecCallback;
+          if (cmd === 'tmux -V' && callback) {
+            callback(null, 'tmux 3.2', '');
+          }
+          return {} as ReturnType<typeof mockExec>;
+        },
+      );
+      // agy is now a real MCP provider — preflight routes it through registration
+      // listing (HOME-global config), like any other MCP provider.
+      mockMcpRegistration.listRegistrations.mockResolvedValue({
+        success: true,
+        message: 'ok',
+        entries: [{ alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp' }],
+      });
+    });
+
+    it('routes agy through MCP registration listing and passes when devchain is registered', async () => {
+      mockStorage.listProviders.mockResolvedValue({
+        items: [agyProvider],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      mockStorage.listAllProfileProviderConfigs.mockResolvedValue([]);
+      mockAccess.mockResolvedValue(undefined);
+
+      const result = await service.runChecks();
+
+      expect(result.providers).toHaveLength(1);
+      expect(result.providers[0].name).toBe('agy');
+      expect(result.providers[0].mcpStatus).toBe('pass');
+      // No longer deferred: agy IS routed through MCP listing.
+      expect(mockMcpRegistration.listRegistrations).toHaveBeenCalled();
+    });
+
+    it('does not require project context for agy (HOME-global config, not project-local)', async () => {
+      mockStorage.findProjectByPath.mockResolvedValue({
+        id: 'project-1',
+        name: 'Test',
+        rootPath: '/test',
+        isTemplate: false,
+        description: null,
+        createdAt: '',
+        updatedAt: '',
+      });
+      mockStorage.listProviders.mockResolvedValue({
+        items: [agyProvider],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      mockStorage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      mockStorage.listProfileProviderConfigsByIds.mockResolvedValue([]);
+      mockStorage.listProvidersByIds.mockResolvedValue([agyProvider]);
+      mockAccess.mockResolvedValue(undefined);
+
+      const result = await service.runChecks('/test/project', { includeAllProviders: true });
+
+      const agy = result.providers.find((p) => p.name === 'agy');
+      expect(agy?.mcpStatus).toBe('pass');
+      // isMcpCli(agy)=true (no project_config) → requiresProjectContext undefined.
+      expect(agy?.requiresProjectContext).toBeUndefined();
     });
   });
 

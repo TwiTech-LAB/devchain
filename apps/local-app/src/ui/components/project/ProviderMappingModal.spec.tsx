@@ -37,7 +37,7 @@ describe('ProviderMappingModal', () => {
         familySlug: 'coder',
         defaultProvider: 'codex',
         defaultProviderAvailable: false,
-        availableProviders: ['claude', 'gemini'],
+        availableProviders: ['claude', 'codex'],
         hasAlternatives: true,
       },
     ] as FamilyAlternative[],
@@ -230,7 +230,7 @@ describe('ProviderMappingModal', () => {
           familySlug: 'coder',
           defaultProvider: 'codex',
           defaultProviderAvailable: false,
-          availableProviders: ['claude', 'gemini'],
+          availableProviders: ['claude', 'codex'],
           hasAlternatives: true,
         },
         {

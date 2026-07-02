@@ -56,7 +56,13 @@ FROM node:20-slim AS production
 WORKDIR /app/apps/local-app
 ARG CLAUDE_CODE_VERSION=2.1.183
 ARG CODEX_VERSION=0.142.0
-ARG GEMINI_CLI_VERSION=0.47.0
+# Antigravity CLI (agy) — the default template provider. Unlike the retired gemini-cli (an npm
+# package), agy ships as a single self-updating native binary installed via the official one-line
+# script (https://antigravity.google/cli/install.sh), which drops `agy` into ~/.local/bin. That
+# installer always fetches the latest build from the platform manifest and exposes no version-pin
+# flag (the download URL embeds an opaque build id), so AGY_CLI_VERSION cannot hard-pin the
+# install — it records the version validated at image-authoring time for traceability only.
+ARG AGY_CLI_VERSION=1.0.14
 
 # Runtime system dependencies required by local-app
 RUN apt-get update \
@@ -75,14 +81,13 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
     && echo 'node ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/node \
     && chmod 0440 /etc/sudoers.d/node \
-    && mkdir -p /home/node/.claude /home/node/.codex /home/node/.gemini /home/node/.devchain \
+    && mkdir -p /home/node/.claude /home/node/.codex /home/node/.gemini /home/node/.copilot /home/node/.devchain \
     && chown -R node:node /home/node \
     && printf '{\n  "hasCompletedOnboarding": true,\n  "autoCompactEnabled": true,\n  "effortCalloutDismissed": true\n}\n' > /home/node/.claude.json \
     && printf '{\n  "skipDangerousModePermissionPrompt": true,\n  "env": {\n    "DISABLE_AUTOUPDATER": "1"\n  }\n}\n' > /home/node/.claude/settings.json \
     && printf 'check_for_update_on_startup = false\n\n[notice.model_migrations]\n"gpt-5.2" = "gpt-5.3-codex"\n' > /home/node/.codex/config.toml \
-    && printf '{\n  "security": {\n    "auth": {\n      "selectedType": "oauth-personal"\n    }\n  },\n  "ui": {\n    "theme": "Default"\n  },\n  "general": {\n    "previewFeatures": false,\n    "enableAutoUpdate": false\n  }\n}\n' > /home/node/.gemini/settings.json \
     && printf '{\n  "/project": "TRUST_FOLDER"\n}\n' > /home/node/.gemini/trustedFolders.json \
-    && chown node:node /home/node/.claude.json /home/node/.claude/settings.json /home/node/.codex/config.toml /home/node/.gemini/settings.json /home/node/.gemini/trustedFolders.json \
+    && chown node:node /home/node/.claude.json /home/node/.claude/settings.json /home/node/.codex/config.toml /home/node/.gemini/trustedFolders.json \
     && printf '[safe]\n\tdirectory = *\n' > /home/node/.gitconfig \
     && chown node:node /home/node/.gitconfig \
     && rm -rf /var/lib/apt/lists/*
@@ -92,13 +97,17 @@ ENV PATH=/home/node/.local/bin:${PATH}
 
 RUN su - node -c "curl -fsSL https://claude.ai/install.sh | bash -s -- ${CLAUDE_CODE_VERSION}"
 
-RUN npm install -g @openai/codex@${CODEX_VERSION} @google/gemini-cli@${GEMINI_CLI_VERSION} \
+RUN npm install -g @openai/codex@${CODEX_VERSION} \
     && claude --version \
     && codex --version \
-    && gemini --version \
     && docker --version \
     && docker compose version \
     && npm cache clean --force
+
+# Antigravity CLI (agy) — default template provider. Installed for the `node` user into
+# ~/.local/bin (already on PATH via the ENV above) and version-checked to gate the build.
+# See the AGY_CLI_VERSION note above for why this is not pinned to an exact version.
+RUN su - node -c "curl -fsSL https://antigravity.google/cli/install.sh | bash && agy --version"
 
 COPY --from=builder /app/deploy/package.json ./package.json
 COPY --from=builder /app/deploy/node_modules ./node_modules

@@ -15,6 +15,7 @@ import { seedRenewInstructionsSubscriberSeeder } from '../seeders/0005_seed_rene
 import { seedRenameTemplateSlugsSeeder } from '../seeders/0006_seed_rename_template_slugs';
 import { seedClaudeNoFlickerEnvSeeder } from '../seeders/0007_seed_claude_no_flicker_env';
 import { seedRemoveClaudeNoFlickerEnvSeeder } from '../seeders/0008_seed_remove_claude_no_flicker_env';
+import { seedRemoveGeminiProviderSeeder } from '../seeders/0009_seed_remove_gemini_provider';
 import type { DataSeeder } from '../types/seeder.types';
 
 export const DATA_SEEDERS = 'DATA_SEEDERS';
@@ -30,6 +31,7 @@ export const REGISTERED_DATA_SEEDERS: DataSeeder[] = [
   seedRenameTemplateSlugsSeeder,
   seedClaudeNoFlickerEnvSeeder,
   seedRemoveClaudeNoFlickerEnvSeeder,
+  seedRemoveGeminiProviderSeeder,
 ];
 
 interface SeederJournalEntry {

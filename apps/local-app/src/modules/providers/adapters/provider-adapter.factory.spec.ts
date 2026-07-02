@@ -1,8 +1,9 @@
 import { ProviderAdapterFactory } from './provider-adapter.factory';
 import { ClaudeAdapter } from './claude.adapter';
 import { CodexAdapter } from './codex.adapter';
-import { GeminiAdapter } from './gemini.adapter';
 import { OpencodeAdapter } from './opencode.adapter';
+import { AntigravityAdapter } from './antigravity.adapter';
+import { CopilotAdapter } from './copilot.adapter';
 import { UnsupportedProviderError, NotFoundError } from '../../../common/errors/error-types';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 
@@ -19,22 +20,25 @@ describe('ProviderAdapterFactory', () => {
   let factory: ProviderAdapterFactory;
   let claudeAdapter: ClaudeAdapter;
   let codexAdapter: CodexAdapter;
-  let geminiAdapter: GeminiAdapter;
   let opencodeAdapter: OpencodeAdapter;
+  let antigravityAdapter: AntigravityAdapter;
+  let copilotAdapter: CopilotAdapter;
   let mockStorage: StorageService;
 
   beforeEach(() => {
     claudeAdapter = new ClaudeAdapter();
     codexAdapter = new CodexAdapter();
-    geminiAdapter = new GeminiAdapter();
     opencodeAdapter = new OpencodeAdapter();
+    antigravityAdapter = new AntigravityAdapter();
+    copilotAdapter = new CopilotAdapter();
     mockStorage = makeMockStorage();
     factory = new ProviderAdapterFactory(
       mockStorage,
       claudeAdapter,
       codexAdapter,
-      geminiAdapter,
       opencodeAdapter,
+      antigravityAdapter,
+      copilotAdapter,
     );
   });
 
@@ -51,16 +55,23 @@ describe('ProviderAdapterFactory', () => {
       expect(adapter.providerName).toBe('codex');
     });
 
-    it('returns GeminiAdapter for gemini provider', () => {
-      const adapter = factory.getAdapter('gemini');
-      expect(adapter).toBeInstanceOf(GeminiAdapter);
-      expect(adapter.providerName).toBe('gemini');
-    });
-
     it('returns OpencodeAdapter for opencode provider', () => {
       const adapter = factory.getAdapter('opencode');
       expect(adapter).toBeInstanceOf(OpencodeAdapter);
       expect(adapter.providerName).toBe('opencode');
+    });
+
+    it('returns AntigravityAdapter for agy provider (case-insensitive)', () => {
+      expect(factory.getAdapter('agy')).toBeInstanceOf(AntigravityAdapter);
+      expect(factory.getAdapter('agy').providerName).toBe('agy');
+      expect(factory.getAdapter('AGY')).toBe(antigravityAdapter);
+    });
+
+    it('returns CopilotAdapter for copilot provider (case-insensitive)', () => {
+      expect(factory.getAdapter('copilot')).toBeInstanceOf(CopilotAdapter);
+      expect(factory.getAdapter('copilot').providerName).toBe('copilot');
+      expect(factory.getAdapter('Copilot')).toBe(copilotAdapter);
+      expect(factory.getAdapter('COPILOT')).toBe(copilotAdapter);
     });
 
     it('Claude adapter exposes launchInitialPromptBehavior with preKeys and preDelayMs', () => {
@@ -77,13 +88,6 @@ describe('ProviderAdapterFactory', () => {
       expect(adapter.launchInitialPromptBehavior!.preDelayMs).toBe(2000);
     });
 
-    it('Gemini adapter exposes launchInitialPromptBehavior with preKeys and preDelayMs', () => {
-      const adapter = factory.getAdapter('gemini');
-      expect(adapter.launchInitialPromptBehavior).toBeDefined();
-      expect(adapter.launchInitialPromptBehavior!.preKeys).toEqual(['Enter']);
-      expect(adapter.launchInitialPromptBehavior!.preDelayMs).toBe(5000);
-    });
-
     it('OpenCode adapter does not define launchInitialPromptBehavior', () => {
       const adapter = factory.getAdapter('opencode');
       expect(adapter.launchInitialPromptBehavior).toBeUndefined();
@@ -92,7 +96,6 @@ describe('ProviderAdapterFactory', () => {
     it('returns the exact injected adapter instances (DI)', () => {
       expect(factory.getAdapter('claude')).toBe(claudeAdapter);
       expect(factory.getAdapter('codex')).toBe(codexAdapter);
-      expect(factory.getAdapter('gemini')).toBe(geminiAdapter);
       expect(factory.getAdapter('opencode')).toBe(opencodeAdapter);
     });
 
@@ -100,7 +103,6 @@ describe('ProviderAdapterFactory', () => {
       expect(factory.getAdapter('Claude')).toBe(claudeAdapter);
       expect(factory.getAdapter('CLAUDE')).toBe(claudeAdapter);
       expect(factory.getAdapter('Codex')).toBe(codexAdapter);
-      expect(factory.getAdapter('GEMINI')).toBe(geminiAdapter);
       expect(factory.getAdapter('OpenCode')).toBe(opencodeAdapter);
       expect(factory.getAdapter('OPENCODE')).toBe(opencodeAdapter);
     });
@@ -108,7 +110,7 @@ describe('ProviderAdapterFactory', () => {
     it('throws UnsupportedProviderError for unsupported provider', () => {
       expect(() => factory.getAdapter('unknown')).toThrow(UnsupportedProviderError);
       expect(() => factory.getAdapter('unknown')).toThrow(
-        'Unsupported provider: unknown. Supported providers: claude, codex, gemini, opencode',
+        'Unsupported provider: unknown. Supported providers: claude, codex, opencode, agy, copilot',
       );
     });
 
@@ -124,7 +126,7 @@ describe('ProviderAdapterFactory', () => {
         expect(unsupportedError.code).toBe('unsupported_provider');
         expect(unsupportedError.details).toEqual({
           providerName: 'unknown',
-          supportedProviders: ['claude', 'codex', 'gemini', 'opencode'],
+          supportedProviders: ['claude', 'codex', 'opencode', 'agy', 'copilot'],
         });
       }
     });
@@ -143,10 +145,6 @@ describe('ProviderAdapterFactory', () => {
       expect(factory.isSupported('codex')).toBe(true);
     });
 
-    it('returns true for gemini', () => {
-      expect(factory.isSupported('gemini')).toBe(true);
-    });
-
     it('returns true for opencode', () => {
       expect(factory.isSupported('opencode')).toBe(true);
     });
@@ -163,7 +161,6 @@ describe('ProviderAdapterFactory', () => {
       expect(factory.isSupported('Claude')).toBe(true);
       expect(factory.isSupported('CLAUDE')).toBe(true);
       expect(factory.isSupported('Codex')).toBe(true);
-      expect(factory.isSupported('GEMINI')).toBe(true);
       expect(factory.isSupported('OpenCode')).toBe(true);
       expect(factory.isSupported('OPENCODE')).toBe(true);
     });
@@ -172,8 +169,10 @@ describe('ProviderAdapterFactory', () => {
   describe('getSupportedProviders', () => {
     it('returns array of supported provider names', () => {
       const supported = factory.getSupportedProviders();
-      expect(supported).toEqual(expect.arrayContaining(['claude', 'codex', 'gemini', 'opencode']));
-      expect(supported).toHaveLength(4);
+      expect(supported).toEqual(
+        expect.arrayContaining(['claude', 'codex', 'opencode', 'agy', 'copilot']),
+      );
+      expect(supported).toHaveLength(5);
     });
   });
 
@@ -193,12 +192,6 @@ describe('ProviderAdapterFactory', () => {
         providerName,
       });
     }
-
-    it('returns 1500 for a Gemini agent', async () => {
-      setupChain('gemini');
-      const result = await factory.getPostPasteDelayMsForAgent(AGENT_ID);
-      expect(result).toBe(1500);
-    });
 
     it('returns undefined for a Claude agent', async () => {
       setupChain('claude');
@@ -257,10 +250,13 @@ describe('ProviderAdapterFactory', () => {
       });
       (mockStorage.getProvider as jest.Mock).mockResolvedValue({
         id: PROVIDER_ID,
-        name: 'gemini',
+        name: 'claude',
       });
       const result = await factory.getPostPasteDelayMsForAgent(AGENT_ID);
-      expect(result).toBe(1500);
+      // Fallback resolves the provider name via getProvider; no surviving
+      // provider defines postPasteDelayMs, so the resolved adapter yields undefined.
+      expect(mockStorage.getProvider).toHaveBeenCalledWith(PROVIDER_ID);
+      expect(result).toBeUndefined();
     });
 
     it('returns undefined for unsupported provider name', async () => {

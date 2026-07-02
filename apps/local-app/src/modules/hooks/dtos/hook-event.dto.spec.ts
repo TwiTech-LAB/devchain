@@ -121,6 +121,77 @@ describe('HookEventSchema (discriminated union)', () => {
     });
   });
 
+  describe('Stop (agentStop) variant', () => {
+    const stop = {
+      hookEventName: 'Stop',
+      stopReason: 'end_turn',
+      transcriptPath: '/home/u/.copilot/session-state/abc/events.jsonl',
+      providerName: 'copilot',
+      providerSessionId: 'copilot-session-1',
+      tmuxSessionName: 'devchain-test',
+      projectId: PROJECT_ID,
+      agentId: AGENT_ID,
+      sessionId: SESSION_ID,
+    };
+
+    it('accepts a Copilot Stop payload (providerSessionId, no claudeSessionId)', () => {
+      const result = HookEventSchema.safeParse(stop);
+      expect(result.success).toBe(true);
+      if (result.success && result.data.hookEventName === 'Stop') {
+        expect(result.data.stopReason).toBe('end_turn');
+        expect(result.data.transcriptPath).toBe(stop.transcriptPath);
+        expect(result.data.providerSessionId).toBe('copilot-session-1');
+      }
+    });
+
+    it('accepts a Stop payload omitting the optional stopReason', () => {
+      const { stopReason, ...withoutReason } = stop;
+      void stopReason;
+      expect(HookEventSchema.safeParse(withoutReason).success).toBe(true);
+    });
+
+    it('accepts a Stop payload carrying a legacy claudeSessionId', () => {
+      expect(
+        HookEventSchema.safeParse({ ...stop, claudeSessionId: 'claude-session-1' }).success,
+      ).toBe(true);
+    });
+
+    it('rejects unknown keys on Stop (strict mode)', () => {
+      expect(HookEventSchema.safeParse({ ...stop, rogueKey: 'x' }).success).toBe(false);
+    });
+  });
+
+  describe('provider-aware SessionStart (Copilot)', () => {
+    it('accepts a Copilot SessionStart with providerName/providerSessionId and no claudeSessionId', () => {
+      const copilotSessionStart = {
+        hookEventName: 'SessionStart',
+        source: 'new',
+        providerName: 'copilot',
+        providerSessionId: 'copilot-session-1',
+        tmuxSessionName: 'devchain-test',
+        projectId: PROJECT_ID,
+        agentId: AGENT_ID,
+        sessionId: SESSION_ID,
+      };
+      const result = HookEventSchema.safeParse(copilotSessionStart);
+      expect(result.success).toBe(true);
+      if (result.success && result.data.hookEventName === 'SessionStart') {
+        expect(result.data.providerName).toBe('copilot');
+        expect(result.data.claudeSessionId).toBeUndefined();
+      }
+    });
+
+    it('keeps claudeSessionId required on the Claude-only tool variants', () => {
+      // SessionStart no longer requires it (cross-provider), but PreToolUse/PostToolUse do.
+      const { claudeSessionId: _pre, ...preWithout } = preToolUse;
+      void _pre;
+      const { claudeSessionId: _post, ...postWithout } = postToolUse;
+      void _post;
+      expect(HookEventSchema.safeParse(preWithout).success).toBe(false);
+      expect(HookEventSchema.safeParse(postWithout).success).toBe(false);
+    });
+  });
+
   describe('rejection (malformed / strict)', () => {
     it('rejects an unknown hookEventName (no matching variant)', () => {
       expect(

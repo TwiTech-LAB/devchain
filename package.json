@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.15.0",
+  "version": "0.16.1",
   "description": "AI driven development platform",
   "homepage": "https://devchain.cc/",
   "repository": {
@@ -8,6 +8,17 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.16.1": [
+      "Template updates"
+    ],
+    "0.16.0": [
+      "New provider: Google Antigravity (agy), with backend, MCP, UI, mobile, infra, and docs parity",
+      "New provider: GitHub Copilot CLI (copilot), with deterministic session binding, UI, mobile, and session-start lifecycle hooks",
+      "Gemini CLI provider retired; templates now redirect to Antigravity (agy)",
+      "E2EE hardening: paired-device dedup (supersede-by-install-id, revoke-on-logout) plus a QR-pairing first-start race fix with in-session self-heal",
+      "Mobile chat: agent busy dots moved into the chat header with an idle state",
+      "Codex: startup update-check disabled at launch"
+    ],
     "0.15.0": [
       "Details: https://devchain.cc/releases/0.15.0/",
       "",

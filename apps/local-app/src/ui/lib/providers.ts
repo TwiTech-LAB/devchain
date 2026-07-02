@@ -16,18 +16,30 @@ const OPENAI_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" 
   <path d="M14.245 6.426a3.49 3.49 0 0 0-.3-2.878 3.544 3.544 0 0 0-3.818-1.682 3.49 3.49 0 0 0-2.625-1.176 3.544 3.544 0 0 0-3.383 2.453 3.49 3.49 0 0 0-2.332 1.693 3.544 3.544 0 0 0 .436 4.157 3.49 3.49 0 0 0 .3 2.878 3.544 3.544 0 0 0 3.818 1.682 3.49 3.49 0 0 0 2.625 1.176 3.544 3.544 0 0 0 3.383-2.453 3.49 3.49 0 0 0 2.332-1.693 3.544 3.544 0 0 0-.436-4.157m-5.283 7.836a2.63 2.63 0 0 1-1.688-.612l.083-.047 2.804-1.62a.46.46 0 0 0 .228-.397V7.048l1.185.685a.04.04 0 0 1 .022.032v3.277a2.64 2.64 0 0 1-2.634 2.62m-5.664-2.42a2.62 2.62 0 0 1-.314-1.77l.083.05 2.804 1.619a.45.45 0 0 0 .456 0l3.424-1.977v1.371a.04.04 0 0 1-.017.035l-2.835 1.637a2.64 2.64 0 0 1-3.601-.965M2.32 5.59a2.62 2.62 0 0 1 1.372-1.156v3.337a.45.45 0 0 0 .228.394l3.424 1.977-1.186.686a.04.04 0 0 1-.038.003L3.285 9.195A2.64 2.64 0 0 1 2.32 5.59m9.715 2.262L8.61 5.875l1.185-.685a.04.04 0 0 1 .039-.004l2.835 1.637a2.64 2.64 0 0 1-.408 4.762V8.248a.45.45 0 0 0-.226-.396m1.18-1.786-.084-.05-2.803-1.62a.45.45 0 0 0-.456 0L6.448 6.374V5.003a.04.04 0 0 1 .017-.035l2.835-1.636a2.64 2.64 0 0 1 3.915 2.734M5.829 8.952l-1.185-.686a.04.04 0 0 1-.022-.031V4.957a2.64 2.64 0 0 1 4.323-2.029l-.083.047-2.804 1.62a.46.46 0 0 0-.228.397zm.644-1.389 1.525-.881 1.526.88v1.762l-1.526.881-1.525-.88z"/>
 </svg>`;
 
-// Google Gemini icon (four-pointed sparkle/star)
-// Source: Gemini brand sparkle shape, Google brand blue
-const GEMINI_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#4285F4">
-  <path d="M12 0C12 6.627 6.627 12 0 12c6.627 0 12 5.373 12 12 0-6.627 5.373-12 12-12-6.627 0-12-5.373-12-12z"/>
-</svg>`;
-
 // OpenCode icon (multi-model terminal AI agent)
 // Source: https://opencode.ai/favicon.svg
 const OPENCODE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <rect width="512" height="512" fill="#131010"/>
   <path d="M320 224V352H192V224H320Z" fill="#5A5858"/>
   <path fill-rule="evenodd" clip-rule="evenodd" d="M384 416H128V96H384V416ZM320 160H192V352H320V160Z" fill="white"/>
+</svg>`;
+
+// Antigravity (agy) icon — stylized "A" delta mark (solid cap + V-notch forming two splaying legs).
+// Mark traced from the official logo: https://antigravity.google/assets/image/antigravity-logo.png
+// Brand blue #3789F6 sampled from the official favicon: https://antigravity.google/favicon.ico
+const ANTIGRAVITY_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#3789F6">
+  <path d="M12 2 L22 22 L12 13 L2 22 Z"/>
+</svg>`;
+
+// GitHub Copilot mark — stylized "squircle + spark" app-icon treatment: a rounded
+// square (corner radius 6) with a 4-point spark knocked out via fill-rule evenodd.
+// Monochrome single-fill #8957e5 (GitHub Copilot brand purple), distinct from every
+// other badge (claude terracotta / openai green / agy blue / opencode
+// dark). Sized on the same 24×24 grid as agy. P2-1 adds the normalizeProviderName
+// branch so free-form names like "Copilot CLI" resolve (exact "copilot" already works
+// via the normalize fallback).
+const COPILOT_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#8957e5">
+  <path fill-rule="evenodd" clip-rule="evenodd" d="M8 2 H16 A6 6 0 0 1 22 8 V16 A6 6 0 0 1 16 22 H8 A6 6 0 0 1 2 16 V8 A6 6 0 0 1 8 2 Z M12 7 C12 9.762 9.762 12 7 12 C9.762 12 12 14.238 12 17 C12 14.238 14.238 12 17 12 C14.238 12 12 9.762 12 7 Z"/>
 </svg>`;
 
 // Map provider names to their SVG icons
@@ -37,9 +49,10 @@ const PROVIDER_ICONS: Record<string, string> = {
   openai: OPENAI_SVG,
   codex: OPENAI_SVG,
   gpt: OPENAI_SVG,
-  gemini: GEMINI_SVG,
-  google: GEMINI_SVG,
   opencode: OPENCODE_SVG,
+  agy: ANTIGRAVITY_SVG,
+  antigravity: ANTIGRAVITY_SVG,
+  copilot: COPILOT_SVG,
 };
 
 // Cache for data URIs
@@ -58,11 +71,14 @@ function normalizeProviderName(name: string | null | undefined): string | null {
   if (normalized.includes('openai') || normalized.includes('codex') || normalized.includes('gpt')) {
     return 'openai';
   }
-  if (normalized.includes('gemini') || normalized.includes('google')) {
-    return 'gemini';
-  }
   if (normalized.includes('opencode')) {
     return 'opencode';
+  }
+  if (normalized === 'agy' || normalized.includes('antigravity')) {
+    return 'agy';
+  }
+  if (normalized === 'copilot') {
+    return 'copilot';
   }
   return normalized;
 }
@@ -125,9 +141,10 @@ export function getProviderIconAltText(name: string | null | undefined): string 
     openai: 'OpenAI',
     codex: 'OpenAI Codex',
     gpt: 'OpenAI GPT',
-    gemini: 'Google Gemini',
-    google: 'Google',
     opencode: 'OpenCode',
+    agy: 'Antigravity CLI',
+    antigravity: 'Antigravity CLI',
+    copilot: 'Copilot CLI',
   };
 
   return `${displayNames[normalized] ?? normalized} icon`;

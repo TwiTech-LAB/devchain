@@ -72,9 +72,26 @@ export interface UnifiedMetrics {
    */
   totalContextTokens: number;
   contextWindowTokens: number;
+  /**
+   * Optional breakdown of the context-window occupancy at the authoritative
+   * snapshot (e.g. Copilot `session.shutdown` `systemTokens` /
+   * `conversationTokens` / `toolDefinitionsTokens`). Undefined for providers
+   * that do not report it. The parts sum to ~`totalContextTokens`.
+   */
+  contextBreakdown?: {
+    system: number;
+    conversation: number;
+    toolDefinitions: number;
+  };
 
   // Cost
   costUsd: number;
+  /**
+   * Provider-native cost figure alongside USD `costUsd` (e.g. Copilot AI Credits
+   * from `session.shutdown` `modelMetrics[*].requests.cost`). Undefined when the
+   * provider has no native cost metric. Not USD — do not conflate with `costUsd`.
+   */
+  nativeCost?: number;
 
   // Model identification
   primaryModel: string;

@@ -679,7 +679,7 @@ describe('pruneUnavailableTeamProfileSelections', () => {
           profileSelections: [
             {
               profileName: 'Architect',
-              configNames: ['gpt-high', 'gemini3', 'opus'],
+              configNames: ['gpt-high', 'agy3', 'opus'],
             },
           ],
         },
@@ -688,7 +688,7 @@ describe('pruneUnavailableTeamProfileSelections', () => {
         {
           id: 'profile-old-1',
           name: 'Architect',
-          providerConfigs: [{ name: 'gpt-high' }, { name: 'gemini3' }, { name: 'opus' }],
+          providerConfigs: [{ name: 'gpt-high' }, { name: 'agy3' }, { name: 'opus' }],
         },
       ],
       { 'profile-old-1': 'profile-new-1' },
@@ -749,7 +749,7 @@ describe('pruneUnavailableTeamProfileSelections', () => {
           profileSelections: [
             {
               profileName: 'Architect',
-              configNames: ['gemini3'],
+              configNames: ['agy3'],
             },
           ],
         },
@@ -758,7 +758,7 @@ describe('pruneUnavailableTeamProfileSelections', () => {
         {
           id: 'profile-old-1',
           name: 'Architect',
-          providerConfigs: [{ name: 'gemini3' }],
+          providerConfigs: [{ name: 'agy3' }],
         },
       ],
       { 'profile-old-1': 'profile-new-1' },

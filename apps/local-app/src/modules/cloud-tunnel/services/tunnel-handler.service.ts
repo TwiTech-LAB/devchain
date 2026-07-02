@@ -6,6 +6,8 @@ import { MobileChatRpcService } from './mobile-chat-rpc.service';
 import { MobileBoardRpcService } from './mobile-board-rpc.service';
 import { ViewportStreamerService } from './viewport-streamer.service';
 import { E2eeTrustService } from '../../e2ee/services/e2ee-trust.service';
+import { ValidationError } from '../../../common/errors/error-types';
+import { type RpcCryptoContext } from './tunnel-rpc-crypto.service';
 import { toJsonRpcError } from './jsonrpc-error.util';
 import { toEpicDto, toStatusDto, toStatusMap } from './epic-dto.util';
 
@@ -210,13 +212,26 @@ const METHOD_SCHEMAS: Record<string, z.ZodTypeAny> = {
   // derives-and-verifies the kid + validates the key length, so the schema only asserts
   // both fields are present non-empty strings.
   'e2ee.adoptDeviceKey': z
-    .object({ kid: z.string().min(1), publicKeyB64: z.string().min(1) })
+    .object({
+      kid: z.string().min(1),
+      publicKeyB64: z.string().min(1),
+      // Optional stable per-install id (M2 dedup). Opaque/bounded here; the device store is
+      // the single validator (canonical-UUID before store/evict). A non-canonical value does
+      // NOT reject the adopt — it just isn't stored (old-client append behavior).
+      installId: z.string().max(100).optional(),
+    })
     .passthrough(),
+  // E2EE logout revoke (M3): the target device is taken from the VERIFIED sealed-sender
+  // context, NEVER from params — so params are accepted-but-ignored (permissive passthrough).
+  'e2ee.revokeDeviceKey': z.object({}).passthrough(),
 };
 
 @Injectable()
 export class TunnelHandlerService {
-  private readonly handlers: Record<string, (params: Record<string, unknown>) => Promise<unknown>>;
+  private readonly handlers: Record<
+    string,
+    (params: Record<string, unknown>, cryptoCtx?: RpcCryptoContext) => Promise<unknown>
+  >;
 
   constructor(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -278,15 +293,23 @@ export class TunnelHandlerService {
       // the bidirectional exchange). Plaintext by design — see RPC_BOOTSTRAP_METHODS.
       'e2ee.adoptDeviceKey': (p) =>
         Promise.resolve(
-          this.e2eeTrust.adoptPeerKeyTofu({
-            kid: p['kid'] as string,
-            publicKeyB64: p['publicKeyB64'] as string,
-          }),
+          this.e2eeTrust.adoptPeerKeyTofu(
+            {
+              kid: p['kid'] as string,
+              publicKeyB64: p['publicKeyB64'] as string,
+            },
+            // installId supersede metadata — carried beside the trust record, never a trust
+            // signal; the trust/store layer validates + applies it (TOFU: evictVerified=false).
+            p['installId'] as string | undefined,
+          ),
         ),
+      // E2EE logout revoke (M3): sealed-only. Identity comes from the trusted crypto context
+      // (verified envelope kid), NOT params — the crypto seam rejects a plaintext attempt.
+      'e2ee.revokeDeviceKey': (_p, cryptoCtx) => Promise.resolve(this.revokeDeviceKey(cryptoCtx)),
     };
   }
 
-  async handle(req: JsonRpcRequest): Promise<JsonRpcResponse> {
+  async handle(req: JsonRpcRequest, cryptoCtx?: RpcCryptoContext): Promise<JsonRpcResponse> {
     const handler = this.handlers[req.method];
     if (!handler) {
       logger.warn({ method: req.method, id: req.id }, 'Unknown RPC method');
@@ -310,12 +333,33 @@ export class TunnelHandlerService {
     }
 
     try {
-      const result = await handler(req.params ?? {});
+      const result = await handler(req.params ?? {}, cryptoCtx);
       return { jsonrpc: '2.0', id: req.id, result };
     } catch (err) {
       logger.error({ err, method: req.method, id: req.id }, 'RPC handler error');
       return { jsonrpc: '2.0', id: req.id, error: toJsonRpcError(err) };
     }
+  }
+
+  /**
+   * E2EE logout revoke (M3 `paired-device-dedup`): remove EXACTLY the sender's own device key.
+   * The target is `cryptoCtx.senderKid` — the VERIFIED envelope kid set by the crypto layer
+   * (decryption proved the sender holds that key). ALL client params are ignored so a sealed
+   * client can never name a DIFFERENT device (force-unpair). An absent `cryptoCtx` (only
+   * reachable if this were ever dispatched off the sealed lane — the crypto seam already
+   * rejects a plaintext attempt) is rejected here too; nothing is revoked.
+   *
+   * Delegates to `E2eeTrustService.revokeDevice` → `E2eeDeviceStoreService.revoke()`.
+   *
+   * Replay convergence: a replayed revoke targets a kid that died at the phone's logout →
+   * `revoke()` returns `false` → clean no-op. The kid cannot be re-adopted (its private key
+   * was destroyed on the phone). Formal replay protection remains backlog `17c7d7bb`.
+   */
+  private revokeDeviceKey(cryptoCtx?: RpcCryptoContext): { kid: string; removed: boolean } {
+    if (!cryptoCtx?.senderKid) {
+      throw new ValidationError('e2ee.revokeDeviceKey requires a sealed sender context');
+    }
+    return this.e2eeTrust.revokeDevice(cryptoCtx.senderKid);
   }
 
   private async listProjects(params: Record<string, unknown>): Promise<unknown[]> {

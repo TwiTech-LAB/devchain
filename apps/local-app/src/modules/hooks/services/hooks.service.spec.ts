@@ -184,6 +184,72 @@ describe('HooksService', () => {
     });
   });
 
+  describe('handleHookEvent — SessionStart (provider-aware / Copilot)', () => {
+    it('resolves claudeSessionId from providerSessionId when the Claude id is absent', async () => {
+      const copilotPayload: HookEventData = {
+        hookEventName: 'SessionStart',
+        source: 'new',
+        providerName: 'copilot',
+        providerSessionId: 'copilot-session-9',
+        tmuxSessionName: 'devchain-test-session',
+        projectId: PROJECT_ID,
+        agentId: AGENT_ID,
+        sessionId: SESSION_ID,
+      };
+
+      const result = await service.handleHookEvent(copilotPayload);
+
+      expect(result).toEqual({ ok: true, handled: true, data: {} });
+      expect(mockEvents.publish).toHaveBeenCalledWith(
+        'claude.hooks.session.started',
+        expect.objectContaining({
+          claudeSessionId: 'copilot-session-9',
+          providerName: 'copilot',
+          providerSessionId: 'copilot-session-9',
+          source: 'new',
+          sessionId: SESSION_ID,
+        }),
+      );
+    });
+
+    it('skips publish when both claudeSessionId and providerSessionId are missing', async () => {
+      const idlessPayload: HookEventData = {
+        hookEventName: 'SessionStart',
+        source: 'new',
+        tmuxSessionName: 'devchain-test-session',
+        projectId: PROJECT_ID,
+        agentId: null,
+        sessionId: null,
+      };
+
+      const result = await service.handleHookEvent(idlessPayload);
+
+      expect(result).toEqual({ ok: true, handled: true, data: {} });
+      expect(mockEvents.publish).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('handleHookEvent — Stop (agentStop)', () => {
+    it('dispatches Stop without publishing (final-metrics deferred to a later phase)', async () => {
+      const stopPayload: HookEventData = {
+        hookEventName: 'Stop',
+        stopReason: 'end_turn',
+        transcriptPath: '/tmp/events.jsonl',
+        providerName: 'copilot',
+        providerSessionId: 'copilot-session-9',
+        tmuxSessionName: 'devchain-test-session',
+        projectId: PROJECT_ID,
+        agentId: AGENT_ID,
+        sessionId: SESSION_ID,
+      };
+
+      const result = await service.handleHookEvent(stopPayload);
+
+      expect(result).toEqual({ ok: true, handled: false, data: {} });
+      expect(mockEvents.publish).not.toHaveBeenCalled();
+    });
+  });
+
   describe('handleHookEvent — unknown event', () => {
     it('should return handled:false for unknown hookEventName (defensive default)', async () => {
       // The schema rejects unknown event names at the controller; the service

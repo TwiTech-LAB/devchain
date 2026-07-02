@@ -106,8 +106,17 @@ export class ProviderModelsController {
     logger.info({ providerId }, 'POST /api/providers/:id/models/discover');
     const provider = await this.storage.getProvider(providerId);
 
-    if (provider.name.toLowerCase() !== 'opencode') {
-      throw new BadRequestException('Model discovery is only supported for the opencode provider');
+    // Both opencode and agy expose a pipe-safe `<binary> models` subcommand that lists
+    // one selectable model per line. agy's lines are DISPLAY names (e.g.
+    // "Gemini 3.5 Flash (High)"), which agy's own `--model` flag accepts verbatim — so
+    // the stored name doubles as the launch `--model` value, exactly like opencode.
+    // Pricing correlation is handled separately by the shared `mapAgyModelToPricing`
+    // family rules (P1-4) on the metrics-decoded id/display name, not by this list.
+    const providerName = provider.name.toLowerCase();
+    if (providerName !== 'opencode' && providerName !== 'agy') {
+      throw new BadRequestException(
+        'Model discovery is only supported for the opencode and agy providers',
+      );
     }
 
     const resolution = await this.mcpRegistration.resolveBinary(provider);

@@ -13,7 +13,8 @@ import { SessionReaderAdapter } from './session-reader-adapter.interface';
  * |-----------|-------------------------------|------------------------------|
  * | `claude`  | ClaudeSessionReaderAdapter     | JSONL (`~/.claude/projects/`) |
  * | `codex`   | CodexSessionReaderAdapter      | JSONL (`~/.codex/sessions/`)  |
- * | `gemini`  | GeminiSessionReaderAdapter     | JSON  (`~/.gemini/tmp/`)      |
+ * | `agy`     | AntigravitySessionReaderAdapter | DB+JSONL (`~/.gemini/antigravity-cli/`) |
+ * | `copilot` | CopilotSessionReaderAdapter     | JSONL (`~/.copilot/session-state/`) |
  *
  * ## Adding a new provider adapter
  *
@@ -27,6 +28,10 @@ import { SessionReaderAdapter } from './session-reader-adapter.interface';
  *    - Inject in constructor, call `adapterFactory.registerAdapter()`
  * 5. Add pricing data: update `isOpenAIModel`/`isGeminiModel` or add a new
  *    filter in `scripts/fetch-pricing-data.ts`, then regenerate `pricing.json`
+ *
+ *    Note: `isGeminiModel()` and `pricing.json` `gemini-*` keys are part of the
+ *    shared MODEL-pricing layer consumed by agy and copilot — they are kept even
+ *    though the Gemini launch provider / session-reader are retired.
  */
 @Injectable()
 export class SessionReaderAdapterFactory {

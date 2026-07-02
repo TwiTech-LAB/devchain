@@ -28,7 +28,7 @@ describe('ProviderMcpEnsureService', () => {
     isSupported: jest.Mock;
     getAdapter: jest.Mock;
   };
-  let mockGeminiTrustedFolders: {
+  let mockTrustProvisioner: {
     ensure: jest.Mock;
   };
   let mockClaudeEnsureProjectSettings: jest.Mock;
@@ -69,18 +69,21 @@ describe('ProviderMcpEnsureService', () => {
       isSupported: jest
         .fn()
         .mockImplementation((name: string) =>
-          ['claude', 'codex', 'gemini', 'opencode'].includes(name),
+          ['claude', 'codex', 'opencode', 'agy', 'copilot'].includes(name),
         ),
       getAdapter: jest.fn().mockImplementation((name: string) => {
         if (name === 'opencode') {
           return { providerName: 'opencode', mcpMode: 'project_config' };
         }
-        if (name === 'gemini') {
+        if (name === 'agy') {
+          // P2-1: agy is real-MCP (HOME-global config) + provisioning-capable.
+          // No `mcpMode='project_config'` → isMcpCli=true → no projectPath required.
           return {
-            providerName: 'gemini',
-            mcpProjectRegistrationStrategy: 'upsert',
+            providerName: 'agy',
             requiresProjectProvisioning: true,
-            provisionProjectPath: mockGeminiTrustedFolders.provisionProjectPath,
+            provisionProjectPath: mockTrustProvisioner.provisionProjectPath,
+            parseGlobalMcpConfig: jest.fn().mockReturnValue([]),
+            buildGlobalMcpServerEntry: jest.fn(),
           };
         }
         if (name === 'claude') {
@@ -93,7 +96,7 @@ describe('ProviderMcpEnsureService', () => {
       }),
     };
 
-    mockGeminiTrustedFolders = {
+    mockTrustProvisioner = {
       ensure: jest.fn().mockResolvedValue({ success: true, action: 'added', message: 'Added' }),
       provisionProjectPath: jest.fn().mockResolvedValue({ success: true, warnings: [] }),
     };
@@ -134,6 +137,69 @@ describe('ProviderMcpEnsureService', () => {
       expect(result.success).toBe(false);
       expect(result.action).toBe('error');
       expect(result.message).toContain('not supported');
+    });
+
+    it('registers agy MCP via ensureRegistration without requiring a project path (HOME-global config)', async () => {
+      const provider = createProvider({ name: 'agy' });
+      mockMcpRegistration.ensureRegistration.mockResolvedValue({
+        success: true,
+        action: 'added',
+        endpoint: 'http://127.0.0.1:3000/mcp',
+        alias: 'devchain',
+      });
+
+      // No projectPath: agy MCP config is HOME-global, so registration still runs
+      // (isMcpCli=true → the project-path requirement does not apply).
+      const result = await service.ensureMcp(provider);
+
+      expect(result.success).toBe(true);
+      expect(result.action).toBe('added');
+      expect(mockMcpRegistration.ensureRegistration).toHaveBeenCalledWith(
+        provider,
+        { endpoint: 'http://127.0.0.1:3000/mcp', alias: 'devchain' },
+        { cwd: undefined },
+      );
+      expect(mockStorage.updateProviderMcpMetadata).toHaveBeenCalled();
+    });
+
+    it('runs trust provisioning AND registers agy MCP when a project path is given', async () => {
+      const provider = createProvider({ name: 'agy' });
+      const projectPath = '/home/user/project';
+      const provisionProjectPath = jest.fn().mockResolvedValue({
+        success: true,
+        warnings: [{ source: 'trusted_workspaces', level: 'warn', message: 'heads up' }],
+      });
+      mockAdapterFactory.getAdapter.mockImplementation((name: string) => {
+        if (name === 'agy') {
+          return {
+            providerName: 'agy',
+            requiresProjectProvisioning: true,
+            provisionProjectPath,
+            parseGlobalMcpConfig: jest.fn().mockReturnValue([]),
+            buildGlobalMcpServerEntry: jest.fn(),
+          };
+        }
+        return { providerName: name };
+      });
+      mockMcpRegistration.ensureRegistration.mockResolvedValue({
+        success: true,
+        action: 'added',
+        endpoint: 'http://127.0.0.1:3000/mcp',
+        alias: 'devchain',
+      });
+
+      const result = await service.ensureMcp(provider, projectPath);
+
+      // Trust provisioning ran AND surfaced its warnings...
+      expect(provisionProjectPath).toHaveBeenCalledWith(projectPath);
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([expect.objectContaining({ message: 'heads up' })]),
+      );
+      // ...and MCP registration now runs (no longer deferred).
+      expect(result.success).toBe(true);
+      expect(result.action).toBe('added');
+      expect(mockMcpRegistration.ensureRegistration).toHaveBeenCalled();
+      expect(mockStorage.updateProviderMcpMetadata).toHaveBeenCalled();
     });
 
     it('returns already_configured when MCP is correctly set up', async () => {
@@ -754,11 +820,11 @@ describe('ProviderMcpEnsureService', () => {
     });
   });
 
-  describe('Gemini upsert routing and trust folders', () => {
-    const geminiProvider = createProvider({ name: 'gemini', binPath: '/usr/local/bin/gemini' });
+  describe('agy provisioning and trust folders', () => {
+    const agyProvider = createProvider({ name: 'agy', binPath: '/usr/local/bin/agy' });
     const projectPath = '/home/user/project';
 
-    it('Gemini with projectPath calls ensureRegistration correctly', async () => {
+    it('agy with projectPath calls ensureRegistration correctly', async () => {
       mockMcpRegistration.ensureRegistration.mockResolvedValue({
         success: true,
         action: 'added',
@@ -766,20 +832,20 @@ describe('ProviderMcpEnsureService', () => {
         alias: 'devchain',
       });
 
-      const result = await service.ensureMcp(geminiProvider, projectPath);
+      const result = await service.ensureMcp(agyProvider, projectPath);
 
       expect(result.success).toBe(true);
       expect(result.action).toBe('added');
       expect(mockMcpRegistration.ensureRegistration).toHaveBeenCalledWith(
-        geminiProvider,
+        agyProvider,
         expect.objectContaining({ alias: 'devchain' }),
         expect.objectContaining({ cwd: projectPath }),
       );
     });
 
-    it('Gemini calls provisionProjectPath BEFORE ensureRegistration', async () => {
+    it('agy calls provisionProjectPath BEFORE ensureRegistration', async () => {
       const callOrder: string[] = [];
-      mockGeminiTrustedFolders.provisionProjectPath.mockImplementation(async () => {
+      mockTrustProvisioner.provisionProjectPath.mockImplementation(async () => {
         callOrder.push('provision');
         return { success: true, warnings: [] };
       });
@@ -793,20 +859,20 @@ describe('ProviderMcpEnsureService', () => {
         };
       });
 
-      await service.ensureMcp(geminiProvider, projectPath);
+      await service.ensureMcp(agyProvider, projectPath);
 
       expect(callOrder).toEqual(['provision', 'ensure']);
     });
 
     it('trust-folder distrusted_warning → ensure proceeds with warning', async () => {
-      mockGeminiTrustedFolders.provisionProjectPath.mockResolvedValue({
+      mockTrustProvisioner.provisionProjectPath.mockResolvedValue({
         success: true,
         warnings: [
           {
             source: 'trusted_folders',
             level: 'warn',
             message: 'Path is distrusted',
-            code: 'GEMINI_PATH_DISTRUSTED',
+            code: 'AGY_TRUSTED_FOLDERS_DISTRUSTED',
           },
         ],
       });
@@ -817,57 +883,28 @@ describe('ProviderMcpEnsureService', () => {
         alias: 'devchain',
       });
 
-      const result = await service.ensureMcp(geminiProvider, projectPath);
-
-      expect(result.success).toBe(true);
-      expect(result.warnings).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ source: 'trusted_folders', code: 'GEMINI_PATH_DISTRUSTED' }),
-        ]),
-      );
-    });
-
-    it('trust-folder malformed_warning → ensure proceeds with warning', async () => {
-      mockGeminiTrustedFolders.provisionProjectPath.mockResolvedValue({
-        success: true,
-        warnings: [
-          {
-            source: 'trusted_folders',
-            level: 'warn',
-            message: 'File is malformed',
-            code: 'GEMINI_TRUST_FILE_MALFORMED',
-          },
-        ],
-      });
-      mockMcpRegistration.ensureRegistration.mockResolvedValue({
-        success: true,
-        action: 'added',
-        endpoint: 'http://127.0.0.1:3000/mcp',
-        alias: 'devchain',
-      });
-
-      const result = await service.ensureMcp(geminiProvider, projectPath);
+      const result = await service.ensureMcp(agyProvider, projectPath);
 
       expect(result.success).toBe(true);
       expect(result.warnings).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             source: 'trusted_folders',
-            code: 'GEMINI_TRUST_FILE_MALFORMED',
+            code: 'AGY_TRUSTED_FOLDERS_DISTRUSTED',
           }),
         ]),
       );
     });
 
-    it('trust-folder throws → ensure proceeds with GEMINI_TRUST_WRITE_FAILED warning', async () => {
-      mockGeminiTrustedFolders.provisionProjectPath.mockResolvedValue({
+    it('trust-folder malformed_warning → ensure proceeds with warning', async () => {
+      mockTrustProvisioner.provisionProjectPath.mockResolvedValue({
         success: true,
         warnings: [
           {
             source: 'trusted_folders',
             level: 'warn',
-            message: 'write failed',
-            code: 'GEMINI_TRUST_WRITE_FAILED',
+            message: 'File is malformed',
+            code: 'AGY_TRUSTED_FOLDERS_MALFORMED',
           },
         ],
       });
@@ -878,12 +915,47 @@ describe('ProviderMcpEnsureService', () => {
         alias: 'devchain',
       });
 
-      const result = await service.ensureMcp(geminiProvider, projectPath);
+      const result = await service.ensureMcp(agyProvider, projectPath);
 
       expect(result.success).toBe(true);
       expect(result.warnings).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ source: 'trusted_folders', code: 'GEMINI_TRUST_WRITE_FAILED' }),
+          expect.objectContaining({
+            source: 'trusted_folders',
+            code: 'AGY_TRUSTED_FOLDERS_MALFORMED',
+          }),
+        ]),
+      );
+    });
+
+    it('trust-folder throws → ensure proceeds with AGY_TRUSTED_FOLDERS_WRITE_FAILED warning', async () => {
+      mockTrustProvisioner.provisionProjectPath.mockResolvedValue({
+        success: true,
+        warnings: [
+          {
+            source: 'trusted_folders',
+            level: 'warn',
+            message: 'write failed',
+            code: 'AGY_TRUSTED_FOLDERS_WRITE_FAILED',
+          },
+        ],
+      });
+      mockMcpRegistration.ensureRegistration.mockResolvedValue({
+        success: true,
+        action: 'added',
+        endpoint: 'http://127.0.0.1:3000/mcp',
+        alias: 'devchain',
+      });
+
+      const result = await service.ensureMcp(agyProvider, projectPath);
+
+      expect(result.success).toBe(true);
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            source: 'trusted_folders',
+            code: 'AGY_TRUSTED_FOLDERS_WRITE_FAILED',
+          }),
         ]),
       );
     });
@@ -896,11 +968,11 @@ describe('ProviderMcpEnsureService', () => {
         alias: 'devchain',
       });
 
-      const result = await service.ensureMcp(geminiProvider, projectPath);
+      const result = await service.ensureMcp(agyProvider, projectPath);
 
       expect(result.success).toBe(true);
       expect(mockMcpRegistration.ensureRegistration).toHaveBeenCalledWith(
-        geminiProvider,
+        agyProvider,
         expect.objectContaining({ alias: 'devchain' }),
         expect.objectContaining({ cwd: projectPath }),
       );
@@ -956,11 +1028,11 @@ describe('ProviderMcpEnsureService', () => {
   });
 
   describe('R3: provisioning catch block visibility (Option B)', () => {
-    const geminiProvider = createProvider({ name: 'gemini', binPath: '/usr/local/bin/gemini' });
+    const agyProvider = createProvider({ name: 'agy', binPath: '/usr/local/bin/agy' });
     const projectPath = '/home/user/project';
 
     it('provisioning throws → result is still success with provisioning warning', async () => {
-      mockGeminiTrustedFolders.provisionProjectPath.mockRejectedValue(
+      mockTrustProvisioner.provisionProjectPath.mockRejectedValue(
         new Error('Unexpected provisioning failure'),
       );
       mockMcpRegistration.ensureRegistration.mockResolvedValue({
@@ -970,7 +1042,7 @@ describe('ProviderMcpEnsureService', () => {
         alias: 'devchain',
       });
 
-      const result = await service.ensureMcp(geminiProvider, projectPath);
+      const result = await service.ensureMcp(agyProvider, projectPath);
 
       expect(result.success).toBe(true);
       expect(result.action).toBe('added');
@@ -986,18 +1058,18 @@ describe('ProviderMcpEnsureService', () => {
     });
 
     it('adapter lookup throws inside provisioning block → result is still success with provisioning warning', async () => {
-      // getAdapter is called 3 times for gemini+projectPath: isMcpCli check, settings check, provisioning check.
+      // getAdapter is called 3 times for agy+projectPath: isMcpCli check, settings check, provisioning check.
       // Only the 3rd call (inside the provisioning try block) should throw to test that specific path.
+      // (The mcp-deferred skip reuses the already-fetched adapter, so it adds no extra getAdapter call.)
       let callCount = 0;
       mockAdapterFactory.getAdapter.mockImplementation((name: string) => {
-        if (name === 'gemini') {
+        if (name === 'agy') {
           callCount++;
           if (callCount === 3) throw new Error('Adapter lookup failed');
           return {
-            providerName: 'gemini',
-            mcpProjectRegistrationStrategy: 'upsert',
+            providerName: 'agy',
             requiresProjectProvisioning: true,
-            provisionProjectPath: mockGeminiTrustedFolders.provisionProjectPath,
+            provisionProjectPath: mockTrustProvisioner.provisionProjectPath,
           };
         }
         if (name === 'opencode') return { providerName: 'opencode', mcpMode: 'project_config' };
@@ -1010,7 +1082,7 @@ describe('ProviderMcpEnsureService', () => {
         action: 'already_configured',
       });
 
-      const result = await service.ensureMcp(geminiProvider, projectPath);
+      const result = await service.ensureMcp(agyProvider, projectPath);
 
       expect(result.success).toBe(true);
       expect(result.warnings).toEqual(
@@ -1021,7 +1093,7 @@ describe('ProviderMcpEnsureService', () => {
     });
 
     it('provisioning throws non-Error → warning message is generic fallback', async () => {
-      mockGeminiTrustedFolders.provisionProjectPath.mockRejectedValue('string error');
+      mockTrustProvisioner.provisionProjectPath.mockRejectedValue('string error');
       mockMcpRegistration.ensureRegistration.mockResolvedValue({
         success: true,
         action: 'added',
@@ -1029,7 +1101,7 @@ describe('ProviderMcpEnsureService', () => {
         alias: 'devchain',
       });
 
-      const result = await service.ensureMcp(geminiProvider, projectPath);
+      const result = await service.ensureMcp(agyProvider, projectPath);
 
       expect(result.success).toBe(true);
       expect(result.warnings).toEqual(
@@ -1040,7 +1112,7 @@ describe('ProviderMcpEnsureService', () => {
     });
 
     it('provisioning happy path → no provisioning warning in result', async () => {
-      mockGeminiTrustedFolders.provisionProjectPath.mockResolvedValue({
+      mockTrustProvisioner.provisionProjectPath.mockResolvedValue({
         success: true,
         warnings: [],
       });
@@ -1051,7 +1123,7 @@ describe('ProviderMcpEnsureService', () => {
         alias: 'devchain',
       });
 
-      const result = await service.ensureMcp(geminiProvider, projectPath);
+      const result = await service.ensureMcp(agyProvider, projectPath);
 
       expect(result.success).toBe(true);
       const provisioningWarning = result.warnings?.find((w) => w.source === 'provisioning');

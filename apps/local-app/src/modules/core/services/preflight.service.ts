@@ -15,7 +15,7 @@ import {
 } from '../../sessions/utils/env-builder';
 import { McpProviderRegistrationService } from '../../providers/services/mcp-provider-registration.service';
 import { parseProfileOptions, ProfileOptionsError } from '../../sessions/utils/profile-options';
-import { ProviderAdapterFactory, isMcpCli } from '../../providers/adapters';
+import { ProviderAdapterFactory, isMcpCli, isAuthProbeCapable } from '../../providers/adapters';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 
 const logger = createLogger('PreflightService');
@@ -517,6 +517,43 @@ export class PreflightService {
   }
 
   /**
+   * Best-effort, NON-BLOCKING provider auth probe. Only providers that declare
+   * `AuthProbeCapability` (Copilot) are probed; everything else returns 'pass'.
+   * A logged-out hint maps to 'warn' with an actionable remediation — never a
+   * 'fail' (the probe has false-negatives; the keyring is authoritative). A probe
+   * exception is swallowed (treated as 'pass') so it can never block a launch.
+   */
+  private async evaluateAuthStatus(provider: Provider): Promise<{
+    authStatus: 'pass' | 'fail' | 'warn';
+    authMessage?: string;
+    authDetails?: string;
+  }> {
+    let adapter;
+    try {
+      adapter = this.adapterFactory.getAdapter(provider.name);
+    } catch {
+      return { authStatus: 'pass' };
+    }
+    if (!isAuthProbeCapable(adapter)) {
+      return { authStatus: 'pass' };
+    }
+    try {
+      const { authenticated, remediation } = await adapter.probeAuth();
+      if (authenticated) {
+        return { authStatus: 'pass' };
+      }
+      return {
+        authStatus: 'warn',
+        authMessage: `${provider.name} may not be authenticated`,
+        authDetails: remediation,
+      };
+    } catch (error) {
+      logger.debug({ error, provider: provider.name }, 'Auth probe failed (non-blocking)');
+      return { authStatus: 'pass' };
+    }
+  }
+
+  /**
    * Check tmux availability and version
    */
   private async checkTmux(): Promise<PreflightCheck> {
@@ -621,7 +658,13 @@ export class PreflightService {
       provider,
       projectPath,
     );
-    const statusCollection: Array<'pass' | 'fail' | 'warn'> = [binaryStatus, mcpStatus];
+
+    // Best-effort, NON-BLOCKING auth probe (S1): a logged-out hint becomes a
+    // 'warn' (never 'fail') — the keyring is authoritative and the real error
+    // surfaces at launch. Only providers declaring AuthProbeCapability run this.
+    const { authStatus, authMessage, authDetails } = await this.evaluateAuthStatus(provider);
+
+    const statusCollection: Array<'pass' | 'fail' | 'warn'> = [binaryStatus, mcpStatus, authStatus];
     const overallStatus = statusCollection.includes('fail')
       ? 'fail'
       : statusCollection.includes('warn')
@@ -629,9 +672,14 @@ export class PreflightService {
         : 'pass';
 
     const summaryMessage =
-      binaryStatus === overallStatus ? binaryMessage : (mcpMessage ?? binaryMessage);
+      binaryStatus === overallStatus
+        ? binaryMessage
+        : overallStatus === authStatus && authMessage
+          ? authMessage
+          : (mcpMessage ?? binaryMessage);
 
-    const combinedDetails = [binaryDetails, mcpDetails].filter(Boolean).join(' | ') || undefined;
+    const combinedDetails =
+      [binaryDetails, mcpDetails, authDetails].filter(Boolean).join(' | ') || undefined;
 
     const requiresProjectContext =
       this.isMcpSupported(provider.name) && !isMcpCli(this.adapterFactory.getAdapter(provider.name))

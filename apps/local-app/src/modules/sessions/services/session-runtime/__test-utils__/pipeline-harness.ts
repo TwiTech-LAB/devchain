@@ -139,6 +139,7 @@ export function createMockAdapter(providerName = 'test-provider') {
   return {
     providerName,
     launchInitialPromptBehavior: undefined,
+    initialPromptSeedMode: undefined as 'argv' | 'stdin' | undefined,
     buildLaunchArgs: jest.fn().mockReturnValue({
       argv: [providerName, '--session', 'new'],
     }),
@@ -178,6 +179,7 @@ export function createLaunchPipelineHarness() {
     typeCommand: jest.fn().mockResolvedValue(undefined),
     waitForOutput: jest.fn().mockResolvedValue(undefined),
     deliver: jest.fn().mockResolvedValue(undefined),
+    deliverImmediate: jest.fn().mockResolvedValue(undefined),
     sessionExists: jest.fn().mockResolvedValue(false),
     startHealthCheck: jest.fn(),
   };
@@ -193,6 +195,11 @@ export function createLaunchPipelineHarness() {
   };
 
   const hooksConfigService = {
+    ensureHooksConfig: jest.fn().mockResolvedValue(undefined),
+  };
+
+  const copilotHooksConfigService = {
+    providerName: 'copilot',
     ensureHooksConfig: jest.fn().mockResolvedValue(undefined),
   };
 
@@ -229,6 +236,7 @@ export function createLaunchPipelineHarness() {
     ptyService, // PtyService
     terminalSessionRegistry, // TerminalSessionRegistry
     hooksConfigService, // HooksConfigService
+    copilotHooksConfigService, // CopilotHooksConfigService
     preflightService, // PreflightService
     mcpEnsureService, // ProviderMcpEnsureService
     eventsService, // EventsService
@@ -247,6 +255,7 @@ export function createLaunchPipelineHarness() {
       ptyService,
       terminalSessionRegistry,
       hooksConfigService,
+      copilotHooksConfigService,
       preflightService,
       mcpEnsureService,
       eventsService,

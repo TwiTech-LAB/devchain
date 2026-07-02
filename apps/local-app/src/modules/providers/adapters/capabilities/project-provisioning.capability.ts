@@ -1,4 +1,4 @@
-// Provisional capability — single adopter (Gemini). Revisit if a 2nd provider needs project provisioning.
+// Real capability — multiple adopters (Antigravity trusted-workspaces + Copilot trusted-folders).
 
 export interface ProvisioningWarningItem {
   source: string;

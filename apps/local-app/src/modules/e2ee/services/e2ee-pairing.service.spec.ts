@@ -124,6 +124,36 @@ describe('E2eePairingService (Task:4 — QR auto-verified key exchange)', () => 
     expect(stored?.publicKeyB64).toBe(bytesToBase64(mobile.publicKey));
   });
 
+  it('QR complete supersedes ALL of the phone’s prior rows for the same installId (verified + unverified)', async () => {
+    const INSTALL = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    // The phone paired before under two now-dead kids (a verified one and a stale unverified one).
+    deviceStore.add({
+      kid: 'oldverified'.padEnd(32, '0'),
+      publicKeyB64: bytesToBase64(new Uint8Array(32).fill(7)),
+      trust: 'verified',
+      verifiedVia: 'qr',
+      installId: INSTALL,
+    });
+    deviceStore.add({
+      kid: 'oldunverified'.padEnd(32, '0'),
+      publicKeyB64: bytesToBase64(new Uint8Array(32).fill(8)),
+      installId: INSTALL,
+    });
+
+    const mobile = fromX25519PrivateKey(bytes(0xbeef));
+    const begin = await service.beginQrPairing('chan-repair');
+    const reply = {
+      ...mobileResponds('chan-repair', begin.pairingSecret, mobile),
+      installId: INSTALL,
+    };
+
+    const result = await service.completeQrPairing(reply);
+
+    // Both stale rows are gone; only the freshly-verified re-pair remains for this phone.
+    expect(deviceStore.list().map((d) => d.kid)).toEqual([result.kid]);
+    expect(deviceStore.get(result.kid)?.trust).toBe('verified');
+  });
+
   it('both ends derive the identical shared key (HKDF works)', async () => {
     const mobile = fromX25519PrivateKey(bytes(0xb0b));
     const pcShared = deriveSharedKey(pcKeyPair.privateKey, mobile.publicKey);

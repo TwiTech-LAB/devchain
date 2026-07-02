@@ -145,7 +145,7 @@ const mockPresets = [
   {
     name: 'minimal',
     description: null,
-    agentConfigs: [{ agentName: 'Reviewer', providerConfigName: 'gemini-config' }],
+    agentConfigs: [{ agentName: 'Reviewer', providerConfigName: 'codex-config' }],
   },
 ];
 

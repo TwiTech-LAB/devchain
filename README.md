@@ -7,7 +7,7 @@
 
 **[Homepage](https://devchain.cc/)** · **[Quick Start Guides](https://devchain.cc/docs/quick-start-guide/)** · **[What's New in v0.15.0](https://devchain.cc/releases/0.15.0/)**
 
-Devchain runs your AI coding agents as coordinated teams — each with their own terminal session, task queue, and chat. Group agents under team leads, assign epics, track progress on a visual board, and let teams scale themselves to match the workload. Supports Claude Code, Codex, Gemini CLI, and OpenCode out of the box.
+Devchain runs your AI coding agents as coordinated teams — each with their own terminal session, task queue, and chat. Group agents under team leads, assign epics, track progress on a visual board, and let teams scale themselves to match the workload. Supports Claude Code, Codex, OpenCode, Antigravity, and GitHub Copilot out of the box.
 
 ---
 
@@ -32,7 +32,7 @@ Change any agent's provider and model on the fly from the context menu — no te
 Spin up isolated agent environments on dedicated git branches. Each worktree gets its own agent team, terminals, and chat — run multiple features in parallel and merge when ready. Worktrees run as Docker containers or local processes with full branch isolation.
 
 ### Container Isolation
-Worktree containers are provisioned automatically from the official Devchain image on [GHCR](https://github.com/orgs/TwiTech-LAB/packages/container/package/devchain). Each container has Claude Code, Codex, and Gemini CLI pre-installed, runs as a non-root user, and shares your git identity for correct commit attribution.
+Worktree containers are provisioned automatically from the official Devchain image on [GHCR](https://github.com/orgs/TwiTech-LAB/packages/container/package/devchain). Each container has Claude Code, Codex, and Antigravity CLI pre-installed, runs as a non-root user, and shares your git identity for correct commit attribution.
 
 ### Skills
 Browse and sync AI agent skills from community sources (Anthropic, OpenAI, Vercel, and more). Enable or disable skills per project and expose them to agents via MCP tools.
@@ -47,7 +47,7 @@ Real terminal streaming via tmux and WebSocket. Each agent gets its own session 
 Live pre-commit diff viewer with agent integration, inline comments, `@mentions`, comment threading, and VS Code-style file navigation.
 
 ### Multi-Provider
-Works with Claude Code, OpenAI Codex, Google Gemini CLI, GLM models, and OpenCode. Switch providers per agent or switch the whole team preset with a single click.
+Works with Claude Code, OpenAI Codex, OpenCode, Antigravity, and GitHub Copilot — plus model families like GLM through provider configs. Switch providers per agent or switch the whole team preset with a single click.
 
 ### MCP Integration
 Full Model Context Protocol support. Agents get access to epics, chat, skills, reviews, and more through MCP tools — auto-configured before each session.
@@ -67,8 +67,9 @@ All data is stored in a local SQLite database and the platform runs entirely on 
 - **AI Provider** — at least one of:
   - [`claude`](https://claude.ai/claude-code) CLI
   - [`codex`](https://github.com/openai/codex) CLI
-  - [`gemini`](https://github.com/google-gemini/gemini-cli) CLI
   - [`opencode`](https://github.com/opencode-ai/opencode) CLI
+  - [`agy`](https://antigravity.google) CLI (Google Antigravity)
+  - [`copilot`](https://github.com/github/copilot-cli) CLI (GitHub Copilot)
 
 ---
 

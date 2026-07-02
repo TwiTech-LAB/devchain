@@ -17,10 +17,16 @@ const ENCODED_TRAVERSAL_RE = /%2e%2e/i;
 const PROVIDER_ROOTS: Record<string, string[]> = {
   claude: ['.claude/projects/'],
   codex: ['.codex/sessions/'],
-  gemini: ['.gemini/tmp/'],
   // OpenCode stores all sessions in a single SQLite container under this root;
   // `transcript_path` points at the `.db` file (a real file → passes validation).
   opencode: ['.local/share/opencode/'],
+  // Antigravity (agy) stores a per-conversation SQLite store under this root;
+  // `transcript_path` points at `conversations/<convId>.db` (a real file →
+  // passes validation), with messages in a sibling `transcript_full.jsonl`.
+  agy: ['.gemini/antigravity-cli/'],
+  // Copilot stores one append-only JSONL transcript per session at
+  // `~/.copilot/session-state/<sessionId>/events.jsonl`; the broad root covers it.
+  copilot: ['.copilot/'],
 };
 
 @Injectable()

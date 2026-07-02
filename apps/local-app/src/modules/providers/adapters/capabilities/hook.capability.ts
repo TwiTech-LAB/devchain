@@ -1,4 +1,7 @@
-// Provisional capability — single adopter (Claude). Revisit if a 2nd provider implements hooks.
+// Real capability — 2nd adopter (Copilot) landed alongside Claude. The hook
+// surface differs per provider (payload casing, config location, event keys), so
+// this stays a typed capability rather than a base-interface field: each adopter
+// supplies its own `hooksEventName` + `buildHookEnv`, narrowed via `isHookCapable`.
 
 export interface HookEnvContext {
   apiUrl: string;

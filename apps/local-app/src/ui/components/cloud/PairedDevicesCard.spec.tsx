@@ -57,7 +57,10 @@ describe('PairedDevicesCard', () => {
 
   it('reveals the safety number on demand and hides it again', async () => {
     global.fetch = mockFetch([
-      ['/safety-number', { kid: 'k1', safetyNumber: '11111 22222 33333 44444', trust: 'unverified' }],
+      [
+        '/safety-number',
+        { kid: 'k1', safetyNumber: '11111 22222 33333 44444', trust: 'unverified' },
+      ],
       ['/api/e2ee/devices', [device()]],
     ]) as unknown as typeof fetch;
 
@@ -81,7 +84,11 @@ describe('PairedDevicesCard', () => {
       const url = String(input);
       if (init?.method === 'DELETE') {
         list = [];
-        return { ok: true, status: 200, json: async () => ({ kid: 'k1', removed: true }) } as Response;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ kid: 'k1', removed: true }),
+        } as Response;
       }
       if (url.includes('/api/e2ee/devices')) {
         return { ok: true, status: 200, json: async () => list } as Response;

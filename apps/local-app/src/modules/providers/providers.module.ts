@@ -13,6 +13,7 @@ import {
   McpRegistrationPort,
   CliMcpRegistrationAdapter,
   ConfigFileMcpRegistrationAdapter,
+  AntigravityMcpRegistrationAdapter,
 } from './services/mcp-registration';
 import { SettingsModule } from '../settings/settings.module';
 import { RegistryModule } from '../registry/registry.module';
@@ -35,6 +36,7 @@ import { ProcessExecutorModule } from '../terminal/services/process-executor/pro
     McpRegistrationPort,
     CliMcpRegistrationAdapter,
     ConfigFileMcpRegistrationAdapter,
+    AntigravityMcpRegistrationAdapter,
     McpProviderRegistrationService,
     ProviderMcpEnsureService,
   ],

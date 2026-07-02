@@ -33,6 +33,12 @@ describe('ProviderModelsController', () => {
     updatedAt: '2024-01-01T00:00:00Z',
   };
 
+  const agyProvider = {
+    ...opencodeProvider,
+    name: 'agy',
+    binPath: '/usr/local/bin/agy',
+  };
+
   beforeEach(async () => {
     jest.clearAllMocks();
 
@@ -231,6 +237,50 @@ describe('ProviderModelsController', () => {
       );
       expect(mcpRegistration.resolveBinary).not.toHaveBeenCalled();
       expect(fakeExecutor.calls).toHaveLength(0);
+    });
+
+    it('discovers agy models by parsing `agy models` display names (mirrors opencode)', async () => {
+      storage.getProvider.mockResolvedValue(agyProvider);
+      mcpRegistration.resolveBinary.mockResolvedValue({
+        success: true,
+        binaryPath: '/usr/local/bin/agy',
+      });
+      // Real `agy models` v1.0.12 output (8 display names, one per line).
+      fakeExecutor.enqueueResponse({
+        type: 'success',
+        stdout: [
+          'Gemini 3.5 Flash (Medium)',
+          'Gemini 3.5 Flash (High)',
+          'Gemini 3.5 Flash (Low)',
+          'Gemini 3.1 Pro (Low)',
+          'Gemini 3.1 Pro (High)',
+          'Claude Sonnet 4.6 (Thinking)',
+          'Claude Opus 4.6 (Thinking)',
+          'GPT-OSS 120B (Medium)',
+        ].join('\n'),
+      });
+      storage.bulkCreateProviderModels.mockResolvedValue({
+        added: ['Gemini 3.5 Flash (High)'],
+        existing: [],
+      });
+
+      const result = await controller.discoverProviderModels('provider-1');
+
+      expect(mcpRegistration.resolveBinary).toHaveBeenCalledWith(agyProvider);
+      expect(fakeExecutor.calls[0].argv).toEqual(['/usr/local/bin/agy', 'models']);
+      // All 8 display names are parsed and bulk-created verbatim (each is also the
+      // `--model` value agy accepts).
+      expect(storage.bulkCreateProviderModels).toHaveBeenCalledWith('provider-1', [
+        'Gemini 3.5 Flash (Medium)',
+        'Gemini 3.5 Flash (High)',
+        'Gemini 3.5 Flash (Low)',
+        'Gemini 3.1 Pro (Low)',
+        'Gemini 3.1 Pro (High)',
+        'Claude Sonnet 4.6 (Thinking)',
+        'Claude Opus 4.6 (Thinking)',
+        'GPT-OSS 120B (Medium)',
+      ]);
+      expect(result).toEqual({ added: ['Gemini 3.5 Flash (High)'], existing: [], total: 1 });
     });
 
     it('returns bad request when binary cannot be resolved', async () => {

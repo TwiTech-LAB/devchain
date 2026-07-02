@@ -130,6 +130,32 @@ describe('SessionLaunchPipeline', () => {
       );
     });
 
+    it('threads the generated sessionId into resolveLaunchConfig for mode:new', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      const resolveMock = resolveLaunchConfig as jest.Mock;
+
+      mocks.sqliteMock.prepare.mockImplementation((sql: string) => {
+        if (sql.includes('SELECT') && sql.includes("status = 'running'")) {
+          return {
+            run: jest.fn(),
+            get: jest.fn().mockReturnValue(undefined),
+            all: jest.fn().mockReturnValue([]),
+          };
+        }
+        return { run: jest.fn().mockReturnValue({ changes: 1 }), get: jest.fn(), all: jest.fn() };
+      });
+
+      const result = await runWithTimers(() => pipeline.launch(launchDto));
+
+      // sessionId (devchain sessions.id) is threaded so a binding adapter can
+      // emit `--session-id <sessions.id>`; it must equal the persisted row id.
+      // Match by value across all calls (the shared resolve mock accumulates
+      // calls across tests, so don't index a fixed call position).
+      expect(resolveMock).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: 'new', sessionId: result.id }),
+      );
+    });
+
     it('creates registry sessions with normalized capture policy for default adapters', async () => {
       const { pipeline, mocks } = createLaunchPipelineHarness();
 
@@ -536,6 +562,101 @@ describe('SessionLaunchPipeline', () => {
       expect(deliveredText).toContain('agent=test-agent');
       expect(deliveredText).toContain('project=TestProject');
       expect(deliveredText).toMatch(/session_short=[a-f0-9]{8}/);
+    });
+  });
+
+  // ── Opt-in initial-prompt seeding (initialPromptSeedMode) ────────────────
+  // For adapters that declare `initialPromptSeedMode`, the prompt is rendered
+  // BEFORE resolveLaunchConfig and threaded into buildLaunchArgs (argv) or piped
+  // post-launch (stdin) — and the fragile post-launch paste is SKIPPED. Default
+  // adapters (no seed mode) keep the existing paste path unchanged.
+  describe('initial-prompt seeding (opt-in initialPromptSeedMode)', () => {
+    const noRunningSelect = (sql: string) => {
+      if (sql.includes('SELECT') && sql.includes("status = 'running'")) {
+        return {
+          run: jest.fn(),
+          get: jest.fn().mockReturnValue(undefined),
+          all: jest.fn().mockReturnValue([]),
+        };
+      }
+      return { run: jest.fn().mockReturnValue({ changes: 1 }), get: jest.fn(), all: jest.fn() };
+    };
+
+    it('argv mode: renders prompt before resolveLaunchConfig, passes it as initialPrompt, and SKIPS paste', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      const resolveMock = resolveLaunchConfig as jest.Mock;
+      (mocks.adapter as { initialPromptSeedMode?: 'argv' | 'stdin' }).initialPromptSeedMode =
+        'argv';
+      mocks.storage.getInitialSessionPrompt.mockResolvedValue({ content: 'Seed {{agent_name}}' });
+      mocks.sqliteMock.prepare.mockImplementation(noRunningSelect);
+
+      await runWithTimers(() => pipeline.launch(launchDto));
+
+      // initialPrompt threaded into resolveLaunchConfig (→ buildLaunchArgs)
+      expect(resolveMock).toHaveBeenCalledWith(
+        expect.objectContaining({ initialPrompt: expect.stringContaining('Seed test-agent') }),
+      );
+      // Post-launch paste skipped entirely; argv mode pipes nothing
+      expect(mocks.terminalIO.deliver).not.toHaveBeenCalled();
+      expect(mocks.terminalIO.deliverImmediate).not.toHaveBeenCalled();
+    });
+
+    it('stdin mode: pipes the rendered prompt as literal input (no bracketed paste) and SKIPS paste', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      const resolveMock = resolveLaunchConfig as jest.Mock;
+      (mocks.adapter as { initialPromptSeedMode?: 'argv' | 'stdin' }).initialPromptSeedMode =
+        'stdin';
+      mocks.storage.getInitialSessionPrompt.mockResolvedValue({ content: 'Seed {{agent_name}}' });
+      mocks.sqliteMock.prepare.mockImplementation(noRunningSelect);
+
+      await runWithTimers(() => pipeline.launch(launchDto));
+
+      expect(resolveMock).toHaveBeenCalledWith(
+        expect.objectContaining({ initialPrompt: expect.stringContaining('Seed test-agent') }),
+      );
+      // Piped to the process after start, without bracketed-paste markers
+      expect(mocks.terminalIO.deliverImmediate).toHaveBeenCalledWith(
+        { name: expect.any(String) },
+        expect.stringContaining('Seed test-agent'),
+        { bracketed: false, confirm: false },
+      );
+      // Fragile paste path not used
+      expect(mocks.terminalIO.deliver).not.toHaveBeenCalled();
+    });
+
+    it('seed adapter with NO configured prompt: initialPrompt undefined, no paste, no pipe', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      const resolveMock = resolveLaunchConfig as jest.Mock;
+      (mocks.adapter as { initialPromptSeedMode?: 'argv' | 'stdin' }).initialPromptSeedMode =
+        'stdin';
+      mocks.storage.getInitialSessionPrompt.mockResolvedValue(null);
+      mocks.sqliteMock.prepare.mockImplementation(noRunningSelect);
+
+      await runWithTimers(() => pipeline.launch(launchDto));
+
+      expect(resolveMock).toHaveBeenCalledWith(
+        expect.objectContaining({ initialPrompt: undefined }),
+      );
+      expect(mocks.terminalIO.deliver).not.toHaveBeenCalled();
+      expect(mocks.terminalIO.deliverImmediate).not.toHaveBeenCalled();
+    });
+
+    it('default adapter (no seed mode): paste path preserved, initialPrompt stays undefined (regression)', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      const resolveMock = resolveLaunchConfig as jest.Mock;
+      // mocks.adapter.initialPromptSeedMode is undefined by default
+      mocks.storage.getInitialSessionPrompt.mockResolvedValue({ content: 'Hello {{agent_name}}' });
+      mocks.sqliteMock.prepare.mockImplementation(noRunningSelect);
+
+      await runWithTimers(() => pipeline.launch(launchDto));
+
+      // No launch-time seeding for default providers
+      expect(resolveMock).toHaveBeenCalledWith(
+        expect.objectContaining({ initialPrompt: undefined }),
+      );
+      // Existing out-of-band paste still happens
+      expect(mocks.terminalIO.deliver).toHaveBeenCalled();
+      expect(mocks.terminalIO.deliverImmediate).not.toHaveBeenCalled();
     });
   });
 

@@ -262,4 +262,82 @@ describe('TunnelRpcCryptoService', () => {
       expect(resp.result).toEqual({ items: [] });
     });
   });
+
+  describe('M3 — sealed-only e2ee.revokeDeviceKey + trusted sender context', () => {
+    const REVOKE = 'e2ee.revokeDeviceKey';
+
+    // DEDICATED: a sealed-only test alone would miss the default mixed-client path — a
+    // plaintext revoke MUST be rejected even when e2eeRequired is false (the branch that
+    // would otherwise dispatch it plaintext).
+    it('rejects a PLAINTEXT revoke with NO dispatch even when e2eeRequired is false', async () => {
+      const { svc, deviceStore } = makeService(); // default e2eeRequired=false
+      const dispatch = jest.fn();
+      const resp = await svc.handle(
+        { jsonrpc: '2.0', id: 'r1', method: REVOKE, params: { kid: 'anything' } },
+        INSTANCE_ID,
+        dispatch,
+      );
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(deviceStore.get).not.toHaveBeenCalled();
+      expect(resp.error).toEqual({ code: -32603, message: 'E2EE required' });
+      expect(resp.result).toBeUndefined();
+    });
+
+    it('also rejects a PLAINTEXT revoke when e2eeRequired is true', async () => {
+      const { svc } = makeService(undefined, { e2eeRequired: true });
+      const dispatch = jest.fn();
+      const resp = await svc.handle(
+        { jsonrpc: '2.0', id: 'r2', method: REVOKE, params: {} },
+        INSTANCE_ID,
+        dispatch,
+      );
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(resp.error).toEqual({ code: -32603, message: 'E2EE required' });
+    });
+
+    it('threads the VERIFIED sender kid (envelope kid) to dispatch, ignoring any param kid', async () => {
+      const { svc } = makeService();
+      const mobileSvc = mobileEnvelopeService();
+      // Params name a DECOY kid — it must never become the sender identity.
+      const sealedParams = await mobileSvc.seal(
+        { kid: 'decoy-kid', __senderKid: 'decoy-kid' },
+        reqCtx(REVOKE),
+      );
+      let ctxSeen: unknown;
+      const dispatch = jest.fn(async (plain: JsonRpcRequestLike, cryptoCtx?: unknown) => {
+        ctxSeen = cryptoCtx;
+        return {
+          jsonrpc: '2.0' as const,
+          id: plain.id,
+          result: { kid: mobile.kid, removed: true },
+        };
+      });
+
+      const resp = await svc.handle(
+        { jsonrpc: '2.0', id: 'r3', method: REVOKE, params: sealedParams },
+        INSTANCE_ID,
+        dispatch,
+      );
+
+      // The trusted context carries the ENVELOPE kid (proven by successful decrypt), not the decoy.
+      expect(ctxSeen).toEqual({ senderKid: mobile.kid });
+      expect(resp.error).toBeUndefined();
+      const opened = (await mobileSvc.open(resp.result, resCtx(REVOKE))) as SealedRpcResult;
+      expect(opened).toEqual({ ok: true, data: { kid: mobile.kid, removed: true } });
+    });
+
+    it('does NOT attach a crypto context on the plaintext (non-sealed-only) path', async () => {
+      const { svc } = makeService();
+      const dispatch = jest.fn(
+        async (): Promise<JsonRpcResponseLike> => ({ jsonrpc: '2.0', id: 'r4', result: {} }),
+      );
+      await svc.handle(
+        { jsonrpc: '2.0', id: 'r4', method: 'board.listProjects', params: { projectId: 'p1' } },
+        INSTANCE_ID,
+        dispatch,
+      );
+      // Single-arg call → no verified sender for an unauthenticated request.
+      expect(dispatch.mock.calls[0]).toHaveLength(1);
+    });
+  });
 });

@@ -10,8 +10,11 @@ Before you begin, ensure you have the following installed:
 - **pnpm** >= 8.0.0
 - **tmux** (required for terminal session management on Linux/macOS)
 - At least one AI provider CLI:
-  - `claude` - Claude CLI
+  - `claude` - Claude Code CLI
   - `codex` - Codex CLI
+  - `opencode` - OpenCode CLI
+  - `agy` - Google Antigravity CLI
+  - `copilot` - GitHub Copilot CLI
 
 ## Getting Started
 
@@ -47,16 +50,25 @@ Before you begin, ensure you have the following installed:
 ```
 devchain/
 ├── scripts/
-│   └── cli.js          # CLI entry point
+│   └── cli.js              # CLI entry point
 ├── apps/
-│   └── local-app/      # NestJS API + Vite UI
-│       ├── src/
-│       │   ├── modules/    # API modules
-│       │   └── ui/         # React UI
-│       └── vite.config.ts
-├── docs/               # Documentation
+│   ├── local-app/          # Main runtime: NestJS API + Vite UI
+│   │   ├── src/modules/    # API modules
+│   │   └── src/ui/         # React UI
+│   ├── mobile-app/         # Expo/React Native mobile client
+│   ├── devchain-bridge/    # Mobile relay (JSON-RPC tunnel)
+│   ├── identity-service/   # Auth/identity service (PostgreSQL)
+│   ├── notifications-service/  # Push notifications (PostgreSQL)
+│   ├── admin-portal/       # Admin SPA for user/org management
+│   ├── landing/            # devchain.cc site assets
+│   ├── remote-api/         # Future/shared-cloud API
+│   └── template-registry/  # Template registry service
+├── packages/               # Shared libraries (shared, auth-common, template-cli, …)
+├── docs/                   # Documentation — see docs/README.md
 └── package.json
 ```
+
+Full directory map: `docs/code-map.md`.
 
 ## Architecture
 
@@ -69,7 +81,7 @@ devchain/
 When you run `pnpm dev`, the CLI performs these validations:
 
 1. **tmux check** - Ensures tmux is installed
-2. **Provider detection** - Checks for `claude` or `codex` on PATH
+2. **Provider detection** - Checks for a supported provider CLI on PATH (`claude`, `codex`, `opencode`, `agy`, `copilot`)
 3. **MCP configuration** - Validates MCP server registration
 4. **Claude bypass permissions** - Prompts to enable auto-approval (if Claude detected)
 
@@ -122,5 +134,5 @@ pnpm build:fast
 - Check that the API is healthy: `curl http://localhost:3000/health`
 
 ### Provider not detected
-- Ensure `claude` or `codex` is installed and on your PATH
-- Test with: `which claude` or `which codex`
+- Ensure at least one supported provider CLI (`claude`, `codex`, `opencode`, `agy`, `copilot`) is installed and on your PATH
+- Test with: `which claude` (or the equivalent for your provider)

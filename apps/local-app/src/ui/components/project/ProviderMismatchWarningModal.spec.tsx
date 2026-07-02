@@ -65,7 +65,7 @@ describe('ProviderMismatchWarningModal', () => {
           ...warnings,
           {
             type: 'provider_mismatch',
-            originalProvider: 'gemini',
+            originalProvider: 'codex',
             substituteProvider: 'openai',
             agentNames: ['Agent C'],
           },
@@ -75,7 +75,7 @@ describe('ProviderMismatchWarningModal', () => {
     );
 
     expect(screen.getByText('Missing: claude')).toBeInTheDocument();
-    expect(screen.getByText('Missing: gemini')).toBeInTheDocument();
+    expect(screen.getByText('Missing: codex')).toBeInTheDocument();
     expect(screen.getByText('Affected agents: Agent C')).toBeInTheDocument();
   });
 });

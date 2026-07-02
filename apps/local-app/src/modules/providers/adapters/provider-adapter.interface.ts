@@ -45,7 +45,25 @@ export interface AddMcpServerOptions {
 export interface BuildLaunchArgsInput {
   mode: 'new' | 'restore';
   providerSessionId?: string;
+  /**
+   * The devchain `sessions.id` for a NEW launch. Supplied only for `mode:'new'`
+   * so a deterministic-binding adapter (e.g. Copilot) can pass it to the provider
+   * CLI as that session's own UUID (`--session-id <sessions.id>`), making the
+   * transcript path derivable pre-scan. Undefined for `mode:'restore'` (which
+   * binds via `providerSessionId`, e.g. `--resume`) and ignored by adapters that
+   * do not bind at launch — existing providers simply never read it.
+   */
+  sessionId?: string;
   profileOptionArgs: string[];
+  /**
+   * Pre-rendered initial prompt, supplied ONLY for adapters that declare an
+   * `initialPromptSeedMode` (opt-in launch-time seeding). `argv`-mode adapters
+   * emit it as an argv value here; `stdin`-mode adapters ignore it (the launch
+   * pipeline pipes it to the process after start). Undefined for every provider
+   * that uses the default post-launch paste path, and whenever no initial prompt
+   * is configured for the project.
+   */
+  initialPrompt?: string;
 }
 
 export interface ProviderAdapter {
@@ -54,10 +72,35 @@ export interface ProviderAdapter {
   readonly runtimePromptBehavior?: RuntimePromptBehavior;
   readonly terminalOutputBehavior?: TerminalOutputBehavior;
   /**
+   * Opt-in initial-prompt seeding at launch time, instead of the default
+   * post-launch out-of-band paste. Set this for full-screen TUIs (e.g. agy)
+   * where pasting into an alt-screen bubbletea UI is fragile. When set, the
+   * launch pipeline renders the initial prompt BEFORE `resolveLaunchConfig()`,
+   * threads it into `buildLaunchArgs` as `initialPrompt`, and SKIPS the
+   * post-launch paste.
+   *
+   * - `'argv'`: the adapter emits the prompt as an argv value from
+   *   `buildLaunchArgs` (note: argv is visible in `ps`/`/proc`).
+   * - `'stdin'`: the pipeline pipes the prompt to the process after start
+   *   (no paste); the adapter's `buildLaunchArgs` ignores `initialPrompt`.
+   *
+   * Leave undefined to keep the existing post-launch paste path unchanged.
+   */
+  readonly initialPromptSeedMode?: 'argv' | 'stdin';
+  /**
    * Environment variables the provider needs cleared from its launch
    * environment (passed to `env -u <KEY>`). Lets a provider opt out of
    * inherited vars without callers hardcoding provider-specific behavior.
    */
   readonly launchUnsetEnv?: readonly string[];
+  /**
+   * Environment variable keys that MUST NOT be present in a provider's launch
+   * environment (provider or config env). When any is set, `resolveLaunchConfig`
+   * throws BEFORE the process starts. Used for vars that would let launch succeed
+   * but break read-time invariants — e.g. Copilot rejects `COPILOT_HOME` (R4)
+   * because a relocated store passes launch then fails transcript-path validation
+   * (`PROVIDER_ROOTS` is `os.homedir()`-relative). Provider-agnostic mechanism.
+   */
+  readonly launchRejectEnv?: readonly string[];
   buildLaunchArgs(input: BuildLaunchArgsInput): { argv: string[] };
 }

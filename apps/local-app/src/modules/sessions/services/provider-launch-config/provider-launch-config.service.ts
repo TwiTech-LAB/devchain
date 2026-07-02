@@ -20,6 +20,12 @@ export { ProfileOptionsError, EnvBuilderError };
 export interface LaunchConfigInput {
   mode: 'new' | 'restore';
   providerSessionId?: string;
+  /**
+   * The devchain `sessions.id` for a NEW launch, threaded into `buildLaunchArgs`
+   * so deterministic-binding adapters (e.g. Copilot) can emit it as the provider
+   * session UUID (`--session-id <sessions.id>`). Undefined on restore.
+   */
+  sessionId?: string;
   adapter: ProviderAdapter;
   profileOptions: string | null | undefined;
   modelOverride: string | null | undefined;
@@ -28,6 +34,13 @@ export interface LaunchConfigInput {
   configEnv: Record<string, string> | null;
   provider: ContextWindowProviderState;
   hookContext?: HookEnvContext;
+  /**
+   * Pre-rendered initial prompt for opt-in seeding adapters
+   * (`adapter.initialPromptSeedMode` set). Threaded into `buildLaunchArgs` so
+   * `argv`-mode adapters can emit it as an argv value. Undefined for the
+   * default post-launch paste path and when no initial prompt is configured.
+   */
+  initialPrompt?: string;
 }
 
 export interface LaunchConfig {
@@ -46,6 +59,23 @@ export function resolve(input: LaunchConfigInput): LaunchConfig {
 
   const providerEnv = input.providerEnv ?? {};
   const configEnv = input.configEnv ?? {};
+
+  // Reject any provider-forbidden env var (e.g. Copilot's COPILOT_HOME, R4)
+  // BEFORE the process starts — these pass launch but break read-time invariants.
+  const rejectEnv = input.adapter.launchRejectEnv;
+  if (rejectEnv?.length) {
+    for (const key of rejectEnv) {
+      if (key in providerEnv || key in configEnv) {
+        throw new EnvBuilderError(
+          `${key} is not supported for the ${input.adapter.providerName} provider — ` +
+            `remove it from the provider/config environment. devchain reads this ` +
+            `provider's session store from a fixed home-relative path, so relocating ` +
+            `it would make launched sessions unreadable.`,
+        );
+      }
+    }
+  }
+
   let env: Record<string, string> | null = null;
 
   const mergedBaseEnv = { ...providerEnv, ...configEnv };
@@ -67,7 +97,9 @@ export function resolve(input: LaunchConfigInput): LaunchConfig {
   const { argv } = input.adapter.buildLaunchArgs({
     mode: input.mode,
     providerSessionId: input.providerSessionId,
+    sessionId: input.sessionId,
     profileOptionArgs: optionArgs,
+    initialPrompt: input.initialPrompt,
   });
 
   // Providers declare any env vars that must be cleared from their launch

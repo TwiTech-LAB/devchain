@@ -215,6 +215,10 @@ export class SessionRestorePipeline {
             projectId,
             transcriptPath: locked.transcript_path,
             providerName: provider.name.toLowerCase(),
+            // Re-emit the provider session id so DB-source watchers (agy/opencode) start.
+            // Without it the watcher skips (`transcript-watcher.service.ts` DB branch) and a
+            // restored DB conversation never receives live updates. Mirrors the launch path.
+            providerSessionId: locked.provider_session_id ?? undefined,
           });
         }
 

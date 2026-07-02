@@ -2,6 +2,7 @@ import { TunnelHandlerService } from './tunnel-handler.service';
 import { MobileChatRpcService } from './mobile-chat-rpc.service';
 import { MobileBoardRpcService } from './mobile-board-rpc.service';
 import { ViewportStreamerService } from './viewport-streamer.service';
+import { E2eeTrustService } from '../../e2ee/services/e2ee-trust.service';
 import {
   AppError,
   ConflictError,
@@ -1349,6 +1350,105 @@ describe('TunnelHandlerService', () => {
         }),
       ).resolves.toMatchObject({ error: { code: -32602, message: 'Invalid params' } });
       expect(unsubscribe).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('e2ee.adoptDeviceKey — installId supersede threading (M2)', () => {
+    const KID = 'a'.repeat(32);
+    const PUB = Buffer.from(new Uint8Array(32).fill(1)).toString('base64');
+    const INSTALL = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+    const makeHandler = (adopt: jest.Mock) => {
+      const e2eeTrust = { adoptPeerKeyTofu: adopt } as unknown as E2eeTrustService;
+      return new TunnelHandlerService({}, mobileChat, mobileBoard, mobileViewport, e2eeTrust);
+    };
+
+    it('threads a supplied installId to adoptPeerKeyTofu as the second (separate) arg', async () => {
+      const adopt = jest.fn().mockReturnValue({ kid: KID, trust: 'unverified' });
+      const service = makeHandler(adopt);
+
+      await expect(
+        service.handle({
+          jsonrpc: '2.0',
+          id: 'e1',
+          method: 'e2ee.adoptDeviceKey',
+          params: { kid: KID, publicKeyB64: PUB, installId: INSTALL },
+        }),
+      ).resolves.toMatchObject({ result: { kid: KID, trust: 'unverified' } });
+      expect(adopt).toHaveBeenCalledWith({ kid: KID, publicKeyB64: PUB }, INSTALL);
+    });
+
+    it('is backward compatible: an old client omitting installId still adopts (installId undefined)', async () => {
+      const adopt = jest.fn().mockReturnValue({ kid: KID, trust: 'unverified' });
+      const service = makeHandler(adopt);
+
+      await expect(
+        service.handle({
+          jsonrpc: '2.0',
+          id: 'e2',
+          method: 'e2ee.adoptDeviceKey',
+          params: { kid: KID, publicKeyB64: PUB },
+        }),
+      ).resolves.toMatchObject({ result: { kid: KID } });
+      expect(adopt).toHaveBeenCalledWith({ kid: KID, publicKeyB64: PUB }, undefined);
+    });
+  });
+
+  describe('e2ee.revokeDeviceKey — sealed-only, trusted sender kid (M3)', () => {
+    const SENDER_KID = 'sender'.repeat(5) + 'ss'; // 32 chars
+    const VICTIM_KID = 'victim'.repeat(5) + 'vv';
+
+    const makeHandler = (revoke: jest.Mock) => {
+      const e2eeTrust = { revokeDevice: revoke } as unknown as E2eeTrustService;
+      return new TunnelHandlerService({}, mobileChat, mobileBoard, mobileViewport, e2eeTrust);
+    };
+
+    it('revokes EXACTLY the crypto-context sender kid and ignores any client-supplied kid param', async () => {
+      const revoke = jest.fn().mockReturnValue({ kid: SENDER_KID, removed: true });
+      const service = makeHandler(revoke);
+
+      await expect(
+        service.handle(
+          // A hostile param naming a DIFFERENT device — must be ignored.
+          {
+            jsonrpc: '2.0',
+            id: 'rv1',
+            method: 'e2ee.revokeDeviceKey',
+            params: { kid: VICTIM_KID },
+          },
+          { senderKid: SENDER_KID },
+        ),
+      ).resolves.toMatchObject({ result: { kid: SENDER_KID, removed: true } });
+      expect(revoke).toHaveBeenCalledWith(SENDER_KID);
+      expect(revoke).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns cleanly (removed:false) for a replayed/already-revoked kid — no throw', async () => {
+      const revoke = jest.fn().mockReturnValue({ kid: SENDER_KID, removed: false });
+      const service = makeHandler(revoke);
+
+      await expect(
+        service.handle(
+          { jsonrpc: '2.0', id: 'rv2', method: 'e2ee.revokeDeviceKey', params: {} },
+          { senderKid: SENDER_KID },
+        ),
+      ).resolves.toMatchObject({ result: { kid: SENDER_KID, removed: false } });
+    });
+
+    it('errors and revokes NOTHING when the crypto context is absent (off the sealed lane)', async () => {
+      const revoke = jest.fn();
+      const service = makeHandler(revoke);
+
+      const resp = await service.handle({
+        jsonrpc: '2.0',
+        id: 'rv3',
+        method: 'e2ee.revokeDeviceKey',
+        params: {},
+      }); // no cryptoCtx
+
+      expect(revoke).not.toHaveBeenCalled();
+      expect(resp.error?.code).toBe(-32602); // ValidationError → invalid params
+      expect(resp.result).toBeUndefined();
     });
   });
 });

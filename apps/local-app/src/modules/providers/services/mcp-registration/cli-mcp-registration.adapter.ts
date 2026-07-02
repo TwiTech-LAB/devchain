@@ -56,7 +56,7 @@ export class CliMcpRegistrationAdapter implements McpRegistrationAdapter {
       alias: options.alias,
       extraArgs: options.extraArgs,
     });
-    return this.execute(resolution.binaryPath, args, 'pipe', execOptions);
+    return this.execute(resolution.binaryPath, args, execOptions);
   }
 
   async list(provider: Provider, execOptions?: McpExecOptions): Promise<McpListResult> {
@@ -74,8 +74,7 @@ export class CliMcpRegistrationAdapter implements McpRegistrationAdapter {
 
     const cliAdapter = this.getCliAdapter(provider);
     const args = cliAdapter.listMcpServers();
-    const mode = cliAdapter.mcpListSpawnMode === 'pty' ? 'pty' : 'pipe';
-    const result = await this.execute(resolution.binaryPath, args, mode, execOptions);
+    const result = await this.execute(resolution.binaryPath, args, execOptions);
 
     if (!result.success) {
       return {
@@ -117,7 +116,7 @@ export class CliMcpRegistrationAdapter implements McpRegistrationAdapter {
 
     const cliAdapter = this.getCliAdapter(provider);
     const args = cliAdapter.removeMcpServer(alias);
-    return this.execute(resolution.binaryPath, args, 'pipe', {
+    return this.execute(resolution.binaryPath, args, {
       timeoutMs: execOptions?.timeoutMs ?? 10_000,
       cwd: execOptions?.cwd,
     });
@@ -278,12 +277,13 @@ export class CliMcpRegistrationAdapter implements McpRegistrationAdapter {
   private async execute(
     binaryPath: string,
     args: string[],
-    mode: 'pipe' | 'pty',
     options?: McpExecOptions,
   ): Promise<McpCommandResult> {
+    // MCP CLI commands (add/list/remove) all run pipe-safe: they exit 0/non-zero
+    // reliably and emit machine-readable output without requiring a TTY.
     const result = await this.executor.run({
       argv: [binaryPath, ...args],
-      mode,
+      mode: 'pipe',
       cwd: options?.cwd,
       timeout: options?.timeoutMs,
     });

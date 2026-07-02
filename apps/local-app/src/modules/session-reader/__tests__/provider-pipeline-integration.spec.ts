@@ -1,6 +1,6 @@
 import * as path from 'node:path';
 import { parseCodexJsonl } from '../parsers/codex-jsonl.parser';
-import { parseGeminiJson } from '../parsers/gemini-json.parser';
+import { parseCopilotJsonl } from '../parsers/copilot-jsonl.parser';
 import { SessionReaderAdapterFactory } from '../adapters/session-reader-adapter.factory';
 import type { SessionReaderAdapter } from '../adapters/session-reader-adapter.interface';
 import type { PricingServiceInterface } from '../services/pricing.interface';
@@ -119,125 +119,53 @@ describe('Codex pipeline: fixture → parser → unified model', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Gemini pipeline integration
+// Copilot pipeline integration (fixture captured in S3)
 // ---------------------------------------------------------------------------
 
-describe('Gemini pipeline: fixture → parser → unified model', () => {
-  const filePath = path.join(FIXTURES_DIR, 'gemini-session.json');
+describe('Copilot pipeline: fixture → parser → unified model', () => {
+  const filePath = path.join(FIXTURES_DIR, 'copilot-events-multiturn.jsonl');
 
-  beforeEach(() => {
-    jest.clearAllMocks();
+  it('should parse the multi-turn fixture (2 user + 2 coalesced assistant turns)', async () => {
+    const result = await parseCopilotJsonl(filePath);
+    expect(result.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+    expect(result.metrics.messageCount).toBe(4);
   });
 
-  it('should parse the fixture and produce valid messages', async () => {
-    const result = await parseGeminiJson(filePath, { pricingService: mockPricing });
-
-    // Fixture has: user, gemini(+tool), gemini(+tool), info, user, gemini
-    expect(result.messages).toHaveLength(6);
+  it('should coalesce the tool turn (call + result + final text) into one assistant', async () => {
+    const result = await parseCopilotJsonl(filePath);
+    const toolTurn = result.messages[3];
+    expect(toolTurn.role).toBe('assistant');
+    expect(toolTurn.toolCalls.length).toBeGreaterThanOrEqual(1);
+    expect(toolTurn.toolResults.length).toBeGreaterThanOrEqual(1);
+    expect(toolTurn.toolResults.every((r) => r.isError === false)).toBe(true);
   });
 
-  it('should extract session ID', async () => {
-    const result = await parseGeminiJson(filePath);
-    expect(result.sessionId).toBe('gemini-test-session-001');
+  it('should skip the system prompt (not counted as a conversational turn)', async () => {
+    const result = await parseCopilotJsonl(filePath);
+    expect(result.messages.some((m) => m.role === 'system')).toBe(false);
   });
 
-  it('should map message roles correctly', async () => {
-    const result = await parseGeminiJson(filePath);
-
-    expect(result.messages[0].role).toBe('user');
-    expect(result.messages[1].role).toBe('assistant');
-    expect(result.messages[2].role).toBe('assistant');
-    expect(result.messages[3].role).toBe('system'); // info message
-    expect(result.messages[4].role).toBe('user');
-    expect(result.messages[5].role).toBe('assistant');
+  it('should track the model id from session.shutdown', async () => {
+    const result = await parseCopilotJsonl(filePath);
+    expect(result.metrics.primaryModel).toBe('claude-haiku-4.5');
   });
 
-  it('should track model as gemini-2.5-pro', async () => {
-    const result = await parseGeminiJson(filePath);
-    expect(result.metrics.primaryModel).toBe('gemini-2.5-pro');
+  it('should SUM session.shutdown totals across the resume (each run is separately billed)', async () => {
+    const result = await parseCopilotJsonl(filePath);
+    expect(result.metrics.isOngoing).toBe(false);
+    // The fixture has two shutdowns (run1 + resumed run2); per-run usage is summed, not final-wins.
+    expect(result.metrics.inputTokens).toBe(15148 + 30769);
+    expect(result.metrics.outputTokens).toBe(63 + 271);
+    // Native AI-Credits preserved alongside USD (0.33 + 0.33).
+    expect(result.metrics.nativeCost).toBeCloseTo(0.66, 5);
   });
 
-  it('should aggregate token metrics across gemini messages', async () => {
-    const result = await parseGeminiJson(filePath);
-
-    // msg1: input=450, output=85, cached=100, thoughts=30
-    // msg2: input=680, output=95, cached=200, thoughts=25
-    // msg3: input=820, output=40, cached=350
-    expect(result.metrics.inputTokens).toBe(450 + 680 + 820);
-    // output includes thoughts: (85+30) + (95+25) + 40 = 275
-    expect(result.metrics.outputTokens).toBe(275);
-    expect(result.metrics.cacheReadTokens).toBe(100 + 200 + 350);
-  });
-
-  it('should map tool calls from gemini messages', async () => {
-    const result = await parseGeminiJson(filePath);
-
-    // First gemini message has read_file, second has edit_file
-    expect(result.messages[1].toolCalls).toHaveLength(1);
-    expect(result.messages[1].toolCalls[0].name).toBe('read_file');
-    expect(result.messages[2].toolCalls).toHaveLength(1);
-    expect(result.messages[2].toolCalls[0].name).toBe('edit_file');
-  });
-
-  it('should map tool results from function responses', async () => {
-    const result = await parseGeminiJson(filePath);
-
-    expect(result.messages[1].toolResults).toHaveLength(1);
-    expect(result.messages[1].toolResults[0].content).toContain('validateToken');
-    expect(result.messages[1].toolResults[0].isError).toBe(false);
-  });
-
-  it('should include thinking content from thoughts', async () => {
-    const result = await parseGeminiJson(filePath);
-
-    const thinkingBlocks = result.messages[1].content.filter((c) => c.type === 'thinking');
-    expect(thinkingBlocks).toHaveLength(1);
-    if (thinkingBlocks[0].type === 'thinking') {
-      expect(thinkingBlocks[0].thinking).toContain('Analyzing request');
-    }
-  });
-
-  it('should mark info message as meta', async () => {
-    const result = await parseGeminiJson(filePath);
-
-    expect(result.messages[3].isMeta).toBe(true);
-    expect(result.messages[3].content[0]).toEqual({
-      type: 'text',
-      text: 'Session checkpoint created',
-    });
-  });
-
-  it('should calculate duration from startTime/lastUpdated', async () => {
-    const result = await parseGeminiJson(filePath);
-    // 10:00:00 to 10:02:30 = 150000ms
-    expect(result.metrics.durationMs).toBe(150_000);
-  });
-
-  it('should chain parentId across messages', async () => {
-    const result = await parseGeminiJson(filePath);
-
+  it('should chain parentId across conversational messages', async () => {
+    const result = await parseCopilotJsonl(filePath);
     expect(result.messages[0].parentId).toBeNull();
     for (let i = 1; i < result.messages.length; i++) {
       expect(result.messages[i].parentId).toBe(result.messages[i - 1].id);
     }
-  });
-
-  it('should preserve message IDs from fixture', async () => {
-    const result = await parseGeminiJson(filePath);
-
-    expect(result.messages[0].id).toBe('msg-user-001');
-    expect(result.messages[1].id).toBe('msg-gemini-001');
-  });
-
-  it('should invoke pricing service for cost calculation', async () => {
-    await parseGeminiJson(filePath, { pricingService: mockPricing });
-    expect(mockPricing.calculateMessageCost).toHaveBeenCalledWith(
-      'gemini-2.5-pro',
-      1950,
-      275,
-      650,
-      0,
-    );
   });
 });
 
@@ -249,7 +177,7 @@ describe('Factory selection → adapter pipeline', () => {
   function makeMockAdapter(name: string, roots: string[]): SessionReaderAdapter {
     return {
       providerName: name,
-      incrementalMode: name === 'gemini' ? 'snapshot' : 'delta',
+      incrementalMode: name === 'copilot' ? 'snapshot' : 'delta',
       allowedRoots: roots,
       discoverSessionFile: jest.fn(),
       parseSessionFile: jest.fn().mockResolvedValue({
@@ -269,34 +197,34 @@ describe('Factory selection → adapter pipeline', () => {
     const factory = new SessionReaderAdapterFactory();
     const claude = makeMockAdapter('claude', ['/home/user/.claude/projects/']);
     const codex = makeMockAdapter('codex', ['/home/user/.codex/sessions/']);
-    const gemini = makeMockAdapter('gemini', ['/home/user/.gemini/tmp/']);
+    const copilot = makeMockAdapter('copilot', ['/home/user/.copilot/']);
 
     factory.registerAdapter(claude);
     factory.registerAdapter(codex);
-    factory.registerAdapter(gemini);
+    factory.registerAdapter(copilot);
 
     expect(factory.getAdapter('claude')).toBe(claude);
     expect(factory.getAdapter('codex')).toBe(codex);
-    expect(factory.getAdapter('gemini')).toBe(gemini);
+    expect(factory.getAdapter('copilot')).toBe(copilot);
   });
 
   it('should resolve adapter by path when provider is unknown', () => {
     const factory = new SessionReaderAdapterFactory();
     const claude = makeMockAdapter('claude', ['/home/user/.claude/projects/']);
     const codex = makeMockAdapter('codex', ['/home/user/.codex/sessions/']);
-    const gemini = makeMockAdapter('gemini', ['/home/user/.gemini/tmp/']);
+    const copilot = makeMockAdapter('copilot', ['/home/user/.copilot/']);
 
     factory.registerAdapter(claude);
     factory.registerAdapter(codex);
-    factory.registerAdapter(gemini);
+    factory.registerAdapter(copilot);
 
     const claudePath = '/home/user/.claude/projects/abc/session.jsonl';
     const codexPath = '/home/user/.codex/sessions/2026/01/01/rollout.jsonl';
-    const geminiPath = '/home/user/.gemini/tmp/my-project/chats/session.json';
+    const copilotPath = '/home/user/.copilot/session-state/abc/events.jsonl';
 
     expect(factory.getAdapterForPath(claudePath)?.providerName).toBe('claude');
     expect(factory.getAdapterForPath(codexPath)?.providerName).toBe('codex');
-    expect(factory.getAdapterForPath(geminiPath)?.providerName).toBe('gemini');
+    expect(factory.getAdapterForPath(copilotPath)?.providerName).toBe('copilot');
   });
 
   it('should call parseSessionFile on resolved adapter', async () => {
@@ -315,11 +243,11 @@ describe('Factory selection → adapter pipeline', () => {
     const factory = new SessionReaderAdapterFactory();
     factory.registerAdapter(makeMockAdapter('claude', []));
     factory.registerAdapter(makeMockAdapter('codex', []));
-    factory.registerAdapter(makeMockAdapter('gemini', []));
+    factory.registerAdapter(makeMockAdapter('copilot', []));
 
     const providers = factory.getSupportedProviders();
     expect(providers).toHaveLength(3);
-    expect(providers).toEqual(expect.arrayContaining(['claude', 'codex', 'gemini']));
+    expect(providers).toEqual(expect.arrayContaining(['claude', 'codex', 'copilot']));
   });
 
   it('should return undefined for unsupported provider', () => {

@@ -193,8 +193,13 @@ export class TunnelClientService
       const response = await this.rpcCrypto.handle(
         msg as unknown as Parameters<typeof this.handler.handle>[0],
         this.instanceId,
-        (plain) =>
-          this.handler.handle(plain as unknown as Parameters<typeof this.handler.handle>[0]),
+        // The crypto layer supplies a trusted `cryptoCtx` (verified sender kid) ONLY on the
+        // sealed lane; thread it to the handler so sealed-only methods can act on it.
+        (plain, cryptoCtx) =>
+          this.handler.handle(
+            plain as unknown as Parameters<typeof this.handler.handle>[0],
+            cryptoCtx,
+          ),
       );
       this.ws?.send(JSON.stringify(response));
     }

@@ -721,7 +721,7 @@ describe('ProjectsService', () => {
         const profile3 = '33333333-3333-3333-3333-333333333333';
         const agentIdLocal = '44444444-4444-4444-4444-444444444444';
         const claudeProviderId = '55555555-5555-5555-5555-555555555555';
-        const geminiProviderId = '66666666-6666-6666-6666-666666666666';
+        const agyProviderId = '66666666-6666-6666-6666-666666666666';
 
         const payload = {
           prompts: [],
@@ -733,18 +733,18 @@ describe('ProjectsService', () => {
               provider: { name: 'claude' },
               familySlug: 'coder',
             },
-            // Coder family - Gemini profile (NOT used by any agent, but should be imported)
+            // Coder family - Agy profile (NOT used by any agent, but should be imported)
             {
               id: profile2,
-              name: 'Coder Gemini',
-              provider: { name: 'gemini' },
+              name: 'Coder Agy',
+              provider: { name: 'agy' },
               familySlug: 'coder',
             },
-            // Another family - Gemini profile (also not used by agent)
+            // Another family - Agy profile (also not used by agent)
             {
               id: profile3,
-              name: 'Reviewer Gemini',
-              provider: { name: 'gemini' },
+              name: 'Reviewer Agy',
+              provider: { name: 'agy' },
               familySlug: 'reviewer',
             },
           ],
@@ -763,11 +763,11 @@ describe('ProjectsService', () => {
           _manifest: undefined,
         } as ReturnType<typeof devchainShared.ExportSchema.parse>);
 
-        // Both claude and gemini are available
+        // Both claude and agy are available
         storage.listProviders.mockResolvedValue({
           items: [
             { id: claudeProviderId, name: 'claude' },
-            { id: geminiProviderId, name: 'gemini' },
+            { id: agyProviderId, name: 'agy' },
           ],
           total: 2,
           limit: 100,
@@ -809,8 +809,8 @@ describe('ProjectsService', () => {
         // Verify all profiles were created
         const createdProfiles = storage.createAgentProfile.mock.calls.map((call) => call[0].name);
         expect(createdProfiles).toContain('Coder Claude');
-        expect(createdProfiles).toContain('Coder Gemini');
-        expect(createdProfiles).toContain('Reviewer Gemini');
+        expect(createdProfiles).toContain('Coder Agy');
+        expect(createdProfiles).toContain('Reviewer Agy');
 
         jest.restoreAllMocks();
       });

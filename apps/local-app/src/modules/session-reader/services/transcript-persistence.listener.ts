@@ -143,6 +143,16 @@ export class TranscriptPersistenceListener {
   // ---------------------------------------------------------------------------
 
   private async processHookPayload(payload: ClaudeHooksSessionStartedEventPayload): Promise<void> {
+    // Provider branch. Claude (absent providerName ⇒ 'claude') binds its transcript
+    // FROM the hook — the original path below, kept byte-identical. Providers that
+    // bind deterministically at launch (Copilot, HookCapability adopter #2) are
+    // already bound by Phase-1, so their hook is an idempotent CONFIRMATION.
+    const providerName = (payload.providerName ?? 'claude').toLowerCase();
+    if (providerName !== 'claude') {
+      this.confirmProviderHookLifecycle(payload, providerName);
+      return;
+    }
+
     const { transcriptPath, claudeSessionId, sessionId, agentId, projectId } = payload;
 
     // Skip if no transcript path provided
@@ -210,6 +220,85 @@ export class TranscriptPersistenceListener {
     }
   }
 
+  /**
+   * Provider hook lifecycle CONFIRMATION (Copilot — HookCapability adopter #2).
+   *
+   * Unlike Claude (whose transcript binding comes FROM the hook), providers that
+   * bind deterministically at launch already have `transcript_path` +
+   * `provider_session_id` set by Phase-1 by the time the hook fires. So this path
+   * NEVER (re)binds: it verifies the hook's ids/path agree with the bound session
+   * and WARNS on mismatch, leaving the row untouched (a rebind primitive is
+   * deliberately out of scope — backlog). Copilot `SessionStart` carries no
+   * `transcriptPath` (confirm by provider session id only); `Stop` carries it
+   * (confirm both). Idempotent and side-effect-free on the happy path.
+   */
+  private confirmProviderHookLifecycle(
+    payload: ClaudeHooksSessionStartedEventPayload,
+    providerName: string,
+  ): void {
+    const { sessionId, transcriptPath } = payload;
+    const incomingProviderSessionId = payload.providerSessionId ?? payload.claudeSessionId ?? null;
+
+    if (!sessionId) {
+      this.logger.warn(
+        { providerName, providerSessionId: incomingProviderSessionId },
+        'Provider hook missing sessionId — cannot confirm lifecycle binding',
+      );
+      return;
+    }
+
+    const row = this.sqlite
+      .prepare('SELECT transcript_path, provider_session_id FROM sessions WHERE id = ?')
+      .get(sessionId) as
+      | { transcript_path: string | null; provider_session_id: string | null }
+      | undefined;
+
+    if (!row) {
+      this.logger.warn(
+        { sessionId, providerName },
+        'Provider hook for unknown session — skipping (Phase-1 owns binding; no rebind)',
+      );
+      return;
+    }
+
+    // Confirm the provider session id Phase-1 bound deterministically.
+    if (
+      incomingProviderSessionId &&
+      row.provider_session_id &&
+      incomingProviderSessionId !== row.provider_session_id
+    ) {
+      this.logger.warn(
+        {
+          sessionId,
+          providerName,
+          bound: row.provider_session_id,
+          incoming: incomingProviderSessionId,
+        },
+        'Provider hook provider_session_id mismatch — NOT overwriting bound session (rebind unsupported)',
+      );
+      return;
+    }
+
+    // Confirm the transcript path when the hook carries one (Copilot `Stop`).
+    if (
+      transcriptPath &&
+      row.transcript_path &&
+      this.normalizePathForCompare(transcriptPath) !==
+        this.normalizePathForCompare(row.transcript_path)
+    ) {
+      this.logger.warn(
+        { sessionId, providerName, bound: row.transcript_path, incoming: transcriptPath },
+        'Provider hook transcript_path mismatch — NOT overwriting bound session (rebind unsupported)',
+      );
+      return;
+    }
+
+    this.logger.debug(
+      { sessionId, providerName, stage: transcriptPath ? 'stop' : 'sessionStart' },
+      'Provider hook lifecycle confirmed (idempotent; Phase-1 owns binding)',
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // Private: Auto-discovery with retry
   // ---------------------------------------------------------------------------
@@ -253,9 +342,11 @@ export class TranscriptPersistenceListener {
         return;
       }
 
-      // Only DB-backed adapters need the launch timestamp + session id (for SQL
-      // window-matching); file adapters keep the original `{ projectRoot }` shape
-      // and avoid the extra started_at lookup.
+      // DB-backed adapters additionally need the launch timestamp for SQL
+      // window-matching. Both shapes now carry `sessionId`: file adapters that
+      // bind deterministically (Copilot derives `…/session-state/<sessionId>/`)
+      // read it, while existing file adapters (Claude/Codex) ignore it —
+      // a backward-compatible widening of the discovery context.
       const discoveryContext =
         adapter.sourceKind === 'db'
           ? {
@@ -263,7 +354,7 @@ export class TranscriptPersistenceListener {
               sessionStartedAt: this.getSessionStartedAt(sessionId) ?? undefined,
               sessionId,
             }
-          : { projectRoot };
+          : { projectRoot, sessionId };
       const files = await adapter.discoverSessionFile(discoveryContext);
 
       // DB-backed sources (e.g. OpenCode): one container holds many sessions, so
@@ -1079,14 +1170,6 @@ export class TranscriptPersistenceListener {
     const codexTimestampMatch = content.match(/"timestamp"\s*:\s*"([^"]+)"/);
     if (codexTimestampMatch?.[1]) {
       const parsed = new Date(codexTimestampMatch[1]);
-      if (!Number.isNaN(parsed.getTime())) {
-        return parsed;
-      }
-    }
-
-    const geminiStartTimeMatch = content.match(/"startTime"\s*:\s*"([^"]+)"/);
-    if (geminiStartTimeMatch?.[1]) {
-      const parsed = new Date(geminiStartTimeMatch[1]);
       if (!Number.isNaN(parsed.getTime())) {
         return parsed;
       }

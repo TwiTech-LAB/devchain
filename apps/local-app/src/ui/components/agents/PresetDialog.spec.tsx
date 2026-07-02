@@ -94,7 +94,7 @@ const mockAgents = [
     profileId: 'profile-1',
     providerConfigId: 'config-2',
     modelOverride: null,
-    providerConfig: { id: 'config-2', name: 'gemini-config' },
+    providerConfig: { id: 'config-2', name: 'codex-config' },
   },
   {
     id: 'agent-3',
@@ -124,7 +124,7 @@ describe('PresetDialog', () => {
       mockProfileConfigs({
         'profile-1': [
           { id: 'config-1', name: 'claude-config' },
-          { id: 'config-2', name: 'gemini-config' },
+          { id: 'config-2', name: 'codex-config' },
         ],
         'profile-2': [{ id: 'config-3', name: 'gpt-config' }],
       });
@@ -162,7 +162,7 @@ describe('PresetDialog', () => {
       mockProfileConfigs({
         'profile-1': [
           { id: 'config-1', name: 'claude-config' },
-          { id: 'config-2', name: 'gemini-config' },
+          { id: 'config-2', name: 'codex-config' },
         ],
         'profile-2': [{ id: 'config-3', name: 'gpt-config' }],
       });
@@ -205,7 +205,7 @@ describe('PresetDialog', () => {
       mockProfileConfigs({
         'profile-1': [
           { id: 'config-1', name: 'claude-config' },
-          { id: 'config-2', name: 'gemini-config' },
+          { id: 'config-2', name: 'codex-config' },
         ],
         'profile-2': [{ id: 'config-3', name: 'gpt-config' }],
       });
@@ -251,7 +251,7 @@ describe('PresetDialog', () => {
       mockProfileConfigs({
         'profile-1': [
           { id: 'config-1', name: 'claude-config' },
-          { id: 'config-2', name: 'gemini-config' },
+          { id: 'config-2', name: 'codex-config' },
         ],
         'profile-2': [{ id: 'config-3', name: 'gpt-config' }],
       });
@@ -305,7 +305,7 @@ describe('PresetDialog', () => {
       mockProfileConfigs({
         'profile-1': [
           { id: 'config-1', name: 'claude-config' },
-          { id: 'config-2', name: 'gemini-config' },
+          { id: 'config-2', name: 'codex-config' },
         ],
         'profile-2': [{ id: 'config-3', name: 'gpt-config' }],
       });
@@ -342,7 +342,7 @@ describe('PresetDialog', () => {
       mockProfileConfigs({
         'profile-1': [
           { id: 'config-1', name: 'claude-config' },
-          { id: 'config-2', name: 'gemini-config' },
+          { id: 'config-2', name: 'codex-config' },
         ],
         'profile-2': [{ id: 'config-3', name: 'gpt-config' }],
       });
@@ -370,7 +370,7 @@ describe('PresetDialog', () => {
       mockProfileConfigs({
         'profile-1': [
           { id: 'config-1', name: 'claude-config' },
-          { id: 'config-2', name: 'gemini-config' },
+          { id: 'config-2', name: 'codex-config' },
           { id: 'config-3', name: 'gpt-config' },
         ],
         'profile-2': [{ id: 'config-4', name: 'test-config' }],
@@ -433,7 +433,7 @@ describe('PresetDialog', () => {
         {
           'profile-1': [
             { id: 'config-1', name: 'claude-config', providerId: 'provider-claude' },
-            { id: 'config-2', name: 'gemini-config', providerId: 'provider-gemini' },
+            { id: 'config-2', name: 'codex-config', providerId: 'provider-codex' },
           ],
           'profile-2': [{ id: 'config-3', name: 'gpt-config', providerId: 'provider-openai' }],
         },
@@ -442,7 +442,7 @@ describe('PresetDialog', () => {
             { id: 'm1', name: 'anthropic/claude-sonnet-4-5' },
             { id: 'm2', name: 'anthropic/claude-opus-4-1' },
           ],
-          'provider-gemini': [{ id: 'm3', name: 'google/gemini-2.5-pro' }],
+          'provider-codex': [{ id: 'm3', name: 'gpt-4o' }],
         },
       );
     });
@@ -460,7 +460,7 @@ describe('PresetDialog', () => {
       mockProfileConfigs({
         'profile-1': [
           { id: 'config-1', name: 'claude-config', providerId: 'provider-claude' },
-          { id: 'config-2', name: 'gemini-config', providerId: 'provider-gemini' },
+          { id: 'config-2', name: 'codex-config', providerId: 'provider-codex' },
         ],
       });
 
@@ -511,7 +511,7 @@ describe('PresetDialog', () => {
       });
 
       await userEvent.click(screen.getByTestId('preset-config-select-agent-1'));
-      await userEvent.click(await screen.findByRole('option', { name: 'gemini-config' }));
+      await userEvent.click(await screen.findByRole('option', { name: 'codex-config' }));
 
       await waitFor(() => {
         expect(screen.getByTestId('preset-model-select-agent-1')).toHaveTextContent('Default');
@@ -554,7 +554,7 @@ describe('PresetDialog', () => {
             }),
             expect.objectContaining({
               agentName: 'Reviewer',
-              providerConfigName: 'gemini-config',
+              providerConfigName: 'codex-config',
               modelOverride: null,
             }),
           ]),
@@ -576,7 +576,7 @@ describe('PresetDialog', () => {
       mockProfileConfigs({
         'profile-1': [
           { id: 'config-1', name: 'claude-config' },
-          { id: 'config-2', name: 'gemini-config' },
+          { id: 'config-2', name: 'codex-config' },
         ],
         'profile-2': [],
       });

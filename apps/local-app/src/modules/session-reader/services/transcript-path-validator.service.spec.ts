@@ -35,16 +35,22 @@ describe('TranscriptPathValidator', () => {
         expect(result).toBe(input);
       });
 
-      it('should accept a valid Gemini transcript path', () => {
-        const input = `${homeDir}/.gemini/tmp/session-data.jsonl`;
-        const result = validator.validateShape(input, 'gemini');
-        expect(result).toBe(input);
-      });
-
       it('should accept a valid OpenCode DB container path', () => {
         const input = `${homeDir}/.local/share/opencode/opencode.db`;
         const result = validator.validateShape(input, 'opencode');
         expect(result).toBe(input);
+      });
+
+      it('should accept a valid Copilot events.jsonl transcript path', () => {
+        // Copilot stores one append-only JSONL per session under session-state/<uuid>/.
+        const input = `${homeDir}/.copilot/session-state/11111111-2222-3333-4444-555555555555/events.jsonl`;
+        const result = validator.validateShape(input, 'copilot');
+        expect(result).toBe(input);
+      });
+
+      it('should reject a Copilot path under the wrong provider (cross-provider guard)', () => {
+        const input = `${homeDir}/.copilot/session-state/abc/events.jsonl`;
+        expect(() => validator.validateShape(input, 'claude')).toThrow(ValidationError);
       });
 
       it('should reject an OpenCode path under the wrong provider', () => {
@@ -106,6 +112,12 @@ describe('TranscriptPathValidator', () => {
         const input = `${homeDir}/.claude/projects/a/b/../c/session.jsonl`;
         const result = validator.validateShape(input, 'claude');
         expect(result).toBe(path.join(homeDir, '.claude/projects/a/c/session.jsonl'));
+      });
+
+      it('should reject Copilot path with .. that escapes the .copilot root', () => {
+        const input = `${homeDir}/.copilot/session-state/../../etc/passwd`;
+        expect(() => validator.validateShape(input, 'copilot')).toThrow(ValidationError);
+        expect(() => validator.validateShape(input, 'copilot')).toThrow(/outside allowed root/);
       });
     });
 

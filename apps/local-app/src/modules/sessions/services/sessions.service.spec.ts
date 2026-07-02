@@ -384,7 +384,7 @@ describe('SessionsService', () => {
       );
     });
 
-    it('resolves postPasteDelayMs for Gemini agent and passes to delivery helper', async () => {
+    it('resolves postPasteDelayMs for agy agent and passes to delivery helper', async () => {
       providerAdapterFactory.getPostPasteDelayMsForAgent.mockResolvedValue(1500);
       sqlitePrepare.mockReturnValue({
         run: insertRunMock,
@@ -863,7 +863,7 @@ describe('SessionsService', () => {
         get: jest.fn().mockReturnValue(runningMetaRow),
         all: jest.fn().mockReturnValue([]),
       });
-      // claude/codex/gemini adapters do not set terminalOutputBehavior
+      // claude/codex adapters do not set terminalOutputBehavior
       providerAdapterFactory.getAdapter.mockReturnValue({ providerName: 'codex' });
 
       expect(service.usesAlternateScreenFor('session-1')).toBe(false);

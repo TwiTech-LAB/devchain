@@ -80,32 +80,51 @@ describe('CodexAdapter', () => {
   });
 
   describe('buildLaunchArgs', () => {
-    it('returns profileOptionArgs unchanged for mode new', () => {
+    const UPDATE_OVERRIDE = ['-c', 'check_for_update_on_startup=false'];
+
+    it('prepends the update-check override before profileOptionArgs for mode new', () => {
       const result = adapter.buildLaunchArgs({ mode: 'new', profileOptionArgs: ['-m', 'o3'] });
-      expect(result.argv).toEqual(['-m', 'o3']);
+      expect(result.argv).toEqual([...UPDATE_OVERRIDE, '-m', 'o3']);
     });
 
-    it('returns empty argv for mode new with no profileOptionArgs', () => {
+    it('returns only the update-check override for mode new with no profileOptionArgs', () => {
       const result = adapter.buildLaunchArgs({ mode: 'new', profileOptionArgs: [] });
-      expect(result.argv).toEqual([]);
+      expect(result.argv).toEqual([...UPDATE_OVERRIDE]);
     });
 
-    it('uses resume subcommand with session ID LAST for mode restore', () => {
+    it('leads with the override, then resume, with session ID LAST for mode restore', () => {
       const result = adapter.buildLaunchArgs({
         mode: 'restore',
         providerSessionId: 'abc',
         profileOptionArgs: ['-m', 'o3', '-p', 'work'],
       });
-      expect(result.argv).toEqual(['resume', '-m', 'o3', '-p', 'work', 'abc']);
+      expect(result.argv).toEqual([...UPDATE_OVERRIDE, 'resume', '-m', 'o3', '-p', 'work', 'abc']);
     });
 
-    it('restore with no profileOptionArgs yields [resume, sessionId]', () => {
+    it('restore with no profileOptionArgs yields [override, resume, sessionId]', () => {
       const result = adapter.buildLaunchArgs({
         mode: 'restore',
         providerSessionId: 'xyz',
         profileOptionArgs: [],
       });
-      expect(result.argv).toEqual(['resume', 'xyz']);
+      expect(result.argv).toEqual([...UPDATE_OVERRIDE, 'resume', 'xyz']);
+    });
+
+    it('places the DevChain override before any profile-supplied -c so the profile can override (last-wins)', () => {
+      const result = adapter.buildLaunchArgs({
+        mode: 'new',
+        profileOptionArgs: ['-c', 'check_for_update_on_startup=true'],
+      });
+      // Our forced `false` leads; a profile that re-adds the key trails it.
+      expect(result.argv).toEqual([
+        '-c',
+        'check_for_update_on_startup=false',
+        '-c',
+        'check_for_update_on_startup=true',
+      ]);
+      expect(result.argv.indexOf('check_for_update_on_startup=false')).toBeLessThan(
+        result.argv.lastIndexOf('check_for_update_on_startup=true'),
+      );
     });
   });
 

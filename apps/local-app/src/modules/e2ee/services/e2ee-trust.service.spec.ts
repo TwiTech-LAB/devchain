@@ -234,5 +234,52 @@ describe('E2eeTrustService (Task:8 — safety-number + TOFU + verify)', () => {
       expect(deviceStore.get(attacker.kid)).toBeNull();
       expect(deviceStore.list()).toHaveLength(1);
     });
+
+    // M2 supersede (paired-device-dedup, Task:3): the TOFU seam threads installId through
+    // to the store with evictVerified:false — a plaintext bootstrap adopt.
+    describe('installId supersede (M2)', () => {
+      const INSTALL = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      const device2 = fromX25519PrivateKey(bytes(0xc0ffee));
+
+      it('supersedes the phone’s prior UNVERIFIED row on re-login (same install, new kid)', () => {
+        service.adoptPeerKeyTofu({ kid: deviceKid, publicKeyB64: devicePubB64 }, INSTALL);
+        service.adoptPeerKeyTofu(
+          { kid: device2.kid, publicKeyB64: bytesToBase64(device2.publicKey) },
+          INSTALL,
+        );
+        // The dead pre-login row is gone; exactly one live entry remains.
+        expect(deviceStore.list().map((d) => d.kid)).toEqual([device2.kid]);
+      });
+
+      it('SECURITY INVARIANT: a plaintext TOFU adopt must NEVER force-unpair a verified device', () => {
+        service.adoptPeerKeyTofu({ kid: deviceKid, publicKeyB64: devicePubB64 }, INSTALL);
+        service.verifyDevice(deviceKid); // becomes 'verified' (e.g. via safety-number)
+
+        // Attacker (or a benign re-login) TOFU-adopts a new key claiming the same installId.
+        service.adoptPeerKeyTofu(
+          { kid: device2.kid, publicKeyB64: bytesToBase64(device2.publicKey) },
+          INSTALL,
+        );
+
+        // The verified device survives; the new key is merely added alongside it.
+        expect(deviceStore.get(deviceKid)?.trust).toBe('verified');
+        expect(
+          deviceStore
+            .list()
+            .map((d) => d.kid)
+            .sort(),
+        ).toEqual([deviceKid, device2.kid].sort());
+      });
+    });
+
+    it('UI contract: installId is NOT exposed by listDevices (unauthenticated metadata stays server-side)', () => {
+      service.adoptPeerKeyTofu(
+        { kid: deviceKid, publicKeyB64: devicePubB64 },
+        'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      );
+      const summary = service.listDevices()[0];
+      expect(summary).toBeDefined();
+      expect('installId' in summary).toBe(false);
+    });
   });
 });

@@ -16,6 +16,8 @@ interface CompleteBody {
   deviceEncKid?: string;
   pairingMac?: string;
   label?: string;
+  /** Optional stable per-install id relayed through the QR channel (M2 dedup); opaque here. */
+  installId?: string;
 }
 
 /**
@@ -47,6 +49,7 @@ export class E2eePairingController {
       deviceEncKid: body.deviceEncKid,
       pairingMac: body.pairingMac,
       ...(body.label !== undefined ? { label: body.label } : {}),
+      ...(body.installId !== undefined ? { installId: body.installId } : {}),
     });
   }
 }

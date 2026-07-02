@@ -1751,7 +1751,7 @@ describe('ProjectsService', () => {
               memberAgentNames: ['Lead Agent', 'Worker Agent'],
               profileNames: ['Default Profile'],
               profileSelections: [
-                { profileName: 'Default Profile', configNames: ['local', 'gemini3'] },
+                { profileName: 'Default Profile', configNames: ['local', 'agy3'] },
               ],
             },
           ],
@@ -1764,8 +1764,8 @@ describe('ProjectsService', () => {
               env: null,
             },
             {
-              name: 'gemini3',
-              providerName: 'gemini',
+              name: 'agy3',
+              providerName: 'agy',
               description: null,
               options: null,
               env: null,
@@ -1795,13 +1795,13 @@ describe('ProjectsService', () => {
               teamLeadAgentName: 'Lead Agent',
               memberAgentNames: ['Lead Agent', 'Worker Agent'],
               profileNames: ['Default Profile'],
-              profileSelections: [{ profileName: 'Default Profile', configNames: ['gemini3'] }],
+              profileSelections: [{ profileName: 'Default Profile', configNames: ['agy3'] }],
             },
           ],
           [
             {
-              name: 'gemini3',
-              providerName: 'gemini',
+              name: 'agy3',
+              providerName: 'agy',
               description: null,
               options: null,
               env: null,

@@ -22,6 +22,32 @@ export type {
 export type { ProjectMcpSettingsCapability } from './project-mcp-settings.capability';
 export type { TranscriptDiscoveryCapability } from './transcript-discovery.capability';
 
+/**
+ * Result of a best-effort, non-blocking authentication probe. `authenticated`
+ * is a HINT (false-negatives possible when a provider authenticates via an OS
+ * keyring devchain can't cheaply inspect), so consumers surface a WARNING — they
+ * never hard-block launch on it. `remediation` is the actionable fix to show.
+ */
+export interface AuthProbeResult {
+  authenticated: boolean;
+  remediation: string;
+}
+
+/**
+ * A provider that exposes a cheap, best-effort auth-state probe for preflight.
+ * Adopter: Copilot (S1 — no `login --status` command; probes env tokens +
+ * `~/.copilot/config.json` `loggedInUsers[]`).
+ */
+export interface AuthProbeCapability {
+  probeAuth(): Promise<AuthProbeResult>;
+}
+
+export function isAuthProbeCapable(
+  adapter: ProviderAdapter,
+): adapter is ProviderAdapter & AuthProbeCapability {
+  return 'probeAuth' in adapter;
+}
+
 export interface ConfigFileMcpCapability {
   readonly configFileName: string;
   parseProjectConfig(content: string): McpServerEntry[];
@@ -42,7 +68,6 @@ export function isConfigFileMcpCapable(
 }
 
 export interface McpCliCapability {
-  readonly mcpListSpawnMode?: 'pipe' | 'pty';
   readonly mcpProjectRegistrationStrategy?: 'list_then_add' | 'upsert';
   addMcpServer(options: AddMcpServerOptions): string[];
   listMcpServers(): string[];
@@ -53,6 +78,36 @@ export interface McpCliCapability {
 
 export function isMcpCli(adapter: ProviderAdapter): adapter is ProviderAdapter & McpCliCapability {
   return (adapter as unknown as Record<string, unknown>).mcpMode !== 'project_config';
+}
+
+/**
+ * Marks a provider whose MCP servers live in a single HOME-global JSON config
+ * file (not a project-local file, and not a CLI `mcp add` subcommand). Today's
+ * adopter is Antigravity (`agy`), which reads `~/.gemini/config/mcp_config.json`
+ * with a windsurf-style `{ "mcpServers": { "<name>": { "serverUrl": … } } }`
+ * shape — distinct from the opencode-flat `{ "mcp": { "<alias>": … } }` project
+ * config (different root key, `serverUrl` transport field, and a home-global
+ * location). `McpRegistrationPort` routes these adapters to the dedicated
+ * `AntigravityMcpRegistrationAdapter` (the file IO + `mcpServers` merge), which
+ * delegates the schema specifics back to these two methods.
+ *
+ * Two-adapter rule: this is a real port adapter (a third `McpRegistrationAdapter`
+ * alongside CLI + ConfigFile), not a speculative capability.
+ */
+export interface GlobalMcpConfigCapability {
+  /** Parse the global MCP config file content into discovered server entries. */
+  parseGlobalMcpConfig(content: string): McpServerEntry[];
+  /** Build the per-server entry to write under the config's `mcpServers` map. */
+  buildGlobalMcpServerEntry(options: AddMcpServerOptions): {
+    key: string;
+    value: Record<string, unknown>;
+  };
+}
+
+export function isGlobalMcpConfigCapable(
+  adapter: ProviderAdapter,
+): adapter is ProviderAdapter & GlobalMcpConfigCapability {
+  return 'parseGlobalMcpConfig' in adapter && 'buildGlobalMcpServerEntry' in adapter;
 }
 
 export function isContextWindowCapable(

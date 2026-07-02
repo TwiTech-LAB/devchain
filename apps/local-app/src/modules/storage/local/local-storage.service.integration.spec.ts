@@ -843,10 +843,10 @@ describe('LocalStorageService', () => {
     });
 
     it('gets a provider by id', async () => {
-      const created = await service.createProvider({ name: 'gemini' });
+      const created = await service.createProvider({ name: 'agy' });
 
       const fetched = await service.getProvider(created.id);
-      expect(fetched.name).toBe('gemini');
+      expect(fetched.name).toBe('agy');
     });
 
     it('throws NotFoundError for missing provider', async () => {

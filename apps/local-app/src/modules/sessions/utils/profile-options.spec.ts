@@ -135,8 +135,8 @@ describe('rewriteModelTo1m', () => {
     },
     {
       desc: 'unknown model unchanged',
-      args: ['--model', 'gemini-pro'],
-      expected: ['--model', 'gemini-pro'],
+      args: ['--model', 'mistral-large'],
+      expected: ['--model', 'mistral-large'],
     },
     {
       desc: 'no model flag defaults to opus[1m]',

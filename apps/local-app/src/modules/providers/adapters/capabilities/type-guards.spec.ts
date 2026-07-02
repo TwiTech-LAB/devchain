@@ -1,10 +1,12 @@
 import { ClaudeAdapter } from '../claude.adapter';
 import { CodexAdapter } from '../codex.adapter';
-import { GeminiAdapter } from '../gemini.adapter';
 import { OpencodeAdapter } from '../opencode.adapter';
+import { AntigravityAdapter } from '../antigravity.adapter';
+import { CopilotAdapter } from '../copilot.adapter';
 import type { ProviderAdapter } from '../provider-adapter.interface';
 import {
   isMcpCli,
+  isGlobalMcpConfigCapable,
   isContextWindowCapable,
   isHookCapable,
   isProjectProvisioningCapable,
@@ -14,10 +16,38 @@ import {
 describe('type-guards', () => {
   const claude: ProviderAdapter = new ClaudeAdapter();
   const codex: ProviderAdapter = new CodexAdapter();
-  const gemini: ProviderAdapter = new GeminiAdapter({
-    ensure: jest.fn(),
-  } as unknown as ConstructorParameters<typeof GeminiAdapter>[0]);
   const opencode: ProviderAdapter = new OpencodeAdapter();
+  const antigravity: ProviderAdapter = new AntigravityAdapter();
+  const copilot: ProviderAdapter = new CopilotAdapter();
+
+  describe('isGlobalMcpConfigCapable', () => {
+    it('returns true for Antigravity (agy — HOME-global mcp_config.json)', () => {
+      expect(isGlobalMcpConfigCapable(antigravity)).toBe(true);
+    });
+
+    it('returns false for CLI and project-local config providers', () => {
+      expect(isGlobalMcpConfigCapable(claude)).toBe(false);
+      expect(isGlobalMcpConfigCapable(codex)).toBe(false);
+      expect(isGlobalMcpConfigCapable(opencode)).toBe(false);
+    });
+
+    it('narrows type to GlobalMcpConfigCapability for agy', () => {
+      if (isGlobalMcpConfigCapable(antigravity)) {
+        expect(typeof antigravity.parseGlobalMcpConfig).toBe('function');
+        expect(typeof antigravity.buildGlobalMcpServerEntry).toBe('function');
+      }
+    });
+  });
+
+  describe('isMcpCli (agy defaults to CLI but is routed by isGlobalMcpConfigCapable first)', () => {
+    it('returns true for agy (no project_config mode) — the port checks global-config first', () => {
+      // agy has no `mcpMode='project_config'`, so the loose isMcpCli default is
+      // true; McpRegistrationPort.resolveAdapter MUST check isGlobalMcpConfigCapable
+      // before isMcpCli so agy never routes to the CLI adapter.
+      expect(isMcpCli(antigravity)).toBe(true);
+      expect(isGlobalMcpConfigCapable(antigravity)).toBe(true);
+    });
+  });
 
   describe('isMcpCli', () => {
     it('returns true for Claude', () => {
@@ -26,10 +56,6 @@ describe('type-guards', () => {
 
     it('returns true for Codex', () => {
       expect(isMcpCli(codex)).toBe(true);
-    });
-
-    it('returns true for Gemini', () => {
-      expect(isMcpCli(gemini)).toBe(true);
     });
 
     it('returns false for OpenCode (project_config mode)', () => {
@@ -54,7 +80,6 @@ describe('type-guards', () => {
 
     it('returns false for non-Claude adapters', () => {
       expect(isContextWindowCapable(codex)).toBe(false);
-      expect(isContextWindowCapable(gemini)).toBe(false);
       expect(isContextWindowCapable(opencode)).toBe(false);
     });
 
@@ -70,14 +95,15 @@ describe('type-guards', () => {
   });
 
   describe('isHookCapable', () => {
-    it('returns true for Claude (implements HookCapability)', () => {
+    it('returns true for Claude and Copilot (the two HookCapability adopters)', () => {
       expect(isHookCapable(claude)).toBe(true);
+      expect(isHookCapable(copilot)).toBe(true);
     });
 
-    it('returns false for non-Claude adapters', () => {
+    it('returns false for non-hook adapters', () => {
       expect(isHookCapable(codex)).toBe(false);
-      expect(isHookCapable(gemini)).toBe(false);
       expect(isHookCapable(opencode)).toBe(false);
+      expect(isHookCapable(antigravity)).toBe(false);
     });
 
     it('narrows type to HookCapability for Claude', () => {
@@ -90,29 +116,28 @@ describe('type-guards', () => {
   });
 
   describe('isProjectProvisioningCapable', () => {
-    it('returns true for Gemini (implements ProjectProvisioningCapability)', () => {
-      expect(isProjectProvisioningCapable(gemini)).toBe(true);
+    it('returns true for Antigravity (implements ProjectProvisioningCapability)', () => {
+      expect(isProjectProvisioningCapable(antigravity)).toBe(true);
     });
 
-    it('returns false for non-Gemini adapters', () => {
+    it('returns false for adapters without project provisioning', () => {
       expect(isProjectProvisioningCapable(claude)).toBe(false);
       expect(isProjectProvisioningCapable(codex)).toBe(false);
       expect(isProjectProvisioningCapable(opencode)).toBe(false);
     });
 
-    it('narrows type to ProjectProvisioningCapability for Gemini', () => {
-      if (isProjectProvisioningCapable(gemini)) {
-        expect(gemini.requiresProjectProvisioning).toBe(true);
-        expect(typeof gemini.provisionProjectPath).toBe('function');
+    it('narrows type to ProjectProvisioningCapability for Antigravity', () => {
+      if (isProjectProvisioningCapable(antigravity)) {
+        expect(antigravity.requiresProjectProvisioning).toBe(true);
+        expect(typeof antigravity.provisionProjectPath).toBe('function');
       }
     });
   });
 
   describe('isTranscriptDiscoveryCapable', () => {
-    it('returns true for Claude, Codex, Gemini, and OpenCode', () => {
+    it('returns true for Claude, Codex, and OpenCode', () => {
       expect(isTranscriptDiscoveryCapable(claude)).toBe(true);
       expect(isTranscriptDiscoveryCapable(codex)).toBe(true);
-      expect(isTranscriptDiscoveryCapable(gemini)).toBe(true);
       expect(isTranscriptDiscoveryCapable(opencode)).toBe(true);
     });
 
@@ -126,11 +151,6 @@ describe('type-guards', () => {
     it('narrows type with correct strategy per provider', () => {
       if (isTranscriptDiscoveryCapable(claude)) {
         expect(claude.transcriptDiscoveryStrategy).toBe('first');
-      }
-      if (isTranscriptDiscoveryCapable(gemini)) {
-        expect(gemini.transcriptDiscoveryStrategy).toBe('all');
-        expect(gemini.transcriptContentSearchMaxBytes).toBe(32_768);
-        expect(gemini.providerSessionIdRequiredForRestore).toBe(true);
       }
       if (isTranscriptDiscoveryCapable(codex)) {
         expect(codex.transcriptContentSearchMaxBytes).toBe(65_536);

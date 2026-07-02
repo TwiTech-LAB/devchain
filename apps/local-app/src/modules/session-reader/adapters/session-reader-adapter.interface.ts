@@ -2,7 +2,7 @@
  * Session Reader Adapter Interface
  *
  * Defines the contract for provider-specific session file reading logic.
- * Each supported provider (claude, codex, gemini) implements this interface
+ * Each supported provider (claude, codex, opencode, agy, copilot) implements this interface
  * to encapsulate session discovery, parsing, and cost calculation.
  */
 
@@ -122,11 +122,11 @@ export interface IncrementalResult {
 /**
  * Provider-agnostic adapter interface for reading session files.
  *
- * Each provider (claude, codex, gemini) implements this to encapsulate
+ * Each provider (claude, codex, opencode, agy, copilot) implements this to encapsulate
  * discovery, parsing, cost calculation, and watch-path resolution.
  */
 export interface SessionReaderAdapter {
-  /** Provider name (e.g., 'claude', 'codex', 'gemini') */
+  /** Provider name (e.g., 'claude', 'codex', 'agy') */
   readonly providerName: string;
 
   /**
