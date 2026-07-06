@@ -29,6 +29,7 @@ import {
   type SyncResult,
 } from '../services/provider-project-sync.service';
 import { ProviderDiscoveryService } from '../services/provider-discovery.service';
+import { ProviderEffortSeedingService } from '../services/provider-effort-seeding.service';
 
 const logger = createLogger('ProvidersController');
 
@@ -78,6 +79,7 @@ export class ProvidersController {
     private readonly providerStateManager: ProviderStateManager,
     private readonly providerProjectSync: ProviderProjectSyncService,
     private readonly providerDiscovery: ProviderDiscoveryService,
+    private readonly effortSeeding: ProviderEffortSeedingService,
   ) {}
 
   @Get()
@@ -105,6 +107,18 @@ export class ProvidersController {
         mcpEndpoint: null,
         mcpRegisteredAt: null,
       });
+
+      // Seed the effort catalog from adapter defaults (idempotent, additive-only).
+      // Non-fatal: rescan must not fail on a seeding hiccup; the startup backfill
+      // seeder re-covers anything missed.
+      try {
+        await this.effortSeeding.seedForProvider(provider);
+      } catch (error) {
+        logger.warn(
+          { providerId: provider.id, providerName: provider.name, error },
+          'Failed to seed provider effort defaults during rescan (non-fatal)',
+        );
+      }
 
       try {
         const sync = await this.providerProjectSync.syncProviderToAllProjects(provider.id);

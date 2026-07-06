@@ -21,6 +21,17 @@ import type {
   UpdateTeam,
 } from '../../storage/models/domain.models';
 import { TeamsStore, type TeamsListOptions } from '../storage/teams.store';
+import {
+  dedupeProfileConfigSelections,
+  validateAgentsInProject,
+  validateConfigProfileConsistency,
+  validateConcurrentTasksCap,
+  validateLeadInMembers,
+  validateMemberCapacity,
+  validateMemberNonEmpty,
+  validateProfilesInProject,
+  validateSelectionsAgainstProfiles,
+} from './teams.validators';
 import { EventsService } from '../../events/services/events.service';
 import { SettingsService } from '../../settings/services/settings.service';
 import { createLogger } from '../../../common/logging/logger';
@@ -87,45 +98,31 @@ export class TeamsService {
     const uniqueProfileIds = data.profileIds ? [...new Set(data.profileIds)] : undefined;
     const teamLeadAgentId = data.teamLeadAgentId ?? null;
 
-    // Rule 2: at least 1 member
-    if (uniqueMembers.length < 1) {
-      throw new ValidationError('A team must have at least 1 member');
-    }
+    validateMemberNonEmpty(uniqueMembers);
+    validateLeadInMembers(teamLeadAgentId, uniqueMembers);
+    await validateAgentsInProject(this.storage, data.projectId, uniqueMembers);
 
-    // Rule 1: team lead must be in members
-    if (teamLeadAgentId !== null && !uniqueMembers.includes(teamLeadAgentId)) {
-      throw new ValidationError('Team lead must be included in the members list');
-    }
-
-    // Rule 3: all agents belong to same project
-    await this.validateAgentsInProject(data.projectId, uniqueMembers);
-
-    // Validate profiles belong to same project
     if (uniqueProfileIds && uniqueProfileIds.length > 0) {
-      await this.validateProfilesInProject(data.projectId, uniqueProfileIds);
+      await validateProfilesInProject(this.storage, data.projectId, uniqueProfileIds);
     }
 
-    // Dedupe profileConfigSelections
-    const dedupedSelections = this.dedupeProfileConfigSelections(data.profileConfigSelections);
-    // Validate selections against profiles and config consistency
+    const dedupedSelections = dedupeProfileConfigSelections(data.profileConfigSelections);
     if (dedupedSelections && dedupedSelections.length > 0) {
       const effectiveProfileIds = uniqueProfileIds ?? [];
-      this.validateSelectionsAgainstProfiles(dedupedSelections, effectiveProfileIds);
-      await this.validateConfigProfileConsistency(dedupedSelections);
+      validateSelectionsAgainstProfiles(dedupedSelections, effectiveProfileIds);
+      await validateConfigProfileConsistency(this.storage, dedupedSelections);
     }
-    // Drop empty configIds (auto-revert)
     const filteredSelections = dedupedSelections?.filter((s) => s.configIds.length > 0);
 
-    // Capacity validation
     const effectiveMaxMembers = data.maxMembers ?? 5;
     const effectiveMaxConcurrentTasks = data.maxConcurrentTasks ?? effectiveMaxMembers;
-    if (effectiveMaxConcurrentTasks > effectiveMaxMembers) {
-      throw new ValidationError('maxConcurrentTasks cannot exceed maxMembers');
-    }
-    const nonLeadCount = uniqueMembers.filter((id) => id !== teamLeadAgentId).length;
-    if (nonLeadCount > effectiveMaxMembers) {
-      throw new ValidationError('Initial team exceeds maxMembers');
-    }
+    validateConcurrentTasksCap(effectiveMaxConcurrentTasks, effectiveMaxMembers);
+    validateMemberCapacity(
+      uniqueMembers,
+      teamLeadAgentId,
+      effectiveMaxMembers,
+      'Initial team exceeds maxMembers',
+    );
 
     return this.teamsStore.createTeam({
       ...data,
@@ -235,7 +232,6 @@ export class TeamsService {
     // Fetch current team to validate cross-field consistency
     const current = await this.teamsStore.getTeam(id);
     if (!current) {
-      const { NotFoundError } = await import('../../../common/errors/error-types');
       throw new NotFoundError('Team', id);
     }
 
@@ -246,58 +242,49 @@ export class TeamsService {
     const effectiveLead =
       data.teamLeadAgentId !== undefined ? data.teamLeadAgentId : current.teamLeadAgentId;
 
-    // Rule 2: at least 1 member (only if members are being changed)
-    if (dedupedMembers !== undefined && effectiveMembers.length < 1) {
-      throw new ValidationError('A team must have at least 1 member');
-    }
-
-    // Rule 1: team lead must be in members
-    if (effectiveLead !== null && !effectiveMembers.includes(effectiveLead)) {
-      throw new ValidationError('Team lead must be included in the members list');
-    }
-
-    // Rule 3: all agents belong to same project (only if members are being changed)
     if (dedupedMembers !== undefined) {
-      await this.validateAgentsInProject(current.projectId, effectiveMembers);
+      validateMemberNonEmpty(effectiveMembers);
+    }
+
+    validateLeadInMembers(effectiveLead, effectiveMembers);
+
+    if (dedupedMembers !== undefined) {
+      await validateAgentsInProject(this.storage, current.projectId, effectiveMembers);
     } else if (data.teamLeadAgentId !== undefined && effectiveLead !== null) {
-      // Only lead changed — validate the new lead belongs to the project
-      await this.validateAgentsInProject(current.projectId, [effectiveLead]);
+      // Only the lead changed — validate just the new lead, not all (stale) members.
+      await validateAgentsInProject(this.storage, current.projectId, [effectiveLead]);
     }
 
-    // Validate profiles belong to same project
     if (dedupedProfileIds !== undefined && dedupedProfileIds.length > 0) {
-      await this.validateProfilesInProject(current.projectId, dedupedProfileIds);
+      await validateProfilesInProject(this.storage, current.projectId, dedupedProfileIds);
     }
 
-    // Dedupe profileConfigSelections
-    const dedupedSelections = this.dedupeProfileConfigSelections(data.profileConfigSelections);
+    const dedupedSelections = dedupeProfileConfigSelections(data.profileConfigSelections);
     if (dedupedSelections && dedupedSelections.length > 0) {
       const effectiveProfileIds = dedupedProfileIds ?? current.profileIds;
-      this.validateSelectionsAgainstProfiles(dedupedSelections, effectiveProfileIds);
-      await this.validateConfigProfileConsistency(dedupedSelections);
+      validateSelectionsAgainstProfiles(dedupedSelections, effectiveProfileIds);
+      await validateConfigProfileConsistency(this.storage, dedupedSelections);
     }
     const filteredSelections =
       dedupedSelections !== undefined
         ? dedupedSelections.filter((s) => s.configIds.length > 0)
         : undefined;
 
-    // Capacity cross-field validation
     const eMM = data.maxMembers ?? current.maxMembers;
     const eMCT = data.maxConcurrentTasks ?? current.maxConcurrentTasks;
-    if (eMCT > eMM) {
-      throw new ValidationError('maxConcurrentTasks cannot exceed maxMembers');
-    }
+    validateConcurrentTasksCap(eMCT, eMM);
 
-    // Member-count validation when members/lead/capacity change together
     if (
       dedupedMembers !== undefined ||
       data.teamLeadAgentId !== undefined ||
       data.maxMembers !== undefined
     ) {
-      const finalNonLeadCount = effectiveMembers.filter((mid) => mid !== effectiveLead).length;
-      if (finalNonLeadCount > eMM) {
-        throw new ValidationError('Team member count exceeds maxMembers');
-      }
+      validateMemberCapacity(
+        effectiveMembers,
+        effectiveLead,
+        eMM,
+        'Team member count exceeds maxMembers',
+      );
     }
 
     const storeData =
@@ -1270,82 +1257,6 @@ export class TeamsService {
         { agentId: input.agentId, projectId: input.projectId, error },
         'Failed to publish agent.deleted event',
       );
-    }
-  }
-
-  private async validateAgentsInProject(projectId: string, agentIds: string[]): Promise<void> {
-    for (const agentId of agentIds) {
-      const agent = await this.storage.getAgent(agentId);
-      if (agent.projectId !== projectId) {
-        throw new ValidationError(`Agent "${agent.name}" belongs to a different project`, {
-          agentId,
-          expectedProjectId: projectId,
-          actualProjectId: agent.projectId,
-        });
-      }
-    }
-  }
-
-  private async validateProfilesInProject(projectId: string, profileIds: string[]): Promise<void> {
-    const uniqueIds = [...new Set(profileIds)];
-    for (const profileId of uniqueIds) {
-      const profile = await this.storage.getAgentProfile(profileId);
-      if (profile.projectId !== projectId) {
-        throw new ValidationError(`Profile "${profile.name}" belongs to a different project`, {
-          profileId,
-          expectedProjectId: projectId,
-          actualProjectId: profile.projectId,
-        });
-      }
-    }
-  }
-
-  private dedupeProfileConfigSelections(
-    selections?: Array<{ profileId: string; configIds: string[] }>,
-  ): Array<{ profileId: string; configIds: string[] }> | undefined {
-    if (!selections) return undefined;
-    const seen = new Set<string>();
-    const result: Array<{ profileId: string; configIds: string[] }> = [];
-    for (const sel of selections) {
-      if (seen.has(sel.profileId)) continue;
-      seen.add(sel.profileId);
-      result.push({ profileId: sel.profileId, configIds: [...new Set(sel.configIds)] });
-    }
-    return result;
-  }
-
-  private validateSelectionsAgainstProfiles(
-    selections: Array<{ profileId: string; configIds: string[] }>,
-    effectiveProfileIds: string[],
-  ): void {
-    const profileIdSet = new Set(effectiveProfileIds);
-    for (const sel of selections) {
-      if (!profileIdSet.has(sel.profileId)) {
-        throw new ValidationError(
-          `Config selection references profile "${sel.profileId}" which is not linked to this team`,
-          { profileId: sel.profileId },
-        );
-      }
-    }
-  }
-
-  private async validateConfigProfileConsistency(
-    selections: Array<{ profileId: string; configIds: string[] }>,
-  ): Promise<void> {
-    for (const sel of selections) {
-      for (const configId of sel.configIds) {
-        const config = await this.storage.getProfileProviderConfig(configId);
-        if (config.profileId !== sel.profileId) {
-          throw new ValidationError(
-            `Config "${configId}" belongs to profile "${config.profileId}", not "${sel.profileId}"`,
-            {
-              configId,
-              expectedProfileId: sel.profileId,
-              actualProfileId: config.profileId,
-            },
-          );
-        }
-      }
     }
   }
 }

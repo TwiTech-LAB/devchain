@@ -4,6 +4,8 @@ import { mkdtemp, mkdir, rm } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { OrchestratorDockerService } from './docker.service';
+import { WorktreeMountDiscoveryService } from './worktree-mount-discovery.service';
+import { FakeProcessExecutor } from '../../../terminal/services/process-executor/fake-process-executor';
 
 describe('OrchestratorDockerService integration', () => {
   const dockerSocketPath = '/var/run/docker.sock';
@@ -21,7 +23,10 @@ describe('OrchestratorDockerService integration', () => {
     try {
       await docker.ping();
       dockerAvailable = true;
-      service = new OrchestratorDockerService(docker);
+      service = new OrchestratorDockerService(
+        new WorktreeMountDiscoveryService(new FakeProcessExecutor()),
+        docker,
+      );
     } catch {
       dockerAvailable = false;
       service = null;

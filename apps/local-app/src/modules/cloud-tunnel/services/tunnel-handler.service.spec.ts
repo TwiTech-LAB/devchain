@@ -3,9 +3,12 @@ import { MobileChatRpcService } from './mobile-chat-rpc.service';
 import { MobileBoardRpcService } from './mobile-board-rpc.service';
 import { ViewportStreamerService } from './viewport-streamer.service';
 import { E2eeTrustService } from '../../e2ee/services/e2ee-trust.service';
+import { ActiveSessionLookup } from '../../sessions/services/active-session-lookup.service';
+import { TerminalKeyInputFacade } from '../../terminal/services/terminal-key-input/terminal-key-input.facade';
 import {
   AppError,
   ConflictError,
+  ForbiddenError,
   NotFoundError,
   OptimisticLockError,
   ValidationError,
@@ -761,6 +764,140 @@ describe('TunnelHandlerService', () => {
     });
   });
 
+  it('passes an optional clientMessageId through chat.sendMessage', async () => {
+    const CLIENT_MSG_ID = '10101010-1010-4010-8010-101010101010';
+    const sendMessage = jest
+      .fn()
+      .mockResolvedValue({ status: 'delivered', messageId: 'm1', clientMessageId: CLIENT_MSG_ID });
+    const chat = { sendMessage } as unknown as MobileChatRpcService;
+    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+
+    await expect(
+      service.handle({
+        jsonrpc: '2.0',
+        id: '16b',
+        method: 'chat.sendMessage',
+        params: {
+          agentId: AGENT_ID,
+          projectId: PROJECT_ID,
+          text: 'hi',
+          clientMessageId: CLIENT_MSG_ID,
+        },
+      }),
+    ).resolves.toMatchObject({
+      result: { status: 'delivered', messageId: 'm1', clientMessageId: CLIENT_MSG_ID },
+    });
+
+    expect(sendMessage).toHaveBeenCalledWith({
+      agentId: AGENT_ID,
+      projectId: PROJECT_ID,
+      text: 'hi',
+      clientMessageId: CLIENT_MSG_ID,
+    });
+  });
+
+  it('rejects chat.sendMessage with a non-uuid clientMessageId before delegating', async () => {
+    const sendMessage = jest.fn();
+    const chat = { sendMessage } as unknown as MobileChatRpcService;
+    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+
+    await expect(
+      service.handle({
+        jsonrpc: '2.0',
+        id: '16c',
+        method: 'chat.sendMessage',
+        params: { agentId: AGENT_ID, projectId: PROJECT_ID, text: 'hi', clientMessageId: 'nope' },
+      }),
+    ).resolves.toMatchObject({ error: { code: -32602, message: 'Invalid params' } });
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('delegates chat.getPendingMessages to MobileChatRpcService', async () => {
+    const CLIENT_MSG_ID = '10101010-1010-4010-8010-101010101010';
+    const rows = [
+      {
+        messageId: 'm1',
+        clientMessageId: CLIENT_MSG_ID,
+        text: 'hi',
+        status: 'delivered',
+        timestamp: 1,
+      },
+    ];
+    const getPendingMessages = jest.fn().mockResolvedValue(rows);
+    const chat = { getPendingMessages } as unknown as MobileChatRpcService;
+    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+
+    await expect(
+      service.handle({
+        jsonrpc: '2.0',
+        id: '16d',
+        method: 'chat.getPendingMessages',
+        params: { agentId: AGENT_ID, projectId: PROJECT_ID, clientMessageIds: [CLIENT_MSG_ID] },
+      }),
+    ).resolves.toMatchObject({ result: rows });
+
+    expect(getPendingMessages).toHaveBeenCalledWith({
+      agentId: AGENT_ID,
+      projectId: PROJECT_ID,
+      clientMessageIds: [CLIENT_MSG_ID],
+    });
+  });
+
+  it('rejects chat.getPendingMessages with more than 50 ids before delegating', async () => {
+    const getPendingMessages = jest.fn();
+    const chat = { getPendingMessages } as unknown as MobileChatRpcService;
+    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+
+    const tooMany = Array.from({ length: 51 }, () => '10101010-1010-4010-8010-101010101010');
+
+    await expect(
+      service.handle({
+        jsonrpc: '2.0',
+        id: '16e',
+        method: 'chat.getPendingMessages',
+        params: { agentId: AGENT_ID, projectId: PROJECT_ID, clientMessageIds: tooMany },
+      }),
+    ).resolves.toMatchObject({ error: { code: -32602, message: 'Invalid params' } });
+    expect(getPendingMessages).not.toHaveBeenCalled();
+  });
+
+  it('rejects chat.getPendingMessages with a non-uuid id before delegating', async () => {
+    const getPendingMessages = jest.fn();
+    const chat = { getPendingMessages } as unknown as MobileChatRpcService;
+    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+
+    await expect(
+      service.handle({
+        jsonrpc: '2.0',
+        id: '16f',
+        method: 'chat.getPendingMessages',
+        params: { agentId: AGENT_ID, projectId: PROJECT_ID, clientMessageIds: ['not-a-uuid'] },
+      }),
+    ).resolves.toMatchObject({ error: { code: -32602, message: 'Invalid params' } });
+    expect(getPendingMessages).not.toHaveBeenCalled();
+  });
+
+  it('rejects chat.getPendingMessages with an unknown extra field (.strict)', async () => {
+    const getPendingMessages = jest.fn();
+    const chat = { getPendingMessages } as unknown as MobileChatRpcService;
+    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+
+    await expect(
+      service.handle({
+        jsonrpc: '2.0',
+        id: '16g',
+        method: 'chat.getPendingMessages',
+        params: {
+          agentId: AGENT_ID,
+          projectId: PROJECT_ID,
+          clientMessageIds: ['10101010-1010-4010-8010-101010101010'],
+          surprise: true,
+        },
+      }),
+    ).resolves.toMatchObject({ error: { code: -32602, message: 'Invalid params' } });
+    expect(getPendingMessages).not.toHaveBeenCalled();
+  });
+
   it('delegates chat.launchAgent and returns the operation handle', async () => {
     const launchAgent = jest.fn().mockResolvedValue({ operationId: 'op-1', status: 'launching' });
     const chat = { launchAgent } as unknown as MobileChatRpcService;
@@ -1350,6 +1487,221 @@ describe('TunnelHandlerService', () => {
         }),
       ).resolves.toMatchObject({ error: { code: -32602, message: 'Invalid params' } });
       expect(unsubscribe).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('terminal.sendKey — discrete mobile key input', () => {
+    const SESSION_ID = '12121212-1212-4212-8212-121212121212';
+    const OTHER_PROJECT_ID = '33333333-3333-4333-8333-333333333333';
+
+    /** Build a handler with only the collaborators terminal.sendKey touches wired. */
+    const makeSendKeyHandler = (
+      activeSessions: Partial<ActiveSessionLookup>,
+      terminalKeyInput: Partial<TerminalKeyInputFacade>,
+    ) =>
+      new TunnelHandlerService(
+        {},
+        mobileChat,
+        mobileBoard,
+        mobileViewport,
+        {} as E2eeTrustService,
+        terminalKeyInput as TerminalKeyInputFacade,
+        activeSessions as ActiveSessionLookup,
+      );
+
+    it('delegates a named key to the facade after the scope check passes', async () => {
+      const sendKey = jest.fn().mockResolvedValue({ ok: true });
+      const activeSessions = {
+        getSessionProjectScope: jest
+          .fn()
+          .mockResolvedValue({ sessionId: SESSION_ID, agentId: 'a1', projectId: PROJECT_ID }),
+      };
+      const service = makeSendKeyHandler(activeSessions, { sendKey });
+
+      await expect(
+        service.handle({
+          jsonrpc: '2.0',
+          id: 'k1',
+          method: 'terminal.sendKey',
+          params: { sessionId: SESSION_ID, projectId: PROJECT_ID, key: 'Up' },
+        }),
+      ).resolves.toMatchObject({ result: { ok: true } });
+
+      expect(activeSessions.getSessionProjectScope).toHaveBeenCalledWith(SESSION_ID);
+      expect(sendKey).toHaveBeenCalledWith(SESSION_ID, 'Up');
+    });
+
+    it('delegates a digit key to the facade (verifies wire value passes the schema)', async () => {
+      const sendKey = jest.fn().mockResolvedValue({ ok: true });
+      const activeSessions = {
+        getSessionProjectScope: jest
+          .fn()
+          .mockResolvedValue({ sessionId: SESSION_ID, agentId: 'a1', projectId: PROJECT_ID }),
+      };
+      const service = makeSendKeyHandler(activeSessions, { sendKey });
+
+      await expect(
+        service.handle({
+          jsonrpc: '2.0',
+          id: 'k2',
+          method: 'terminal.sendKey',
+          params: { sessionId: SESSION_ID, projectId: PROJECT_ID, key: '7' },
+        }),
+      ).resolves.toMatchObject({ result: { ok: true } });
+      expect(sendKey).toHaveBeenCalledWith(SESSION_ID, '7');
+    });
+
+    it.each([
+      ['C-c token', 'C-c'],
+      ['raw arrow escape', '\x1b[A'],
+      ['unknown named key', 'Space'],
+      ['lowercase up', 'up'],
+      ['trailing space', 'Up '],
+    ])(
+      'rejects %s (%j) at the schema layer (-32602) before scope check or facade',
+      async (_label, key) => {
+        const sendKey = jest.fn();
+        const getSessionProjectScope = jest.fn();
+        const service = makeSendKeyHandler({ getSessionProjectScope }, { sendKey });
+
+        await expect(
+          service.handle({
+            jsonrpc: '2.0',
+            id: 'k3',
+            method: 'terminal.sendKey',
+            params: { sessionId: SESSION_ID, projectId: PROJECT_ID, key },
+          }),
+        ).resolves.toMatchObject({ error: { code: -32602, message: 'Invalid params' } });
+        expect(getSessionProjectScope).not.toHaveBeenCalled();
+        expect(sendKey).not.toHaveBeenCalled();
+      },
+    );
+
+    it('rejects an extra field under the STRICT schema (-32602) before scope check', async () => {
+      const sendKey = jest.fn();
+      const getSessionProjectScope = jest.fn();
+      const service = makeSendKeyHandler({ getSessionProjectScope }, { sendKey });
+
+      await expect(
+        service.handle({
+          jsonrpc: '2.0',
+          id: 'k4',
+          method: 'terminal.sendKey',
+          params: { sessionId: SESSION_ID, projectId: PROJECT_ID, key: 'Up', injected: true },
+        }),
+      ).resolves.toMatchObject({ error: { code: -32602, message: 'Invalid params' } });
+      expect(getSessionProjectScope).not.toHaveBeenCalled();
+      expect(sendKey).not.toHaveBeenCalled();
+    });
+
+    it('rejects a non-uuid sessionId at the schema layer before delegating', async () => {
+      const sendKey = jest.fn();
+      const service = makeSendKeyHandler({ getSessionProjectScope: jest.fn() }, { sendKey });
+
+      await expect(
+        service.handle({
+          jsonrpc: '2.0',
+          id: 'k5',
+          method: 'terminal.sendKey',
+          params: { sessionId: 'nope', projectId: PROJECT_ID, key: 'Up' },
+        }),
+      ).resolves.toMatchObject({ error: { code: -32602, message: 'Invalid params' } });
+      expect(sendKey).not.toHaveBeenCalled();
+    });
+
+    it('maps an unknown session (scope null) to NotFoundError → error.data.code not_found', async () => {
+      const sendKey = jest.fn();
+      const activeSessions = { getSessionProjectScope: jest.fn().mockResolvedValue(null) };
+      const service = makeSendKeyHandler(activeSessions, { sendKey });
+
+      await expect(
+        service.handle({
+          jsonrpc: '2.0',
+          id: 'k6',
+          method: 'terminal.sendKey',
+          params: { sessionId: SESSION_ID, projectId: PROJECT_ID, key: 'Up' },
+        }),
+      ).resolves.toMatchObject({ error: { code: -32603, data: { code: 'not_found' } } });
+      expect(sendKey).not.toHaveBeenCalled();
+    });
+
+    it('maps a cross-project session to ForbiddenError SESSION_PROJECT_MISMATCH', async () => {
+      const sendKey = jest.fn();
+      // The session exists but belongs to a DIFFERENT project.
+      const activeSessions = {
+        getSessionProjectScope: jest
+          .fn()
+          .mockResolvedValue({ sessionId: SESSION_ID, agentId: 'a1', projectId: OTHER_PROJECT_ID }),
+      };
+      const service = makeSendKeyHandler(activeSessions, { sendKey });
+
+      await expect(
+        service.handle({
+          jsonrpc: '2.0',
+          id: 'k7',
+          method: 'terminal.sendKey',
+          params: { sessionId: SESSION_ID, projectId: PROJECT_ID, key: 'Up' },
+        }),
+      ).resolves.toMatchObject({
+        // ForbiddenError code is 'forbidden'; the specific reason rides in data.details.code
+        // (same contract as ViewportStreamerService.assertSessionInProject).
+        error: {
+          code: -32603,
+          data: { code: 'forbidden', details: { code: 'SESSION_PROJECT_MISMATCH' } },
+        },
+      });
+      expect(sendKey).not.toHaveBeenCalled();
+    });
+
+    it('preserves a facade SESSION_NOT_RUNNING AppError as error.data.code', async () => {
+      const sendKey = jest.fn().mockRejectedValue(new AppError('dead', 'SESSION_NOT_RUNNING', 409));
+      const activeSessions = {
+        getSessionProjectScope: jest
+          .fn()
+          .mockResolvedValue({ sessionId: SESSION_ID, agentId: 'a1', projectId: PROJECT_ID }),
+      };
+      const service = makeSendKeyHandler(activeSessions, { sendKey });
+
+      await expect(
+        service.handle({
+          jsonrpc: '2.0',
+          id: 'k8',
+          method: 'terminal.sendKey',
+          params: { sessionId: SESSION_ID, projectId: PROJECT_ID, key: 'Up' },
+        }),
+      ).resolves.toMatchObject({ error: { code: -32603, data: { code: 'SESSION_NOT_RUNNING' } } });
+    });
+
+    it('preserves a facade RATE_LIMITED AppError as error.data.code', async () => {
+      const sendKey = jest.fn().mockRejectedValue(new AppError('too fast', 'RATE_LIMITED', 429));
+      const activeSessions = {
+        getSessionProjectScope: jest
+          .fn()
+          .mockResolvedValue({ sessionId: SESSION_ID, agentId: 'a1', projectId: PROJECT_ID }),
+      };
+      const service = makeSendKeyHandler(activeSessions, { sendKey });
+
+      await expect(
+        service.handle({
+          jsonrpc: '2.0',
+          id: 'k9',
+          method: 'terminal.sendKey',
+          params: { sessionId: SESSION_ID, projectId: PROJECT_ID, key: 'Up' },
+        }),
+      ).resolves.toMatchObject({ error: { code: -32603, data: { code: 'RATE_LIMITED' } } });
+    });
+
+    it('uses the EXISTING ForbiddenError(SESSION_PROJECT_MISMATCH) contract shape', () => {
+      // Pin the cross-project error shape to the shared contract (ViewportStreamerService
+      // builds the identical ForbiddenError), so the two transports cannot drift.
+      const err = new ForbiddenError('Session does not belong to the requested project', {
+        code: 'SESSION_PROJECT_MISMATCH',
+        sessionId: SESSION_ID,
+        projectId: PROJECT_ID,
+      });
+      expect(err.code).toBe('forbidden');
+      expect(err.statusCode).toBe(403);
+      expect(err.details).toMatchObject({ code: 'SESSION_PROJECT_MISMATCH' });
     });
   });
 

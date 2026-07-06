@@ -59,6 +59,7 @@ export const TemplatePresetAgentConfigSchema = z.object({
   agentName: z.string().min(1),
   providerConfigName: z.string().min(1),
   modelOverride: z.string().nullable().optional(),
+  effortOverride: z.string().nullable().optional(),
 });
 
 export const TemplatePresetSchema = z.object({

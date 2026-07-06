@@ -7,6 +7,7 @@ import { EnvScopesMap, Provider, UpdateProvider } from '../../storage/models/dom
 import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
 import { ProbeProofService } from './probe-proof.service';
 import { ProviderProjectSyncService, type SyncResult } from './provider-project-sync.service';
+import { ProviderEffortSeedingService } from './provider-effort-seeding.service';
 import { probe1mSupport, ProbeOutcome } from '../utils/probe-1m';
 import {
   disableClaudeAutoCompact,
@@ -52,6 +53,7 @@ export class ProviderStateManager {
     private readonly probeProofService: ProbeProofService,
     private readonly providerProjectSync: ProviderProjectSyncService,
     private readonly executor: ProcessExecutor,
+    private readonly effortSeeding: ProviderEffortSeedingService,
   ) {}
 
   async update(
@@ -249,6 +251,11 @@ export class ProviderStateManager {
       env: input.env,
     });
 
+    // Seed the effort catalog from adapter defaults (idempotent, additive-only).
+    // Non-fatal: a seeding hiccup must never fail provider creation, and the
+    // startup backfill seeder is a safety net.
+    await this.seedEffortDefaults(provider);
+
     try {
       const sync = await this.providerProjectSync.syncProviderToAllProjects(provider.id);
       return { provider, sync };
@@ -256,6 +263,22 @@ export class ProviderStateManager {
       const message = error instanceof Error ? error.message : 'Unknown sync error';
       logger.warn({ providerId: provider.id, error: message }, 'Provider sync failed after create');
       return { provider, sync: null, syncError: message };
+    }
+  }
+
+  /**
+   * Seed a newly created provider's effort catalog from adapter defaults.
+   * Non-fatal — logs and swallows so provider creation always succeeds; the
+   * one-time startup backfill seeder re-covers anything missed.
+   */
+  private async seedEffortDefaults(provider: Provider): Promise<void> {
+    try {
+      await this.effortSeeding.seedForProvider(provider);
+    } catch (error) {
+      logger.warn(
+        { providerId: provider.id, providerName: provider.name, error },
+        'Failed to seed provider effort defaults on create (non-fatal)',
+      );
     }
   }
 

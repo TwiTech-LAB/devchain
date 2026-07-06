@@ -58,6 +58,8 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
       description: data.description ?? null,
       options: data.options ?? null,
       env: data.env ?? null,
+      model: data.model ?? null,
+      effort: data.effort ?? null,
       position,
       createdAt: now,
       updatedAt: now,
@@ -71,6 +73,8 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
       description: config.description,
       options: config.options,
       env: config.env ? JSON.stringify(config.env) : null,
+      model: config.model,
+      effort: config.effort,
       position: config.position,
       createdAt: config.createdAt,
       updatedAt: config.updatedAt,
@@ -90,6 +94,8 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
     description?: string | null;
     options?: string | null;
     env?: Record<string, string>;
+    model?: string | null;
+    effort?: string | null;
   }): Promise<CreateIfMissingResult> {
     const { randomUUID } = await import('crypto');
     const { profileProviderConfigs } = await import('../../db/schema');
@@ -117,6 +123,8 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
           description: row.description,
           options: row.options,
           env: parseProviderConfigEnv(row.env, row.id, row.profileId),
+          model: row.model ?? null,
+          effort: row.effort ?? null,
           position: row.position,
           createdAt: row.createdAt,
           updatedAt: row.updatedAt,
@@ -149,6 +157,8 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
           description: input.description ?? null,
           options: input.options ?? null,
           env: input.env ? JSON.stringify(input.env) : null,
+          model: input.model ?? null,
+          effort: input.effort ?? null,
           position: nextPosition,
           createdAt: now,
           updatedAt: now,
@@ -185,6 +195,8 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
             description: row.description,
             options: row.options,
             env: parseProviderConfigEnv(row.env, row.id, row.profileId),
+            model: row.model ?? null,
+            effort: row.effort ?? null,
             position: row.position,
             createdAt: row.createdAt,
             updatedAt: row.updatedAt,
@@ -241,6 +253,8 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
       description: row.description,
       options: row.options,
       env: parseProviderConfigEnv(row.env, row.id, row.profileId),
+      model: row.model ?? null,
+      effort: row.effort ?? null,
       position: row.position,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -270,6 +284,8 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
       description: row.config.description,
       options: row.config.options,
       env: parseProviderConfigEnv(row.config.env, row.config.id, row.config.profileId),
+      model: row.config.model ?? null,
+      effort: row.config.effort ?? null,
       position: row.config.position,
       createdAt: row.config.createdAt,
       updatedAt: row.config.updatedAt,
@@ -297,6 +313,8 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
       description: row.description,
       options: row.options,
       env: parseProviderConfigEnv(row.env, row.id, row.profileId),
+      model: row.model ?? null,
+      effort: row.effort ?? null,
       position: row.position,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -316,6 +334,8 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
       description: row.description,
       options: row.options,
       env: parseProviderConfigEnv(row.env, row.id, row.profileId),
+      model: row.model ?? null,
+      effort: row.effort ?? null,
       position: row.position,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -346,6 +366,12 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
     }
     if (data.env !== undefined) {
       updateData.env = data.env ? JSON.stringify(data.env) : null;
+    }
+    if (data.model !== undefined) {
+      updateData.model = data.model;
+    }
+    if (data.effort !== undefined) {
+      updateData.effort = data.effort;
     }
     if (data.position !== undefined) {
       updateData.position = data.position;

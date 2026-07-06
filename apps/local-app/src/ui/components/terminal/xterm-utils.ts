@@ -116,3 +116,18 @@ export function decodeOsc52ClipboardPayload(payload: string): string {
 export function supportsWheelMouseTracking(mode: string): boolean {
   return mode === 'vt200' || mode === 'drag' || mode === 'any';
 }
+
+/**
+ * True when the terminal container is laid out and on-screen.
+ *
+ * We use `offsetParent === null` as the hidden signal because it is the exact
+ * condition under which the browser clamps `.xterm-viewport` scrollTop to 0 and
+ * xterm's viewport guard bails out — i.e. a `display:none` ancestor (the tab
+ * switcher hiding the terminal). It is deliberately NOT a substitute for a
+ * ResizeObserver: it only answers "is this element currently rendered?", cheap
+ * enough to poll. Note `position:fixed` elements report `offsetParent === null`
+ * even when visible, but the terminal container is never fixed-positioned.
+ */
+export function isTerminalContainerVisible(el: HTMLElement | null | undefined): boolean {
+  return !!el && el.offsetParent !== null;
+}

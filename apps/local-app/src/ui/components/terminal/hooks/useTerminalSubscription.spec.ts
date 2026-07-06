@@ -123,9 +123,10 @@ describe('useTerminalSubscription', () => {
       cols: 80,
       rows: 24,
     });
-    expect(mockSocket.emit).toHaveBeenCalledWith('terminal:focus', { sessionId });
-    // Note: Resize is handled by server during subscribe (using cols/rows from payload)
-    // No separate resize emit needed
+    // Subscribe no longer auto-steals authority: initial authority originates server-side
+    // (claimInitialAuthority latch + subscribe() first-subscriber grant). Resize rides the
+    // subscribe payload's cols/rows.
+    expect(mockSocket.emit).not.toHaveBeenCalledWith('terminal:focus', { sessionId });
     expect(termLog).toHaveBeenCalledWith('subscribe_success', {
       sessionId,
       expectingSeed: true,
@@ -156,7 +157,7 @@ describe('useTerminalSubscription', () => {
       'terminal:subscribe',
       expect.objectContaining({ sessionId }),
     );
-    expect(providedSocket.emit).toHaveBeenCalledWith('terminal:focus', { sessionId });
+    expect(providedSocket.emit).not.toHaveBeenCalledWith('terminal:focus', { sessionId });
     expect(mockSocket.emit).not.toHaveBeenCalled();
   });
 

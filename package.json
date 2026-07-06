@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.16.1",
+  "version": "0.17.1",
   "description": "AI driven development platform",
   "homepage": "https://devchain.cc/",
   "repository": {
@@ -8,6 +8,21 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.17.1": [
+      "Setup wizard: show the config's effort in the Effort field's Default label",
+      "Mobile: chat empty-state and preferences fixes",
+      "Template updates"
+    ],
+    "0.17.0": [
+      "Setup wizard: multi-step project setup and template import (Providers, Agents, Teams, Review), with provider selection driving preset and per-agent configuration",
+      "Reasoning effort: per-provider effort levels as a first-class parameter, selectable as provider defaults and overridable per agent from a new chat Overrides dialog",
+      "Mobile: durable message outbox with transcript cache and app version gate, plus an on-screen key pad for terminal prompts",
+      "Bug fixes: tmux scrollback duplication on resize, terminal viewport jumps, seed capture timing, and session restore blocked by stale terminal entries",
+      "Internal refactoring across template export/import, event automation, worktree runtime, mobile hooks, and UI scaffolding"
+    ],
+    "0.16.2": [
+      "Template fix"
+    ],
     "0.16.1": [
       "Template updates"
     ],

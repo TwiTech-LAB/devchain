@@ -6,7 +6,9 @@ import { MobileChatRpcService } from './mobile-chat-rpc.service';
 import { MobileBoardRpcService } from './mobile-board-rpc.service';
 import { ViewportStreamerService } from './viewport-streamer.service';
 import { E2eeTrustService } from '../../e2ee/services/e2ee-trust.service';
-import { ValidationError } from '../../../common/errors/error-types';
+import { ActiveSessionLookup } from '../../sessions/services/active-session-lookup.service';
+import { TerminalKeyInputFacade } from '../../terminal/services/terminal-key-input/terminal-key-input.facade';
+import { ValidationError, NotFoundError, ForbiddenError } from '../../../common/errors/error-types';
 import { type RpcCryptoContext } from './tunnel-rpc-crypto.service';
 import { toJsonRpcError } from './jsonrpc-error.util';
 import { toEpicDto, toStatusDto, toStatusMap } from './epic-dto.util';
@@ -154,8 +156,20 @@ const METHOD_SCHEMAS: Record<string, z.ZodTypeAny> = {
       agentId: z.string().uuid(),
       projectId: z.string().uuid(),
       text: z.string().trim().min(1),
+      // Additive-optional idempotency key (mobile). UUID-shaped so it matches the
+      // ids chat.getPendingMessages validates; absent for older desktop callers.
+      clientMessageId: z.string().uuid().optional(),
     })
     .passthrough(),
+  // STRICT (no passthrough): a read that names ids to look up — reject any unknown/extra
+  // field at the schema layer (-32602) before dispatch. Bounded 1..50 UUIDs.
+  'chat.getPendingMessages': z
+    .object({
+      agentId: z.string().uuid(),
+      projectId: z.string().uuid(),
+      clientMessageIds: z.array(z.string().uuid()).min(1).max(50),
+    })
+    .strict(),
   'chat.launchAgent': z
     .object({ agentId: z.string().uuid(), projectId: z.string().uuid() })
     .passthrough(),
@@ -208,6 +222,36 @@ const METHOD_SCHEMAS: Record<string, z.ZodTypeAny> = {
     })
     .passthrough(),
   'terminal.viewport.unsubscribe': z.object({ subscriptionId: z.string().min(1) }).passthrough(),
+  // Discrete mobile key input: one navigation/confirm key or one digit to answer a blocked
+  // interactive prompt (permission dialog, AskUserQuestion). STRICT (no passthrough) on
+  // purpose — unlike every other method above, this is an INPUT method, so defense-in-depth
+  // rejects any unknown/extra field at the schema layer (-32602) before dispatch. The
+  // whitelist enum is mirrored as a second, independent check inside the facade.
+  'terminal.sendKey': z
+    .object({
+      sessionId: z.string().uuid(),
+      projectId: z.string().uuid(),
+      key: z.enum([
+        'Up',
+        'Down',
+        'Left',
+        'Right',
+        'Enter',
+        'Escape',
+        'Tab',
+        '0',
+        '1',
+        '2',
+        '3',
+        '4',
+        '5',
+        '6',
+        '7',
+        '8',
+        '9',
+      ]),
+    })
+    .strict(),
   // E2EE bootstrap (RE2E1): the mobile delivers its X25519 public key + kid. The service
   // derives-and-verifies the kid + validates the key length, so the schema only asserts
   // both fields are present non-empty strings.
@@ -250,6 +294,12 @@ export class TunnelHandlerService {
     // can decrypt that device's RPC. Delivered plaintext (public key only); the adopt
     // derives-and-verifies the kid before storing (no unverified ingestion).
     private readonly e2eeTrust: E2eeTrustService,
+    // Discrete mobile key input (terminal.sendKey). INLINE handler below (no per-domain
+    // RpcService for a single method): source-side project scoping via ActiveSessionLookup,
+    // then the narrow facade owns the registry/liveness/whitelist/rate-limit. TerminalIOService
+    // is NEVER injected here — the facade is the only terminal surface CloudTunnel touches.
+    private readonly terminalKeyInput: TerminalKeyInputFacade,
+    private readonly activeSessions: ActiveSessionLookup,
   ) {
     this.handlers = {
       'board.listProjects': (p) => this.listProjects(p),
@@ -276,6 +326,7 @@ export class TunnelHandlerService {
       'chat.getTranscriptChunks': (p) => this.mobileChat.getTranscriptChunks(p),
       'chat.getTranscriptTail': (p) => this.mobileChat.getTranscriptTail(p),
       'chat.sendMessage': (p) => this.mobileChat.sendMessage(p),
+      'chat.getPendingMessages': (p) => this.mobileChat.getPendingMessages(p),
       'chat.launchAgent': (p) => this.mobileChat.launchAgent(p),
       'chat.restartAgent': (p) => this.mobileChat.restartAgent(p),
       'chat.restoreSession': (p) => this.mobileChat.restoreSession(p),
@@ -289,6 +340,10 @@ export class TunnelHandlerService {
       // Live viewport lease control:
       'terminal.viewport.subscribe': (p) => this.viewportStreamer.subscribe(p),
       'terminal.viewport.unsubscribe': (p) => Promise.resolve(this.viewportStreamer.unsubscribe(p)),
+      // Discrete mobile key input. INLINE handler (no per-domain RpcService for a single
+      // method — mirrors the revokeDeviceKey inline pattern): project-scope the session,
+      // then delegate the tmux send to the narrow facade.
+      'terminal.sendKey': (p) => this.sendTerminalKey(p),
       // E2EE bootstrap (RE2E1): adopt the mobile device's public key (email-login half of
       // the bidirectional exchange). Plaintext by design — see RPC_BOOTSTRAP_METHODS.
       'e2ee.adoptDeviceKey': (p) =>
@@ -360,6 +415,41 @@ export class TunnelHandlerService {
       throw new ValidationError('e2ee.revokeDeviceKey requires a sealed sender context');
     }
     return this.e2eeTrust.revokeDevice(cryptoCtx.senderKid);
+  }
+
+  /**
+   * `terminal.sendKey({ sessionId, projectId, key })` — project-scope the session BEFORE the
+   * key is sent (unknown → NotFoundError, cross-project → ForbiddenError), then hand the
+   * whitelisted key to {@link TerminalKeyInputFacade.sendKey}. The scope check mirrors
+   * `ViewportStreamerService.assertSessionInProject` / `MobileChatRpcService.assertSessionInProject`
+   * (the shared SESSION_PROJECT_MISMATCH contract); the facade owns registry/liveness/whitelist/
+   * rate-limit and surfaces `SESSION_NOT_RUNNING | INVALID_KEY | RATE_LIMITED` as AppError codes.
+   */
+  private async sendTerminalKey(params: Record<string, unknown>): Promise<{ ok: true }> {
+    const sessionId = params['sessionId'] as string;
+    const projectId = params['projectId'] as string;
+    const key = params['key'] as string;
+    await this.assertSessionInProject(sessionId, projectId);
+    return this.terminalKeyInput.sendKey(sessionId, key);
+  }
+
+  /**
+   * Enforce `session → agent → project` ownership before acting on a sessionId. Mirrors
+   * `ViewportStreamerService.assertSessionInProject`: unknown → NotFoundError, cross-project →
+   * ForbiddenError (`SESSION_PROJECT_MISMATCH`).
+   */
+  private async assertSessionInProject(sessionId: string, projectId: string): Promise<void> {
+    const scope = await this.activeSessions.getSessionProjectScope(sessionId);
+    if (!scope) {
+      throw new NotFoundError('Session', sessionId);
+    }
+    if (scope.projectId !== projectId) {
+      throw new ForbiddenError('Session does not belong to the requested project', {
+        code: 'SESSION_PROJECT_MISMATCH',
+        sessionId,
+        projectId,
+      });
+    }
   }
 
   private async listProjects(params: Record<string, unknown>): Promise<unknown[]> {

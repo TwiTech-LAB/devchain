@@ -14,13 +14,18 @@ import type {
   ContextWindowCapability,
   ContextWindowProviderState,
   ModelFamily,
+  EffortCapability,
   HookCapability,
   HookEnvContext,
   TranscriptDiscoveryCapability,
   ProjectMcpSettingsCapability,
 } from './capabilities';
 
-import { rewriteModelTo1m, extractModelFromArgs } from '../../sessions/utils/profile-options';
+import {
+  rewriteModelTo1m,
+  extractModelFromArgs,
+  stripFlag,
+} from '../../sessions/utils/profile-options';
 
 interface ClaudeSettingsLocal {
   permissions?: {
@@ -39,11 +44,17 @@ export class ClaudeAdapter
     ProviderAdapter,
     McpCliCapability,
     ContextWindowCapability,
+    EffortCapability,
     HookCapability,
     TranscriptDiscoveryCapability,
     ProjectMcpSettingsCapability
 {
   readonly providerName = 'claude';
+
+  // Effort (`--effort <value>`): Claude's CLI accepts these and falls back
+  // gracefully on unsupported values, so `max` is still seeded even though it is
+  // model/CLI-dependent. Static seed/endpoint metadata — not derived at launch.
+  readonly defaultEffortValues = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 
   readonly launchInitialPromptBehavior: LaunchInitialPromptBehavior = {
     preKeys: ['Enter'],
@@ -112,6 +123,18 @@ export class ClaudeAdapter
     delete resultEnv.CLAUDE_CODE_DISABLE_1M_CONTEXT;
 
     return { argv, env: resultEnv };
+  }
+
+  applyEffort(
+    args: string[],
+    env: Record<string, string>,
+    effortValue: string,
+  ): { argv: string[]; env: Record<string, string> } {
+    // Strip any raw `--effort` (both `--effort v` and `--effort=v` forms) so the
+    // structured value can't be contradicted, then inject the native flag. Env is
+    // untouched (Claude's effort is an argv flag, not an env overlay).
+    const stripped = stripFlag(args, '--effort');
+    return { argv: ['--effort', effortValue, ...stripped], env };
   }
 
   getCompactThreshold(

@@ -101,4 +101,28 @@ describe('ManifestOverrideSchema', () => {
       expect(result.success).toBe(false);
     });
   });
+
+  describe('preset agentConfigs effortOverride', () => {
+    it('accepts preset agentConfigs with effortOverride (string, null, omitted)', () => {
+      const result = ExportWithOverridesSchema.safeParse({
+        presets: [
+          {
+            name: 'default',
+            agentConfigs: [
+              { agentName: 'Coder', providerConfigName: 'cfg', effortOverride: 'high' },
+              { agentName: 'Reviewer', providerConfigName: 'cfg', effortOverride: null },
+              { agentName: 'Architect', providerConfigName: 'cfg' },
+            ],
+          },
+        ],
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        const configs = result.data.presets![0].agentConfigs;
+        expect(configs[0].effortOverride).toBe('high');
+        expect(configs[1].effortOverride).toBeNull();
+        expect(configs[2].effortOverride).toBeUndefined();
+      }
+    });
+  });
 });

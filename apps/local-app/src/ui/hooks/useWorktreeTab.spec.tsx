@@ -6,6 +6,7 @@ import { waitFor } from '@testing-library/react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { Socket } from 'socket.io-client';
 import { WorktreeTabProvider, useWorktreeTab, type ActiveWorktreeTab } from './useWorktreeTab';
+import { providersQueryKeys } from '@/ui/lib/providers-query-keys';
 import {
   PROJECT_STORAGE_KEY,
   ProjectSelectionProvider,
@@ -431,7 +432,7 @@ describe('WorktreeTabProvider', () => {
     expect(predicate).toBeDefined();
     expect(predicate?.({ queryKey: ['worktree-tabs-worktrees'] })).toBe(false);
     expect(predicate?.({ queryKey: ['projects'] })).toBe(false);
-    expect(predicate?.({ queryKey: ['providers'] })).toBe(false);
+    expect(predicate?.({ queryKey: providersQueryKeys.list() })).toBe(false);
     expect(predicate?.({ queryKey: ['epics', 'project-1'] })).toBe(true);
 
     // Verify cancel→invalidate sequence for projects

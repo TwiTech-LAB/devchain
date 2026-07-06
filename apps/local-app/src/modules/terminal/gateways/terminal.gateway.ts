@@ -111,14 +111,35 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
 
   handleDisconnect(client: Socket) {
     logger.info({ clientId: client.id }, 'Client disconnected');
-    const clientSession = this.clientSessions.get(client.id);
-    if (clientSession?.sessionId) {
-      const session = this.registry.get(clientSession.sessionId);
-      if (session) {
-        session.unsubscribe(client.id);
+    this.releaseClientSession(client.id);
+  }
+
+  /**
+   * Release every terminal authority a client held, then drop its tracking. Idempotent — safe
+   * to call twice (double-disconnect, or a heartbeat kill that also triggers handleDisconnect).
+   *
+   * Sweeps the UNION of session ids drawn from the client's `session/<id>` AND `terminal/<id>`
+   * subscription entries PLUS the singular `clientSession.sessionId`. The prefixes matter: a
+   * subscribe adds `session/<id>` BEFORE the latch but `terminal/<id>` only AFTER the 50ms seed
+   * settle, so a client that latches authority then dies inside that window holds only
+   * `session/<id>`. A terminal/-only sweep would leak that authority and wedge the session — the
+   * latch would then see `authority !== null` forever and no later subscriber could apply
+   * geometry or send input until a live focusin steal.
+   */
+  private releaseClientSession(clientId: string): void {
+    const clientSession = this.clientSessions.get(clientId);
+    if (clientSession) {
+      const sessionIds = new Set<string>();
+      if (clientSession.sessionId) sessionIds.add(clientSession.sessionId);
+      for (const sub of clientSession.subscriptions) {
+        if (sub.startsWith('session/')) sessionIds.add(sub.slice('session/'.length));
+        else if (sub.startsWith('terminal/')) sessionIds.add(sub.slice('terminal/'.length));
+      }
+      for (const sessionId of sessionIds) {
+        this.registry.get(sessionId)?.unsubscribe(clientId);
       }
     }
-    this.clientSessions.delete(client.id);
+    this.clientSessions.delete(clientId);
   }
 
   // ── Subscribe / Unsubscribe ─────────────────────────────────────────
@@ -178,12 +199,29 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
     await this.ensurePtyStreaming(sessionId, session.tmuxSessionName, { cols, rows });
 
     const isFirstAttach = typeof lastSequence !== 'number';
-    if (typeof rows === 'number' && rows > 0 && typeof cols === 'number' && cols > 0) {
+    const validDims = typeof rows === 'number' && rows > 0 && typeof cols === 'number' && cols > 0;
+    // Gate the pty geometry apply on the initial-authority latch: exactly one subscriber wins
+    // per session lifecycle, so a reconnect/mount burst flips geometry ONCE instead of per view.
+    // Losers (and dimensionless subscribes) fall through to subscribe()'s first-subscriber grant.
+    // Seed-invalidation + the 50ms settle bind to isFirstAttach && wonInitialAuthority — two
+    // independent predicates: a reconnecting winner resizes without invalidating; a first-attach
+    // loser does neither and seeds at the winner's width.
+    let wonInitialAuthority = false;
+    if (validDims && session.claimInitialAuthority(client.id)) {
+      wonInitialAuthority = true;
       this.ptyService.resize(sessionId, cols, rows);
       if (isFirstAttach) {
         this.seedService.invalidateCache(sessionId);
         await new Promise((r) => setTimeout(r, 50));
       }
+    }
+
+    // Post-await liveness guard: the awaits above (sessionExists, ensurePtyStreaming, the 50ms
+    // seed settle) can resume after the client already disconnected. Bail before wiring/subscribing;
+    // the disconnect sweep releases any latched authority keyed on the now-dead client id.
+    if (!this.clientSessions.has(client.id)) {
+      logger.info({ sessionId, clientId: client.id }, 'Client gone mid-subscribe — skipping');
+      return;
     }
 
     client.emit(
@@ -201,6 +239,12 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
     // hasHistory (alt-screen seeds → no scroll-up affordance). Set before subscribe()
     // because subscribe() kicks off the async seed emit.
     session.setUsesAlternateScreen(this.sessionsService.usesAlternateScreenFor(sessionId));
+    // Forward the latched grant now that the listener is wired and the socket has joined
+    // terminal:<id>. subscribe() below no-ops its own grant for the winner (authority already
+    // set), so this is the sole focus_changed for an initial latch grant.
+    if (wonInitialAuthority) {
+      session.notifyInitialAuthority(client.id);
+    }
     session.subscribe(client.id);
 
     if (!isFirstAttach) {
@@ -307,7 +351,15 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
         );
         this.themeCache.set(sessionId, { foregroundHex, backgroundHex });
         logger.debug({ sessionId }, 'terminal_theme_applied');
-        void this.ptyService.triggerRedraw(sessionId);
+        // Gate the SIGWINCH redraw jiggle on the provider's alt-screen policy. A non-alt-screen
+        // Ink TUI (claude/codex) repaints its transcript tail into scrollback at the resized
+        // geometry, baking duplicated history. tmux window style + the dedup cache stay ungated
+        // for every provider — only the jiggle is skipped (mirrors maybeRestoreViewportModes).
+        if (this.sessionsService.usesAlternateScreenFor(sessionId)) {
+          void this.ptyService.triggerRedraw(sessionId);
+        } else {
+          logger.debug({ sessionId }, 'terminal_theme_redraw_skipped_non_altscreen');
+        }
       } catch (error) {
         logger.debug({ sessionId, error: String(error) }, 'terminal_theme_apply_failed');
       }
@@ -427,10 +479,14 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
     const session = this.registry.get(sessionId);
     if (!session) return;
 
-    const capturedSequence = this.streamService.getCurrentSequence(sessionId);
     const target = { name: session.tmuxSessionName };
 
     const captureResult = await this.terminalIO.captureHistory(target, maxLines, true);
+    // Sample the sequence AFTER the tmux capture completes (and before the cursor
+    // lookup): frames stamped while capture-pane ran are already inside the snapshot,
+    // so they must fall at or below capturedSequence or the client replays them on
+    // top of the snapshot and duplicates the tail.
+    const capturedSequence = this.streamService.getCurrentSequence(sessionId);
     let history = captureResult.ok ? captureResult.output : '';
     history = stripFinalLineEnding(history);
 
@@ -496,7 +552,13 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
 
   @OnEvent('session.crashed')
   handleSessionCrashed(payload: { sessionId: string; sessionName: string }) {
+    // Mirror handleDeadTmuxSession: without this the DB row stays 'running'
+    // and the registry entry survives, blocking a later restore with
+    // "TerminalSession already exists".
+    this.sessionsService.markSessionFailed(payload.sessionId, 'tmux session lost (health check)');
+    this.ptyService.stopStreaming(payload.sessionId);
     this.unwireFrameListener(payload.sessionId);
+    this.registry.dispose(payload.sessionId);
     const ep: SessionStatePayload = {
       sessionId: payload.sessionId,
       status: 'crashed',
@@ -575,7 +637,9 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
         if (now.getTime() - cs.lastHeartbeat.getTime() > HEARTBEAT_TIMEOUT) {
           logger.warn({ clientId }, 'Client heartbeat timeout');
           this.server.sockets.sockets.get(clientId)?.disconnect(true);
-          this.clientSessions.delete(clientId);
+          // Same authority sweep as handleDisconnect — disconnect(true) may not route through it,
+          // and a plain clientSessions.delete would leak authority on every latched session.
+          this.releaseClientSession(clientId);
         } else {
           const sock = this.server.sockets.sockets.get(clientId);
           if (sock) this.sendHeartbeat(sock);

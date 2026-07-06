@@ -17,6 +17,7 @@ function createRehydrator(options?: {
     sessionExists: jest.fn().mockImplementation(async (target: { name: string }) => {
       return options?.sessionExistsResults?.get(target.name) ?? true;
     }),
+    startHealthCheck: jest.fn(),
   };
 
   const registry = new TerminalSessionRegistry();
@@ -86,6 +87,24 @@ describe('TerminalRegistryRehydrator', () => {
     expect(sessionsService.markSessionFailed).not.toHaveBeenCalledWith('alive', expect.anything());
     expect(registry.get('alive')).toBeDefined();
     expect(registry.get('dead')).toBeUndefined();
+  });
+
+  it('starts a health check for rehydrated sessions but not for dead ones', async () => {
+    const { rehydrator, terminalIO } = createRehydrator({
+      metas: [
+        { sessionId: 'alive', tmuxSessionName: 'tmux_alive', providerName: 'claude' },
+        { sessionId: 'dead', tmuxSessionName: 'tmux_dead', providerName: 'claude' },
+      ],
+      sessionExistsResults: new Map([
+        ['tmux_alive', true],
+        ['tmux_dead', false],
+      ]),
+    });
+
+    await rehydrator.onApplicationBootstrap();
+
+    expect(terminalIO.startHealthCheck).toHaveBeenCalledWith('tmux_alive', 'alive');
+    expect(terminalIO.startHealthCheck).not.toHaveBeenCalledWith('tmux_dead', 'dead');
   });
 
   it('skips sessions already in registry (no double-create)', async () => {

@@ -66,6 +66,7 @@ function renderAgentRow(overrides: Partial<React.ComponentProps<typeof AgentRow>
   const onLaunch = jest.fn();
   const onTerminate = jest.fn();
   const onToggleContextTracking = jest.fn();
+  const onOpenOverrides = jest.fn();
 
   const utils = render(
     <AgentRow
@@ -87,7 +88,8 @@ function renderAgentRow(overrides: Partial<React.ComponentProps<typeof AgentRow>
       isRestarting={false}
       isLaunchingChat={false}
       activityBadge={<span>Busy 10s</span>}
-      providerConfigSubmenu={<div>Provider Config</div>}
+      canOverride={true}
+      onOpenOverrides={onOpenOverrides}
       onClick={onClick}
       onRestart={onRestart}
       onLaunch={onLaunch}
@@ -97,7 +99,15 @@ function renderAgentRow(overrides: Partial<React.ComponentProps<typeof AgentRow>
     />,
   );
 
-  return { ...utils, onClick, onRestart, onLaunch, onTerminate, onToggleContextTracking };
+  return {
+    ...utils,
+    onClick,
+    onRestart,
+    onLaunch,
+    onTerminate,
+    onToggleContextTracking,
+    onOpenOverrides,
+  };
 }
 
 describe('AgentRow', () => {
@@ -157,10 +167,33 @@ describe('AgentRow', () => {
     fireEvent.contextMenu(screen.getByLabelText(/Chat with Alpha \(online\)/i));
 
     await waitFor(() => {
-      expect(screen.getByText('Provider Config')).toBeInTheDocument();
+      expect(screen.getByText('Overrides…')).toBeInTheDocument();
     });
     expect(screen.getByRole('menuitemcheckbox', { name: /Context tracking/i })).toBeInTheDocument();
     expect(screen.getByText(/Launch session/i)).toBeInTheDocument();
+  });
+
+  it('fires onOpenOverrides with the row trigger from the context menu', async () => {
+    const { onOpenOverrides } = renderAgentRow();
+
+    fireEvent.contextMenu(screen.getByLabelText(/Chat with Alpha/i));
+
+    fireEvent.click(await screen.findByText('Overrides…'));
+
+    expect(onOpenOverrides).toHaveBeenCalledTimes(1);
+    // Receives an element (the row trigger) so the dialog can restore focus.
+    expect(onOpenOverrides.mock.calls[0][0]).toBeInstanceOf(HTMLElement);
+  });
+
+  it('hides the Overrides item when canOverride is false', async () => {
+    renderAgentRow({ canOverride: false });
+
+    fireEvent.contextMenu(screen.getByLabelText(/Chat with Alpha/i));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Context tracking/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Overrides…')).not.toBeInTheDocument();
   });
 
   it('marks the row as selected when isSelected is true', () => {

@@ -43,7 +43,6 @@ function renderHistoryHarness(options?: {
     const isSubscribedRef = useRef(true);
     const hasHistoryRef = useRef(false);
     const isLoadingHistoryRef = useRef(false);
-    const historyViewportOffsetRef = useRef<number | null>(10);
     const isHistoryInFlightRef = useRef(true);
     const pendingHistoryFramesRef = useRef<{ sequence: number; data: string }[]>(
       options?.pendingFrames ?? [],
@@ -70,7 +69,6 @@ function renderHistoryHarness(options?: {
       isSubscribedRef,
       hasHistoryRef,
       isLoadingHistoryRef,
-      historyViewportOffsetRef,
       isHistoryInFlightRef,
       pendingHistoryFramesRef,
       lastCapturedSequenceRef,
@@ -107,7 +105,6 @@ describe('useTerminalMessageHandlers', () => {
       const isSubscribedRef = useRef(true);
       const hasHistoryRef = useRef(false);
       const isLoadingHistoryRef = useRef(false);
-      const historyViewportOffsetRef = useRef<number | null>(null);
       const isHistoryInFlightRef = useRef(true);
       const pendingHistoryFramesRef = useRef<{ sequence: number; data: string }[]>([]);
       const lastCapturedSequenceRef = useRef(0);
@@ -132,7 +129,6 @@ describe('useTerminalMessageHandlers', () => {
         isSubscribedRef,
         hasHistoryRef,
         isLoadingHistoryRef,
-        historyViewportOffsetRef,
         isHistoryInFlightRef,
         pendingHistoryFramesRef,
         lastCapturedSequenceRef,
@@ -194,7 +190,6 @@ describe('useTerminalMessageHandlers', () => {
       const isSubscribedRef = useRef(true);
       const hasHistoryRef = useRef(false);
       const isLoadingHistoryRef = useRef(false);
-      const historyViewportOffsetRef = useRef<number | null>(10);
       const isHistoryInFlightRef = useRef(true);
       const pendingHistoryFramesRef = useRef<{ sequence: number; data: string }[]>([]);
       const lastCapturedSequenceRef = useRef(0);
@@ -223,7 +218,6 @@ describe('useTerminalMessageHandlers', () => {
         isSubscribedRef,
         hasHistoryRef,
         isLoadingHistoryRef,
-        historyViewportOffsetRef,
         isHistoryInFlightRef,
         pendingHistoryFramesRef,
         lastCapturedSequenceRef,

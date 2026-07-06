@@ -26,6 +26,8 @@ describe('ProviderConfigsController', () => {
     description: null,
     options: '--model test',
     env: { API_KEY: 'test-key' },
+    model: null,
+    effort: null,
     position: 0,
     createdAt: '2024-01-01T00:00:00.000Z',
     updatedAt: '2024-01-01T00:00:00.000Z',
@@ -126,6 +128,54 @@ describe('ProviderConfigsController', () => {
         env: null,
       });
       expect(result.env).toBeNull();
+    });
+
+    it('sets structured model and effort defaults', async () => {
+      const updatedConfig = { ...baseConfig, model: 'claude-sonnet-4-5', effort: 'high' };
+      providerConfigsService.updateProviderConfig.mockResolvedValue(updatedConfig);
+
+      const result = await controller.updateProviderConfig('config-1', {
+        model: 'claude-sonnet-4-5',
+        effort: 'high',
+      });
+
+      expect(providerConfigsService.updateProviderConfig).toHaveBeenCalledWith('config-1', {
+        model: 'claude-sonnet-4-5',
+        effort: 'high',
+      });
+      expect(result.model).toBe('claude-sonnet-4-5');
+      expect(result.effort).toBe('high');
+    });
+
+    it('clears structured model/effort via null', async () => {
+      const updatedConfig = { ...baseConfig, model: null, effort: null };
+      providerConfigsService.updateProviderConfig.mockResolvedValue(updatedConfig);
+
+      const result = await controller.updateProviderConfig('config-1', {
+        model: null,
+        effort: null,
+      });
+
+      expect(providerConfigsService.updateProviderConfig).toHaveBeenCalledWith('config-1', {
+        model: null,
+        effort: null,
+      });
+      expect(result.model).toBeNull();
+      expect(result.effort).toBeNull();
+    });
+
+    it('omitting model/effort preserves them (not passed to storage)', async () => {
+      const updatedConfig = { ...baseConfig, options: '--model new' };
+      providerConfigsService.updateProviderConfig.mockResolvedValue(updatedConfig);
+
+      await controller.updateProviderConfig('config-1', { options: '--model new' });
+
+      const passed = providerConfigsService.updateProviderConfig.mock.calls[0][1] as {
+        model?: unknown;
+        effort?: unknown;
+      };
+      expect(passed.model).toBeUndefined();
+      expect(passed.effort).toBeUndefined();
     });
 
     it('throws when config not found', async () => {

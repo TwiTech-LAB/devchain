@@ -11,6 +11,12 @@ export interface DeliveryMessage {
   readonly messageId?: string;
   readonly senderAgentId?: string;
   /**
+   * Caller-supplied idempotency key threaded into the message pool so a retry
+   * with the same key dedups instead of double-delivering (mobile sends). The
+   * resulting log-entry id comes back on {@link RecipientResult.messageId}.
+   */
+  readonly clientMessageId?: string;
+  /**
    * Tmux framing directive for `kind:'mcp.direct'` deliveries. Only applies to
    * `mcp.direct`; ignored for `'mcp.thread'`, `'chat.user'`, and `'pooled'`.
    * `'agent-banner'` (default when unset) wraps the body in the agent-oriented
@@ -53,6 +59,8 @@ export interface RecipientResult {
   readonly agentId: string;
   readonly status: 'queued' | 'delivered' | 'failed' | 'unconfirmed';
   readonly error?: string;
+  /** Log-entry id of the enqueued (or deduped) message, when the pool returned one. */
+  readonly messageId?: string;
 }
 
 export interface DeliveryStatus {

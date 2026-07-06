@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { SettingsModule } from '../settings/settings.module';
 import { StorageModule } from '../storage/storage.module';
 import { WatchersModule } from '../watchers/watchers.module';
+import { ProviderEffortSeedingModule } from '../providers/services/provider-effort-seeding.module';
 import {
   DATA_SEEDERS,
   DataSeederService,
@@ -9,7 +10,7 @@ import {
 } from './services/data-seeder.service';
 
 @Module({
-  imports: [StorageModule, SettingsModule, WatchersModule],
+  imports: [StorageModule, SettingsModule, WatchersModule, ProviderEffortSeedingModule],
   providers: [
     {
       provide: DATA_SEEDERS,

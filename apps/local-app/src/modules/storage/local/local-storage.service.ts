@@ -43,6 +43,8 @@ import {
   CreateProvider,
   ProviderModel,
   CreateProviderModel,
+  ProviderEffort,
+  CreateProviderEffort,
   UpdateProvider,
   ProviderMcpMetadata,
   UpdateProviderMcpMetadata,
@@ -108,6 +110,7 @@ import { ProfileProviderConfigStorageDelegate } from './delegates/profile-provid
 import { PromptStorageDelegate } from './delegates/prompt.delegate';
 import { ProviderStorageDelegate } from './delegates/provider.delegate';
 import { ProviderModelStorageDelegate } from './delegates/provider-model.delegate';
+import { ProviderEffortStorageDelegate } from './delegates/provider-effort.delegate';
 import { ProjectStorageDelegate } from './delegates/project.delegate';
 import { RecordStorageDelegate } from './delegates/record.delegate';
 import { ReviewStorageDelegate } from './delegates/review.delegate';
@@ -148,6 +151,7 @@ export class LocalStorageService implements StorageService {
   private readonly guestDelegate: GuestStorageDelegate;
   private readonly reviewDelegate: ReviewStorageDelegate;
   private readonly providerModelDelegate: ProviderModelStorageDelegate;
+  private readonly providerEffortDelegate: ProviderEffortStorageDelegate;
   private readonly scheduledEpicDelegate: ScheduledEpicStorageDelegate;
   private readonly sessionDelegate: SessionStorageDelegate;
 
@@ -180,6 +184,7 @@ export class LocalStorageService implements StorageService {
       updateProvider: (id, data) => this.updateProvider(id, data),
     });
     this.providerModelDelegate = new ProviderModelStorageDelegate(context);
+    this.providerEffortDelegate = new ProviderEffortStorageDelegate(context);
     this.skillSourceDelegate = new SkillSourceStorageDelegate(context, {
       assertLocalSourceNameAvailableAcrossTypes: (sourceName) =>
         this.assertLocalSourceNameAvailableAcrossTypes(sourceName),
@@ -245,12 +250,15 @@ export class LocalStorageService implements StorageService {
     return this.projectDelegate.createProject(data);
   }
 
-  async createProjectWithTemplate(
+  runInTransaction<T>(fn: () => Promise<T>): Promise<T> {
+    return this.projectDelegate.runInTransaction(fn);
+  }
+
+  async createProjectShell(
     data: CreateProject,
-    template: import('../interfaces/storage.interface').TemplateImportPayload,
     options?: import('../interfaces/storage.interface').CreateProjectWithTemplateOptions,
-  ): Promise<import('../interfaces/storage.interface').CreateProjectWithTemplateResult> {
-    return this.projectDelegate.createProjectWithTemplate(data, template, options);
+  ): Promise<Project> {
+    return this.projectDelegate.createProjectShell(data, options);
   }
 
   async getProject(id: string): Promise<Project> {
@@ -491,6 +499,29 @@ export class LocalStorageService implements StorageService {
     names: string[],
   ): Promise<{ added: string[]; existing: string[] }> {
     return this.providerModelDelegate.bulkCreateProviderModels(providerId, names);
+  }
+
+  async createProviderEffort(data: CreateProviderEffort): Promise<ProviderEffort> {
+    return this.providerEffortDelegate.createProviderEffort(data);
+  }
+
+  async listProviderEffortsByProvider(providerId: string): Promise<ProviderEffort[]> {
+    return this.providerEffortDelegate.listProviderEffortsByProvider(providerId);
+  }
+
+  async listProviderEffortsByProviderIds(providerIds: string[]): Promise<ProviderEffort[]> {
+    return this.providerEffortDelegate.listProviderEffortsByProviderIds(providerIds);
+  }
+
+  async deleteProviderEffort(id: string): Promise<void> {
+    return this.providerEffortDelegate.deleteProviderEffort(id);
+  }
+
+  async bulkCreateProviderEfforts(
+    providerId: string,
+    names: string[],
+  ): Promise<{ added: string[]; existing: string[] }> {
+    return this.providerEffortDelegate.bulkCreateProviderEfforts(providerId, names);
   }
 
   async getProvider(id: string): Promise<Provider> {

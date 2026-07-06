@@ -33,6 +33,7 @@ interface Agent {
   profileId: string;
   providerConfigId?: string | null;
   modelOverride?: string | null;
+  effortOverride?: string | null;
   providerConfig?: {
     id: string;
     name: string;
@@ -56,6 +57,7 @@ interface ProviderConfig {
   name: string;
   profileId: string;
   providerId: string;
+  model?: string | null;
 }
 
 interface ProviderModelOption {
@@ -63,7 +65,19 @@ interface ProviderModelOption {
   name: string;
 }
 
+interface ProviderEffortOption {
+  id: string;
+  name: string;
+}
+
+interface ProviderEffortsCatalog {
+  efforts: ProviderEffortOption[];
+  supportsEffort: boolean;
+  requiresModelForEffort: boolean;
+}
+
 const DEFAULT_MODEL_OVERRIDE = '__default_model_override__';
+const DEFAULT_EFFORT_OVERRIDE = '__default_effort_override__';
 
 function parseProviderModels(payload: unknown, providerId: string): ProviderModelOption[] {
   if (!Array.isArray(payload)) {
@@ -94,6 +108,43 @@ function parseProviderModels(payload: unknown, providerId: string): ProviderMode
       return { id, name };
     })
     .filter((model): model is ProviderModelOption => Boolean(model));
+}
+
+function parseProviderEfforts(payload: unknown, providerId: string): ProviderEffortsCatalog {
+  const empty: ProviderEffortsCatalog = {
+    efforts: [],
+    supportsEffort: false,
+    requiresModelForEffort: false,
+  };
+
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return empty;
+  }
+
+  const obj = payload as {
+    efforts?: unknown;
+    supportsEffort?: unknown;
+    requiresModelForEffort?: unknown;
+  };
+
+  const efforts = Array.isArray(obj.efforts)
+    ? obj.efforts
+        .map((rawEffort, index) => {
+          const rawName =
+            typeof rawEffort === 'string' ? rawEffort : (rawEffort as { name?: unknown })?.name;
+          if (typeof rawName !== 'string') return null;
+          const name = rawName.trim();
+          if (!name) return null;
+          return { id: `${providerId}:${name}:${index}`, name };
+        })
+        .filter((effort): effort is ProviderEffortOption => Boolean(effort))
+    : [];
+
+  return {
+    efforts,
+    supportsEffort: obj.supportsEffort === true,
+    requiresModelForEffort: obj.requiresModelForEffort === true,
+  };
 }
 
 async function createPreset(projectId: string, preset: Preset): Promise<CreatePresetResponse> {
@@ -157,6 +208,7 @@ export function PresetDialog({
           presetToEdit.agentConfigs.map((config) => ({
             ...config,
             modelOverride: config.modelOverride ?? null,
+            effortOverride: config.effortOverride ?? null,
           })),
         );
       } else {
@@ -169,6 +221,7 @@ export function PresetDialog({
             agentName: a.name,
             providerConfigName: a.providerConfig!.name,
             modelOverride: a.modelOverride ?? null,
+            effortOverride: a.effortOverride ?? null,
           })),
         );
       }
@@ -264,6 +317,40 @@ export function PresetDialog({
     return map;
   }, [providerModelQueries, selectedProviderIds]);
 
+  const providerEffortQueries = useQueries({
+    queries: selectedProviderIds.map((providerId) => ({
+      queryKey: ['provider-efforts', providerId],
+      queryFn: async () => {
+        const res = await fetch(`/api/providers/${providerId}/efforts`);
+        if (!res.ok) {
+          return {
+            efforts: [],
+            supportsEffort: false,
+            requiresModelForEffort: false,
+          } as ProviderEffortsCatalog;
+        }
+        const payload = (await res.json().catch(() => null)) as unknown;
+        return parseProviderEfforts(payload, providerId);
+      },
+      staleTime: 5 * 60 * 1000,
+      enabled: open,
+    })),
+  });
+
+  const providerEffortsByProviderId = useMemo(() => {
+    const map = new Map<string, ProviderEffortsCatalog>();
+    selectedProviderIds.forEach((providerId, index) => {
+      const query = providerEffortQueries[index];
+      const catalog = query?.data ?? {
+        efforts: [],
+        supportsEffort: false,
+        requiresModelForEffort: false,
+      };
+      map.set(providerId, catalog);
+    });
+    return map;
+  }, [providerEffortQueries, selectedProviderIds]);
+
   // Validate name
   const nameError = name.trim()
     ? existingPresetNames.some(
@@ -296,6 +383,7 @@ export function PresetDialog({
         (agentConfig) => ({
           ...agentConfig,
           modelOverride: agentConfig.modelOverride ?? null,
+          effortOverride: agentConfig.effortOverride ?? null,
         }),
       );
 
@@ -357,6 +445,10 @@ export function PresetDialog({
     return selectedAgentConfigs.find((ac) => ac.agentName === agentName)?.modelOverride ?? null;
   };
 
+  const getSelectedEffortOverride = (agentName: string): string | null => {
+    return selectedAgentConfigs.find((ac) => ac.agentName === agentName)?.effortOverride ?? null;
+  };
+
   // Handler for checkbox: toggles agent in/out of preset
   const handleAgentCheckboxChange = (agentName: string, checked: boolean) => {
     const existingIndex = selectedAgentConfigs.findIndex((ac) => ac.agentName === agentName);
@@ -375,6 +467,7 @@ export function PresetDialog({
             agentName,
             providerConfigName: configToUse,
             modelOverride: agent?.modelOverride ?? null,
+            effortOverride: agent?.effortOverride ?? null,
           },
         ]);
       }
@@ -388,11 +481,17 @@ export function PresetDialog({
   const handleAgentConfigSelect = (agentName: string, configName: string) => {
     const existingIndex = selectedAgentConfigs.findIndex((ac) => ac.agentName === agentName);
     if (existingIndex >= 0) {
-      // Update existing agent's config
+      // Update existing agent's config (reset overrides — catalogs rebind)
       setSelectedAgentConfigs((prev) =>
         prev.map((ac, i) =>
           i === existingIndex
-            ? { ...ac, agentName, providerConfigName: configName, modelOverride: null }
+            ? {
+                ...ac,
+                agentName,
+                providerConfigName: configName,
+                modelOverride: null,
+                effortOverride: null,
+              }
             : ac,
         ),
       );
@@ -400,7 +499,7 @@ export function PresetDialog({
       // Add agent with selected config
       setSelectedAgentConfigs((prev) => [
         ...prev,
-        { agentName, providerConfigName: configName, modelOverride: null },
+        { agentName, providerConfigName: configName, modelOverride: null, effortOverride: null },
       ]);
     }
   };
@@ -411,6 +510,15 @@ export function PresetDialog({
 
     setSelectedAgentConfigs((prev) =>
       prev.map((ac, i) => (i === existingIndex ? { ...ac, modelOverride: modelName } : ac)),
+    );
+  };
+
+  const handleAgentEffortSelect = (agentName: string, effortName: string | null) => {
+    const existingIndex = selectedAgentConfigs.findIndex((ac) => ac.agentName === agentName);
+    if (existingIndex < 0) return;
+
+    setSelectedAgentConfigs((prev) =>
+      prev.map((ac, i) => (i === existingIndex ? { ...ac, effortOverride: effortName } : ac)),
     );
   };
 
@@ -499,6 +607,26 @@ export function PresetDialog({
                       ? (providerModelsByProviderId.get(selectedProviderId) ?? [])
                       : [];
                     const hasProviderModels = providerModels.length > 0;
+                    // Effort catalog + gating for this row's provider
+                    const effortsCatalog = selectedProviderId
+                      ? providerEffortsByProviderId.get(selectedProviderId)
+                      : undefined;
+                    const supportsEffort = effortsCatalog?.supportsEffort ?? false;
+                    const providerEfforts = effortsCatalog?.efforts ?? [];
+                    const requiresModelForEffort = effortsCatalog?.requiresModelForEffort ?? false;
+                    const selectedEffortOverride = getSelectedEffortOverride(agent.name);
+                    // "Select a model first" gate: resolvable via agent override OR config structured model
+                    const hasResolvableModel = Boolean(
+                      selectedModelOverride || selectedConfigOption?.model,
+                    );
+                    const effortModelRequired = requiresModelForEffort && !hasResolvableModel;
+                    const effortEmpty = providerEfforts.length === 0;
+                    const effortDisabled = effortModelRequired || effortEmpty;
+                    const effortPlaceholder = effortModelRequired
+                      ? 'Select a model first'
+                      : effortEmpty
+                        ? 'No effort levels'
+                        : 'Default';
 
                     return (
                       <div
@@ -573,6 +701,40 @@ export function PresetDialog({
                                   className="text-xs"
                                 >
                                   {shortModelName(model.name)}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        ) : null}
+                        {isSelected && selectedProviderId && supportsEffort ? (
+                          <Select
+                            value={selectedEffortOverride ?? DEFAULT_EFFORT_OVERRIDE}
+                            onValueChange={(value) =>
+                              handleAgentEffortSelect(
+                                agent.name,
+                                value === DEFAULT_EFFORT_OVERRIDE ? null : value,
+                              )
+                            }
+                            disabled={effortDisabled}
+                          >
+                            <SelectTrigger
+                              className="h-7 w-36 text-xs"
+                              data-testid={`preset-effort-select-${agent.id}`}
+                            >
+                              <SelectValue placeholder={effortPlaceholder} />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value={DEFAULT_EFFORT_OVERRIDE} className="text-xs">
+                                Default
+                              </SelectItem>
+                              {providerEfforts.map((effort) => (
+                                <SelectItem
+                                  key={effort.id}
+                                  value={effort.name}
+                                  title={effort.name}
+                                  className="text-xs"
+                                >
+                                  {effort.name}
                                 </SelectItem>
                               ))}
                             </SelectContent>

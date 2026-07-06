@@ -6,12 +6,8 @@ import type { SettingsService } from '../../settings/services/settings.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import type { UnifiedTemplateService } from '../../registry/services/unified-template.service';
 import {
-  buildNameToIdMaps,
-  buildPromptTitleToIdMap,
   buildProviderConfigLookupKey,
-  extractTemplatePresets,
-  mergeProjectSettingsWithInitialPrompt,
-  resolveArchiveStatusId,
+  preserveImportedEnv,
   resolveProvidersFromStorage,
   selectProfilesForFamilies,
   type FamilyAlternative,
@@ -22,21 +18,20 @@ import {
   ensureNoDuplicateAgentNames,
   planAndApplySessionPreservation,
 } from './project-import-sessions';
-
-const logger = createLogger('ProjectImport');
+import type { PresetAgentConfig } from './project-presets.helpers';
+import { ImportContext } from '../template-codec/import-context';
+import { TemplatePipeline } from '../template-codec/template-pipeline';
 
 /**
- * Preserve env entries from an imported template, including redacted ones
- * (value === '***'). Keeping redacted keys lets the user see which secrets the
- * config expects so they can fill in real values after import — stripping them
- * silently was confusing because the var would just disappear from the UI.
+ * Module-init-validated fallback pipeline. Constructed once when this module loads (so
+ * its topological validation runs at module init, not per request), and reused by every
+ * import that does not supply its own `deps.templatePipeline`. Production wires the
+ * NestJS-provided `TemplatePipeline` through deps; tests and internal callers fall back
+ * to this shared singleton. Either way there is no per-request validation cost.
  */
-export function preserveImportedEnv(
-  env: Record<string, string> | null | undefined,
-): Record<string, string> | null {
-  if (!env) return null;
-  return Object.keys(env).length > 0 ? env : null;
-}
+const DEFAULT_TEMPLATE_PIPELINE = new TemplatePipeline();
+
+const logger = createLogger('ProjectImport');
 
 type ParsedTemplatePayload = ReturnType<typeof ExportSchema.parse>;
 type SelectedProfilesByFamily = ReturnType<
@@ -69,6 +64,19 @@ export interface ImportProjectInputLike {
   dryRun?: boolean;
   statusMappings?: Record<string, string>;
   familyProviderMappings?: Record<string, string>;
+  /**
+   * Wizard/API per-agent config overrides. NEW import capability: import previously applied no
+   * per-agent configuration. Applied after the profiles+agents batch via `applyAgentConfigs`;
+   * NEVER marks an active preset. Mutually exclusive with a preset selection (controller 400).
+   */
+  agentOverrides?: PresetAgentConfig[];
+  /**
+   * Transient, server-enforced provider allowlist (Step-1 wizard selection). When present
+   * (validated non-empty + lowercased at the controller), providers outside it are treated as
+   * uninstalled: excluded from family resolution AND from providerConfig creation, and reflected in
+   * the dry-run counts/missingProviders. NOT persisted. Absent → byte-identical to today.
+   */
+  selectedProviderNames?: string[];
   teamOverrides?: Array<{
     teamName: string;
     allowTeamLeadCreateAgents?: boolean;
@@ -82,6 +90,8 @@ export interface ImportProjectInputLike {
 interface ImportProjectDeps {
   storage: StorageService;
   settings: SettingsService;
+  /** Template section pipeline; falls back to the module singleton when omitted. */
+  templatePipeline?: TemplatePipeline;
   watchersService: {
     deleteWatcher: (watcherId: string) => Promise<void>;
   };
@@ -95,6 +105,7 @@ interface ImportProjectDeps {
   computeFamilyAlternatives: (
     templateProfiles: ParsedTemplatePayload['profiles'],
     templateAgents: ParsedTemplatePayload['agents'],
+    selectedProviderNames?: string[],
   ) => Promise<FamilyAlternativesResult>;
   createWatchersFromPayload: (
     projectId: string,
@@ -126,6 +137,18 @@ interface ImportProjectDeps {
     archiveStatusId: string | null,
   ) => Promise<{ initialPromptSet: boolean }>;
   getImportErrorMessage: (error: unknown) => string;
+  /**
+   * Applies wizard/API `agentOverrides` after the profiles+agents batch. NEVER marks an active
+   * preset. Falls back to building name maps from storage when they are omitted.
+   */
+  applyAgentConfigs: (
+    projectId: string,
+    agentConfigs: PresetAgentConfig[],
+    nameMaps?: {
+      agentNameToId: Map<string, string>;
+      configLookupMap: Map<string, string>;
+    },
+  ) => Promise<{ applied: number; warnings: string[] }>;
   probe1m?: (binPath: string) => Promise<ProbeOutcome>;
   teamsService?: {
     createTeam: (data: {
@@ -180,42 +203,85 @@ export async function importProjectWithHelper(
 
     await clearExistingProjectData(input.projectId, context.existing, deps);
 
-    const { statusIdMap, templateLabelToStatusId } = await recreateStatuses(
-      input.projectId,
-      context.payload.statuses,
-      context.existing.statuses.items,
-      deps.storage,
+    // Template pipeline (replace mode). The statuses + prompts codecs own their sections;
+    // their ordering invariants are declared reads/writes validated when the pipeline was
+    // constructed. `existingDataCleared` is seeded because clearExistingProjectData just ran.
+    const pipeline = deps.templatePipeline ?? DEFAULT_TEMPLATE_PIPELINE;
+    const pipelineCtx = new ImportContext(
+      { selectedProfilesByFamily: context.selectedProfilesByFamily },
+      // `existingDataCleared`: clearExistingProjectData just ran. `epicsLoaded`: epics are
+      // PRESERVED across replace (never cleared), so scheduledEpics may resolve parent titles.
+      ['existingDataCleared', 'epicsLoaded'],
     );
-
-    await applyStatusMappings(input.statusMappings, templateLabelToStatusId, deps.storage);
-
-    const { promptIdMap, createdPrompts } = await createImportedPrompts(
-      input.projectId,
-      context.payload.prompts,
-      deps.storage,
+    // Watcher-creation seam for the watchers codec. In production `deps.watchersService` is
+    // the real service whose `createWatcher` also starts runners; some callers (and the
+    // contract harness) provide a reduced `watchersService` and route creation through storage
+    // instead. Mirror the legacy `createWatchersFromPayload` seam exactly by preferring the
+    // service's `createWatcher` when present and falling back to `storage.createWatcher`, so the
+    // codec path is byte-identical to the legacy inline path in every environment.
+    const watcherServiceForCodec = {
+      createWatcher: (
+        data: Parameters<StorageService['createWatcher']>[0],
+      ): ReturnType<StorageService['createWatcher']> => {
+        const svc = deps.watchersService as { createWatcher?: StorageService['createWatcher'] };
+        return svc.createWatcher ? svc.createWatcher(data) : deps.storage.createWatcher(data);
+      },
+    };
+    const codecRuntime = {
+      projectId: input.projectId,
+      storage: deps.storage,
+      settings: deps.settings,
+      watchersService: watcherServiceForCodec,
+      statusMappings: input.statusMappings,
+      existingStatuses: context.existing.statuses.items,
+      available: context.available,
+      teamsService: deps.teamsService,
+      teamOverrides: input.teamOverrides,
+      probe1m: deps.probe1m,
+      scheduledEpicsRefresh: deps.scheduledEpicsRefresh,
+      computeNextRunAt: deps.computeNextRunAt,
+    };
+    await pipeline.applySections(
+      ['statuses', 'prompts'],
+      context.payload,
+      pipelineCtx,
+      'replace',
+      codecRuntime,
     );
+    const statusIdMap = pipelineCtx.get('statusIdMap');
+    const promptIdMap = pipelineCtx.get('promptIdMap');
 
-    const { profileIdMap } = await createImportedProfiles(
-      input.projectId,
-      context.selectedProfilesByFamily.profilesToCreate,
-      deps.storage,
+    // profiles (with embedded provider configs) + agents codecs.
+    await pipeline.applySections(
+      ['profiles', 'agents'],
+      context.payload,
+      pipelineCtx,
+      'replace',
+      codecRuntime,
     );
+    const profileIdMap = pipelineCtx.get('profileIdMap');
+    const agentIdMap = pipelineCtx.get('agentIdMap');
+    const agentNameToId = pipelineCtx.get('agentNameToId');
 
-    const configLookupMap = await createImportedProviderConfigs(
-      context.selectedProfilesByFamily.profilesToCreate,
-      profileIdMap,
-      context.available,
-      deps.storage,
-    );
-
-    const { agentIdMap, agentNameToId } = await createImportedAgents(
-      input.projectId,
-      context.payload.agents,
-      context.selectedProfilesByFamily.agentProfileMap,
-      profileIdMap,
-      configLookupMap,
-      deps.storage,
-    );
+    // Per-agent config overrides (wizard/API) — a NEW import capability applied right after the
+    // profiles+agents batch, while the freshly-created agents' name→id + config lookup maps are
+    // in the ImportContext. It NEVER marks an active preset; the presets codec (batch-6 below)
+    // still owns preset store/clear semantics unchanged. Unknown agent/config names surface as
+    // warnings (not silent), mirroring preset apply.
+    if (input.agentOverrides && input.agentOverrides.length > 0) {
+      const { applied, warnings } = await deps.applyAgentConfigs(
+        input.projectId,
+        input.agentOverrides,
+        {
+          agentNameToId: new Map(Object.entries(agentNameToId)),
+          configLookupMap: pipelineCtx.get('configLookupMap'),
+        },
+      );
+      logger.info(
+        { projectId: input.projectId, applied, warnings: warnings.length },
+        'Applied agentOverrides during import',
+      );
+    }
 
     const sessionPreservation = await planAndApplySessionPreservation(
       parkedByOldAgentId,
@@ -225,72 +291,86 @@ export async function importProjectWithHelper(
     );
     logger.info(sessionPreservation, 'Session preservation applied');
 
-    const mappingResults = await importWatchersAndSubscribers(
-      input.projectId,
+    // watchers + subscribers codecs. They resolve name refs through the ImportContext maps
+    // written by the profiles/agents codecs and publish watcherIdMap/subscriberIdMap for the
+    // response `mappings` (byte-compatible with the legacy inline importWatchersAndSubscribers).
+    await pipeline.applySections(
+      ['watchers', 'subscribers'],
       context.payload,
-      context.selectedProfilesByFamily,
-      { agentIdMap, profileIdMap },
-      context.available,
-      deps,
+      pipelineCtx,
+      'replace',
+      codecRuntime,
     );
+    const watcherIdMap = pipelineCtx.get('watcherIdMap');
+    const subscriberIdMap = pipelineCtx.get('subscriberIdMap');
 
-    // Import teams (after agents and profiles are created)
-    let teamsImported = 0;
-    if (deps.teamsService && context.payload.teams && context.payload.teams.length > 0) {
-      const teamsToImport = applyTeamOverrides(
-        context.payload.teams,
-        input.teamOverrides,
-        context.selectedProfilesByFamily.profileNameRemapMap,
-      );
-      const teamsWithAvailableConfigs = pruneUnavailableTeamProfileSelections(
-        teamsToImport,
-        context.selectedProfilesByFamily.profilesToCreate,
-        profileIdMap,
-        configLookupMap,
-      );
-      teamsImported = await createImportedTeams(input.projectId, teamsWithAvailableConfigs, deps);
-    }
+    // Teams + scheduled-epics codecs (matrix rows 13–14), after agents/profiles. The teams
+    // codec owns override-merge + pruning + creation (with scoped partial-failure cleanup);
+    // the scheduled-epics codec owns schedule creation. Both resolve refs through the
+    // ImportContext maps the profiles/agents codecs wrote. `agentsPersisted` is marked by the
+    // agents codec; `epicsLoaded` was seeded above.
+    const teamSectionResults = await pipeline.applySections(
+      ['teams', 'scheduledEpics'],
+      context.payload,
+      pipelineCtx,
+      'replace',
+      codecRuntime,
+    );
+    const teamsImported =
+      (teamSectionResults.find((r) => r.section === 'teams')?.log?.teams as number | undefined) ??
+      0;
+    const scheduledEpicsImported =
+      (teamSectionResults.find((r) => r.section === 'scheduledEpics')?.log?.scheduledEpics as
+        | number
+        | undefined) ?? 0;
 
-    // Import scheduled epics (after agents and statuses are created)
-    let scheduledEpicsImported = 0;
-    if (context.payload.scheduledEpics?.length) {
-      scheduledEpicsImported = await createImportedScheduledEpics(
-        input.projectId,
-        context.payload.scheduledEpics,
-        {
-          agentNameToId: mappingResults.agentNameToId,
-          statusLabelToId: templateLabelToStatusId,
-        },
-        deps,
-      );
-    }
-
+    // Epic agent remap keys on agent name(lowercased) -> new id. The agents codec's
+    // `agentNameToId` (Record) is content-identical to the legacy buildNameToIdMaps result
+    // (both map name(lowercased) -> created id, last-occurrence wins); adapt it to a Map.
     const epicResult = await remapEpicAgentAssignments(
       input.projectId,
       oldAgentIdToName,
-      mappingResults.agentNameToId,
+      new Map(Object.entries(agentNameToId)),
       deps.storage,
     );
 
-    const initialPromptSet = await applyImportedProjectSettings(
-      input.projectId,
+    // projectSettings codec — owns the projectSettings + initialPrompt resolution. It reads
+    // createdPrompts/promptIdMap (prompts) + templateLabelToStatusId (statuses) from the context.
+    const settingsResults = await pipeline.applySections(
+      ['projectSettings'],
       context.payload,
-      createdPrompts,
-      templateLabelToStatusId,
-      deps,
+      pipelineCtx,
+      'replace',
+      codecRuntime,
+    );
+    const initialPromptSet =
+      (settingsResults.find((r) => r.section === 'projectSettings')?.log?.initialPromptSet as
+        | boolean
+        | undefined) ?? false;
+
+    // Template metadata recording is a post-sections lifecycle step (needs unifiedTemplateService
+    // + an install timestamp); intentionally NOT a codec (see project-settings.codec header).
+    await updateTemplateMetadata(input.projectId, context.payload, deps);
+
+    // presets codec — set-or-clear semantics (template WITH presets replaces; WITHOUT clears).
+    await pipeline.applySections(
+      ['presets'],
+      context.payload,
+      pipelineCtx,
+      'replace',
+      codecRuntime,
     );
 
-    await updateTemplateMetadata(input.projectId, context.payload, deps);
-    await replaceProjectPresets(input.projectId, context.payload, deps.settings);
-    await importProviderSettings(context.payload, deps.storage, { probe1m: deps.probe1m });
-    const providerModelsImportResult = await importProviderModels(context.payload, deps.storage);
-    logger.info(
-      {
-        added: providerModelsImportResult.added,
-        existing: providerModelsImportResult.existing,
-        providersSkipped: providerModelsImportResult.providersSkipped,
-      },
-      'Imported provider models from template',
+    // providerSettings + providerModels + providerEfforts codecs (matrix rows 19–21):
+    // additive provider-catalog mutations, no ImportContext products. providerSettings
+    // resolves against live provider storage (threshold/probe/env matrix); the other two
+    // add model/effort catalogs. Applied in registry order.
+    await pipeline.applySections(
+      ['providerSettings', 'providerModels', 'providerEfforts'],
+      context.payload,
+      pipelineCtx,
+      'replace',
+      codecRuntime,
     );
 
     return buildImportSuccessResponse({
@@ -300,8 +380,8 @@ export async function importProjectWithHelper(
       promptIdMap,
       profileIdMap,
       agentIdMap,
-      watcherIdMap: mappingResults.watcherIdMap,
-      subscriberIdMap: mappingResults.subscriberIdMap,
+      watcherIdMap,
+      subscriberIdMap,
       initialPromptSet,
       epicsTotal: epicResult.epicsTotal,
       epicsRemapped: epicResult.epicsRemapped,
@@ -324,7 +404,11 @@ async function prepareImportContext(
   const isDryRun = input.dryRun ?? false;
   const payload = ExportSchema.parse(input.payload ?? {});
 
-  const familyResult = await deps.computeFamilyAlternatives(payload.profiles, payload.agents);
+  const familyResult = await deps.computeFamilyAlternatives(
+    payload.profiles,
+    payload.agents,
+    input.selectedProviderNames,
+  );
   const needsMapping = familyResult.alternatives.some((alt) => !alt.defaultProviderAvailable);
 
   const providerNames = new Set(
@@ -333,6 +417,7 @@ async function prepareImportContext(
   const { available, missing: missingProviders } = await resolveProvidersFromStorage(
     deps.storage,
     providerNames,
+    input.selectedProviderNames,
   );
 
   const selectedProfilesByFamily = selectProfilesForFamilies(
@@ -574,346 +659,6 @@ async function clearExistingProjectData(
   });
 }
 
-async function recreateStatuses(
-  projectId: string,
-  templateStatuses: ParsedTemplatePayload['statuses'],
-  existingStatuses: ExistingProjectData['statuses']['items'],
-  storage: StorageService,
-) {
-  const statusIdMap: Record<string, string> = {};
-  const existingStatusByLabel = new Map<string, ExistingProjectData['statuses']['items'][number]>();
-
-  for (const status of existingStatuses) {
-    existingStatusByLabel.set(status.label.trim().toLowerCase(), status);
-  }
-
-  const tempPositionOffset = 100000;
-  for (const status of existingStatuses) {
-    await storage.updateStatus(status.id, {
-      position: status.position + tempPositionOffset,
-    });
-  }
-
-  for (const status of templateStatuses.sort((a, b) => a.position - b.position)) {
-    const labelKey = status.label.trim().toLowerCase();
-    const existing = existingStatusByLabel.get(labelKey);
-
-    if (existing) {
-      const updated = await storage.updateStatus(existing.id, {
-        color: status.color,
-        position: status.position,
-        mcpHidden: status.mcpHidden,
-      });
-      if (status.id) {
-        statusIdMap[status.id] = updated.id;
-      }
-      existingStatusByLabel.delete(labelKey);
-      continue;
-    }
-
-    const created = await storage.createStatus({
-      projectId,
-      label: status.label,
-      color: status.color,
-      position: status.position,
-      mcpHidden: status.mcpHidden,
-    });
-    if (status.id) {
-      statusIdMap[status.id] = created.id;
-    }
-  }
-
-  const templateLabelToStatusId = new Map<string, string>();
-  const allStatuses = await storage.listStatuses(projectId, {
-    limit: 10000,
-    offset: 0,
-  });
-  for (const status of allStatuses.items) {
-    templateLabelToStatusId.set(status.label.trim().toLowerCase(), status.id);
-  }
-
-  return { statusIdMap, templateLabelToStatusId };
-}
-
-async function applyStatusMappings(
-  statusMappings: ImportProjectInputLike['statusMappings'],
-  templateLabelToStatusId: Map<string, string>,
-  storage: StorageService,
-) {
-  if (!statusMappings || Object.keys(statusMappings).length === 0) {
-    return;
-  }
-
-  let epicsMapped = 0;
-  let statusesDeleted = 0;
-
-  for (const [oldStatusId, targetLabel] of Object.entries(statusMappings)) {
-    const targetStatusId = templateLabelToStatusId.get(targetLabel.trim().toLowerCase());
-    if (!targetStatusId) {
-      continue;
-    }
-
-    const remapped = await storage.updateEpicsStatus(oldStatusId, targetStatusId);
-    epicsMapped += remapped;
-    await storage.deleteStatus(oldStatusId);
-    statusesDeleted++;
-  }
-
-  logger.info(
-    { epicsMapped, statusesDeleted },
-    'Applied status mappings: epics remapped and old statuses deleted',
-  );
-}
-
-async function createImportedPrompts(
-  projectId: string,
-  prompts: ParsedTemplatePayload['prompts'],
-  storage: StorageService,
-) {
-  const promptIdMap: Record<string, string> = {};
-  const createdPrompts: Array<{ id: string; title: string }> = [];
-
-  for (const prompt of prompts) {
-    const created = await storage.createPrompt({
-      projectId,
-      title: prompt.title,
-      content: prompt.content,
-      tags: prompt.tags ?? [],
-    });
-
-    if (prompt.id) {
-      promptIdMap[prompt.id] = created.id;
-    }
-    createdPrompts.push({ id: created.id, title: created.title });
-  }
-
-  return { promptIdMap, createdPrompts };
-}
-
-async function createImportedProfiles(
-  projectId: string,
-  profilesToCreate: SelectedProfilesByFamily['profilesToCreate'],
-  storage: StorageService,
-) {
-  const profileIdMap: Record<string, string> = {};
-
-  for (const profile of profilesToCreate) {
-    const created = await storage.createAgentProfile({
-      projectId,
-      name: profile.name,
-      familySlug: profile.familySlug ?? null,
-      systemPrompt: null,
-      instructions: profile.instructions ?? null,
-      temperature: profile.temperature ?? null,
-      maxTokens: profile.maxTokens ?? null,
-    });
-
-    const profileKey = profile.id || `name:${profile.name.trim().toLowerCase()}`;
-    profileIdMap[profileKey] = created.id;
-  }
-
-  return { profileIdMap };
-}
-
-async function createImportedProviderConfigs(
-  profilesToCreate: SelectedProfilesByFamily['profilesToCreate'],
-  profileIdMap: Record<string, string>,
-  available: Map<string, string>,
-  storage: StorageService,
-) {
-  const configLookupMap = new Map<string, string>();
-
-  for (const profile of profilesToCreate) {
-    const profileKey = profile.id || `name:${profile.name.trim().toLowerCase()}`;
-    const newProfileId = profileIdMap[profileKey];
-    if (!newProfileId) {
-      continue;
-    }
-
-    const providerConfigs = (
-      profile as {
-        providerConfigs?: Array<{
-          name: string;
-          providerName: string;
-          description?: string | null;
-          options?: string | null;
-          env?: Record<string, string> | null;
-        }>;
-      }
-    ).providerConfigs;
-
-    if (providerConfigs && providerConfigs.length > 0) {
-      for (const config of providerConfigs) {
-        const providerId = available.get(config.providerName.trim().toLowerCase());
-        if (!providerId) {
-          logger.warn(
-            { profileName: profile.name, providerName: config.providerName },
-            'Provider not found for config, skipping',
-          );
-          continue;
-        }
-
-        const created = await storage.createProfileProviderConfig({
-          profileId: newProfileId,
-          providerId,
-          name: config.name,
-          description: config.description ?? null,
-          options: config.options ?? null,
-          env: preserveImportedEnv(config.env),
-        });
-
-        const lookupKey = buildProviderConfigLookupKey(newProfileId, config.name);
-        configLookupMap.set(lookupKey, created.id);
-      }
-      continue;
-    }
-
-    const providerName = profile.provider.name.trim().toLowerCase();
-    const providerId = available.get(providerName);
-    if (!providerId) {
-      continue;
-    }
-
-    const options =
-      profile.options != null
-        ? typeof profile.options === 'string'
-          ? profile.options
-          : JSON.stringify(profile.options)
-        : null;
-
-    const created = await storage.createProfileProviderConfig({
-      profileId: newProfileId,
-      providerId,
-      name: 'default',
-      options,
-      env: null,
-    });
-
-    const lookupKey = buildProviderConfigLookupKey(newProfileId, 'default');
-    configLookupMap.set(lookupKey, created.id);
-  }
-
-  return configLookupMap;
-}
-
-async function createImportedAgents(
-  projectId: string,
-  agents: ParsedTemplatePayload['agents'],
-  agentProfileMap: SelectedProfilesByFamily['agentProfileMap'],
-  profileIdMap: Record<string, string>,
-  configLookupMap: Map<string, string>,
-  storage: StorageService,
-): Promise<{ agentIdMap: Record<string, string>; agentNameToId: Record<string, string> }> {
-  const agentIdMap: Record<string, string> = {};
-  const agentNameToId: Record<string, string> = {};
-
-  for (const agent of agents) {
-    const remappedProfileId = agentProfileMap.get(agent.id ?? '');
-    const oldProfileId = remappedProfileId ?? agent.profileId ?? '';
-    const newProfileId = oldProfileId ? profileIdMap[oldProfileId] : undefined;
-
-    if (!newProfileId) {
-      throw new ValidationError(`Profile mapping missing for agent ${agent.name}`, {
-        profileId: oldProfileId || null,
-      });
-    }
-
-    const agentWithConfig = agent as { providerConfigName?: string | null };
-    let providerConfigId: string | undefined;
-
-    if (agentWithConfig.providerConfigName) {
-      const lookupKey = buildProviderConfigLookupKey(
-        newProfileId,
-        agentWithConfig.providerConfigName,
-      );
-      providerConfigId = configLookupMap.get(lookupKey);
-    }
-
-    if (!providerConfigId) {
-      const profilePrefix = `${newProfileId}:`;
-      for (const [lookupKey, configId] of configLookupMap.entries()) {
-        if (lookupKey.startsWith(profilePrefix)) {
-          providerConfigId = configId;
-          break;
-        }
-      }
-    }
-
-    if (!providerConfigId) {
-      throw new ValidationError(`No provider config available for agent ${agent.name}`, {
-        profileId: newProfileId,
-        providerConfigName: agentWithConfig.providerConfigName || null,
-      });
-    }
-
-    const created = await storage.createAgent({
-      projectId,
-      name: agent.name,
-      profileId: newProfileId,
-      description: agent.description ?? null,
-      providerConfigId,
-      modelOverride: agent.modelOverride ?? null,
-    });
-
-    const agentKey = agent.id || `name:${agent.name.trim().toLowerCase()}`;
-    agentIdMap[agentKey] = created.id;
-    agentNameToId[agent.name.trim().toLowerCase()] = created.id;
-  }
-
-  return { agentIdMap, agentNameToId };
-}
-
-async function importWatchersAndSubscribers(
-  projectId: string,
-  payload: ParsedTemplatePayload,
-  selectedProfilesByFamily: SelectedProfilesByFamily,
-  entityMaps: {
-    agentIdMap: Record<string, string>;
-    profileIdMap: Record<string, string>;
-  },
-  available: Map<string, string>,
-  deps: ImportProjectDeps,
-) {
-  const augmentedPayload = {
-    agents: payload.agents.map((agent) => ({
-      ...agent,
-      id: agent.id || `name:${agent.name.trim().toLowerCase()}`,
-    })),
-    profiles: selectedProfilesByFamily.profilesToCreate.map((profile) => ({
-      ...profile,
-      id: profile.id || `name:${profile.name.trim().toLowerCase()}`,
-    })),
-  };
-
-  const { agentNameToId, profileNameToId } = buildNameToIdMaps(
-    augmentedPayload,
-    entityMaps,
-    logger,
-  );
-
-  const { watcherIdMap } = await deps.createWatchersFromPayload(projectId, payload.watchers, {
-    agentNameToId,
-    profileNameToId,
-    providerNameToId: available,
-    profileNameRemapMap: selectedProfilesByFamily.profileNameRemapMap,
-  });
-
-  const { subscriberIdMap } = await deps.createSubscribersFromPayload(
-    projectId,
-    payload.subscribers,
-  );
-
-  logger.info(
-    {
-      watchersCreated: payload.watchers.length,
-      subscribersCreated: payload.subscribers.length,
-    },
-    'Watchers and subscribers imported',
-  );
-
-  return { agentNameToId, watcherIdMap, subscriberIdMap };
-}
-
 async function remapEpicAgentAssignments(
   projectId: string,
   oldAgentIdToName: Map<string, string>,
@@ -959,32 +704,6 @@ async function remapEpicAgentAssignments(
   };
 }
 
-async function applyImportedProjectSettings(
-  projectId: string,
-  payload: ParsedTemplatePayload,
-  createdPrompts: Array<{ id: string; title: string }>,
-  templateLabelToStatusId: Map<string, string>,
-  deps: ImportProjectDeps,
-) {
-  const mergedSettings = mergeProjectSettingsWithInitialPrompt(
-    payload.prompts,
-    payload.initialPrompt,
-    payload.projectSettings,
-  );
-
-  const promptTitleToId = buildPromptTitleToIdMap(createdPrompts);
-  const archiveStatusId = resolveArchiveStatusId(templateLabelToStatusId);
-
-  const settingsResult = await deps.applyProjectSettings(
-    projectId,
-    mergedSettings,
-    { promptTitleToId, statusLabelToId: templateLabelToStatusId },
-    archiveStatusId,
-  );
-
-  return settingsResult.initialPromptSet;
-}
-
 async function updateTemplateMetadata(
   projectId: string,
   payload: ParsedTemplatePayload,
@@ -1014,26 +733,6 @@ async function updateTemplateMetadata(
     { projectId, slug: payload._manifest.slug, source: templateSource },
     'Updated template metadata after import',
   );
-}
-
-async function replaceProjectPresets(
-  projectId: string,
-  payload: ParsedTemplatePayload,
-  settings: SettingsService,
-) {
-  const templatePresets = extractTemplatePresets(payload as { presets?: unknown });
-
-  if (templatePresets.length > 0) {
-    await settings.setProjectPresets(projectId, templatePresets);
-    logger.info(
-      { projectId, presetCount: templatePresets.length },
-      'Presets replaced from template during import',
-    );
-    return;
-  }
-
-  await settings.clearProjectPresets(projectId);
-  logger.info({ projectId }, 'Presets cleared during import (template has none)');
 }
 
 export async function importProviderSettings(
@@ -1162,123 +861,6 @@ export async function importProviderSettings(
       await storage.updateProvider(localProvider.id, updates);
     }
   }
-}
-
-async function importProviderModels(payload: ParsedTemplatePayload, storage: StorageService) {
-  const providerModelsData = (
-    payload as {
-      providerModels?: Array<{ providerName: string; models: string[] }>;
-    }
-  ).providerModels;
-
-  if (!providerModelsData || providerModelsData.length === 0) {
-    return { added: 0, existing: 0, providersSkipped: 0 };
-  }
-
-  const allProviders = await storage.listProviders();
-  const providersByName = new Map(
-    allProviders.items.map((provider) => [provider.name.trim().toLowerCase(), provider]),
-  );
-
-  let totalAdded = 0;
-  let totalExisting = 0;
-  let providersSkipped = 0;
-
-  for (const entry of providerModelsData) {
-    const localProvider = providersByName.get(entry.providerName.trim().toLowerCase());
-    if (!localProvider) {
-      providersSkipped++;
-      logger.debug(
-        { providerName: entry.providerName },
-        'Skipping providerModels import: no matching local provider',
-      );
-      continue;
-    }
-
-    if (entry.models.length === 0) {
-      continue;
-    }
-
-    const result = await storage.bulkCreateProviderModels(localProvider.id, entry.models);
-    totalAdded += result.added.length;
-    totalExisting += result.existing.length;
-  }
-
-  return { added: totalAdded, existing: totalExisting, providersSkipped };
-}
-
-export function applyTeamOverrides(
-  teams: Array<{
-    name: string;
-    description?: string | null;
-    teamLeadAgentName?: string | null;
-    memberAgentNames: string[];
-    maxMembers?: number;
-    maxConcurrentTasks?: number;
-    allowTeamLeadCreateAgents?: boolean;
-    profileNames?: string[];
-    profileSelections?: Array<{ profileName: string; configNames: string[] }>;
-  }>,
-  overrides?: ImportProjectInputLike['teamOverrides'],
-  profileNameRemapMap?: Map<string, string>,
-): typeof teams {
-  const hasOverrides = overrides && overrides.length > 0;
-  if (!hasOverrides && !profileNameRemapMap) return teams;
-
-  const remapName = (name: string): string =>
-    profileNameRemapMap?.get(name.trim().toLowerCase()) ?? name;
-
-  const overrideMap = new Map<
-    string,
-    NonNullable<ImportProjectInputLike['teamOverrides']>[number]
-  >();
-  if (hasOverrides) {
-    for (const ov of overrides!) {
-      overrideMap.set(ov.teamName.trim().toLowerCase(), ov);
-    }
-    for (const ov of overrides!) {
-      if (!teams.some((t) => t.name.trim().toLowerCase() === ov.teamName.trim().toLowerCase())) {
-        logger.warn({ teamName: ov.teamName }, 'teamOverrides references unknown team; skipping');
-      }
-    }
-  }
-
-  return teams.map((team) => {
-    const override = overrideMap.get(team.name.trim().toLowerCase());
-
-    // Mirror template-loader.ts: remap profile names from override when provided, otherwise
-    // remap the template team's own names — both reference pre-substitution profile names.
-    const finalProfileNames =
-      override?.profileNames !== undefined
-        ? override.profileNames.map(remapName)
-        : team.profileNames?.map(remapName);
-
-    const finalProfileSelections =
-      override?.profileSelections !== undefined
-        ? override.profileSelections.map((sel) => ({
-            ...sel,
-            profileName: remapName(sel.profileName),
-          }))
-        : team.profileSelections?.map((sel) => ({
-            ...sel,
-            profileName: remapName(sel.profileName),
-          }));
-
-    return {
-      ...team,
-      ...(override?.maxMembers !== undefined ? { maxMembers: override.maxMembers } : {}),
-      ...(override?.maxConcurrentTasks !== undefined
-        ? { maxConcurrentTasks: override.maxConcurrentTasks }
-        : {}),
-      ...(override?.allowTeamLeadCreateAgents !== undefined
-        ? { allowTeamLeadCreateAgents: override.allowTeamLeadCreateAgents }
-        : {}),
-      ...(finalProfileNames !== undefined ? { profileNames: finalProfileNames } : {}),
-      ...(finalProfileSelections !== undefined
-        ? { profileSelections: finalProfileSelections }
-        : {}),
-    };
-  });
 }
 
 export async function createImportedTeams(

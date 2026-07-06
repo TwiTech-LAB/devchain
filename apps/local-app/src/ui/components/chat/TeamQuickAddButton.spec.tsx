@@ -6,11 +6,14 @@ import type { QuickAddPayload } from './TeamQuickAddButton';
 
 // ── Mocks ──
 
-let _popoverOpen = false;
-let _popoverOnOpenChange: ((v: boolean) => void) | undefined;
+let _menuOpen = false;
+let _menuOnOpenChange: ((v: boolean) => void) | undefined;
 
-jest.mock('@/ui/components/ui/popover', () => ({
-  Popover: ({
+// Minimal inline stand-ins for the Radix dropdown menu: capture the controlled
+// open state, render content only while open, and render submenu content inline
+// (no hover/portal machinery) so grouping + selection stay assertable.
+jest.mock('@/ui/components/ui/dropdown-menu', () => ({
+  DropdownMenu: ({
     children,
     open,
     onOpenChange,
@@ -19,17 +22,39 @@ jest.mock('@/ui/components/ui/popover', () => ({
     open: boolean;
     onOpenChange: (v: boolean) => void;
   }) => {
-    _popoverOpen = open;
-    _popoverOnOpenChange = onOpenChange;
+    _menuOpen = open;
+    _menuOnOpenChange = onOpenChange;
     return <>{children}</>;
   },
-  PopoverTrigger: ({ children }: { children: React.ReactNode }) => (
-    <div onClick={() => _popoverOnOpenChange?.(true)} data-testid="popover-trigger">
+  DropdownMenuTrigger: ({ children }: { children: React.ReactNode }) => (
+    <div onClick={() => _menuOnOpenChange?.(true)} data-testid="menu-trigger">
       {children}
     </div>
   ),
-  PopoverContent: ({ children }: { children: React.ReactNode }) =>
-    _popoverOpen ? <div data-testid="popover-content">{children}</div> : null,
+  DropdownMenuContent: ({ children }: { children: React.ReactNode }) =>
+    _menuOpen ? <div data-testid="menu-content">{children}</div> : null,
+  DropdownMenuLabel: ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="menu-label">{children}</div>
+  ),
+  DropdownMenuSub: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  DropdownMenuSubTrigger: ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="submenu-trigger">{children}</div>
+  ),
+  DropdownMenuSubContent: ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="submenu-content">{children}</div>
+  ),
+  DropdownMenuPortal: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  DropdownMenuItem: ({
+    children,
+    onSelect,
+  }: {
+    children: React.ReactNode;
+    onSelect?: (e: Event) => void;
+  }) => (
+    <button type="button" onClick={() => onSelect?.(new Event('select'))}>
+      {children}
+    </button>
+  ),
 }));
 
 jest.mock('@/ui/components/ui/tooltip', () => ({
@@ -163,17 +188,17 @@ describe('TeamQuickAddButton', () => {
     expect(screen.getByTestId('tooltip-content')).toHaveTextContent('Assign a team lead first');
   });
 
-  it('clicking disabled button does not open popover or fire callback', () => {
+  it('clicking disabled button does not open the menu or fire callback', () => {
     const { onAddAgent } = renderButton({ profileIds: [] });
 
     const button = screen.getByRole('button', { name: /Add agent to Alpha/i });
     fireEvent.click(button);
 
-    expect(screen.queryByTestId('popover-content')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('menu-content')).not.toBeInTheDocument();
     expect(onAddAgent).not.toHaveBeenCalled();
   });
 
-  it('does not fetch configs when popover is closed', () => {
+  it('does not fetch configs while the menu is closed', () => {
     const fetchSpy = jest.fn();
     global.fetch = fetchSpy;
 
@@ -182,7 +207,7 @@ describe('TeamQuickAddButton', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it('fetches configs when popover opens', async () => {
+  it('fetches configs when the menu opens', async () => {
     global.fetch = jest.fn(async () => ({
       ok: true,
       json: async () => [{ id: 'cfg-1', name: 'GPT-4', description: null, profileId: 'profile-1' }],
@@ -228,6 +253,74 @@ describe('TeamQuickAddButton', () => {
     });
     expect(screen.getByText('GPT-4')).toBeInTheDocument();
     expect(screen.queryByText('Reviewer')).not.toBeInTheDocument();
+  });
+
+  it('renders a flat label + items for a single profile (no submenu hop)', async () => {
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => [{ id: 'cfg-1', name: 'opus', description: null, profileId: 'profile-1' }],
+    })) as unknown as typeof fetch;
+
+    renderButton();
+
+    fireEvent.click(screen.getByRole('button', { name: /Add agent to Alpha/i }));
+
+    await waitFor(() => expect(screen.getByTestId('menu-label')).toHaveTextContent('Coder'));
+    expect(screen.getByText('opus')).toBeInTheDocument();
+    expect(screen.queryByTestId('submenu-trigger')).not.toBeInTheDocument();
+  });
+
+  it('renders one submenu per profile when several profiles have configs', async () => {
+    const profilesById = new Map([
+      ['profile-1', { id: 'profile-1', name: 'Coder' }],
+      ['profile-2', { id: 'profile-2', name: 'Reviewer' }],
+    ]);
+    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      const profileId = url.includes('profile-1') ? 'profile-1' : 'profile-2';
+      return {
+        ok: true,
+        json: async () => [
+          { id: `cfg-${profileId}`, name: `opus-${profileId}`, description: null, profileId },
+        ],
+      };
+    }) as unknown as typeof fetch;
+
+    renderButton({ profileIds: ['profile-1', 'profile-2'], profilesById });
+
+    fireEvent.click(screen.getByRole('button', { name: /Add agent to Alpha/i }));
+
+    await waitFor(() => expect(screen.getAllByTestId('submenu-trigger')).toHaveLength(2));
+    expect(screen.getAllByTestId('submenu-trigger').map((n) => n.textContent)).toEqual([
+      'Coder',
+      'Reviewer',
+    ]);
+    expect(screen.queryByTestId('menu-label')).not.toBeInTheDocument();
+  });
+
+  it('shows the provider icon when providerName resolves, and a fallback glyph otherwise', async () => {
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => [
+        {
+          id: 'cfg-1',
+          name: 'opus',
+          description: null,
+          profileId: 'profile-1',
+          providerName: 'claude',
+        },
+        { id: 'cfg-2', name: 'mystery', description: null, profileId: 'profile-1' },
+      ],
+    })) as unknown as typeof fetch;
+
+    renderButton();
+
+    fireEvent.click(screen.getByRole('button', { name: /Add agent to Alpha/i }));
+
+    await waitFor(() => expect(screen.getByText('opus')).toBeInTheDocument());
+    expect(screen.getByTitle('Provider: claude')).toBeInTheDocument();
+    // The providerName-less config renders no provider icon (Plug fallback instead).
+    expect(screen.getAllByTitle(/Provider:/)).toHaveLength(1);
   });
 
   it('renders empty state when all profiles return zero configs', async () => {

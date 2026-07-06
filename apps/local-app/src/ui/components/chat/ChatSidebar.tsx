@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { HelpButton } from '@/ui/components/shared';
 import { Button } from '@/ui/components/ui/button';
 import { Badge } from '@/ui/components/ui/badge';
@@ -24,14 +24,13 @@ import {
   ContextMenuItem,
   ContextMenuSeparator,
   ContextMenuTrigger,
-  ContextMenuSub,
-  ContextMenuSubTrigger,
-  ContextMenuSubContent,
-  ContextMenuRadioGroup,
-  ContextMenuRadioItem,
   ContextMenuCheckboxItem,
-  ContextMenuLabel,
 } from '@/ui/components/ui/context-menu';
+import {
+  AgentOverridesDialog,
+  type OverridesConfigOption,
+  type AgentOverridesSavePayload,
+} from './AgentOverridesDialog';
 import { cn } from '@/ui/lib/utils';
 import {
   Plus,
@@ -51,6 +50,7 @@ import {
   AlertTriangle,
   Terminal,
   Box,
+  SlidersHorizontal,
 } from 'lucide-react';
 import type { AgentPresenceMap } from '@/ui/lib/sessions';
 import {
@@ -64,7 +64,6 @@ import type { AgentOrGuest } from '@/ui/hooks/useChatQueries';
 import type { WorktreeAgentGroup } from '@/ui/hooks/useWorktreeAgents';
 import type { PresetAvailability } from '@/ui/lib/preset-validation';
 import { getProviderIconDataUri } from '@/ui/lib/providers';
-import { providerModelQueryKeys } from '@/ui/lib/provider-model-query-keys';
 import { shortModelName } from '@/ui/lib/model-utils';
 import { Link } from 'react-router-dom';
 import { fetchTeamDetail, fetchTeams, teamsQueryKeys, type TeamDetail } from '@/ui/lib/teams';
@@ -84,8 +83,15 @@ function formatSectionCount(count: number, singular: string, plural = `${singula
 // Types
 // ============================================
 
-export interface ChatSidebarProps {
-  // Data
+/**
+ * Read-only view state the sidebar renders from. Grouping by change-cadence
+ * (data vs. controllers vs. admin actions) lets ChatPage memoize each bundle
+ * independently so a change to one does not force the others — and, with the
+ * memoized `ChatSidebar`, keeps the AgentRow subtree from re-rendering when an
+ * unrelated ChatPage state ticks. Referential stability of these bundles is a
+ * behavior contract, not an optimization.
+ */
+export interface ChatSidebarData {
   projectId: string | null;
   agents: AgentOrGuest[];
   guests: AgentOrGuest[];
@@ -97,24 +103,31 @@ export interface ChatSidebarProps {
   presenceReady: boolean;
   offlineAgents: AgentOrGuest[];
   agentsWithSessions: AgentOrGuest[];
-
-  // Loading states
   agentsLoading: boolean;
   agentsError: boolean;
   userThreadsLoading: boolean;
   agentThreadsLoading: boolean;
+  selectedThreadId: string | null;
+  selectedWorktreeAgent: { worktreeName: string; agentId: string } | null;
+  hasSelectedProject: boolean;
+  getProviderForAgent: (agentId: string | null | undefined) => string | null;
+  validatedPresets: PresetAvailability[];
+  activePreset: string | null;
+  projectProfiles?: Array<{ id: string; name: string }>;
+}
+
+/**
+ * Session lifecycle + preset/config controllers and their pending state. Sourced
+ * from Task 7's lifecycle core/adapters and the preset/config domain hooks; the
+ * handlers are stable useCallbacks, so this bundle only changes when a pending
+ * flag flips.
+ */
+export interface ChatSidebarSessionController {
   launchingAgentIds: Record<string, boolean>;
   restartingAgentId: string | null;
   startingAll: boolean;
   terminatingAll: boolean;
   isLaunchingChat: boolean;
-
-  // Selection
-  selectedThreadId: string | null;
-  selectedWorktreeAgent: { worktreeName: string; agentId: string } | null;
-  hasSelectedProject: boolean;
-
-  // Handlers
   onSelectThread: (threadId: string) => void;
   onLaunchChat: (agentIds: string[]) => void;
   onLaunchWorktreeAgentChat: (group: WorktreeAgentGroup, agentId: string) => void;
@@ -131,59 +144,43 @@ export interface ChatSidebarProps {
   onLaunchSession: (agentId: string, options?: { attach?: boolean }) => Promise<unknown>;
   onRestartSession: (agentId: string) => Promise<void>;
   onTerminateConfirm: (agentId: string, sessionId: string) => void;
-
-  // Provider lookup
-  getProviderForAgent: (agentId: string | null | undefined) => string | null;
-
-  // Pending restart state
   pendingRestartAgentIds: Set<string>;
   onMarkForRestart: (agentIds: string[]) => void;
   worktreeSessionActionsByAgentKey: Record<
     string,
     'launching' | 'restarting' | 'terminating' | undefined
   >;
-
-  // Presets (validated with availability info)
-  validatedPresets: PresetAvailability[];
-  activePreset: string | null;
   onApplyPreset: (presetName: string) => void;
   applyingPreset: boolean;
-
-  // Provider config switching
+  // Single call carries config + model + effort overrides
   onSwitchConfig: (
     agentId: string,
     providerConfigId: string,
     modelOverride?: string | null,
-  ) => void;
-  fetchProviderConfigsForProfile: (
-    profileId: string,
-  ) => Promise<Array<{ id: string; name: string; providerId: string }>>;
+    effortOverride?: string | null,
+  ) => Promise<unknown> | void;
+  fetchProviderConfigsForProfile: (profileId: string) => Promise<OverridesConfigOption[]>;
   updatingConfigAgentIds: Record<string, boolean>;
-
-  // Worktree provider config switching
   onSwitchWorktreeConfig: (
     group: WorktreeAgentGroup,
     agentId: string,
     providerConfigId: string,
     modelOverride?: string | null,
-  ) => void;
+    effortOverride?: string | null,
+  ) => Promise<unknown> | void;
   updatingWorktreeConfigKey: string | null;
+  createGroupPending: boolean;
+}
 
-  // Clone
+/** Agent admin actions (clone / delete / quick-add / edit-team) and their pending state. */
+export interface ChatSidebarAdminActions {
   onCloneAgent?: (
     agent: AgentOrGuest,
     context?: { teamId: string; teamName: string; isTeamLead: boolean },
   ) => void;
-
-  // Delete
   onDeleteAgent?: (agent: AgentOrGuest) => void;
   pendingDeleteAgentId?: string | null;
-
-  // Quick-add
   onAddTeamAgent?: (payload: import('./TeamQuickAddButton').QuickAddPayload) => void;
-  projectProfiles?: Array<{ id: string; name: string }>;
-
-  // Edit team
   onEditTeam?: (payload: {
     teamId: string;
     teamName: string;
@@ -191,9 +188,12 @@ export interface ChatSidebarProps {
     maxConcurrentTasks: number;
     allowTeamLeadCreateAgents: boolean;
   }) => void;
+}
 
-  // Mutation states
-  createGroupPending: boolean;
+export interface ChatSidebarProps {
+  data: ChatSidebarData;
+  sessionController: ChatSidebarSessionController;
+  adminActions: ChatSidebarAdminActions;
 }
 
 type AgentGroupMode = 'all' | 'teams';
@@ -202,384 +202,121 @@ type AgentGroupMode = 'all' | 'teams';
 // Component
 // ============================================
 
-// Provider config submenu component
-interface ProviderConfigSubmenuProps {
-  agent: AgentOrGuest;
-  hasSelectedProject: boolean;
-  isBusy: boolean;
-  onRequestCloseMenu?: () => void;
-  onSwitchConfig: (
-    agentId: string,
-    providerConfigId: string,
-    modelOverride?: string | null,
-  ) => void;
-  fetchProviderConfigsForProfile: (
-    profileId: string,
-  ) => Promise<Array<{ id: string; name: string; providerId: string }>>;
-  updatingConfigAgentIds: Record<string, boolean>;
-  apiBase?: string;
+// ============================================
+// Agent row config / override label
+// ============================================
+
+interface AgentConfigDisplay {
+  /** Short label rendered in the row (e.g. "opus · high"). */
+  label: string;
+  /** Full-detail tooltip (e.g. "model: anthropic/opus · effort: high"). */
+  title: string;
 }
 
-interface ProviderModelOption {
-  id: string;
-  name: string;
-}
+/**
+ * Row secondary label. When the agent has a model and/or effort override, show
+ * the short model name joined with the effort ("model · effort"); otherwise fall
+ * back to the provider config name. Returns null when there is nothing to show.
+ */
+function getAgentConfigDisplay(agent: AgentOrGuest): AgentConfigDisplay | null {
+  const modelOverride = agent.modelOverride ?? null;
+  const effortOverride = agent.effortOverride ?? null;
 
-interface ModelOverrideSubmenuProps {
-  config: { id: string; name: string };
-  providerModels: ProviderModelOption[];
-  currentConfigId: string;
-  currentModelOverride: string | null;
-  isUpdating: boolean;
-  onRequestCloseMenu?: () => void;
-  onSelectModelOverride: (configId: string, nextModelOverride: string | null) => void;
-}
-
-const MODEL_OVERRIDE_DEFAULT = '__default_no_override__';
-const MODEL_OVERRIDE_NONE_SELECTED = '__none_selected__';
-
-export function normalizeModelOverrideSelection(value: string): string | null | undefined {
-  if (value === MODEL_OVERRIDE_NONE_SELECTED) {
-    return undefined;
+  if (modelOverride || effortOverride) {
+    const labelParts = [
+      modelOverride ? shortModelName(modelOverride) : null,
+      effortOverride,
+    ].filter((part): part is string => Boolean(part));
+    const titleParts: string[] = [];
+    if (modelOverride) titleParts.push(`model: ${modelOverride}`);
+    if (effortOverride) titleParts.push(`effort: ${effortOverride}`);
+    return { label: labelParts.join(' · '), title: titleParts.join(' · ') };
   }
-  if (value === MODEL_OVERRIDE_DEFAULT) {
-    return null;
-  }
-  return value;
-}
 
-function getAgentConfigDisplayName(agent: AgentOrGuest): string | null {
   if (!agent.providerConfig?.name) {
     return null;
   }
-  return agent.modelOverride ? shortModelName(agent.modelOverride) : agent.providerConfig.name;
-}
-
-function parseProviderModels(payload: unknown, providerId: string): ProviderModelOption[] {
-  if (!Array.isArray(payload)) {
-    return [];
-  }
-
-  return payload
-    .map((rawModel, index) => {
-      if (
-        !rawModel ||
-        typeof rawModel !== 'object' ||
-        Array.isArray(rawModel) ||
-        typeof (rawModel as { name?: unknown }).name !== 'string'
-      ) {
-        return null;
-      }
-
-      const model = rawModel as { id?: unknown; name: string };
-      const name = model.name.trim();
-      if (!name) {
-        return null;
-      }
-
-      const id =
-        typeof model.id === 'string' && model.id.trim().length > 0
-          ? model.id
-          : `${providerId}:${name}:${index}`;
-      return { id, name };
-    })
-    .filter((model): model is ProviderModelOption => Boolean(model));
-}
-
-function ModelOverrideSubmenu({
-  config,
-  providerModels,
-  currentConfigId,
-  currentModelOverride,
-  isUpdating,
-  onRequestCloseMenu,
-  onSelectModelOverride,
-}: ModelOverrideSubmenuProps) {
-  const [isOpen, setIsOpen] = useState(false);
-  const requestCloseMenu = useCallback(() => {
-    onRequestCloseMenu?.();
-  }, [onRequestCloseMenu]);
-
-  const activeModelValue =
-    currentConfigId === config.id
-      ? (currentModelOverride ?? MODEL_OVERRIDE_DEFAULT)
-      : MODEL_OVERRIDE_NONE_SELECTED;
-
-  return (
-    <ContextMenuSub open={isOpen} onOpenChange={setIsOpen}>
-      <ContextMenuSubTrigger
-        disabled={isUpdating}
-        onClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          onSelectModelOverride(config.id, null);
-          setIsOpen(false);
-          requestCloseMenu();
-        }}
-      >
-        {config.name}
-      </ContextMenuSubTrigger>
-      <ContextMenuSubContent className="w-[min(30rem,80vw)] p-0">
-        <div className="border-b bg-popover px-2 py-2">
-          <ContextMenuLabel className="px-0 py-0 text-xs font-medium text-muted-foreground">
-            Override model:
-          </ContextMenuLabel>
-        </div>
-
-        <div
-          className="max-h-[min(400px,60vh)] overflow-y-auto p-1"
-          data-testid={`model-override-options-${config.id}`}
-        >
-          <ContextMenuRadioGroup
-            value={activeModelValue}
-            onValueChange={(value) => {
-              const nextModelOverride = normalizeModelOverrideSelection(value);
-              if (nextModelOverride === undefined) return;
-              onSelectModelOverride(config.id, nextModelOverride);
-              requestCloseMenu();
-            }}
-          >
-            <ContextMenuRadioItem value={MODEL_OVERRIDE_DEFAULT} disabled={isUpdating}>
-              Default (no override)
-            </ContextMenuRadioItem>
-            {providerModels.map((model) => (
-              <ContextMenuRadioItem
-                key={model.id}
-                value={model.name}
-                title={model.name}
-                disabled={isUpdating}
-              >
-                {shortModelName(model.name)}
-              </ContextMenuRadioItem>
-            ))}
-          </ContextMenuRadioGroup>
-        </div>
-      </ContextMenuSubContent>
-    </ContextMenuSub>
-  );
-}
-
-function ProviderConfigSubmenu({
-  agent,
-  hasSelectedProject,
-  isBusy,
-  onRequestCloseMenu,
-  onSwitchConfig,
-  fetchProviderConfigsForProfile,
-  updatingConfigAgentIds,
-  apiBase,
-}: ProviderConfigSubmenuProps) {
-  // Skip guests - they don't have profiles
-  if (!agent.profileId || agent.type === 'guest') {
-    return null;
-  }
-
-  // Lazy fetch provider configs for this agent's profile
-  //
-  // PERF: No `enabled` gating needed here. Radix UI's ContextMenuSubContent uses
-  // lazy mounting via the Presence component - this component only mounts when the
-  // user opens the context menu (context.open === true), not during initial page render.
-  // Therefore the useQuery only executes when the menu is opened, avoiding N API calls
-  // on page load (one per agent row).
-  //
-  // Cached results are retained for 5 minutes via staleTime, so repeated menu opens
-  // will use cached data instead of fetching again.
-  const {
-    data: rawConfigs = [],
-    isLoading,
-    isError,
-  } = useQuery({
-    queryKey: ['profile-provider-configs', apiBase ?? 'main', agent.profileId],
-    queryFn: () => fetchProviderConfigsForProfile(agent.profileId!),
-    staleTime: 5 * 60 * 1000, // Cache for 5 minutes
-  });
-
-  // Defensive guard: ensure configs is always an array (API returns array, but tests may mock incorrectly)
-  const configs = Array.isArray(rawConfigs) ? rawConfigs : [];
-  const uniqueProviderIds = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          configs
-            .map((config) => config.providerId)
-            .filter((providerId): providerId is string => Boolean(providerId)),
-        ),
-      ).sort(),
-    [configs],
-  );
-
-  const providerModelQueries = useQueries({
-    queries: uniqueProviderIds.map((providerId) => ({
-      queryKey: providerModelQueryKeys.byContext(apiBase ?? 'main', providerId),
-      queryFn: async () => {
-        const base = apiBase ?? '';
-        const res = await fetch(`${base}/api/providers/${providerId}/models`);
-        if (!res.ok) {
-          return [] as ProviderModelOption[];
-        }
-        const payload = (await res.json().catch(() => [])) as unknown;
-        return parseProviderModels(payload, providerId);
-      },
-      staleTime: 5 * 60 * 1000, // Cache for 5 minutes
-    })),
-  });
-
-  const providerModelsStateByProviderId = useMemo(() => {
-    const state: Record<string, { models: ProviderModelOption[]; isLoading: boolean }> = {};
-    uniqueProviderIds.forEach((providerId, index) => {
-      const query = providerModelQueries[index];
-      state[providerId] = {
-        models: Array.isArray(query?.data) ? query.data : [],
-        isLoading: Boolean(query?.isLoading),
-      };
-    });
-    return state;
-  }, [providerModelQueries, uniqueProviderIds]);
-
-  const currentConfigId = agent.providerConfigId ?? '';
-  const currentModelOverride = agent.modelOverride ?? null;
-  const isUpdating = updatingConfigAgentIds[agent.id];
-
-  const handleConfigSwitch = (configId: string) => {
-    if (configId !== currentConfigId) {
-      onSwitchConfig(agent.id, configId);
-    }
-  };
-  const requestCloseMenu = useCallback(() => {
-    onRequestCloseMenu?.();
-  }, [onRequestCloseMenu]);
-
-  const handleModelOverrideSwitch = (configId: string, nextModelOverride: string | null) => {
-    if (configId === currentConfigId && currentModelOverride === nextModelOverride) {
-      return;
-    }
-    onSwitchConfig(agent.id, configId, nextModelOverride);
-  };
-
-  return (
-    <ContextMenuSub>
-      <ContextMenuSubTrigger disabled={!hasSelectedProject || isBusy}>
-        Provider Config
-      </ContextMenuSubTrigger>
-      <ContextMenuSubContent>
-        {isLoading ? (
-          <div className="flex items-center gap-2 px-2 py-1.5 text-sm text-muted-foreground">
-            <Loader2 className="h-3 w-3 animate-spin" />
-            Loading configs...
-          </div>
-        ) : isError ? (
-          <div className="px-2 py-1.5 text-sm text-destructive">Failed to load configs</div>
-        ) : configs.length === 0 ? (
-          <div className="px-2 py-1.5 text-sm text-muted-foreground">No configs available</div>
-        ) : (
-          <>
-            {configs.map((config) => {
-              const providerModelState = providerModelsStateByProviderId[config.providerId] ?? {
-                models: [],
-                isLoading: false,
-              };
-              const providerModels = providerModelState.models;
-              const isProviderModelsLoading = providerModelState.isLoading;
-              const hasModels = providerModels.length > 0;
-              if (!hasModels || isProviderModelsLoading) {
-                return (
-                  <ContextMenuItem
-                    key={config.id}
-                    disabled={isUpdating}
-                    onSelect={(event) => {
-                      event.preventDefault();
-                      handleConfigSwitch(config.id);
-                      requestCloseMenu();
-                    }}
-                  >
-                    {config.name}
-                    {isProviderModelsLoading && <Loader2 className="ml-2 h-3 w-3 animate-spin" />}
-                  </ContextMenuItem>
-                );
-              }
-
-              return (
-                <ModelOverrideSubmenu
-                  key={config.id}
-                  config={config}
-                  providerModels={providerModels}
-                  currentConfigId={currentConfigId}
-                  currentModelOverride={currentModelOverride}
-                  isUpdating={Boolean(isUpdating)}
-                  onSelectModelOverride={handleModelOverrideSwitch}
-                  onRequestCloseMenu={onRequestCloseMenu}
-                />
-              );
-            })}
-          </>
-        )}
-      </ContextMenuSubContent>
-    </ContextMenuSub>
-  );
+  return { label: agent.providerConfig.name, title: agent.providerConfig.name };
 }
 
 // ============================================
 // Main ChatSidebar Component
 // ============================================
 
-export function ChatSidebar({
-  projectId,
-  agents,
-  guests,
-  worktreeAgentGroups,
-  worktreeAgentGroupsLoading,
-  agentPresence,
-  userThreads,
-  agentThreads,
-  presenceReady,
-  offlineAgents,
-  agentsWithSessions,
-  agentsLoading,
-  agentsError,
-  userThreadsLoading,
-  agentThreadsLoading,
-  launchingAgentIds,
-  restartingAgentId,
-  startingAll,
-  terminatingAll,
-  isLaunchingChat,
-  selectedThreadId,
-  selectedWorktreeAgent,
-  hasSelectedProject,
-  onSelectThread,
-  onLaunchChat,
-  onLaunchWorktreeAgentChat,
-  onLaunchWorktreeSession,
-  onRestartWorktreeSession,
-  onTerminateWorktreeSession,
-  onCreateGroup,
-  onStartAllAgents,
-  onTerminateAllConfirm,
-  onLaunchSession,
-  onRestartSession,
-  onTerminateConfirm,
-  getProviderForAgent,
-  pendingRestartAgentIds,
-  onMarkForRestart,
-  worktreeSessionActionsByAgentKey,
-  validatedPresets,
-  activePreset,
-  onApplyPreset,
-  applyingPreset,
-  onSwitchConfig,
-  fetchProviderConfigsForProfile,
-  updatingConfigAgentIds,
-  onSwitchWorktreeConfig,
-  updatingWorktreeConfigKey,
-  onCloneAgent,
-  onDeleteAgent,
-  pendingDeleteAgentId,
-  onAddTeamAgent,
-  projectProfiles,
-  onEditTeam,
-  createGroupPending,
-}: ChatSidebarProps) {
+function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebarProps) {
+  const {
+    projectId,
+    agents,
+    guests,
+    worktreeAgentGroups,
+    worktreeAgentGroupsLoading,
+    agentPresence,
+    userThreads,
+    agentThreads,
+    presenceReady,
+    offlineAgents,
+    agentsWithSessions,
+    agentsLoading,
+    agentsError,
+    userThreadsLoading,
+    agentThreadsLoading,
+    selectedThreadId,
+    selectedWorktreeAgent,
+    hasSelectedProject,
+    getProviderForAgent,
+    validatedPresets,
+    activePreset,
+    projectProfiles,
+  } = data;
+  const {
+    launchingAgentIds,
+    restartingAgentId,
+    startingAll,
+    terminatingAll,
+    isLaunchingChat,
+    onSelectThread,
+    onLaunchChat,
+    onLaunchWorktreeAgentChat,
+    onLaunchWorktreeSession,
+    onRestartWorktreeSession,
+    onTerminateWorktreeSession,
+    onCreateGroup,
+    onStartAllAgents,
+    onTerminateAllConfirm,
+    onLaunchSession,
+    onRestartSession,
+    onTerminateConfirm,
+    pendingRestartAgentIds,
+    onMarkForRestart,
+    worktreeSessionActionsByAgentKey,
+    onApplyPreset,
+    applyingPreset,
+    onSwitchConfig,
+    fetchProviderConfigsForProfile,
+    updatingConfigAgentIds,
+    onSwitchWorktreeConfig,
+    updatingWorktreeConfigKey,
+    createGroupPending,
+  } = sessionController;
+  const { onCloneAgent, onDeleteAgent, pendingDeleteAgentId, onAddTeamAgent, onEditTeam } =
+    adminActions;
+
   const { toast } = useToast();
+
+  // ── Overrides dialog (single themed dialog replacing the model-override submenu) ──
+  const [overridesTarget, setOverridesTarget] = useState<{
+    agent: AgentOrGuest;
+    isOnline: boolean;
+    triggerEl: HTMLElement | null;
+    group: WorktreeAgentGroup | null;
+  } | null>(null);
+  // Focus-restoration targets for worktree rows (which render their own button, not AgentRow).
+  const worktreeRowRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+
+  const closeOverrides = useCallback(() => {
+    setOverridesTarget(null);
+  }, []);
+
   const groups = userThreads
     .filter((t) => t.isGroup)
     .map((g) => ({
@@ -723,13 +460,6 @@ export function ChatSidebar({
       return new Set();
     }
   });
-  const [mainContextMenuVersionByAgentId, setMainContextMenuVersionByAgentId] = useState<
-    Record<string, number>
-  >({});
-  const [worktreeContextMenuVersionByKey, setWorktreeContextMenuVersionByKey] = useState<
-    Record<string, number>
-  >({});
-
   useEffect(() => {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(
@@ -974,14 +704,13 @@ export function ChatSidebar({
     const sessionId = agentPresence[agent.id]?.sessionId ?? null;
     const isLaunching = Boolean(launchingAgentIds[agent.id]);
     const isRestarting = restartingAgentId === agent.id;
-    const anyBusy = isLaunching || isRestarting;
-    const mainContextMenuVersion = mainContextMenuVersionByAgentId[agent.id] ?? 0;
     const metricsKey = getMetricsKey(agent.id);
     const keyPrefix = options?.keyPrefix ?? 'all';
+    const configDisplay = getAgentConfigDisplay(agent);
 
     return (
       <AgentRow
-        key={`${keyPrefix}:${agent.id}:${mainContextMenuVersion}`}
+        key={`${keyPrefix}:${agent.id}`}
         agent={agent}
         isSelected={isSelected}
         isOnline={isOnline}
@@ -991,7 +720,8 @@ export function ChatSidebar({
         pendingRestart={pendingRestartAgentIds.has(restartKeyForMain(agent.id))}
         providerIconUri={agentProviderIcon}
         providerName={agentProviderName}
-        configDisplayName={getAgentConfigDisplayName(agent)}
+        configDisplayName={configDisplay?.label ?? null}
+        configDisplayTitle={configDisplay?.title ?? null}
         contextTrackingEnabled={!contextBarHidden.has(metricsKey)}
         hasSelectedProject={hasSelectedProject}
         hasSession={hasSession}
@@ -1001,21 +731,9 @@ export function ChatSidebar({
         isLaunchingChat={isLaunchingChat}
         activityBadge={renderActivityBadge(agent.id)}
         isTeamLead={options?.isTeamLead ?? false}
-        providerConfigSubmenu={
-          <ProviderConfigSubmenu
-            agent={agent}
-            hasSelectedProject={hasSelectedProject}
-            isBusy={anyBusy}
-            onSwitchConfig={onSwitchConfig}
-            onRequestCloseMenu={() => {
-              setMainContextMenuVersionByAgentId((previous) => ({
-                ...previous,
-                [agent.id]: (previous[agent.id] ?? 0) + 1,
-              }));
-            }}
-            fetchProviderConfigsForProfile={fetchProviderConfigsForProfile}
-            updatingConfigAgentIds={updatingConfigAgentIds}
-          />
+        canOverride={agent.type !== 'guest' && Boolean(agent.profileId)}
+        onOpenOverrides={(triggerEl) =>
+          setOverridesTarget({ agent, isOnline, triggerEl, group: null })
         }
         canClone={agent.type !== 'guest' && Boolean(onCloneAgent)}
         onClone={
@@ -1518,17 +1236,17 @@ export function ChatSidebar({
                               ? getProviderIconDataUri(providerName)
                               : null;
                             const worktreeContextMenuKey = `${group.apiBase}:${agent.id}`;
-                            const worktreeContextMenuVersion =
-                              worktreeContextMenuVersionByKey[worktreeContextMenuKey] ?? 0;
                             const worktreeActivityBadge = renderActivityBadgeForPresence(
                               group.agentPresence[agent.id],
                             );
+                            const worktreeConfigDisplay = getAgentConfigDisplay(agent);
                             return (
-                              <ContextMenu
-                                key={`${group.id}:${agent.id}:${worktreeContextMenuVersion}`}
-                              >
+                              <ContextMenu key={`${group.id}:${agent.id}`}>
                                 <ContextMenuTrigger asChild>
                                   <button
+                                    ref={(el) => {
+                                      worktreeRowRefs.current[worktreeContextMenuKey] = el;
+                                    }}
                                     onClick={() => onLaunchWorktreeAgentChat(group, agent.id)}
                                     disabled={isDisabled}
                                     className={cn(
@@ -1563,7 +1281,8 @@ export function ChatSidebar({
                                     )}
                                     <AgentIdentity
                                       agentName={agent.name}
-                                      configDisplayName={getAgentConfigDisplayName(agent)}
+                                      configDisplayName={worktreeConfigDisplay?.label ?? null}
+                                      configDisplayTitle={worktreeConfigDisplay?.title ?? null}
                                     />
                                     {worktreeActivityBadge && (
                                       <span className="ml-1 shrink-0">{worktreeActivityBadge}</span>
@@ -1596,40 +1315,24 @@ export function ChatSidebar({
                                     </div>
                                   )}
                                 <ContextMenuContent className="w-56">
-                                  <ProviderConfigSubmenu
-                                    agent={agent}
-                                    hasSelectedProject={Boolean(group.devchainProjectId)}
-                                    isBusy={anyWorktreeBusy}
-                                    onSwitchConfig={(agentId, providerConfigId, modelOverride) =>
-                                      onSwitchWorktreeConfig(
-                                        group,
-                                        agentId,
-                                        providerConfigId,
-                                        modelOverride,
-                                      )
-                                    }
-                                    onRequestCloseMenu={() => {
-                                      setWorktreeContextMenuVersionByKey((previous) => ({
-                                        ...previous,
-                                        [worktreeContextMenuKey]:
-                                          (previous[worktreeContextMenuKey] ?? 0) + 1,
-                                      }));
-                                    }}
-                                    fetchProviderConfigsForProfile={async (profileId) => {
-                                      const res = await fetch(
-                                        `${group.apiBase}/api/profiles/${profileId}/provider-configs`,
-                                      );
-                                      if (!res.ok)
-                                        throw new Error('Failed to fetch provider configs');
-                                      return res.json();
-                                    }}
-                                    updatingConfigAgentIds={
-                                      updatingWorktreeConfigKey === `${group.apiBase}:${agent.id}`
-                                        ? { [agent.id]: true }
-                                        : {}
-                                    }
-                                    apiBase={group.apiBase}
-                                  />
+                                  {agent.type !== 'guest' && Boolean(agent.profileId) && (
+                                    <ContextMenuItem
+                                      onSelect={(event) => {
+                                        event.preventDefault();
+                                        setOverridesTarget({
+                                          agent,
+                                          isOnline,
+                                          triggerEl:
+                                            worktreeRowRefs.current[worktreeContextMenuKey] ?? null,
+                                          group,
+                                        });
+                                      }}
+                                      disabled={!group.devchainProjectId || anyWorktreeBusy}
+                                    >
+                                      <SlidersHorizontal className="mr-2 h-4 w-4" />
+                                      Overrides…
+                                    </ContextMenuItem>
+                                  )}
                                   <ContextMenuSeparator />
                                   <ContextMenuCheckboxItem
                                     checked={
@@ -1869,6 +1572,63 @@ export function ChatSidebar({
           </>
         )}
       </ScrollArea>
+
+      {overridesTarget &&
+        (() => {
+          const { agent, isOnline, triggerEl, group } = overridesTarget;
+          const apiBase = group?.apiBase;
+          const isSaving = group
+            ? updatingWorktreeConfigKey === `${group.apiBase}:${agent.id}`
+            : Boolean(updatingConfigAgentIds[agent.id]);
+          const fetchConfigs = group
+            ? async (profileId: string): Promise<OverridesConfigOption[]> => {
+                const res = await fetch(
+                  `${group.apiBase}/api/profiles/${profileId}/provider-configs`,
+                );
+                if (!res.ok) throw new Error('Failed to fetch provider configs');
+                return res.json();
+              }
+            : fetchProviderConfigsForProfile;
+          const handleSave = (payload: AgentOverridesSavePayload) =>
+            group
+              ? onSwitchWorktreeConfig(
+                  group,
+                  agent.id,
+                  payload.providerConfigId,
+                  payload.modelOverride,
+                  payload.effortOverride,
+                )
+              : onSwitchConfig(
+                  agent.id,
+                  payload.providerConfigId,
+                  payload.modelOverride,
+                  payload.effortOverride,
+                );
+          return (
+            <AgentOverridesDialog
+              key={`${apiBase ?? 'main'}:${agent.id}`}
+              open
+              onOpenChange={(next) => {
+                if (!next) closeOverrides();
+              }}
+              agent={agent}
+              isOnline={isOnline}
+              apiBase={apiBase}
+              isSaving={isSaving}
+              fetchProviderConfigsForProfile={fetchConfigs}
+              onSave={handleSave}
+              triggerEl={triggerEl}
+            />
+          );
+        })()}
     </div>
   );
 }
+
+/**
+ * Memoized at the bundle boundary: with ChatPage's three useMemo'd bundles, an
+ * unrelated ChatPage re-render leaves all three prop references intact, so this
+ * component and its AgentRow subtree skip re-rendering. Referential stability of
+ * the bundles is the contract that makes this correct.
+ */
+export const ChatSidebar = memo(ChatSidebarInner);

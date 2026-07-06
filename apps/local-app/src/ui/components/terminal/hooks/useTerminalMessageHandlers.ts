@@ -97,7 +97,6 @@ export function useTerminalMessageHandlers(
   isSubscribedRef: React.MutableRefObject<boolean>,
   hasHistoryRef: React.MutableRefObject<boolean>,
   isLoadingHistoryRef: React.MutableRefObject<boolean>,
-  historyViewportOffsetRef: React.MutableRefObject<number | null>,
   isHistoryInFlightRef: React.MutableRefObject<boolean>,
   pendingHistoryFramesRef: React.MutableRefObject<BufferedFrame[]>,
   lastCapturedSequenceRef: React.MutableRefObject<number>,

@@ -4,6 +4,7 @@ import type { ActiveSessionLookup } from '../../sessions/services/active-session
 import type { SessionReaderService } from '../../session-reader/services/session-reader.service';
 import type { TranscriptWatcherService } from '../../session-reader/services/transcript-watcher.service';
 import type { AgentMessageDeliveryService } from '../../agent-message-delivery/agent-message-delivery.service';
+import type { SessionsMessageLogReadFacade } from '../../sessions/services/sessions-message-log-read.facade';
 import type { SessionLifecycleFacade } from '../../sessions/services/session-lifecycle-facade.service';
 import type { TeamsService } from '../../teams/services/teams.service';
 import type { PendingAskUserQuestionService } from '../../hooks/services/pending-ask-user-question.service';
@@ -62,6 +63,7 @@ function build(overrides: {
   sessionReader?: Partial<SessionReaderService>;
   transcriptWatcher?: Partial<TranscriptWatcherService>;
   agentMessageDelivery?: Partial<AgentMessageDeliveryService>;
+  messageLogRead?: Partial<SessionsMessageLogReadFacade>;
   sessionLifecycle?: Partial<SessionLifecycleFacade>;
   teamsService?: Partial<TeamsService>;
   pendingAskUserQuestion?: Partial<PendingAskUserQuestionService>;
@@ -96,6 +98,10 @@ function build(overrides: {
     deliver: jest.fn(),
     ...overrides.agentMessageDelivery,
   } as unknown as AgentMessageDeliveryService;
+  const messageLogRead = {
+    queryPendingMobile: jest.fn().mockReturnValue([]),
+    ...overrides.messageLogRead,
+  } as unknown as SessionsMessageLogReadFacade;
   const sessionLifecycle = {
     launch: jest.fn(),
     restart: jest.fn(),
@@ -121,6 +127,7 @@ function build(overrides: {
     sessionReader,
     transcriptWatcher,
     agentMessageDelivery,
+    messageLogRead,
     sessionLifecycle,
     operationTracker,
     teamsService,
@@ -133,6 +140,7 @@ function build(overrides: {
     sessionReader,
     transcriptWatcher,
     agentMessageDelivery,
+    messageLogRead,
     sessionLifecycle,
     operationTracker,
     teamsService,
@@ -829,6 +837,104 @@ describe('MobileChatRpcService.sendMessage', () => {
       ).rejects.toBeInstanceOf(ForbiddenError);
       expect(pendingAskUserQuestion.clearBySession).not.toHaveBeenCalled();
     });
+  });
+
+  describe('clientMessageId / messageId threading', () => {
+    const CLIENT_MSG_ID = '10101010-1010-4010-8010-101010101010';
+    const LOG_ENTRY_ID = '20202020-2020-4020-8020-202020202020';
+
+    it('threads clientMessageId into the delivery message and echoes messageId + clientMessageId', async () => {
+      const { service, agentMessageDelivery } = buildSend({
+        deliver: {
+          status: 'delivered',
+          results: [{ agentId: AGENT_A, status: 'delivered', messageId: LOG_ENTRY_ID }],
+        },
+      });
+
+      const result = await service.sendMessage({
+        agentId: AGENT_A,
+        projectId: PROJECT_ID,
+        text: 'idempotent hi',
+        clientMessageId: CLIENT_MSG_ID,
+      });
+
+      expect(result).toEqual({
+        status: 'delivered',
+        messageId: LOG_ENTRY_ID,
+        clientMessageId: CLIENT_MSG_ID,
+      });
+      const [, message] = (agentMessageDelivery.deliver as jest.Mock).mock.calls[0];
+      expect(message.clientMessageId).toBe(CLIENT_MSG_ID);
+    });
+
+    it('omits messageId/clientMessageId when the caller sends neither (desktop-compatible shape)', async () => {
+      const { service, agentMessageDelivery } = buildSend({});
+
+      const result = await service.sendMessage({
+        agentId: AGENT_A,
+        projectId: PROJECT_ID,
+        text: 'legacy send',
+      });
+
+      expect(result).toEqual({ status: 'queued' });
+      const [, message] = (agentMessageDelivery.deliver as jest.Mock).mock.calls[0];
+      expect(message.clientMessageId).toBeUndefined();
+    });
+  });
+});
+
+describe('MobileChatRpcService.getPendingMessages', () => {
+  const CLIENT_MSG_ID = '10101010-1010-4010-8010-101010101010';
+
+  it('authorizes the agent against the project, then delegates to the read facade', async () => {
+    const rows = [
+      {
+        messageId: '20202020-2020-4020-8020-202020202020',
+        clientMessageId: CLIENT_MSG_ID,
+        text: 'hi',
+        status: 'delivered' as const,
+        timestamp: 123,
+        deliveredAt: 456,
+      },
+    ];
+    const { service, storage, messageLogRead } = build({
+      storage: { getAgent: jest.fn().mockResolvedValue(agent({})) },
+      messageLogRead: { queryPendingMobile: jest.fn().mockReturnValue(rows) },
+    });
+
+    const result = await service.getPendingMessages({
+      agentId: AGENT_A,
+      projectId: PROJECT_ID,
+      clientMessageIds: [CLIENT_MSG_ID],
+    });
+
+    expect(result).toBe(rows);
+    expect(storage.getAgent).toHaveBeenCalledWith(AGENT_A);
+    expect(messageLogRead.queryPendingMobile).toHaveBeenCalledWith(AGENT_A, PROJECT_ID, [
+      CLIENT_MSG_ID,
+    ]);
+  });
+
+  it('rejects a cross-project agent with AGENT_PROJECT_MISMATCH before reading the log', async () => {
+    const { service, messageLogRead } = build({
+      storage: {
+        getAgent: jest
+          .fn()
+          .mockResolvedValue(agent({ projectId: '44444444-4444-4444-8444-444444444444' })),
+      },
+    });
+
+    const err = await service
+      .getPendingMessages({
+        agentId: AGENT_A,
+        projectId: PROJECT_ID,
+        clientMessageIds: [CLIENT_MSG_ID],
+      })
+      .catch((e) => e);
+
+    expect(err).toBeInstanceOf(ForbiddenError);
+    expect((err as ForbiddenError).details).toMatchObject({ code: 'AGENT_PROJECT_MISMATCH' });
+    expect(messageLogRead.queryPendingMobile).not.toHaveBeenCalled();
   });
 });
 

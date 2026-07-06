@@ -20,7 +20,13 @@ import {
   DialogTitle,
 } from '@/ui/components/ui/dialog';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/ui/components/ui/card';
-import { useToast } from '@/ui/hooks/use-toast';
+import { getErrorMessage, useToastHelpers } from '@/ui/lib/toast-helpers';
+import { useConfirmDialog, useFormDialog } from '@/ui/hooks/useFormDialog';
+import {
+  optimisticMergeById,
+  useCrudMutation,
+  type ListContainer,
+} from '@/ui/hooks/useCrudMutations';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import {
   Edit,
@@ -442,7 +448,7 @@ function TagInput({
 }
 
 export function DocumentsPage() {
-  const { toast } = useToast();
+  const { toast, showSuccess, showError } = useToastHelpers();
   const queryClient = useQueryClient();
   const { selectedProjectId, projects, projectsLoading, projectsError, setSelectedProjectId } =
     useSelectedProject();
@@ -452,8 +458,10 @@ export function DocumentsPage() {
   const [selectedFacets, setSelectedFacets] = useState<Map<string, Set<string>>>(new Map());
   const [groupByKey, setGroupByKey] = useState<string | null>(null);
   const [page, setPage] = useState(0);
-  const [showDialog, setShowDialog] = useState(false);
-  const [editingDocument, setEditingDocument] = useState<Document | null>(null);
+  const formDialog = useFormDialog<Document>();
+  const deleteDialog = useConfirmDialog<string>();
+  const editingDocument = formDialog.isEdit ? formDialog.entity : null;
+  const pendingDeleteDocumentId = deleteDialog.target;
   const [slugTouched, setSlugTouched] = useState(false);
   const [showPreview, setShowPreview] = useState(true);
   const [formData, setFormData] = useState({
@@ -468,7 +476,6 @@ export function DocumentsPage() {
   const [selectedDocuments, setSelectedDocuments] = useState<Set<string>>(new Set());
   const [previewDocument, setPreviewDocument] = useState<Document | null>(null);
   const [focusedDocumentIndex, setFocusedDocumentIndex] = useState<number>(0);
-  const [pendingDeleteDocumentId, setPendingDeleteDocumentId] = useState<string | null>(null);
   const [pendingDeleteView, setPendingDeleteView] = useState<SavedView | null>(null);
 
   // Compute selected tags from facets for API queries
@@ -639,18 +646,17 @@ export function DocumentsPage() {
 
   const resetForm = () => {
     setFormData({ title: '', slug: '', contentMd: '', tags: [] });
-    setEditingDocument(null);
     setSlugTouched(false);
     setShowPreview(true);
   };
 
   const handleCreate = () => {
     resetForm();
-    setShowDialog(true);
+    formDialog.openCreate();
   };
 
   const handleEdit = (document: Document) => {
-    setEditingDocument(document);
+    formDialog.openEdit(document);
     setFormData({
       title: document.title,
       slug: document.slug,
@@ -658,18 +664,17 @@ export function DocumentsPage() {
       tags: [...document.tags],
     });
     setSlugTouched(true);
-    setShowDialog(true);
     setShowPreview(true);
   };
 
   const handleDelete = (id: string) => {
-    setPendingDeleteDocumentId(id);
+    deleteDialog.open(id);
   };
 
   const handleConfirmDeleteDocument = () => {
     if (!pendingDeleteDocumentId) return;
     deleteMutation.mutate(pendingDeleteDocumentId);
-    setPendingDeleteDocumentId(null);
+    deleteDialog.close();
   };
 
   const handlePinnedToggle = (document: Document) => {
@@ -834,67 +839,55 @@ export function DocumentsPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['documents'] });
       toast({ title: 'Document created', description: 'Document saved successfully.' });
-      setShowDialog(false);
+      formDialog.close();
       resetForm();
     },
     onError: (error: unknown) => {
-      toast({
+      showError({
         title: 'Failed to create document',
-        description: error instanceof Error ? error.message : 'Unknown error',
-        variant: 'destructive',
+        description: getErrorMessage(error, 'Unknown error'),
       });
     },
   });
 
-  const updateMutation = useMutation({
-    mutationFn: ({ id, data }: UpdateArgs) => updateDocument(id, data),
-    onMutate: async ({ id, optimistic, silent }: UpdateArgs) => {
-      await queryClient.cancelQueries({ queryKey: ['documents'] });
-      const previous = queryClient.getQueryData([
-        'documents',
-        selectedProjectId,
-        searchTerm,
-        tagsKey,
-        page,
-      ]);
+  const documentsListKey = ['documents', selectedProjectId, searchTerm, tagsKey, page] as const;
+  const documentsBroadKey = ['documents'] as const;
+  type DocumentsList = ListContainer<Document>;
 
-      if (optimistic) {
-        queryClient.setQueryData(
-          ['documents', selectedProjectId, searchTerm, tagsKey, page],
-          (old: DocumentsQueryData | undefined) => {
-            if (!old?.items) return old;
-            return {
-              ...old,
-              items: old.items.map((doc: Document) =>
-                doc.id === id
-                  ? { ...doc, ...optimistic, updatedAt: new Date().toISOString() }
-                  : doc,
-              ),
-            };
-          },
-        );
-      }
-
-      return { previous, silent };
+  const updateMutation = useCrudMutation<Document, UpdateArgs, void>({
+    mutationFn: ({ id, data }) => updateDocument(id, data),
+    optimistic: {
+      queryKey: documentsListKey,
+      // in-place merge — only when the caller supplied an optimistic patch
+      // (single-edit). Bulk callers pass no `optimistic` and skip projection.
+      project: (previous, { id, optimistic }) => {
+        if (!optimistic) return previous;
+        const list = previous as DocumentsList | undefined;
+        if (!list) return previous;
+        return optimisticMergeById(list, id, (doc: Document) => ({
+          ...doc,
+          ...optimistic,
+          updatedAt: new Date().toISOString(),
+        }));
+      },
     },
-    onError: (error, _variables, context) => {
-      if (context?.previous) {
-        queryClient.setQueryData(
-          ['documents', selectedProjectId, searchTerm, tagsKey, page],
-          context.previous,
-        );
-      }
-      toast({
+    // Broad key is canceled (and harmlessly snapshotted/rolled-back — it has no
+    // exact cached value) to match the original cancelQueries(['documents']).
+    rollbackKeys: [documentsBroadKey],
+    invalidateKeys: [documentsBroadKey],
+    toast: {
+      error: (error) => ({
         title: 'Failed to update document',
-        description: error instanceof Error ? error.message : 'Unknown error',
-        variant: 'destructive',
-      });
+        description: getErrorMessage(error, 'Unknown error'),
+      }),
     },
-    onSuccess: (_result, _variables, context) => {
-      queryClient.invalidateQueries({ queryKey: ['documents'] });
-      if (!context?.silent) {
-        toast({ title: 'Document updated', description: 'Changes saved successfully.' });
-        setShowDialog(false);
+    // `silent` is carried on the vars (single-edit omits it; bulk sets it). The
+    // success toast + dialog close/reset are gated on it so bulk ops reuse this
+    // one mutation without per-item UI feedback.
+    onSuccessSideEffects: (_data, vars) => {
+      if (!vars.silent) {
+        showSuccess({ title: 'Document updated', description: 'Changes saved successfully.' });
+        formDialog.close();
         resetForm();
       }
     },
@@ -927,15 +920,14 @@ export function DocumentsPage() {
           context.previous,
         );
       }
-      toast({
+      showError({
         title: 'Failed to delete document',
-        description: error instanceof Error ? error.message : 'Unknown error',
-        variant: 'destructive',
+        description: getErrorMessage(error, 'Unknown error'),
       });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['documents'] });
-      toast({ title: 'Document deleted', description: 'Document removed successfully.' });
+      showSuccess({ title: 'Document deleted', description: 'Document removed successfully.' });
     },
   });
 
@@ -1015,20 +1007,27 @@ export function DocumentsPage() {
           ),
         );
         queryClient.invalidateQueries({ queryKey: ['documents'] });
-        toast({
+        showSuccess({
           title: 'Tags added',
           description: `Added tags to ${selectedDocs.length} document(s).`,
         });
         handleClearSelection();
       } catch (error) {
-        toast({
+        showError({
           title: 'Failed to add tags',
-          description: error instanceof Error ? error.message : 'Unknown error',
-          variant: 'destructive',
+          description: getErrorMessage(error, 'Unknown error'),
         });
       }
     },
-    [documents, selectedDocuments, updateMutation, queryClient, toast, handleClearSelection],
+    [
+      documents,
+      selectedDocuments,
+      updateMutation,
+      queryClient,
+      showSuccess,
+      showError,
+      handleClearSelection,
+    ],
   );
 
   const handleBulkRemoveTags = useCallback(
@@ -1058,20 +1057,27 @@ export function DocumentsPage() {
           ),
         );
         queryClient.invalidateQueries({ queryKey: ['documents'] });
-        toast({
+        showSuccess({
           title: 'Tags removed',
           description: `Removed tags from ${selectedDocs.length} document(s).`,
         });
         handleClearSelection();
       } catch (error) {
-        toast({
+        showError({
           title: 'Failed to remove tags',
-          description: error instanceof Error ? error.message : 'Unknown error',
-          variant: 'destructive',
+          description: getErrorMessage(error, 'Unknown error'),
         });
       }
     },
-    [documents, selectedDocuments, updateMutation, queryClient, toast, handleClearSelection],
+    [
+      documents,
+      selectedDocuments,
+      updateMutation,
+      queryClient,
+      showSuccess,
+      showError,
+      handleClearSelection,
+    ],
   );
 
   const handleBulkArchive = useCallback(async () => {
@@ -1091,19 +1097,26 @@ export function DocumentsPage() {
         ),
       );
       queryClient.invalidateQueries({ queryKey: ['documents'] });
-      toast({
+      showSuccess({
         title: 'Documents archived',
         description: `Archived ${selectedDocs.length} document(s).`,
       });
       handleClearSelection();
     } catch (error) {
-      toast({
+      showError({
         title: 'Failed to archive documents',
-        description: error instanceof Error ? error.message : 'Unknown error',
-        variant: 'destructive',
+        description: getErrorMessage(error, 'Unknown error'),
       });
     }
-  }, [documents, selectedDocuments, updateMutation, queryClient, toast, handleClearSelection]);
+  }, [
+    documents,
+    selectedDocuments,
+    updateMutation,
+    queryClient,
+    showSuccess,
+    showError,
+    handleClearSelection,
+  ]);
 
   const handleBulkUnarchive = useCallback(async () => {
     const selectedDocs = documents.filter((doc) => selectedDocuments.has(doc.id));
@@ -1122,19 +1135,26 @@ export function DocumentsPage() {
         ),
       );
       queryClient.invalidateQueries({ queryKey: ['documents'] });
-      toast({
+      showSuccess({
         title: 'Documents unarchived',
         description: `Unarchived ${selectedDocs.length} document(s).`,
       });
       handleClearSelection();
     } catch (error) {
-      toast({
+      showError({
         title: 'Failed to unarchive documents',
-        description: error instanceof Error ? error.message : 'Unknown error',
-        variant: 'destructive',
+        description: getErrorMessage(error, 'Unknown error'),
       });
     }
-  }, [documents, selectedDocuments, updateMutation, queryClient, toast, handleClearSelection]);
+  }, [
+    documents,
+    selectedDocuments,
+    updateMutation,
+    queryClient,
+    showSuccess,
+    showError,
+    handleClearSelection,
+  ]);
 
   const handleUpdateDocumentTags = useCallback(
     (documentId: string, newTags: string[]) => {
@@ -1168,7 +1188,7 @@ export function DocumentsPage() {
     (event: KeyboardEvent) => {
       // Only handle shortcuts when not in input/textarea/dialog
       if (
-        showDialog ||
+        formDialog.isOpen ||
         event.target instanceof HTMLInputElement ||
         event.target instanceof HTMLTextAreaElement
       ) {
@@ -1224,7 +1244,7 @@ export function DocumentsPage() {
     [
       documents,
       focusedDocumentIndex,
-      showDialog,
+      formDialog.isOpen,
       previewDocument,
       handleEdit,
       handlePinnedToggle,
@@ -1665,13 +1685,11 @@ export function DocumentsPage() {
           )}
 
           <Dialog
-            open={showDialog}
+            open={formDialog.isOpen}
             onOpenChange={(open) => {
               if (!open) {
-                setShowDialog(false);
+                formDialog.close();
                 resetForm();
-              } else {
-                setShowDialog(true);
               }
             }}
           >
@@ -1833,7 +1851,7 @@ export function DocumentsPage() {
                     type="button"
                     variant="outline"
                     onClick={() => {
-                      setShowDialog(false);
+                      formDialog.close();
                       resetForm();
                     }}
                   >
@@ -1866,12 +1884,8 @@ export function DocumentsPage() {
         )}
       </div>
       <ConfirmDialog
-        open={pendingDeleteDocumentId !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setPendingDeleteDocumentId(null);
-          }
-        }}
+        open={deleteDialog.isOpen}
+        onOpenChange={deleteDialog.onOpenChange}
         onConfirm={handleConfirmDeleteDocument}
         title="Delete document?"
         description="Delete this document permanently?"

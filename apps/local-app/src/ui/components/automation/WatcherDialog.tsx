@@ -32,6 +32,7 @@ import {
   type ConditionType,
   type TriggerCondition,
 } from '@/ui/lib/watchers';
+import { providersQueryKeys } from '@/ui/lib/providers-query-keys';
 
 interface Agent {
   id: string;
@@ -134,7 +135,7 @@ export function WatcherDialog({ open, onOpenChange, watcher }: WatcherDialogProp
   });
 
   const { data: providersData } = useQuery({
-    queryKey: ['providers'],
+    queryKey: providersQueryKeys.list(),
     queryFn: fetchProviders,
     enabled: open,
   });

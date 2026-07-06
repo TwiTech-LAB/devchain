@@ -4,6 +4,7 @@ import {
   injectModelOverride,
   rewriteModelTo1m,
   extractModelFromArgs,
+  stripFlag,
 } from './profile-options';
 
 describe('parseProfileOptions', () => {
@@ -43,6 +44,39 @@ describe('parseProfileOptions', () => {
 
   it('rejects unterminated quotes', () => {
     expect(() => parseProfileOptions("--model 'unfinished")).toThrow(ProfileOptionsError);
+  });
+});
+
+describe('stripFlag', () => {
+  it('removes the two-token `--flag value` form', () => {
+    expect(stripFlag(['--effort', 'high', '--verbose'], '--effort')).toEqual(['--verbose']);
+  });
+
+  it('removes the single-token `--flag=value` form', () => {
+    expect(stripFlag(['--effort=high', '--verbose'], '--effort')).toEqual(['--verbose']);
+  });
+
+  it('removes every occurrence (both forms) in one pass', () => {
+    expect(
+      stripFlag(['--effort', 'low', '-x', '--effort=high', '--effort', 'max'], '--effort'),
+    ).toEqual(['-x']);
+  });
+
+  it('leaves args untouched when the flag is absent (byte-identical)', () => {
+    const args = ['--model', 'opus', '--verbose'];
+    expect(stripFlag(args, '--effort')).toEqual(args);
+  });
+
+  it('does not strip flags that merely share a prefix', () => {
+    // `--effort-budget` must survive a strip of `--effort`.
+    expect(stripFlag(['--effort-budget', '5', '--effort', 'high'], '--effort')).toEqual([
+      '--effort-budget',
+      '5',
+    ]);
+  });
+
+  it('drops a dangling flag with no following value', () => {
+    expect(stripFlag(['--verbose', '--effort'], '--effort')).toEqual(['--verbose']);
   });
 });
 

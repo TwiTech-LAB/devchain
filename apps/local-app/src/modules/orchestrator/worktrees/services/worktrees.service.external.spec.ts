@@ -6,7 +6,9 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { promisify } from 'util';
 import Database from 'better-sqlite3';
-import { OrchestratorDockerService } from '../../docker/services/docker.service';
+import { ContainerRuntime } from '../runtime/container-runtime';
+import { ProcessRuntime } from '../runtime/process-runtime';
+import { FakeProcessExecutor } from '../../../terminal/services/process-executor/fake-process-executor';
 import { SeedPreparationService } from '../../docker/services/seed-preparation.service';
 import { GitWorktreeService } from '../../git/services/git-worktree.service';
 import { EventLogService } from '../../../events/services/event-log.service';
@@ -111,7 +113,7 @@ describe('WorktreesService integration', () => {
   let repoPath: string;
   let store: IntegrationStore;
   let gitService: GitWorktreeService;
-  let docker: jest.Mocked<Partial<OrchestratorDockerService>>;
+  let containerRuntime: jest.Mocked<Partial<ContainerRuntime>>;
   let seedPreparation: jest.Mocked<Partial<SeedPreparationService>>;
   let eventEmitter: jest.Mocked<Pick<EventEmitter2, 'emitAsync' | 'emit'>>;
   let eventLogService: jest.Mocked<Pick<EventLogService, 'recordPublished'>>;
@@ -132,7 +134,7 @@ describe('WorktreesService integration', () => {
     store = new IntegrationStore();
     gitService = new GitWorktreeService();
 
-    docker = {
+    containerRuntime = {
       cleanupWorktreeProjectContainers: jest.fn().mockResolvedValue(undefined),
       removeWorktreeNetwork: jest.fn().mockResolvedValue(undefined),
       ensureWorktreeOnComposeNetwork: jest.fn().mockResolvedValue(undefined),
@@ -166,7 +168,8 @@ describe('WorktreesService integration', () => {
 
     service = new WorktreesService(
       store,
-      docker as unknown as OrchestratorDockerService,
+      containerRuntime as unknown as ContainerRuntime,
+      new ProcessRuntime(new FakeProcessExecutor()),
       gitService,
       seedPreparation as unknown as SeedPreparationService,
       eventEmitter as unknown as EventEmitter2,
@@ -220,7 +223,7 @@ describe('WorktreesService integration', () => {
       await mkdir(skillDir, { recursive: true });
       await writeFile(join(skillDir, 'SKILL.md'), '# seeded skill\n', 'utf-8');
     });
-    docker.createContainer?.mockImplementation(async (config) => {
+    containerRuntime.createContainer?.mockImplementation(async (config) => {
       containerProjectId = config.env?.CONTAINER_PROJECT_ID;
       expect(containerProjectId).toMatch(
         /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
@@ -290,12 +293,12 @@ describe('WorktreesService integration', () => {
 
     const deleted = await service.deleteWorktree(created.id);
     expect(deleted).toEqual({ success: true });
-    expect(docker.cleanupWorktreeProjectContainers).toHaveBeenCalledWith(
+    expect(containerRuntime.cleanupWorktreeProjectContainers).toHaveBeenCalledWith(
       'feature-auth',
       'container-1',
     );
-    expect(docker.stopContainer).toHaveBeenCalledWith('container-1');
-    expect(docker.removeContainer).toHaveBeenCalledWith('container-1', true);
-    expect(docker.removeWorktreeNetwork).toHaveBeenCalledWith('feature-auth');
+    expect(containerRuntime.stopContainer).toHaveBeenCalledWith('container-1');
+    expect(containerRuntime.removeContainer).toHaveBeenCalledWith('container-1', true);
+    expect(containerRuntime.removeWorktreeNetwork).toHaveBeenCalledWith('feature-auth');
   });
 });

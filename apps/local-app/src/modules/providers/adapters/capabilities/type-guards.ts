@@ -4,6 +4,7 @@ import type {
   AddMcpServerOptions,
 } from '../provider-adapter.interface';
 import type { ContextWindowCapability } from './context-window.capability';
+import type { EffortCapability } from './effort.capability';
 import type { HookCapability } from './hook.capability';
 import type { ProjectProvisioningCapability } from './project-provisioning.capability';
 import type { ProjectMcpSettingsCapability } from './project-mcp-settings.capability';
@@ -13,6 +14,7 @@ export type {
   ContextWindowProviderState,
   ModelFamily,
 } from './context-window.capability';
+export type { EffortCapability } from './effort.capability';
 export type { HookCapability, HookEnvContext } from './hook.capability';
 export type {
   ProjectProvisioningCapability,
@@ -114,6 +116,12 @@ export function isContextWindowCapable(
   adapter: ProviderAdapter,
 ): adapter is ProviderAdapter & ContextWindowCapability {
   return 'applyContextWindowConfig' in adapter;
+}
+
+export function isEffortCapable(
+  adapter: ProviderAdapter,
+): adapter is ProviderAdapter & EffortCapability {
+  return 'applyEffort' in adapter;
 }
 
 export function isHookCapable(

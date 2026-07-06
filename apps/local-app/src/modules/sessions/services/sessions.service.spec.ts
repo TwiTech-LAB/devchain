@@ -202,7 +202,7 @@ describe('SessionsService', () => {
       expect(mockTerminalIO.destroySession).not.toHaveBeenCalled();
     });
 
-    it('treats stopped session as success', async () => {
+    it('treats stopped session as success but still disposes stale in-memory state', async () => {
       sqlitePrepare.mockReturnValue({
         run: insertRunMock,
         get: jest.fn().mockReturnValue({
@@ -215,7 +215,13 @@ describe('SessionsService', () => {
       });
 
       await service.terminateSession('session-1');
-      expect(ptyService.stopStreaming).not.toHaveBeenCalled();
+
+      // No tmux side effects on the early return…
+      expect(mockTerminalIO.destroySession).not.toHaveBeenCalled();
+      // …but any surviving registry entry / streaming is cleaned up so it
+      // cannot block a later restore with "TerminalSession already exists".
+      expect(ptyService.stopStreaming).toHaveBeenCalledWith('session-1');
+      expect(terminalSessionRegistry.dispose).toHaveBeenCalledWith('session-1');
     });
 
     it('disposes registry entry in terminateSession', async () => {
@@ -489,6 +495,10 @@ describe('SessionsService', () => {
       const sessions = await service.listActiveSessions();
       expect(sessions).toEqual([]);
       expect(insertRunMock).toHaveBeenCalled();
+      // In-memory terminal state must be dropped alongside the DB flip — a
+      // stale registry entry would block restoring the session later.
+      expect(ptyService.stopStreaming).toHaveBeenCalledWith('session-1');
+      expect(terminalSessionRegistry.dispose).toHaveBeenCalledWith('session-1');
     });
   });
 

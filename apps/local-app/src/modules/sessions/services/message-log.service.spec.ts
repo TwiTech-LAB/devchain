@@ -90,4 +90,99 @@ describe('MessageLogService', () => {
     // All entries are queued so none can be pruned; overflow is still added
     expect(log.getStats().entryCount).toBe(501);
   });
+
+  describe('mobile idempotent prune protection', () => {
+    const FIFTEEN_MIN_MS = 15 * 60 * 1000;
+
+    function fillDelivered(count: number, startIndex = 0): void {
+      for (let i = startIndex; i < startIndex + count; i++) {
+        log.addEntry(makeEntry({ id: `d${i}`, status: 'delivered', text: 'x' }));
+      }
+    }
+
+    it('protects non-terminal (unconfirmed) mobile entries under pruning pressure', () => {
+      log.addEntry(
+        makeEntry({
+          id: 'mob',
+          source: 'mobile',
+          clientMessageId: 'c1',
+          status: 'unconfirmed',
+          text: 'x',
+        }),
+      );
+      fillDelivered(499);
+
+      // 500 entries; this overflow forces exactly one prune.
+      log.addEntry(makeEntry({ id: 'overflow', status: 'delivered', text: 'x' }));
+
+      expect(log.getById('mob')).not.toBeNull(); // protected: skipped
+      expect(log.getById('d0')).toBeNull(); // oldest prunable removed instead
+    });
+
+    it('keeps a terminal mobile entry within the 15-minute retention floor', () => {
+      const now = Date.now();
+      log.addEntry(
+        makeEntry({
+          id: 'fresh',
+          source: 'mobile',
+          clientMessageId: 'c1',
+          status: 'delivered',
+          deliveredAt: now,
+          text: 'x',
+        }),
+      );
+      fillDelivered(499);
+
+      log.addEntry(makeEntry({ id: 'overflow', status: 'delivered', text: 'x' }));
+
+      expect(log.getById('fresh')).not.toBeNull();
+      expect(log.getById('d0')).toBeNull();
+    });
+
+    it('stops protecting a terminal mobile entry once the 15-minute floor lapses', () => {
+      const stale = Date.now() - (FIFTEEN_MIN_MS + 1000);
+      log.addEntry(
+        makeEntry({
+          id: 'stale',
+          source: 'mobile',
+          clientMessageId: 'c1',
+          status: 'delivered',
+          timestamp: stale,
+          deliveredAt: stale,
+          text: 'x',
+        }),
+      );
+      fillDelivered(499);
+
+      log.addEntry(makeEntry({ id: 'overflow', status: 'delivered', text: 'x' }));
+
+      // Past the floor → prunable, and it is the oldest, so it is removed first.
+      expect(log.getById('stale')).toBeNull();
+      expect(log.getById('d0')).not.toBeNull();
+    });
+
+    it('degrades oldest-first when protected mobile entries exceed the 100 cap', () => {
+      // 101 protected (non-terminal) mobile entries: over the cap by one.
+      for (let i = 0; i < 101; i++) {
+        log.addEntry(
+          makeEntry({
+            id: `m${i}`,
+            source: 'mobile',
+            clientMessageId: `c${i}`,
+            status: 'unconfirmed',
+            timestamp: 1000 + i, // strictly increasing: m0 is the oldest
+            text: 'x',
+          }),
+        );
+      }
+      // Add delivered entries until the log overflows and pruning is forced.
+      fillDelivered(400);
+
+      // Over the cap, only the NEWEST 100 protected survive; the oldest (m0)
+      // reverted to prunable and — being the oldest overall — was pruned.
+      expect(log.getById('m0')).toBeNull();
+      expect(log.getById('m100')).not.toBeNull();
+      expect(log.getById('m1')).not.toBeNull();
+    });
+  });
 });

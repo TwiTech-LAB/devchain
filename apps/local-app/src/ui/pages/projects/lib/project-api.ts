@@ -1,5 +1,67 @@
-import type { ManifestData } from '@devchain/shared';
+import type { ExportData, ManifestData } from '@devchain/shared';
 import type { FamilyAlternative } from '@/ui/components/project/ProviderMappingModal';
+
+/** Per-agent config override sent to the create/import endpoints (Task 2 field). */
+export interface AgentOverridePayload {
+  agentName: string;
+  providerConfigName: string;
+  modelOverride?: string | null;
+  effortOverride?: string | null;
+}
+
+/** One referenced provider, annotated with families, agent count, and local availability. */
+export interface SetupPreviewProviderSummary {
+  name: string;
+  available: boolean;
+  families: string[];
+  agentCount: number;
+}
+
+export interface SetupPreviewFamilyAlternative {
+  familySlug: string;
+  defaultProvider: string;
+  defaultProviderAvailable: boolean;
+  availableProviders: string[];
+  hasAlternatives: boolean;
+}
+
+export interface SetupPreviewPresetCoverage {
+  presetName: string;
+  referencedProviders: string[];
+  coversAllAgents: boolean;
+  coveredAgentNames: string[];
+  agentResolvedProviders: Record<string, string>;
+}
+
+/** Response of POST /api/projects/setup-preview (Task 1). Fetched once per wizard session. */
+export interface SetupPreviewResponse {
+  payload: ExportData;
+  providerSummary: SetupPreviewProviderSummary[];
+  familyAlternatives: SetupPreviewFamilyAlternative[];
+  presetProviderCoverage: SetupPreviewPresetCoverage[];
+  localAvailability: { installedProviders: Array<{ id: string; name: string }> };
+}
+
+/** Exactly one of {slug(+version) | templatePath | rawContent} must be provided. */
+export interface SetupPreviewRequest {
+  slug?: string;
+  version?: string | null;
+  templatePath?: string;
+  rawContent?: Record<string, unknown>;
+}
+
+export async function fetchSetupPreview(body: SetupPreviewRequest): Promise<SetupPreviewResponse> {
+  const res = await fetch('/api/projects/setup-preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ message: 'Failed to load template preview' }));
+    throw new Error(error.message || 'Failed to load template preview');
+  }
+  return res.json();
+}
 
 export interface TemplateMetadata {
   slug: string;
@@ -162,6 +224,10 @@ export async function createProjectFromTemplate(data: {
   version?: string;
   familyProviderMappings?: Record<string, string>;
   presetName?: string;
+  /** Per-agent config overrides (Task 2). Mutually exclusive with presetName. */
+  agentOverrides?: AgentOverridePayload[];
+  /** Transient, server-enforced provider allowlist (Task 3, Step-1 wizard selection). */
+  selectedProviderNames?: string[];
   teamOverrides?: Array<{
     teamName: string;
     allowTeamLeadCreateAgents?: boolean;

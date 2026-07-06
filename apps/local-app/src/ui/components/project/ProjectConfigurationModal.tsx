@@ -42,6 +42,7 @@ import { cn } from '@/ui/lib/utils';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 import { validatePresetAvailability } from '@/ui/lib/preset-validation';
 import type { Preset } from '@/ui/lib/preset-types';
+import { providersQueryKeys } from '@/ui/lib/providers-query-keys';
 
 interface Agent {
   id: string;
@@ -161,7 +162,7 @@ export function ProjectConfigurationModal({
 
   // Fetch providers
   const { isLoading: providersLoading } = useQuery({
-    queryKey: ['providers'],
+    queryKey: providersQueryKeys.list(),
     queryFn: fetchProviders,
     enabled: open,
   });

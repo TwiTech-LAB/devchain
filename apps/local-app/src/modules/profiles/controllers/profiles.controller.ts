@@ -233,6 +233,8 @@ export class ProfilesController {
       description: data.description ?? null,
       options: data.options ?? null,
       env: data.env ?? null,
+      model: data.model ?? null,
+      effort: data.effort ?? null,
     });
 
     return ProfileProviderConfigSchema.parse(config);

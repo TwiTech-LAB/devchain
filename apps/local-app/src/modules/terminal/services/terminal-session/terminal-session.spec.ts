@@ -91,6 +91,96 @@ describe('TerminalSession', () => {
     });
   });
 
+  describe('claimInitialAuthority (subscribe-time latch)', () => {
+    it('grants when authority is unheld and does NOT emit focus_changed', () => {
+      const session = createSession();
+      const frames = collectFrames(session);
+
+      const granted = session.claimInitialAuthority('client-1');
+
+      expect(granted).toBe(true);
+      expect(session.getAuthority()).toBe('client-1');
+      expect(frames.filter((f) => f.type === 'focus_changed')).toHaveLength(0);
+    });
+
+    it('refuses and leaves authority untouched when already held', () => {
+      const session = createSession();
+      session.claimInitialAuthority('client-1');
+
+      const granted = session.claimInitialAuthority('client-2');
+
+      expect(granted).toBe(false);
+      expect(session.getAuthority()).toBe('client-1');
+    });
+
+    it('grants to a non-subscriber (deliberate exception vs claimAuthority)', () => {
+      const session = createSession();
+
+      // Not subscribed yet — the latch fires just before subscribe().
+      expect(session.hasSubscriber('client-1')).toBe(false);
+      expect(session.claimInitialAuthority('client-1')).toBe(true);
+      expect(session.getAuthority()).toBe('client-1');
+    });
+
+    it('resolves concurrent latch attempts to a single winner (interleaved subscribes)', () => {
+      const session = createSession();
+
+      const first = session.claimInitialAuthority('client-1');
+      const second = session.claimInitialAuthority('client-2');
+
+      expect(first).toBe(true);
+      expect(second).toBe(false);
+      expect(session.getAuthority()).toBe('client-1');
+    });
+
+    it('subscribe() no-ops its own grant for the latch winner (no duplicate focus_changed)', () => {
+      const session = createSession();
+      session.claimInitialAuthority('client-1');
+      const frames = collectFrames(session);
+
+      session.subscribe('client-1');
+
+      expect(session.getAuthority()).toBe('client-1');
+      expect(frames.filter((f) => f.type === 'focus_changed')).toHaveLength(0);
+    });
+
+    it('unsubscribe releases latched authority even without membership (disconnect safety)', () => {
+      const session = createSession();
+      session.claimInitialAuthority('client-1');
+
+      // Client latched then died before subscribe() ran — no membership, but authority clears.
+      session.unsubscribe('client-1');
+
+      expect(session.getAuthority()).toBeNull();
+    });
+  });
+
+  describe('notifyInitialAuthority (deferred grant forwarding)', () => {
+    it('emits exactly one focus_changed for the current authority holder', () => {
+      const session = createSession();
+      session.claimInitialAuthority('client-1');
+      const frames = collectFrames(session);
+
+      session.notifyInitialAuthority('client-1');
+
+      const focus = frames.filter((f) => f.type === 'focus_changed');
+      expect(focus).toHaveLength(1);
+      expect(focus[0].payload).toEqual(
+        expect.objectContaining({ clientId: 'client-1', granted: true }),
+      );
+    });
+
+    it('no-ops when the client no longer holds authority (voided by a steal/disconnect)', () => {
+      const session = createSession();
+      session.claimInitialAuthority('client-1');
+      const frames = collectFrames(session);
+
+      session.notifyInitialAuthority('client-2');
+
+      expect(frames.filter((f) => f.type === 'focus_changed')).toHaveLength(0);
+    });
+  });
+
   describe('unsubscribe', () => {
     it('removes client from subscribers', () => {
       const session = createSession();

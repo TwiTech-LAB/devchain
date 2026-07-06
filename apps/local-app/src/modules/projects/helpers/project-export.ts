@@ -3,6 +3,19 @@ import { createLogger } from '../../../common/logging/logger';
 import type { SettingsService } from '../../settings/services/settings.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import { resolveExportPresets } from './profile-mapping.helpers';
+// Export builders colocated with their section codecs (moved out of this file).
+import { loadExportPrompts } from '../template-codec/codecs/prompts.codec';
+import { buildExportStatuses } from '../template-codec/codecs/statuses.codec';
+import { buildExportProfiles } from '../template-codec/codecs/profiles.codec';
+import { buildExportAgents } from '../template-codec/codecs/agents.codec';
+import { buildProviderModels } from '../template-codec/codecs/provider-models.codec';
+import { buildProviderEfforts } from '../template-codec/codecs/provider-efforts.codec';
+import { buildProviderSettings } from '../template-codec/codecs/provider-settings.codec';
+import { buildExportTeams } from '../template-codec/codecs/teams.codec';
+import { buildExportScheduledEpics } from '../template-codec/codecs/scheduled-epics.codec';
+import { buildExportWatchers } from '../template-codec/codecs/watchers.codec';
+import { buildExportSubscribers } from '../template-codec/codecs/subscribers.codec';
+import { buildProjectSettings } from '../template-codec/codecs/project-settings.codec';
 
 const logger = createLogger('ProjectExport');
 
@@ -15,6 +28,7 @@ export interface ExportProjectOptions {
       agentName: string;
       providerConfigName: string;
       modelOverride?: string | null;
+      effortOverride?: string | null;
     }>;
   }>;
 }
@@ -52,19 +66,6 @@ interface ExportProjectDeps {
 }
 
 type ExportState = Awaited<ReturnType<typeof loadExportState>>;
-type ProfileExportContext = Awaited<ReturnType<typeof loadProfileExportContext>>;
-type ProjectSettingsExport = {
-  initialPromptTitle?: string;
-  autoCleanStatusLabels?: string[];
-  epicAssignedTemplate?: string;
-  messagePoolSettings?: {
-    enabled?: boolean;
-    delayMs?: number;
-    maxWaitMs?: number;
-    maxMessages?: number;
-    separator?: string;
-  };
-};
 
 export async function exportProjectWithHelper(
   projectId: string,
@@ -79,16 +80,33 @@ export async function exportProjectWithHelper(
   const prompts = await loadExportPrompts(state.promptsRes, deps.storage);
   const profileContext = await loadProfileExportContext(state.profilesRes, deps.storage);
 
-  const profiles = buildExportProfiles(state.profilesRes, profileContext);
+  const profiles = buildExportProfiles(state.profilesRes, profileContext, sanitizeEnvMap);
   const agents = buildExportAgents(state.agentsRes, profileContext.configIdToInfo);
   const statuses = buildExportStatuses(state.statusesRes);
-  const projectSettings = buildProjectSettings(state, projectId);
-  const watchers = await buildExportWatchers(state, deps.storage);
+  const projectSettings = buildProjectSettings({
+    initialPromptTitle: state.initialPrompt?.title,
+    autoCleanStatusIds: state.settings.autoClean?.statusIds?.[projectId] ?? [],
+    statuses: state.statusesRes.items,
+    epicAssignedTemplate: state.settings.events?.epicAssigned?.template,
+    poolSettings: state.settings.messagePool?.projects?.[projectId],
+  });
+  const watchers = await buildExportWatchers(
+    state.watchersRes,
+    state.agentsRes.items,
+    state.profilesRes.items,
+    deps.storage,
+  );
   const subscribers = buildExportSubscribers(state.subscribersRes);
   const scopeMap = deps.storage.listEnvScopesByProviderIds([...profileContext.providersMap.keys()]);
-  const providerSettings = buildProviderSettings(profileContext.providersMap, projectId, scopeMap);
+  const providerSettings = buildProviderSettings(profileContext.providersMap, projectId, scopeMap, {
+    filterEnvByScope,
+    sanitizeEnvMap,
+  });
   const providerModels = await buildProviderModels(profileContext.providersMap, deps.storage);
-  const teams = deps.teamsService ? await buildExportTeams(state.project, deps) : [];
+  const providerEfforts = await buildProviderEfforts(profileContext.providersMap, deps.storage);
+  const teams = deps.teamsService
+    ? await buildExportTeams(state.project, deps.teamsService, deps.storage)
+    : [];
   const scheduledEpics = await buildExportScheduledEpics(projectId, state, deps.storage);
 
   const manifest = buildManifest(
@@ -116,6 +134,7 @@ export async function exportProjectWithHelper(
     ...(Object.keys(projectSettings).length > 0 && { projectSettings }),
     ...(providerSettings.length > 0 && { providerSettings }),
     providerModels,
+    providerEfforts,
     watchers,
     subscribers,
     ...(teams.length > 0 && { teams }),
@@ -206,23 +225,6 @@ export function sanitizeEnvMap(
   return result;
 }
 
-async function loadExportPrompts(
-  promptsRes: ExportState['promptsRes'],
-  storage: StorageService,
-): Promise<Array<{ id: string; title: string; content: string; version: number; tags: string[] }>> {
-  const fullPrompts = await Promise.all(
-    promptsRes.items.map((prompt) => storage.getPrompt(prompt.id)),
-  );
-
-  return fullPrompts.map((prompt) => ({
-    id: prompt.id,
-    title: prompt.title,
-    content: prompt.content,
-    version: prompt.version,
-    tags: prompt.tags,
-  }));
-}
-
 async function loadProfileExportContext(
   profilesRes: ExportState['profilesRes'],
   storage: StorageService,
@@ -253,173 +255,6 @@ async function loadProfileExportContext(
   return { configIdToInfo, allConfigsByProfile, providersMap };
 }
 
-function buildExportProfiles(
-  profilesRes: ExportState['profilesRes'],
-  context: ProfileExportContext,
-) {
-  return profilesRes.items.map((profile) => {
-    const configs = context.allConfigsByProfile.get(profile.id) || [];
-
-    let primaryProvider: { id: string; name: string } | null = null;
-    const providerConfigs = configs.map((config) => {
-      const provider = context.providersMap.get(config.providerId);
-      if (!primaryProvider && provider) {
-        primaryProvider = { id: provider.id, name: provider.name };
-      }
-
-      context.configIdToInfo.set(config.id, { name: config.name, profileId: profile.id });
-
-      return {
-        name: config.name,
-        providerName: provider?.name || 'unknown',
-        description: config.description,
-        options: config.options,
-        env: sanitizeEnvMap(config.env),
-        position: config.position,
-      };
-    });
-
-    return {
-      id: profile.id,
-      name: profile.name,
-      provider: primaryProvider,
-      familySlug: profile.familySlug,
-      instructions: profile.instructions,
-      temperature: profile.temperature,
-      maxTokens: profile.maxTokens,
-      ...(providerConfigs.length > 0 && { providerConfigs }),
-    };
-  });
-}
-
-function buildExportAgents(
-  agentsRes: ExportState['agentsRes'],
-  configIdToInfo: Map<string, { name: string; profileId: string }>,
-) {
-  return agentsRes.items.map((agent) => {
-    let providerConfigName: string | null = null;
-    if (agent.providerConfigId) {
-      providerConfigName = configIdToInfo.get(agent.providerConfigId)?.name ?? null;
-    }
-
-    return {
-      id: agent.id,
-      name: agent.name,
-      profileId: agent.profileId,
-      description: agent.description,
-      modelOverride: agent.modelOverride ?? null,
-      ...(providerConfigName && { providerConfigName }),
-    };
-  });
-}
-
-function buildExportStatuses(statusesRes: ExportState['statusesRes']) {
-  return statusesRes.items.map((status) => ({
-    id: status.id,
-    label: status.label,
-    color: status.color,
-    position: status.position,
-    mcpHidden: status.mcpHidden,
-  }));
-}
-
-function buildProjectSettings(state: ExportState, projectId: string): ProjectSettingsExport {
-  const projectSettings: ProjectSettingsExport = {};
-
-  if (state.initialPrompt?.title) {
-    projectSettings.initialPromptTitle = state.initialPrompt.title;
-  }
-
-  const autoCleanStatusIds = state.settings.autoClean?.statusIds?.[projectId] ?? [];
-  if (autoCleanStatusIds.length > 0) {
-    const statusMap = new Map(state.statusesRes.items.map((status) => [status.id, status.label]));
-    const autoCleanLabels = autoCleanStatusIds
-      .map((statusId) => statusMap.get(statusId))
-      .filter((label): label is string => Boolean(label));
-
-    if (autoCleanLabels.length > 0) {
-      projectSettings.autoCleanStatusLabels = autoCleanLabels;
-    }
-  }
-
-  const epicAssignedTemplate = state.settings.events?.epicAssigned?.template;
-  if (epicAssignedTemplate) {
-    projectSettings.epicAssignedTemplate = epicAssignedTemplate;
-  }
-
-  const poolSettings = state.settings.messagePool?.projects?.[projectId];
-  if (poolSettings && Object.keys(poolSettings).length > 0) {
-    projectSettings.messagePoolSettings = poolSettings;
-  }
-
-  return projectSettings;
-}
-
-async function buildExportWatchers(state: ExportState, storage: StorageService) {
-  return Promise.all(
-    state.watchersRes.map(async (watcher) => {
-      let scopeFilterName: string | null = null;
-
-      if (watcher.scopeFilterId) {
-        switch (watcher.scope) {
-          case 'agent':
-            scopeFilterName =
-              state.agentsRes.items.find((agent) => agent.id === watcher.scopeFilterId)?.name ??
-              null;
-            break;
-          case 'profile':
-            scopeFilterName =
-              state.profilesRes.items.find((profile) => profile.id === watcher.scopeFilterId)
-                ?.name ?? null;
-            break;
-          case 'provider':
-            try {
-              scopeFilterName = (await storage.getProvider(watcher.scopeFilterId))?.name ?? null;
-            } catch {
-              scopeFilterName = null;
-            }
-            break;
-        }
-      }
-
-      return {
-        id: watcher.id,
-        name: watcher.name,
-        description: watcher.description,
-        enabled: watcher.enabled,
-        scope: watcher.scope,
-        scopeFilterName,
-        pollIntervalMs: watcher.pollIntervalMs,
-        viewportLines: watcher.viewportLines,
-        idleAfterSeconds: watcher.idleAfterSeconds,
-        condition: watcher.condition,
-        cooldownMs: watcher.cooldownMs,
-        cooldownMode: watcher.cooldownMode,
-        eventName: watcher.eventName,
-      };
-    }),
-  );
-}
-
-function buildExportSubscribers(subscribersRes: ExportState['subscribersRes']) {
-  return subscribersRes.map((subscriber) => ({
-    id: subscriber.id,
-    name: subscriber.name,
-    description: subscriber.description,
-    enabled: subscriber.enabled,
-    eventName: subscriber.eventName,
-    eventFilter: subscriber.eventFilter,
-    actionType: subscriber.actionType,
-    actionInputs: subscriber.actionInputs,
-    delayMs: subscriber.delayMs,
-    cooldownMs: subscriber.cooldownMs,
-    retryOnError: subscriber.retryOnError,
-    groupName: subscriber.groupName,
-    position: subscriber.position,
-    priority: subscriber.priority,
-  }));
-}
-
 function filterEnvByScope(
   env: Record<string, string>,
   scopes: Record<string, string[]> | undefined,
@@ -433,218 +268,6 @@ function filterEnvByScope(
     }
   }
   return Object.keys(filtered).length > 0 ? filtered : null;
-}
-
-function buildProviderSettings(
-  providersMap: Map<string, Awaited<ReturnType<StorageService['listProvidersByIds']>>[number]>,
-  sourceProjectId: string,
-  scopeMap: Map<string, Record<string, string[]>>,
-) {
-  const providerSettings: Array<{
-    name: string;
-    autoCompactThreshold: number | null;
-    autoCompactThreshold1m?: number | null;
-    oneMillionContextEnabled?: boolean;
-    env?: Record<string, string> | null;
-  }> = [];
-
-  for (const [providerId, provider] of providersMap.entries()) {
-    const filteredEnv =
-      provider.env && Object.keys(provider.env).length > 0
-        ? filterEnvByScope(provider.env, scopeMap.get(providerId), sourceProjectId)
-        : null;
-    const hasEnv = filteredEnv !== null;
-    if (
-      provider.autoCompactThreshold != null ||
-      provider.autoCompactThreshold1m != null ||
-      provider.oneMillionContextEnabled ||
-      hasEnv
-    ) {
-      providerSettings.push({
-        name: provider.name,
-        autoCompactThreshold: provider.autoCompactThreshold ?? null,
-        ...(provider.autoCompactThreshold1m != null && {
-          autoCompactThreshold1m: provider.autoCompactThreshold1m,
-        }),
-        ...(provider.oneMillionContextEnabled && { oneMillionContextEnabled: true }),
-        ...(hasEnv && { env: sanitizeEnvMap(filteredEnv) }),
-      });
-    }
-  }
-
-  return providerSettings;
-}
-
-async function buildProviderModels(
-  providersMap: Map<string, Awaited<ReturnType<StorageService['listProvidersByIds']>>[number]>,
-  storage: StorageService,
-) {
-  const providerIds = [...providersMap.keys()];
-  if (providerIds.length === 0) {
-    return [] as Array<{ providerName: string; models: string[] }>;
-  }
-
-  const allModels = await storage.listProviderModelsByProviderIds(providerIds);
-  const modelsByProviderId = new Map<string, string[]>();
-
-  for (const model of allModels) {
-    const models = modelsByProviderId.get(model.providerId) ?? [];
-    models.push(model.name);
-    modelsByProviderId.set(model.providerId, models);
-  }
-
-  const result: Array<{ providerName: string; models: string[] }> = [];
-  for (const [providerId, provider] of providersMap.entries()) {
-    const models = modelsByProviderId.get(providerId);
-    if (models && models.length > 0) {
-      result.push({ providerName: provider.name, models });
-    }
-  }
-
-  return result;
-}
-
-async function buildExportTeams(project: { id: string }, deps: ExportProjectDeps) {
-  if (!deps.teamsService) return [];
-  const { items: teamList } = await deps.teamsService.listTeams(project.id, { limit: 10000 });
-  const result: Array<{
-    name: string;
-    description: string | null;
-    teamLeadAgentName: string | null;
-    memberAgentNames: string[];
-    maxMembers?: number;
-    maxConcurrentTasks?: number;
-    allowTeamLeadCreateAgents?: boolean;
-    profileNames: string[];
-    profileSelections?: Array<{ profileName: string; configNames: string[] }>;
-  }> = [];
-
-  for (const teamSummary of teamList) {
-    const team = await deps.teamsService.getTeam(teamSummary.id);
-    if (!team) continue;
-
-    // Resolve member agent names
-    const memberAgentNames: string[] = [];
-    let teamLeadAgentName: string | null = null;
-    for (const member of team.members) {
-      try {
-        const agent = await deps.storage.getAgent(member.agentId);
-        memberAgentNames.push(agent.name);
-        if (member.agentId === team.teamLeadAgentId) {
-          teamLeadAgentName = agent.name;
-        }
-      } catch {
-        // Agent may have been deleted; skip
-      }
-    }
-
-    // Resolve profile names
-    const profileNames: string[] = [];
-    for (const profileId of team.profileIds) {
-      try {
-        const profile = await deps.storage.getAgentProfile(profileId);
-        profileNames.push(profile.name);
-      } catch {
-        // Profile may have been deleted; skip
-      }
-    }
-
-    // Resolve profileConfigSelections → profileSelections (name-based)
-    const profileSelections: Array<{ profileName: string; configNames: string[] }> = [];
-    if (team.profileConfigSelections && team.profileConfigSelections.length > 0) {
-      const profileIdToName = new Map<string, string>();
-      for (let i = 0; i < team.profileIds.length; i++) {
-        try {
-          const profile = await deps.storage.getAgentProfile(team.profileIds[i]);
-          profileIdToName.set(profile.id, profile.name);
-        } catch {
-          // already resolved above; skip deleted profiles
-        }
-      }
-
-      for (const sel of team.profileConfigSelections) {
-        const pName = profileIdToName.get(sel.profileId);
-        if (!pName) continue;
-        const configNames: string[] = [];
-        for (const configId of sel.configIds) {
-          try {
-            const config = await deps.storage.getProfileProviderConfig(configId);
-            configNames.push(config.name);
-          } catch {
-            // config may have been deleted; skip
-          }
-        }
-        if (configNames.length > 0) {
-          profileSelections.push({ profileName: pName, configNames });
-        }
-      }
-    }
-
-    result.push({
-      name: team.name,
-      description: team.description,
-      teamLeadAgentName,
-      memberAgentNames,
-      ...(team.maxMembers !== 5 ? { maxMembers: team.maxMembers } : {}),
-      ...(team.maxConcurrentTasks !== 5 ? { maxConcurrentTasks: team.maxConcurrentTasks } : {}),
-      ...(team.allowTeamLeadCreateAgents ? { allowTeamLeadCreateAgents: true } : {}),
-      profileNames,
-      ...(profileSelections.length > 0 ? { profileSelections } : {}),
-    });
-  }
-
-  return result;
-}
-
-async function buildExportScheduledEpics(
-  projectId: string,
-  state: ExportState,
-  storage: StorageService,
-) {
-  const { items: schedules } = await storage.listScheduledEpics(projectId, { limit: 10000 });
-
-  const statusMap = new Map(state.statusesRes.items.map((s) => [s.id, s.label]));
-  const agentMap = new Map(state.agentsRes.items.map((a) => [a.id, a.name]));
-
-  const epicTitleCache = new Map<string, string>();
-
-  return Promise.all(
-    schedules.map(async (schedule) => {
-      let templateParentEpicTitle: string | null = null;
-      if (schedule.templateParentEpicId) {
-        if (epicTitleCache.has(schedule.templateParentEpicId)) {
-          templateParentEpicTitle = epicTitleCache.get(schedule.templateParentEpicId)!;
-        } else {
-          try {
-            const epic = await storage.getEpic(schedule.templateParentEpicId);
-            templateParentEpicTitle = epic.title;
-            epicTitleCache.set(schedule.templateParentEpicId, epic.title);
-          } catch {
-            templateParentEpicTitle = null;
-          }
-        }
-      }
-
-      return {
-        name: schedule.name,
-        cronExpression: schedule.cronExpression,
-        timezone: schedule.timezone,
-        enabled: schedule.enabled,
-        titleTemplate: schedule.titleTemplate,
-        descriptionTemplate: schedule.descriptionTemplate,
-        templateStatusLabel: schedule.templateStatusId
-          ? (statusMap.get(schedule.templateStatusId) ?? null)
-          : null,
-        templateParentEpicTitle,
-        templateAgentName: schedule.templateAgentId
-          ? (agentMap.get(schedule.templateAgentId) ?? null)
-          : null,
-        templateTags: schedule.templateTags,
-        allowOverlap: schedule.allowOverlap,
-        missedRunPolicy: schedule.missedRunPolicy,
-      };
-    }),
-  );
 }
 
 function buildManifest(

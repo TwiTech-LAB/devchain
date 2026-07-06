@@ -75,6 +75,7 @@ describe('ProjectsController', () => {
     projectsService = {
       listTemplates: jest.fn(),
       createFromTemplate: jest.fn(),
+      setupPreview: jest.fn(),
       exportProject: jest.fn(),
       importProject: jest.fn(),
       updateProject: jest.fn(),
@@ -1234,6 +1235,216 @@ describe('ProjectsController', () => {
         }),
       ).rejects.toThrow('Duplicate teamName in teamOverrides');
     });
+
+    it('accepts valid agentOverrides and passes them to the service', async () => {
+      const mockResult = {
+        success: true,
+        project: makeProject({ id: 'p1', name: 'New' }),
+        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
+      };
+      (projectsService.createFromTemplate as jest.Mock).mockResolvedValue(mockResult);
+
+      await controller.createProjectFromTemplate({
+        name: 'New',
+        rootPath: '/tmp/new',
+        slug: 'my-template',
+        agentOverrides: [
+          {
+            agentName: 'Coder',
+            providerConfigName: 'claude-config',
+            modelOverride: 'openai/gpt-5',
+          },
+          { agentName: 'Reviewer', providerConfigName: 'agy-config', effortOverride: null },
+        ],
+      });
+
+      expect(projectsService.createFromTemplate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentOverrides: [
+            {
+              agentName: 'Coder',
+              providerConfigName: 'claude-config',
+              modelOverride: 'openai/gpt-5',
+            },
+            { agentName: 'Reviewer', providerConfigName: 'agy-config', effortOverride: null },
+          ],
+        }),
+      );
+    });
+
+    it('rejects when presetName and agentOverrides are both provided (400)', async () => {
+      await expect(
+        controller.createProjectFromTemplate({
+          name: 'New',
+          rootPath: '/tmp/new',
+          slug: 'my-template',
+          presetName: 'default',
+          agentOverrides: [{ agentName: 'Coder', providerConfigName: 'claude-config' }],
+        }),
+      ).rejects.toThrow('Provide either presetName or agentOverrides, but not both');
+      expect(projectsService.createFromTemplate).not.toHaveBeenCalled();
+    });
+
+    it('rejects agentOverrides with an empty agentName', async () => {
+      await expect(
+        controller.createProjectFromTemplate({
+          name: 'New',
+          rootPath: '/tmp/new',
+          slug: 'my-template',
+          agentOverrides: [{ agentName: '', providerConfigName: 'claude-config' }],
+        }),
+      ).rejects.toThrow();
+    });
+
+    it('accepts selectedProviderNames and normalizes them to lowercase', async () => {
+      const mockResult = {
+        success: true,
+        project: makeProject({ id: 'p1', name: 'New' }),
+        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
+      };
+      (projectsService.createFromTemplate as jest.Mock).mockResolvedValue(mockResult);
+
+      await controller.createProjectFromTemplate({
+        name: 'New',
+        rootPath: '/tmp/new',
+        slug: 'my-template',
+        selectedProviderNames: ['Claude', 'CODEX'],
+      });
+
+      expect(projectsService.createFromTemplate).toHaveBeenCalledWith(
+        expect.objectContaining({ selectedProviderNames: ['claude', 'codex'] }),
+      );
+    });
+
+    it('rejects an empty selectedProviderNames array (non-empty when present)', async () => {
+      await expect(
+        controller.createProjectFromTemplate({
+          name: 'New',
+          rootPath: '/tmp/new',
+          slug: 'my-template',
+          selectedProviderNames: [],
+        }),
+      ).rejects.toThrow();
+      expect(projectsService.createFromTemplate).not.toHaveBeenCalled();
+    });
+
+    it('does not pass selectedProviderNames when the field is absent', async () => {
+      const mockResult = {
+        success: true,
+        project: makeProject({ id: 'p1', name: 'New' }),
+        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
+      };
+      (projectsService.createFromTemplate as jest.Mock).mockResolvedValue(mockResult);
+
+      await controller.createProjectFromTemplate({
+        name: 'New',
+        rootPath: '/tmp/new',
+        slug: 'my-template',
+      });
+
+      const call = (projectsService.createFromTemplate as jest.Mock).mock.calls[0][0];
+      expect(call).not.toHaveProperty('selectedProviderNames');
+    });
+  });
+
+  describe('POST /api/projects/setup-preview', () => {
+    const mockPreviewResponse = {
+      payload: { profiles: [], agents: [], presets: [] },
+      providerSummary: [
+        { name: 'claude', available: true, families: ['reasoning'], agentCount: 1 },
+      ],
+      familyAlternatives: [
+        {
+          familySlug: 'reasoning',
+          defaultProvider: 'claude',
+          defaultProviderAvailable: true,
+          availableProviders: ['claude'],
+          hasAlternatives: true,
+        },
+      ],
+      presetProviderCoverage: [
+        {
+          presetName: 'default',
+          referencedProviders: ['claude'],
+          coversAllAgents: true,
+          coveredAgentNames: ['coder'],
+          agentResolvedProviders: { coder: 'claude' },
+        },
+      ],
+      localAvailability: { installedProviders: [{ id: 'prov-1', name: 'claude' }] },
+    };
+
+    it('resolves by slug and passes it to the service', async () => {
+      (projectsService.setupPreview as jest.Mock).mockResolvedValue(mockPreviewResponse);
+
+      const result = await controller.setupPreview({ slug: 'my-template' });
+
+      expect(result).toBe(mockPreviewResponse);
+      expect(projectsService.setupPreview).toHaveBeenCalledWith({ slug: 'my-template' });
+    });
+
+    it('passes slug + version to the service', async () => {
+      (projectsService.setupPreview as jest.Mock).mockResolvedValue(mockPreviewResponse);
+
+      await controller.setupPreview({ slug: 'my-template', version: '1.2.3' });
+
+      expect(projectsService.setupPreview).toHaveBeenCalledWith({
+        slug: 'my-template',
+        version: '1.2.3',
+      });
+    });
+
+    it('resolves by templatePath and passes it to the service', async () => {
+      (projectsService.setupPreview as jest.Mock).mockResolvedValue(mockPreviewResponse);
+
+      await controller.setupPreview({ templatePath: '/abs/path/template.json' });
+
+      expect(projectsService.setupPreview).toHaveBeenCalledWith({
+        templatePath: '/abs/path/template.json',
+      });
+    });
+
+    it('resolves by rawContent and passes it to the service', async () => {
+      (projectsService.setupPreview as jest.Mock).mockResolvedValue(mockPreviewResponse);
+      const rawContent = { profiles: [], agents: [], statuses: [] };
+
+      await controller.setupPreview({ rawContent });
+
+      expect(projectsService.setupPreview).toHaveBeenCalledWith({ rawContent });
+    });
+
+    it('rejects when no source is provided', async () => {
+      await expect(controller.setupPreview({})).rejects.toThrow(
+        'Provide exactly one of slug, templatePath, or rawContent',
+      );
+      expect(projectsService.setupPreview).not.toHaveBeenCalled();
+    });
+
+    it('rejects when multiple sources are provided', async () => {
+      await expect(
+        controller.setupPreview({ slug: 'my-template', rawContent: { profiles: [] } }),
+      ).rejects.toThrow('Provide exactly one of slug, templatePath, or rawContent');
+      expect(projectsService.setupPreview).not.toHaveBeenCalled();
+    });
+
+    it('rejects version paired with templatePath', async () => {
+      await expect(
+        controller.setupPreview({ templatePath: '/abs/t.json', version: '1.0.0' }),
+      ).rejects.toThrow('version can only be specified together with slug');
+      expect(projectsService.setupPreview).not.toHaveBeenCalled();
+    });
+
+    it('rejects version paired with rawContent', async () => {
+      await expect(controller.setupPreview({ rawContent: {}, version: '1.0.0' })).rejects.toThrow(
+        'version can only be specified together with slug',
+      );
+      expect(projectsService.setupPreview).not.toHaveBeenCalled();
+    });
+
+    it('rejects an invalid slug format', async () => {
+      await expect(controller.setupPreview({ slug: 'Bad Slug!' })).rejects.toThrow();
+      expect(projectsService.setupPreview).not.toHaveBeenCalled();
+    });
   });
 
   describe('POST /api/projects/:id/export', () => {
@@ -1474,6 +1685,90 @@ describe('ProjectsController', () => {
 
       const call = (projectsService.importProject as jest.Mock).mock.calls[0][0];
       expect(call.teamOverrides).toBeUndefined();
+    });
+
+    it('validates + strips agentOverrides so they never reach the template payload', async () => {
+      const mockResult = { success: true, counts: { imported: {}, deleted: {} } };
+      (projectsService.importProject as jest.Mock).mockResolvedValue(mockResult);
+
+      await controller.importProject('p1', undefined, {
+        agentOverrides: [
+          { agentName: 'Coder', providerConfigName: 'claude-config', effortOverride: 'high' },
+        ],
+        // Simulated template export field that must remain in the payload.
+        agents: [{ name: 'Coder' }],
+      } as unknown as Record<string, unknown>);
+
+      const call = (projectsService.importProject as jest.Mock).mock.calls[0][0];
+      expect(call.agentOverrides).toEqual([
+        { agentName: 'Coder', providerConfigName: 'claude-config', effortOverride: 'high' },
+      ]);
+      // Stripped from the ExportSchema-bound payload (would otherwise be swallowed by `...payload`).
+      expect(call.payload.agentOverrides).toBeUndefined();
+      expect(call.payload.agents).toEqual([{ name: 'Coder' }]);
+    });
+
+    it('rejects when presetName and agentOverrides are both provided (400)', async () => {
+      await expect(
+        controller.importProject('p1', undefined, {
+          presetName: 'default',
+          agentOverrides: [{ agentName: 'Coder', providerConfigName: 'claude-config' }],
+        } as unknown as Record<string, unknown>),
+      ).rejects.toThrow('Provide either presetName or agentOverrides, but not both');
+      expect(projectsService.importProject).not.toHaveBeenCalled();
+    });
+
+    it('rejects agentOverrides with a missing providerConfigName', async () => {
+      await expect(
+        controller.importProject('p1', undefined, {
+          agentOverrides: [{ agentName: 'Coder' }],
+        } as unknown as Record<string, unknown>),
+      ).rejects.toThrow('Invalid agentOverrides');
+    });
+
+    it('passes no agentOverrides when field is absent', async () => {
+      const mockResult = { success: true, counts: { imported: {}, deleted: {} } };
+      (projectsService.importProject as jest.Mock).mockResolvedValue(mockResult);
+
+      await controller.importProject('p1', undefined, {});
+
+      const call = (projectsService.importProject as jest.Mock).mock.calls[0][0];
+      expect(call.agentOverrides).toBeUndefined();
+    });
+
+    it('validates + normalizes + strips selectedProviderNames so they never reach the payload', async () => {
+      const mockResult = { success: true, counts: { imported: {}, deleted: {} } };
+      (projectsService.importProject as jest.Mock).mockResolvedValue(mockResult);
+
+      await controller.importProject('p1', undefined, {
+        selectedProviderNames: ['Claude', 'CODEX'],
+        agents: [{ name: 'Coder' }],
+      } as unknown as Record<string, unknown>);
+
+      const call = (projectsService.importProject as jest.Mock).mock.calls[0][0];
+      expect(call.selectedProviderNames).toEqual(['claude', 'codex']);
+      // Stripped from the ExportSchema-bound payload (would otherwise be swallowed by `...payload`).
+      expect(call.payload.selectedProviderNames).toBeUndefined();
+      expect(call.payload.agents).toEqual([{ name: 'Coder' }]);
+    });
+
+    it('rejects an empty selectedProviderNames array (400)', async () => {
+      await expect(
+        controller.importProject('p1', undefined, {
+          selectedProviderNames: [],
+        } as unknown as Record<string, unknown>),
+      ).rejects.toThrow('Invalid selectedProviderNames');
+      expect(projectsService.importProject).not.toHaveBeenCalled();
+    });
+
+    it('passes no selectedProviderNames when field is absent', async () => {
+      const mockResult = { success: true, counts: { imported: {}, deleted: {} } };
+      (projectsService.importProject as jest.Mock).mockResolvedValue(mockResult);
+
+      await controller.importProject('p1', undefined, {});
+
+      const call = (projectsService.importProject as jest.Mock).mock.calls[0][0];
+      expect(call.selectedProviderNames).toBeUndefined();
     });
   });
 
@@ -2062,6 +2357,35 @@ describe('ProjectsController', () => {
         ],
       });
       expect(result?.agentConfigs).toEqual(updatedPresets[0].agentConfigs);
+    });
+
+    it('accepts and round-trips agentConfigs with effortOverride (set / null / omitted)', async () => {
+      storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
+      const updatedAgentConfigs = [
+        { agentName: 'Coder', providerConfigName: 'cfg', effortOverride: 'high' },
+        { agentName: 'Reviewer', providerConfigName: 'cfg', effortOverride: null },
+        { agentName: 'Architect', providerConfigName: 'cfg' },
+      ];
+      getProjectPresetsMock.mockReturnValue([
+        {
+          name: 'Existing Preset',
+          description: 'Original description',
+          agentConfigs: updatedAgentConfigs,
+        },
+      ]);
+
+      const result = await controller.updatePreset('p1', {
+        presetName: 'Existing Preset',
+        updates: {
+          agentConfigs: updatedAgentConfigs,
+        },
+      });
+
+      expect(updateProjectPresetMock).toHaveBeenCalledWith('p1', 'Existing Preset', {
+        agentConfigs: updatedAgentConfigs,
+      });
+      // effortOverride is accepted (validation passes) and forwarded verbatim
+      expect(result?.agentConfigs).toEqual(updatedAgentConfigs);
     });
 
     it('throws BadRequestException for invalid request body', async () => {

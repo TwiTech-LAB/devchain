@@ -30,7 +30,7 @@ import {
   DialogFooter,
   DialogDescription,
 } from '@/ui/components/ui/dialog';
-import { useToast } from '@/ui/hooks/use-toast';
+import { getErrorMessage, useToastHelpers } from '@/ui/lib/toast-helpers';
 import { Checkbox } from '@/ui/components/ui/checkbox';
 import {
   Plus,
@@ -49,7 +49,16 @@ import { EnvEditor, type EnvEditorHandle } from '@/ui/components/EnvEditor';
 import { ProviderEnvScopePopover } from '@/ui/components/ProviderEnvScopePopover';
 import { fetchPreflightChecks } from '@/ui/lib/preflight';
 import { providerModelQueryKeys } from '@/ui/lib/provider-model-query-keys';
+import { providerEffortQueryKeys } from '@/ui/lib/provider-effort-query-keys';
+import { providersQueryKeys } from '@/ui/lib/providers-query-keys';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
+import { useProviderProbe } from '@/ui/hooks/useProviderProbe';
+import {
+  useCrudMutation,
+  optimisticAdd,
+  optimisticMergeById,
+  optimisticRemoveById,
+} from '@/ui/hooks/useCrudMutations';
 import { getMcpEndpointUrl } from '@/ui/lib/mcp-endpoint';
 
 type ProviderType = 'codex' | 'claude' | 'opencode' | 'agy' | 'copilot';
@@ -86,6 +95,25 @@ interface ProviderModel {
   position: number;
   createdAt: string;
   updatedAt: string;
+}
+
+interface ProviderEffort {
+  id: string;
+  providerId: string;
+  name: string;
+  position: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// Response shape of GET /api/providers/:id/efforts (Task 3). supportsEffort is the
+// capability signal derived from isEffortCapable(adapter) at that endpoint only;
+// empty efforts ≠ unsupported. requiresModelForEffort is true for per-model effort
+// mechanisms (e.g. opencode); surfaced so the UI can require a model selection.
+interface ProviderEffortsResponse {
+  efforts: ProviderEffort[];
+  supportsEffort: boolean;
+  requiresModelForEffort: boolean;
 }
 
 interface ProviderMutationError extends Error {
@@ -187,17 +215,6 @@ async function ensureProviderMcp(id: string, projectPath?: string) {
   return res.json();
 }
 
-async function probeProvider1mContext(
-  id: string,
-): Promise<{ supported: boolean; status: string; capture?: string; detail?: string }> {
-  const res = await fetch(`/api/providers/${id}/1m-context/probe`, { method: 'POST' });
-  if (!res.ok) {
-    const error = await res.json().catch(() => ({ message: 'Probe failed' }));
-    throw new Error(error.message || 'Failed to probe 1M context support');
-  }
-  return res.json();
-}
-
 async function fetchProviderModels(providerId: string): Promise<ProviderModel[]> {
   const res = await fetch(`/api/providers/${providerId}/models`);
   if (!res.ok) {
@@ -239,6 +256,38 @@ async function discoverProviderModels(
   return res.json();
 }
 
+async function fetchProviderEfforts(providerId: string): Promise<ProviderEffortsResponse> {
+  const res = await fetch(`/api/providers/${providerId}/efforts`);
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ message: 'Failed to fetch provider efforts' }));
+    throw new Error(error.message || 'Failed to fetch provider efforts');
+  }
+  return res.json();
+}
+
+async function addProviderEffort(providerId: string, name: string): Promise<ProviderEffort> {
+  const res = await fetch(`/api/providers/${providerId}/efforts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ message: 'Failed to add effort' }));
+    throw new Error(error.message || 'Failed to add effort');
+  }
+  return res.json();
+}
+
+async function removeProviderEffort(providerId: string, effortId: string): Promise<void> {
+  const res = await fetch(`/api/providers/${providerId}/efforts/${effortId}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ message: 'Failed to delete effort' }));
+    throw new Error(error.message || 'Failed to delete effort');
+  }
+}
+
 interface SyncResult {
   providerId: string;
   insertedCount: number;
@@ -278,12 +327,12 @@ function invalidateProviderConfigQueries(queryClient: ReturnType<typeof useQuery
     },
   });
   // Also refresh the providers-page preflight badge
-  queryClient.invalidateQueries({ queryKey: ['preflight', 'providers-page'] });
+  queryClient.invalidateQueries({ queryKey: providersQueryKeys.preflightAll() });
 }
 
 function ProviderModelsSection({ provider }: { provider: Provider }) {
   const queryClient = useQueryClient();
-  const { toast } = useToast();
+  const { toast, showSuccess, showError } = useToastHelpers();
   const [isOpen, setIsOpen] = useState(false);
   const [newModelName, setNewModelName] = useState('');
   const [modelDeleteConfirm, setModelDeleteConfirm] = useState<ProviderModel | null>(null);
@@ -306,17 +355,15 @@ function ProviderModelsSection({ provider }: { provider: Provider }) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: providerModelQueryKeys.all });
       setNewModelName('');
-      toast({
+      showSuccess({
         title: 'Model added',
         description: `Added model to ${provider.name}.`,
       });
     },
     onError: (mutationError) => {
-      toast({
+      showError({
         title: 'Add failed',
-        description:
-          mutationError instanceof Error ? mutationError.message : 'Failed to add model.',
-        variant: 'destructive',
+        description: getErrorMessage(mutationError, 'Failed to add model.'),
       });
     },
   });
@@ -326,18 +373,16 @@ function ProviderModelsSection({ provider }: { provider: Provider }) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: providerModelQueryKeys.all });
       setModelDeleteConfirm(null);
-      toast({
+      showSuccess({
         title: 'Model deleted',
         description: `Removed model from ${provider.name}.`,
       });
     },
     onError: (mutationError) => {
       setModelDeleteConfirm(null);
-      toast({
+      showError({
         title: 'Delete failed',
-        description:
-          mutationError instanceof Error ? mutationError.message : 'Failed to delete model.',
-        variant: 'destructive',
+        description: getErrorMessage(mutationError, 'Failed to delete model.'),
       });
     },
   });
@@ -346,19 +391,15 @@ function ProviderModelsSection({ provider }: { provider: Provider }) {
     mutationFn: () => discoverProviderModels(provider.id),
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: providerModelQueryKeys.all });
-      toast({
+      showSuccess({
         title: 'Discovery complete',
         description: `Added ${result.added.length} models, ${result.existing.length} already existed.`,
       });
     },
     onError: (mutationError) => {
-      toast({
+      showError({
         title: 'Auto-discover failed',
-        description:
-          mutationError instanceof Error
-            ? mutationError.message
-            : 'Failed to discover models for provider.',
-        variant: 'destructive',
+        description: getErrorMessage(mutationError, 'Failed to discover models for provider.'),
       });
     },
   });
@@ -395,7 +436,7 @@ function ProviderModelsSection({ provider }: { provider: Provider }) {
           {isLoading && <p className="text-sm text-muted-foreground">Loading models...</p>}
           {isError && (
             <p className="text-sm text-destructive">
-              {error instanceof Error ? error.message : 'Failed to load models.'}
+              {getErrorMessage(error, 'Failed to load models.')}
             </p>
           )}
 
@@ -482,9 +523,186 @@ function ProviderModelsSection({ provider }: { provider: Provider }) {
   );
 }
 
+function ProviderEffortsSection({ provider }: { provider: Provider }) {
+  const queryClient = useQueryClient();
+  const { toast, showSuccess, showError } = useToastHelpers();
+  const [isOpen, setIsOpen] = useState(false);
+  const [newEffortName, setNewEffortName] = useState('');
+  const [effortDeleteConfirm, setEffortDeleteConfirm] = useState<ProviderEffort | null>(null);
+  const effortsQueryKey = providerEffortQueryKeys.main(provider.id);
+
+  const { data, isLoading, isFetching, isError, error } = useQuery({
+    queryKey: effortsQueryKey,
+    queryFn: () => fetchProviderEfforts(provider.id),
+    enabled: true,
+  });
+
+  const efforts = data?.efforts ?? [];
+  const supportsEffort = data?.supportsEffort ?? false;
+  const requiresModelForEffort = data?.requiresModelForEffort ?? false;
+
+  const addEffortMutation = useMutation({
+    mutationFn: (name: string) => addProviderEffort(provider.id, name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: providerEffortQueryKeys.all });
+      setNewEffortName('');
+      showSuccess({
+        title: 'Effort level added',
+        description: `Added effort level to ${provider.name}.`,
+      });
+    },
+    onError: (mutationError) => {
+      showError({
+        title: 'Add failed',
+        description: getErrorMessage(mutationError, 'Failed to add effort level.'),
+      });
+    },
+  });
+
+  const deleteEffortMutation = useMutation({
+    mutationFn: (effortId: string) => removeProviderEffort(provider.id, effortId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: providerEffortQueryKeys.all });
+      setEffortDeleteConfirm(null);
+      showSuccess({
+        title: 'Effort level deleted',
+        description: `Removed effort level from ${provider.name}.`,
+      });
+    },
+    onError: (mutationError) => {
+      setEffortDeleteConfirm(null);
+      showError({
+        title: 'Delete failed',
+        description: getErrorMessage(mutationError, 'Failed to delete effort level.'),
+      });
+    },
+  });
+
+  const handleAddEffort = () => {
+    const name = newEffortName.trim();
+    if (!name) {
+      toast({
+        title: 'Effort level required',
+        description: 'Enter an effort level before adding.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    addEffortMutation.mutate(name);
+  };
+
+  // Hidden entirely when the provider is not effort-capable (e.g. agy) or until the
+  // capability signal resolves. Empty ≠ unsupported: a capable provider with an empty
+  // catalog still shows the section + add affordance below (mirrors Models empty state).
+  if (!supportsEffort) {
+    return null;
+  }
+
+  const effortCount = efforts.length;
+
+  return (
+    <>
+      <Collapsible open={isOpen} onOpenChange={setIsOpen} className="mt-4 border-t pt-4">
+        <CollapsibleTrigger asChild>
+          <Button variant="ghost" className="w-full justify-between px-2">
+            <span className="flex items-center gap-2 text-sm font-medium">
+              {isOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              Effort Levels ({effortCount})
+              {isFetching && <span className="text-xs text-muted-foreground">Refreshing...</span>}
+            </span>
+            <span className="text-xs text-muted-foreground">Manage provider effort levels</span>
+          </Button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="space-y-3 pt-3">
+          {isLoading && <p className="text-sm text-muted-foreground">Loading effort levels...</p>}
+          {isError && (
+            <p className="text-sm text-destructive">
+              {getErrorMessage(error, 'Failed to load effort levels.')}
+            </p>
+          )}
+
+          {!isLoading && !isError && (
+            <>
+              <div className="max-h-56 overflow-y-auto rounded-md border bg-background">
+                {efforts.length === 0 && (
+                  <p className="px-3 py-2 text-sm text-muted-foreground">
+                    No effort levels configured.
+                  </p>
+                )}
+                {efforts.map((effort) => (
+                  <div
+                    key={effort.id}
+                    className="flex items-center justify-between gap-2 border-b px-3 py-2 last:border-b-0"
+                  >
+                    <code className="text-xs">{effort.name}</code>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setEffortDeleteConfirm(effort)}
+                      aria-label={`Delete effort level ${effort.name}`}
+                    >
+                      <Trash2 className="h-4 w-4 text-destructive" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Input
+                  value={newEffortName}
+                  onChange={(e) => setNewEffortName(e.target.value)}
+                  placeholder="high"
+                  aria-label="Add Effort Level"
+                />
+                <Button onClick={handleAddEffort} disabled={addEffortMutation.isPending}>
+                  Add Effort Level
+                </Button>
+              </div>
+
+              {requiresModelForEffort && (
+                <p className="text-xs text-muted-foreground">
+                  Effort values for this provider apply per-model.
+                </p>
+              )}
+            </>
+          )}
+        </CollapsibleContent>
+      </Collapsible>
+
+      <Dialog
+        open={!!effortDeleteConfirm}
+        onOpenChange={(open) => !open && setEffortDeleteConfirm(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Effort Level</DialogTitle>
+            <DialogDescription>
+              Delete <strong>{effortDeleteConfirm?.name}</strong> from {provider.name}?
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEffortDeleteConfirm(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() =>
+                effortDeleteConfirm && deleteEffortMutation.mutate(effortDeleteConfirm.id)
+              }
+              disabled={deleteEffortMutation.isPending}
+            >
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
 export function ProvidersPage() {
   const queryClient = useQueryClient();
-  const { toast } = useToast();
+  const { toast, showSuccess, showError } = useToastHelpers();
   const { selectedProject } = useSelectedProject();
   const [showDialog, setShowDialog] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
@@ -501,15 +719,14 @@ export function ProvidersPage() {
   const [formErrorField, setFormErrorField] = useState<'binPath' | 'autoCompactThreshold' | null>(
     null,
   );
-  const [probeStatus, setProbeStatus] = useState<
-    'idle' | 'probing' | 'supported' | 'unsupported' | 'error'
-  >('idle');
   const [providerType, setProviderType] = useState<ProviderType>('codex');
   const [binPathTouched, setBinPathTouched] = useState(false);
   const envEditorRef = useRef<EnvEditorHandle>(null);
 
+  const probe = useProviderProbe({ setValues: setFormData });
+
   const { data: providersData, isLoading } = useQuery({
-    queryKey: ['providers'],
+    queryKey: providersQueryKeys.list(),
     queryFn: fetchProviders,
   });
 
@@ -532,7 +749,7 @@ export function ProvidersPage() {
     isLoading: isPreflightLoading,
     isError: isPreflightError,
   } = useQuery({
-    queryKey: ['preflight', 'providers-page', selectedProject?.rootPath ?? 'global'],
+    queryKey: providersQueryKeys.preflight(selectedProject?.rootPath),
     queryFn: () => fetchPreflightChecks(selectedProject?.rootPath, { includeAllProviders: true }),
     staleTime: 60000,
     refetchInterval: false,
@@ -543,32 +760,43 @@ export function ProvidersPage() {
     [preflightResult?.supportedMcpProviders],
   );
 
-  const createMutation = useMutation({
+  type ProvidersList = ProvidersQueryData;
+  const providersListKey = providersQueryKeys.list();
+
+  const createMutation = useCrudMutation<
+    { provider: Provider; sync: SyncResult | null; syncError?: string },
+    Parameters<typeof createProvider>[0],
+    void
+  >({
     mutationFn: createProvider,
-    onMutate: async (newProvider) => {
-      await queryClient.cancelQueries({ queryKey: ['providers'] });
-      const previousData = queryClient.getQueryData(['providers']);
-
-      queryClient.setQueryData(['providers'], (old: ProvidersQueryData | undefined) => ({
-        ...old,
-        items: [
-          {
-            id: 'temp-' + Date.now(),
-            ...newProvider,
-            env: newProvider.env ?? null,
-            mcpConfigured: false,
-            mcpEndpoint: null,
-            mcpRegisteredAt: null,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          },
-          ...(old?.items || []),
-        ],
-      }));
-
-      return { previousData };
+    optimistic: {
+      queryKey: providersListKey,
+      // temp-id prepend. total is server-owned and corrected on invalidate, so
+      // the optimistic row does not bump it (matches the prior inline behavior).
+      project: (previous, newProvider) => {
+        const list = (previous as ProvidersList | undefined) ?? { items: [] as Provider[] };
+        const optimisticRow = {
+          id: 'temp-' + Date.now(),
+          ...newProvider,
+          env: newProvider.env ?? null,
+          mcpConfigured: false,
+          mcpEndpoint: null,
+          mcpRegisteredAt: null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        } as Provider;
+        return optimisticAdd(list, optimisticRow, { trackTotal: false });
+      },
     },
-    onSuccess: (data: { provider: Provider; sync: SyncResult | null; syncError?: string }) => {
+    toast: {
+      error: (error) => ({
+        title: 'Error',
+        description: getErrorMessage(error, 'Failed to create provider'),
+      }),
+    },
+    // No invalidateKeys: the create fan-out is a predicate over multiple domains
+    // (invalidateProviderConfigQueries), which the kit's key-list can't express.
+    onSuccessSideEffects: (data) => {
       invalidateProviderConfigQueries(queryClient);
       setShowDialog(false);
       setFormData({
@@ -581,47 +809,36 @@ export function ProvidersPage() {
       });
       setFormError(null);
       setFormErrorField(null);
-      setProbeStatus('idle');
+      probe.reset();
 
       if (data.sync) {
         const desc =
           data.sync.insertedCount > 0
             ? `Propagated ${data.sync.insertedCount} config(s) across ${data.sync.affectedProjectIds.length} project(s)${data.sync.warnings.length > 0 ? ` with ${data.sync.warnings.length} warning(s)` : ''}`
             : 'No new configs needed';
-        toast({ title: `Provider ${data.provider.name} created`, description: desc });
+        showSuccess({ title: `Provider ${data.provider.name} created`, description: desc });
       } else if (data.syncError) {
-        toast({
+        showError({
           title: `Provider ${data.provider.name} created`,
           description: `Propagation failed: ${data.syncError}`,
-          variant: 'destructive',
         });
       } else {
-        toast({ title: 'Success', description: 'Provider created successfully' });
+        showSuccess({ title: 'Success', description: 'Provider created successfully' });
       }
     },
-    onError: (error, variables, context) => {
-      if (context?.previousData) {
-        queryClient.setQueryData(['providers'], context.previousData);
-      }
+    onErrorSideEffects: (error) => {
       if (isProviderMutationError(error) && error.field) {
         setFormError(error.message);
         setFormErrorField(
           error.field === 'autoCompactThreshold' ? 'autoCompactThreshold' : 'binPath',
         );
       }
-      toast({
-        title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to create provider',
-        variant: 'destructive',
-      });
     },
   });
 
-  const updateMutation = useMutation({
-    mutationFn: ({
-      id,
-      data,
-    }: {
+  const updateMutation = useCrudMutation<
+    Provider,
+    {
       id: string;
       data: {
         binPath?: string | null;
@@ -631,23 +848,30 @@ export function ProvidersPage() {
         env?: Record<string, string> | null;
         envScopes?: Record<string, string[]>;
       };
-    }) => updateProvider(id, data),
-    onMutate: async ({ id, data }) => {
-      await queryClient.cancelQueries({ queryKey: ['providers'] });
-      const previousData = queryClient.getQueryData(['providers']);
-
-      queryClient.setQueryData(['providers'], (old: ProvidersQueryData | undefined) => ({
-        ...old,
-        items: old?.items.map((p: Provider) =>
-          p.id === id ? { ...p, ...data, updatedAt: new Date().toISOString() } : p,
-        ),
-      }));
-
-      return { previousData };
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['providers'] });
-      queryClient.invalidateQueries({ queryKey: ['preflight', 'providers-page'] });
+    void
+  >({
+    mutationFn: ({ id, data }) => updateProvider(id, data),
+    optimistic: {
+      queryKey: providersListKey,
+      // in-place merge — per-field spread + server-authored updatedAt.
+      project: (previous, { id, data }) => {
+        const list = (previous as ProvidersList | undefined) ?? { items: [] as Provider[] };
+        return optimisticMergeById(list, id, (p) => ({
+          ...p,
+          ...data,
+          updatedAt: new Date().toISOString(),
+        }));
+      },
+    },
+    invalidateKeys: [providersListKey, providersQueryKeys.preflightAll()],
+    toast: {
+      error: (error) => ({
+        title: 'Error',
+        description: getErrorMessage(error, 'Failed to update provider'),
+      }),
+    },
+    onSuccessSideEffects: () => {
       setShowDialog(false);
       setEditingProvider(null);
       setFormData({
@@ -660,69 +884,55 @@ export function ProvidersPage() {
       });
       setFormError(null);
       setFormErrorField(null);
-      setProbeStatus('idle');
-      toast({
+      probe.reset();
+      showSuccess({
         title: 'Success',
         description: 'Provider updated successfully',
       });
     },
-    onError: (error, variables, context) => {
-      if (context?.previousData) {
-        queryClient.setQueryData(['providers'], context.previousData);
-      }
+    onErrorSideEffects: (error) => {
       if (isProviderMutationError(error) && error.field) {
         setFormError(error.message);
         setFormErrorField(
           error.field === 'autoCompactThreshold' ? 'autoCompactThreshold' : 'binPath',
         );
       }
-      toast({
-        title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to update provider',
-        variant: 'destructive',
-      });
     },
   });
 
-  const deleteMutation = useMutation({
+  const deleteMutation = useCrudMutation<void, string, void>({
     mutationFn: deleteProvider,
-    onMutate: async (id) => {
-      await queryClient.cancelQueries({ queryKey: ['providers'] });
-      const previousData = queryClient.getQueryData(['providers']);
-
-      queryClient.setQueryData(['providers'], (old: ProvidersQueryData | undefined) => ({
-        ...old,
-        items: old?.items.filter((p: Provider) => p.id !== id),
-      }));
-
-      return { previousData };
+    optimistic: {
+      queryKey: providersListKey,
+      // filter-out the matched id.
+      project: (previous, id) => {
+        const list = (previous as ProvidersList | undefined) ?? { items: [] as Provider[] };
+        return optimisticRemoveById(list, id, { trackTotal: false });
+      },
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['providers'] });
-      queryClient.invalidateQueries({ queryKey: ['preflight', 'providers-page'] });
+    invalidateKeys: [providersListKey, providersQueryKeys.preflightAll()],
+    toast: {
+      error: (error) => ({
+        title: 'Error',
+        description: getErrorMessage(error, 'Failed to delete provider'),
+      }),
+    },
+    onSuccessSideEffects: () => {
       setDeleteConfirm(null);
-      toast({
+      showSuccess({
         title: 'Success',
         description: 'Provider deleted successfully',
       });
     },
-    onError: (error, variables, context) => {
-      if (context?.previousData) {
-        queryClient.setQueryData(['providers'], context.previousData);
-      }
+    onErrorSideEffects: () => {
       setDeleteConfirm(null);
-      toast({
-        title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to delete provider',
-        variant: 'destructive',
-      });
     },
   });
 
   const configureMutation = useMutation({
     mutationFn: (id: string) => ensureProviderMcp(id, selectedProject?.rootPath),
     onSuccess: (result) => {
-      queryClient.invalidateQueries({ queryKey: ['providers'] });
+      queryClient.invalidateQueries({ queryKey: providersListKey });
       // Refresh preflight so MCP badge updates immediately
       queryClient.invalidateQueries({ queryKey: ['preflight'] });
       queryClient.refetchQueries({ queryKey: ['preflight'] });
@@ -735,16 +945,15 @@ export function ProvidersPage() {
         }[result?.action as 'added' | 'fixed_mismatch' | 'already_configured'] ||
         'MCP configuration updated';
 
-      toast({
+      showSuccess({
         title: actionText,
         description: `Endpoint: ${getMcpEndpointUrl()}`,
       });
     },
     onError: (error) => {
-      toast({
+      showError({
         title: 'MCP configuration failed',
-        description: error instanceof Error ? error.message : 'Failed to configure MCP.',
-        variant: 'destructive',
+        description: getErrorMessage(error, 'Failed to configure MCP.'),
       });
     },
   });
@@ -762,59 +971,15 @@ export function ProvidersPage() {
           `\nDiscovered: ${names}` +
           (totalPropagated > 0 ? ` (${totalPropagated} configs propagated)` : '');
       }
-      toast({ title: 'Rescan complete', description: desc });
+      showSuccess({ title: 'Rescan complete', description: desc });
     },
     onError: (error) => {
-      toast({
+      showError({
         title: 'Rescan failed',
-        description: error instanceof Error ? error.message : 'Failed to rescan providers.',
-        variant: 'destructive',
+        description: getErrorMessage(error, 'Failed to rescan providers.'),
       });
     },
   });
-
-  const handleProbe1mContext = async (providerId: string) => {
-    setProbeStatus('probing');
-    try {
-      const result = await probeProvider1mContext(providerId);
-      if (result.supported) {
-        setProbeStatus('supported');
-        setFormData((prev) => ({
-          ...prev,
-          oneMillionContextEnabled: true,
-          autoCompactThreshold1m: '50',
-          autoCompactThreshold: '95',
-        }));
-        toast({ title: '1M context supported', description: 'Threshold set to 50%.' });
-      } else {
-        if (result.status === 'unsupported') {
-          setProbeStatus('unsupported');
-          toast({
-            title: '1M context not supported',
-            description: result.detail ?? 'Binary does not support 1M.',
-            variant: 'destructive',
-          });
-        } else {
-          // launch_failure / timeout — retryable
-          setProbeStatus('error');
-          toast({
-            title: 'Probe failed',
-            description: result.detail ?? `Status: ${result.status}`,
-            variant: 'destructive',
-          });
-        }
-        setFormData((prev) => ({ ...prev, oneMillionContextEnabled: false }));
-      }
-    } catch (error) {
-      setProbeStatus('error');
-      setFormData((prev) => ({ ...prev, oneMillionContextEnabled: false }));
-      toast({
-        title: 'Probe failed',
-        description: error instanceof Error ? error.message : 'Failed to probe 1M context.',
-        variant: 'destructive',
-      });
-    }
-  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -902,7 +1067,7 @@ export function ProvidersPage() {
       env: provider.env ?? {},
       envScopes: provider.envScopes ?? {},
     });
-    setProbeStatus(provider.oneMillionContextEnabled ? 'supported' : 'idle');
+    probe.setProbeStatus(provider.oneMillionContextEnabled ? 'supported' : 'idle');
     // derive provider type from existing provider
     const t: ProviderType = (
       provider.name === 'codex'
@@ -961,7 +1126,7 @@ export function ProvidersPage() {
     setBinPathTouched(false);
     setFormError(null);
     setFormErrorField(null);
-    setProbeStatus('idle');
+    probe.reset();
     setShowDialog(true);
   };
 
@@ -1199,6 +1364,7 @@ export function ProvidersPage() {
                   </div>
                 </div>
                 <ProviderModelsSection provider={provider} />
+                <ProviderEffortsSection provider={provider} />
               </div>
             );
           })}
@@ -1222,7 +1388,7 @@ export function ProvidersPage() {
             });
             setFormError(null);
             setFormErrorField(null);
-            setProbeStatus('idle');
+            probe.reset();
           }
         }}
       >
@@ -1291,18 +1457,11 @@ export function ProvidersPage() {
                   setFormData((prev) => ({
                     ...prev,
                     binPath: newBinPath,
-                    // Invalidate 1M state when Claude binPath changes
-                    ...(isClaude && prev.oneMillionContextEnabled
-                      ? {
-                          oneMillionContextEnabled: false,
-                          autoCompactThreshold1m: '',
-                          autoCompactThreshold: '95',
-                        }
-                      : {}),
+                    // Invalidate 1M state when Claude binPath changes — the probe
+                    // is only valid for the exact binary that was probed.
+                    ...probe.binPathChangePatch(prev, isClaude),
                   }));
-                  if (isClaude && probeStatus === 'supported') {
-                    setProbeStatus('idle');
-                  }
+                  probe.onBinPathChange(isClaude);
                   setBinPathTouched(true);
                   setFormError(null);
                   setFormErrorField(null);
@@ -1328,7 +1487,7 @@ export function ProvidersPage() {
                     id="provider-1m-context"
                     checked={formData.oneMillionContextEnabled}
                     disabled={
-                      probeStatus === 'probing' ||
+                      probe.probeStatus === 'probing' ||
                       !editingProvider ||
                       (editingProvider &&
                         formData.binPath.trim() !== (editingProvider.binPath ?? ''))
@@ -1338,7 +1497,7 @@ export function ProvidersPage() {
                         // Run probe for existing providers only
                         const providerId = editingProvider?.id;
                         if (providerId) {
-                          handleProbe1mContext(providerId);
+                          probe.probe(providerId);
                         }
                       } else {
                         setFormData((prev) => ({
@@ -1347,32 +1506,32 @@ export function ProvidersPage() {
                           autoCompactThreshold1m: '',
                           autoCompactThreshold: '95',
                         }));
-                        setProbeStatus('idle');
+                        probe.reset();
                       }
                     }}
                   />
                   <Label htmlFor="provider-1m-context" className="cursor-pointer">
                     1M context
                   </Label>
-                  {probeStatus === 'probing' && (
+                  {probe.probeStatus === 'probing' && (
                     <span className="flex items-center gap-1 text-xs text-muted-foreground">
                       <Loader2 className="h-3 w-3 animate-spin" />
                       Checking support...
                     </span>
                   )}
-                  {probeStatus === 'supported' && (
+                  {probe.probeStatus === 'supported' && (
                     <span className="flex items-center gap-1 text-xs text-emerald-600">
                       <CheckCircle2 className="h-3 w-3" />
                       Supported
                     </span>
                   )}
-                  {probeStatus === 'unsupported' && (
+                  {probe.probeStatus === 'unsupported' && (
                     <span className="flex items-center gap-1 text-xs text-destructive">
                       <XCircle className="h-3 w-3" />
                       Not supported
                     </span>
                   )}
-                  {probeStatus === 'error' && (
+                  {probe.probeStatus === 'error' && (
                     <span className="flex items-center gap-1 text-xs text-destructive">
                       <XCircle className="h-3 w-3" />
                       Probe failed
@@ -1553,7 +1712,7 @@ export function ProvidersPage() {
                   setBinPathTouched(false);
                   setFormError(null);
                   setFormErrorField(null);
-                  setProbeStatus('idle');
+                  probe.reset();
                 }}
               >
                 Cancel

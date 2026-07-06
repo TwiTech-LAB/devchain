@@ -27,11 +27,18 @@ jest.mock('@/ui/lib/sessions', () => {
   };
 });
 
-import { launchSession, restartSession, restoreSession, SessionApiError } from '@/ui/lib/sessions';
+import {
+  launchSession,
+  restartSession,
+  restoreSession,
+  terminateSession,
+  SessionApiError,
+} from '@/ui/lib/sessions';
 
 const mockLaunch = launchSession as jest.MockedFunction<typeof launchSession>;
 const mockRestart = restartSession as jest.MockedFunction<typeof restartSession>;
 const mockRestore = restoreSession as jest.MockedFunction<typeof restoreSession>;
+const mockTerminate = terminateSession as jest.MockedFunction<typeof terminateSession>;
 
 // ============================================
 // Helpers
@@ -454,6 +461,52 @@ describe('useChatSessionControls', () => {
       );
     });
 
+    it('shows INVALID_SESSION_STATE toast with specific title on 409', async () => {
+      mockRestore.mockRejectedValue(
+        new SessionApiError('Session is not in a restorable state', 409, {
+          statusCode: 409,
+          code: 'http_exception',
+          message: 'Session is not in a restorable state',
+          details: {
+            message: 'Session is not in a restorable state',
+            code: 'INVALID_SESSION_STATE',
+          },
+          timestamp: new Date().toISOString(),
+          path: '/api/sessions/x/restore',
+        }),
+      );
+
+      const { wrapper } = createWrapper();
+      const { result } = renderHook(() => useChatSessionControls(buildOptions()), { wrapper });
+
+      await act(async () => {
+        await result.current.handleRestoreSession(sessionId, agentId);
+      });
+
+      expect(mockToast).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Invalid session state', variant: 'destructive' }),
+      );
+    });
+
+    it('falls back to the default "Restore failed" title for non-409 errors', async () => {
+      mockRestore.mockRejectedValue(new Error('network down'));
+
+      const { wrapper } = createWrapper();
+      const { result } = renderHook(() => useChatSessionControls(buildOptions()), { wrapper });
+
+      await act(async () => {
+        await result.current.handleRestoreSession(sessionId, agentId);
+      });
+
+      expect(mockToast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Restore failed',
+          description: 'network down',
+          variant: 'destructive',
+        }),
+      );
+    });
+
     it('clears restoringSessionIds after restore completes', async () => {
       mockRestore.mockResolvedValue(makeSession({ id: sessionId, agentId }));
 
@@ -466,6 +519,200 @@ describe('useChatSessionControls', () => {
 
       // After completion, the id should be cleared from the map
       expect(result.current.restoringSessionIds[sessionId]).toBeUndefined();
+    });
+  });
+
+  describe('handleTerminateSession (single)', () => {
+    beforeEach(() => {
+      mockTerminate.mockReset();
+    });
+
+    it('calls terminateSession and shows the chat success toast', async () => {
+      mockTerminate.mockResolvedValue(undefined);
+
+      const { wrapper } = createWrapper();
+      const { result } = renderHook(() => useChatSessionControls(buildOptions()), { wrapper });
+
+      await act(async () => {
+        await result.current.handleTerminateSession('agent-1', 'sess-old');
+      });
+
+      expect(mockTerminate).toHaveBeenCalledWith('sess-old', '', expect.any(Function));
+      expect(mockToast).toHaveBeenCalledWith({
+        title: 'Session terminated',
+        description: 'The session was terminated.',
+      });
+    });
+
+    it('shows a destructive toast when terminate fails', async () => {
+      mockTerminate.mockRejectedValue(new Error('cannot stop'));
+
+      const { wrapper } = createWrapper();
+      const { result } = renderHook(() => useChatSessionControls(buildOptions()), { wrapper });
+
+      await act(async () => {
+        await result.current.handleTerminateSession('agent-1', 'sess-old');
+      });
+
+      expect(mockToast).toHaveBeenCalledWith({
+        title: 'Terminate failed',
+        description: 'cannot stop',
+        variant: 'destructive',
+      });
+    });
+  });
+
+  describe('handleStartAllAgents (batch)', () => {
+    const offlinePresence = {
+      'agent-1': { online: false, sessionId: undefined },
+      'agent-2': { online: false, sessionId: undefined },
+    };
+
+    it('launches every offline agent and reports total success', async () => {
+      mockLaunch.mockResolvedValue(makeSession());
+
+      const { wrapper } = createWrapper();
+      const { result } = renderHook(
+        () => useChatSessionControls(buildOptions({ agentPresence: offlinePresence })),
+        { wrapper },
+      );
+
+      await act(async () => {
+        await result.current.handleStartAllAgents();
+      });
+
+      // Each offline agent launched silently, attach:false.
+      expect(mockLaunch).toHaveBeenCalledTimes(2);
+      expect(mockToast).toHaveBeenCalledWith({
+        title: 'All agents started',
+        description: '2 sessions launched successfully.',
+      });
+    });
+
+    it('reports partial failure with a destructive toast', async () => {
+      mockLaunch
+        .mockResolvedValueOnce(makeSession())
+        .mockRejectedValueOnce(new Error('launch blew up'));
+
+      const { wrapper } = createWrapper();
+      const { result } = renderHook(
+        () => useChatSessionControls(buildOptions({ agentPresence: offlinePresence })),
+        { wrapper },
+      );
+
+      await act(async () => {
+        await result.current.handleStartAllAgents();
+      });
+
+      expect(mockToast).toHaveBeenCalledWith({
+        title: 'Batch launch complete',
+        description: '1 started, 1 failed.',
+        variant: 'destructive',
+      });
+    });
+
+    it('is a no-op when there are no offline agents', async () => {
+      const { wrapper } = createWrapper();
+      const { result } = renderHook(
+        () =>
+          useChatSessionControls(
+            buildOptions({
+              agentPresence: {
+                'agent-1': { online: true, sessionId: 'a' },
+                'agent-2': { online: true, sessionId: 'b' },
+              },
+            }),
+          ),
+        { wrapper },
+      );
+
+      await act(async () => {
+        await result.current.handleStartAllAgents();
+      });
+
+      expect(mockLaunch).not.toHaveBeenCalled();
+      expect(mockToast).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('handleTerminateAllAgents (batch)', () => {
+    beforeEach(() => {
+      mockTerminate.mockReset();
+    });
+
+    it('terminates every agent-with-session and reports total success', async () => {
+      mockTerminate.mockResolvedValue(undefined);
+
+      const { wrapper } = createWrapper();
+      const { result } = renderHook(() => useChatSessionControls(buildOptions()), { wrapper });
+
+      await act(async () => {
+        await result.current.handleTerminateAllAgents();
+      });
+
+      expect(mockTerminate).toHaveBeenCalledTimes(2);
+      expect(mockToast).toHaveBeenCalledWith({
+        title: 'All sessions terminated',
+        description: '2 sessions stopped.',
+      });
+    });
+
+    it('reports partial failure with a destructive toast', async () => {
+      mockTerminate.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('stuck'));
+
+      const { wrapper } = createWrapper();
+      const { result } = renderHook(() => useChatSessionControls(buildOptions()), { wrapper });
+
+      await act(async () => {
+        await result.current.handleTerminateAllAgents();
+      });
+
+      expect(mockToast).toHaveBeenCalledWith({
+        title: 'Batch terminate complete',
+        description: '1 stopped, 1 failed.',
+        variant: 'destructive',
+      });
+    });
+
+    it('is a no-op when no agents have sessions', async () => {
+      const { wrapper } = createWrapper();
+      const { result } = renderHook(
+        () =>
+          useChatSessionControls(
+            buildOptions({
+              agentPresence: {
+                'agent-1': { online: false, sessionId: undefined },
+                'agent-2': { online: false, sessionId: undefined },
+              },
+            }),
+          ),
+        { wrapper },
+      );
+
+      await act(async () => {
+        await result.current.handleTerminateAllAgents();
+      });
+
+      expect(mockTerminate).not.toHaveBeenCalled();
+      expect(mockToast).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('handleVerifyMcp (preserved-policy stub)', () => {
+    // useChatSessionControls.ts:529-534 — chat's verifyMcp is a deliberate
+    // return-false stub (known bug, preserved as explicit adapter policy).
+    it('always resolves false and invalidates the preflight query', async () => {
+      const { wrapper, queryClient } = createWrapper();
+      const invalidateSpy = jest.spyOn(queryClient, 'invalidateQueries');
+      const { result } = renderHook(() => useChatSessionControls(buildOptions()), { wrapper });
+
+      let verified: boolean | undefined;
+      await act(async () => {
+        verified = await result.current.handleVerifyMcp();
+      });
+
+      expect(verified).toBe(false);
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['preflight'] });
     });
   });
 });

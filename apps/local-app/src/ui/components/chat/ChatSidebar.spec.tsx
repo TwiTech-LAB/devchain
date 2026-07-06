@@ -2,7 +2,8 @@ import React from 'react';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
-import { ChatSidebar, normalizeModelOverrideSelection, type ChatSidebarProps } from './ChatSidebar';
+import { ChatSidebar } from './ChatSidebar';
+import { packChatSidebarProps, type FlatChatSidebarProps } from './ChatSidebar.test-helpers';
 import type { AgentOrGuest } from '@/ui/hooks/useChatQueries';
 import type { WorktreeAgentGroup } from '@/ui/hooks/useWorktreeAgents';
 
@@ -99,9 +100,9 @@ const agent: AgentOrGuest = {
   projectId: 'project-1',
 } as AgentOrGuest;
 
-function renderSidebar(overrides: Partial<ChatSidebarProps> = {}) {
+function renderSidebar(overrides: Partial<FlatChatSidebarProps> = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const defaultProps: ChatSidebarProps = {
+  const defaultProps: FlatChatSidebarProps = {
     projectId: 'project-1',
     agents: [agent],
     guests: [],
@@ -156,25 +157,11 @@ function renderSidebar(overrides: Partial<ChatSidebarProps> = {}) {
   return render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        <ChatSidebar {...defaultProps} {...overrides} />
+        <ChatSidebar {...packChatSidebarProps({ ...defaultProps, ...overrides })} />
       </QueryClientProvider>
     </MemoryRouter>,
   );
 }
-
-describe('normalizeModelOverrideSelection', () => {
-  it('returns undefined for the none-selected sentinel', () => {
-    expect(normalizeModelOverrideSelection('__none_selected__')).toBeUndefined();
-  });
-
-  it('returns null for default model override option', () => {
-    expect(normalizeModelOverrideSelection('__default_no_override__')).toBeNull();
-  });
-
-  it('passes through explicit model values', () => {
-    expect(normalizeModelOverrideSelection('openai/gpt-4.1')).toBe('openai/gpt-4.1');
-  });
-});
 
 describe('ChatSidebar header controls', () => {
   const originalFetch = global.fetch;
@@ -467,7 +454,7 @@ describe('ChatSidebar activity badges', () => {
           activityState: 'busy',
           busySince: new Date(Date.now()).toISOString(),
         },
-      } as unknown as ChatSidebarProps['agentPresence'],
+      } as unknown as FlatChatSidebarProps['agentPresence'],
       agentsWithSessions: [agent],
       offlineAgents: [],
     });

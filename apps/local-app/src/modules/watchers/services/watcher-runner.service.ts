@@ -1,5 +1,4 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Inject, forwardRef } from '@nestjs/common';
-import { createHash } from 'crypto';
 import { createLogger } from '../../../common/logging/logger';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
 import type { Watcher, TriggerCondition } from '../../storage/models/domain.models';
@@ -7,6 +6,7 @@ import { SessionsService } from '../../sessions/services/sessions.service';
 import { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
 import { EventsService } from '../../events/services/events.service';
 import type { SessionDto } from '../../sessions/dtos/sessions.dto';
+import { WatcherTriggerState } from './watcher-trigger-state';
 
 /**
  * Cache TTL for viewport captures (2 seconds).
@@ -33,15 +33,14 @@ export class WatcherRunnerService implements OnModuleInit, OnModuleDestroy {
 
   // State maps for runtime management
   private readonly pollIntervals = new Map<string, NodeJS.Timeout>();
-  private readonly cooldowns = new Map<string, number>(); // key: `${watcherId}:${sessionId}`, value: timestamp
-  private readonly lastConditionState = new Map<string, boolean>(); // key: `${watcherId}:${sessionId}`
-  private readonly lastTriggeredHash = new Map<string, string>(); // key: `${watcherId}:${sessionId}`
-  private readonly triggerCounts = new Map<string, number>(); // key: `${watcherId}:${sessionId}`
   private readonly captureCache = new Map<string, CaptureCache>(); // key: `${tmuxSessionId}:${lines}`
   private readonly inFlight = new Set<string>(); // watcherId
 
   // Watcher config cache (avoid repeated DB reads during poll)
   private readonly watcherConfigs = new Map<string, Watcher>();
+
+  // Per-{watcher,session} trigger state: cooldowns, condition state, dedup hash, counts.
+  private readonly triggerState = new WatcherTriggerState();
 
   constructor(
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
@@ -70,18 +69,15 @@ export class WatcherRunnerService implements OnModuleInit, OnModuleDestroy {
   async onModuleDestroy(): Promise<void> {
     this.logger.info('WatcherRunnerService shutting down...');
 
-    // Clear all intervals
+    // Clear all intervals and per-watcher trigger state
     for (const [watcherId, interval] of this.pollIntervals) {
       clearInterval(interval);
       this.logger.debug({ watcherId }, 'Cleared interval');
+      this.triggerState.clearForWatcher(watcherId);
     }
 
     // Clear all state maps
     this.pollIntervals.clear();
-    this.cooldowns.clear();
-    this.lastConditionState.clear();
-    this.lastTriggeredHash.clear();
-    this.triggerCounts.clear();
     this.captureCache.clear();
     this.inFlight.clear();
     this.watcherConfigs.clear();
@@ -150,33 +146,8 @@ export class WatcherRunnerService implements OnModuleInit, OnModuleDestroy {
       this.pollIntervals.delete(watcherId);
     }
 
-    // Clean up ALL state for this watcher (prefix matching)
-    const prefix = `${watcherId}:`;
-
-    // Use spread to avoid iterator invalidation during deletion
-    for (const key of [...this.cooldowns.keys()]) {
-      if (key.startsWith(prefix)) {
-        this.cooldowns.delete(key);
-      }
-    }
-
-    for (const key of [...this.lastConditionState.keys()]) {
-      if (key.startsWith(prefix)) {
-        this.lastConditionState.delete(key);
-      }
-    }
-
-    for (const key of [...this.lastTriggeredHash.keys()]) {
-      if (key.startsWith(prefix)) {
-        this.lastTriggeredHash.delete(key);
-      }
-    }
-
-    for (const key of [...this.triggerCounts.keys()]) {
-      if (key.startsWith(prefix)) {
-        this.triggerCounts.delete(key);
-      }
-    }
+    // Clean up ALL trigger state for this watcher (prefix matching)
+    this.triggerState.clearForWatcher(watcherId);
 
     // Remove from inFlight
     this.inFlight.delete(watcherId);
@@ -317,7 +288,7 @@ export class WatcherRunnerService implements OnModuleInit, OnModuleDestroy {
     const conditionMatched = this.matchCondition(watcher.condition, viewport);
 
     // Check trigger eligibility (handles cooldown + dedup)
-    const { shouldTrigger, viewportHash } = this.checkTriggerEligibility(
+    const { shouldTrigger, viewportHash } = this.triggerState.evaluate(
       watcher,
       sessionId,
       viewport,
@@ -325,8 +296,8 @@ export class WatcherRunnerService implements OnModuleInit, OnModuleDestroy {
     );
 
     if (shouldTrigger) {
-      // Increment trigger count
-      const triggerCount = this.incrementTriggerCount(watcherId, sessionId);
+      // Increment trigger count AFTER eligibility passes and BEFORE triggerEvent.
+      const triggerCount = this.triggerState.incrementTriggerCount(watcherId, sessionId);
 
       this.logger.info(
         {
@@ -651,206 +622,26 @@ export class WatcherRunnerService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Get the cooldown state for a watcher+session pair.
-   */
-  isOnCooldown(watcherId: string, sessionId: string): boolean {
-    const key = `${watcherId}:${sessionId}`;
-    const cooldownUntil = this.cooldowns.get(key);
-
-    if (!cooldownUntil) {
-      return false;
-    }
-
-    return Date.now() < cooldownUntil;
-  }
-
-  /**
-   * Set the cooldown for a watcher+session pair.
-   */
-  setCooldown(watcherId: string, sessionId: string, durationMs: number): void {
-    const key = `${watcherId}:${sessionId}`;
-    this.cooldowns.set(key, Date.now() + durationMs);
-  }
-
-  /**
-   * Clear the cooldown for a watcher+session pair (for until_clear mode).
-   */
-  clearCooldown(watcherId: string, sessionId: string): void {
-    const key = `${watcherId}:${sessionId}`;
-    this.cooldowns.delete(key);
-  }
-
-  /**
-   * Compute a hash of viewport text for deduplication.
-   * Uses SHA-256 truncated to 16 hex chars (64 bits).
+   * Compute a viewport hash. Delegated to {@link WatcherTriggerState} so
+   * `testWatcher` and the trigger path share one implementation.
    */
   computeViewportHash(viewport: string): string {
-    return createHash('sha256').update(viewport).digest('hex').slice(0, 16);
+    return this.triggerState.computeViewportHash(viewport);
   }
 
   /**
-   * Check if a trigger should fire based on cooldown mode and deduplication.
-   *
-   * This method handles the complete trigger decision logic:
-   * 1. Hash-based deduplication (skip if same viewport as last trigger)
-   * 2. Cooldown check (time-based or until_clear)
-   * 3. Transition detection for until_clear mode
-   * 4. State updates when triggered
-   *
-   * @param watcher - The watcher configuration
-   * @param sessionId - The session ID
-   * @param viewport - The captured viewport text
-   * @param conditionMatched - Whether the condition matched
-   * @returns Object with shouldTrigger boolean and viewportHash
-   */
-  checkTriggerEligibility(
-    watcher: Watcher,
-    sessionId: string,
-    viewport: string,
-    conditionMatched: boolean,
-  ): { shouldTrigger: boolean; viewportHash: string } {
-    const watcherId = watcher.id;
-    const viewportHash = this.computeViewportHash(viewport);
-    const previousState = this.getLastConditionState(watcherId, sessionId);
-
-    // Always update the condition state
-    this.setLastConditionState(watcherId, sessionId, conditionMatched);
-
-    if (conditionMatched) {
-      // Cooldown check based on mode
-      if (watcher.cooldownMode === 'time') {
-        // Time-based cooldown
-        if (this.isOnCooldown(watcherId, sessionId)) {
-          this.logger.debug(
-            { watcherId, sessionId },
-            'Skipping trigger: time-based cooldown active',
-          );
-          return { shouldTrigger: false, viewportHash };
-        }
-
-        // Hash-based deduplication is only applied when cooldownMs=0 (no time throttle).
-        // When cooldownMs>0, the cooldown already prevents spamming and we allow periodic
-        // re-triggers even if the viewport content is unchanged.
-        if (watcher.cooldownMs === 0) {
-          const lastHash = this.getLastTriggeredHash(watcherId, sessionId);
-          if (lastHash === viewportHash) {
-            this.logger.debug(
-              { watcherId, sessionId, viewportHash },
-              'Skipping trigger: viewport unchanged (hash dedup)',
-            );
-            return { shouldTrigger: false, viewportHash };
-          }
-        }
-      } else if (watcher.cooldownMode === 'until_clear') {
-        // until_clear: only trigger on false -> true transition
-        if (previousState === true) {
-          this.logger.debug(
-            { watcherId, sessionId },
-            'Skipping trigger: until_clear mode, condition already true',
-          );
-          return { shouldTrigger: false, viewportHash };
-        }
-        // Also check if cooldown entry exists (condition was never cleared)
-        if (this.cooldowns.has(`${watcherId}:${sessionId}`)) {
-          this.logger.debug(
-            { watcherId, sessionId },
-            'Skipping trigger: until_clear mode, cooldown not cleared',
-          );
-          return { shouldTrigger: false, viewportHash };
-        }
-
-        const lastHash = this.getLastTriggeredHash(watcherId, sessionId);
-        if (lastHash === viewportHash) {
-          this.logger.debug(
-            { watcherId, sessionId, viewportHash },
-            'Skipping trigger: until_clear mode, viewport unchanged since last trigger',
-          );
-          return { shouldTrigger: false, viewportHash };
-        }
-      }
-
-      // All checks passed - should trigger
-      // Set cooldown and hash
-      this.setCooldown(watcherId, sessionId, watcher.cooldownMs);
-      this.setLastTriggeredHash(watcherId, sessionId, viewportHash);
-
-      this.logger.debug(
-        { watcherId, sessionId, viewportHash, cooldownMode: watcher.cooldownMode },
-        'Trigger approved',
-      );
-      return { shouldTrigger: true, viewportHash };
-    } else {
-      // Condition is false
-      if (watcher.cooldownMode === 'until_clear') {
-        // Clear only after the configured hold window expires. Terminal capture can
-        // transiently miss a matched line while the same condition is still effectively active.
-        if (this.isOnCooldown(watcherId, sessionId)) {
-          this.logger.debug(
-            { watcherId, sessionId },
-            'Keeping cooldown: condition no longer matches but hold window is active',
-          );
-          return { shouldTrigger: false, viewportHash };
-        }
-
-        this.clearCooldown(watcherId, sessionId);
-        this.logger.debug(
-          { watcherId, sessionId },
-          'Cleared cooldown: condition no longer matches (until_clear mode)',
-        );
-      }
-      return { shouldTrigger: false, viewportHash };
-    }
-  }
-
-  /**
-   * Get the last condition state (for until_clear mode).
-   */
-  getLastConditionState(watcherId: string, sessionId: string): boolean | undefined {
-    const key = `${watcherId}:${sessionId}`;
-    return this.lastConditionState.get(key);
-  }
-
-  /**
-   * Set the last condition state.
-   */
-  setLastConditionState(watcherId: string, sessionId: string, matched: boolean): void {
-    const key = `${watcherId}:${sessionId}`;
-    this.lastConditionState.set(key, matched);
-  }
-
-  /**
-   * Get the last triggered hash (for deduplication).
-   */
-  getLastTriggeredHash(watcherId: string, sessionId: string): string | undefined {
-    const key = `${watcherId}:${sessionId}`;
-    return this.lastTriggeredHash.get(key);
-  }
-
-  /**
-   * Set the last triggered hash.
-   */
-  setLastTriggeredHash(watcherId: string, sessionId: string, hash: string): void {
-    const key = `${watcherId}:${sessionId}`;
-    this.lastTriggeredHash.set(key, hash);
-  }
-
-  /**
-   * Get and increment the trigger count.
-   */
-  incrementTriggerCount(watcherId: string, sessionId: string): number {
-    const key = `${watcherId}:${sessionId}`;
-    const current = this.triggerCounts.get(key) ?? 0;
-    const next = current + 1;
-    this.triggerCounts.set(key, next);
-    return next;
-  }
-
-  /**
-   * Get the current trigger count.
+   * Get the current trigger count (read-through to {@link WatcherTriggerState}).
    */
   getTriggerCount(watcherId: string, sessionId: string): number {
-    const key = `${watcherId}:${sessionId}`;
-    return this.triggerCounts.get(key) ?? 0;
+    return this.triggerState.getTriggerCount(watcherId, sessionId);
+  }
+
+  /**
+   * Get the cooldown state for a watcher+session pair (read-through to
+   * {@link WatcherTriggerState}).
+   */
+  isOnCooldown(watcherId: string, sessionId: string): boolean {
+    return this.triggerState.isOnCooldown(watcherId, sessionId);
   }
 
   /**

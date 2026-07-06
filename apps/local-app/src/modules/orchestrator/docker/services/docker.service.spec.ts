@@ -1,11 +1,12 @@
 import Dockerode = require('dockerode');
 import { execFileSync } from 'child_process';
-import { mkdtemp, mkdir, rm, writeFile } from 'fs/promises';
+import { existsSync } from 'fs';
+import { mkdtemp, mkdir, rm } from 'fs/promises';
 import { Readable } from 'stream';
+import { homedir, tmpdir } from 'os';
 import { join } from 'path';
-import { tmpdir } from 'os';
 import { OrchestratorDockerService } from './docker.service';
-import { FakeProcessExecutor } from '../../../terminal/services/process-executor/fake-process-executor';
+import { WorktreeMountDiscoveryService, MountPlan } from './worktree-mount-discovery.service';
 
 jest.mock('child_process', () => ({
   ...jest.requireActual('child_process'),
@@ -15,6 +16,22 @@ jest.mock('child_process', () => ({
 }));
 
 const mockExecFileSync = execFileSync as jest.MockedFunction<typeof execFileSync>;
+
+// Mirror docker.service.ts's module-load socket resolution so bind snapshots
+// use the same path the production code selected (the first existing candidate).
+const DOCKER_SOCKET_PATH_IN_SPEC = (() => {
+  const candidates = [
+    '/var/run/docker.sock',
+    join(homedir(), '.docker', 'run', 'docker.sock'),
+    join(homedir(), '.colima', 'default', 'docker.sock'),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return candidates[0];
+})();
 
 function encodeDockerFrame(payload: string, streamType = 1): Buffer {
   const payloadBuffer = Buffer.from(payload, 'utf8');
@@ -29,10 +46,6 @@ describe('OrchestratorDockerService', () => {
   const originalFetch = global.fetch;
   const originalOrchestratorContainerImage = process.env.ORCHESTRATOR_CONTAINER_IMAGE;
   const originalDevchainMode = process.env.DEVCHAIN_MODE;
-  // Copilot auth tokens are read from the orchestrator's env; isolate them so tests are
-  // deterministic regardless of the host/CI environment (GitHub Actions sets GITHUB_TOKEN).
-  const COPILOT_TOKEN_ENV_KEYS = ['COPILOT_GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'] as const;
-  const originalCopilotTokens = COPILOT_TOKEN_ENV_KEYS.map((key) => process.env[key]);
 
   let tempHome: string;
   let dockerMock: {
@@ -56,9 +69,6 @@ describe('OrchestratorDockerService', () => {
     process.env.HOME = tempHome;
     process.env.ORCHESTRATOR_CONTAINER_IMAGE = 'ghcr.io/twitech-lab/devchain:test';
     delete process.env.DEVCHAIN_MODE;
-    for (const key of COPILOT_TOKEN_ENV_KEYS) {
-      delete process.env[key];
-    }
 
     dockerMock = {
       createContainer: jest.fn(),
@@ -93,32 +103,27 @@ describe('OrchestratorDockerService', () => {
     } else {
       process.env.DEVCHAIN_MODE = originalDevchainMode;
     }
-    COPILOT_TOKEN_ENV_KEYS.forEach((key, index) => {
-      const original = originalCopilotTokens[index];
-      if (original === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = original;
-      }
-    });
     global.fetch = originalFetch;
     jest.restoreAllMocks();
     await rm(tempHome, { recursive: true, force: true });
   });
 
-  const mockRunningContainer = (name: string, hostPort: string) => ({
-    id: `container-${name}`,
-    start: jest.fn().mockResolvedValue(undefined),
-    inspect: jest.fn().mockResolvedValue({
-      Name: `/${name}`,
-      State: { Status: 'running' },
-      NetworkSettings: {
-        Ports: {
-          '3000/tcp': [{ HostIp: '127.0.0.1', HostPort: hostPort }],
-        },
-      },
-    }),
-  });
+  // Discovery is extracted to WorktreeMountDiscoveryService (see its dedicated spec).
+  // These tests mock the MountPlan and verify OrchestratorDockerService CONSUMES it
+  // correctly — discovery behavior itself is characterized in
+  // worktree-mount-discovery.service.spec.ts.
+  const EMPTY_PLAN: MountPlan = { env: {}, credentialBinds: [], infrastructureBinds: [] };
+
+  const makeService = (plan: MountPlan = EMPTY_PLAN) => {
+    const mountDiscovery = {
+      discoverMountPlan: jest.fn().mockResolvedValue(plan),
+    } as unknown as WorktreeMountDiscoveryService;
+    const service = new OrchestratorDockerService(
+      mountDiscovery,
+      dockerMock as unknown as Dockerode,
+    );
+    return { service, mountDiscovery };
+  };
 
   it('creates container with required binds, env, labels, and capabilities', async () => {
     const worktreePath = join(tempHome, 'worktree');
@@ -126,32 +131,30 @@ describe('OrchestratorDockerService', () => {
     await mkdir(worktreePath, { recursive: true });
     await mkdir(dataPath, { recursive: true });
 
-    await mkdir(join(tempHome, '.claude'), { recursive: true });
-    await writeFile(join(tempHome, '.claude', '.credentials.json'), '{"token":"x"}');
-    await mkdir(join(tempHome, '.codex'), { recursive: true });
-    await writeFile(join(tempHome, '.codex', 'auth.json'), '{"token":"y"}');
-    await mkdir(join(tempHome, '.devchain', 'skills'), { recursive: true });
-
-    const containerInspect = {
-      Name: '/devchain-wt-feature-auth',
-      State: { Status: 'running' },
-      NetworkSettings: {
-        Ports: {
-          '3000/tcp': [{ HostIp: '127.0.0.1', HostPort: '49155' }],
-        },
-      },
+    const claudeBind = `${join(tempHome, '.claude', '.credentials.json')}:/home/node/.claude/.credentials.json:ro`;
+    const codexBind = `${join(tempHome, '.codex', 'auth.json')}:/home/node/.codex/auth.json:ro`;
+    const skillsBind = `${join(tempHome, '.devchain', 'skills')}:/seed-skills:ro`;
+    const plan: MountPlan = {
+      env: { ENABLED_PROVIDERS: 'claude,codex' },
+      credentialBinds: [claudeBind, codexBind],
+      infrastructureBinds: [skillsBind],
     };
-    const containerMock = {
+
+    dockerMock.createContainer.mockResolvedValue({
       id: 'container-123',
       start: jest.fn().mockResolvedValue(undefined),
-      inspect: jest.fn().mockResolvedValue(containerInspect),
-    };
-    dockerMock.createContainer.mockResolvedValue(containerMock);
+      inspect: jest.fn().mockResolvedValue({
+        Name: '/devchain-wt-feature-auth',
+        State: { Status: 'running' },
+        NetworkSettings: {
+          Ports: {
+            '3000/tcp': [{ HostIp: '127.0.0.1', HostPort: '49155' }],
+          },
+        },
+      }),
+    });
 
-    const service = new OrchestratorDockerService(
-      new FakeProcessExecutor(),
-      dockerMock as unknown as Dockerode,
-    );
+    const { service, mountDiscovery } = makeService(plan);
     const info = await service.createContainer({
       name: 'devchain-wt-feature-auth',
       worktreePath,
@@ -165,6 +168,10 @@ describe('OrchestratorDockerService', () => {
       image: 'ghcr.io/twitech-lab/devchain:test',
       hostPort: 49155,
       state: 'running',
+    });
+    expect(mountDiscovery.discoverMountPlan).toHaveBeenCalledWith({
+      worktreePath,
+      worktreeName: 'feature-auth',
     });
     expect(dockerMock.getImage).toHaveBeenCalledWith('ghcr.io/twitech-lab/devchain:test');
     expect(dockerMock.pull).not.toHaveBeenCalled();
@@ -183,14 +190,9 @@ describe('OrchestratorDockerService', () => {
         'NODE_ENV=production',
         'CUSTOM_ENV=1',
         'COMPOSE_PROJECT_NAME=feature-auth',
+        'ENABLED_PROVIDERS=claude,codex',
       ]),
     );
-    const enabledProviders = createInput.Env.find((entry: string) =>
-      entry.startsWith('ENABLED_PROVIDERS='),
-    );
-    expect(enabledProviders).toBeDefined();
-    expect(enabledProviders).toContain('claude');
-    expect(enabledProviders).toContain('codex');
 
     expect(createInput.Labels).toEqual({
       'devchain.worktree': 'feature-auth',
@@ -200,17 +202,11 @@ describe('OrchestratorDockerService', () => {
       expect.arrayContaining([
         `${worktreePath}:/project:rw`,
         `${dataPath}:/home/node/.devchain:rw`,
-        `${join(tempHome, '.claude', '.credentials.json')}:/home/node/.claude/.credentials.json:ro`,
-        `${join(tempHome, '.codex', 'auth.json')}:/home/node/.codex/auth.json:ro`,
-        `${join(tempHome, '.devchain', 'skills')}:/seed-skills:ro`,
-        '/var/run/docker.sock:/var/run/docker.sock:rw',
+        claudeBind,
+        codexBind,
+        skillsBind,
+        `${DOCKER_SOCKET_PATH_IN_SPEC}:/var/run/docker.sock:rw`,
       ]),
-    );
-    expect(createInput.HostConfig.Binds).not.toContain(
-      `${join(tempHome, '.claude')}:/home/node/.claude:ro`,
-    );
-    expect(createInput.HostConfig.Binds).not.toContain(
-      `${join(tempHome, '.codex')}:/home/node/.codex:ro`,
     );
 
     expect(dockerMock.createNetwork).toHaveBeenCalledWith({
@@ -227,10 +223,7 @@ describe('OrchestratorDockerService', () => {
     delete process.env.ORCHESTRATOR_CONTAINER_IMAGE;
     process.env.DEVCHAIN_MODE = 'main';
 
-    const service = new OrchestratorDockerService(
-      new FakeProcessExecutor(),
-      dockerMock as unknown as Dockerode,
-    );
+    const { service } = makeService();
 
     await expect(
       service.createContainer({
@@ -246,457 +239,6 @@ describe('OrchestratorDockerService', () => {
     expect(dockerMock.createNetwork).not.toHaveBeenCalled();
   });
 
-  it('supports partial provider auth discovery (agy only, from ~/.gemini creds)', async () => {
-    const worktreePath = join(tempHome, 'worktree');
-    const dataPath = join(tempHome, 'data');
-    await mkdir(worktreePath, { recursive: true });
-    await mkdir(dataPath, { recursive: true });
-
-    await mkdir(join(tempHome, '.gemini'), { recursive: true });
-    await writeFile(join(tempHome, '.gemini', 'oauth_creds.json'), '{"token":"z"}');
-
-    const containerMock = {
-      id: 'container-123',
-      start: jest.fn().mockResolvedValue(undefined),
-      inspect: jest.fn().mockResolvedValue({
-        Name: '/devchain-wt-feature-agy',
-        State: { Status: 'running' },
-        NetworkSettings: {
-          Ports: {
-            '3000/tcp': [{ HostIp: '127.0.0.1', HostPort: '49156' }],
-          },
-        },
-      }),
-    };
-    dockerMock.createContainer.mockResolvedValue(containerMock);
-
-    const service = new OrchestratorDockerService(
-      new FakeProcessExecutor(),
-      dockerMock as unknown as Dockerode,
-    );
-    await service.createContainer({
-      name: 'devchain-wt-feature-agy',
-      worktreePath,
-      dataPath,
-    });
-
-    const createInput = dockerMock.createContainer.mock.calls[0][0];
-    // agy is now the sole owner of the ~/.gemini OAuth creds mount (the gemini CLI was retired),
-    // so the creds file enables agy only.
-    const enabledProviders = createInput.Env.find((entry: string) =>
-      entry.startsWith('ENABLED_PROVIDERS='),
-    );
-    expect(enabledProviders).toContain('agy');
-    expect(enabledProviders).not.toContain('gemini');
-    expect(createInput.Env).toContain('COMPOSE_PROJECT_NAME=feature-agy');
-    // The shared OAuth creds file must mount exactly once (no duplicate bind target).
-    const oauthBind = `${join(tempHome, '.gemini', 'oauth_creds.json')}:/home/node/.gemini/oauth_creds.json:ro`;
-    expect(createInput.HostConfig.Binds.filter((b: string) => b === oauthBind)).toHaveLength(1);
-  });
-
-  it('gracefully handles zero discovered providers', async () => {
-    const worktreePath = join(tempHome, 'worktree');
-    const dataPath = join(tempHome, 'data');
-    await mkdir(worktreePath, { recursive: true });
-    await mkdir(dataPath, { recursive: true });
-
-    const containerMock = {
-      id: 'container-123',
-      start: jest.fn().mockResolvedValue(undefined),
-      inspect: jest.fn().mockResolvedValue({
-        Name: '/devchain-wt-no-providers',
-        State: { Status: 'running' },
-        NetworkSettings: {
-          Ports: {
-            '3000/tcp': [{ HostIp: '127.0.0.1', HostPort: '49157' }],
-          },
-        },
-      }),
-    };
-    dockerMock.createContainer.mockResolvedValue(containerMock);
-
-    const service = new OrchestratorDockerService(
-      new FakeProcessExecutor(),
-      dockerMock as unknown as Dockerode,
-    );
-    await service.createContainer({
-      name: 'devchain-wt-no-providers',
-      worktreePath,
-      dataPath,
-    });
-
-    const createInput = dockerMock.createContainer.mock.calls[0][0];
-    expect(createInput.Env).toContain('ENABLED_PROVIDERS=');
-    expect(createInput.HostConfig.Binds).toEqual(
-      expect.arrayContaining([
-        `${worktreePath}:/project:rw`,
-        `${dataPath}:/home/node/.devchain:rw`,
-        '/var/run/docker.sock:/var/run/docker.sock:rw',
-      ]),
-    );
-    expect(createInput.HostConfig.Binds.length).toBeGreaterThanOrEqual(3);
-  });
-
-  it('enables copilot via a forwarded token env var with no host bind mount', async () => {
-    const worktreePath = join(tempHome, 'worktree');
-    const dataPath = join(tempHome, 'data');
-    await mkdir(worktreePath, { recursive: true });
-    await mkdir(dataPath, { recursive: true });
-
-    // Copilot's host credential lives in the OS keyring (no mountable file); a token env
-    // var is the only way to authenticate the containerized CLI (spike S1).
-    process.env.GH_TOKEN = 'ghu_test_token';
-
-    const containerMock = {
-      id: 'container-123',
-      start: jest.fn().mockResolvedValue(undefined),
-      inspect: jest.fn().mockResolvedValue({
-        Name: '/devchain-wt-feature-copilot',
-        State: { Status: 'running' },
-        NetworkSettings: {
-          Ports: {
-            '3000/tcp': [{ HostIp: '127.0.0.1', HostPort: '49158' }],
-          },
-        },
-      }),
-    };
-    dockerMock.createContainer.mockResolvedValue(containerMock);
-
-    const service = new OrchestratorDockerService(
-      new FakeProcessExecutor(),
-      dockerMock as unknown as Dockerode,
-    );
-    await service.createContainer({
-      name: 'devchain-wt-feature-copilot',
-      worktreePath,
-      dataPath,
-    });
-
-    const createInput = dockerMock.createContainer.mock.calls[0][0];
-    // copilot is enabled (preflight will validate it in-container)…
-    const enabledProviders = createInput.Env.find((entry: string) =>
-      entry.startsWith('ENABLED_PROVIDERS='),
-    );
-    expect(enabledProviders).toContain('copilot');
-    // …the token is forwarded under its own name…
-    expect(createInput.Env).toContain('GH_TOKEN=ghu_test_token');
-    // …COPILOT_HOME is never set (R4 preflight-rejects a relocated store)…
-    expect(createInput.Env.some((entry: string) => entry.startsWith('COPILOT_HOME='))).toBe(false);
-    // …and there is NO ~/.copilot bind mount (session-state stays container-local).
-    expect(createInput.HostConfig.Binds.some((bind: string) => bind.includes('/.copilot'))).toBe(
-      false,
-    );
-  });
-
-  it('does not enable copilot when no token env var is present', async () => {
-    const worktreePath = join(tempHome, 'worktree');
-    const dataPath = join(tempHome, 'data');
-    await mkdir(worktreePath, { recursive: true });
-    await mkdir(dataPath, { recursive: true });
-
-    const containerMock = {
-      id: 'container-123',
-      start: jest.fn().mockResolvedValue(undefined),
-      inspect: jest.fn().mockResolvedValue({
-        Name: '/devchain-wt-no-copilot',
-        State: { Status: 'running' },
-        NetworkSettings: {
-          Ports: {
-            '3000/tcp': [{ HostIp: '127.0.0.1', HostPort: '49159' }],
-          },
-        },
-      }),
-    };
-    dockerMock.createContainer.mockResolvedValue(containerMock);
-
-    const service = new OrchestratorDockerService(
-      new FakeProcessExecutor(),
-      dockerMock as unknown as Dockerode,
-    );
-    await service.createContainer({
-      name: 'devchain-wt-no-copilot',
-      worktreePath,
-      dataPath,
-    });
-
-    const createInput = dockerMock.createContainer.mock.calls[0][0];
-    const enabledProviders = createInput.Env.find((entry: string) =>
-      entry.startsWith('ENABLED_PROVIDERS='),
-    );
-    // ENABLED_PROVIDERS is empty (no creds, no token) and copilot is absent.
-    expect(enabledProviders).toBe('ENABLED_PROVIDERS=');
-  });
-
-  it('includes git identity env vars when host has git config', async () => {
-    const worktreePath = join(tempHome, 'worktree');
-    const dataPath = join(tempHome, 'data');
-    await mkdir(worktreePath, { recursive: true });
-    await mkdir(dataPath, { recursive: true });
-
-    dockerMock.createContainer.mockResolvedValue(
-      mockRunningContainer('devchain-wt-git-identity', '49170'),
-    );
-
-    const gitFakeExecutor = new FakeProcessExecutor();
-    gitFakeExecutor.enqueueResponse(
-      { type: 'success', stdout: 'Test User\n' }, // git config user.name
-      { type: 'success', stdout: 'test@example.com\n' }, // git config user.email
-    );
-
-    const service = new OrchestratorDockerService(
-      gitFakeExecutor,
-      dockerMock as unknown as Dockerode,
-    );
-    await service.createContainer({
-      name: 'devchain-wt-git-identity',
-      worktreePath,
-      dataPath,
-    });
-
-    const createInput = dockerMock.createContainer.mock.calls[0][0];
-    expect(createInput.Env).toEqual(
-      expect.arrayContaining([
-        'GIT_AUTHOR_NAME=Test User',
-        'GIT_AUTHOR_EMAIL=test@example.com',
-        'GIT_COMMITTER_NAME=Test User',
-        'GIT_COMMITTER_EMAIL=test@example.com',
-      ]),
-    );
-  });
-
-  it('omits git identity env vars when host has no git config', async () => {
-    const worktreePath = join(tempHome, 'worktree');
-    const dataPath = join(tempHome, 'data');
-    await mkdir(worktreePath, { recursive: true });
-    await mkdir(dataPath, { recursive: true });
-
-    dockerMock.createContainer.mockResolvedValue(
-      mockRunningContainer('devchain-wt-no-git', '49171'),
-    );
-
-    const service = new OrchestratorDockerService(
-      new FakeProcessExecutor(),
-      dockerMock as unknown as Dockerode,
-    );
-    await service.createContainer({
-      name: 'devchain-wt-no-git',
-      worktreePath,
-      dataPath,
-    });
-
-    const createInput = dockerMock.createContainer.mock.calls[0][0];
-    const gitEnvVars = (createInput.Env as string[]).filter(
-      (e: string) => e.startsWith('GIT_AUTHOR_') || e.startsWith('GIT_COMMITTER_'),
-    );
-    expect(gitEnvVars).toHaveLength(0);
-  });
-
-  it('preserves user-supplied git env vars over host config', async () => {
-    const worktreePath = join(tempHome, 'worktree');
-    const dataPath = join(tempHome, 'data');
-    await mkdir(worktreePath, { recursive: true });
-    await mkdir(dataPath, { recursive: true });
-
-    dockerMock.createContainer.mockResolvedValue(
-      mockRunningContainer('devchain-wt-custom-git', '49172'),
-    );
-
-    const gitFakeExecutor = new FakeProcessExecutor();
-    gitFakeExecutor.enqueueResponse(
-      { type: 'success', stdout: 'Host User\n' }, // git config user.name
-      { type: 'success', stdout: 'host@example.com\n' }, // git config user.email
-    );
-
-    const service = new OrchestratorDockerService(
-      gitFakeExecutor,
-      dockerMock as unknown as Dockerode,
-    );
-    await service.createContainer({
-      name: 'devchain-wt-custom-git',
-      worktreePath,
-      dataPath,
-      env: { GIT_AUTHOR_NAME: 'Custom User', GIT_AUTHOR_EMAIL: 'custom@example.com' },
-    });
-
-    const createInput = dockerMock.createContainer.mock.calls[0][0];
-    // User-supplied values are preserved
-    expect(createInput.Env).toEqual(
-      expect.arrayContaining([
-        'GIT_AUTHOR_NAME=Custom User',
-        'GIT_AUTHOR_EMAIL=custom@example.com',
-      ]),
-    );
-    // Host values used for committer (not supplied by user)
-    expect(createInput.Env).toEqual(
-      expect.arrayContaining([
-        'GIT_COMMITTER_NAME=Host User',
-        'GIT_COMMITTER_EMAIL=host@example.com',
-      ]),
-    );
-    // User-supplied values NOT overwritten
-    expect(createInput.Env).not.toEqual(expect.arrayContaining(['GIT_AUTHOR_NAME=Host User']));
-  });
-
-  it('adds git common-dir mount when worktree .git file has valid gitdir path', async () => {
-    const worktreePath = join(tempHome, 'worktree');
-    const dataPath = join(tempHome, 'data');
-    const repoGitCommonDir = join(tempHome, 'repo', '.git');
-    const gitdirPath = join(repoGitCommonDir, 'worktrees', 'feature-auth');
-    await mkdir(worktreePath, { recursive: true });
-    await mkdir(dataPath, { recursive: true });
-    await mkdir(gitdirPath, { recursive: true });
-    await writeFile(join(worktreePath, '.git'), `gitdir: ${gitdirPath}\n`, 'utf8');
-
-    dockerMock.createContainer.mockResolvedValue(
-      mockRunningContainer('devchain-wt-feature-auth', '49159'),
-    );
-
-    const service = new OrchestratorDockerService(
-      new FakeProcessExecutor(),
-      dockerMock as unknown as Dockerode,
-    );
-    await service.createContainer({
-      name: 'devchain-wt-feature-auth',
-      worktreePath,
-      dataPath,
-    });
-
-    const createInput = dockerMock.createContainer.mock.calls[0][0];
-    expect(createInput.HostConfig.Binds).toContain(`${repoGitCommonDir}:${repoGitCommonDir}:rw`);
-  });
-
-  it('does not add git common-dir mount when worktree .git is a directory', async () => {
-    const worktreePath = join(tempHome, 'worktree');
-    const dataPath = join(tempHome, 'data');
-    await mkdir(worktreePath, { recursive: true });
-    await mkdir(dataPath, { recursive: true });
-    await mkdir(join(worktreePath, '.git'), { recursive: true });
-
-    dockerMock.createContainer.mockResolvedValue(
-      mockRunningContainer('devchain-wt-dir-git', '49160'),
-    );
-
-    const service = new OrchestratorDockerService(
-      new FakeProcessExecutor(),
-      dockerMock as unknown as Dockerode,
-    );
-    await service.createContainer({
-      name: 'devchain-wt-dir-git',
-      worktreePath,
-      dataPath,
-    });
-
-    const createInput = dockerMock.createContainer.mock.calls[0][0];
-    expect(createInput.HostConfig.Binds).toEqual(
-      expect.arrayContaining([
-        `${worktreePath}:/project:rw`,
-        `${dataPath}:/home/node/.devchain:rw`,
-        '/var/run/docker.sock:/var/run/docker.sock:rw',
-      ]),
-    );
-    expect(createInput.HostConfig.Binds.length).toBeGreaterThanOrEqual(3);
-  });
-
-  it('does not add git common-dir mount when worktree .git does not exist', async () => {
-    const worktreePath = join(tempHome, 'worktree');
-    const dataPath = join(tempHome, 'data');
-    await mkdir(worktreePath, { recursive: true });
-    await mkdir(dataPath, { recursive: true });
-
-    dockerMock.createContainer.mockResolvedValue(
-      mockRunningContainer('devchain-wt-missing-git', '49161'),
-    );
-
-    const service = new OrchestratorDockerService(
-      new FakeProcessExecutor(),
-      dockerMock as unknown as Dockerode,
-    );
-    await service.createContainer({
-      name: 'devchain-wt-missing-git',
-      worktreePath,
-      dataPath,
-    });
-
-    const createInput = dockerMock.createContainer.mock.calls[0][0];
-    expect(createInput.HostConfig.Binds).toEqual(
-      expect.arrayContaining([
-        `${worktreePath}:/project:rw`,
-        `${dataPath}:/home/node/.devchain:rw`,
-        '/var/run/docker.sock:/var/run/docker.sock:rw',
-      ]),
-    );
-    expect(createInput.HostConfig.Binds.length).toBeGreaterThanOrEqual(3);
-  });
-
-  it('gracefully skips git common-dir mount when gitdir path does not exist', async () => {
-    const worktreePath = join(tempHome, 'worktree');
-    const dataPath = join(tempHome, 'data');
-    const missingGitdirPath = join(tempHome, 'repo', '.git', 'worktrees', 'feature-missing');
-    await mkdir(worktreePath, { recursive: true });
-    await mkdir(dataPath, { recursive: true });
-    await writeFile(join(worktreePath, '.git'), `gitdir: ${missingGitdirPath}\n`, 'utf8');
-
-    dockerMock.createContainer.mockResolvedValue(
-      mockRunningContainer('devchain-wt-missing-gitdir', '49162'),
-    );
-
-    const service = new OrchestratorDockerService(
-      new FakeProcessExecutor(),
-      dockerMock as unknown as Dockerode,
-    );
-    await service.createContainer({
-      name: 'devchain-wt-missing-gitdir',
-      worktreePath,
-      dataPath,
-    });
-
-    const createInput = dockerMock.createContainer.mock.calls[0][0];
-    expect(createInput.HostConfig.Binds).toEqual(
-      expect.arrayContaining([
-        `${worktreePath}:/project:rw`,
-        `${dataPath}:/home/node/.devchain:rw`,
-        '/var/run/docker.sock:/var/run/docker.sock:rw',
-      ]),
-    );
-    expect(createInput.HostConfig.Binds.length).toBeGreaterThanOrEqual(3);
-  });
-
-  it('skips git common-dir mount for non-posix gitdir paths', async () => {
-    const worktreePath = join(tempHome, 'worktree');
-    const dataPath = join(tempHome, 'data');
-    await mkdir(worktreePath, { recursive: true });
-    await mkdir(dataPath, { recursive: true });
-    await writeFile(
-      join(worktreePath, '.git'),
-      'gitdir: C:\\repo\\.git\\worktrees\\feature-auth\n',
-      'utf8',
-    );
-
-    dockerMock.createContainer.mockResolvedValue(
-      mockRunningContainer('devchain-wt-non-posix-gitdir', '49163'),
-    );
-
-    const service = new OrchestratorDockerService(
-      new FakeProcessExecutor(),
-      dockerMock as unknown as Dockerode,
-    );
-    await service.createContainer({
-      name: 'devchain-wt-non-posix-gitdir',
-      worktreePath,
-      dataPath,
-    });
-
-    const createInput = dockerMock.createContainer.mock.calls[0][0];
-    expect(createInput.HostConfig.Binds).toEqual(
-      expect.arrayContaining([
-        `${worktreePath}:/project:rw`,
-        `${dataPath}:/home/node/.devchain:rw`,
-        '/var/run/docker.sock:/var/run/docker.sock:rw',
-      ]),
-    );
-    expect(createInput.HostConfig.Binds.length).toBeGreaterThanOrEqual(3);
-  });
-
   it('preserves explicit COMPOSE_PROJECT_NAME and reuses existing network', async () => {
     dockerMock.getNetwork.mockReturnValue({
       inspect: jest.fn().mockResolvedValue({ Name: 'devchain-wt-existing-net' }),
@@ -708,7 +250,7 @@ describe('OrchestratorDockerService', () => {
     await mkdir(worktreePath, { recursive: true });
     await mkdir(dataPath, { recursive: true });
 
-    const containerMock = {
+    dockerMock.createContainer.mockResolvedValue({
       id: 'container-123',
       start: jest.fn().mockResolvedValue(undefined),
       inspect: jest.fn().mockResolvedValue({
@@ -720,13 +262,9 @@ describe('OrchestratorDockerService', () => {
           },
         },
       }),
-    };
-    dockerMock.createContainer.mockResolvedValue(containerMock);
+    });
 
-    const service = new OrchestratorDockerService(
-      new FakeProcessExecutor(),
-      dockerMock as unknown as Dockerode,
-    );
+    const { service } = makeService();
     await service.createContainer({
       name: 'devchain-wt-existing',
       worktreePath,
@@ -759,10 +297,7 @@ describe('OrchestratorDockerService', () => {
       } as unknown as Dockerode.Network;
     });
 
-    const service = new OrchestratorDockerService(
-      new FakeProcessExecutor(),
-      dockerMock as unknown as Dockerode,
-    );
+    const { service } = makeService();
     await service.ensureWorktreeOnComposeNetwork('feature-auth', 'worktree-1');
 
     expect(connect).toHaveBeenCalledWith({ Container: 'worktree-1' });
@@ -827,10 +362,7 @@ describe('OrchestratorDockerService', () => {
       } as unknown as Dockerode.Network;
     });
 
-    const service = new OrchestratorDockerService(
-      new FakeProcessExecutor(),
-      dockerMock as unknown as Dockerode,
-    );
+    const { service } = makeService();
     await service.cleanupWorktreeProjectContainers('feature-auth', 'worktree-1');
 
     expect(dockerMock.listContainers).toHaveBeenCalledWith({
@@ -888,10 +420,7 @@ describe('OrchestratorDockerService', () => {
       remove: jest.fn().mockResolvedValue(undefined),
     });
 
-    const service = new OrchestratorDockerService(
-      new FakeProcessExecutor(),
-      dockerMock as unknown as Dockerode,
-    );
+    const { service } = makeService();
     await service.cleanupWorktreeProjectContainers('feature-auth', 'worktree-1');
 
     expect(worktreeContainer.exec).toHaveBeenCalledWith(
@@ -916,10 +445,7 @@ describe('OrchestratorDockerService', () => {
       remove,
     });
 
-    const service = new OrchestratorDockerService(
-      new FakeProcessExecutor(),
-      dockerMock as unknown as Dockerode,
-    );
+    const { service } = makeService();
     await service.removeWorktreeNetwork('feature-auth');
     await service.removeWorktreeNetwork('feature-auth');
 
@@ -932,7 +458,7 @@ describe('OrchestratorDockerService', () => {
     });
     dockerMock.pull.mockResolvedValue({});
 
-    const containerMock = {
+    dockerMock.createContainer.mockResolvedValue({
       id: 'container-123',
       start: jest.fn().mockResolvedValue(undefined),
       inspect: jest.fn().mockResolvedValue({
@@ -940,18 +466,14 @@ describe('OrchestratorDockerService', () => {
         State: { Status: 'running' },
         NetworkSettings: { Ports: { '3000/tcp': [{ HostPort: '49321' }] } },
       }),
-    };
-    dockerMock.createContainer.mockResolvedValue(containerMock);
+    });
 
     const worktreePath = join(tempHome, 'worktree');
     const dataPath = join(tempHome, 'data');
     await mkdir(worktreePath, { recursive: true });
     await mkdir(dataPath, { recursive: true });
 
-    const service = new OrchestratorDockerService(
-      new FakeProcessExecutor(),
-      dockerMock as unknown as Dockerode,
-    );
+    const { service } = makeService();
     await service.createContainer({
       name: 'devchain-wt-test',
       image: 'custom:latest',
@@ -972,10 +494,7 @@ describe('OrchestratorDockerService', () => {
       logs: jest.fn().mockResolvedValue(logsBuffer),
     });
 
-    const service = new OrchestratorDockerService(
-      new FakeProcessExecutor(),
-      dockerMock as unknown as Dockerode,
-    );
+    const { service } = makeService();
     const logs = await service.getContainerLogs('container-123');
 
     expect(logs).toBe('stdout-line\nstderr-line\n');
@@ -991,10 +510,7 @@ describe('OrchestratorDockerService', () => {
       exec: jest.fn().mockResolvedValue(execMock),
     });
 
-    const service = new OrchestratorDockerService(
-      new FakeProcessExecutor(),
-      dockerMock as unknown as Dockerode,
-    );
+    const { service } = makeService();
     const result = await service.execInContainer('container-123', ['echo', 'ok']);
 
     expect(result).toEqual({ exitCode: 0, output: 'exec-output\n' });
@@ -1010,10 +526,7 @@ describe('OrchestratorDockerService', () => {
       }),
     });
 
-    const service = new OrchestratorDockerService(
-      new FakeProcessExecutor(),
-      dockerMock as unknown as Dockerode,
-    );
+    const { service } = makeService();
     const ready = await service.waitForHealthy('container-123', 2000);
 
     expect(ready).toBe(true);
@@ -1025,19 +538,231 @@ describe('OrchestratorDockerService', () => {
 
   it('uses docker ping for daemon readiness', async () => {
     dockerMock.ping = jest.fn().mockResolvedValue(undefined);
-    const service = new OrchestratorDockerService(
-      new FakeProcessExecutor(),
-      dockerMock as unknown as Dockerode,
-    );
+    const { service } = makeService();
     const ready = await service.ping();
     expect(ready).toBe(true);
 
     dockerMock.ping = jest.fn().mockRejectedValue(new Error('unreachable'));
-    const unavailableService = new OrchestratorDockerService(
-      new FakeProcessExecutor(),
-      dockerMock as unknown as Dockerode,
-    );
+    const { service: unavailableService } = makeService();
     const unavailable = await unavailableService.ping();
     expect(unavailable).toBe(false);
+  });
+
+  // ============================================================================
+  // MountPlan consumption snapshots — lock the EXACT env/bind assembly that
+  // OrchestratorDockerService builds from a given MountPlan + config. The
+  // discovery side (what plan a given home/env produces) is locked in
+  // worktree-mount-discovery.service.spec.ts. Together they are byte-identical
+  // to the pre-extraction createContainer output.
+  // ============================================================================
+  describe('createContainer MountPlan consumption snapshots', () => {
+    const captureCreateInput = async (
+      plan: MountPlan,
+      configOverrides: Partial<Parameters<OrchestratorDockerService['createContainer']>[0]> = {},
+    ) => {
+      const worktreePath = configOverrides.worktreePath ?? join(tempHome, 'snap-wt');
+      const dataPath = configOverrides.dataPath ?? join(tempHome, 'snap-data');
+      await mkdir(worktreePath, { recursive: true });
+      await mkdir(dataPath, { recursive: true });
+
+      dockerMock.createContainer.mockResolvedValue({
+        id: 'snap-container',
+        start: jest.fn().mockResolvedValue(undefined),
+        inspect: jest.fn().mockResolvedValue({
+          Name: '/snap',
+          State: { Status: 'running' },
+          NetworkSettings: {
+            Ports: { '3000/tcp': [{ HostIp: '127.0.0.1', HostPort: '49999' }] },
+          },
+        }),
+      });
+
+      const { service } = makeService(plan);
+      await service.createContainer({
+        name: 'devchain-wt-snap',
+        worktreePath,
+        dataPath,
+        ...configOverrides,
+      });
+      return dockerMock.createContainer.mock.calls[0][0] as {
+        Env: string[];
+        HostConfig: { Binds: string[] };
+      };
+    };
+
+    // ----- env precedence -----
+
+    it('env: bare plan yields base env + COMPOSE_PROJECT_NAME default + plan ENABLED_PROVIDERS', async () => {
+      const input = await captureCreateInput({ ...EMPTY_PLAN, env: { ENABLED_PROVIDERS: '' } });
+
+      expect(input.Env).toEqual([
+        'HOST=0.0.0.0',
+        'NODE_ENV=production',
+        'COMPOSE_PROJECT_NAME=snap',
+        'ENABLED_PROVIDERS=',
+      ]);
+    });
+
+    it('env: user env spreads between base and COMPOSE_PROJECT_NAME default (insertion order preserved)', async () => {
+      const input = await captureCreateInput(
+        { ...EMPTY_PLAN, env: { ENABLED_PROVIDERS: '' } },
+        { env: { CUSTOM_ENV: '1', ANOTHER: 'two' } },
+      );
+
+      expect(input.Env).toEqual([
+        'HOST=0.0.0.0',
+        'NODE_ENV=production',
+        'CUSTOM_ENV=1',
+        'ANOTHER=two',
+        'COMPOSE_PROJECT_NAME=snap',
+        'ENABLED_PROVIDERS=',
+      ]);
+    });
+
+    it('env: explicit user COMPOSE_PROJECT_NAME is preserved (no default applied)', async () => {
+      const input = await captureCreateInput(
+        { ...EMPTY_PLAN, env: { ENABLED_PROVIDERS: '' } },
+        { env: { COMPOSE_PROJECT_NAME: 'custom-project' } },
+      );
+
+      expect(input.Env).toEqual([
+        'HOST=0.0.0.0',
+        'NODE_ENV=production',
+        'COMPOSE_PROJECT_NAME=custom-project',
+        'ENABLED_PROVIDERS=',
+      ]);
+    });
+
+    it('env: plan git identity merges after COMPOSE_PROJECT_NAME via ??=', async () => {
+      const input = await captureCreateInput({
+        env: {
+          GIT_AUTHOR_NAME: 'Alice',
+          GIT_COMMITTER_NAME: 'Alice',
+          GIT_AUTHOR_EMAIL: 'alice@example.com',
+          GIT_COMMITTER_EMAIL: 'alice@example.com',
+          ENABLED_PROVIDERS: '',
+        },
+        credentialBinds: [],
+        infrastructureBinds: [],
+      });
+
+      expect(input.Env).toEqual([
+        'HOST=0.0.0.0',
+        'NODE_ENV=production',
+        'COMPOSE_PROJECT_NAME=snap',
+        'GIT_AUTHOR_NAME=Alice',
+        'GIT_COMMITTER_NAME=Alice',
+        'GIT_AUTHOR_EMAIL=alice@example.com',
+        'GIT_COMMITTER_EMAIL=alice@example.com',
+        'ENABLED_PROVIDERS=',
+      ]);
+    });
+
+    it('env: user-supplied GIT_AUTHOR_* wins; plan fills only the unset COMMITTER/EMAIL slots', async () => {
+      const input = await captureCreateInput(
+        {
+          env: {
+            GIT_AUTHOR_NAME: 'Host User',
+            GIT_COMMITTER_NAME: 'Host User',
+            GIT_AUTHOR_EMAIL: 'host@example.com',
+            GIT_COMMITTER_EMAIL: 'host@example.com',
+            ENABLED_PROVIDERS: '',
+          },
+          credentialBinds: [],
+          infrastructureBinds: [],
+        },
+        { env: { GIT_AUTHOR_NAME: 'Custom User' } },
+      );
+
+      expect(input.Env).toEqual([
+        'HOST=0.0.0.0',
+        'NODE_ENV=production',
+        'GIT_AUTHOR_NAME=Custom User',
+        'COMPOSE_PROJECT_NAME=snap',
+        'GIT_COMMITTER_NAME=Host User',
+        'GIT_AUTHOR_EMAIL=host@example.com',
+        'GIT_COMMITTER_EMAIL=host@example.com',
+        'ENABLED_PROVIDERS=',
+      ]);
+    });
+
+    it('env: plan copilot token is forwarded under its own name; COPILOT_HOME never set', async () => {
+      const input = await captureCreateInput({
+        env: { ENABLED_PROVIDERS: 'copilot', GH_TOKEN: 'ghu_snapshot' },
+        credentialBinds: [],
+        infrastructureBinds: [],
+      });
+
+      expect(input.Env).toEqual([
+        'HOST=0.0.0.0',
+        'NODE_ENV=production',
+        'COMPOSE_PROJECT_NAME=snap',
+        'ENABLED_PROVIDERS=copilot',
+        'GH_TOKEN=ghu_snapshot',
+      ]);
+      expect(input.Env.some((e) => e.startsWith('COPILOT_HOME='))).toBe(false);
+    });
+
+    it('env: explicit user ENABLED_PROVIDERS wins over the plan (??= no-clobber)', async () => {
+      const input = await captureCreateInput(
+        { env: { ENABLED_PROVIDERS: 'copilot' }, credentialBinds: [], infrastructureBinds: [] },
+        { env: { ENABLED_PROVIDERS: 'claude' } },
+      );
+
+      expect(input.Env).toEqual([
+        'HOST=0.0.0.0',
+        'NODE_ENV=production',
+        'ENABLED_PROVIDERS=claude',
+        'COMPOSE_PROJECT_NAME=snap',
+      ]);
+    });
+
+    // ----- bind precedence -----
+
+    it('binds: bare plan assembles worktree + data + docker.sock only', async () => {
+      const input = await captureCreateInput(EMPTY_PLAN);
+
+      expect(input.HostConfig.Binds).toEqual([
+        `${join(tempHome, 'snap-wt')}:/project:rw`,
+        `${join(tempHome, 'snap-data')}:/home/node/.devchain:rw`,
+        `${DOCKER_SOCKET_PATH_IN_SPEC}:/var/run/docker.sock:rw`,
+      ]);
+    });
+
+    it('binds: plan credentialBinds slot in before additionalBinds and docker.sock', async () => {
+      const claudeBind = `${join(tempHome, '.claude', '.credentials.json')}:/home/node/.claude/.credentials.json:ro`;
+      const codexBind = `${join(tempHome, '.codex', 'auth.json')}:/home/node/.codex/auth.json:ro`;
+      const input = await captureCreateInput(
+        { env: {}, credentialBinds: [claudeBind, codexBind], infrastructureBinds: [] },
+        { additionalBinds: ['/host/extra:/container/extra:ro'] },
+      );
+
+      expect(input.HostConfig.Binds).toEqual([
+        `${join(tempHome, 'snap-wt')}:/project:rw`,
+        `${join(tempHome, 'snap-data')}:/home/node/.devchain:rw`,
+        claudeBind,
+        codexBind,
+        '/host/extra:/container/extra:ro',
+        `${DOCKER_SOCKET_PATH_IN_SPEC}:/var/run/docker.sock:rw`,
+      ]);
+    });
+
+    it('binds: plan infrastructureBinds append after docker.sock in fixed order', async () => {
+      const gitCommonBind = `${join(tempHome, 'repo', '.git')}:${join(tempHome, 'repo', '.git')}:rw`;
+      const skillsBind = `${join(tempHome, '.devchain', 'skills')}:/seed-skills:ro`;
+      const input = await captureCreateInput({
+        env: {},
+        credentialBinds: [],
+        infrastructureBinds: [gitCommonBind, skillsBind],
+      });
+
+      expect(input.HostConfig.Binds).toEqual([
+        `${join(tempHome, 'snap-wt')}:/project:rw`,
+        `${join(tempHome, 'snap-data')}:/home/node/.devchain:rw`,
+        `${DOCKER_SOCKET_PATH_IN_SPEC}:/var/run/docker.sock:rw`,
+        gitCommonBind,
+        skillsBind,
+      ]);
+    });
   });
 });

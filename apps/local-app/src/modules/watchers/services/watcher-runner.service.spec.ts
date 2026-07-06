@@ -914,216 +914,6 @@ describe('WatcherRunnerService', () => {
     });
   });
 
-  describe('checkTriggerEligibility', () => {
-    const createTestWatcher = (overrides: Partial<Watcher> = {}): Watcher => ({
-      id: 'watcher-1',
-      projectId: 'project-1',
-      name: 'Test Watcher',
-      description: null,
-      enabled: true,
-      scope: 'all',
-      scopeFilterId: null,
-      pollIntervalMs: 1000,
-      viewportLines: 50,
-      idleAfterSeconds: 0,
-      condition: { type: 'contains', pattern: 'error' },
-      cooldownMs: 5000,
-      cooldownMode: 'time',
-      eventName: 'test.event',
-      createdAt: '2024-01-01T00:00:00Z',
-      updatedAt: '2024-01-01T00:00:00Z',
-      ...overrides,
-    });
-
-    describe('hash-based deduplication', () => {
-      it('should trigger on first match', () => {
-        const watcher = createTestWatcher();
-        const result = service.checkTriggerEligibility(watcher, 'session-1', 'error content', true);
-        expect(result.shouldTrigger).toBe(true);
-      });
-
-      it('should NOT trigger when viewport hash unchanged', () => {
-        const watcher = createTestWatcher();
-        // First trigger
-        service.checkTriggerEligibility(watcher, 'session-1', 'error content', true);
-        // Second call with same content - should skip
-        const result = service.checkTriggerEligibility(watcher, 'session-1', 'error content', true);
-        expect(result.shouldTrigger).toBe(false);
-      });
-
-      it('should trigger when viewport hash changes', () => {
-        const watcher = createTestWatcher({ cooldownMs: 0 }); // Disable time-based cooldown
-        // First trigger
-        service.checkTriggerEligibility(watcher, 'session-1', 'error content 1', true);
-        // Second call with different content - should trigger
-        const result = service.checkTriggerEligibility(
-          watcher,
-          'session-1',
-          'error content 2',
-          true,
-        );
-        expect(result.shouldTrigger).toBe(true);
-      });
-    });
-
-    describe('time-based cooldown', () => {
-      it('should NOT trigger during cooldown period', () => {
-        const watcher = createTestWatcher({ cooldownMs: 10000 }); // 10s cooldown
-        // First trigger
-        service.checkTriggerEligibility(watcher, 'session-1', 'error 1', true);
-        // Second call with different content but within cooldown
-        const result = service.checkTriggerEligibility(watcher, 'session-1', 'error 2', true);
-        expect(result.shouldTrigger).toBe(false);
-      });
-
-      it('should trigger after cooldown expires', async () => {
-        const watcher = createTestWatcher({ cooldownMs: 10 }); // 10ms cooldown
-        // First trigger
-        service.checkTriggerEligibility(watcher, 'session-1', 'error 1', true);
-        // Wait for cooldown to expire
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        // Should trigger again even if viewport unchanged (cooldown already throttles)
-        const result = service.checkTriggerEligibility(watcher, 'session-1', 'error 1', true);
-        expect(result.shouldTrigger).toBe(true);
-      });
-    });
-
-    describe('until_clear cooldown mode', () => {
-      it('should trigger on first false->true transition', () => {
-        const watcher = createTestWatcher({ cooldownMode: 'until_clear' });
-        const result = service.checkTriggerEligibility(watcher, 'session-1', 'error content', true);
-        expect(result.shouldTrigger).toBe(true);
-      });
-
-      it('should NOT trigger when condition stays true', () => {
-        const watcher = createTestWatcher({ cooldownMode: 'until_clear' });
-        // First trigger (false -> true)
-        service.checkTriggerEligibility(watcher, 'session-1', 'error 1', true);
-        // Second call with condition still true (different content)
-        const result = service.checkTriggerEligibility(watcher, 'session-1', 'error 2', true);
-        expect(result.shouldTrigger).toBe(false);
-      });
-
-      it('should trigger again after condition clears (true->false->true)', () => {
-        const watcher = createTestWatcher({ cooldownMode: 'until_clear', cooldownMs: 0 });
-        // First trigger (false -> true)
-        service.checkTriggerEligibility(watcher, 'session-1', 'error 1', true);
-        // Condition becomes false - clears cooldown
-        service.checkTriggerEligibility(watcher, 'session-1', 'no error', false);
-        // Condition becomes true again - should trigger
-        const result = service.checkTriggerEligibility(watcher, 'session-1', 'error 2', true);
-        expect(result.shouldTrigger).toBe(true);
-      });
-
-      it('should clear cooldown when condition becomes false', () => {
-        const watcher = createTestWatcher({ cooldownMode: 'until_clear', cooldownMs: 0 });
-        // Trigger
-        service.checkTriggerEligibility(watcher, 'session-1', 'error', true);
-        // Verify cooldown is set
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        expect((service as any).cooldowns.has('watcher-1:session-1')).toBe(true);
-        // Condition becomes false
-        service.checkTriggerEligibility(watcher, 'session-1', 'no error', false);
-        // Cooldown should be cleared
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        expect((service as any).cooldowns.has('watcher-1:session-1')).toBe(false);
-      });
-
-      it('should not clear cooldown during the until_clear hold window', () => {
-        const watcher = createTestWatcher({ cooldownMode: 'until_clear', cooldownMs: 30000 });
-
-        service.checkTriggerEligibility(watcher, 'session-1', 'Context compacted', true);
-        service.checkTriggerEligibility(
-          watcher,
-          'session-1',
-          'terminal redraw without match',
-          false,
-        );
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        expect((service as any).cooldowns.has('watcher-1:session-1')).toBe(true);
-
-        const result = service.checkTriggerEligibility(
-          watcher,
-          'session-1',
-          'Context compacted',
-          true,
-        );
-        expect(result.shouldTrigger).toBe(false);
-      });
-
-      it('should not retrigger the identical viewport after a clear', () => {
-        const watcher = createTestWatcher({ cooldownMode: 'until_clear', cooldownMs: 0 });
-
-        service.checkTriggerEligibility(watcher, 'session-1', 'Context compacted', true);
-        service.checkTriggerEligibility(
-          watcher,
-          'session-1',
-          'terminal redraw without match',
-          false,
-        );
-
-        const result = service.checkTriggerEligibility(
-          watcher,
-          'session-1',
-          'Context compacted',
-          true,
-        );
-
-        expect(result.shouldTrigger).toBe(false);
-      });
-    });
-
-    describe('condition state tracking', () => {
-      it('should update lastConditionState on each check', () => {
-        const watcher = createTestWatcher();
-        // Check with true
-        service.checkTriggerEligibility(watcher, 'session-1', 'error', true);
-        expect(service.getLastConditionState('watcher-1', 'session-1')).toBe(true);
-        // Check with false
-        service.checkTriggerEligibility(watcher, 'session-1', 'no error', false);
-        expect(service.getLastConditionState('watcher-1', 'session-1')).toBe(false);
-      });
-
-      it('should return viewportHash in result', () => {
-        const watcher = createTestWatcher();
-        const result = service.checkTriggerEligibility(watcher, 'session-1', 'test content', true);
-        expect(result.viewportHash).toHaveLength(16);
-      });
-
-      it('should set lastTriggeredHash when triggering', () => {
-        const watcher = createTestWatcher();
-        const result = service.checkTriggerEligibility(watcher, 'session-1', 'error', true);
-        expect(service.getLastTriggeredHash('watcher-1', 'session-1')).toBe(result.viewportHash);
-      });
-    });
-
-    describe('condition not matched', () => {
-      it('should return shouldTrigger=false when condition not matched', () => {
-        const watcher = createTestWatcher();
-        const result = service.checkTriggerEligibility(watcher, 'session-1', 'no match', false);
-        expect(result.shouldTrigger).toBe(false);
-      });
-
-      it('should still return viewportHash even when not triggering', () => {
-        const watcher = createTestWatcher();
-        const result = service.checkTriggerEligibility(watcher, 'session-1', 'no match', false);
-        expect(result.viewportHash).toHaveLength(16);
-      });
-    });
-
-    describe('isolation between sessions', () => {
-      it('should maintain separate state for different sessions', () => {
-        const watcher = createTestWatcher({ cooldownMode: 'until_clear' });
-        // Trigger for session-1
-        service.checkTriggerEligibility(watcher, 'session-1', 'error', true);
-        // Trigger for session-2 should work independently
-        const result = service.checkTriggerEligibility(watcher, 'session-2', 'error', true);
-        expect(result.shouldTrigger).toBe(true);
-      });
-    });
-  });
-
   describe('checkSession', () => {
     const createTestWatcher = (overrides: Partial<Watcher> = {}): Watcher => ({
       id: 'watcher-1',
@@ -2022,6 +1812,66 @@ describe('WatcherRunnerService', () => {
       expect(ids).toContain('watcher-1');
       expect(ids).toContain('watcher-2');
       expect(ids).toHaveLength(2);
+    });
+  });
+
+  // Edge characterization for the shared viewport cache (locks behavior at the
+  // seam rather than re-covering captureViewport unit tests above).
+  describe('captureCache 2s-TTL × concurrent pollWatcher (edge characterization)', () => {
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('serves one shared capture to a second watcher within the 2s TTL (single tmux call)', async () => {
+      jest.useFakeTimers();
+      jest.setSystemTime(new Date('2025-01-01T00:00:00.000Z'));
+      mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'shared viewport' });
+
+      // First watcher captures (cache miss → tmux).
+      const first = await service.captureViewport('tmux-shared', 50);
+      // A different watcher polling the same session+lines reuses the cache.
+      const second = await service.captureViewport('tmux-shared', 50);
+
+      expect(first).toBe('shared viewport');
+      expect(second).toBe('shared viewport');
+      expect(mockTerminalIO.captureHistory).toHaveBeenCalledTimes(1);
+    });
+
+    it('re-captures from tmux once the 2s TTL expires on the shared key', async () => {
+      jest.useFakeTimers();
+      jest.setSystemTime(new Date('2025-01-01T00:00:00.000Z'));
+      mockTerminalIO.captureHistory
+        .mockResolvedValueOnce({ ok: true, output: 'stale' })
+        .mockResolvedValueOnce({ ok: true, output: 'fresh' });
+
+      await service.captureViewport('tmux-expire', 50);
+      expect(mockTerminalIO.captureHistory).toHaveBeenCalledTimes(1);
+
+      await jest.advanceTimersByTimeAsync(2001); // past the 2s TTL
+      const after = await service.captureViewport('tmux-expire', 50);
+
+      expect(after).toBe('fresh');
+      expect(mockTerminalIO.captureHistory).toHaveBeenCalledTimes(2);
+    });
+
+    it('skips an overlapping poll for the same watcher (per-watcher inFlight guard)', async () => {
+      const watcher = createMockWatcher({ id: 'watcher-overlap', scope: 'all' });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (service as any).watcherConfigs.set('watcher-overlap', watcher);
+      mockSessionsService.listActiveSessions.mockResolvedValue([
+        createMockSession({ tmuxSessionId: 'tmux-overlap' }),
+      ]);
+      mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'no error here' });
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pollWatcher = (service as any).pollWatcher.bind(service);
+      // inFlight is set synchronously before the first await in pollWatcher, so the
+      // second overlapping poll observes it and no-ops without running checkSession.
+      const first = pollWatcher('watcher-overlap');
+      const second = pollWatcher('watcher-overlap');
+      await Promise.all([first, second]);
+
+      expect(mockTerminalIO.captureHistory).toHaveBeenCalledTimes(1);
     });
   });
 });

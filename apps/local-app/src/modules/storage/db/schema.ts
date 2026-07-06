@@ -100,6 +100,33 @@ export const providerModels = sqliteTable(
   }),
 );
 
+// Provider Efforts (supported reasoning effort levels per provider)
+export const providerEfforts = sqliteTable(
+  'provider_efforts',
+  {
+    id: text('id').primaryKey(),
+    providerId: text('provider_id')
+      .notNull()
+      .references(() => providers.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    position: integer('position').notNull().default(0),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    // Case-insensitive uniqueness per provider to prevent duplicate effort names.
+    providerEffortNameUniqueCi: uniqueIndex('provider_efforts_provider_name_ci_idx').on(
+      table.providerId,
+      sql`lower(${table.name})`,
+    ),
+    // Supports ordered list queries by provider.
+    providerEffortPositionIdx: index('provider_efforts_provider_position_idx').on(
+      table.providerId,
+      table.position,
+    ),
+  }),
+);
+
 // Provider Env Scopes (per-project scoping for provider-level env vars)
 export const providerEnvScopes = sqliteTable(
   'provider_env_scopes',
@@ -163,6 +190,8 @@ export const profileProviderConfigs = sqliteTable(
     description: text('description'),
     options: text('options'), // JSON string for provider-specific options
     env: text('env'), // JSON string for environment variables
+    model: text('model'), // Structured default model selected from provider catalog
+    effort: text('effort'), // Structured default effort selected from provider catalog
     position: integer('position').notNull().default(0), // Order within profile
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
@@ -194,6 +223,7 @@ export const agents = sqliteTable('agents', {
     .notNull()
     .references(() => profileProviderConfigs.id, { onDelete: 'restrict' }),
   modelOverride: text('model_override'),
+  effortOverride: text('effort_override'),
   name: text('name').notNull(),
   description: text('description'),
   createdAt: text('created_at').notNull(),

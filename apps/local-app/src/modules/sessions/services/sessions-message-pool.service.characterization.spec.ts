@@ -130,7 +130,7 @@ describe('SessionsMessagePoolService characterization', () => {
         immediate: true,
         senderAgentId: 'sender-1',
       }),
-    ).resolves.toEqual({ status: 'failed', error: 'tmux failed' });
+    ).resolves.toEqual({ status: 'failed', error: 'tmux failed', logEntryId: expect.any(String) });
     expect(failureNotifier.notifySendersOfFailure).not.toHaveBeenCalled();
   });
 

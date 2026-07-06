@@ -113,6 +113,20 @@ function eventsStub(): EventsService {
   return { publish: jest.fn().mockResolvedValue('evt-id') } as unknown as EventsService;
 }
 
+/** ProviderAdapterFactory mock: Claude binds (hooksProvideTranscriptPath=true),
+ *  Copilot confirms (=false). Drives the listener's bind-vs-confirm branch. */
+function mockProviderAdapterFactory(): ProviderAdapterFactory {
+  return {
+    getAdapter: jest.fn((name: string) => {
+      if (name === 'claude')
+        return { providerName: 'claude', hooksEnabled: true, hooksProvideTranscriptPath: true };
+      if (name === 'copilot')
+        return { providerName: 'copilot', hooksEnabled: true, hooksProvideTranscriptPath: false };
+      throw new Error(`Unsupported: ${name}`);
+    }),
+  } as unknown as ProviderAdapterFactory;
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────
 
 describe('Copilot lifecycle seam: relay → HookEventSchema → HooksService → listener', () => {
@@ -159,7 +173,7 @@ describe('Copilot lifecycle seam: relay → HookEventSchema → HooksService →
       listenerEvents,
       { getAdapter: jest.fn().mockReturnValue(null) } as unknown as SessionReaderAdapterFactory,
       {} as StorageService,
-      {} as unknown as ProviderAdapterFactory as never,
+      mockProviderAdapterFactory() as unknown as ProviderAdapterFactory as never,
     );
   });
 
@@ -259,7 +273,7 @@ describe('Claude regression seam: the same pipeline binds the transcript FROM th
       listenerEvents,
       { getAdapter: jest.fn().mockReturnValue(null) } as unknown as SessionReaderAdapterFactory,
       {} as StorageService,
-      {} as unknown as ProviderAdapterFactory as never,
+      mockProviderAdapterFactory() as unknown as ProviderAdapterFactory as never,
     );
   });
 

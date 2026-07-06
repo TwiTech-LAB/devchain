@@ -14,6 +14,8 @@ export interface PoolMessage {
   readonly immediate?: boolean;
   readonly projectId?: string;
   readonly agentName?: string;
+  /** Caller-supplied idempotency key (mobile sends); threaded into the pool for dedup. */
+  readonly clientMessageId?: string;
 }
 
 export interface MessageEnqueueResult extends EnqueueResult {
@@ -47,6 +49,7 @@ export class MessageEnqueueService {
         immediate: message.immediate,
         projectId: message.projectId,
         agentName: message.agentName,
+        clientMessageId: message.clientMessageId,
       });
 
       results.push({ agentId: message.agentId, ...result });

@@ -3,6 +3,7 @@ import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
 import { DataSeederService, type DataSeeder } from './data-seeder.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import { WatchersService } from '../../watchers/services/watchers.service';
+import type { ProviderEffortSeedingService } from '../../providers/services/provider-effort-seeding.service';
 
 describe('DataSeederService', () => {
   let sqlite: Database.Database;
@@ -27,7 +28,13 @@ describe('DataSeederService', () => {
   });
 
   function createService(seeders: DataSeeder[]): DataSeederService {
-    return new DataSeederService({} as StorageService, {} as WatchersService, db, seeders);
+    return new DataSeederService(
+      {} as StorageService,
+      {} as WatchersService,
+      {} as ProviderEffortSeedingService,
+      db,
+      seeders,
+    );
   }
 
   function upsertJournal(rawValue: string): void {

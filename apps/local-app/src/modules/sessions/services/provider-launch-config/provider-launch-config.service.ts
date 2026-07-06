@@ -4,6 +4,7 @@ import type {
 } from '../../../providers/adapters/provider-adapter.interface';
 import {
   isContextWindowCapable,
+  isEffortCapable,
   isHookCapable,
   type HookEnvContext,
   type ContextWindowProviderState,
@@ -12,6 +13,7 @@ import {
   parseProfileOptions,
   ProfileOptionsError,
   injectModelOverride,
+  extractModelFromArgs,
 } from '../../utils/profile-options';
 import { buildSessionCommand, EnvBuilderError } from '../../utils/env-builder';
 
@@ -29,6 +31,15 @@ export interface LaunchConfigInput {
   adapter: ProviderAdapter;
   profileOptions: string | null | undefined;
   modelOverride: string | null | undefined;
+  /**
+   * Effective effort value (agent override → config default), precomputed by the
+   * pipeline. When set AND the adapter is effort-capable, the adapter strips any
+   * conflicting raw effort flags and injects its native form. When null/undefined,
+   * raw effort options pass through untouched (power-user escape hatch). Applied
+   * AFTER model injection and BEFORE the context-window model-alias rewrite so the
+   * adapter sees the pre-alias model form.
+   */
+  effortOverride?: string | null;
   providerBinPath: string;
   providerEnv: Record<string, string> | null;
   configEnv: Record<string, string> | null;
@@ -86,6 +97,22 @@ export function resolve(input: LaunchConfigInput): LaunchConfig {
   if (isHookCapable(input.adapter) && input.hookContext) {
     const hookEnv = input.adapter.buildHookEnv(input.hookContext);
     env = { ...hookEnv, ...providerEnv, ...configEnv };
+  }
+
+  // Effort resolution runs AFTER model injection (above) but BEFORE the
+  // context-window model-alias rewrite (below): the ordering invariant is that
+  // effort must not assume the post-alias model form, so a per-model effort
+  // adapter sees the pre-alias effective model here.
+  if (isEffortCapable(input.adapter) && input.effortOverride) {
+    const effectiveModel = extractModelFromArgs(optionArgs) ?? undefined;
+    const effortResult = input.adapter.applyEffort(
+      optionArgs,
+      env ?? {},
+      input.effortOverride,
+      effectiveModel,
+    );
+    optionArgs = effortResult.argv;
+    env = Object.keys(effortResult.env).length > 0 ? effortResult.env : null;
   }
 
   if (isContextWindowCapable(input.adapter)) {

@@ -169,6 +169,20 @@ describe('ChatTerminal', () => {
 
     const utils = render(<ChatTerminal sessionId="chat-session" socket={currentAppSocket} />);
 
+    // jsdom reports offsetParent === null for every element (no layout engine), which the
+    // visibility-aware scroll guard would read as "hidden" and suppress all history requests.
+    // Mark the terminal container visible BEFORE the 100ms poll first ticks so these tests
+    // exercise the on-screen path (the terminal is genuinely visible in these scenarios).
+    const terminalContainer = utils
+      .getByRole('region')
+      .querySelector('div.overflow-auto') as HTMLElement | null;
+    if (terminalContainer) {
+      Object.defineProperty(terminalContainer, 'offsetParent', {
+        configurable: true,
+        get: () => document.body,
+      });
+    }
+
     // Wait for settings fetch and effects to register
     if (useFakeTimers) {
       // With fake timers, run all pending timers
@@ -506,6 +520,20 @@ describe('ChatTerminal', () => {
     // Advance past the poll interval to establish wasAtBottom = true
     await act(async () => {
       jest.advanceTimersByTime(150);
+    });
+
+    // A genuine user scroll gesture (Shift+PageUp) is required by the gesture gate before a
+    // scroll-up can request history. The container is the element passed to terminal.open().
+    const termContainer = terminalInstance?.open.mock.calls[0]?.[0] as HTMLElement | undefined;
+    await act(async () => {
+      termContainer?.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          shiftKey: true,
+          code: 'PageUp',
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
     });
 
     // Now simulate scroll-up (viewportY moves away from baseY)

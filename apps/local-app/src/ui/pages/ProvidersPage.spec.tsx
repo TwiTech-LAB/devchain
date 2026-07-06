@@ -2272,3 +2272,249 @@ describe('ProvidersPage - aggregate-fail MCP badge guard', () => {
     expect(screen.queryByText('MCP —')).not.toBeInTheDocument();
   });
 });
+
+describe('ProvidersPage - provider effort levels management', () => {
+  const claudeProvider = {
+    id: 'p-claude',
+    name: 'claude',
+    binPath: '/usr/local/bin/claude',
+    autoCompactThreshold: null,
+    oneMillionContextEnabled: false,
+    mcpConfigured: true,
+    mcpEndpoint: 'http://127.0.0.1:3000/mcp',
+    mcpRegisteredAt: '2024-01-01',
+    createdAt: '2024-01-01',
+    updatedAt: '2024-01-01',
+  };
+
+  const agyProvider = {
+    ...claudeProvider,
+    id: 'p-agy',
+    name: 'agy',
+    binPath: '/usr/local/bin/agy',
+  };
+
+  // Per-provider effort state. supportsEffort is the capability signal; empty efforts
+  // is a valid manageable state (empty ≠ unsupported).
+  const effortsByProvider: Record<
+    string,
+    Array<{ id: string; providerId: string; name: string }>
+  > = {
+    'p-claude': [{ id: 'e-1', providerId: 'p-claude', name: 'high' }],
+  };
+  const supportsByProvider: Record<string, boolean> = {
+    'p-claude': true,
+    'p-agy': false,
+  };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function setupFetch(providers: any[]) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (global as unknown as { fetch: unknown }).fetch = jest.fn(
+      (url: string, options?: RequestInit) => {
+        if (url === '/api/providers' && (!options || !options.method)) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              items: providers,
+              total: providers.length,
+              limit: 100,
+              offset: 0,
+            }),
+          });
+        }
+        if (url.startsWith('/api/preflight')) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              overall: 'pass',
+              checks: [],
+              providers: providers.map((p) => ({
+                id: p.id,
+                mcpStatus: p.mcpConfigured ? 'pass' : 'warn',
+              })),
+              supportedMcpProviders: ['claude', 'codex', 'opencode'],
+              timestamp: new Date().toISOString(),
+            }),
+          });
+        }
+        // Models endpoint — return empty so the sibling Models section doesn't interfere.
+        if (url.match(/^\/api\/providers\/[^/]+\/models$/) && (!options || !options.method)) {
+          return Promise.resolve({ ok: true, json: async () => [] });
+        }
+        // Efforts GET → capability-gated response shape.
+        if (url.match(/^\/api\/providers\/[^/]+\/efforts$/) && (!options || !options.method)) {
+          const providerId = url.split('/')[3];
+          const efforts = effortsByProvider[providerId] ?? [];
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              efforts: efforts.map((effort, index) => ({
+                ...effort,
+                position: index,
+                createdAt: '2024-01-01',
+                updatedAt: '2024-01-01',
+              })),
+              supportsEffort: supportsByProvider[providerId] ?? false,
+              requiresModelForEffort: false,
+            }),
+          });
+        }
+        if (url.match(/^\/api\/providers\/[^/]+\/efforts$/) && options?.method === 'POST') {
+          const body = JSON.parse(options.body as string);
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              id: 'e-new',
+              providerId: url.split('/')[3],
+              name: body.name,
+              position: 0,
+              createdAt: '2024-01-01',
+              updatedAt: '2024-01-01',
+            }),
+          });
+        }
+        if (
+          url.match(/^\/api\/providers\/[^/]+\/efforts\/[^/]+$/) &&
+          options?.method === 'DELETE'
+        ) {
+          return Promise.resolve({ ok: true, json: async () => ({ success: true }) });
+        }
+        if (url.match(/\/api\/providers\/[\w-]+$/) && options?.method === 'PUT') {
+          return Promise.resolve({ ok: true, json: async () => providers[0] });
+        }
+        return Promise.resolve({ ok: false });
+      },
+    );
+  }
+
+  beforeEach(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (Element as unknown as { prototype: { scrollIntoView: unknown } }).prototype.scrollIntoView =
+      jest.fn();
+  });
+
+  it('shows the effort section with add affordance for a capable provider even when empty (empty ≠ unsupported)', async () => {
+    // Capable provider with NO effort values yet — section must still render + be usable.
+    effortsByProvider['p-claude'] = [];
+    setupFetch([claudeProvider]);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('claude')).toBeInTheDocument());
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Effort Levels \(0\)/i })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Effort Levels \(/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText('No effort levels configured.')).toBeInTheDocument(),
+    );
+    expect(screen.getByLabelText('Add Effort Level')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add Effort Level' })).toBeInTheDocument();
+  });
+
+  it('hides the effort section entirely for a non-capable provider (agy)', async () => {
+    setupFetch([agyProvider]);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('agy')).toBeInTheDocument());
+
+    // The effort query resolves with supportsEffort:false → section renders nothing.
+    await waitFor(() => {
+      const effortCalls = (
+        (global as unknown as { fetch?: unknown }).fetch as jest.Mock
+      ).mock.calls.filter(
+        (call: [string, RequestInit?]) =>
+          call[0] === '/api/providers/p-agy/efforts' && (!call[1] || !call[1].method),
+      );
+      expect(effortCalls.length).toBeGreaterThan(0);
+    });
+    expect(screen.queryByText(/Effort Levels/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Add Effort Level')).not.toBeInTheDocument();
+  });
+
+  it('adds and deletes effort levels from the effort section (themed confirm dialog)', async () => {
+    effortsByProvider['p-claude'] = [{ id: 'e-1', providerId: 'p-claude', name: 'high' }];
+    setupFetch([claudeProvider]);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('claude')).toBeInTheDocument());
+
+    // The effort section renders null until the capability query resolves (unlike
+    // Models, which always renders), so await the button before expanding.
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Effort Levels \(1\)/i })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Effort Levels \(/i }));
+    await waitFor(() => expect(screen.getByText('high')).toBeInTheDocument());
+
+    // Add
+    fireEvent.change(screen.getByLabelText('Add Effort Level'), { target: { value: 'max' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Effort Level' }));
+    await waitFor(() => {
+      const postCalls = (
+        (global as unknown as { fetch?: unknown }).fetch as jest.Mock
+      ).mock.calls.filter(
+        (call: [string, RequestInit?]) =>
+          call[0] === '/api/providers/p-claude/efforts' && call[1]?.method === 'POST',
+      );
+      expect(postCalls.length).toBeGreaterThan(0);
+      expect(JSON.parse(postCalls[0][1].body as string)).toEqual({ name: 'max' });
+    });
+
+    // Delete via themed dialog (not window.confirm)
+    fireEvent.click(screen.getByRole('button', { name: 'Delete effort level high' }));
+    await waitFor(() => expect(screen.getByText('Delete Effort Level')).toBeInTheDocument());
+    const dialog = screen.getByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => {
+      const deleteCalls = (
+        (global as unknown as { fetch?: unknown }).fetch as jest.Mock
+      ).mock.calls.filter(
+        (call: [string, RequestInit?]) =>
+          call[0] === '/api/providers/p-claude/efforts/e-1' && call[1]?.method === 'DELETE',
+      );
+      expect(deleteCalls.length).toBeGreaterThan(0);
+    });
+  });
+
+  it('invalidates provider-efforts caches across contexts after add/delete', async () => {
+    effortsByProvider['p-claude'] = [{ id: 'e-1', providerId: 'p-claude', name: 'high' }];
+    setupFetch([claudeProvider]);
+    const queryClient = createQueryClient();
+    const invalidateSpy = jest.spyOn(queryClient, 'invalidateQueries');
+    renderWithQuery(<ProvidersPage />, queryClient);
+    await waitFor(() => expect(screen.getByText('claude')).toBeInTheDocument());
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Effort Levels \(1\)/i })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Effort Levels \(/i }));
+    await waitFor(() => expect(screen.getByText('high')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText('Add Effort Level'), { target: { value: 'max' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Effort Level' }));
+    await waitFor(() => {
+      expect(
+        invalidateSpy.mock.calls.some(
+          ([arg]) =>
+            (arg as { queryKey?: unknown[] })?.queryKey?.length === 1 &&
+            (arg as { queryKey?: unknown[] })?.queryKey?.[0] === 'provider-efforts',
+        ),
+      ).toBe(true);
+    });
+
+    invalidateSpy.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete effort level high' }));
+    await waitFor(() => expect(screen.getByText('Delete Effort Level')).toBeInTheDocument());
+    const dialog = screen.getByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => {
+      expect(
+        invalidateSpy.mock.calls.some(
+          ([arg]) =>
+            (arg as { queryKey?: unknown[] })?.queryKey?.length === 1 &&
+            (arg as { queryKey?: unknown[] })?.queryKey?.[0] === 'provider-efforts',
+        ),
+      ).toBe(true);
+    });
+  });
+});

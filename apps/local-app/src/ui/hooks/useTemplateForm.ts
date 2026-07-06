@@ -42,6 +42,13 @@ export interface TeamOverridePayload {
   }>;
 }
 
+export interface AgentOverridePayload {
+  agentName: string;
+  providerConfigName: string;
+  modelOverride?: string | null;
+  effortOverride?: string | null;
+}
+
 export interface CreateFromTemplatePayload {
   name: string;
   description?: string;
@@ -49,7 +56,12 @@ export interface CreateFromTemplatePayload {
   templateId?: string;
   templatePath?: string;
   version?: string;
+  familyProviderMappings?: Record<string, string>;
   presetName?: string;
+  /** Per-agent config overrides (wizard Step 2). Mutually exclusive with presetName. */
+  agentOverrides?: AgentOverridePayload[];
+  /** Transient server-enforced provider allowlist (wizard Step 1). */
+  selectedProviderNames?: string[];
   teamOverrides?: TeamOverridePayload[];
 }
 
@@ -67,9 +79,6 @@ interface UseTemplateFormResult {
   setTemplateFormData: React.Dispatch<React.SetStateAction<TemplateFormData>>;
   templatePathValidation: TemplatePathValidation;
   templateFilePathValidation: TemplateFilePathValidation;
-  availablePresets: string[];
-  selectedPreset: string;
-  setSelectedPreset: React.Dispatch<React.SetStateAction<string>>;
   selectedTemplate: TemplateOption | undefined;
   sortedVersions: string[];
   resetTemplateForm: () => void;
@@ -110,8 +119,6 @@ export function useTemplateForm({
       checked: false,
       isFile: false,
     });
-  const [availablePresets, setAvailablePresets] = useState<string[]>([]);
-  const [selectedPreset, setSelectedPreset] = useState<string>('');
   const latestTemplatePathRef = useRef('');
 
   const resetTemplateForm = () => {
@@ -132,8 +139,6 @@ export function useTemplateForm({
     });
     setTemplateSourceTab('template');
     latestTemplatePathRef.current = '';
-    setSelectedPreset('');
-    setAvailablePresets([]);
   };
 
   const handleOpenTemplateDialog = () => {
@@ -267,7 +272,6 @@ export function useTemplateForm({
       rootPath: templateFormData.rootPath,
       templateId: templateFormData.templateId,
       version: templateFormData.version,
-      ...(selectedPreset && { presetName: selectedPreset }),
     });
   };
 
@@ -298,6 +302,8 @@ export function useTemplateForm({
     }
   }, [templates, templateFormData.templateId]);
 
+  // Preset selection was removed from the create modal (it now lives in wizard Step 2, sourced from
+  // the setup-preview endpoint). This handler only sets the selected template + its latest version.
   const handleTemplateChange = async (slug: string) => {
     const template = templates?.find((t) => t.slug === slug);
     const latestVersion = template?.latestVersion || '';
@@ -307,73 +313,7 @@ export function useTemplateForm({
       templateId: slug,
       version: latestVersion,
     }));
-    setSelectedPreset('');
-    setAvailablePresets([]);
-
-    if (template) {
-      try {
-        const templateUrl =
-          template.source === 'registry' && latestVersion
-            ? `/api/templates/${slug}/versions/${latestVersion}`
-            : `/api/templates/${slug}`;
-        const res = await fetch(templateUrl);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.content?.presets && Array.isArray(data.content.presets)) {
-            const presetNames = data.content.presets.map((p: { name: string }) => p.name).reverse();
-            setAvailablePresets(presetNames);
-          }
-        }
-      } catch (error) {
-        console.error('Failed to fetch template presets:', error);
-      }
-    }
   };
-
-  useEffect(() => {
-    const fetchPresetsForTemplate = async () => {
-      if (!templateFormData.templateId || templateSourceTab === 'file') {
-        return;
-      }
-
-      const template = templates?.find((t) => t.slug === templateFormData.templateId);
-      if (!template) return;
-
-      const templateUrl =
-        template.source === 'registry' && templateFormData.version
-          ? `/api/templates/${templateFormData.templateId}/versions/${templateFormData.version}`
-          : `/api/templates/${templateFormData.templateId}`;
-
-      try {
-        const res = await fetch(templateUrl);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.content?.presets && Array.isArray(data.content.presets)) {
-            const presetNames = data.content.presets.map((p: { name: string }) => p.name).reverse();
-            setAvailablePresets(presetNames);
-          } else {
-            setAvailablePresets([]);
-          }
-          if (
-            selectedPreset &&
-            !data.content?.presets?.some((p: { name: string }) => p.name === selectedPreset)
-          ) {
-            setSelectedPreset('');
-          }
-        }
-      } catch (error) {
-        console.error('Failed to fetch template presets:', error);
-      }
-    };
-
-    fetchPresetsForTemplate();
-  }, [
-    templateFormData.version,
-    templateFormData.templateId,
-    templates,
-    selectedPreset,
-    templateSourceTab,
-  ]);
 
   return {
     templateSourceTab,
@@ -382,9 +322,6 @@ export function useTemplateForm({
     setTemplateFormData,
     templatePathValidation,
     templateFilePathValidation,
-    availablePresets,
-    selectedPreset,
-    setSelectedPreset,
     selectedTemplate,
     sortedVersions,
     resetTemplateForm,

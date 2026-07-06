@@ -85,12 +85,17 @@ export class AgentMessageDeliveryService {
           immediate: policy.immediate,
           projectId: message.projectId,
           agentName: undefined,
+          clientMessageId: message.clientMessageId,
         },
       ]);
       if (!poolResult) {
         return { agentId, status: 'failed', error: 'Message enqueue returned no result' };
       }
-      return { agentId, status: poolResult.status };
+      return {
+        agentId,
+        status: poolResult.status,
+        ...(poolResult.logEntryId ? { messageId: poolResult.logEntryId } : {}),
+      };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       return { agentId, status: 'failed', error: msg };

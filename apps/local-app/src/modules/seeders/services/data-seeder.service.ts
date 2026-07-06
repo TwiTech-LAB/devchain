@@ -16,6 +16,8 @@ import { seedRenameTemplateSlugsSeeder } from '../seeders/0006_seed_rename_templ
 import { seedClaudeNoFlickerEnvSeeder } from '../seeders/0007_seed_claude_no_flicker_env';
 import { seedRemoveClaudeNoFlickerEnvSeeder } from '../seeders/0008_seed_remove_claude_no_flicker_env';
 import { seedRemoveGeminiProviderSeeder } from '../seeders/0009_seed_remove_gemini_provider';
+import { seedProviderEffortDefaultsSeeder } from '../seeders/0010_seed_provider_effort_defaults';
+import { ProviderEffortSeedingService } from '../../providers/services/provider-effort-seeding.service';
 import type { DataSeeder } from '../types/seeder.types';
 
 export const DATA_SEEDERS = 'DATA_SEEDERS';
@@ -32,6 +34,7 @@ export const REGISTERED_DATA_SEEDERS: DataSeeder[] = [
   seedClaudeNoFlickerEnvSeeder,
   seedRemoveClaudeNoFlickerEnvSeeder,
   seedRemoveGeminiProviderSeeder,
+  seedProviderEffortDefaultsSeeder,
 ];
 
 interface SeederJournalEntry {
@@ -72,6 +75,7 @@ export class DataSeederService implements OnModuleInit {
   constructor(
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
     private readonly watchersService: WatchersService,
+    private readonly providerEffortSeeding: ProviderEffortSeedingService,
     @Inject(DB_CONNECTION) private readonly db: BetterSQLite3Database,
     @Inject(DATA_SEEDERS) private readonly seeders: DataSeeder[],
   ) {
@@ -113,6 +117,7 @@ export class DataSeederService implements OnModuleInit {
         await seeder.run({
           storage: this.storage,
           watchersService: this.watchersService,
+          providerEffortSeeding: this.providerEffortSeeding,
           db: this.db,
           logger: seederLogger,
         });

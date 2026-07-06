@@ -15,6 +15,8 @@ export interface PooledMessage {
   submitKeys: string[];
   senderAgentId?: string;
   logEntryId: string;
+  /** Caller-supplied idempotency key (mobile sends); see {@link EnqueueOptions.clientMessageId}. */
+  clientMessageId?: string;
 }
 
 export interface EnqueueOptions {
@@ -28,12 +30,22 @@ export interface EnqueueOptions {
   immediate?: boolean;
   projectId?: string;
   agentName?: string;
+  /**
+   * Caller-supplied idempotency key. When set, a re-enqueue with the same
+   * `clientMessageId` + `agentId` + `source` returns the existing entry instead
+   * of delivering again (see the dedup invariant in
+   * `SessionsMessagePoolService.enqueue`). Used by mobile so a relay-timeout
+   * retry cannot duplicate a send.
+   */
+  clientMessageId?: string;
 }
 
 export interface EnqueueResult {
   status: 'queued' | 'delivered' | 'failed' | 'unconfirmed';
   poolSize?: number;
   error?: string;
+  /** Log-entry id of the enqueued (or deduped) message; the mobile-facing messageId. */
+  logEntryId?: string;
 }
 
 export interface FlushResult {
@@ -59,6 +71,8 @@ export interface MessageLogEntry {
   text: string;
   source: string;
   senderAgentId?: string;
+  /** Caller-supplied idempotency key; see {@link EnqueueOptions.clientMessageId}. */
+  clientMessageId?: string;
   status: 'queued' | 'delivered' | 'failed' | 'unconfirmed';
   batchId?: string;
   deliveredAt?: number;

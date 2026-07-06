@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '../hooks/use-toast';
+import { getErrorMessage } from '@/ui/lib/toast-helpers';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 import { resolveSkillSlugs, type SkillSummary } from '@/ui/lib/skills';
@@ -263,10 +264,10 @@ async function checkPreflight(
       errors: [
         {
           code: 'preflight_failed',
-          message:
-            error instanceof Error
-              ? error.message
-              : 'Preflight check failed. Please review provider configuration.',
+          message: getErrorMessage(
+            error,
+            'Preflight check failed. Please review provider configuration.',
+          ),
         },
       ],
     };

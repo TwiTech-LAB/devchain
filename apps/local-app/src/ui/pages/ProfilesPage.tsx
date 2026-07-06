@@ -13,7 +13,15 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@/ui/components/ui/dialog';
-import { useToast } from '@/ui/hooks/use-toast';
+import { getErrorMessage, useToastHelpers } from '@/ui/lib/toast-helpers';
+import { useConfirmDialog, useFormDialog } from '@/ui/hooks/useFormDialog';
+import {
+  optimisticAdd,
+  optimisticMergeById,
+  optimisticRemoveById,
+  useCrudMutation,
+  type ListContainer,
+} from '@/ui/hooks/useCrudMutations';
 import {
   Plus,
   GripVertical,
@@ -28,6 +36,7 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { cn } from '@/ui/lib/utils';
+import { providersQueryKeys } from '@/ui/lib/providers-query-keys';
 import { EnvEditor, type EnvEditorHandle } from '@/ui/components/EnvEditor';
 import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
 import { MarkdownReferenceInput } from '@/ui/components/shared';
@@ -71,15 +80,10 @@ interface ProviderConfig {
   description: string | null;
   options: string | null;
   env: Record<string, string> | null;
+  model: string | null;
+  effort: string | null;
   createdAt: string;
   updatedAt: string;
-}
-
-interface ProfilesQueryData {
-  items: AgentProfile[];
-  total?: number;
-  limit?: number;
-  offset?: number;
 }
 
 async function fetchProfiles(projectId: string) {
@@ -166,6 +170,8 @@ async function createProviderConfig(
     description?: string | null;
     options?: string | null;
     env?: Record<string, string> | null;
+    model?: string | null;
+    effort?: string | null;
   },
 ): Promise<ProviderConfig> {
   const res = await fetch(`/api/profiles/${profileId}/provider-configs`, {
@@ -187,6 +193,8 @@ async function updateProviderConfig(
     description?: string | null;
     options?: string | null;
     env?: Record<string, string> | null;
+    model?: string | null;
+    effort?: string | null;
   },
 ): Promise<ProviderConfig> {
   const res = await fetch(`/api/provider-configs/${id}`, {
@@ -207,6 +215,141 @@ async function deleteProviderConfig(id: string): Promise<void> {
     const error = await res.json().catch(() => ({}));
     throw new Error(error.message || 'Failed to delete provider config');
   }
+}
+
+interface ProviderCatalogModel {
+  name: string;
+}
+
+interface ProviderEffortsCatalog {
+  efforts: Array<{ name: string }>;
+  supportsEffort: boolean;
+  requiresModelForEffort: boolean;
+}
+
+async function fetchProviderModels(providerId: string): Promise<ProviderCatalogModel[]> {
+  const res = await fetch(`/api/providers/${encodeURIComponent(providerId)}/models`);
+  if (!res.ok) throw new Error('Failed to fetch provider models');
+  return res.json();
+}
+
+async function fetchProviderEfforts(providerId: string): Promise<ProviderEffortsCatalog> {
+  const res = await fetch(`/api/providers/${encodeURIComponent(providerId)}/efforts`);
+  if (!res.ok) throw new Error('Failed to fetch provider efforts');
+  return res.json();
+}
+
+// Detect whether raw options text carries a conflicting flag for a structured
+// selection. Intentionally simple string/flag matching (full options parsing is
+// a registered backlog item).
+const MODEL_FLAG_RES = /(^|\s)--model(=|\s)|(^|\s)-m(\s)/;
+const EFFORT_FLAG_RES =
+  /(^|\s)--effort(=|\s)|(^|\s)--reasoning-effort(=|\s)|-c\s+model_reasoning_effort=/;
+
+function hasModelFlagConflict(options: string, model: string | null): boolean {
+  return model != null && MODEL_FLAG_RES.test(options);
+}
+
+function hasEffortFlagConflict(options: string, effort: string | null): boolean {
+  return effort != null && EFFORT_FLAG_RES.test(options);
+}
+
+// Structured Model + Effort selectors with a non-blocking conflict warning.
+// Used by both the create and edit config paths.
+export function ProviderConfigDefaultsFields({
+  providerId,
+  model,
+  effort,
+  options,
+  onModelChange,
+  onEffortChange,
+}: {
+  providerId: string;
+  model: string | null;
+  effort: string | null;
+  options: string;
+  onModelChange: (value: string | null) => void;
+  onEffortChange: (value: string | null) => void;
+}) {
+  const { data: models } = useQuery({
+    queryKey: ['provider-models', providerId],
+    queryFn: () => fetchProviderModels(providerId),
+    enabled: !!providerId,
+  });
+
+  const { data: effortsCatalog } = useQuery({
+    queryKey: ['provider-efforts', providerId],
+    queryFn: () => fetchProviderEfforts(providerId),
+    enabled: !!providerId,
+  });
+
+  const supportsEffort = effortsCatalog?.supportsEffort ?? false;
+  const efforts = effortsCatalog?.efforts ?? [];
+  const modelOptions = models ?? [];
+
+  const modelConflict = hasModelFlagConflict(options, model);
+  const effortConflict = hasEffortFlagConflict(options, effort);
+  const showWarning = modelConflict || effortConflict;
+
+  const selectClass =
+    'flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm';
+
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <Label className="text-xs">Model</Label>
+          <select
+            value={model ?? ''}
+            onChange={(e) => onModelChange(e.target.value || null)}
+            className={selectClass}
+            aria-label="Structured model default"
+          >
+            <option value="">None (use raw options)</option>
+            {modelOptions.map((m) => (
+              <option key={m.name} value={m.name}>
+                {m.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        {supportsEffort && (
+          <div>
+            <Label className="text-xs">Effort</Label>
+            <select
+              value={effort ?? ''}
+              onChange={(e) => onEffortChange(e.target.value || null)}
+              className={selectClass}
+              disabled={efforts.length === 0}
+              aria-label="Structured effort default"
+            >
+              <option value="">None (use raw options)</option>
+              {efforts.map((e) => (
+                <option key={e.name} value={e.name}>
+                  {e.name}
+                </option>
+              ))}
+            </select>
+            {efforts.length === 0 && (
+              <p className="text-xs text-muted-foreground mt-1">No effort levels configured</p>
+            )}
+          </div>
+        )}
+      </div>
+      {showWarning && (
+        <div className="flex items-start gap-2 text-xs text-amber-600 dark:text-amber-500">
+          <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+          <span>
+            The flag in options will be overridden by the structured selection
+            {modelConflict && effortConflict ? 's' : ''}.
+          </span>
+        </div>
+      )}
+      <p className="text-xs text-muted-foreground">
+        Precedence: agent override → these structured defaults → raw options flags.
+      </p>
+    </div>
+  );
 }
 
 // Drag and Drop Prompt List Component
@@ -346,7 +489,7 @@ function ProviderConfigsSection({
   onConfigChange?: () => void;
 }) {
   const queryClient = useQueryClient();
-  const { toast } = useToast();
+  const { toast, showSuccess, showError } = useToastHelpers();
   const [expanded, setExpanded] = useState(true);
   const [showAddForm, setShowAddForm] = useState(false);
   const [editingConfigId, setEditingConfigId] = useState<string | null>(null);
@@ -361,6 +504,8 @@ function ProviderConfigsSection({
     description: '',
     options: '',
     env: {} as Record<string, string>,
+    model: null as string | null,
+    effort: null as string | null,
   });
 
   const { data: configs, isLoading } = useQuery({
@@ -383,19 +528,20 @@ function ProviderConfigsSection({
       description?: string | null;
       options?: string | null;
       env?: Record<string, string> | null;
+      model?: string | null;
+      effort?: string | null;
     }) => createProviderConfig(profileId, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['provider-configs', profileId] });
       setShowAddForm(false);
       resetForm();
-      toast({ title: 'Success', description: 'Provider configuration created' });
+      showSuccess({ title: 'Success', description: 'Provider configuration created' });
       onConfigChange?.();
     },
     onError: (error) => {
-      toast({
+      showError({
         title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to create configuration',
-        variant: 'destructive',
+        description: getErrorMessage(error, 'Failed to create configuration'),
       });
     },
   });
@@ -412,6 +558,8 @@ function ProviderConfigsSection({
         description?: string | null;
         options?: string | null;
         env?: Record<string, string> | null;
+        model?: string | null;
+        effort?: string | null;
       };
     }) => updateProviderConfig(id, data),
     onSuccess: (updatedConfig, variables) => {
@@ -433,14 +581,13 @@ function ProviderConfigsSection({
       }
       setEditingConfigId(null);
       resetForm();
-      toast({ title: 'Success', description: 'Provider configuration updated' });
+      showSuccess({ title: 'Success', description: 'Provider configuration updated' });
       onConfigChange?.();
     },
     onError: (error) => {
-      toast({
+      showError({
         title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to update configuration',
-        variant: 'destructive',
+        description: getErrorMessage(error, 'Failed to update configuration'),
       });
     },
   });
@@ -449,14 +596,13 @@ function ProviderConfigsSection({
     mutationFn: deleteProviderConfig,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['provider-configs', profileId] });
-      toast({ title: 'Success', description: 'Provider configuration deleted' });
+      showSuccess({ title: 'Success', description: 'Provider configuration deleted' });
       onConfigChange?.();
     },
     onError: (error) => {
-      toast({
+      showError({
         title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to delete configuration',
-        variant: 'destructive',
+        description: getErrorMessage(error, 'Failed to delete configuration'),
       });
     },
   });
@@ -476,14 +622,13 @@ function ProviderConfigsSection({
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['provider-configs', profileId] });
-      toast({ title: 'Success', description: 'Provider configurations reordered' });
+      showSuccess({ title: 'Success', description: 'Provider configurations reordered' });
       onConfigChange?.();
     },
     onError: (error) => {
-      toast({
+      showError({
         title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to reorder configurations',
-        variant: 'destructive',
+        description: getErrorMessage(error, 'Failed to reorder configurations'),
       });
       // Revert local order on error
       if (configs) {
@@ -493,7 +638,15 @@ function ProviderConfigsSection({
   });
 
   const resetForm = () => {
-    setFormData({ providerId: '', name: '', description: '', options: '', env: {} });
+    setFormData({
+      providerId: '',
+      name: '',
+      description: '',
+      options: '',
+      env: {},
+      model: null,
+      effort: null,
+    });
   };
 
   const handleCreate = () => {
@@ -522,6 +675,8 @@ function ProviderConfigsSection({
       description: formData.description.trim() || null,
       options: formData.options.trim() || null,
       env: Object.keys(env).length > 0 ? env : null,
+      model: formData.model,
+      effort: formData.effort,
     });
   };
 
@@ -549,6 +704,8 @@ function ProviderConfigsSection({
         description: formData.description.trim() || null,
         options: formData.options.trim() || null,
         env: Object.keys(env).length > 0 ? env : null,
+        model: formData.model,
+        effort: formData.effort,
       },
     });
   };
@@ -571,6 +728,8 @@ function ProviderConfigsSection({
       description: config.description || '',
       options: config.options || '',
       env: config.env || {},
+      model: config.model ?? null,
+      effort: config.effort ?? null,
     });
     setShowAddForm(false);
   };
@@ -702,6 +861,14 @@ function ProviderConfigsSection({
                       className="text-sm"
                     />
                   </div>
+                  <ProviderConfigDefaultsFields
+                    providerId={formData.providerId}
+                    model={formData.model}
+                    effort={formData.effort}
+                    options={formData.options}
+                    onModelChange={(v) => setFormData({ ...formData, model: v })}
+                    onEffortChange={(v) => setFormData({ ...formData, effort: v })}
+                  />
                   <div>
                     <Label className="text-xs">Environment Variables</Label>
                     <EnvEditor
@@ -814,7 +981,14 @@ function ProviderConfigsSection({
                     const provider = providersById.get(newProviderId);
                     // Auto-suggest name based on provider
                     const suggestedName = provider?.name || '';
-                    setFormData({ ...formData, providerId: newProviderId, name: suggestedName });
+                    // Clear structured selections — catalogs rebind to the new provider
+                    setFormData({
+                      ...formData,
+                      providerId: newProviderId,
+                      name: suggestedName,
+                      model: null,
+                      effort: null,
+                    });
                   }}
                   className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
                 >
@@ -858,6 +1032,14 @@ function ProviderConfigsSection({
                   className="text-sm"
                 />
               </div>
+              <ProviderConfigDefaultsFields
+                providerId={formData.providerId}
+                model={formData.model}
+                effort={formData.effort}
+                options={formData.options}
+                onModelChange={(v) => setFormData({ ...formData, model: v })}
+                onEffortChange={(v) => setFormData({ ...formData, effort: v })}
+              />
               <div>
                 <Label className="text-xs">Environment Variables</Label>
                 <EnvEditor
@@ -930,11 +1112,12 @@ function ProviderConfigsSection({
 
 export function ProfilesPage() {
   const queryClient = useQueryClient();
-  const { toast } = useToast();
+  const { showError, showSuccess } = useToastHelpers();
   const { selectedProjectId } = useSelectedProject();
-  const [showDialog, setShowDialog] = useState(false);
-  const [editingProfile, setEditingProfile] = useState<AgentProfile | null>(null);
-  const [pendingDeleteProfile, setPendingDeleteProfile] = useState<AgentProfile | null>(null);
+  const formDialog = useFormDialog<AgentProfile>();
+  const deleteDialog = useConfirmDialog<AgentProfile>();
+  const editingProfile = formDialog.isEdit ? formDialog.entity : null;
+  const pendingDeleteProfile = deleteDialog.target;
   // Note: providerId and options removed in Phase 4
   // Provider configuration now managed via ProviderConfigsSection
   const [formData, setFormData] = useState({
@@ -957,7 +1140,7 @@ export function ProfilesPage() {
   });
 
   const { data: providersData } = useQuery({
-    queryKey: ['providers'],
+    queryKey: providersQueryKeys.list(),
     queryFn: fetchProviders,
   });
 
@@ -971,172 +1154,138 @@ export function ProfilesPage() {
     return map;
   }, [providersData]);
 
-  const createMutation = useMutation({
+  const profilesKey = ['profiles', selectedProjectId] as const;
+  type ProfilesList = ListContainer<AgentProfile>;
+
+  const createMutation = useCrudMutation<AgentProfile, Parameters<typeof createProfile>[0], void>({
     mutationFn: createProfile,
-    onMutate: async (newProfile) => {
-      await queryClient.cancelQueries({ queryKey: ['profiles', selectedProjectId] });
-      const previousData = queryClient.getQueryData(['profiles', selectedProjectId]);
-
-      queryClient.setQueryData(
-        ['profiles', selectedProjectId],
-        (old: ProfilesQueryData | undefined) => ({
-          ...old,
-          items: [
-            {
-              id: 'temp-' + Date.now(),
-              name: newProfile.name,
-              familySlug: newProfile.familySlug ?? null,
-              instructions: newProfile.instructions ?? null,
-              prompts: [],
-              agentCount: 0,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-            },
-            ...(old?.items || []),
-          ],
-        }),
-      );
-
-      return { previousData };
+    optimistic: {
+      queryKey: profilesKey,
+      // temp-id add — Profiles prepends the new row.
+      project: (previous, newProfile) => {
+        const list = previous as ProfilesList | undefined;
+        if (!list) return previous;
+        const optimistic: AgentProfile = {
+          id: `temp-${Date.now()}`,
+          name: newProfile.name,
+          familySlug: newProfile.familySlug ?? null,
+          instructions: newProfile.instructions ?? null,
+          prompts: [],
+          agentCount: 0,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        return optimisticAdd(list, optimistic);
+      },
     },
-    onSuccess: async (created) => {
+    toast: {
+      error: (error) => ({
+        title: 'Error',
+        description: getErrorMessage(error, 'Failed to create profile'),
+      }),
+    },
+    // Invalidate + success toast run AFTER the prompt-ordering chain: refetching
+    // earlier would serve a list without the just-persisted prompt order. A
+    // prompt-order failure is a soft warning — the dialog still closes and the
+    // create itself is not rolled back.
+    onSuccessSideEffects: async (created) => {
       try {
         if (formData.orderedPromptIds.length > 0 && created?.id) {
           await replaceProfilePrompts(created.id, formData.orderedPromptIds);
         }
       } catch (e) {
-        toast({
+        showError({
           title: 'Warning',
-          description: e instanceof Error ? e.message : 'Failed to persist prompt ordering',
-          variant: 'destructive',
+          description: getErrorMessage(e, 'Failed to persist prompt ordering'),
         });
       } finally {
         queryClient.invalidateQueries({ queryKey: ['profiles', selectedProjectId] });
-        setShowDialog(false);
+        formDialog.close();
         resetForm();
-        toast({
+        showSuccess({
           title: 'Success',
           description: 'Profile created successfully',
         });
       }
     },
-    onError: (error, variables, context) => {
-      if (context?.previousData) {
-        queryClient.setQueryData(['profiles', selectedProjectId], context.previousData);
-      }
-      toast({
-        title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to create profile',
-        variant: 'destructive',
-      });
-    },
   });
 
-  const updateMutation = useMutation({
-    mutationFn: ({
-      id,
-      data,
-    }: {
-      id: string;
-      data: {
-        name?: string;
-        providerId?: string;
-        familySlug?: string | null;
-        options?: string | null;
-        promptIds?: string[];
-        instructions?: string | null;
-      };
-    }) => updateProfile(id, data),
-    onMutate: async ({ id, data }) => {
-      await queryClient.cancelQueries({ queryKey: ['profiles', selectedProjectId] });
-      const previousData = queryClient.getQueryData(['profiles', selectedProjectId]);
+  type UpdateProfileVars = {
+    id: string;
+    data: {
+      name?: string;
+      providerId?: string;
+      familySlug?: string | null;
+      options?: string | null;
+      promptIds?: string[];
+      instructions?: string | null;
+    };
+  };
 
-      queryClient.setQueryData(
-        ['profiles', selectedProjectId],
-        (old: ProfilesQueryData | undefined) => ({
-          ...old,
-          items: (old?.items || []).map((p: AgentProfile) =>
-            p.id === id
-              ? {
-                  ...p,
-                  name: data.name ?? p.name,
-                  instructions:
-                    data.instructions !== undefined ? (data.instructions ?? null) : p.instructions,
-                  updatedAt: new Date().toISOString(),
-                }
-              : p,
-          ),
-        }),
-      );
-
-      return { previousData };
+  const updateMutation = useCrudMutation<unknown, UpdateProfileVars, void>({
+    mutationFn: ({ id, data }) => updateProfile(id, data),
+    optimistic: {
+      queryKey: profilesKey,
+      // in-place merge — same per-field precedence as before.
+      project: (previous, { id, data }) => {
+        const list = previous as ProfilesList | undefined;
+        if (!list) return previous;
+        return optimisticMergeById(list, id, (p: AgentProfile) => ({
+          ...p,
+          name: data.name ?? p.name,
+          instructions:
+            data.instructions !== undefined ? (data.instructions ?? null) : p.instructions,
+          updatedAt: new Date().toISOString(),
+        }));
+      },
     },
-    onSuccess: async (_updated, variables) => {
+    toast: {
+      error: (error) => ({
+        title: 'Error',
+        description: getErrorMessage(error, 'Failed to update profile'),
+      }),
+    },
+    // See createMutation: invalidate + success toast must follow the prompt chain.
+    onSuccessSideEffects: async (_updated, variables) => {
       try {
         if (formData.orderedPromptIds.length >= 0 && variables?.id) {
           await replaceProfilePrompts(variables.id, formData.orderedPromptIds);
         }
       } catch (e) {
-        toast({
+        showError({
           title: 'Warning',
-          description: e instanceof Error ? e.message : 'Failed to persist prompt ordering',
-          variant: 'destructive',
+          description: getErrorMessage(e, 'Failed to persist prompt ordering'),
         });
       } finally {
         queryClient.invalidateQueries({ queryKey: ['profiles', selectedProjectId] });
-        setShowDialog(false);
-        setEditingProfile(null);
+        formDialog.close();
         resetForm();
-        toast({
+        showSuccess({
           title: 'Success',
           description: 'Profile updated successfully',
         });
       }
     },
-    onError: (error, variables, context) => {
-      if (context?.previousData) {
-        queryClient.setQueryData(['profiles', selectedProjectId], context.previousData);
-      }
-      toast({
-        title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to update profile',
-        variant: 'destructive',
-      });
-    },
   });
 
-  const deleteMutation = useMutation({
+  const deleteMutation = useCrudMutation<void, string, void>({
     mutationFn: deleteProfile,
-    onMutate: async (id) => {
-      await queryClient.cancelQueries({ queryKey: ['profiles', selectedProjectId] });
-      const previousData = queryClient.getQueryData(['profiles', selectedProjectId]);
-
-      queryClient.setQueryData(
-        ['profiles', selectedProjectId],
-        (old: ProfilesQueryData | undefined) => ({
-          ...old,
-          items: (old?.items || []).filter((p: AgentProfile) => p.id !== id),
-        }),
-      );
-
-      return { previousData };
+    optimistic: {
+      queryKey: profilesKey,
+      // filter-out.
+      project: (previous, id) => {
+        const list = previous as ProfilesList | undefined;
+        if (!list) return previous;
+        return optimisticRemoveById(list, id);
+      },
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profiles', selectedProjectId] });
-      toast({
-        title: 'Success',
-        description: 'Profile deleted successfully',
-      });
-    },
-    onError: (error, variables, context) => {
-      if (context?.previousData) {
-        queryClient.setQueryData(['profiles', selectedProjectId], context.previousData);
-      }
-      toast({
+    invalidateKeys: [profilesKey],
+    toast: {
+      success: () => ({ title: 'Success', description: 'Profile deleted successfully' }),
+      error: (error) => ({
         title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to delete profile',
-        variant: 'destructive',
-      });
+        description: getErrorMessage(error, 'Failed to delete profile'),
+      }),
     },
   });
 
@@ -1147,16 +1296,14 @@ export function ProfilesPage() {
       instructions: '',
       orderedPromptIds: [],
     });
-    setEditingProfile(null);
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedProjectId) {
-      toast({
+      showError({
         title: 'Error',
         description: 'Please select a project first',
-        variant: 'destructive',
       });
       return;
     }
@@ -1188,7 +1335,7 @@ export function ProfilesPage() {
   };
 
   const handleEdit = (profile: AgentProfile) => {
-    setEditingProfile(profile);
+    formDialog.openEdit(profile);
     setFormData({
       name: profile.name,
       familySlug: profile.familySlug ?? '',
@@ -1197,20 +1344,18 @@ export function ProfilesPage() {
         .sort((a, b) => a.order - b.order)
         .map((pp) => pp.promptId),
     });
-    setShowDialog(true);
   };
 
   const handleDelete = (profile: AgentProfile) => {
     const agentCount = profile.agentCount || 0;
     if (agentCount > 0) {
-      toast({
+      showError({
         title: 'Cannot delete',
         description: `This profile is used by ${agentCount} agent(s). Remove agent assignments first.`,
-        variant: 'destructive',
       });
       return;
     }
-    setPendingDeleteProfile(profile);
+    deleteDialog.open(profile);
   };
 
   const handleConfirmProfileDelete = () => {
@@ -1234,7 +1379,7 @@ export function ProfilesPage() {
         <Button
           onClick={() => {
             resetForm();
-            setShowDialog(true);
+            formDialog.openCreate();
           }}
         >
           <Plus className="h-4 w-4 mr-2" />
@@ -1322,7 +1467,7 @@ export function ProfilesPage() {
         </div>
       )}
 
-      <Dialog open={showDialog} onOpenChange={setShowDialog}>
+      <Dialog open={formDialog.isOpen} onOpenChange={formDialog.onOpenChange}>
         <DialogContent className="max-w-5xl w-full max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editingProfile ? 'Edit Profile' : 'Create Profile'}</DialogTitle>
@@ -1434,7 +1579,7 @@ export function ProfilesPage() {
                 type="button"
                 variant="outline"
                 onClick={() => {
-                  setShowDialog(false);
+                  formDialog.close();
                   resetForm();
                 }}
               >
@@ -1448,10 +1593,8 @@ export function ProfilesPage() {
         </DialogContent>
       </Dialog>
       <ConfirmDialog
-        open={pendingDeleteProfile !== null}
-        onOpenChange={(open) => {
-          if (!open) setPendingDeleteProfile(null);
-        }}
+        open={deleteDialog.isOpen}
+        onOpenChange={deleteDialog.onOpenChange}
         title="Delete profile?"
         description="Are you sure you want to delete this profile?"
         confirmText="Delete"

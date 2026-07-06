@@ -284,50 +284,50 @@
     "max_output_tokens": 128000
   },
   "anthropic.claude-sonnet-5": {
-    "input_cost_per_token": 0.000003,
-    "output_cost_per_token": 0.000015,
-    "cache_read_input_token_cost": 3e-7,
-    "cache_creation_input_token_cost": 0.00000375,
+    "input_cost_per_token": 0.000002,
+    "output_cost_per_token": 0.00001,
+    "cache_read_input_token_cost": 2e-7,
+    "cache_creation_input_token_cost": 0.0000025,
     "max_input_tokens": 1000000,
     "max_output_tokens": 128000
   },
   "global.anthropic.claude-sonnet-5": {
-    "input_cost_per_token": 0.000003,
-    "output_cost_per_token": 0.000015,
-    "cache_read_input_token_cost": 3e-7,
-    "cache_creation_input_token_cost": 0.00000375,
+    "input_cost_per_token": 0.000002,
+    "output_cost_per_token": 0.00001,
+    "cache_read_input_token_cost": 2e-7,
+    "cache_creation_input_token_cost": 0.0000025,
     "max_input_tokens": 1000000,
     "max_output_tokens": 128000
   },
   "us.anthropic.claude-sonnet-5": {
-    "input_cost_per_token": 0.0000033,
-    "output_cost_per_token": 0.0000165,
-    "cache_read_input_token_cost": 3.3e-7,
-    "cache_creation_input_token_cost": 0.000004125,
+    "input_cost_per_token": 0.0000022,
+    "output_cost_per_token": 0.000011,
+    "cache_read_input_token_cost": 2.2e-7,
+    "cache_creation_input_token_cost": 0.00000275,
     "max_input_tokens": 1000000,
     "max_output_tokens": 128000
   },
   "eu.anthropic.claude-sonnet-5": {
-    "input_cost_per_token": 0.0000033,
-    "output_cost_per_token": 0.0000165,
-    "cache_read_input_token_cost": 3.3e-7,
-    "cache_creation_input_token_cost": 0.000004125,
+    "input_cost_per_token": 0.0000022,
+    "output_cost_per_token": 0.000011,
+    "cache_read_input_token_cost": 2.2e-7,
+    "cache_creation_input_token_cost": 0.00000275,
     "max_input_tokens": 1000000,
     "max_output_tokens": 128000
   },
   "au.anthropic.claude-sonnet-5": {
-    "input_cost_per_token": 0.0000033,
-    "output_cost_per_token": 0.0000165,
-    "cache_read_input_token_cost": 3.3e-7,
-    "cache_creation_input_token_cost": 0.000004125,
+    "input_cost_per_token": 0.0000022,
+    "output_cost_per_token": 0.000011,
+    "cache_read_input_token_cost": 2.2e-7,
+    "cache_creation_input_token_cost": 0.00000275,
     "max_input_tokens": 1000000,
     "max_output_tokens": 128000
   },
   "jp.anthropic.claude-sonnet-5": {
-    "input_cost_per_token": 0.0000033,
-    "output_cost_per_token": 0.0000165,
-    "cache_read_input_token_cost": 3.3e-7,
-    "cache_creation_input_token_cost": 0.000004125,
+    "input_cost_per_token": 0.0000022,
+    "output_cost_per_token": 0.000011,
+    "cache_read_input_token_cost": 2.2e-7,
+    "cache_creation_input_token_cost": 0.00000275,
     "max_input_tokens": 1000000,
     "max_output_tokens": 128000
   },
@@ -557,10 +557,10 @@
     "max_output_tokens": 64000
   },
   "azure_ai/claude-sonnet-5": {
-    "input_cost_per_token": 0.000003,
-    "output_cost_per_token": 0.000015,
-    "cache_read_input_token_cost": 3e-7,
-    "cache_creation_input_token_cost": 0.00000375,
+    "input_cost_per_token": 0.000002,
+    "output_cost_per_token": 0.00001,
+    "cache_read_input_token_cost": 2e-7,
+    "cache_creation_input_token_cost": 0.0000025,
     "max_input_tokens": 1000000,
     "max_output_tokens": 128000
   },
@@ -1931,10 +1931,10 @@
     "max_output_tokens": 64000
   },
   "claude-sonnet-5": {
-    "input_cost_per_token": 0.000003,
-    "output_cost_per_token": 0.000015,
-    "cache_read_input_token_cost": 3e-7,
-    "cache_creation_input_token_cost": 0.00000375,
+    "input_cost_per_token": 0.000002,
+    "output_cost_per_token": 0.00001,
+    "cache_read_input_token_cost": 2e-7,
+    "cache_creation_input_token_cost": 0.0000025,
     "max_input_tokens": 1000000,
     "max_output_tokens": 128000
   },
@@ -4938,10 +4938,10 @@
     "max_output_tokens": 64000
   },
   "vertex_ai/claude-sonnet-5": {
-    "input_cost_per_token": 0.000003,
-    "output_cost_per_token": 0.000015,
-    "cache_read_input_token_cost": 3e-7,
-    "cache_creation_input_token_cost": 0.00000375,
+    "input_cost_per_token": 0.000002,
+    "output_cost_per_token": 0.00001,
+    "cache_read_input_token_cost": 2e-7,
+    "cache_creation_input_token_cost": 0.0000025,
     "max_input_tokens": 1000000,
     "max_output_tokens": 128000
   },
@@ -5299,10 +5299,10 @@
     "max_output_tokens": 65535
   },
   "vertex_ai/claude-sonnet-5@default": {
-    "input_cost_per_token": 0.000003,
-    "output_cost_per_token": 0.000015,
-    "cache_read_input_token_cost": 3e-7,
-    "cache_creation_input_token_cost": 0.00000375,
+    "input_cost_per_token": 0.000002,
+    "output_cost_per_token": 0.00001,
+    "cache_read_input_token_cost": 2e-7,
+    "cache_creation_input_token_cost": 0.0000025,
     "max_input_tokens": 1000000,
     "max_output_tokens": 128000
   },

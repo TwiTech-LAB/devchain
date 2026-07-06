@@ -243,6 +243,7 @@ describe('Teams Regression – Destructive Flows', () => {
           createSubscribersFromPayload: async () => ({ created: 0, subscriberIdMap: {} }),
           applyProjectSettings: async () => ({ initialPromptSet: false }),
           getImportErrorMessage: (e) => (e instanceof Error ? e.message : String(e)),
+          applyAgentConfigs: async () => ({ applied: 0, warnings: [] }),
         },
       );
 

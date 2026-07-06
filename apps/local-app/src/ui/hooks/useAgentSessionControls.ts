@@ -9,7 +9,6 @@ import {
   terminateSession,
   launchSession,
   restartSession,
-  SessionApiError,
   type ActiveSession,
   type AgentPresenceMap,
 } from '@/ui/lib/sessions';
@@ -18,6 +17,11 @@ import {
   OPEN_TERMINAL_DOCK_EVENT,
 } from '@/ui/components/terminal-dock';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
+import {
+  getMcpProviderDetails,
+  isMcpNotConfigured,
+  useLifecyclePendingTracker,
+} from '@/ui/hooks/lifecycle/session-lifecycle-core';
 
 // ============================================
 // Last-used agent persistence helpers
@@ -115,9 +119,12 @@ export function useAgentSessionControls({
   const terminalSessionsQueryKey = [...TERMINAL_SESSIONS_QUERY_KEY, projectId ?? 'all'] as const;
 
   // ---- State ----
-  const [launchingAgentId, setLaunchingAgentId] = useState<string | null>(null);
-  const [terminatingAgentId, setTerminatingAgentId] = useState<string | null>(null);
-  const [restartingAgentId, setRestartingAgentId] = useState<string | null>(null);
+  // Pending launching/terminating/restarting is tracked by the shared lifecycle
+  // core; agents projects the map back into its three `string | null` surfaces.
+  const pending = useLifecyclePendingTracker();
+  const launchingAgentId = pending.singleKeyOf('launching');
+  const terminatingAgentId = pending.singleKeyOf('terminating');
+  const restartingAgentId = pending.singleKeyOf('restarting');
   const [lastUsedAgentId, setLastUsedAgentId] = useState<string | null>(null);
   const [mcpModalOpen, setMcpModalOpen] = useState(false);
   const [pendingMcpLaunch, setPendingMcpLaunch] = useState<PendingMcpLaunch | null>(null);
@@ -200,7 +207,8 @@ export function useAgentSessionControls({
 
   // ---- Terminate mutation ----
   const terminateMutation = useMutation({
-    mutationFn: (sessionId: string) => terminateSession(sessionId, '', apiFetch),
+    mutationFn: ({ sessionId }: { agentId: string; sessionId: string }) =>
+      terminateSession(sessionId, '', apiFetch),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['active-sessions', projectId] });
       queryClient.invalidateQueries({ queryKey: ['agent-presence', projectId] });
@@ -213,8 +221,8 @@ export function useAgentSessionControls({
       const message = error instanceof Error ? error.message : 'Failed to terminate session';
       toast({ title: 'Terminate failed', description: message, variant: 'destructive' });
     },
-    onSettled: () => {
-      setTerminatingAgentId(null);
+    onSettled: (_data, _error, variables) => {
+      pending.clear(variables.agentId);
     },
   });
 
@@ -223,7 +231,7 @@ export function useAgentSessionControls({
     mutationFn: ({ agentId, pid }: { agentId: string; pid: string }) =>
       launchSession(agentId, pid, undefined, '', apiFetch),
     onMutate: ({ agentId }) => {
-      setLaunchingAgentId(agentId);
+      pending.setAction(agentId, 'launching');
     },
     onSuccess: (data, variables) => {
       const launchedSession: ActiveSession = {
@@ -246,12 +254,12 @@ export function useAgentSessionControls({
       persistAndOpenDock(variables.agentId);
     },
     onError: (error: unknown, variables) => {
-      if (error instanceof SessionApiError && error.hasCode('MCP_NOT_CONFIGURED')) {
-        const details = error.payload?.details;
+      if (isMcpNotConfigured(error)) {
+        const details = getMcpProviderDetails(error);
         setPendingMcpLaunch({
           agentId: variables.agentId,
-          providerId: details?.providerId ?? '',
-          providerName: details?.providerName ?? 'Unknown',
+          providerId: details.providerId ?? '',
+          providerName: details.providerName ?? 'Unknown',
           action: 'launch',
         });
         setMcpModalOpen(true);
@@ -262,8 +270,8 @@ export function useAgentSessionControls({
         error instanceof Error ? error.message : 'Unable to launch session for the agent.';
       toast({ title: 'Launch failed', description: message, variant: 'destructive' });
     },
-    onSettled: () => {
-      setLaunchingAgentId(null);
+    onSettled: (_data, _error, variables) => {
+      pending.clear(variables.agentId);
     },
   });
 
@@ -280,7 +288,7 @@ export function useAgentSessionControls({
   const performRestart = useCallback(
     async (agentId: string, sessionId: string) => {
       if (!projectId) return;
-      setRestartingAgentId(agentId);
+      pending.setAction(agentId, 'restarting');
       try {
         const result = await restartSession(agentId, projectId, sessionId, '', apiFetch);
         const newSession = result.session;
@@ -302,12 +310,12 @@ export function useAgentSessionControls({
           });
         }
       } catch (e) {
-        if (e instanceof SessionApiError && e.hasCode('MCP_NOT_CONFIGURED')) {
-          const details = e.payload?.details;
+        if (isMcpNotConfigured(e)) {
+          const details = getMcpProviderDetails(e);
           setPendingMcpLaunch({
             agentId,
-            providerId: details?.providerId ?? '',
-            providerName: details?.providerName ?? 'Unknown',
+            providerId: details.providerId ?? '',
+            providerName: details.providerName ?? 'Unknown',
             action: 'restart',
             sessionId,
           });
@@ -318,7 +326,7 @@ export function useAgentSessionControls({
         const msg = e instanceof Error ? e.message : 'Failed to restart session';
         toast({ title: 'Restart failed', description: msg, variant: 'destructive' });
       } finally {
-        setRestartingAgentId(null);
+        pending.clear(agentId);
       }
     },
     [
@@ -328,6 +336,7 @@ export function useAgentSessionControls({
       openTerminalWindow,
       updateTerminalSessionsCache,
       persistAndOpenDock,
+      pending,
     ],
   );
 
@@ -341,10 +350,10 @@ export function useAgentSessionControls({
   // ---- Terminate handler ----
   const handleTerminate = useCallback(
     (agentId: string, sessionId: string) => {
-      setTerminatingAgentId(agentId);
-      terminateMutation.mutate(sessionId);
+      pending.setAction(agentId, 'terminating');
+      terminateMutation.mutate({ agentId, sessionId });
     },
-    [terminateMutation],
+    [pending, terminateMutation],
   );
 
   // ---- MCP configured handler (retryMcpEnsure) ----

@@ -34,7 +34,9 @@ describe('ProjectsService', () => {
     listProvidersByIds: jest.Mock;
     listEnvScopesByProviderIds: jest.Mock;
     listProviderModelsByProviderIds: jest.Mock;
+    listProviderEffortsByProviderIds: jest.Mock;
     bulkCreateProviderModels: jest.Mock;
+    bulkCreateProviderEfforts: jest.Mock;
     listPrompts: jest.Mock;
     getPrompt: jest.Mock;
     listAgentProfiles: jest.Mock;
@@ -117,7 +119,9 @@ describe('ProjectsService', () => {
       listProvidersByIds: jest.fn().mockResolvedValue([]),
       listEnvScopesByProviderIds: jest.fn().mockReturnValue(new Map()),
       listProviderModelsByProviderIds: jest.fn().mockResolvedValue([]),
+      listProviderEffortsByProviderIds: jest.fn().mockResolvedValue([]),
       bulkCreateProviderModels: jest.fn().mockResolvedValue({ added: [], existing: [] }),
+      bulkCreateProviderEfforts: jest.fn().mockResolvedValue({ added: [], existing: [] }),
       listPrompts: jest.fn(),
       getPrompt: jest.fn(),
       listAgentProfiles: jest.fn(),
@@ -545,6 +549,87 @@ describe('ProjectsService', () => {
       jest.restoreAllMocks();
     });
 
+    it('passes config model/effort and agent effortOverride through to storage on import', async () => {
+      const projectId = 'project-123';
+      const profId = '11111111-1111-1111-1111-111111111111';
+      const agentId = '22222222-2222-2222-2222-222222222222';
+      const provId = '33333333-3333-3333-3333-333333333333';
+      const payload = {
+        prompts: [],
+        profiles: [
+          {
+            id: profId,
+            name: 'Test Profile',
+            provider: { id: provId, name: 'claude' },
+            providerConfigs: [
+              {
+                name: 'claude-cfg',
+                providerName: 'claude',
+                options: null,
+                env: null,
+                model: 'opus',
+                effort: 'high',
+              },
+            ],
+          },
+        ],
+        agents: [
+          {
+            id: agentId,
+            name: 'Test Agent',
+            profileId: profId,
+            description: null,
+            effortOverride: 'medium',
+          },
+        ],
+        statuses: [],
+      };
+      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
+        ...payload,
+        version: 1,
+        exportedAt: undefined,
+        initialPrompt: undefined,
+        projectSettings: undefined,
+        watchers: [],
+        subscribers: [],
+        _manifest: undefined,
+      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+      storage.listProviders.mockResolvedValue({
+        items: [{ id: provId, name: 'claude' }],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      storage.listAgentProfiles.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
+      sessions.listActiveSessions.mockResolvedValue([]);
+      settings.updateSettings.mockResolvedValue(undefined);
+
+      storage.createAgentProfile.mockResolvedValue({ id: 'new-prof-1' });
+      storage.createProfileProviderConfig.mockResolvedValue({ id: 'new-cfg-1' });
+      storage.createAgent.mockResolvedValue({ id: 'new-agent-1' });
+
+      await service.importProject({ projectId, payload, dryRun: false });
+
+      expect(storage.createProfileProviderConfig).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'claude-cfg',
+          model: 'opus',
+          effort: 'high',
+        }),
+      );
+      expect(storage.createAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'Test Agent',
+          effortOverride: 'medium',
+        }),
+      );
+      jest.restoreAllMocks();
+    });
+
     it('should pass all profile fields to createAgentProfile', async () => {
       const projectId = 'project-123';
       const profId = '11111111-1111-1111-1111-111111111111';
@@ -714,8 +799,11 @@ describe('ProjectsService', () => {
         jest.restoreAllMocks();
       });
 
-      it('should import ALL profiles whose provider is available (not just agent-referenced ones)', async () => {
-        // Template with multiple profiles per family - all should be imported if provider available
+      it('imports one profile per family (family-unique), plus non-agent-referenced families', async () => {
+        // Post-migration-0031 the DB enforces UNIQUE(project_id, family_slug): a family may
+        // materialize AT MOST ONE profile. So within the 'coder' family only the agent's provider
+        // profile (Coder Claude) is created — the sibling 'Coder Agy' is NOT duplicated — while a
+        // DISTINCT family with no agent reference (Reviewer Agy) is still imported.
         const profile1 = '11111111-1111-1111-1111-111111111111';
         const profile2 = '22222222-2222-2222-2222-222222222222';
         const profile3 = '33333333-3333-3333-3333-333333333333';
@@ -803,14 +891,14 @@ describe('ProjectsService', () => {
           dryRun: false,
         });
 
-        // ALL 3 profiles should be imported (not just the one referenced by agent)
-        expect(storage.createAgentProfile).toHaveBeenCalledTimes(3);
+        // One profile per family: Coder Claude (coder) + Reviewer Agy (reviewer). Coder Agy is
+        // the same-family sibling and must NOT be created (would violate family uniqueness).
+        expect(storage.createAgentProfile).toHaveBeenCalledTimes(2);
 
-        // Verify all profiles were created
         const createdProfiles = storage.createAgentProfile.mock.calls.map((call) => call[0].name);
         expect(createdProfiles).toContain('Coder Claude');
-        expect(createdProfiles).toContain('Coder Agy');
         expect(createdProfiles).toContain('Reviewer Agy');
+        expect(createdProfiles).not.toContain('Coder Agy');
 
         jest.restoreAllMocks();
       });
@@ -1384,6 +1472,8 @@ describe('ProjectsService', () => {
           description: null,
           options: '--model claude-3',
           env: { ANTHROPIC_API_KEY: 'sk-xxx' },
+          model: null,
+          effort: null,
         });
 
         // Verify agent was created with providerConfigId

@@ -2105,6 +2105,74 @@ describe('SubscriberExecutorService', () => {
       });
     });
   });
+
+  // Scheduling and execution are separated by a configurable delay, and the
+  // subscriber's stored config can change in between. executeSubscriberForTask
+  // re-loads the subscriber at execution time and re-applies the enabled and
+  // filter checks against the CURRENT config, so a mutation made after
+  // scheduling is honored. This matrix locks that schedule→mutate→execute
+  // freshness contract end-to-end through the real scheduling path.
+  describe('schedule → config-mutation → execute freshness contract', () => {
+    const captureScheduledTask = () => {
+      expect(mockScheduler.schedule).toHaveBeenCalledTimes(1);
+      return mockScheduler.schedule.mock.calls[0][0];
+    };
+
+    it('skips with filter_not_matched when the filter is narrowed after scheduling', async () => {
+      const atSchedule = createMockSubscriber({
+        eventFilter: { field: 'agentId', operator: 'equals', value: 'agent-456' },
+      });
+      mockStorage.findSubscribersByEventName.mockResolvedValue([atSchedule]);
+
+      await service.handleEvent('terminal.watcher.triggered', createMockPayload());
+
+      const task = captureScheduledTask();
+
+      // Config changes between schedule and execute: the filter no longer
+      // matches the original payload.
+      mockStorage.getSubscriber.mockResolvedValue(
+        createMockSubscriber({
+          eventFilter: { field: 'agentId', operator: 'equals', value: 'someone-else' },
+        }),
+      );
+
+      const result = await task.execute();
+
+      expect(result).toMatchObject({ skipped: true, skipReason: 'filter_not_matched' });
+    });
+
+    it('skips with disabled when the subscriber is disabled after scheduling', async () => {
+      const atSchedule = createMockSubscriber({ eventFilter: null });
+      mockStorage.findSubscribersByEventName.mockResolvedValue([atSchedule]);
+      mockStorage.getSubscriber.mockResolvedValue(atSchedule);
+
+      await service.handleEvent('terminal.watcher.triggered', createMockPayload());
+
+      const task = captureScheduledTask();
+
+      mockStorage.getSubscriber.mockResolvedValue(createMockSubscriber({ enabled: false }));
+
+      const result = await task.execute();
+
+      expect(result).toMatchObject({ skipped: true, skipReason: 'disabled' });
+    });
+
+    it('skips with deleted when the subscriber is deleted after scheduling', async () => {
+      const atSchedule = createMockSubscriber({ eventFilter: null });
+      mockStorage.findSubscribersByEventName.mockResolvedValue([atSchedule]);
+      mockStorage.getSubscriber.mockResolvedValue(atSchedule);
+
+      await service.handleEvent('terminal.watcher.triggered', createMockPayload());
+
+      const task = captureScheduledTask();
+
+      mockStorage.getSubscriber.mockResolvedValue(null);
+
+      const result = await task.execute();
+
+      expect(result).toMatchObject({ skipped: true, skipReason: 'deleted' });
+    });
+  });
 });
 
 /**

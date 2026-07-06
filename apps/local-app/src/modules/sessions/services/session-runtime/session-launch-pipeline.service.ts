@@ -42,6 +42,7 @@ import { ProviderMcpEnsureService } from '../../../providers/services/provider-m
 import { EventsService } from '../../../events/services/events.service';
 import { TeamsStore } from '../../../teams/storage/teams.store';
 import { resolve as resolveLaunchConfig, type LaunchConfig } from '../provider-launch-config';
+import { parseProfileOptions, extractModelFromArgs } from '../../utils/profile-options';
 import { buildTmuxSessionName } from '../../utils/tmux-naming.util';
 import { renderTemplate } from '../../../../common/template/handlebars-renderer';
 import { buildPromptRenderContext } from '../../../../common/template/prompt-render-context';
@@ -95,6 +96,16 @@ export class SessionLaunchPipeline {
         const target = await this.resolveLaunchTarget({ agentId, projectId, epicId });
         const { agent, project, epic, profile, provider, options, configEnv } = target;
 
+        // Effective model/effort precedence (uniform): agent override → config
+        // structured default → raw options text (model only; effort has no raw
+        // text form). When a structured model is set, the raw `--model` in options
+        // no longer wins — the resolver strips it and injects the effective value.
+        const effectiveModel =
+          agent.modelOverride ??
+          target.configModel ??
+          extractModelFromArgs(parseProfileOptions(options));
+        const effectiveEffort = agent.effortOverride ?? target.configEffort ?? null;
+
         // Auto-compact recommendation (non-blocking)
         this.emitAutoCompactRecommendation(provider, agent, agentId, silent);
 
@@ -142,7 +153,8 @@ export class SessionLaunchPipeline {
           sessionId,
           adapter,
           profileOptions: options,
-          modelOverride: agent.modelOverride,
+          modelOverride: effectiveModel,
+          effortOverride: effectiveEffort,
           providerBinPath: provider.binPath!,
           providerEnv: this.storage.getProviderEnvForProject(provider.id, projectId),
           configEnv,
@@ -353,6 +365,11 @@ export class SessionLaunchPipeline {
       provider,
       options: config.options,
       configEnv: config.env,
+      // Structured model/effort defaults from the resolved provider config
+      // (Phase-1 effort levels). The pipeline folds these into the effective
+      // model/effort passed to resolveLaunchConfig (precedence below).
+      configModel: config.model,
+      configEffort: config.effort,
     };
   }
 

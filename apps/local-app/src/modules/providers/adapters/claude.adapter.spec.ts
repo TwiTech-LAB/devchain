@@ -27,6 +27,35 @@ describe('ClaudeAdapter', () => {
     });
   });
 
+  describe('EffortCapability', () => {
+    it('exposes the seeded default effort values (static metadata)', () => {
+      expect(adapter.defaultEffortValues).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+    });
+
+    it('injects the native `--effort <value>` flag', () => {
+      const { argv } = adapter.applyEffort(['--verbose'], {}, 'high');
+      expect(argv).toEqual(['--effort', 'high', '--verbose']);
+    });
+
+    it('strips a conflicting raw `--effort` (both value forms) before injecting', () => {
+      expect(adapter.applyEffort(['--effort', 'low', '-x'], {}, 'high').argv).toEqual([
+        '--effort',
+        'high',
+        '-x',
+      ]);
+      expect(adapter.applyEffort(['--effort=low', '-x'], {}, 'high').argv).toEqual([
+        '--effort',
+        'high',
+        '-x',
+      ]);
+    });
+
+    it('returns env unchanged (effort is an argv flag, not an env overlay)', () => {
+      const env = { FOO: 'bar' };
+      expect(adapter.applyEffort([], env, 'medium').env).toBe(env);
+    });
+  });
+
   describe('addMcpServer', () => {
     it('builds command with default alias', () => {
       const args = adapter.addMcpServer({

@@ -1,37 +1,32 @@
 import { ExportSchema } from '@devchain/shared';
-import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
+import { ValidationError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
-import type {
-  StorageService,
-  TemplateImportPayload,
-} from '../../storage/interfaces/storage.interface';
+import type { StorageService } from '../../storage/interfaces/storage.interface';
 import type { SettingsService } from '../../settings/services/settings.service';
 import type { UnifiedTemplateService } from '../../registry/services/unified-template.service';
 import {
-  buildNameToIdMaps,
-  buildPromptTitleToIdMap,
-  buildProviderConfigLookupKey,
-  buildStatusLabelToIdMap,
+  derivePresetProviderCoverage,
   extractTemplatePresets,
   hasPresetName,
-  mergeProjectSettingsWithInitialPrompt,
-  resolveArchiveStatusId,
   resolveProvidersFromStorage,
   selectProfilesForFamilies,
   type FamilyAlternativesResult,
   type ProjectSettingsTemplateInput,
 } from './profile-mapping.helpers';
 import type { ProbeOutcome } from '../../providers/utils/probe-1m';
-import {
-  importProviderSettings,
-  createImportedTeams,
-  createImportedScheduledEpics,
-  preserveImportedEnv,
-  pruneUnavailableTeamProfileSelections,
-} from './project-import';
+import type { PresetAgentConfig } from './project-presets.helpers';
 import type { TeamsService } from '../../teams/services/teams.service';
+import type { WatchersService } from '../../watchers/services/watchers.service';
+import { ImportContext } from '../template-codec/import-context';
+import { TemplatePipeline } from '../template-codec/template-pipeline';
 
 const logger = createLogger('TemplateLoader');
+
+/**
+ * Module-init-validated pipeline for the create-new flow (topology validated once at load).
+ * Reused by every create-from-template call; there is no per-request validation cost.
+ */
+const CREATE_TEMPLATE_PIPELINE = new TemplatePipeline();
 
 export interface CreateFromTemplateInputLike {
   name: string;
@@ -43,6 +38,19 @@ export interface CreateFromTemplateInputLike {
   templatePath?: string;
   familyProviderMappings?: Record<string, string>;
   presetName?: string;
+  /**
+   * Wizard/API per-agent config overrides (preset-SHAPED but not a stored preset). Mutually
+   * exclusive with `presetName` (enforced at the controller). Applied via `applyAgentConfigs`
+   * and NEVER marks an active preset.
+   */
+  agentOverrides?: PresetAgentConfig[];
+  /**
+   * Transient, server-enforced provider allowlist (Step-1 wizard selection). When present
+   * (validated non-empty + lowercased at the controller), providers outside it are treated as
+   * uninstalled: excluded from family resolution AND from providerConfig creation. NOT persisted.
+   * Absent → resolution is byte-identical to today.
+   */
+  selectedProviderNames?: string[];
   teamOverrides?: Array<{
     teamName: string;
     allowTeamLeadCreateAgents?: boolean;
@@ -66,6 +74,7 @@ interface CreateFromTemplateDeps {
   computeFamilyAlternatives: (
     profiles: ParsedTemplatePayload['profiles'],
     agents: ParsedTemplatePayload['agents'],
+    selectedProviderNames?: string[],
   ) => Promise<FamilyAlternativesResult>;
   normalizeProfileOptions: (options: unknown) => string | null;
   applyProjectSettings: (
@@ -99,8 +108,21 @@ interface CreateFromTemplateDeps {
       configLookupMap: Map<string, string>;
     },
   ) => Promise<{ applied: number; warnings: string[] }>;
+  applyAgentConfigs: (
+    projectId: string,
+    agentConfigs: PresetAgentConfig[],
+    nameMaps?: {
+      agentNameToId: Map<string, string>;
+      configLookupMap: Map<string, string>;
+    },
+  ) => Promise<{ applied: number; warnings: string[] }>;
   probe1m?: (binPath: string) => Promise<ProbeOutcome>;
   teamsService?: TeamsService;
+  /**
+   * Real watchers service (starts runners on create) for the watchers codec. Optional: when
+   * absent (reduced/test deps), the create orchestrator falls back to `storage.createWatcher`.
+   */
+  watchersService?: Pick<WatchersService, 'createWatcher'>;
   scheduledEpicsRefresh?: {
     refreshScheduleWindow: () => void;
   };
@@ -138,9 +160,8 @@ export async function createFromTemplateWithHelper(
 
   const { payload, templateResult, templateSlug } = await loadTemplate(input, deps);
 
-  // When a preset is selected, resolve which agents are fully covered by it.
-  // Walk preset agentConfig → template agent → profileId → profile.providerConfigs
-  // to determine the actual provider each agent will use.
+  // When a preset is selected, resolve which agents are fully covered by it via the shared
+  // preset→provider derivation (agentConfig → agent → profileId → profile.providerConfigs).
   const presetCoveredAgentNames = new Set<string>();
   const presetAgentResolvedProviders = new Map<string, string>();
   let presetCoversAllAgents = false;
@@ -149,69 +170,44 @@ export async function createFromTemplateWithHelper(
       (p: { name: string }) => p.name === input.presetName,
     );
     if (selectedPreset) {
-      const profileConfigsByProfileId = new Map<string, Map<string, string>>();
-      for (const prof of payload.profiles ?? []) {
-        if (!prof.id) continue;
-        const providerConfigs = (
-          prof as { providerConfigs?: Array<{ name: string; providerName: string }> }
-        ).providerConfigs;
-        if (providerConfigs) {
-          const configMap = new Map<string, string>();
-          for (const pc of providerConfigs) {
-            configMap.set(pc.name.trim().toLowerCase(), pc.providerName.trim().toLowerCase());
-          }
-          profileConfigsByProfileId.set(prof.id, configMap);
-        }
-      }
-
-      const agentNameToProfileId = new Map<string, string>();
-      for (const agent of payload.agents ?? []) {
-        if (agent.profileId) {
-          agentNameToProfileId.set(agent.name.trim().toLowerCase(), agent.profileId);
-        }
-      }
-
       const localProviders = await deps.storage.listProviders();
+      // Honor the transient allowlist here too: an agent whose preset resolves to an excluded
+      // provider must not count as covered (consistent with "treated as uninstalled").
+      const allow = input.selectedProviderNames
+        ? new Set(input.selectedProviderNames.map((n) => n.trim().toLowerCase()))
+        : undefined;
       const localProviderNames = new Set(
-        localProviders.items.map((p) => p.name.trim().toLowerCase()),
+        localProviders.items
+          .map((p) => p.name.trim().toLowerCase())
+          .filter((name) => !allow || allow.has(name)),
       );
-
-      let allCovered = true;
-      for (const ac of selectedPreset.agentConfigs) {
-        const agentKey = ac.agentName.trim().toLowerCase();
-        const profileId = agentNameToProfileId.get(agentKey);
-        if (!profileId) {
-          allCovered = false;
-          continue;
+      const coverage = derivePresetProviderCoverage(
+        payload.presets ?? [],
+        payload.profiles ?? [],
+        payload.agents ?? [],
+        localProviderNames,
+        { selectedPresetName: input.presetName },
+      )[0];
+      if (coverage) {
+        for (const [k, v] of coverage.agentResolvedProviders) {
+          presetAgentResolvedProviders.set(k, v);
         }
-        const configMap = profileConfigsByProfileId.get(profileId);
-        const providerName = configMap?.get(ac.providerConfigName.trim().toLowerCase());
-        if (providerName) {
-          presetAgentResolvedProviders.set(agentKey, providerName);
+        for (const n of coverage.coveredAgentNames) {
+          presetCoveredAgentNames.add(n);
         }
-        if (providerName && localProviderNames.has(providerName)) {
-          presetCoveredAgentNames.add(agentKey);
-        } else {
-          allCovered = false;
+        presetCoversAllAgents = coverage.coversAllAgents;
+
+        if (presetCoversAllAgents) {
+          logger.info(
+            { presetName: input.presetName, coveredAgents: [...presetCoveredAgentNames] },
+            'Preset covers all agents with available providers — skipping family mapping',
+          );
+        } else if (presetCoveredAgentNames.size > 0) {
+          logger.info(
+            { presetName: input.presetName, coveredAgents: [...presetCoveredAgentNames] },
+            'Preset partially covers agents — suppressing warnings for covered agents only',
+          );
         }
-      }
-
-      const allTemplateAgentNames = new Set(
-        (payload.agents ?? []).map((a) => a.name.trim().toLowerCase()),
-      );
-      presetCoversAllAgents =
-        allCovered && [...allTemplateAgentNames].every((n) => presetCoveredAgentNames.has(n));
-
-      if (presetCoversAllAgents) {
-        logger.info(
-          { presetName: input.presetName, coveredAgents: [...presetCoveredAgentNames] },
-          'Preset covers all agents with available providers — skipping family mapping',
-        );
-      } else if (presetCoveredAgentNames.size > 0) {
-        logger.info(
-          { presetName: input.presetName, coveredAgents: [...presetCoveredAgentNames] },
-          'Preset partially covers agents — suppressing warnings for covered agents only',
-        );
       }
     }
   }
@@ -252,207 +248,150 @@ export async function createFromTemplateWithHelper(
     });
   }
 
-  const templatePayload = buildTemplateImportPayload(
-    resolvedPayload,
-    selectedProfilesByFamily,
-    available,
-    deps.normalizeProfileOptions,
-  );
-  const result = await createProjectWithTemplate(input, templatePayload, deps.storage);
-
-  const { agentNameToId: agentNameToNewId, profileNameToId: profileNameToNewId } =
-    buildNameToIdMaps(templatePayload, result.mappings, logger);
-
-  const configLookupMap = await createProviderConfigsAndAgentAssignments(
-    resolvedPayload,
-    selectedProfilesByFamily,
-    available,
-    result.mappings,
-    deps.storage,
+  // ---- Pipeline-driven create (one pipeline, both flows). ------------------------------
+  // CREATE-CORE runs inside a single IMMEDIATE transaction: project row + sourceProjectEnabled
+  // seeding (createProjectShell) + statuses + prompts + profiles(+configs) + agents. A mid-core
+  // throw rolls the whole project back — no orphan project row. Reusing the section codecs is
+  // what makes the create path carry agent effortOverride + config model/effort (parity #1/#2);
+  // providerModels/providerEfforts are seeded by their codecs post-core (parity #3).
+  const pipelineCtx = new ImportContext(
+    { selectedProfilesByFamily },
+    // Fresh project: nothing to clear, no epics to load — both preconditions trivially hold.
+    ['existingDataCleared', 'epicsLoaded'],
   );
 
-  // Seed teams from template (after agents + configs exist)
-  if (deps.teamsService && resolvedPayload.teams && resolvedPayload.teams.length > 0) {
-    const overrideMap = new Map<
-      string,
-      NonNullable<CreateFromTemplateInputLike['teamOverrides']>[number]
-    >();
-    if (input.teamOverrides) {
-      for (const ov of input.teamOverrides) {
-        overrideMap.set(ov.teamName.trim().toLowerCase(), ov);
-      }
-    }
-
-    const remapProfileName = (pn: string): string => {
-      const remapped = selectedProfilesByFamily.profileNameRemapMap.get(pn.trim().toLowerCase());
-      return remapped
-        ? (resolvedPayload.profiles.find((p) => p.name.trim().toLowerCase() === remapped)?.name ??
-            pn)
-        : pn;
-    };
-
-    const remappedTeams = resolvedPayload.teams.map((team) => {
-      const override = overrideMap.get(team.name.trim().toLowerCase());
-
-      const mergedProfileSelections = override?.profileSelections
-        ? override.profileSelections.map((sel) => ({
-            ...sel,
-            profileName: remapProfileName(sel.profileName),
-          }))
-        : team.profileSelections?.map((sel) => ({
-            ...sel,
-            profileName: remapProfileName(sel.profileName),
-          }));
-
-      const finalProfileNames =
-        override?.profileNames !== undefined
-          ? override.profileNames.map(remapProfileName)
-          : team.profileNames?.map(remapProfileName);
-
-      return {
-        ...team,
-        ...(override?.maxMembers !== undefined ? { maxMembers: override.maxMembers } : {}),
-        ...(override?.maxConcurrentTasks !== undefined
-          ? { maxConcurrentTasks: override.maxConcurrentTasks }
-          : {}),
-        ...(override?.allowTeamLeadCreateAgents !== undefined
-          ? { allowTeamLeadCreateAgents: override.allowTeamLeadCreateAgents }
-          : {}),
-        profileNames: finalProfileNames,
-        profileSelections: mergedProfileSelections,
-      };
-    });
-
-    if (input.teamOverrides) {
-      for (const ov of input.teamOverrides) {
-        if (
-          !resolvedPayload.teams.some(
-            (t) => t.name.trim().toLowerCase() === ov.teamName.trim().toLowerCase(),
-          )
-        ) {
-          logger.warn({ teamName: ov.teamName }, 'teamOverrides references unknown team; skipping');
-        }
-      }
-    }
-
-    try {
-      const teamsWithAvailableConfigs = pruneUnavailableTeamProfileSelections(
-        remappedTeams,
-        selectedProfilesByFamily.profilesToCreate,
-        result.mappings.profileIdMap,
-        configLookupMap,
-      );
-      await createImportedTeams(result.project.id, teamsWithAvailableConfigs, {
-        storage: deps.storage,
-        teamsService: deps.teamsService,
-      } as unknown as Parameters<typeof createImportedTeams>[2]);
-    } catch (error) {
-      logger.error({ err: error }, 'Failed to seed teams from template (non-fatal)');
-    }
-  }
-
-  const mergedSettings = mergeProjectSettingsWithInitialPrompt(
-    resolvedPayload.prompts,
-    resolvedPayload.initialPrompt,
-    resolvedPayload.projectSettings,
-  );
-  const promptTitleToId = buildPromptTitleToIdMap(
-    resolvedPayload.prompts,
-    result.mappings.promptIdMap,
-  );
-  const statusLabelToId = buildStatusLabelToIdMap(
-    templatePayload.statuses,
-    result.mappings.statusIdMap,
-  );
-  const archiveStatusId = resolveArchiveStatusId(statusLabelToId);
-
-  const settingsResult = await deps.applyProjectSettings(
-    result.project.id,
-    mergedSettings,
-    { promptTitleToId, statusLabelToId },
-    archiveStatusId,
-  );
-
-  const { created: watchersCreated } = await deps.createWatchersFromPayload(
-    result.project.id,
-    resolvedPayload.watchers,
-    {
-      agentNameToId: agentNameToNewId,
-      profileNameToId: profileNameToNewId,
-      providerNameToId: available,
-      profileNameRemapMap: selectedProfilesByFamily.profileNameRemapMap,
+  // Watcher-creation seam (mirrors the import path): prefer the real service's `createWatcher`
+  // (starts runners in production), else fall back to `storage.createWatcher` (reduced/test deps).
+  const watcherServiceForCodec = {
+    createWatcher: (data: Parameters<StorageService['createWatcher']>[0]) => {
+      const svc = deps.watchersService;
+      return svc?.createWatcher ? svc.createWatcher(data) : deps.storage.createWatcher(data);
     },
-  );
+  };
 
-  const { created: subscribersCreated } = await deps.createSubscribersFromPayload(
-    result.project.id,
-    resolvedPayload.subscribers,
-  );
+  const buildRuntime = (projectId: string) => ({
+    projectId,
+    storage: deps.storage,
+    settings: deps.settings,
+    watchersService: watcherServiceForCodec,
+    available,
+    existingStatuses: [] as const,
+    teamsService: deps.teamsService,
+    teamOverrides: input.teamOverrides,
+    probe1m: deps.probe1m,
+    scheduledEpicsRefresh: deps.scheduledEpicsRefresh,
+    computeNextRunAt: deps.computeNextRunAt,
+  });
 
-  let scheduledEpicsCreated = 0;
-  if (resolvedPayload.scheduledEpics?.length) {
-    scheduledEpicsCreated = await createImportedScheduledEpics(
-      result.project.id,
-      resolvedPayload.scheduledEpics,
+  const project = await deps.storage.runInTransaction(async () => {
+    const created = await deps.storage.createProjectShell(
       {
-        agentNameToId: agentNameToNewId,
-        statusLabelToId,
+        name: input.name,
+        description: input.description ?? null,
+        rootPath: input.rootPath,
+        isTemplate: false,
       },
-      {
-        storage: deps.storage,
-        scheduledEpicsRefresh: deps.scheduledEpicsRefresh,
-        computeNextRunAt: deps.computeNextRunAt,
-      },
+      input.projectId ? { projectId: input.projectId } : undefined,
     );
-  }
+    await CREATE_TEMPLATE_PIPELINE.applySections(
+      ['statuses', 'prompts', 'profiles', 'agents'],
+      resolvedPayload,
+      pipelineCtx,
+      'create',
+      buildRuntime(created.id),
+    );
+    return created;
+  });
 
-  await importProviderSettings(resolvedPayload, deps.storage, { probe1m: deps.probe1m });
+  // POST-TX (non-transactional): watchers, subscribers, teams (non-fatal on create),
+  // scheduledEpics, projectSettings + initialPrompt, presets, providerSettings, providerModels,
+  // providerEfforts — in registry order.
+  const postResults = await CREATE_TEMPLATE_PIPELINE.applySections(
+    [
+      'watchers',
+      'subscribers',
+      'teams',
+      'scheduledEpics',
+      'projectSettings',
+      'presets',
+      'providerSettings',
+      'providerModels',
+      'providerEfforts',
+    ],
+    resolvedPayload,
+    pipelineCtx,
+    'create',
+    buildRuntime(project.id),
+  );
 
+  const logOf = (section: string): Record<string, unknown> =>
+    postResults.find((r) => r.section === section)?.log ?? {};
+  const watchersCreated = (logOf('watchers').watchers as number | undefined) ?? 0;
+  const subscribersCreated = (logOf('subscribers').subscribers as number | undefined) ?? 0;
+  const scheduledEpicsCreated = (logOf('scheduledEpics').scheduledEpics as number | undefined) ?? 0;
+  const initialPromptSet =
+    (logOf('projectSettings').initialPromptSet as boolean | undefined) ?? false;
+
+  const statusIdMap = pipelineCtx.get('statusIdMap');
+  const promptIdMap = pipelineCtx.get('promptIdMap');
+  const profileIdMap = pipelineCtx.get('profileIdMap');
+  const agentIdMap = pipelineCtx.get('agentIdMap');
+
+  // Template metadata is a post-sections lifecycle step (needs slug + resolved source); not a codec.
   await applyTemplateMetadata(
-    result.project.id,
+    project.id,
     resolvedPayload,
     resolvedTemplateSlug,
     resolvedTemplateResult,
     deps.settings,
   );
 
-  const templatePresets = extractTemplatePresets(resolvedPayload as { presets?: unknown });
-  if (templatePresets.length > 0) {
-    await deps.settings.setProjectPresets(result.project.id, templatePresets);
-    logger.info(
-      { projectId: result.project.id, presetCount: templatePresets.length },
-      'Presets stored for project',
-    );
-  }
-
+  // Preset APPLICATION (create-specific: selects each agent's provider config by name). The presets
+  // themselves were stored by the presets codec above; here we apply the chosen one.
   const presetName = input.presetName;
   if (presetName) {
+    const templatePresets = extractTemplatePresets(resolvedPayload as { presets?: unknown });
     const selectedPreset = templatePresets.find((preset) => hasPresetName(preset, presetName));
     if (!selectedPreset) {
-      logger.warn(
-        { projectId: result.project.id, presetName },
-        'Selected preset not found in template',
-      );
+      logger.warn({ projectId: project.id, presetName }, 'Selected preset not found in template');
     } else {
-      await deps.applyPreset(result.project.id, presetName, {
-        agentNameToId: agentNameToNewId,
-        configLookupMap,
+      await deps.applyPreset(project.id, presetName, {
+        agentNameToId: new Map(Object.entries(pipelineCtx.get('agentNameToId'))),
+        configLookupMap: pipelineCtx.get('configLookupMap'),
       });
-      logger.info({ projectId: result.project.id, presetName }, 'Applied preset to project');
+      logger.info({ projectId: project.id, presetName }, 'Applied preset to project');
     }
+  }
+
+  // Per-agent config overrides (wizard/API). Mutually exclusive with presetName (enforced at the
+  // controller); applied via the shared inner helper and NEVER marks an active preset. Uses the
+  // same name maps the preset path uses so config resolution is byte-identical.
+  const agentOverrides = input.agentOverrides;
+  if (agentOverrides && agentOverrides.length > 0) {
+    const { applied, warnings } = await deps.applyAgentConfigs(project.id, agentOverrides, {
+      agentNameToId: new Map(Object.entries(pipelineCtx.get('agentNameToId'))),
+      configLookupMap: pipelineCtx.get('configLookupMap'),
+    });
+    logger.info(
+      { projectId: project.id, applied, warnings: warnings.length },
+      'Applied agentOverrides to project',
+    );
   }
 
   return {
     success: true,
-    project: result.project,
+    project,
     imported: {
-      ...result.imported,
+      prompts: resolvedPayload.prompts.length,
+      profiles: selectedProfilesByFamily.profilesToCreate.length,
+      agents: resolvedPayload.agents.length,
+      statuses: resolvedPayload.statuses.length,
       watchers: watchersCreated,
       subscribers: subscribersCreated,
       scheduledEpics: scheduledEpicsCreated,
     },
-    mappings: result.mappings,
-    initialPromptSet: settingsResult.initialPromptSet,
+    mappings: { promptIdMap, profileIdMap, agentIdMap, statusIdMap },
+    initialPromptSet,
     message: 'Project created from template successfully.',
     ...(warnings.length > 0 ? { warnings } : {}),
   };
@@ -499,7 +438,11 @@ async function resolveFamilyMappings(
     presetCoversAllAgents: boolean;
   },
 ): Promise<FamilyMappingResolution> {
-  const familyResult = await deps.computeFamilyAlternatives(payload.profiles, payload.agents);
+  const familyResult = await deps.computeFamilyAlternatives(
+    payload.profiles,
+    payload.agents,
+    input.selectedProviderNames,
+  );
   const needsMapping = familyResult.alternatives.some((alt) => !alt.defaultProviderAvailable);
   let effectiveFamilyProviderMappings = input.familyProviderMappings;
 
@@ -553,7 +496,11 @@ async function resolveFamilyMappings(
   const providerNames = new Set(
     payload.profiles.map((profile) => profile.provider.name.trim().toLowerCase()),
   );
-  const { available } = await resolveProvidersFromStorage(deps.storage, providerNames);
+  const { available } = await resolveProvidersFromStorage(
+    deps.storage,
+    providerNames,
+    input.selectedProviderNames,
+  );
 
   // Fail-fast if no providers are installed but template requires profiles
   if (available.size === 0 && payload.profiles.length > 0) {
@@ -583,251 +530,6 @@ async function resolveFamilyMappings(
     available,
     selectedProfilesByFamily,
   };
-}
-
-function buildTemplateImportPayload(
-  payload: ParsedTemplatePayload,
-  selectedProfilesByFamily: ReturnType<
-    typeof selectProfilesForFamilies<ParsedTemplatePayload['profiles'][number]>
-  >,
-  available: Map<string, string>,
-  normalizeProfileOptions: (options: unknown) => string | null,
-): TemplateImportPayload {
-  return {
-    prompts: payload.prompts.map((prompt) => ({
-      id: prompt.id,
-      title: prompt.title,
-      content: prompt.content,
-      version: prompt.version,
-      tags: prompt.tags,
-    })),
-    profiles: selectedProfilesByFamily.profilesToCreate.map((profile) => {
-      const providerId = available.get(profile.provider.name.trim().toLowerCase());
-      if (!providerId) {
-        throw new NotFoundError('Provider', profile.provider.name);
-      }
-      return {
-        id: profile.id,
-        name: profile.name,
-        providerId,
-        familySlug: profile.familySlug ?? null,
-        options: normalizeProfileOptions(profile.options),
-        instructions: profile.instructions ?? null,
-        temperature: profile.temperature ?? null,
-        maxTokens: profile.maxTokens ?? null,
-      };
-    }),
-    agents: payload.agents.map((agent) => {
-      const remappedProfileId =
-        selectedProfilesByFamily.agentProfileMap.get(agent.id ?? '') ?? agent.profileId;
-      return {
-        id: agent.id,
-        name: agent.name,
-        profileId: remappedProfileId,
-        description: agent.description,
-        modelOverride: agent.modelOverride ?? null,
-      };
-    }),
-    statuses: payload.statuses.map((status) => ({
-      id: status.id,
-      label: status.label,
-      color: status.color,
-      position: status.position,
-      mcpHidden: status.mcpHidden,
-    })),
-    initialPrompt: payload.initialPrompt,
-  };
-}
-
-async function createProjectWithTemplate(
-  input: CreateFromTemplateInputLike,
-  templatePayload: TemplateImportPayload,
-  storage: StorageService,
-) {
-  const projectInput = {
-    name: input.name,
-    description: input.description ?? null,
-    rootPath: input.rootPath,
-    isTemplate: false,
-  };
-  if (input.projectId) {
-    return storage.createProjectWithTemplate(projectInput, templatePayload, {
-      projectId: input.projectId,
-    });
-  }
-  return storage.createProjectWithTemplate(projectInput, templatePayload);
-}
-
-async function createProviderConfigsAndAgentAssignments(
-  payload: ParsedTemplatePayload,
-  selectedProfilesByFamily: ReturnType<
-    typeof selectProfilesForFamilies<ParsedTemplatePayload['profiles'][number]>
-  >,
-  available: Map<string, string>,
-  mappings: {
-    profileIdMap: Record<string, string>;
-    agentIdMap: Record<string, string>;
-  },
-  storage: StorageService,
-): Promise<Map<string, string>> {
-  const configLookupMap = new Map<string, string>();
-
-  for (const profile of selectedProfilesByFamily.profilesToCreate) {
-    if (!profile.id) continue;
-    const newProfileId = mappings.profileIdMap[profile.id];
-    if (!newProfileId) continue;
-
-    const providerConfigs = (
-      profile as {
-        providerConfigs?: Array<{
-          name: string;
-          providerName: string;
-          description?: string | null;
-          options?: string | null;
-          env?: Record<string, string> | null;
-        }>;
-      }
-    ).providerConfigs;
-
-    if (!providerConfigs || providerConfigs.length === 0) continue;
-
-    for (const config of providerConfigs) {
-      const configProviderId = available.get(config.providerName.trim().toLowerCase());
-      if (!configProviderId) {
-        logger.warn(
-          { profileName: profile.name, providerName: config.providerName },
-          'Provider not found for config in createFromTemplate, skipping',
-        );
-        continue;
-      }
-
-      const createdConfig = await storage.createProfileProviderConfig({
-        profileId: newProfileId,
-        providerId: configProviderId,
-        name: config.name,
-        description: config.description ?? null,
-        options: config.options ?? null,
-        env: preserveImportedEnv(config.env),
-      });
-
-      const lookupKey = buildProviderConfigLookupKey(newProfileId, config.name);
-      configLookupMap.set(lookupKey, createdConfig.id);
-    }
-  }
-
-  const profilesWithProviderConfigs = buildProfilesWithProviderConfigs(
-    selectedProfilesByFamily,
-    mappings.profileIdMap,
-  );
-
-  for (const agent of payload.agents) {
-    const agentWithConfig = agent as { providerConfigName?: string | null };
-    if (!agentWithConfig.providerConfigName || !agent.id) continue;
-
-    const newAgentId = mappings.agentIdMap[agent.id];
-    if (!newAgentId) continue;
-
-    const remappedProfileId =
-      selectedProfilesByFamily.agentProfileMap.get(agent.id) ?? agent.profileId;
-    const newProfileId = remappedProfileId ? mappings.profileIdMap[remappedProfileId] : null;
-    if (!newProfileId) continue;
-
-    const lookupKey = buildProviderConfigLookupKey(
-      newProfileId,
-      agentWithConfig.providerConfigName,
-    );
-    const providerConfigId = configLookupMap.get(lookupKey);
-
-    if (providerConfigId) {
-      await storage.updateAgent(newAgentId, { providerConfigId });
-      logger.debug(
-        { agentName: agent.name, providerConfigId },
-        'Updated agent with providerConfigId',
-      );
-      continue;
-    }
-
-    const fallbackKey = Array.from(configLookupMap.keys()).find((key) =>
-      key.startsWith(`${newProfileId}:`),
-    );
-    if (fallbackKey) {
-      const fallbackConfigId = configLookupMap.get(fallbackKey)!;
-      await storage.updateAgent(newAgentId, { providerConfigId: fallbackConfigId });
-      logger.warn(
-        {
-          agentName: agent.name,
-          providerConfigName: agentWithConfig.providerConfigName,
-          fallbackConfigId,
-        },
-        'Agent providerConfigName unavailable, fell back to first available config',
-      );
-    } else {
-      logger.warn(
-        { agentName: agent.name, providerConfigName: agentWithConfig.providerConfigName },
-        'No provider config available for agent in createFromTemplate',
-      );
-    }
-  }
-
-  await removeDuplicateDefaultConfigs(profilesWithProviderConfigs, storage);
-  return configLookupMap;
-}
-
-function buildProfilesWithProviderConfigs(
-  selectedProfilesByFamily: ReturnType<
-    typeof selectProfilesForFamilies<ParsedTemplatePayload['profiles'][number]>
-  >,
-  profileIdMap: Record<string, string>,
-): Map<string, { profileName: string; configNames: Set<string> }> {
-  const profilesWithProviderConfigs = new Map<
-    string,
-    { profileName: string; configNames: Set<string> }
-  >();
-
-  for (const profile of selectedProfilesByFamily.profilesToCreate) {
-    if (!profile.id) continue;
-    const newProfileId = profileIdMap[profile.id];
-    if (!newProfileId) continue;
-
-    const providerConfigs = (profile as { providerConfigs?: Array<{ name: string }> })
-      .providerConfigs;
-    if (!providerConfigs || providerConfigs.length === 0) continue;
-
-    profilesWithProviderConfigs.set(newProfileId, {
-      profileName: profile.name,
-      configNames: new Set(
-        providerConfigs.map((providerConfig) => providerConfig.name.trim().toLowerCase()),
-      ),
-    });
-  }
-
-  return profilesWithProviderConfigs;
-}
-
-async function removeDuplicateDefaultConfigs(
-  profilesWithProviderConfigs: Map<string, { profileName: string; configNames: Set<string> }>,
-  storage: StorageService,
-): Promise<void> {
-  for (const [newProfileId, { profileName, configNames }] of profilesWithProviderConfigs) {
-    const existingConfigs = await storage.listProfileProviderConfigsByProfile(newProfileId);
-    for (const existingConfig of existingConfigs) {
-      const isFromProviderConfigs = configNames.has(existingConfig.name.trim().toLowerCase());
-      if (isFromProviderConfigs || existingConfig.name !== profileName) continue;
-
-      try {
-        await storage.deleteProfileProviderConfig(existingConfig.id);
-        logger.debug(
-          { profileName, configId: existingConfig.id },
-          'Deleted duplicate config created by storage layer',
-        );
-      } catch {
-        logger.debug(
-          { profileName, configId: existingConfig.id },
-          'Skipped deleting default config — still referenced by agents',
-        );
-      }
-    }
-  }
 }
 
 async function applyTemplateMetadata(

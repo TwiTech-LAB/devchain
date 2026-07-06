@@ -1,328 +1,317 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { ProjectsService } from './projects.service';
-import { ProjectProviderProvisioningService } from './project-provider-provisioning.service';
-import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
-import { SessionsService } from '../../sessions/services/sessions.service';
+/**
+ * ProjectsService.createFromTemplate — behavior suite (real in-memory storage).
+ *
+ * Rearchitected for Task 8: the create path no longer calls the (deleted)
+ * `storage.createProjectWithTemplate`. It now runs `storage.runInTransaction` →
+ * `createProjectShell` + the template-codec pipeline (real per-entity storage methods),
+ * then post-tx codecs (watchers, subscribers, teams, scheduledEpics, projectSettings,
+ * presets, providerSettings, providerModels, providerEfforts), then template metadata +
+ * preset application.
+ *
+ * These tests exercise the genuine ProjectsService/create-helper behavior that the
+ * template round-trip contract suite does NOT cover. They call `createFromTemplateWithHelper`
+ * directly (identical to the sibling contract spec) against a REAL `LocalStorageService`
+ * on an in-memory better-sqlite3 DB + real `SettingsService`/`TeamsStore`, and assert by
+ * querying the persisted result — NOT by inspecting internal pipeline mock calls.
+ *
+ * The only mocked collaborators are true externals: `unifiedTemplateService` (template
+ * content/source/version), `probe1m` (1M-context probe), and jest-spy wrappers around the
+ * real `teamsService.createTeam` / `watchersService.createWatcher` seams so we can assert
+ * the exact arguments the create path resolves for those services.
+ */
+import Database from 'better-sqlite3';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
+import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
+import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { join } from 'path';
+
+import { LocalStorageService } from '../../storage/local/local-storage.service';
+import type { StorageService } from '../../storage/interfaces/storage.interface';
 import { SettingsService } from '../../settings/services/settings.service';
-import { WatchersService } from '../../watchers/services/watchers.service';
-import { WatcherRunnerService } from '../../watchers/services/watcher-runner.service';
-import { UnifiedTemplateService } from '../../registry/services/unified-template.service';
-import { TeamsService } from '../../teams/services/teams.service';
-import { SCHEDULED_EPIC_RUNNER_REFRESH } from '../../scheduled-epics/services/scheduled-epics.service';
-import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
-import { FakeProcessExecutor } from '../../terminal/services/process-executor/fake-process-executor';
+import { TeamsStore } from '../../teams/storage/teams.store';
 import { ValidationError, NotFoundError } from '../../../common/errors/error-types';
-import * as devchainShared from '@devchain/shared';
+
+import { createFromTemplateWithHelper } from '../helpers/template-loader';
+import { computeFamilyAlternativesFromStorage } from '../helpers/profile-mapping.helpers';
+import { applyAgentConfigs, applyPresetWithHelper } from '../helpers/project-presets.helpers';
+import {
+  applyProjectSettingsWithHelper,
+  createSubscribersFromPayloadWithHelper,
+  createWatchersFromPayloadWithHelper,
+  normalizeProfileOptions,
+} from '../helpers/project-runtime.helpers';
+import { deriveSlugFromPath } from '../helpers/template-file.helpers';
+import { getNextRunAt } from '../../scheduled-epics/helpers/cron-helpers';
 
 jest.mock('../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
 }));
 
-// Mock probe-1m utility
-jest.mock('../../providers/utils/probe-1m', () => ({
-  probe1mSupport: jest.fn(),
-}));
-import { probe1mSupport } from '../../providers/utils/probe-1m';
-const mockProbe1mSupport = probe1mSupport as jest.Mock;
-import { createMockProject } from '../../../../test/factories';
+// ---------------------------------------------------------------------------
+// Harness: real :memory: SQLite + real storage-backed services.
+// ---------------------------------------------------------------------------
 
-describe('ProjectsService', () => {
-  let service: ProjectsService;
-  let storage: {
-    getProject: jest.Mock;
-    listProviders: jest.Mock;
-    listProvidersByIds: jest.Mock;
-    listEnvScopesByProviderIds: jest.Mock;
-    listProviderModelsByProviderIds: jest.Mock;
-    bulkCreateProviderModels: jest.Mock;
-    listPrompts: jest.Mock;
-    getPrompt: jest.Mock;
-    listAgentProfiles: jest.Mock;
-    listAgents: jest.Mock;
-    listStatuses: jest.Mock;
-    getInitialSessionPrompt: jest.Mock;
-    getProvider: jest.Mock;
-    createStatus: jest.Mock;
-    createPrompt: jest.Mock;
-    createAgentProfile: jest.Mock;
-    createAgent: jest.Mock;
-    updateAgent: jest.Mock;
-    deleteAgent: jest.Mock;
-    deleteAgentProfile: jest.Mock;
-    deletePrompt: jest.Mock;
-    deleteStatus: jest.Mock;
-    createProjectWithTemplate: jest.Mock;
-    countEpicsByStatus: jest.Mock;
-    listEpics: jest.Mock;
-    updateEpic: jest.Mock;
-    updateStatus: jest.Mock;
-    updateEpicsStatus: jest.Mock;
-    listWatchers: jest.Mock;
-    listSubscribers: jest.Mock;
-    listScheduledEpics: jest.Mock;
-    deleteScheduledEpic: jest.Mock;
-    createScheduledEpic: jest.Mock;
-    createWatcher: jest.Mock;
-    createSubscriber: jest.Mock;
-    deleteSubscriber: jest.Mock;
-    listProfileProviderConfigsByProfile: jest.Mock;
-    createProfileProviderConfig: jest.Mock;
-    deleteProfileProviderConfig: jest.Mock;
-    getAgent: jest.Mock;
-    getAgentProfile: jest.Mock;
-    getProfileProviderConfig: jest.Mock;
-    parkSessionsFromAgents: jest.Mock;
-    applySessionPlan: jest.Mock;
-  };
-  let sessions: {
-    listActiveSessions: jest.Mock;
-    getActiveSessionsForProject: jest.Mock;
-  };
-  let settings: {
-    updateSettings: jest.Mock;
-    getSettings: jest.Mock;
-    getAutoCleanStatusIds: jest.Mock;
-    getRegistryConfig: jest.Mock;
-    setProjectTemplateMetadata: jest.Mock;
-    getProjectTemplateMetadata: jest.Mock;
-    getProjectPresets: jest.Mock;
-    setProjectPresets: jest.Mock;
-    clearProjectPresets: jest.Mock;
-  };
-  let watchersService: {
-    deleteWatcher: jest.Mock;
-    createWatcher: jest.Mock;
-  };
-  let watcherRunner: {
-    startWatcher: jest.Mock;
-  };
-  let scheduledEpicRunnerRefresh: {
-    refreshScheduleWindow: jest.Mock;
-  };
-  let unifiedTemplateService: {
-    getTemplate: jest.Mock;
-    getBundledTemplate: jest.Mock;
-    listTemplates: jest.Mock;
-    hasTemplate: jest.Mock;
-    getTemplateFromFilePath: jest.Mock;
-  };
-  let teamsServiceMock: {
-    deleteTeamsByProject: jest.Mock;
-    listTeams: jest.Mock;
-    getTeam: jest.Mock;
-    createTeam: jest.Mock;
-  };
+interface Harness {
+  sqlite: Database.Database;
+  storage: StorageService;
+  settings: SettingsService;
+  teamsStore: TeamsStore;
+}
 
-  beforeEach(async () => {
-    storage = {
-      getProject: jest.fn().mockResolvedValue(
-        createMockProject({
-          id: 'project-123',
-          description: 'A test project',
-          rootPath: '/test/path',
-        }),
+function createHarness(): Harness {
+  const sqlite = new Database(':memory:');
+  sqlite.pragma('journal_mode = WAL');
+  const db: BetterSQLite3Database = drizzle(sqlite);
+  sqlite.pragma('foreign_keys = OFF');
+  migrate(db, { migrationsFolder: join(__dirname, '../../../..', 'drizzle') });
+  sqlite.pragma('foreign_keys = ON');
+
+  const storage = new LocalStorageService(db) as unknown as StorageService;
+  const settings = new SettingsService(db, new EventEmitter2());
+  const teamsStore = new TeamsStore(db);
+  return { sqlite, storage, settings, teamsStore };
+}
+
+/** Thin, real, storage-backed adapter matching the teamsService deps shape. */
+function teamsAdapter(teamsStore: TeamsStore) {
+  return {
+    listTeams: (projectId: string, options?: { limit?: number }) =>
+      teamsStore.listTeams(projectId, options),
+    getTeam: (id: string) => teamsStore.getTeam(id),
+    createTeam: (data: Parameters<TeamsStore['createTeam']>[0]) => teamsStore.createTeam(data),
+    deleteTeamsByProject: (projectId: string) => teamsStore.deleteTeamsByProject(projectId),
+    deleteTeamsByIds: (ids: string[]) => teamsStore.deleteTeamsByIds(ids),
+  };
+}
+
+type AnyRec = Record<string, unknown>;
+
+interface UnifiedMock {
+  getTemplate: jest.Mock;
+  getTemplateFromFilePath: jest.Mock;
+}
+
+/** Build a UnifiedTemplateService mock resolving `template` from a registry/bundled slug. */
+function bundledUnified(
+  template: AnyRec,
+  opts: { source?: 'bundled' | 'registry'; version?: string | null } = {},
+): UnifiedMock {
+  return {
+    getTemplate: jest.fn(async () => ({
+      content: template,
+      source: opts.source ?? 'bundled',
+      version: opts.version ?? null,
+    })),
+    getTemplateFromFilePath: jest.fn(() => {
+      throw new Error('getTemplateFromFilePath not expected in this test');
+    }),
+  };
+}
+
+/** Build a UnifiedTemplateService mock resolving `template` from a file path. */
+function fileUnified(template: AnyRec, version: string | null = null): UnifiedMock {
+  return {
+    getTemplate: jest.fn(() => {
+      throw new Error('getTemplate not expected in this test');
+    }),
+    getTemplateFromFilePath: jest.fn(() => ({
+      content: template,
+      source: 'file' as const,
+      version,
+    })),
+  };
+}
+
+interface DepsBundle {
+  deps: unknown;
+  createTeam: jest.Mock;
+  deleteTeamsByIds: jest.Mock;
+  createWatcher: jest.Mock;
+  probe1m: jest.Mock;
+  refreshScheduleWindow: jest.Mock;
+}
+
+/**
+ * Wire the create-from-template deps to the real services, with jest-spy wrappers around the
+ * true-external seams (teams createTeam, watchers createWatcher, 1M probe, schedule refresh).
+ */
+function buildDeps(h: Harness, unified: UnifiedMock): DepsBundle {
+  const adapter = teamsAdapter(h.teamsStore);
+  const createTeam = jest.fn((data: Parameters<typeof adapter.createTeam>[0]) =>
+    adapter.createTeam(data),
+  );
+  const deleteTeamsByIds = jest.fn((ids: string[]) => adapter.deleteTeamsByIds(ids));
+  const teamsService = { ...adapter, createTeam, deleteTeamsByIds };
+
+  const createWatcher = jest.fn((data: Parameters<StorageService['createWatcher']>[0]) =>
+    h.storage.createWatcher(data),
+  );
+  const watchersService = { createWatcher };
+
+  const probe1m = jest.fn(async () => ({ supported: false, status: 'unsupported' }));
+  const refreshScheduleWindow = jest.fn();
+
+  const deps = {
+    storage: h.storage,
+    settings: h.settings,
+    unifiedTemplateService: unified,
+    deriveSlugFromPath,
+    computeFamilyAlternatives: (profiles: never, agents: never, selected?: string[]) =>
+      computeFamilyAlternativesFromStorage(h.storage, profiles, agents, undefined, selected),
+    normalizeProfileOptions,
+    applyProjectSettings: (
+      projectId: string,
+      projectSettings: never,
+      maps: never,
+      archiveStatusId: string | null,
+    ) =>
+      applyProjectSettingsWithHelper(projectId, projectSettings, maps, archiveStatusId, h.settings),
+    createWatchersFromPayload: (projectId: string, watchers: never, maps: never) =>
+      createWatchersFromPayloadWithHelper(projectId, watchers, maps, watchersService as never),
+    createSubscribersFromPayload: (projectId: string, subscribers: never) =>
+      createSubscribersFromPayloadWithHelper(projectId, subscribers, h.storage),
+    applyPreset: (projectId: string, presetName: string, nameMaps?: never) =>
+      applyPresetWithHelper(
+        projectId,
+        presetName,
+        { storage: h.storage, settings: h.settings },
+        nameMaps,
       ),
-      listProviders: jest.fn(),
-      listProvidersByIds: jest.fn().mockResolvedValue([]),
-      listEnvScopesByProviderIds: jest.fn().mockReturnValue(new Map()),
-      listProviderModelsByProviderIds: jest.fn().mockResolvedValue([]),
-      bulkCreateProviderModels: jest.fn().mockResolvedValue({ added: [], existing: [] }),
-      listPrompts: jest.fn(),
-      getPrompt: jest.fn(),
-      listAgentProfiles: jest.fn(),
-      listAgents: jest.fn(),
-      listStatuses: jest.fn(),
-      getInitialSessionPrompt: jest.fn(),
-      getProvider: jest.fn(),
-      updateProvider: jest.fn(),
-      createStatus: jest.fn(),
-      createPrompt: jest.fn(),
-      createAgentProfile: jest.fn(),
-      createAgent: jest.fn(),
-      updateAgent: jest.fn(),
-      deleteAgent: jest.fn(),
-      deleteAgentProfile: jest.fn(),
-      deletePrompt: jest.fn(),
-      deleteStatus: jest.fn(),
-      createProjectWithTemplate: jest.fn(),
-      countEpicsByStatus: jest.fn().mockResolvedValue(0),
-      listEpics: jest.fn().mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 }),
-      updateEpic: jest.fn(),
-      updateStatus: jest.fn(),
-      updateEpicsStatus: jest.fn().mockResolvedValue(0),
-      listWatchers: jest.fn().mockResolvedValue([]),
-      listSubscribers: jest.fn().mockResolvedValue([]),
-      listScheduledEpics: jest.fn().mockResolvedValue({ items: [], total: 0 }),
-      deleteScheduledEpic: jest.fn().mockResolvedValue(undefined),
-      createScheduledEpic: jest.fn().mockImplementation(async (data) => ({
-        id: `scheduled-epic-${Date.now()}`,
-        ...data,
-        configVersion: 1,
-        runCount: 0,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      })),
-      createWatcher: jest.fn(),
-      createSubscriber: jest.fn(),
-      deleteSubscriber: jest.fn(),
-      listProfileProviderConfigsByProfile: jest.fn().mockResolvedValue([]),
-      createProfileProviderConfig: jest.fn().mockImplementation(async (data) => ({
-        id: `config-${Date.now()}`,
-        ...data,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      })),
-      deleteProfileProviderConfig: jest.fn().mockResolvedValue(undefined),
-      getAgent: jest.fn(),
-      getAgentProfile: jest.fn(),
-      getProfileProviderConfig: jest.fn(),
-      parkSessionsFromAgents: jest.fn().mockResolvedValue(new Map()),
-      applySessionPlan: jest.fn().mockResolvedValue(undefined),
-    };
+    applyAgentConfigs: (projectId: string, agentConfigs: never, nameMaps?: never) =>
+      applyAgentConfigs(projectId, agentConfigs, { storage: h.storage }, nameMaps),
+    teamsService: teamsService as never,
+    watchersService: watchersService as never,
+    probe1m,
+    scheduledEpicsRefresh: { refreshScheduleWindow },
+    computeNextRunAt: getNextRunAt,
+  };
 
-    sessions = {
-      listActiveSessions: jest.fn(),
-      getActiveSessionsForProject: jest.fn().mockReturnValue([]),
-    };
+  return { deps, createTeam, deleteTeamsByIds, createWatcher, probe1m, refreshScheduleWindow };
+}
 
-    settings = {
-      updateSettings: jest.fn(),
-      getSettings: jest.fn().mockReturnValue({}),
-      getAutoCleanStatusIds: jest.fn().mockReturnValue([]),
-      getRegistryConfig: jest.fn().mockReturnValue({ url: 'https://registry.example.com' }),
-      setProjectTemplateMetadata: jest.fn().mockResolvedValue(undefined),
-      getProjectTemplateMetadata: jest.fn().mockReturnValue(null),
-      getProjectPresets: jest.fn().mockReturnValue([]),
-      setProjectPresets: jest.fn().mockResolvedValue(undefined),
-      clearProjectPresets: jest.fn().mockResolvedValue(undefined),
-    };
+// ---------------------------------------------------------------------------
+// Shared setup helpers.
+// ---------------------------------------------------------------------------
 
-    watchersService = {
-      deleteWatcher: jest.fn(),
-      createWatcher: jest.fn().mockResolvedValue({ id: 'mock-watcher-id', enabled: false }),
-    };
+async function seedClaudeProvider(
+  h: Harness,
+  binPath: string | null = null,
+): Promise<{ id: string }> {
+  // Force a null autoCompactThreshold (claude otherwise defaults to 85) so the
+  // providerSettings 1M codec exercises its "no local threshold set → import 95" branch.
+  return h.storage.createProvider({ name: 'claude', binPath, autoCompactThreshold: null });
+}
 
-    watcherRunner = {
-      startWatcher: jest.fn(),
-    };
+async function getProfileByName(h: Harness, projectId: string, name: string) {
+  const { items } = await h.storage.listAgentProfiles({ projectId });
+  return items.find((p) => p.name === name);
+}
 
-    scheduledEpicRunnerRefresh = {
-      refreshScheduleWindow: jest.fn(),
-    };
+async function getAgentByName(h: Harness, projectId: string, name: string) {
+  const { items } = await h.storage.listAgents(projectId, { limit: 10000 });
+  return items.find((a) => a.name === name);
+}
 
-    unifiedTemplateService = {
-      getTemplate: jest.fn(),
-      getBundledTemplate: jest.fn(),
-      listTemplates: jest.fn(),
-      hasTemplate: jest.fn(),
-      getTemplateFromFilePath: jest.fn(),
-    };
+async function getConfigByName(h: Harness, profileId: string, name: string) {
+  const configs = await h.storage.listProfileProviderConfigsByProfile(profileId);
+  return configs.find((c) => c.name.trim().toLowerCase() === name.trim().toLowerCase());
+}
 
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        ProjectsService,
-        {
-          provide: STORAGE_SERVICE,
-          useValue: storage,
-        },
-        {
-          provide: SessionsService,
-          useValue: sessions,
-        },
-        {
-          provide: SettingsService,
-          useValue: settings,
-        },
-        {
-          provide: WatchersService,
-          useValue: watchersService,
-        },
-        {
-          provide: WatcherRunnerService,
-          useValue: watcherRunner,
-        },
-        {
-          provide: SCHEDULED_EPIC_RUNNER_REFRESH,
-          useValue: scheduledEpicRunnerRefresh,
-        },
-        {
-          provide: UnifiedTemplateService,
-          useValue: unifiedTemplateService,
-        },
-        {
-          provide: TeamsService,
-          useValue: (teamsServiceMock = {
-            deleteTeamsByProject: jest.fn().mockResolvedValue(undefined),
-            listTeams: jest.fn().mockResolvedValue({ items: [] }),
-            getTeam: jest.fn().mockResolvedValue(null),
-            createTeam: jest.fn().mockImplementation(async (data: Record<string, unknown>) => ({
-              id: `team-${Date.now()}`,
-              ...data,
-            })),
-          }),
-        },
-        {
-          provide: ProjectProviderProvisioningService,
-          useValue: { provisionProject: jest.fn().mockResolvedValue({ warnings: [] }) },
-        },
-        { provide: ProcessExecutor, useValue: new FakeProcessExecutor() },
-      ],
-    }).compile();
+// ---------------------------------------------------------------------------
+// Fixture builders (schema-valid ExportSchema payloads).
+// ---------------------------------------------------------------------------
 
-    service = module.get<ProjectsService>(ProjectsService);
+const PROFILE_ID = '11111111-1111-4111-8111-111111111111';
+const AGENT_ID = '22222222-2222-4222-8222-222222222222';
+const STATUS_ID = '33333333-3333-4333-8333-333333333333';
+
+/** Minimal empty-but-valid template (no profiles → no provider required). */
+function emptyTemplate(manifest?: AnyRec): AnyRec {
+  return {
+    version: 1,
+    prompts: [],
+    profiles: [],
+    agents: [],
+    statuses: [],
+    ...(manifest ? { _manifest: manifest } : {}),
+  };
+}
+
+/** A single-profile/agent/status template that needs the claude provider. */
+function claudeTemplate(extra: AnyRec = {}): AnyRec {
+  return {
+    version: 1,
+    prompts: [],
+    profiles: [
+      {
+        id: PROFILE_ID,
+        name: 'Test Profile',
+        provider: { name: 'claude' },
+        instructions: null,
+        temperature: null,
+        maxTokens: null,
+      },
+    ],
+    agents: [{ id: AGENT_ID, name: 'Test Agent', profileId: PROFILE_ID, description: null }],
+    statuses: [{ id: STATUS_ID, label: 'To Do', color: '#3b82f6', position: 0 }],
+    ...extra,
+  };
+}
+
+describe('ProjectsService.createFromTemplate (real storage)', () => {
+  let h: Harness;
+
+  beforeEach(() => {
+    h = createHarness();
   });
 
   afterEach(() => {
-    jest.clearAllMocks();
+    h.sqlite.close();
   });
 
-  describe('createFromTemplate', () => {
-    it('should throw ValidationError for invalid template content', async () => {
-      // Mock UnifiedTemplateService to return content that doesn't match ExportSchema
-      unifiedTemplateService.getTemplate.mockResolvedValue({
-        content: { invalid: 'content without required fields' },
-        source: 'bundled',
-        version: null,
-      });
+  // -------------------------------------------------------------------------
+  // Validation & template loading.
+  // -------------------------------------------------------------------------
+  describe('validation & loading', () => {
+    it('throws ValidationError for invalid template content', async () => {
+      const unified = bundledUnified({ invalid: 'content without required fields' } as AnyRec);
+      const { deps } = buildDeps(h, unified);
 
       await expect(
-        service.createFromTemplate({
-          name: 'Test Project',
-          rootPath: '/test',
-          slug: 'bad-template',
-        }),
+        createFromTemplateWithHelper(
+          { name: 'Test Project', rootPath: '/test/a', slug: 'bad-template' },
+          deps as never,
+        ),
       ).rejects.toThrow(ValidationError);
 
       await expect(
-        service.createFromTemplate({
-          name: 'Test Project',
-          rootPath: '/test',
-          slug: 'bad-template',
-        }),
+        createFromTemplateWithHelper(
+          { name: 'Test Project', rootPath: '/test/b', slug: 'bad-template' },
+          deps as never,
+        ),
       ).rejects.toThrow('Invalid template format');
     });
 
-    it('should throw ValidationError for slug with path traversal attempt', async () => {
-      // UnifiedTemplateService validates slugs internally and throws ValidationError
-      unifiedTemplateService.getTemplate.mockRejectedValue(
+    it('propagates ValidationError for slug with path traversal attempt', async () => {
+      const unified = bundledUnified(emptyTemplate());
+      unified.getTemplate.mockRejectedValue(
         new ValidationError(
           'Invalid template slug: must contain only alphanumeric characters and hyphens',
-          {
-            slug: '../../../etc/passwd',
-          },
+          { slug: '../../../etc/passwd' },
         ),
       );
+      const { deps } = buildDeps(h, unified);
 
       await expect(
-        service.createFromTemplate({
-          name: 'Test Project',
-          rootPath: '/test',
-          slug: '../../../etc/passwd',
-        }),
+        createFromTemplateWithHelper(
+          { name: 'Test Project', rootPath: '/test', slug: '../../../etc/passwd' },
+          deps as never,
+        ),
       ).rejects.toThrow(ValidationError);
     });
 
-    it('should throw ValidationError for slug with special characters', async () => {
+    it('propagates ValidationError for slug with special characters', async () => {
       const invalidSlugs = [
         'template;rm -rf /',
         'template`whoami`',
@@ -331,112 +320,356 @@ describe('ProjectsService', () => {
       ];
 
       for (const slug of invalidSlugs) {
-        unifiedTemplateService.getTemplate.mockRejectedValue(
+        const unified = bundledUnified(emptyTemplate());
+        unified.getTemplate.mockRejectedValue(
           new ValidationError('Invalid template slug', { slug }),
         );
+        const { deps } = buildDeps(h, unified);
 
         await expect(
-          service.createFromTemplate({
-            name: 'Test Project',
-            rootPath: '/test',
-            slug,
-          }),
+          createFromTemplateWithHelper(
+            { name: 'Test Project', rootPath: '/test', slug },
+            deps as never,
+          ),
         ).rejects.toThrow(ValidationError);
       }
     });
 
-    it('should throw NotFoundError for missing template', async () => {
-      unifiedTemplateService.getTemplate.mockRejectedValue(
-        new NotFoundError('Template', 'nonexistent-template'),
-      );
+    it('propagates NotFoundError for missing template', async () => {
+      const unified = bundledUnified(emptyTemplate());
+      unified.getTemplate.mockRejectedValue(new NotFoundError('Template', 'nonexistent-template'));
+      const { deps } = buildDeps(h, unified);
 
       await expect(
-        service.createFromTemplate({
-          name: 'Test Project',
-          rootPath: '/test',
-          slug: 'nonexistent-template',
-        }),
+        createFromTemplateWithHelper(
+          { name: 'Test Project', rootPath: '/test', slug: 'nonexistent-template' },
+          deps as never,
+        ),
       ).rejects.toThrow(NotFoundError);
     });
 
-    it('should accept valid slug and create project from template', async () => {
-      // Mock valid template content via UnifiedTemplateService
-      const validTemplate = {
+    it('accepts valid slugs and creates a project from an empty template', async () => {
+      const validSlugs = ['valid-template', 'template-123', 'ABC123', 'my-template-v1'];
+
+      for (const slug of validSlugs) {
+        const unified = bundledUnified(emptyTemplate());
+        const { deps } = buildDeps(h, unified);
+
+        const result = await createFromTemplateWithHelper(
+          { name: `Project ${slug}`, rootPath: `/test/${slug}`, slug },
+          deps as never,
+        );
+
+        expect(result).toMatchObject({ success: true, project: { name: `Project ${slug}` } });
+      }
+    });
+
+    it('passes the pre-generated projectId to createProjectShell when provided', async () => {
+      const projectId = '44444444-4444-4444-8444-444444444444';
+      const unified = bundledUnified(emptyTemplate());
+      const { deps } = buildDeps(h, unified);
+
+      const result = (await createFromTemplateWithHelper(
+        { name: 'Test Project', rootPath: '/test', slug: 'my-template', projectId },
+        deps as never,
+      )) as AnyRec;
+
+      const project = result.project as AnyRec;
+      expect(project.id).toBe(projectId);
+      // Project row was really persisted under that id.
+      const persisted = await h.storage.getProject(projectId);
+      expect(persisted.name).toBe('Test Project');
+    });
+
+    it('passes the version to UnifiedTemplateService.getTemplate when provided', async () => {
+      const unified = bundledUnified(emptyTemplate(), { source: 'registry', version: '1.2.0' });
+      const { deps } = buildDeps(h, unified);
+
+      await createFromTemplateWithHelper(
+        { name: 'Test Project', rootPath: '/test', slug: 'my-template', version: '1.2.0' },
+        deps as never,
+      );
+
+      expect(unified.getTemplate).toHaveBeenCalledWith('my-template', '1.2.0');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Template metadata recording.
+  // -------------------------------------------------------------------------
+  describe('template metadata', () => {
+    it('records installedVersion from _manifest.version for a bundled template', async () => {
+      const unified = bundledUnified(
+        emptyTemplate({ slug: 'bundled-template', name: 'Bundled Template', version: '1.1.0' }),
+        { source: 'bundled', version: null },
+      );
+      const { deps } = buildDeps(h, unified);
+
+      const result = (await createFromTemplateWithHelper(
+        { name: 'Test Project', rootPath: '/test', slug: 'bundled-template' },
+        deps as never,
+      )) as AnyRec;
+
+      const meta = h.settings.getProjectTemplateMetadata((result.project as AnyRec).id as string);
+      expect(meta).toMatchObject({
+        templateSlug: 'bundled-template',
+        source: 'bundled',
+        installedVersion: '1.1.0',
+        registryUrl: null,
+      });
+      expect(typeof meta?.installedAt).toBe('string');
+    });
+
+    it('records installedVersion null for a bundled template without a _manifest version', async () => {
+      const unified = bundledUnified(emptyTemplate(), { source: 'bundled', version: null });
+      const { deps } = buildDeps(h, unified);
+
+      const result = (await createFromTemplateWithHelper(
+        { name: 'Test Project', rootPath: '/test', slug: 'legacy-template' },
+        deps as never,
+      )) as AnyRec;
+
+      const meta = h.settings.getProjectTemplateMetadata((result.project as AnyRec).id as string);
+      expect(meta).toMatchObject({
+        templateSlug: 'legacy-template',
+        source: 'bundled',
+        installedVersion: null,
+        registryUrl: null,
+      });
+    });
+
+    it('records source=registry with the registry url and version', async () => {
+      const unified = bundledUnified(emptyTemplate(), { source: 'registry', version: '1.2.0' });
+      const { deps } = buildDeps(h, unified);
+      const registryUrl = h.settings.getRegistryConfig().url;
+
+      const result = (await createFromTemplateWithHelper(
+        { name: 'Test Project', rootPath: '/test', slug: 'my-registry-template', version: '1.2.0' },
+        deps as never,
+      )) as AnyRec;
+
+      const meta = h.settings.getProjectTemplateMetadata((result.project as AnyRec).id as string);
+      expect(meta).toMatchObject({
+        templateSlug: 'my-registry-template',
+        source: 'registry',
+        installedVersion: '1.2.0',
+        registryUrl,
+      });
+    });
+
+    it('calls getTemplateFromFilePath and records source=file when templatePath is provided', async () => {
+      const unified = fileUnified(
+        emptyTemplate({ slug: 'file-template', name: 'File Template', version: '2.0.0' }),
+        '2.0.0',
+      );
+      const { deps } = buildDeps(h, unified);
+
+      const result = (await createFromTemplateWithHelper(
+        { name: 'Test Project', rootPath: '/test', templatePath: '/path/to/template.json' },
+        deps as never,
+      )) as AnyRec;
+
+      expect(unified.getTemplateFromFilePath).toHaveBeenCalledWith('/path/to/template.json');
+      expect(unified.getTemplate).not.toHaveBeenCalled();
+
+      const meta = h.settings.getProjectTemplateMetadata((result.project as AnyRec).id as string);
+      expect(meta).toMatchObject({
+        templateSlug: 'file-template',
+        source: 'file',
+        installedVersion: '2.0.0',
+        registryUrl: null,
+      });
+    });
+
+    it('derives the slug from the filename when _manifest.slug is absent', async () => {
+      const unified = fileUnified(emptyTemplate(), null);
+      const { deps } = buildDeps(h, unified);
+
+      const result = (await createFromTemplateWithHelper(
+        {
+          name: 'Test Project',
+          rootPath: '/test',
+          templatePath: '/path/to/my-custom-template.json',
+        },
+        deps as never,
+      )) as AnyRec;
+
+      const meta = h.settings.getProjectTemplateMetadata((result.project as AnyRec).id as string);
+      expect(meta).toMatchObject({
+        templateSlug: 'my-custom-template',
+        source: 'file',
+        installedVersion: null,
+      });
+    });
+
+    it('uses _manifest.slug over the filename for a file-based template', async () => {
+      const unified = fileUnified(
+        emptyTemplate({ slug: 'manifest-defined-slug', name: 'Manifest', version: '1.5.0' }),
+        '1.5.0',
+      );
+      const { deps } = buildDeps(h, unified);
+
+      const result = (await createFromTemplateWithHelper(
+        {
+          name: 'Test Project',
+          rootPath: '/test',
+          templatePath: '/path/to/different-filename.json',
+        },
+        deps as never,
+      )) as AnyRec;
+
+      const meta = h.settings.getProjectTemplateMetadata((result.project as AnyRec).id as string);
+      expect(meta).toMatchObject({
+        templateSlug: 'manifest-defined-slug',
+        source: 'file',
+        installedVersion: '1.5.0',
+      });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Watcher integration (startWatcher seam + scope resolution).
+  // -------------------------------------------------------------------------
+  describe('watchers', () => {
+    const watcher = (over: AnyRec = {}): AnyRec => ({
+      name: 'Watcher',
+      description: null,
+      enabled: false,
+      scope: 'all',
+      scopeFilterName: null,
+      pollIntervalMs: 5000,
+      viewportLines: 100,
+      condition: { type: 'contains', pattern: 'test' },
+      cooldownMs: 10000,
+      cooldownMode: 'time',
+      eventName: 'test-event',
+      ...over,
+    });
+
+    it('creates (starts) enabled watchers via the watchers service seam', async () => {
+      await seedClaudeProvider(h);
+      const unified = bundledUnified(
+        claudeTemplate({
+          watchers: [watcher({ name: 'Enabled Watcher', enabled: true, eventName: 'ev-enabled' })],
+        }),
+      );
+      const { deps, createWatcher } = buildDeps(h, unified);
+
+      const result = (await createFromTemplateWithHelper(
+        { name: 'Test Project', rootPath: '/test', slug: 'watcher-test' },
+        deps as never,
+      )) as AnyRec;
+
+      expect(createWatcher).toHaveBeenCalledTimes(1);
+      expect(createWatcher).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'Enabled Watcher', enabled: true }),
+      );
+      expect((result.imported as AnyRec).watchers).toBe(1);
+    });
+
+    it('creates disabled watchers without starting them (enabled:false passed through)', async () => {
+      const unified = bundledUnified({
         version: 1,
         prompts: [],
         profiles: [],
         agents: [],
         statuses: [],
-      };
-      unifiedTemplateService.getTemplate.mockResolvedValue({
-        content: validTemplate,
-        source: 'bundled',
-        version: null,
+        watchers: [watcher({ name: 'Disabled Watcher', enabled: false, eventName: 'ev-disabled' })],
       });
+      const { deps, createWatcher } = buildDeps(h, unified);
 
-      // Mock storage methods
-      storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'p1', name: 'Test' },
-        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
-        mappings: { promptIdMap: {}, profileIdMap: {}, agentIdMap: {}, statusIdMap: {} },
-      });
+      await createFromTemplateWithHelper(
+        { name: 'Test Project', rootPath: '/test', slug: 'disabled-watcher-test' },
+        deps as never,
+      );
 
-      const validSlugs = ['valid-template', 'template-123', 'ABC123', 'my-template-v1'];
-
-      for (const slug of validSlugs) {
-        await expect(
-          service.createFromTemplate({
-            name: 'Test Project',
-            rootPath: '/test',
-            slug,
-          }),
-        ).resolves.toBeDefined();
-      }
+      expect(createWatcher).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'Disabled Watcher', enabled: false }),
+      );
     });
 
-    it('should create scheduled epics when template payload contains them', async () => {
-      const profileTemplateId = '11111111-1111-4111-8111-111111111111';
-      const agentTemplateId = '22222222-2222-4222-8222-222222222222';
-      const statusTemplateId = '33333333-3333-4333-8333-333333333333';
+    it('falls back to scope "all" when scopeFilterName cannot be resolved', async () => {
+      const unified = bundledUnified({
+        version: 1,
+        prompts: [],
+        profiles: [],
+        agents: [],
+        statuses: [],
+        watchers: [
+          watcher({
+            name: 'Unresolvable Scope',
+            scope: 'agent',
+            scopeFilterName: 'NonExistent Agent',
+            eventName: 'ev-unresolved',
+          }),
+        ],
+      });
+      const { deps, createWatcher } = buildDeps(h, unified);
+
+      await createFromTemplateWithHelper(
+        { name: 'Test Project', rootPath: '/test', slug: 'unresolved-scope-test' },
+        deps as never,
+      );
+
+      expect(createWatcher).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'all', scopeFilterId: null }),
+      );
+    });
+
+    it('allows duplicate watcher eventName values across template watchers', async () => {
+      const unified = bundledUnified({
+        version: 1,
+        prompts: [],
+        profiles: [],
+        agents: [],
+        statuses: [],
+        watchers: [
+          watcher({ name: 'Watcher A', eventName: 'duplicate-event' }),
+          watcher({ name: 'Watcher B', eventName: 'duplicate-event' }),
+        ],
+      });
+      const { deps, createWatcher } = buildDeps(h, unified);
+
+      const result = (await createFromTemplateWithHelper(
+        { name: 'Test Project', rootPath: '/test', slug: 'duplicate-event-test' },
+        deps as never,
+      )) as AnyRec;
+
+      expect(result.success).toBe(true);
+      expect((result.imported as AnyRec).watchers).toBe(2);
+      expect(createWatcher).toHaveBeenCalledTimes(2);
+      expect(createWatcher).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ eventName: 'duplicate-event' }),
+      );
+      expect(createWatcher).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ eventName: 'duplicate-event' }),
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Scheduled epics.
+  // -------------------------------------------------------------------------
+  describe('scheduled epics', () => {
+    it('creates scheduled epics with resolved status/agent references', async () => {
+      await seedClaudeProvider(h);
       const template = {
         version: 1,
         prompts: [],
         profiles: [
           {
-            id: profileTemplateId,
+            id: PROFILE_ID,
             name: 'Builder Profile',
-            provider: { id: '44444444-4444-4444-8444-444444444444', name: 'claude' },
-            options: null,
+            provider: { name: 'claude' },
             instructions: null,
             temperature: null,
             maxTokens: null,
-            familySlug: null,
           },
         ],
-        agents: [
-          {
-            id: agentTemplateId,
-            name: 'Coder',
-            profileId: profileTemplateId,
-            description: null,
-            modelOverride: null,
-          },
-        ],
-        statuses: [
-          {
-            id: statusTemplateId,
-            label: 'Backlog',
-            color: '#6c757d',
-            position: 1,
-            mcpHidden: false,
-          },
-        ],
-        watchers: [],
-        subscribers: [],
-        teams: [],
-        presets: [],
-        providerModels: [],
+        agents: [{ id: AGENT_ID, name: 'Coder', profileId: PROFILE_ID, description: null }],
+        statuses: [{ id: STATUS_ID, label: 'Backlog', color: '#6c757d', position: 1 }],
         scheduledEpics: [
           {
             name: 'Daily Planning',
@@ -447,1975 +680,505 @@ describe('ProjectsService', () => {
             descriptionTemplate: 'Create planning context for {{date}}',
             templateStatusLabel: 'Backlog',
             templateAgentName: 'Coder',
-            templateParentEpicTitle: 'Parent Epic',
             templateTags: ['planning', 'daily'],
             allowOverlap: false,
             missedRunPolicy: 'skip' as const,
           },
         ],
-        exportedAt: undefined,
-        initialPrompt: undefined,
-        projectSettings: undefined,
-        _manifest: undefined,
       };
+      const { deps, refreshScheduleWindow } = buildDeps(h, bundledUnified(template));
 
-      jest
-        .spyOn(devchainShared.ExportSchema, 'parse')
-        .mockReturnValueOnce(template as ReturnType<typeof devchainShared.ExportSchema.parse>);
-      unifiedTemplateService.getTemplate.mockResolvedValue({
-        content: template,
-        source: 'bundled',
-        version: null,
-      });
-
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: 'provider-local-1', name: 'claude' }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-      storage.listEpics.mockResolvedValue({
-        items: [{ id: 'parent-epic-1', title: 'Parent Epic' }],
-        total: 1,
-        limit: 100000,
-        offset: 0,
-      });
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'project-from-template-1', name: 'Template Project' },
-        imported: { prompts: 0, profiles: 1, agents: 1, statuses: 1 },
-        mappings: {
-          promptIdMap: {},
-          profileIdMap: { [profileTemplateId]: 'profile-local-1' },
-          agentIdMap: { [agentTemplateId]: 'agent-local-1' },
-          statusIdMap: { [statusTemplateId]: 'status-local-1' },
-        },
-      });
-
-      const result = await service.createFromTemplate({
-        name: 'Template Project',
-        rootPath: '/test/template-project',
-        slug: 'scheduled-template',
-      });
-
-      expect(storage.createScheduledEpic).toHaveBeenCalledTimes(1);
-      expect(storage.createScheduledEpic).toHaveBeenCalledWith(
-        expect.objectContaining({
-          projectId: 'project-from-template-1',
-          name: 'Daily Planning',
-          cronExpression: '0 9 * * 1-5',
-          timezone: 'America/New_York',
-          enabled: false,
-          titleTemplate: 'Daily planning {{date}}',
-          descriptionTemplate: 'Create planning context for {{date}}',
-          templateStatusId: 'status-local-1',
-          templateAgentId: 'agent-local-1',
-          templateParentEpicId: 'parent-epic-1',
-          templateTags: ['planning', 'daily'],
-          allowOverlap: false,
-          missedRunPolicy: 'skip',
-          nextRunAt: expect.any(String),
-        }),
-      );
-      expect(scheduledEpicRunnerRefresh.refreshScheduleWindow).toHaveBeenCalledTimes(1);
-      expect(result).toEqual(
-        expect.objectContaining({
-          imported: expect.objectContaining({ scheduledEpics: 1 }),
-        }),
-      );
-    });
-
-    it('passes pre-generated projectId to storage when provided', async () => {
-      const validTemplate = {
-        version: 1,
-        prompts: [],
-        profiles: [],
-        agents: [],
-        statuses: [],
-      };
-      unifiedTemplateService.getTemplate.mockResolvedValue({
-        content: validTemplate,
-        source: 'bundled',
-        version: null,
-      });
-
-      storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: '11111111-1111-4111-8111-111111111111', name: 'Test' },
-        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
-        mappings: { promptIdMap: {}, profileIdMap: {}, agentIdMap: {}, statusIdMap: {} },
-      });
-
-      await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'my-template',
-        projectId: '11111111-1111-4111-8111-111111111111',
-      });
-
-      expect(storage.createProjectWithTemplate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          name: 'Test Project',
-          rootPath: '/test',
-        }),
-        expect.any(Object),
+      const result = (await createFromTemplateWithHelper(
         {
-          projectId: '11111111-1111-4111-8111-111111111111',
+          name: 'Template Project',
+          rootPath: '/test/template-project',
+          slug: 'scheduled-template',
         },
+        deps as never,
+      )) as AnyRec;
+
+      const projectId = (result.project as AnyRec).id as string;
+      const backlog = (await h.storage.listStatuses(projectId)).items.find(
+        (s) => s.label === 'Backlog',
       );
-    });
+      const coder = await getAgentByName(h, projectId, 'Coder');
 
-    it('should pass version to UnifiedTemplateService when provided', async () => {
-      const validTemplate = {
-        version: 1,
-        prompts: [],
-        profiles: [],
-        agents: [],
-        statuses: [],
-      };
-      unifiedTemplateService.getTemplate.mockResolvedValue({
-        content: validTemplate,
-        source: 'registry',
-        version: '1.2.0',
-      });
-
-      storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'p1', name: 'Test' },
-        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
-        mappings: { promptIdMap: {}, profileIdMap: {}, agentIdMap: {}, statusIdMap: {} },
-      });
-
-      await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'my-template',
-        version: '1.2.0',
-      });
-
-      expect(unifiedTemplateService.getTemplate).toHaveBeenCalledWith('my-template', '1.2.0');
-    });
-
-    it('should call startWatcher for enabled watchers in template', async () => {
-      const agentId = '11111111-1111-1111-1111-111111111111';
-      const profileId = '22222222-2222-2222-2222-222222222222';
-      const providerId = '33333333-3333-3333-3333-333333333333';
-
-      const templateWithWatchers = {
-        version: 1,
-        prompts: [],
-        profiles: [
-          {
-            id: profileId,
-            name: 'Test Profile',
-            provider: { name: 'claude' },
-            options: null,
-            instructions: null,
-            temperature: null,
-            maxTokens: null,
-          },
-        ],
-        agents: [
-          {
-            id: agentId,
-            name: 'Test Agent',
-            profileId: profileId,
-            description: null,
-          },
-        ],
-        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
-        watchers: [
-          {
-            name: 'Enabled Watcher',
-            description: null,
-            enabled: true, // Should trigger startWatcher
-            scope: 'all',
-            scopeFilterName: null,
-            pollIntervalMs: 5000,
-            viewportLines: 100,
-            condition: { type: 'contains', pattern: 'test' },
-            cooldownMs: 10000,
-            cooldownMode: 'time',
-            eventName: 'test-event-enabled',
-          },
-        ],
-        subscribers: [],
-      };
-
-      unifiedTemplateService.getTemplate.mockResolvedValue({
-        content: templateWithWatchers,
-        source: 'bundled',
-        version: null,
-      });
-
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: providerId, name: 'claude' }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'new-project-1', name: 'Test' },
-        imported: { prompts: 0, profiles: 1, agents: 1, statuses: 1 },
-        mappings: {
-          promptIdMap: {},
-          profileIdMap: { [profileId]: 'new-profile-1' },
-          agentIdMap: { [agentId]: 'new-agent-1' },
-          statusIdMap: {},
-        },
-      });
-
-      const createdWatcher = {
-        id: 'watcher-1',
-        name: 'Enabled Watcher',
-        enabled: true,
-        scope: 'all',
-        scopeFilterId: null,
-      };
-      // WatchersService.createWatcher handles start internally
-      watchersService.createWatcher.mockResolvedValue(createdWatcher);
-
-      await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'watcher-test',
-      });
-
-      // Verify createWatcher was called via WatchersService (which handles start internally)
-      expect(watchersService.createWatcher).toHaveBeenCalledTimes(1);
-      expect(watchersService.createWatcher).toHaveBeenCalledWith(
-        expect.objectContaining({
-          name: 'Enabled Watcher',
-          enabled: true,
-        }),
-      );
-    });
-
-    it('should NOT call startWatcher for disabled watchers in template', async () => {
-      const templateWithDisabledWatcher = {
-        version: 1,
-        prompts: [],
-        profiles: [],
-        agents: [],
-        statuses: [],
-        watchers: [
-          {
-            name: 'Disabled Watcher',
-            description: null,
-            enabled: false, // Should NOT trigger startWatcher
-            scope: 'all',
-            scopeFilterName: null,
-            pollIntervalMs: 5000,
-            viewportLines: 100,
-            condition: { type: 'contains', pattern: 'test' },
-            cooldownMs: 10000,
-            cooldownMode: 'time',
-            eventName: 'test-event-disabled',
-          },
-        ],
-        subscribers: [],
-      };
-
-      unifiedTemplateService.getTemplate.mockResolvedValue({
-        content: templateWithDisabledWatcher,
-        source: 'bundled',
-        version: null,
-      });
-
-      storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'new-project-1', name: 'Test' },
-        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
-        mappings: {
-          promptIdMap: {},
-          profileIdMap: {},
-          agentIdMap: {},
-          statusIdMap: {},
-        },
-      });
-
-      // WatchersService.createWatcher handles start internally (won't start if disabled)
-      watchersService.createWatcher.mockResolvedValue({
-        id: 'watcher-1',
-        name: 'Disabled Watcher',
+      const { items: schedules } = await h.storage.listScheduledEpics(projectId, { limit: 100 });
+      expect(schedules).toHaveLength(1);
+      expect(schedules[0]).toMatchObject({
+        name: 'Daily Planning',
+        cronExpression: '0 9 * * 1-5',
+        timezone: 'America/New_York',
         enabled: false,
-        scope: 'all',
-        scopeFilterId: null,
+        templateStatusId: backlog!.id,
+        templateAgentId: coder!.id,
+        templateTags: ['planning', 'daily'],
+        missedRunPolicy: 'skip',
       });
+      expect(schedules[0].nextRunAt).toEqual(expect.any(String));
+      expect(refreshScheduleWindow).toHaveBeenCalledTimes(1);
+      expect((result.imported as AnyRec).scheduledEpics).toBe(1);
+    });
+  });
 
-      await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'disabled-watcher-test',
-      });
+  // -------------------------------------------------------------------------
+  // providerSettings — 1M-context enable/disable via probe.
+  // -------------------------------------------------------------------------
+  describe('providerSettings 1M-context', () => {
+    const oneMTemplate = () =>
+      claudeTemplate({ providerSettings: [{ name: 'claude', oneMillionContextEnabled: true }] });
 
-      // Verify createWatcher was called with enabled: false
-      expect(watchersService.createWatcher).toHaveBeenCalledWith(
-        expect.objectContaining({
-          name: 'Disabled Watcher',
-          enabled: false,
-        }),
+    it('disables 1M and sets a safe fallback threshold when provider has no binPath', async () => {
+      const provider = await seedClaudeProvider(h, null);
+      const { deps, probe1m } = buildDeps(h, bundledUnified(oneMTemplate()));
+
+      await createFromTemplateWithHelper(
+        { name: 'Test Project', rootPath: '/test', slug: 'my-template' },
+        deps as never,
       );
-    });
 
-    it('should fallback to scope "all" when scopeFilterName cannot be resolved', async () => {
-      const templateWithUnresolvableScope = {
-        version: 1,
-        prompts: [],
-        profiles: [],
-        agents: [],
-        statuses: [],
-        watchers: [
-          {
-            name: 'Watcher with Unresolvable Scope',
-            description: null,
-            enabled: false,
-            scope: 'agent', // Agent scope but no matching agent
-            scopeFilterName: 'NonExistent Agent',
-            pollIntervalMs: 5000,
-            viewportLines: 100,
-            condition: { type: 'contains', pattern: 'test' },
-            cooldownMs: 10000,
-            cooldownMode: 'time',
-            eventName: 'test-event-unresolved',
-          },
-        ],
-        subscribers: [],
-      };
-
-      unifiedTemplateService.getTemplate.mockResolvedValue({
-        content: templateWithUnresolvableScope,
-        source: 'bundled',
-        version: null,
-      });
-
-      storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'new-project-1', name: 'Test' },
-        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
-        mappings: {
-          promptIdMap: {},
-          profileIdMap: {},
-          agentIdMap: {}, // No agents, so scope cannot be resolved
-          statusIdMap: {},
-        },
-      });
-
-      watchersService.createWatcher.mockResolvedValue({
-        id: 'watcher-1',
-        name: 'Watcher with Unresolvable Scope',
-        enabled: false,
-        scope: 'all', // Should fallback to 'all'
-        scopeFilterId: null,
-      });
-
-      await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'unresolved-scope-test',
-      });
-
-      // Verify createWatcher was called with scope: 'all' (fallback)
-      expect(watchersService.createWatcher).toHaveBeenCalledWith(
-        expect.objectContaining({
-          scope: 'all',
-          scopeFilterId: null,
-        }),
-      );
-    });
-
-    it('should set template metadata for bundled template with version from _manifest', async () => {
-      const validTemplate = {
-        version: 1,
-        prompts: [],
-        profiles: [],
-        agents: [],
-        statuses: [],
-        _manifest: {
-          slug: 'bundled-template',
-          name: 'Bundled Template',
-          version: '1.1.0',
-        },
-      };
-
-      // Mock ExportSchema.parse to return the expected parsed output
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-        ...validTemplate,
-        watchers: [],
-        subscribers: [],
-        exportedAt: undefined,
-        initialPrompt: undefined,
-        projectSettings: undefined,
-      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
-
-      unifiedTemplateService.getTemplate.mockResolvedValue({
-        content: validTemplate,
-        source: 'bundled',
-        version: null, // UnifiedTemplateService returns null for bundled templates
-      });
-
-      storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'p1', name: 'Test' },
-        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
-        mappings: { promptIdMap: {}, profileIdMap: {}, agentIdMap: {}, statusIdMap: {} },
-      });
-
-      await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'bundled-template',
-      });
-
-      // Should read version from _manifest when getTemplate returns version: null
-      expect(settings.setProjectTemplateMetadata).toHaveBeenCalledWith('p1', {
-        templateSlug: 'bundled-template',
-        source: 'bundled',
-        installedVersion: '1.1.0',
-        registryUrl: null,
-        installedAt: expect.any(String),
-      });
-
-      jest.restoreAllMocks();
-    });
-
-    it('should set installedVersion as null for bundled template without _manifest version', async () => {
-      const validTemplate = {
-        version: 1,
-        prompts: [],
-        profiles: [],
-        agents: [],
-        statuses: [],
-        // No _manifest or _manifest without version
-      };
-      unifiedTemplateService.getTemplate.mockResolvedValue({
-        content: validTemplate,
-        source: 'bundled',
-        version: null,
-      });
-
-      storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'p1', name: 'Test' },
-        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
-        mappings: { promptIdMap: {}, profileIdMap: {}, agentIdMap: {}, statusIdMap: {} },
-      });
-
-      await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'legacy-template',
-      });
-
-      expect(settings.setProjectTemplateMetadata).toHaveBeenCalledWith('p1', {
-        templateSlug: 'legacy-template',
-        source: 'bundled',
-        installedVersion: null,
-        registryUrl: null,
-        installedAt: expect.any(String),
-      });
-    });
-
-    it('should set template metadata for registry template with version', async () => {
-      const validTemplate = {
-        version: 1,
-        prompts: [],
-        profiles: [],
-        agents: [],
-        statuses: [],
-      };
-      unifiedTemplateService.getTemplate.mockResolvedValue({
-        content: validTemplate,
-        source: 'registry',
-        version: '1.2.0',
-      });
-
-      storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'p1', name: 'Test' },
-        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
-        mappings: { promptIdMap: {}, profileIdMap: {}, agentIdMap: {}, statusIdMap: {} },
-      });
-
-      await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'my-registry-template',
-        version: '1.2.0',
-      });
-
-      expect(settings.setProjectTemplateMetadata).toHaveBeenCalledWith('p1', {
-        templateSlug: 'my-registry-template',
-        source: 'registry',
-        installedVersion: '1.2.0',
-        registryUrl: 'https://registry.example.com',
-        installedAt: expect.any(String),
-      });
-    });
-
-    it('should allow duplicate watcher eventName values when importing template watchers', async () => {
-      const templateWithWatcher = {
-        version: 1,
-        prompts: [],
-        profiles: [],
-        agents: [],
-        statuses: [],
-        watchers: [
-          {
-            name: 'Watcher A',
-            description: null,
-            enabled: false,
-            scope: 'all',
-            scopeFilterName: null,
-            pollIntervalMs: 5000,
-            viewportLines: 100,
-            condition: { type: 'contains', pattern: 'test' },
-            cooldownMs: 10000,
-            cooldownMode: 'time',
-            eventName: 'duplicate-event',
-          },
-          {
-            name: 'Watcher B',
-            description: null,
-            enabled: false,
-            scope: 'all',
-            scopeFilterName: null,
-            pollIntervalMs: 5000,
-            viewportLines: 100,
-            condition: { type: 'contains', pattern: 'another' },
-            cooldownMs: 10000,
-            cooldownMode: 'time',
-            eventName: 'duplicate-event',
-          },
-        ],
-        subscribers: [],
-      };
-
-      unifiedTemplateService.getTemplate.mockResolvedValue({
-        content: templateWithWatcher,
-        source: 'bundled',
-        version: null,
-      });
-
-      storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'new-project-1', name: 'Test' },
-        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
-        mappings: {
-          promptIdMap: {},
-          profileIdMap: {},
-          agentIdMap: {},
-          statusIdMap: {},
-        },
-      });
-
-      watchersService.createWatcher
-        .mockResolvedValueOnce({ id: 'watcher-1', enabled: false })
-        .mockResolvedValueOnce({ id: 'watcher-2', enabled: false });
-
-      const result = await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'duplicate-event-test',
-      });
-
-      expect(result.success).toBe(true);
-      expect(result.imported.watchers).toBe(2);
-      expect(watchersService.createWatcher).toHaveBeenCalledTimes(2);
-      expect(watchersService.createWatcher).toHaveBeenNthCalledWith(
-        1,
-        expect.objectContaining({ eventName: 'duplicate-event' }),
-      );
-      expect(watchersService.createWatcher).toHaveBeenNthCalledWith(
-        2,
-        expect.objectContaining({ eventName: 'duplicate-event' }),
-      );
-    });
-
-    // Tests for templatePath flow (file-based templates)
-    it('should call getTemplateFromFilePath when templatePath is provided', async () => {
-      const validTemplate = {
-        version: 1,
-        prompts: [],
-        profiles: [],
-        agents: [],
-        statuses: [],
-        _manifest: { slug: 'file-template', version: '1.0.0' },
-      };
-
-      // Mock ExportSchema.parse to return valid parsed output
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-        ...validTemplate,
-        watchers: [],
-        subscribers: [],
-        exportedAt: undefined,
-        initialPrompt: undefined,
-        projectSettings: undefined,
-      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
-
-      unifiedTemplateService.getTemplateFromFilePath.mockReturnValue({
-        content: validTemplate,
-        source: 'file',
-        version: '1.0.0',
-      });
-
-      storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'p1', name: 'Test' },
-        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
-        mappings: { promptIdMap: {}, profileIdMap: {}, agentIdMap: {}, statusIdMap: {} },
-      });
-
-      await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        templatePath: '/path/to/template.json',
-      });
-
-      expect(unifiedTemplateService.getTemplateFromFilePath).toHaveBeenCalledWith(
-        '/path/to/template.json',
-      );
-      expect(unifiedTemplateService.getTemplate).not.toHaveBeenCalled();
-
-      jest.restoreAllMocks();
-    });
-
-    it('should set source: file in metadata when templatePath is provided', async () => {
-      const validTemplate = {
-        version: 1,
-        prompts: [],
-        profiles: [],
-        agents: [],
-        statuses: [],
-        _manifest: { slug: 'file-template', version: '2.0.0' },
-      };
-
-      // Mock ExportSchema.parse to return valid parsed output
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-        ...validTemplate,
-        watchers: [],
-        subscribers: [],
-        exportedAt: undefined,
-        initialPrompt: undefined,
-        projectSettings: undefined,
-      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
-
-      unifiedTemplateService.getTemplateFromFilePath.mockReturnValue({
-        content: validTemplate,
-        source: 'file',
-        version: '2.0.0',
-      });
-
-      storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'p1', name: 'Test' },
-        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
-        mappings: { promptIdMap: {}, profileIdMap: {}, agentIdMap: {}, statusIdMap: {} },
-      });
-
-      await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        templatePath: '/path/to/template.json',
-      });
-
-      expect(settings.setProjectTemplateMetadata).toHaveBeenCalledWith('p1', {
-        templateSlug: 'file-template',
-        source: 'file',
-        installedVersion: '2.0.0',
-        registryUrl: null,
-        installedAt: expect.any(String),
-      });
-
-      jest.restoreAllMocks();
-    });
-
-    it('should derive slug from filename when _manifest.slug is absent', async () => {
-      const validTemplate = {
-        version: 1,
-        prompts: [],
-        profiles: [],
-        agents: [],
-        statuses: [],
-        // No _manifest or _manifest without slug
-      };
-      unifiedTemplateService.getTemplateFromFilePath.mockReturnValue({
-        content: validTemplate,
-        source: 'file',
-        version: null,
-      });
-
-      storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'p1', name: 'Test' },
-        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
-        mappings: { promptIdMap: {}, profileIdMap: {}, agentIdMap: {}, statusIdMap: {} },
-      });
-
-      await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        templatePath: '/path/to/my-custom-template.json',
-      });
-
-      expect(settings.setProjectTemplateMetadata).toHaveBeenCalledWith('p1', {
-        templateSlug: 'my-custom-template', // Derived from filename
-        source: 'file',
-        installedVersion: null,
-        registryUrl: null,
-        installedAt: expect.any(String),
-      });
-    });
-
-    it('should use _manifest.slug when present in file-based template', async () => {
-      const validTemplate = {
-        version: 1,
-        prompts: [],
-        profiles: [],
-        agents: [],
-        statuses: [],
-        _manifest: { slug: 'manifest-defined-slug', version: '1.5.0' },
-      };
-
-      // Mock ExportSchema.parse to return valid parsed output
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-        ...validTemplate,
-        watchers: [],
-        subscribers: [],
-        exportedAt: undefined,
-        initialPrompt: undefined,
-        projectSettings: undefined,
-      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
-
-      unifiedTemplateService.getTemplateFromFilePath.mockReturnValue({
-        content: validTemplate,
-        source: 'file',
-        version: '1.5.0',
-      });
-
-      storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'p1', name: 'Test' },
-        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
-        mappings: { promptIdMap: {}, profileIdMap: {}, agentIdMap: {}, statusIdMap: {} },
-      });
-
-      await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        templatePath: '/path/to/different-filename.json',
-      });
-
-      expect(settings.setProjectTemplateMetadata).toHaveBeenCalledWith('p1', {
-        templateSlug: 'manifest-defined-slug', // From _manifest, not filename
-        source: 'file',
-        installedVersion: '1.5.0',
-        registryUrl: null,
-        installedAt: expect.any(String),
-      });
-
-      jest.restoreAllMocks();
-    });
-
-    it('should apply providerSettings with oneMillionContextEnabled during createFromTemplate', async () => {
-      const providerId = '33333333-3333-3333-3333-333333333333';
-      const profileId = '22222222-2222-2222-2222-222222222222';
-
-      const validTemplate = {
-        version: 1,
-        prompts: [],
-        profiles: [
-          {
-            id: profileId,
-            name: 'Test Profile',
-            provider: { name: 'claude' },
-            options: null,
-            instructions: null,
-            temperature: null,
-            maxTokens: null,
-          },
-        ],
-        agents: [
-          {
-            id: '11111111-1111-1111-1111-111111111111',
-            name: 'Test Agent',
-            profileId,
-            description: null,
-          },
-        ],
-        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
-      };
-
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-        ...validTemplate,
-        watchers: [],
-        subscribers: [],
-        exportedAt: undefined,
-        initialPrompt: undefined,
-        projectSettings: undefined,
-        providerSettings: [{ name: 'claude', oneMillionContextEnabled: true }],
-      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
-
-      unifiedTemplateService.getTemplate.mockResolvedValue({
-        content: validTemplate,
-        source: 'bundled',
-        version: null,
-      });
-
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: providerId, name: 'claude', autoCompactThreshold: null }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'new-project-1', name: 'Test' },
-        imported: { prompts: 0, profiles: 1, agents: 1, statuses: 1 },
-        mappings: {
-          promptIdMap: {},
-          profileIdMap: { [profileId]: 'new-profile-1' },
-          agentIdMap: { '11111111-1111-1111-1111-111111111111': 'new-agent-1' },
-          statusIdMap: {},
-        },
-      });
-
-      await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'my-template',
-      });
-
-      // No binPath → should disable 1M and set safe fallback threshold of 95
-      expect(storage.updateProvider).toHaveBeenCalledWith(providerId, {
+      const updated = await h.storage.getProvider(provider.id);
+      expect(updated).toMatchObject({
         autoCompactThreshold: 95,
         autoCompactThreshold1m: null,
         oneMillionContextEnabled: false,
       });
-      expect(mockProbe1mSupport).not.toHaveBeenCalled();
-
-      jest.restoreAllMocks();
+      expect(probe1m).not.toHaveBeenCalled();
     });
 
-    it('should enable 1M during createFromTemplate when auto-probe succeeds', async () => {
-      const providerId = '33333333-3333-3333-3333-333333333333';
-      const profileId = '22222222-2222-2222-2222-222222222222';
+    it('enables 1M when the auto-probe succeeds', async () => {
+      const provider = await seedClaudeProvider(h, '/usr/bin/claude');
+      const { deps, probe1m } = buildDeps(h, bundledUnified(oneMTemplate()));
+      probe1m.mockResolvedValue({ supported: true, status: 'supported' });
 
-      const validTemplate = {
-        version: 1,
-        prompts: [],
-        profiles: [
-          {
-            id: profileId,
-            name: 'Test Profile',
-            provider: { name: 'claude' },
-            options: null,
-            instructions: null,
-            temperature: null,
-            maxTokens: null,
-          },
-        ],
-        agents: [
-          {
-            id: '11111111-1111-1111-1111-111111111111',
-            name: 'Test Agent',
-            profileId,
-            description: null,
-          },
-        ],
-        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
-      };
+      await createFromTemplateWithHelper(
+        { name: 'Test Project', rootPath: '/test', slug: 'my-template' },
+        deps as never,
+      );
 
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-        ...validTemplate,
-        watchers: [],
-        subscribers: [],
-        exportedAt: undefined,
-        initialPrompt: undefined,
-        projectSettings: undefined,
-        providerSettings: [{ name: 'claude', oneMillionContextEnabled: true }],
-      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
-
-      unifiedTemplateService.getTemplate.mockResolvedValue({
-        content: validTemplate,
-        source: 'bundled',
-        version: null,
-      });
-
-      storage.listProviders.mockResolvedValue({
-        items: [
-          {
-            id: providerId,
-            name: 'claude',
-            autoCompactThreshold: null,
-            binPath: '/usr/bin/claude',
-          },
-        ],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'new-project-1', name: 'Test' },
-        imported: { prompts: 0, profiles: 1, agents: 1, statuses: 1 },
-        mappings: {
-          promptIdMap: {},
-          profileIdMap: { [profileId]: 'new-profile-1' },
-          agentIdMap: { '11111111-1111-1111-1111-111111111111': 'new-agent-1' },
-          statusIdMap: {},
-        },
-      });
-
-      mockProbe1mSupport.mockResolvedValue({ supported: true, status: 'supported' });
-
-      await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'my-template',
-      });
-
-      expect(mockProbe1mSupport).toHaveBeenCalledWith(expect.anything(), '/usr/bin/claude');
-      expect(storage.updateProvider).toHaveBeenCalledWith(providerId, {
+      expect(probe1m).toHaveBeenCalledWith('/usr/bin/claude');
+      const updated = await h.storage.getProvider(provider.id);
+      expect(updated).toMatchObject({
         autoCompactThreshold: 95,
         autoCompactThreshold1m: 50,
         oneMillionContextEnabled: true,
       });
-
-      jest.restoreAllMocks();
     });
 
-    it('should disable 1M during createFromTemplate when auto-probe fails', async () => {
-      const providerId = '33333333-3333-3333-3333-333333333333';
-      const profileId = '22222222-2222-2222-2222-222222222222';
+    it('disables 1M when the auto-probe fails', async () => {
+      const provider = await seedClaudeProvider(h, '/usr/bin/claude');
+      const { deps, probe1m } = buildDeps(h, bundledUnified(oneMTemplate()));
+      probe1m.mockResolvedValue({ supported: false, status: 'unsupported' });
 
-      const validTemplate = {
-        version: 1,
-        prompts: [],
-        profiles: [
-          {
-            id: profileId,
-            name: 'Test Profile',
-            provider: { name: 'claude' },
-            options: null,
-            instructions: null,
-            temperature: null,
-            maxTokens: null,
-          },
-        ],
-        agents: [
-          {
-            id: '11111111-1111-1111-1111-111111111111',
-            name: 'Test Agent',
-            profileId,
-            description: null,
-          },
-        ],
-        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
-      };
+      await createFromTemplateWithHelper(
+        { name: 'Test Project', rootPath: '/test', slug: 'my-template' },
+        deps as never,
+      );
 
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-        ...validTemplate,
-        watchers: [],
-        subscribers: [],
-        exportedAt: undefined,
-        initialPrompt: undefined,
-        projectSettings: undefined,
-        providerSettings: [{ name: 'claude', oneMillionContextEnabled: true }],
-      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
-
-      unifiedTemplateService.getTemplate.mockResolvedValue({
-        content: validTemplate,
-        source: 'bundled',
-        version: null,
-      });
-
-      storage.listProviders.mockResolvedValue({
-        items: [
-          {
-            id: providerId,
-            name: 'claude',
-            autoCompactThreshold: null,
-            binPath: '/usr/bin/claude',
-          },
-        ],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'new-project-1', name: 'Test' },
-        imported: { prompts: 0, profiles: 1, agents: 1, statuses: 1 },
-        mappings: {
-          promptIdMap: {},
-          profileIdMap: { [profileId]: 'new-profile-1' },
-          agentIdMap: { '11111111-1111-1111-1111-111111111111': 'new-agent-1' },
-          statusIdMap: {},
-        },
-      });
-
-      mockProbe1mSupport.mockResolvedValue({ supported: false, status: 'unsupported' });
-
-      await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'my-template',
-      });
-
-      expect(mockProbe1mSupport).toHaveBeenCalledWith(expect.anything(), '/usr/bin/claude');
-      expect(storage.updateProvider).toHaveBeenCalledWith(providerId, {
+      expect(probe1m).toHaveBeenCalledWith('/usr/bin/claude');
+      const updated = await h.storage.getProvider(provider.id);
+      expect(updated).toMatchObject({
         autoCompactThreshold: 95,
         autoCompactThreshold1m: null,
         oneMillionContextEnabled: false,
       });
-
-      jest.restoreAllMocks();
     });
+  });
 
-    describe('team seeding', () => {
-      const tProfileId = '22222222-2222-2222-2222-222222222222';
-      const tProviderId = '33333333-3333-3333-3333-333333333333';
-      const tAgentA = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
-      const tAgentB = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+  // -------------------------------------------------------------------------
+  // Team seeding (via teamsService.createTeam).
+  // -------------------------------------------------------------------------
+  describe('team seeding', () => {
+    const tProfileId = 'aaaaaaaa-1111-4111-8111-111111111111';
+    const tAgentA = 'aaaaaaaa-2222-4222-8222-222222222222';
+    const tAgentB = 'aaaaaaaa-3333-4333-8333-333333333333';
 
-      function makeTemplateWithTeams(
-        teams: Array<{
-          name: string;
-          description?: string | null;
-          teamLeadAgentName?: string | null;
-          memberAgentNames: string[];
-          maxMembers?: number;
-          maxConcurrentTasks?: number;
-          profileNames?: string[];
-          profileSelections?: Array<{ profileName: string; configNames: string[] }>;
-        }>,
-        providerConfigs: Array<{
-          name: string;
-          providerName: string;
-          description?: string | null;
-          options?: string | null;
-          env?: Record<string, string> | null;
-        }> = [
+    /** Two agents on a claude profile carrying the given provider configs. */
+    function teamTemplate(
+      teams: AnyRec[],
+      providerConfigs: AnyRec[] = [
+        { name: 'local', providerName: 'claude', options: null, env: null },
+      ],
+    ): AnyRec {
+      return {
+        version: 1,
+        prompts: [],
+        profiles: [
           {
-            name: 'local',
-            providerName: 'claude',
-            description: null,
-            options: null,
-            env: null,
+            id: tProfileId,
+            name: 'Default Profile',
+            provider: { name: 'claude' },
+            instructions: null,
+            temperature: null,
+            maxTokens: null,
+            providerConfigs,
           },
         ],
-      ) {
-        return {
-          version: 1,
-          prompts: [],
-          profiles: [
-            {
-              id: tProfileId,
-              name: 'Default Profile',
-              provider: { name: 'claude' },
-              options: null,
-              instructions: null,
-              temperature: null,
-              maxTokens: null,
-              providerConfigs,
-            },
-          ],
-          agents: [
-            { id: tAgentA, name: 'Lead Agent', profileId: tProfileId, description: null },
-            { id: tAgentB, name: 'Worker Agent', profileId: tProfileId, description: null },
-          ],
-          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
-          teams,
-        };
-      }
+        agents: [
+          { id: tAgentA, name: 'Lead Agent', profileId: tProfileId, description: null },
+          { id: tAgentB, name: 'Worker Agent', profileId: tProfileId, description: null },
+        ],
+        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+        teams,
+      };
+    }
 
-      function setupTeamSeedMocks() {
-        const newProfileId = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
-        const newAgentA = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
-        const newAgentB = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
+    async function createTeams(teams: AnyRec[], providerConfigs?: AnyRec[], input: AnyRec = {}) {
+      await seedClaudeProvider(h);
+      const bundle = buildDeps(h, bundledUnified(teamTemplate(teams, providerConfigs)));
+      const result = (await createFromTemplateWithHelper(
+        { name: 'Team Project', rootPath: '/test/teams', slug: 'team-seed-test', ...input },
+        bundle.deps as never,
+      )) as AnyRec;
+      return { result, ...bundle };
+    }
 
-        storage.listProviders.mockResolvedValue({
-          items: [{ id: tProviderId, name: 'claude', binPath: null }],
-          total: 1,
-          limit: 100,
-          offset: 0,
-        });
-        storage.createProjectWithTemplate.mockResolvedValue({
-          project: { id: 'new-proj-1', name: 'Test' },
-          imported: { prompts: 0, profiles: 1, agents: 2, statuses: 1 },
-          mappings: {
-            promptIdMap: {},
-            profileIdMap: { [tProfileId]: newProfileId },
-            agentIdMap: { [tAgentA]: newAgentA, [tAgentB]: newAgentB },
-            statusIdMap: {},
-          },
-        });
-        storage.listAgents.mockResolvedValue({
-          items: [
-            { id: newAgentA, name: 'Lead Agent', profileId: newProfileId },
-            { id: newAgentB, name: 'Worker Agent', profileId: newProfileId },
-          ],
-          total: 2,
-          limit: 10000,
-          offset: 0,
-        });
-        storage.listAgentProfiles.mockResolvedValue({
-          items: [{ id: newProfileId, name: 'Default Profile' }],
-          total: 1,
-          limit: 1000,
-          offset: 0,
-        });
-        storage.listProfileProviderConfigsByProfile.mockResolvedValue([
-          {
-            id: 'config-local-1',
-            name: 'local',
-            profileId: newProfileId,
-            providerId: tProviderId,
-            options: null,
-            env: null,
-          },
-        ]);
-        storage.createProfileProviderConfig.mockImplementation(
-          async (data: Record<string, unknown>) => ({
-            id: `config-${Date.now()}`,
-            ...data,
-          }),
-        );
-      }
+    it('seeds one team from the template', async () => {
+      const { result, createTeam } = await createTeams([
+        {
+          name: 'Dev Team',
+          description: 'Main dev team',
+          teamLeadAgentName: 'Lead Agent',
+          memberAgentNames: ['Lead Agent', 'Worker Agent'],
+          profileNames: ['Default Profile'],
+          profileSelections: [{ profileName: 'Default Profile', configNames: ['local'] }],
+        },
+      ]);
 
-      function mockParsedTemplate(
-        teams: Array<{
-          name: string;
-          description?: string | null;
-          teamLeadAgentName?: string | null;
-          memberAgentNames: string[];
-          maxMembers?: number;
-          maxConcurrentTasks?: number;
-          profileNames?: string[];
-          profileSelections?: Array<{ profileName: string; configNames: string[] }>;
-        }>,
-        providerConfigs?: Parameters<typeof makeTemplateWithTeams>[1],
-      ) {
-        const template = makeTemplateWithTeams(teams, providerConfigs);
-        const parsed = {
-          ...template,
-          prompts: [],
-          profiles: template.profiles.map((p) => ({
-            ...p,
-            familySlug: null,
-          })),
-          agents: template.agents.map((a) => ({
-            ...a,
-            modelOverride: null,
-          })),
-          watchers: [],
-          subscribers: [],
-          teams,
-          presets: [],
-          providerModels: [],
-          exportedAt: undefined,
-          initialPrompt: undefined,
-          projectSettings: undefined,
-        } as ReturnType<typeof devchainShared.ExportSchema.parse>;
+      expect(createTeam).toHaveBeenCalledTimes(1);
+      expect(createTeam).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: (result.project as AnyRec).id,
+          name: 'Dev Team',
+          description: 'Main dev team',
+        }),
+      );
+    });
 
-        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(parsed);
-        unifiedTemplateService.getTemplate.mockResolvedValue({
-          content: template,
-          source: 'bundled',
-          version: null,
-        });
-      }
+    it('seeds two teams from the template', async () => {
+      const { createTeam } = await createTeams([
+        {
+          name: 'Team Alpha',
+          teamLeadAgentName: 'Lead Agent',
+          memberAgentNames: ['Lead Agent', 'Worker Agent'],
+        },
+        {
+          name: 'Team Beta',
+          teamLeadAgentName: 'Worker Agent',
+          memberAgentNames: ['Worker Agent'],
+        },
+      ]);
 
-      afterEach(() => {
-        jest.restoreAllMocks();
-      });
+      expect(createTeam).toHaveBeenCalledTimes(2);
+      expect(createTeam).toHaveBeenCalledWith(expect.objectContaining({ name: 'Team Alpha' }));
+      expect(createTeam).toHaveBeenCalledWith(expect.objectContaining({ name: 'Team Beta' }));
+    });
 
-      it('should seed one team from template', async () => {
-        mockParsedTemplate([
+    it('skips a team when its lead agent is missing (non-fatal)', async () => {
+      const { result, createTeam } = await createTeams([
+        {
+          name: 'Bad Team',
+          teamLeadAgentName: 'Nonexistent Agent',
+          memberAgentNames: ['Nonexistent Agent'],
+        },
+      ]);
+
+      expect(result.success).toBe(true);
+      expect(createTeam).not.toHaveBeenCalled();
+    });
+
+    it('creates the project normally when the template has zero teams', async () => {
+      const { result, createTeam } = await createTeams([]);
+
+      expect(result.success).toBe(true);
+      expect(createTeam).not.toHaveBeenCalled();
+    });
+
+    it('preserves the allow-all sentinel when no profileSelections are provided', async () => {
+      const { createTeam } = await createTeams([
+        {
+          name: 'AllowAll Team',
+          teamLeadAgentName: 'Lead Agent',
+          memberAgentNames: ['Lead Agent'],
+          profileNames: ['Default Profile'],
+        },
+      ]);
+
+      expect(createTeam).toHaveBeenCalledTimes(1);
+      expect(createTeam.mock.calls[0][0].profileConfigSelections).toBeUndefined();
+    });
+
+    it('prunes skipped provider configs from team profileSelections', async () => {
+      const { result, createTeam } = await createTeams(
+        [
           {
             name: 'Dev Team',
-            description: 'Main dev team',
             teamLeadAgentName: 'Lead Agent',
             memberAgentNames: ['Lead Agent', 'Worker Agent'],
             profileNames: ['Default Profile'],
-            profileSelections: [{ profileName: 'Default Profile', configNames: ['local'] }],
+            profileSelections: [{ profileName: 'Default Profile', configNames: ['local', 'agy3'] }],
           },
-        ]);
-        setupTeamSeedMocks();
+        ],
+        [
+          { name: 'local', providerName: 'claude', options: null, env: null },
+          { name: 'agy3', providerName: 'agy', options: null, env: null },
+        ],
+      );
 
-        await service.createFromTemplate({
-          name: 'Test Project',
-          rootPath: '/test',
-          slug: 'team-seed-test',
-        });
+      const projectId = (result.project as AnyRec).id as string;
+      const profile = await getProfileByName(h, projectId, 'Default Profile');
+      const localConfig = await getConfigByName(h, profile!.id, 'local');
 
-        expect(teamsServiceMock.createTeam).toHaveBeenCalledTimes(1);
-        expect(teamsServiceMock.createTeam).toHaveBeenCalledWith(
-          expect.objectContaining({
-            projectId: 'new-proj-1',
-            name: 'Dev Team',
-            description: 'Main dev team',
-          }),
-        );
-      });
+      expect(createTeam).toHaveBeenCalledTimes(1);
+      expect(createTeam.mock.calls[0][0].profileConfigSelections).toEqual([
+        { profileId: profile!.id, configIds: [localConfig!.id] },
+      ]);
+    });
 
-      it('should seed two teams from template', async () => {
-        mockParsedTemplate([
+    it('does not widen access when all selected provider configs are skipped', async () => {
+      const { createTeam } = await createTeams(
+        [
           {
-            name: 'Team Alpha',
+            name: 'Dev Team',
             teamLeadAgentName: 'Lead Agent',
             memberAgentNames: ['Lead Agent', 'Worker Agent'],
-          },
-          {
-            name: 'Team Beta',
-            teamLeadAgentName: 'Worker Agent',
-            memberAgentNames: ['Worker Agent'],
-          },
-        ]);
-        setupTeamSeedMocks();
-
-        await service.createFromTemplate({
-          name: 'Test Project',
-          rootPath: '/test',
-          slug: 'two-teams-test',
-        });
-
-        expect(teamsServiceMock.createTeam).toHaveBeenCalledTimes(2);
-        expect(teamsServiceMock.createTeam).toHaveBeenCalledWith(
-          expect.objectContaining({ name: 'Team Alpha' }),
-        );
-        expect(teamsServiceMock.createTeam).toHaveBeenCalledWith(
-          expect.objectContaining({ name: 'Team Beta' }),
-        );
-      });
-
-      it('should skip team when lead agent is missing (non-fatal)', async () => {
-        mockParsedTemplate([
-          {
-            name: 'Bad Team',
-            teamLeadAgentName: 'Nonexistent Agent',
-            memberAgentNames: ['Nonexistent Agent'],
-          },
-        ]);
-        setupTeamSeedMocks();
-
-        const result = await service.createFromTemplate({
-          name: 'Test Project',
-          rootPath: '/test',
-          slug: 'missing-lead-test',
-        });
-
-        expect(result).toBeDefined();
-        expect(teamsServiceMock.createTeam).not.toHaveBeenCalled();
-      });
-
-      it('should create project normally when template has zero teams', async () => {
-        mockParsedTemplate([]);
-        setupTeamSeedMocks();
-
-        const result = await service.createFromTemplate({
-          name: 'Test Project',
-          rootPath: '/test',
-          slug: 'no-teams-test',
-        });
-
-        expect(result).toBeDefined();
-        expect(teamsServiceMock.createTeam).not.toHaveBeenCalled();
-      });
-
-      it('should preserve allow-all sentinel when no profileSelections provided', async () => {
-        mockParsedTemplate([
-          {
-            name: 'AllowAll Team',
-            teamLeadAgentName: 'Lead Agent',
-            memberAgentNames: ['Lead Agent'],
             profileNames: ['Default Profile'],
+            profileSelections: [{ profileName: 'Default Profile', configNames: ['agy3'] }],
           },
-        ]);
-        setupTeamSeedMocks();
+        ],
+        // local keeps agents creatable; agy3 (provider agy) is filtered out.
+        [
+          { name: 'local', providerName: 'claude', options: null, env: null },
+          { name: 'agy3', providerName: 'agy', options: null, env: null },
+        ],
+      );
 
-        await service.createFromTemplate({
-          name: 'Test Project',
-          rootPath: '/test',
-          slug: 'allow-all-test',
-        });
+      expect(createTeam).toHaveBeenCalledTimes(1);
+      const callArgs = createTeam.mock.calls[0][0];
+      expect(callArgs.profileIds).toEqual([]);
+      expect(callArgs.profileConfigSelections).toBeUndefined();
+    });
 
-        expect(teamsServiceMock.createTeam).toHaveBeenCalledTimes(1);
-        const callArgs = teamsServiceMock.createTeam.mock.calls[0][0];
-        expect(callArgs.profileConfigSelections).toBeUndefined();
-      });
+    it('passes maxMembers and maxConcurrentTasks to createTeam', async () => {
+      const { createTeam } = await createTeams([
+        {
+          name: 'Capped Team',
+          teamLeadAgentName: 'Lead Agent',
+          memberAgentNames: ['Lead Agent'],
+          maxMembers: 8,
+          maxConcurrentTasks: 3,
+        },
+      ]);
 
-      it('should prune skipped provider configs from team profileSelections', async () => {
-        mockParsedTemplate(
-          [
-            {
-              name: 'Dev Team',
-              teamLeadAgentName: 'Lead Agent',
-              memberAgentNames: ['Lead Agent', 'Worker Agent'],
-              profileNames: ['Default Profile'],
-              profileSelections: [
-                { profileName: 'Default Profile', configNames: ['local', 'agy3'] },
-              ],
-            },
-          ],
-          [
-            {
-              name: 'local',
-              providerName: 'claude',
-              description: null,
-              options: null,
-              env: null,
-            },
-            {
-              name: 'agy3',
-              providerName: 'agy',
-              description: null,
-              options: null,
-              env: null,
-            },
-          ],
-        );
-        setupTeamSeedMocks();
+      expect(createTeam).toHaveBeenCalledWith(
+        expect.objectContaining({ maxMembers: 8, maxConcurrentTasks: 3 }),
+      );
+    });
 
-        await service.createFromTemplate({
-          name: 'Test Project',
-          rootPath: '/test',
-          slug: 'skipped-provider-config-test',
-        });
+    it('remaps team profileNames via profileNameRemapMap for family-mapped templates', async () => {
+      const codexProfileId = 'bbbbbbbb-1111-4111-8111-111111111111';
+      const claudeProfileId = 'bbbbbbbb-2222-4222-8222-222222222222';
+      const fmAgentId = 'bbbbbbbb-3333-4333-8333-333333333333';
+      await seedClaudeProvider(h);
 
-        expect(teamsServiceMock.createTeam).toHaveBeenCalledTimes(1);
-        const callArgs = teamsServiceMock.createTeam.mock.calls[0][0];
-        expect(callArgs.profileConfigSelections).toEqual([
-          { profileId: 'cccccccc-cccc-cccc-cccc-cccccccccccc', configIds: ['config-local-1'] },
-        ]);
-      });
-
-      it('should not widen access when all selected provider configs are skipped', async () => {
-        mockParsedTemplate(
-          [
-            {
-              name: 'Dev Team',
-              teamLeadAgentName: 'Lead Agent',
-              memberAgentNames: ['Lead Agent', 'Worker Agent'],
-              profileNames: ['Default Profile'],
-              profileSelections: [{ profileName: 'Default Profile', configNames: ['agy3'] }],
-            },
-          ],
-          [
-            {
-              name: 'agy3',
-              providerName: 'agy',
-              description: null,
-              options: null,
-              env: null,
-            },
-          ],
-        );
-        setupTeamSeedMocks();
-
-        await service.createFromTemplate({
-          name: 'Test Project',
-          rootPath: '/test',
-          slug: 'all-skipped-provider-config-test',
-        });
-
-        expect(teamsServiceMock.createTeam).toHaveBeenCalledTimes(1);
-        const callArgs = teamsServiceMock.createTeam.mock.calls[0][0];
-        expect(callArgs.profileIds).toEqual([]);
-        expect(callArgs.profileConfigSelections).toBeUndefined();
-      });
-
-      it('should pass maxMembers and maxConcurrentTasks to createTeam', async () => {
-        mockParsedTemplate([
+      const template = {
+        version: 1,
+        prompts: [],
+        profiles: [
           {
-            name: 'Capped Team',
-            teamLeadAgentName: 'Lead Agent',
-            memberAgentNames: ['Lead Agent'],
-            maxMembers: 8,
-            maxConcurrentTasks: 3,
+            id: codexProfileId,
+            name: 'Coder Codex',
+            provider: { name: 'codex' },
+            familySlug: 'coder',
           },
-        ]);
-        setupTeamSeedMocks();
-
-        await service.createFromTemplate({
-          name: 'Test Project',
-          rootPath: '/test',
-          slug: 'capacity-test',
-        });
-
-        expect(teamsServiceMock.createTeam).toHaveBeenCalledWith(
-          expect.objectContaining({
-            maxMembers: 8,
-            maxConcurrentTasks: 3,
-          }),
-        );
-      });
-
-      it('should remap team profileNames via profileNameRemapMap for family-mapped templates', async () => {
-        const codexProfileId = 'aaaaaaaa-aaaa-aaaa-aaaa-111111111111';
-        const claudeProfileId = 'aaaaaaaa-aaaa-aaaa-aaaa-222222222222';
-        const fmAgentId = 'aaaaaaaa-aaaa-aaaa-aaaa-333333333333';
-        const fmProviderId = 'aaaaaaaa-aaaa-aaaa-aaaa-444444444444';
-
-        const templateWithFamily = {
-          version: 1,
-          prompts: [],
-          profiles: [
-            {
-              id: codexProfileId,
-              name: 'Coder Codex',
-              provider: { name: 'codex' },
-              familySlug: 'coder',
-              options: null,
-              instructions: null,
-              temperature: null,
-              maxTokens: null,
-            },
-            {
-              id: claudeProfileId,
-              name: 'Coder Claude',
-              provider: { name: 'claude' },
-              familySlug: 'coder',
-              options: null,
-              instructions: null,
-              temperature: null,
-              maxTokens: null,
-            },
-          ],
-          agents: [
-            {
-              id: fmAgentId,
-              name: 'Coder',
-              profileId: codexProfileId,
-              description: null,
-              modelOverride: null,
-            },
-          ],
-          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
-          teams: [
-            {
-              name: 'Dev Team',
-              teamLeadAgentName: 'Coder',
-              memberAgentNames: ['Coder'],
-              profileNames: ['Coder Codex'],
-            },
-          ],
-          watchers: [],
-          subscribers: [],
-          presets: [],
-          providerModels: [],
-          exportedAt: undefined,
-          initialPrompt: undefined,
-          projectSettings: undefined,
-        };
-
-        jest
-          .spyOn(devchainShared.ExportSchema, 'parse')
-          .mockReturnValue(
-            templateWithFamily as ReturnType<typeof devchainShared.ExportSchema.parse>,
-          );
-
-        unifiedTemplateService.getTemplate.mockResolvedValue({
-          content: templateWithFamily,
-          source: 'bundled',
-          version: null,
-        });
-
-        storage.listProviders.mockResolvedValue({
-          items: [{ id: fmProviderId, name: 'claude' }],
-          total: 1,
-          limit: 100,
-          offset: 0,
-        });
-
-        const newProfileId = 'aaaaaaaa-aaaa-aaaa-aaaa-555555555555';
-        const newAgentId = 'aaaaaaaa-aaaa-aaaa-aaaa-666666666666';
-
-        storage.createProjectWithTemplate.mockResolvedValue({
-          project: { id: 'new-proj-fm', name: 'Family Test' },
-          imported: { prompts: 0, profiles: 1, agents: 1, statuses: 1 },
-          mappings: {
-            promptIdMap: {},
-            profileIdMap: { [claudeProfileId]: newProfileId },
-            agentIdMap: { [fmAgentId]: newAgentId },
-            statusIdMap: {},
+          {
+            id: claudeProfileId,
+            name: 'Coder Claude',
+            provider: { name: 'claude' },
+            familySlug: 'coder',
           },
-        });
+        ],
+        agents: [{ id: fmAgentId, name: 'Coder', profileId: codexProfileId, description: null }],
+        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+        teams: [
+          {
+            name: 'Dev Team',
+            teamLeadAgentName: 'Coder',
+            memberAgentNames: ['Coder'],
+            profileNames: ['Coder Codex'],
+          },
+        ],
+      };
+      const { deps, createTeam } = buildDeps(h, bundledUnified(template));
 
-        storage.listAgents.mockResolvedValue({
-          items: [{ id: newAgentId, name: 'Coder', profileId: newProfileId }],
-          total: 1,
-          limit: 10000,
-          offset: 0,
-        });
-        storage.listAgentProfiles.mockResolvedValue({
-          items: [{ id: newProfileId, name: 'Coder Claude' }],
-          total: 1,
-          limit: 1000,
-          offset: 0,
-        });
-        storage.listProfileProviderConfigsByProfile.mockResolvedValue([]);
-        storage.createProfileProviderConfig.mockImplementation(
-          async (data: Record<string, unknown>) => ({
-            id: `config-${Date.now()}`,
-            ...data,
-          }),
-        );
-
-        await service.createFromTemplate({
+      const result = (await createFromTemplateWithHelper(
+        {
           name: 'Family Test',
           rootPath: '/test',
           slug: 'family-test',
           familyProviderMappings: { coder: 'claude' },
-        });
+        },
+        deps as never,
+      )) as AnyRec;
 
-        expect(teamsServiceMock.createTeam).toHaveBeenCalledTimes(1);
-        const callArgs = teamsServiceMock.createTeam.mock.calls[0][0];
-        expect(callArgs.profileIds).toBeDefined();
-        expect(callArgs.profileIds).toContain(newProfileId);
-      });
+      const projectId = (result.project as AnyRec).id as string;
+      const claudeProfile = await getProfileByName(h, projectId, 'Coder Claude');
 
-      it('should roundtrip capacity values through export and import', async () => {
-        const projectId = 'project-123';
+      expect(createTeam).toHaveBeenCalledTimes(1);
+      expect(createTeam.mock.calls[0][0].profileIds).toContain(claudeProfile!.id);
+    });
 
-        storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
-        storage.listAgentProfiles.mockResolvedValue({
-          items: [],
-          total: 0,
-          limit: 1000,
-          offset: 0,
-        });
-        storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
-        storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
-        storage.getInitialSessionPrompt.mockResolvedValue(null);
-        storage.listWatchers.mockResolvedValue([]);
-        storage.listSubscribers.mockResolvedValue([]);
-        storage.listProfileProviderConfigsByProfile.mockResolvedValue([]);
-
-        const teamId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
-        const leadAgentId = 'aaaaaaaa-bbbb-cccc-dddd-ffffffffffff';
-        teamsServiceMock.listTeams.mockResolvedValue({
-          items: [
-            {
-              id: teamId,
-              name: 'Capped Team',
-              description: null,
-              teamLeadAgentId: leadAgentId,
-              memberCount: 1,
-            },
-          ],
-        });
-        teamsServiceMock.getTeam.mockResolvedValue({
-          id: teamId,
-          name: 'Capped Team',
-          description: null,
-          teamLeadAgentId: leadAgentId,
-          maxMembers: 6,
-          maxConcurrentTasks: 2,
-          members: [{ agentId: leadAgentId }],
-          profileIds: [],
-          profileConfigSelections: [],
-        });
-        storage.getAgent.mockResolvedValue({ id: leadAgentId, name: 'Lead Agent' });
-
-        const exported = await service.exportProject(projectId);
-
-        expect(exported.teams).toBeDefined();
-        expect(exported.teams).toHaveLength(1);
-        expect(exported.teams![0].maxMembers).toBe(6);
-        expect(exported.teams![0].maxConcurrentTasks).toBe(2);
-
-        // Now import and verify capacity is passed through
-        storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
-        storage.listEpics.mockResolvedValue({ items: [], total: 0, limit: 100000, offset: 0 });
-        // Import creates agents/profiles; listAgents called by createImportedTeams
-        storage.listAgents.mockResolvedValue({
-          items: [{ id: leadAgentId, name: 'Lead Agent', profileId: 'prof-1' }],
-          total: 1,
-          limit: 10000,
-          offset: 0,
-        });
-        storage.listAgentProfiles.mockResolvedValue({
-          items: [],
-          total: 0,
-          limit: 1000,
-          offset: 0,
-        });
-        storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
-        storage.listWatchers.mockResolvedValue([]);
-        storage.listSubscribers.mockResolvedValue([]);
-
-        const { _manifest: _omitted, ...importPayload } = exported;
-        void _omitted;
-        jest
-          .spyOn(devchainShared.ExportSchema, 'parse')
-          .mockReturnValue(importPayload as ReturnType<typeof devchainShared.ExportSchema.parse>);
-
-        await service.importProject({
-          projectId,
-          payload: importPayload,
-          dryRun: false,
-        });
-
-        expect(teamsServiceMock.createTeam).toHaveBeenCalledWith(
-          expect.objectContaining({
-            maxMembers: 6,
-            maxConcurrentTasks: 2,
-          }),
-        );
-      });
-
-      it('should roundtrip allowTeamLeadCreateAgents through export and import', async () => {
-        const projectId = 'project-123';
-
-        storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
-        storage.listAgentProfiles.mockResolvedValue({
-          items: [],
-          total: 0,
-          limit: 1000,
-          offset: 0,
-        });
-        storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
-        storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
-        storage.getInitialSessionPrompt.mockResolvedValue(null);
-        storage.listWatchers.mockResolvedValue([]);
-        storage.listSubscribers.mockResolvedValue([]);
-        storage.listProfileProviderConfigsByProfile.mockResolvedValue([]);
-
-        const teamId = 'aaaaaaaa-bbbb-cccc-dddd-111111111111';
-        const leadAgentId = 'aaaaaaaa-bbbb-cccc-dddd-222222222222';
-        teamsServiceMock.listTeams.mockResolvedValue({
-          items: [
-            {
-              id: teamId,
-              name: 'Flagged Team',
-              description: null,
-              teamLeadAgentId: leadAgentId,
-              memberCount: 1,
-            },
-          ],
-        });
-        teamsServiceMock.getTeam.mockResolvedValue({
-          id: teamId,
-          name: 'Flagged Team',
-          description: null,
-          teamLeadAgentId: leadAgentId,
-          maxMembers: 5,
-          maxConcurrentTasks: 5,
-          allowTeamLeadCreateAgents: true,
-          members: [{ agentId: leadAgentId }],
-          profileIds: [],
-          profileConfigSelections: [],
-        });
-        storage.getAgent.mockResolvedValue({ id: leadAgentId, name: 'Lead' });
-
-        const exported = await service.exportProject(projectId);
-
-        expect(exported.teams).toHaveLength(1);
-        expect(exported.teams![0].allowTeamLeadCreateAgents).toBe(true);
-
-        // Import without the field → should default to false
-        storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
-        storage.listEpics.mockResolvedValue({ items: [], total: 0, limit: 100000, offset: 0 });
-        storage.listAgents.mockResolvedValue({
-          items: [{ id: leadAgentId, name: 'Lead', profileId: 'prof-1' }],
-          total: 1,
-          limit: 10000,
-          offset: 0,
-        });
-        storage.listAgentProfiles.mockResolvedValue({
-          items: [],
-          total: 0,
-          limit: 1000,
-          offset: 0,
-        });
-        storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
-        storage.listWatchers.mockResolvedValue([]);
-        storage.listSubscribers.mockResolvedValue([]);
-
-        // Import WITH the field set
-        const { _manifest: _omit, ...importPayload } = exported;
-        void _omit;
-        jest
-          .spyOn(devchainShared.ExportSchema, 'parse')
-          .mockReturnValue(importPayload as ReturnType<typeof devchainShared.ExportSchema.parse>);
-
-        await service.importProject({
-          projectId,
-          payload: importPayload,
-          dryRun: false,
-        });
-
-        expect(teamsServiceMock.createTeam).toHaveBeenCalledWith(
-          expect.objectContaining({
-            allowTeamLeadCreateAgents: true,
-          }),
-        );
-      });
-
-      it('should apply teamOverrides with correct precedence (override > template)', async () => {
-        mockParsedTemplate([
+    it('applies teamOverrides with override > template precedence', async () => {
+      const { createTeam } = await createTeams(
+        [
           {
             name: 'Dev Team',
             teamLeadAgentName: 'Lead Agent',
             memberAgentNames: ['Lead Agent'],
             maxMembers: 5,
           },
-        ]);
-        setupTeamSeedMocks();
-
-        await service.createFromTemplate({
-          name: 'Override Test',
-          rootPath: '/test',
-          slug: 'override-test',
+        ],
+        undefined,
+        {
           teamOverrides: [{ teamName: 'Dev Team', maxMembers: 8, allowTeamLeadCreateAgents: true }],
-        });
+        },
+      );
 
-        expect(teamsServiceMock.createTeam).toHaveBeenCalledTimes(1);
-        expect(teamsServiceMock.createTeam).toHaveBeenCalledWith(
-          expect.objectContaining({
-            maxMembers: 8,
-            allowTeamLeadCreateAgents: true,
-          }),
-        );
-      });
+      expect(createTeam).toHaveBeenCalledTimes(1);
+      expect(createTeam).toHaveBeenCalledWith(
+        expect.objectContaining({ maxMembers: 8, allowTeamLeadCreateAgents: true }),
+      );
+    });
 
-      it('should ignore unknown teamName in teamOverrides without error', async () => {
-        mockParsedTemplate([
+    it('ignores an unknown teamName in teamOverrides without error', async () => {
+      const { result, createTeam } = await createTeams(
+        [{ name: 'Real Team', teamLeadAgentName: 'Lead Agent', memberAgentNames: ['Lead Agent'] }],
+        undefined,
+        { teamOverrides: [{ teamName: 'Nonexistent Team', maxMembers: 9 }] },
+      );
+
+      expect(result.success).toBe(true);
+      expect(createTeam).toHaveBeenCalledTimes(1);
+      expect(createTeam).toHaveBeenCalledWith(expect.objectContaining({ name: 'Real Team' }));
+    });
+
+    it('uses override profileNames to remove a profile from the team (Rule 3)', async () => {
+      const profileAId = 'cccccccc-1111-4111-8111-111111111111';
+      const profileBId = 'cccccccc-2222-4222-8222-222222222222';
+      const rule3AgentId = 'cccccccc-3333-4333-8333-333333333333';
+      await seedClaudeProvider(h);
+
+      const template = {
+        version: 1,
+        prompts: [],
+        profiles: [
           {
-            name: 'Real Team',
-            teamLeadAgentName: 'Lead Agent',
-            memberAgentNames: ['Lead Agent'],
+            id: profileAId,
+            name: 'ProfileA',
+            provider: { name: 'claude' },
+            providerConfigs: [{ name: 'a-cfg', providerName: 'claude', options: null, env: null }],
           },
-        ]);
-        setupTeamSeedMocks();
-
-        const result = await service.createFromTemplate({
-          name: 'Unknown Override Test',
-          rootPath: '/test',
-          slug: 'unknown-override',
-          teamOverrides: [{ teamName: 'Nonexistent Team', maxMembers: 9 }],
-        });
-
-        expect(result).toBeDefined();
-        expect(teamsServiceMock.createTeam).toHaveBeenCalledTimes(1);
-        expect(teamsServiceMock.createTeam).toHaveBeenCalledWith(
-          expect.objectContaining({ name: 'Real Team' }),
-        );
-      });
-
-      it('should use override profileNames to remove a profile from the team (Rule 3 regression)', async () => {
-        const newProfileIdA = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
-        const newProfileIdB = 'cccccccc-cccc-cccc-cccc-dddddddddddd';
-        const newAgentA = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
-
-        mockParsedTemplate([
+          {
+            id: profileBId,
+            name: 'ProfileB',
+            provider: { name: 'claude' },
+            providerConfigs: [{ name: 'b-cfg', providerName: 'claude', options: null, env: null }],
+          },
+        ],
+        agents: [
+          { id: rule3AgentId, name: 'Lead Agent', profileId: profileAId, description: null },
+        ],
+        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+        teams: [
           {
             name: 'Dev Team',
             teamLeadAgentName: 'Lead Agent',
             memberAgentNames: ['Lead Agent'],
             profileNames: ['ProfileA', 'ProfileB'],
           },
-        ]);
+        ],
+      };
+      const { deps, createTeam } = buildDeps(h, bundledUnified(template));
 
-        storage.listProviders.mockResolvedValue({
-          items: [{ id: tProviderId, name: 'claude', binPath: null }],
-          total: 1,
-          limit: 100,
-          offset: 0,
-        });
-        storage.createProjectWithTemplate.mockResolvedValue({
-          project: { id: 'new-proj-1', name: 'Test' },
-          imported: { prompts: 0, profiles: 2, agents: 1, statuses: 1 },
-          mappings: {
-            promptIdMap: {},
-            profileIdMap: { [tProfileId]: newProfileIdA },
-            agentIdMap: { [tAgentA]: newAgentA },
-            statusIdMap: {},
-          },
-        });
-        storage.listAgents.mockResolvedValue({
-          items: [{ id: newAgentA, name: 'Lead Agent', profileId: newProfileIdA }],
-          total: 1,
-          limit: 10000,
-          offset: 0,
-        });
-        storage.listAgentProfiles.mockResolvedValue({
-          items: [
-            { id: newProfileIdA, name: 'ProfileA' },
-            { id: newProfileIdB, name: 'ProfileB' },
-          ],
-          total: 2,
-          limit: 1000,
-          offset: 0,
-        });
-        storage.listProfileProviderConfigsByProfile.mockResolvedValue([]);
-        storage.createProfileProviderConfig.mockImplementation(
-          async (data: Record<string, unknown>) => ({
-            id: `config-${Date.now()}`,
-            ...data,
-          }),
-        );
-
-        await service.createFromTemplate({
+      const result = (await createFromTemplateWithHelper(
+        {
           name: 'Rule3 Test',
           rootPath: '/test',
           slug: 'rule3-test',
-          teamOverrides: [
-            {
-              teamName: 'Dev Team',
-              profileNames: ['ProfileB'],
-            },
-          ],
-        });
+          teamOverrides: [{ teamName: 'Dev Team', profileNames: ['ProfileB'] }],
+        },
+        deps as never,
+      )) as AnyRec;
 
-        expect(teamsServiceMock.createTeam).toHaveBeenCalledTimes(1);
-        const callArgs = teamsServiceMock.createTeam.mock.calls[0][0];
-        expect(callArgs.profileIds).toEqual([newProfileIdB]);
-      });
+      const projectId = (result.project as AnyRec).id as string;
+      const profileB = await getProfileByName(h, projectId, 'ProfileB');
 
-      it('should preserve template profileNames when override profileNames is undefined', async () => {
-        mockParsedTemplate([
+      expect(createTeam).toHaveBeenCalledTimes(1);
+      expect(createTeam.mock.calls[0][0].profileIds).toEqual([profileB!.id]);
+    });
+
+    it('preserves template profileNames when override profileNames is undefined', async () => {
+      const { result, createTeam } = await createTeams(
+        [
           {
             name: 'Dev Team',
             teamLeadAgentName: 'Lead Agent',
             memberAgentNames: ['Lead Agent'],
             profileNames: ['Default Profile'],
           },
-        ]);
-        setupTeamSeedMocks();
+        ],
+        undefined,
+        { teamOverrides: [{ teamName: 'Dev Team', maxMembers: 8 }] },
+      );
 
-        await service.createFromTemplate({
-          name: 'No Override Test',
-          rootPath: '/test',
-          slug: 'no-override-test',
-          teamOverrides: [{ teamName: 'Dev Team', maxMembers: 8 }],
-        });
+      const projectId = (result.project as AnyRec).id as string;
+      const profile = await getProfileByName(h, projectId, 'Default Profile');
 
-        expect(teamsServiceMock.createTeam).toHaveBeenCalledTimes(1);
-        const callArgs = teamsServiceMock.createTeam.mock.calls[0][0];
-        expect(callArgs.profileIds).toBeDefined();
-        expect(callArgs.profileIds!.length).toBe(1);
-      });
+      expect(createTeam).toHaveBeenCalledTimes(1);
+      expect(createTeam.mock.calls[0][0].profileIds).toEqual([profile!.id]);
+    });
 
-      it('should apply profileNameRemapMap to override profileSelections', async () => {
-        const codexProfileId = 'aaaaaaaa-aaaa-aaaa-aaaa-111111111111';
-        const claudeProfileId = 'aaaaaaaa-aaaa-aaaa-aaaa-222222222222';
-        const fmAgentId = 'aaaaaaaa-aaaa-aaaa-aaaa-333333333333';
-        const fmProviderId = 'aaaaaaaa-aaaa-aaaa-aaaa-444444444444';
+    it('applies profileNameRemapMap to override profileSelections', async () => {
+      const codexProfileId = 'dddddddd-1111-4111-8111-111111111111';
+      const claudeProfileId = 'dddddddd-2222-4222-8222-222222222222';
+      const fmAgentId = 'dddddddd-3333-4333-8333-333333333333';
+      await seedClaudeProvider(h);
 
-        const templateWithFamily = {
-          version: 1,
-          prompts: [],
-          profiles: [
-            {
-              id: codexProfileId,
-              name: 'Coder Codex',
-              provider: { name: 'codex' },
-              familySlug: 'coder',
-              options: null,
-              instructions: null,
-              temperature: null,
-              maxTokens: null,
-            },
-            {
-              id: claudeProfileId,
-              name: 'Coder Claude',
-              provider: { name: 'claude' },
-              familySlug: 'coder',
-              options: null,
-              instructions: null,
-              temperature: null,
-              maxTokens: null,
-            },
-          ],
-          agents: [
-            {
-              id: fmAgentId,
-              name: 'Coder',
-              profileId: codexProfileId,
-              description: null,
-              modelOverride: null,
-            },
-          ],
-          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
-          teams: [
-            {
-              name: 'Dev Team',
-              teamLeadAgentName: 'Coder',
-              memberAgentNames: ['Coder'],
-              profileNames: ['Coder Codex'],
-            },
-          ],
-          watchers: [],
-          subscribers: [],
-          presets: [],
-          providerModels: [],
-          exportedAt: undefined,
-          initialPrompt: undefined,
-          projectSettings: undefined,
-        };
-
-        jest
-          .spyOn(devchainShared.ExportSchema, 'parse')
-          .mockReturnValue(
-            templateWithFamily as ReturnType<typeof devchainShared.ExportSchema.parse>,
-          );
-
-        unifiedTemplateService.getTemplate.mockResolvedValue({
-          content: templateWithFamily,
-          source: 'bundled',
-          version: null,
-        });
-
-        storage.listProviders.mockResolvedValue({
-          items: [{ id: fmProviderId, name: 'claude' }],
-          total: 1,
-          limit: 100,
-          offset: 0,
-        });
-
-        const newProfileId = 'aaaaaaaa-aaaa-aaaa-aaaa-555555555555';
-        const newAgentId = 'aaaaaaaa-aaaa-aaaa-aaaa-666666666666';
-
-        storage.createProjectWithTemplate.mockResolvedValue({
-          project: { id: 'new-proj-fm2', name: 'Family Override Test' },
-          imported: { prompts: 0, profiles: 1, agents: 1, statuses: 1 },
-          mappings: {
-            promptIdMap: {},
-            profileIdMap: { [claudeProfileId]: newProfileId },
-            agentIdMap: { [fmAgentId]: newAgentId },
-            statusIdMap: {},
-          },
-        });
-
-        storage.listAgents.mockResolvedValue({
-          items: [{ id: newAgentId, name: 'Coder', profileId: newProfileId }],
-          total: 1,
-          limit: 10000,
-          offset: 0,
-        });
-        storage.listAgentProfiles.mockResolvedValue({
-          items: [{ id: newProfileId, name: 'Coder Claude' }],
-          total: 1,
-          limit: 1000,
-          offset: 0,
-        });
-        storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+      const template = {
+        version: 1,
+        prompts: [],
+        profiles: [
           {
-            id: 'config-claude-1',
-            name: 'claude-local',
-            profileId: newProfileId,
-            providerId: fmProviderId,
-            options: null,
-            env: null,
+            id: codexProfileId,
+            name: 'Coder Codex',
+            provider: { name: 'codex' },
+            familySlug: 'coder',
           },
-        ]);
-        storage.createProfileProviderConfig.mockImplementation(
-          async (data: Record<string, unknown>) => ({
-            id: `config-${Date.now()}`,
-            ...data,
-          }),
-        );
+          {
+            id: claudeProfileId,
+            name: 'Coder Claude',
+            provider: { name: 'claude' },
+            familySlug: 'coder',
+            providerConfigs: [
+              { name: 'claude-local', providerName: 'claude', options: null, env: null },
+            ],
+          },
+        ],
+        agents: [{ id: fmAgentId, name: 'Coder', profileId: codexProfileId, description: null }],
+        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+        teams: [
+          {
+            name: 'Dev Team',
+            teamLeadAgentName: 'Coder',
+            memberAgentNames: ['Coder'],
+            profileNames: ['Coder Codex'],
+          },
+        ],
+      };
+      const { deps, createTeam } = buildDeps(h, bundledUnified(template));
 
-        await service.createFromTemplate({
+      const result = (await createFromTemplateWithHelper(
+        {
           name: 'Family Override Test',
           rootPath: '/test',
           slug: 'family-override',
@@ -2426,15 +1189,20 @@ describe('ProjectsService', () => {
               profileSelections: [{ profileName: 'Coder Codex', configNames: ['claude-local'] }],
             },
           ],
-        });
+        },
+        deps as never,
+      )) as AnyRec;
 
-        expect(teamsServiceMock.createTeam).toHaveBeenCalledTimes(1);
-        const callArgs = teamsServiceMock.createTeam.mock.calls[0][0];
-        expect(callArgs.profileIds).toContain(newProfileId);
-      });
+      const projectId = (result.project as AnyRec).id as string;
+      const claudeProfile = await getProfileByName(h, projectId, 'Coder Claude');
 
-      it('should preserve allow-all when override has empty configNames', async () => {
-        mockParsedTemplate([
+      expect(createTeam).toHaveBeenCalledTimes(1);
+      expect(createTeam.mock.calls[0][0].profileIds).toContain(claudeProfile!.id);
+    });
+
+    it('preserves allow-all when the override has empty configNames', async () => {
+      const { createTeam } = await createTeams(
+        [
           {
             name: 'AllowAll Override',
             teamLeadAgentName: 'Lead Agent',
@@ -2442,58 +1210,43 @@ describe('ProjectsService', () => {
             profileNames: ['Default Profile'],
             profileSelections: [{ profileName: 'Default Profile', configNames: ['local'] }],
           },
-        ]);
-        setupTeamSeedMocks();
-
-        await service.createFromTemplate({
-          name: 'AllowAll Override Test',
-          rootPath: '/test',
-          slug: 'allowall-override',
+        ],
+        undefined,
+        {
           teamOverrides: [
             {
               teamName: 'AllowAll Override',
               profileSelections: [{ profileName: 'Default Profile', configNames: [] }],
             },
           ],
-        });
+        },
+      );
 
-        expect(teamsServiceMock.createTeam).toHaveBeenCalledTimes(1);
-        const callArgs = teamsServiceMock.createTeam.mock.calls[0][0];
-        const selections = callArgs.profileConfigSelections;
-        expect(!selections || selections.length === 0).toBe(true);
-      });
+      expect(createTeam).toHaveBeenCalledTimes(1);
+      const selections = createTeam.mock.calls[0][0].profileConfigSelections;
+      expect(!selections || selections.length === 0).toBe(true);
     });
   });
 
-  describe('createFromTemplate with familyProviderMappings', () => {
-    const profileId1 = '11111111-1111-1111-1111-111111111111';
-    const profileId2 = '22222222-2222-2222-2222-222222222222';
-    const agentId = '33333333-3333-3333-3333-333333333333';
-    const providerId = '44444444-4444-4444-4444-444444444444';
+  // -------------------------------------------------------------------------
+  // Family-provider mappings.
+  // -------------------------------------------------------------------------
+  describe('familyProviderMappings', () => {
+    const profileId1 = 'eeeeeeee-1111-4111-8111-111111111111';
+    const profileId2 = 'eeeeeeee-2222-4222-8222-222222222222';
+    const fmAgentId = 'eeeeeeee-3333-4333-8333-333333333333';
 
-    it('should return providerMappingRequired when default provider is missing and no mappings provided', async () => {
-      // Directly test computeFamilyAlternatives since createFromTemplate's schema parsing
-      // has ESM compatibility issues in Jest. The createFromTemplate integration is tested
-      // in e2e tests where the full schema works correctly.
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: providerId, name: 'claude' }], // codex is missing
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      // Test computeFamilyAlternatives directly to verify the logic
+    it('reports which families need a mapping when the default provider is missing', async () => {
+      await seedClaudeProvider(h); // codex is NOT installed
       const profiles = [
         { id: profileId1, name: 'Coder Codex', provider: { name: 'codex' }, familySlug: 'coder' },
         { id: profileId2, name: 'Coder Claude', provider: { name: 'claude' }, familySlug: 'coder' },
       ];
-      const agents = [{ id: agentId, name: 'Coder', profileId: profileId1 }];
+      const agents = [{ id: fmAgentId, name: 'Coder', profileId: profileId1 }];
 
-      const familyResult = await service.computeFamilyAlternatives(profiles, agents);
+      const familyResult = await computeFamilyAlternativesFromStorage(h.storage, profiles, agents);
 
-      // Verify the conditions that would trigger providerMappingRequired return
-      const needsMapping = familyResult.alternatives.some((alt) => !alt.defaultProviderAvailable);
-      expect(needsMapping).toBe(true);
+      expect(familyResult.alternatives.some((alt) => !alt.defaultProviderAvailable)).toBe(true);
       expect(familyResult.missingProviders).toContain('codex');
       expect(familyResult.canImport).toBe(true);
       expect(familyResult.alternatives).toHaveLength(1);
@@ -2501,8 +1254,9 @@ describe('ProjectsService', () => {
       expect(familyResult.alternatives[0].availableProviders).toContain('claude');
     });
 
-    it('should create project with remapped profiles when mappings are provided', async () => {
-      const templateWithMissingProvider = {
+    it('creates the remapped (claude, not codex) profile when a mapping is provided', async () => {
+      await seedClaudeProvider(h);
+      const template = {
         version: 1,
         prompts: [],
         profiles: [
@@ -2516,7 +1270,7 @@ describe('ProjectsService', () => {
         ],
         agents: [
           {
-            id: agentId,
+            id: fmAgentId,
             name: 'Coder',
             profileId: profileId1,
             modelOverride: 'anthropic/claude-sonnet-4-5',
@@ -2524,75 +1278,33 @@ describe('ProjectsService', () => {
         ],
         statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
       };
+      const { deps } = buildDeps(h, bundledUnified(template));
 
-      // Mock ExportSchema.parse to return input with defaults applied (preserving familySlug)
-      // This works around ESM compatibility issues in Jest
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-        ...templateWithMissingProvider,
-        exportedAt: undefined,
-        initialPrompt: undefined,
-        projectSettings: undefined,
-        watchers: [],
-        subscribers: [],
-        _manifest: undefined,
-      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
-
-      unifiedTemplateService.getTemplate.mockResolvedValue({
-        content: templateWithMissingProvider,
-        source: 'bundled',
-        version: null,
-      });
-
-      // Only claude is available
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: providerId, name: 'claude' }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'new-project-1', name: 'Test' },
-        imported: { prompts: 0, profiles: 1, agents: 1, statuses: 1 },
-        mappings: {
-          promptIdMap: {},
-          profileIdMap: { [profileId2]: 'new-profile-1' },
-          agentIdMap: { [agentId]: 'new-agent-1' },
-          statusIdMap: {},
+      const result = (await createFromTemplateWithHelper(
+        {
+          name: 'Test Project',
+          rootPath: '/test',
+          slug: 'test-template',
+          familyProviderMappings: { coder: 'claude' },
         },
-      });
-
-      const result = await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'test-template',
-        familyProviderMappings: { coder: 'claude' }, // Remap coder family to claude
-      });
+        deps as never,
+      )) as AnyRec;
 
       expect(result.success).toBe(true);
-      expect(result.project).toBeDefined();
+      const projectId = (result.project as AnyRec).id as string;
 
-      // Verify createProjectWithTemplate was called with the claude profile (not codex)
-      expect(storage.createProjectWithTemplate).toHaveBeenCalled();
-      const [, templatePayload] = storage.createProjectWithTemplate.mock.calls[0];
-      expect(templatePayload.profiles).toHaveLength(1);
-      expect(templatePayload.profiles[0].name).toBe('Coder Claude');
-      expect(templatePayload.profiles[0].providerId).toBe(providerId);
-      expect(templatePayload.agents).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            name: 'Coder',
-            modelOverride: 'anthropic/claude-sonnet-4-5',
-          }),
-        ]),
-      );
+      const { items: profiles } = await h.storage.listAgentProfiles({ projectId });
+      expect(profiles.map((p) => p.name)).toEqual(['Coder Claude']);
 
-      // Cleanup
-      jest.restoreAllMocks();
+      const agent = await getAgentByName(h, projectId, 'Coder');
+      expect(agent).toMatchObject({ modelOverride: 'anthropic/claude-sonnet-4-5' });
+      // The created agent points at the claude profile.
+      expect(agent!.profileId).toBe(profiles[0].id);
     });
 
-    it('should proceed normally when all default providers are available', async () => {
-      const templateWithAvailableProvider = {
+    it('proceeds normally when all default providers are available', async () => {
+      await seedClaudeProvider(h);
+      const template = {
         version: 1,
         prompts: [],
         profiles: [
@@ -2603,63 +1315,23 @@ describe('ProjectsService', () => {
             familySlug: 'coder',
           },
         ],
-        agents: [{ id: agentId, name: 'Coder', profileId: profileId1 }],
+        agents: [{ id: fmAgentId, name: 'Coder', profileId: profileId1 }],
         statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
       };
+      const { deps } = buildDeps(h, bundledUnified(template));
 
-      // Mock ExportSchema.parse to return input with defaults applied (preserving familySlug)
-      // This works around ESM compatibility issues in Jest
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-        ...templateWithAvailableProvider,
-        exportedAt: undefined,
-        initialPrompt: undefined,
-        projectSettings: undefined,
-        watchers: [],
-        subscribers: [],
-        _manifest: undefined,
-      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
-
-      unifiedTemplateService.getTemplate.mockResolvedValue({
-        content: templateWithAvailableProvider,
-        source: 'bundled',
-        version: null,
-      });
-
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: providerId, name: 'claude' }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'new-project-1', name: 'Test' },
-        imported: { prompts: 0, profiles: 1, agents: 1, statuses: 1 },
-        mappings: {
-          promptIdMap: {},
-          profileIdMap: { [profileId1]: 'new-profile-1' },
-          agentIdMap: { [agentId]: 'new-agent-1' },
-          statusIdMap: {},
-        },
-      });
-
-      const result = await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'test-template',
-        // No mappings needed
-      });
+      const result = (await createFromTemplateWithHelper(
+        { name: 'Test Project', rootPath: '/test', slug: 'test-template' },
+        deps as never,
+      )) as AnyRec;
 
       expect(result.success).toBe(true);
       expect(result.providerMappingRequired).toBeUndefined();
-
-      // Cleanup
-      jest.restoreAllMocks();
     });
 
-    it('should remap watcher profile scope when profile is remapped via family mappings', async () => {
-      const watcherId = '55555555-5555-5555-5555-555555555555';
-      const templateWithWatcher = {
+    it('auto-selects the sole available provider when exactly one alternative exists', async () => {
+      await seedClaudeProvider(h); // codex missing, claude available
+      const template = {
         version: 1,
         prompts: [],
         profiles: [
@@ -2671,88 +1343,30 @@ describe('ProjectsService', () => {
             familySlug: 'coder',
           },
         ],
-        agents: [{ id: agentId, name: 'Coder', profileId: profileId1 }],
+        agents: [{ id: fmAgentId, name: 'Coder', profileId: profileId1 }],
         statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
-        // Watcher references 'Coder Codex' profile which won't be created (Coder Claude will be selected)
-        watchers: [
-          {
-            id: watcherId,
-            name: 'Test Watcher',
-            enabled: true,
-            scope: 'profile' as const,
-            scopeFilterName: 'Coder Codex', // References the original profile
-            pollIntervalMs: 1000,
-            viewportLines: 50,
-            condition: { type: 'contains' as const, pattern: 'error' },
-            cooldownMs: 5000,
-            cooldownMode: 'time' as const,
-            eventName: 'test-event',
-          },
-        ],
-        subscribers: [],
       };
+      const { deps } = buildDeps(h, bundledUnified(template));
 
-      // Mock ExportSchema.parse to preserve familySlug
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-        ...templateWithWatcher,
-        exportedAt: undefined,
-        initialPrompt: undefined,
-        projectSettings: undefined,
-        _manifest: undefined,
-      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+      const result = (await createFromTemplateWithHelper(
+        { name: 'Test Project', rootPath: '/test', slug: 'test-template' }, // no mappings
+        deps as never,
+      )) as AnyRec;
 
-      unifiedTemplateService.getTemplate.mockResolvedValue({
-        content: templateWithWatcher,
-        source: 'bundled',
-        version: null,
-      });
+      expect(result.success).toBe(true);
+      expect(result.providerMappingRequired).toBeUndefined();
 
-      // Only claude is available
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: providerId, name: 'claude' }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
+      const projectId = (result.project as AnyRec).id as string;
+      const { items: profiles } = await h.storage.listAgentProfiles({ projectId });
+      expect(profiles.map((p) => p.name)).toEqual(['Coder Claude']);
 
-      const newProfileId = 'new-profile-uuid';
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'new-project-1', name: 'Test' },
-        imported: { prompts: 0, profiles: 1, agents: 1, statuses: 1 },
-        mappings: {
-          promptIdMap: {},
-          profileIdMap: { [profileId2]: newProfileId },
-          agentIdMap: { [agentId]: 'new-agent-1' },
-          statusIdMap: {},
-        },
-      });
-
-      // Mock watcher creation
-      watchersService.createWatcher.mockResolvedValue({ id: 'new-watcher-id', enabled: true });
-
-      await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'test-template',
-        familyProviderMappings: { coder: 'claude' },
-      });
-
-      // Verify watcher was created with the remapped profile scope
-      expect(watchersService.createWatcher).toHaveBeenCalledWith(
-        expect.objectContaining({
-          scope: 'profile',
-          // scopeFilterId should be the new profile ID (remapped from Coder Codex to Coder Claude)
-          scopeFilterId: newProfileId,
-        }),
-      );
-
-      // Cleanup
-      jest.restoreAllMocks();
+      const agent = await getAgentByName(h, projectId, 'Coder');
+      expect(agent!.modelOverride).toBeNull();
     });
 
-    it('should throw ValidationError when canImport is false (no alternatives available)', async () => {
-      // Template with a profile that has no available provider alternatives
-      const templateWithNoAlternatives = {
+    it('returns providerMappingRequired (canImport:false) when no alternatives are available', async () => {
+      // No providers installed at all.
+      const template = {
         version: 1,
         prompts: [],
         profiles: [
@@ -2763,51 +1377,29 @@ describe('ProjectsService', () => {
             familySlug: 'special',
           },
         ],
-        agents: [{ id: agentId, name: 'Special Agent', profileId: profileId1 }],
+        agents: [{ id: fmAgentId, name: 'Special Agent', profileId: profileId1 }],
         statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
       };
+      const { deps } = buildDeps(h, bundledUnified(template));
 
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-        ...templateWithNoAlternatives,
-        exportedAt: undefined,
-        initialPrompt: undefined,
-        projectSettings: undefined,
-        watchers: [],
-        subscribers: [],
-        _manifest: undefined,
-      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
-
-      unifiedTemplateService.getTemplate.mockResolvedValue({
-        content: templateWithNoAlternatives,
-        source: 'bundled',
-        version: null,
-      });
-
-      // No providers available at all
-      storage.listProviders.mockResolvedValue({
-        items: [],
-        total: 0,
-        limit: 100,
-        offset: 0,
-      });
-
-      // Even with mappings provided, should return canImport: false (not throw)
-      const result = await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'test-template',
-        familyProviderMappings: { special: 'anything' },
-      });
+      const result = (await createFromTemplateWithHelper(
+        {
+          name: 'Test Project',
+          rootPath: '/test',
+          slug: 'test-template',
+          familyProviderMappings: { special: 'anything' },
+        },
+        deps as never,
+      )) as AnyRec;
 
       expect(result.success).toBe(false);
       expect(result.providerMappingRequired).toBeDefined();
-      expect(result.providerMappingRequired!.canImport).toBe(false);
-
-      jest.restoreAllMocks();
+      expect((result.providerMappingRequired as AnyRec).canImport).toBe(false);
     });
 
-    it('should auto-select provider when exactly one alternative is available', async () => {
-      const templateWithAlternatives = {
+    it('remaps a profile-scope watcher when its target profile is family-substituted', async () => {
+      await seedClaudeProvider(h);
+      const template = {
         version: 1,
         prompts: [],
         profiles: [
@@ -2819,78 +1411,47 @@ describe('ProjectsService', () => {
             familySlug: 'coder',
           },
         ],
-        agents: [{ id: agentId, name: 'Coder', profileId: profileId1 }],
+        agents: [{ id: fmAgentId, name: 'Coder', profileId: profileId1 }],
         statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+        watchers: [
+          {
+            id: 'ffffffff-1111-4111-8111-111111111111',
+            name: 'Test Watcher',
+            enabled: true,
+            scope: 'profile' as const,
+            scopeFilterName: 'Coder Codex', // original (pre-substitution) profile
+            pollIntervalMs: 1000,
+            viewportLines: 50,
+            condition: { type: 'contains' as const, pattern: 'error' },
+            cooldownMs: 5000,
+            cooldownMode: 'time' as const,
+            eventName: 'test-event',
+          },
+        ],
       };
+      const { deps, createWatcher } = buildDeps(h, bundledUnified(template));
 
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-        ...templateWithAlternatives,
-        exportedAt: undefined,
-        initialPrompt: undefined,
-        projectSettings: undefined,
-        watchers: [],
-        subscribers: [],
-        _manifest: undefined,
-      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
-
-      unifiedTemplateService.getTemplate.mockResolvedValue({
-        content: templateWithAlternatives,
-        source: 'bundled',
-        version: null,
-      });
-
-      // Only claude available (codex missing)
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: providerId, name: 'claude' }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'new-project-1', name: 'Test' },
-        imported: { prompts: 0, profiles: 1, agents: 1, statuses: 1 },
-        mappings: {
-          promptIdMap: {},
-          profileIdMap: { [profileId2]: 'new-profile-1' },
-          agentIdMap: { [agentId]: 'new-agent-1' },
-          statusIdMap: {},
+      const result = (await createFromTemplateWithHelper(
+        {
+          name: 'Test Project',
+          rootPath: '/test',
+          slug: 'test-template',
+          familyProviderMappings: { coder: 'claude' },
         },
-      });
+        deps as never,
+      )) as AnyRec;
 
-      // No familyProviderMappings — should auto-select claude
-      const result = await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'test-template',
-      });
+      const projectId = (result.project as AnyRec).id as string;
+      const claudeProfile = await getProfileByName(h, projectId, 'Coder Claude');
 
-      expect(result.success).toBe(true);
-      expect(result.providerMappingRequired).toBeUndefined();
-
-      // Verify the claude profile was selected (not codex)
-      expect(storage.createProjectWithTemplate).toHaveBeenCalled();
-      const [, templatePayload] = storage.createProjectWithTemplate.mock.calls[0];
-      expect(templatePayload.profiles).toHaveLength(1);
-      expect(templatePayload.profiles[0].name).toBe('Coder Claude');
-      expect(templatePayload.agents[0].modelOverride).toBeNull();
-
-      jest.restoreAllMocks();
+      expect(createWatcher).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'profile', scopeFilterId: claudeProfile!.id }),
+      );
     });
 
-    it('should fall back to first available config when agent providerConfigName is unavailable', async () => {
-      const opusConfigId = 'created-opus-config';
-      storage.createProfileProviderConfig.mockImplementation(
-        async (data: { name: string; profileId: string }) => ({
-          id:
-            data.name.trim().toLowerCase() === 'opus' ? opusConfigId : `config-other-${Date.now()}`,
-          ...data,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        }),
-      );
-
-      const templateWithConfigs = {
+    it('falls back to the first available config when the agent providerConfigName is unavailable', async () => {
+      await seedClaudeProvider(h);
+      const template = {
         version: 1,
         prompts: [],
         profiles: [
@@ -2901,98 +1462,45 @@ describe('ProjectsService', () => {
             familySlug: 'coder',
             providerConfigs: [
               { name: 'opus', providerName: 'claude', options: null, env: null },
-              { name: 'gpt-high', providerName: 'codex', options: null, env: null },
+              { name: 'gpt-high', providerName: 'codex', options: null, env: null }, // codex missing → skipped
             ],
           },
         ],
         agents: [
           {
-            id: agentId,
+            id: fmAgentId,
             name: 'Coder',
             profileId: profileId1,
-            providerConfigName: 'gpt-high', // codex config — unavailable
+            providerConfigName: 'gpt-high', // unavailable → fall back to opus
             modelOverride: 'openai/gpt-5',
           },
         ],
         statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
       };
+      const { deps } = buildDeps(h, bundledUnified(template));
 
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-        ...templateWithConfigs,
-        exportedAt: undefined,
-        initialPrompt: undefined,
-        projectSettings: undefined,
-        watchers: [],
-        subscribers: [],
-        _manifest: undefined,
-      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
-
-      unifiedTemplateService.getTemplate.mockResolvedValue({
-        content: templateWithConfigs,
-        source: 'bundled',
-        version: null,
-      });
-
-      // Only claude available (codex missing — gpt-high config won't be created)
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: providerId, name: 'claude' }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      const newProfileId = 'new-profile-1';
-      const newAgentId = 'new-agent-1';
-
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'new-project-1', name: 'Test' },
-        imported: { prompts: 0, profiles: 1, agents: 1, statuses: 1 },
-        mappings: {
-          promptIdMap: {},
-          profileIdMap: { [profileId1]: newProfileId },
-          agentIdMap: { [agentId]: newAgentId },
-          statusIdMap: {},
-        },
-      });
-
-      const result = await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'test-template',
-      });
+      const result = (await createFromTemplateWithHelper(
+        { name: 'Test Project', rootPath: '/test', slug: 'test-template' },
+        deps as never,
+      )) as AnyRec;
 
       expect(result.success).toBe(true);
+      const projectId = (result.project as AnyRec).id as string;
+      const profile = await getProfileByName(h, projectId, 'Coder Claude');
+      const opusConfig = await getConfigByName(h, profile!.id, 'opus');
+      const agent = await getAgentByName(h, projectId, 'Coder');
 
-      // Agent should have been updated with fallback config (opus) since gpt-high was unavailable
-      expect(storage.updateAgent).toHaveBeenCalledWith(newAgentId, {
-        providerConfigId: opusConfigId,
-      });
-      const [, templatePayload] = storage.createProjectWithTemplate.mock.calls[0];
-      expect(templatePayload.agents).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            name: 'Coder',
-            modelOverride: 'openai/gpt-5',
-          }),
-        ]),
-      );
-      const reassignmentPayload = (storage.updateAgent as jest.Mock).mock.calls[0]?.[1] as
-        | { providerConfigId: string; modelOverride?: string | null }
-        | undefined;
-      expect(reassignmentPayload?.providerConfigId).toBe(opusConfigId);
-      expect(reassignmentPayload).not.toHaveProperty('modelOverride');
-
-      jest.restoreAllMocks();
+      // gpt-high config was never created (codex unavailable); the agent falls back to opus,
+      // and its verbatim modelOverride is preserved.
+      expect(agent!.providerConfigId).toBe(opusConfig!.id);
+      expect(agent!.modelOverride).toBe('openai/gpt-5');
+      expect(await getConfigByName(h, profile!.id, 'gpt-high')).toBeUndefined();
     });
 
-    it('preserves modelOverride when create-from-template applies a preset that omits modelOverride', async () => {
-      const selectedPresetName = 'balanced';
-      const opusConfigId = 'created-opus-config';
-      const newProfileId = 'new-profile-1';
-      const newAgentId = 'new-agent-1';
+    it('preserves modelOverride when the create path applies a preset that omits modelOverride', async () => {
+      await seedClaudeProvider(h);
       const initialModelOverride = 'anthropic/claude-sonnet-4-5';
-
-      const templateWithPreset = {
+      const template = {
         version: 1,
         prompts: [],
         profiles: [
@@ -3006,7 +1514,7 @@ describe('ProjectsService', () => {
         ],
         agents: [
           {
-            id: agentId,
+            id: fmAgentId,
             name: 'Coder',
             profileId: profileId1,
             providerConfigName: 'opus',
@@ -3015,128 +1523,31 @@ describe('ProjectsService', () => {
         ],
         statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
         presets: [
-          {
-            name: selectedPresetName,
-            agentConfigs: [{ agentName: 'Coder', providerConfigName: 'opus' }],
-          },
+          { name: 'balanced', agentConfigs: [{ agentName: 'Coder', providerConfigName: 'opus' }] },
         ],
       };
+      const { deps } = buildDeps(h, bundledUnified(template));
 
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-        ...templateWithPreset,
-        exportedAt: undefined,
-        initialPrompt: undefined,
-        projectSettings: undefined,
-        watchers: [],
-        subscribers: [],
-        _manifest: undefined,
-      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
-
-      unifiedTemplateService.getTemplate.mockResolvedValue({
-        content: templateWithPreset,
-        source: 'bundled',
-        version: null,
-      });
-
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: providerId, name: 'claude' }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'new-project-1', name: 'Test' },
-        imported: { prompts: 0, profiles: 1, agents: 1, statuses: 1 },
-        mappings: {
-          promptIdMap: {},
-          profileIdMap: { [profileId1]: newProfileId },
-          agentIdMap: { [agentId]: newAgentId },
-          statusIdMap: {},
-        },
-      });
-      storage.createProfileProviderConfig.mockResolvedValue({
-        id: opusConfigId,
-        profileId: newProfileId,
-        providerId,
-        name: 'opus',
-        options: null,
-        env: null,
-        createdAt: '',
-        updatedAt: '',
-      });
-
-      let currentAgent = {
-        id: newAgentId,
-        name: 'Coder',
-        profileId: newProfileId,
-        providerConfigId: null as string | null,
-        modelOverride: initialModelOverride,
-      };
-      storage.listAgents.mockImplementation(async () => ({
-        items: [currentAgent],
-        total: 1,
-        limit: 1000,
-        offset: 0,
-      }));
-      storage.updateAgent.mockImplementation(async (id, data) => {
-        if (id === currentAgent.id) {
-          currentAgent = { ...currentAgent, ...data };
-        }
-        return { id, ...data } as never;
-      });
-
-      const storedPresetsByProject = new Map<string, unknown[]>();
-      (settings as { setProjectActivePreset: jest.Mock }).setProjectActivePreset = jest
-        .fn()
-        .mockResolvedValue(undefined);
-      (settings as { setProjectPresets: jest.Mock }).setProjectPresets.mockImplementation(
-        async (projectIdParam: string, presets: unknown[]) => {
-          storedPresetsByProject.set(projectIdParam, presets);
-        },
-      );
-      (settings as { getProjectPresets: jest.Mock }).getProjectPresets.mockImplementation(
-        (projectIdParam: string) => storedPresetsByProject.get(projectIdParam) ?? [],
-      );
-
-      const result = await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'test-template',
-        presetName: selectedPresetName,
-      });
+      const result = (await createFromTemplateWithHelper(
+        { name: 'Test Project', rootPath: '/test', slug: 'test-template', presetName: 'balanced' },
+        deps as never,
+      )) as AnyRec;
 
       expect(result.success).toBe(true);
-      const [, templatePayload] = storage.createProjectWithTemplate.mock.calls[0];
-      expect(templatePayload.agents).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            name: 'Coder',
-            modelOverride: initialModelOverride,
-          }),
-        ]),
-      );
-      for (const [, updatePayload] of (storage.updateAgent as jest.Mock).mock.calls) {
-        expect(updatePayload).toEqual(
-          expect.objectContaining({
-            providerConfigId: opusConfigId,
-          }),
-        );
-        expect(updatePayload).toEqual(
-          expect.not.objectContaining({
-            modelOverride: expect.anything(),
-          }),
-        );
-      }
-      expect(currentAgent.modelOverride).toBe(initialModelOverride);
-      expect(
-        (settings as { setProjectActivePreset: jest.Mock }).setProjectActivePreset,
-      ).toHaveBeenCalledWith('new-project-1', selectedPresetName);
+      const projectId = (result.project as AnyRec).id as string;
+      const profile = await getProfileByName(h, projectId, 'Coder Claude');
+      const opusConfig = await getConfigByName(h, profile!.id, 'opus');
+      const agent = await getAgentByName(h, projectId, 'Coder');
 
-      jest.restoreAllMocks();
+      // The preset selects the opus config but must NOT clobber the agent's modelOverride.
+      expect(agent!.providerConfigId).toBe(opusConfig!.id);
+      expect(agent!.modelOverride).toBe(initialModelOverride);
+      expect(h.settings.getProjectActivePreset(projectId)).toBe('balanced');
     });
 
-    it('should not throw when deleteProfileProviderConfig fails during cleanup', async () => {
-      const templateWithConfigs = {
+    it('applies agentOverrides on the create path and NEVER marks an active preset', async () => {
+      await seedClaudeProvider(h);
+      const template = {
         version: 1,
         prompts: [],
         profiles: [
@@ -3145,71 +1556,191 @@ describe('ProjectsService', () => {
             name: 'Coder Claude',
             provider: { name: 'claude' },
             familySlug: 'coder',
-            providerConfigs: [{ name: 'opus', providerName: 'claude', options: null, env: null }],
+            providerConfigs: [
+              { name: 'opus', providerName: 'claude', options: null, env: null },
+              { name: 'sonnet', providerName: 'claude', options: null, env: null },
+            ],
           },
         ],
-        agents: [{ id: agentId, name: 'Coder', profileId: profileId1 }],
+        agents: [
+          {
+            id: fmAgentId,
+            name: 'Coder',
+            profileId: profileId1,
+            providerConfigName: 'opus', // template default
+          },
+        ],
         statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
       };
+      const { deps } = buildDeps(h, bundledUnified(template));
 
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-        ...templateWithConfigs,
-        exportedAt: undefined,
-        initialPrompt: undefined,
-        projectSettings: undefined,
-        watchers: [],
-        subscribers: [],
-        _manifest: undefined,
-      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
-
-      unifiedTemplateService.getTemplate.mockResolvedValue({
-        content: templateWithConfigs,
-        source: 'bundled',
-        version: null,
-      });
-
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: providerId, name: 'claude' }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      const newProfileId = 'new-profile-1';
-      storage.createProjectWithTemplate.mockResolvedValue({
-        project: { id: 'new-project-1', name: 'Test' },
-        imported: { prompts: 0, profiles: 1, agents: 1, statuses: 1 },
-        mappings: {
-          promptIdMap: {},
-          profileIdMap: { [profileId1]: newProfileId },
-          agentIdMap: { [agentId]: 'new-agent-1' },
-          statusIdMap: {},
+      const result = (await createFromTemplateWithHelper(
+        {
+          name: 'Test Project',
+          rootPath: '/test',
+          slug: 'test-template',
+          // Wizard/API path: re-point Coder to the sonnet config + set a model override.
+          agentOverrides: [
+            {
+              agentName: 'Coder',
+              providerConfigName: 'sonnet',
+              modelOverride: 'anthropic/claude-sonnet-4-5',
+            },
+          ],
         },
-      });
-
-      // Storage layer created a default config matching profile name
-      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
-        { id: 'default-config', name: 'Coder Claude', profileId: newProfileId },
-        { id: 'opus-config', name: 'opus', profileId: newProfileId },
-      ]);
-
-      // Simulate deleteProfileProviderConfig throwing (config still referenced by agent)
-      storage.deleteProfileProviderConfig.mockRejectedValue(
-        new ValidationError('Cannot delete provider config: still referenced by agents'),
-      );
-
-      // Should NOT throw — the try-catch in cleanup absorbs the error
-      const result = await service.createFromTemplate({
-        name: 'Test Project',
-        rootPath: '/test',
-        slug: 'test-template',
-      });
+        deps as never,
+      )) as AnyRec;
 
       expect(result.success).toBe(true);
-      // Verify cleanup was attempted
-      expect(storage.deleteProfileProviderConfig).toHaveBeenCalledWith('default-config');
+      const projectId = (result.project as AnyRec).id as string;
+      const profile = await getProfileByName(h, projectId, 'Coder Claude');
+      const sonnetConfig = await getConfigByName(h, profile!.id, 'sonnet');
+      const agent = await getAgentByName(h, projectId, 'Coder');
 
-      jest.restoreAllMocks();
+      expect(agent!.providerConfigId).toBe(sonnetConfig!.id);
+      expect(agent!.modelOverride).toBe('anthropic/claude-sonnet-4-5');
+      // The agentOverrides path must never set an active preset.
+      expect(h.settings.getProjectActivePreset(projectId)).toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Transient selectedProviderNames allowlist (Task 3).
+  // -------------------------------------------------------------------------
+  describe('selectedProviderNames (transient allowlist)', () => {
+    const spProfileId = 'a1a1a1a1-1111-4111-8111-111111111111';
+    const spAgentId = 'a1a1a1a1-2222-4222-8222-222222222222';
+
+    it('does not create providerConfigs for a provider excluded by the allowlist', async () => {
+      await seedClaudeProvider(h);
+      await h.storage.createProvider({ name: 'codex', binPath: null });
+
+      const template = {
+        version: 1,
+        prompts: [],
+        profiles: [
+          {
+            id: spProfileId,
+            name: 'Coder',
+            provider: { name: 'claude' },
+            providerConfigs: [
+              { name: 'claude-cfg', providerName: 'claude', options: null, env: null },
+              { name: 'codex-cfg', providerName: 'codex', options: null, env: null },
+            ],
+          },
+        ],
+        agents: [
+          {
+            id: spAgentId,
+            name: 'Coder',
+            profileId: spProfileId,
+            providerConfigName: 'claude-cfg',
+            description: null,
+          },
+        ],
+        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+      };
+      const { deps } = buildDeps(h, bundledUnified(template));
+
+      const result = (await createFromTemplateWithHelper(
+        {
+          name: 'Allowlist Project',
+          rootPath: '/test/allowlist',
+          slug: 'allowlist-test',
+          // codex is installed but excluded → its config must NOT be created.
+          selectedProviderNames: ['claude'],
+        },
+        deps as never,
+      )) as AnyRec;
+
+      expect(result.success).toBe(true);
+      const projectId = (result.project as AnyRec).id as string;
+      const profile = await getProfileByName(h, projectId, 'Coder');
+
+      expect(await getConfigByName(h, profile!.id, 'claude-cfg')).toBeDefined();
+      // codex was excluded by the allowlist — treated as uninstalled, so no codex config exists.
+      expect(await getConfigByName(h, profile!.id, 'codex-cfg')).toBeUndefined();
+    });
+
+    it('is byte-compatible with today when the allowlist covers the needed provider (back-compat)', async () => {
+      await seedClaudeProvider(h);
+      const { deps } = buildDeps(h, bundledUnified(claudeTemplate()));
+
+      const result = (await createFromTemplateWithHelper(
+        {
+          name: 'BackCompat Project',
+          rootPath: '/test/backcompat',
+          slug: 'backcompat-test',
+          selectedProviderNames: ['claude'],
+        },
+        deps as never,
+      )) as AnyRec;
+
+      expect(result.success).toBe(true);
+      const projectId = (result.project as AnyRec).id as string;
+      expect(await getProfileByName(h, projectId, 'Test Profile')).toBeDefined();
+      expect(await getAgentByName(h, projectId, 'Test Agent')).toBeDefined();
+    });
+
+    it('[red-team] maps a family to a config-only provider and selects the owning profile/config', async () => {
+      await seedClaudeProvider(h);
+      await h.storage.createProvider({ name: 'gemini', binPath: null });
+
+      const claudeProfileId = 'b2b2b2b2-1111-4111-8111-111111111111';
+      const codexProfileId = 'b2b2b2b2-2222-4222-8222-222222222222';
+      const rtAgentId = 'b2b2b2b2-3333-4333-8333-333333333333';
+
+      // gemini exists ONLY inside the codex profile's providerConfigs (config-only provider).
+      const template = {
+        version: 1,
+        prompts: [],
+        profiles: [
+          {
+            id: claudeProfileId,
+            name: 'Claude Coder',
+            provider: { name: 'claude' },
+            familySlug: 'coder',
+          },
+          {
+            id: codexProfileId,
+            name: 'Codex Coder',
+            provider: { name: 'codex' },
+            familySlug: 'coder',
+            providerConfigs: [
+              { name: 'gemini-cfg', providerName: 'gemini', options: null, env: null },
+            ],
+          },
+        ],
+        agents: [{ id: rtAgentId, name: 'Coder', profileId: claudeProfileId, description: null }],
+        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+      };
+      const { deps } = buildDeps(h, bundledUnified(template));
+
+      const result = (await createFromTemplateWithHelper(
+        {
+          name: 'RedTeam Project',
+          rootPath: '/test/redteam',
+          slug: 'redteam-test',
+          familyProviderMappings: { coder: 'gemini' }, // config-only provider
+        },
+        deps as never,
+      )) as AnyRec;
+
+      expect(result.success).toBe(true);
+      const projectId = (result.project as AnyRec).id as string;
+
+      const codexProfile = await getProfileByName(h, projectId, 'Codex Coder');
+      const agent = await getAgentByName(h, projectId, 'Coder');
+      const geminiConfig = await getConfigByName(h, codexProfile!.id, 'gemini-cfg');
+
+      // The mapping actually took effect: the gemini-config owner (Codex Coder) is the ONLY
+      // profile created for the family (the claude default sibling is dropped — one profile per
+      // family), the agent points at it, and its resolved config is the gemini one.
+      expect(codexProfile).toBeDefined();
+      expect(await getProfileByName(h, projectId, 'Claude Coder')).toBeUndefined();
+      expect(agent!.profileId).toBe(codexProfile!.id);
+      expect(geminiConfig).toBeDefined();
+      expect(agent!.providerConfigId).toBe(geminiConfig!.id);
     });
   });
 });

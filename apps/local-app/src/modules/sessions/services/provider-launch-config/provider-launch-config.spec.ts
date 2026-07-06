@@ -56,6 +56,147 @@ describe('ProviderLaunchConfig.resolve', () => {
     });
   });
 
+  describe('effort injection (EffortCapability)', () => {
+    it('injects the adapter native effort form when effortOverride is set', () => {
+      const result = resolve(
+        makeInput({
+          adapter: new ClaudeAdapter(),
+          providerBinPath: '/usr/bin/claude',
+          effortOverride: 'high',
+        }),
+      );
+      expect(result.argv).toEqual(expect.arrayContaining(['--effort', 'high']));
+    });
+
+    it('strips a conflicting raw effort flag then injects the structured value (UI never lies)', () => {
+      const result = resolve(
+        makeInput({
+          adapter: new ClaudeAdapter(),
+          providerBinPath: '/usr/bin/claude',
+          profileOptions: '--effort low',
+          effortOverride: 'high',
+        }),
+      );
+      expect(result.argv).toContain('high');
+      expect(result.argv).not.toContain('low');
+    });
+
+    it('passes raw effort options through byte-identical when effortOverride is null (escape hatch)', () => {
+      const result = resolve(
+        makeInput({
+          adapter: new ClaudeAdapter(),
+          providerBinPath: '/usr/bin/claude',
+          profileOptions: '--effort low --verbose',
+          effortOverride: null,
+        }),
+      );
+      // applyEffort never runs → raw options are untouched.
+      expect(result.argv).toEqual(['--effort', 'low', '--verbose']);
+    });
+
+    it('ignores effortOverride for a non-effort-capable adapter (no applyEffort)', () => {
+      // A bare adapter without applyEffort (e.g. agy) — effort must pass through.
+      const bareAdapter = {
+        providerName: 'agy',
+        buildLaunchArgs: ({ profileOptionArgs }: { profileOptionArgs: string[] }) => ({
+          argv: [...profileOptionArgs],
+        }),
+      } as unknown as LaunchConfigInput['adapter'];
+      const result = resolve(
+        makeInput({
+          adapter: bareAdapter,
+          profileOptions: '--effort low',
+          effortOverride: 'high',
+        }),
+      );
+      expect(result.argv).toEqual(['--effort', 'low']);
+    });
+
+    it('applies effort BEFORE the 1M model-alias rewrite (ordering invariant); both take effect', () => {
+      const result = resolve(
+        makeInput({
+          adapter: new ClaudeAdapter(),
+          providerBinPath: '/usr/bin/claude',
+          profileOptions: '--model opus',
+          effortOverride: 'high',
+          provider: { oneMillionContextEnabled: true },
+        }),
+      );
+      // Effort flag present with the pre-alias value, AND the model was rewritten
+      // to the 1M alias — proving effort ran before applyContextWindowConfig.
+      expect(result.argv).toEqual(expect.arrayContaining(['--effort', 'high']));
+      expect(result.argv.join(' ')).toContain('opus[1m]');
+    });
+  });
+
+  describe('effort as env overlay (OpenCode)', () => {
+    const OVERLAY = 'OPENCODE_CONFIG_CONTENT';
+
+    it('LAUNCH: model + effort produce the OPENCODE_CONFIG_CONTENT overlay in child env', () => {
+      const result = resolve(
+        makeInput({
+          adapter: new OpencodeAdapter(),
+          modelOverride: 'anthropic/claude-x',
+          effortOverride: 'high',
+        }),
+      );
+      expect(JSON.parse(result.env![OVERLAY])).toEqual({
+        provider: {
+          anthropic: { models: { 'claude-x': { options: { reasoningEffort: 'high' } } } },
+        },
+      });
+    });
+
+    it('RESTORE parity: the overlay is carried on the restore launch too', () => {
+      const result = resolve(
+        makeInput({
+          mode: 'restore',
+          providerSessionId: 'ses_abc',
+          adapter: new OpencodeAdapter(),
+          modelOverride: 'anthropic/claude-x',
+          effortOverride: 'high',
+        }),
+      );
+      expect(result.argv).toEqual(expect.arrayContaining(['--session', 'ses_abc']));
+      expect(JSON.parse(result.env![OVERLAY])).toEqual({
+        provider: {
+          anthropic: { models: { 'claude-x': { options: { reasoningEffort: 'high' } } } },
+        },
+      });
+    });
+
+    it('deep-merges onto configEnv OPENCODE_CONFIG_CONTENT (configEnv wins over providerEnv)', () => {
+      const result = resolve(
+        makeInput({
+          adapter: new OpencodeAdapter(),
+          modelOverride: 'anthropic/claude-x',
+          effortOverride: 'high',
+          providerEnv: { [OVERLAY]: JSON.stringify({ fromProvider: true }) },
+          configEnv: { [OVERLAY]: JSON.stringify({ fromConfig: true }) },
+        }),
+      );
+      const parsed = JSON.parse(result.env![OVERLAY]);
+      // configEnv's OPENCODE_CONFIG_CONTENT shadows providerEnv's (config precedence),
+      // then the effort overlay deep-merges onto it.
+      expect(parsed.fromConfig).toBe(true);
+      expect(parsed.fromProvider).toBeUndefined();
+      expect(parsed.provider.anthropic.models['claude-x'].options.reasoningEffort).toBe('high');
+    });
+
+    it('fail-fast: effort active with no resolvable model → throws (ValidationError)', () => {
+      expect(() =>
+        resolve(
+          makeInput({
+            adapter: new OpencodeAdapter(),
+            modelOverride: null,
+            profileOptions: null,
+            effortOverride: 'high',
+          }),
+        ),
+      ).toThrow(/requires a model/);
+    });
+  });
+
   describe('initialPrompt threading (opt-in seeding)', () => {
     function spyAdapter() {
       const buildLaunchArgs = jest.fn().mockReturnValue({ argv: [] });

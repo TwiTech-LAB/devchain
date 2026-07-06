@@ -661,5 +661,49 @@ describe('PresetSettingsDelegate', () => {
 
       expect(delegate.getProjectPresets('proj-1')).toEqual([validPreset]);
     });
+
+    it('preserves effortOverride through provider-config rename', async () => {
+      await delegate.setProjectPresets('proj-1', [
+        {
+          name: 'Preset A',
+          agentConfigs: [
+            {
+              agentName: 'Coder',
+              providerConfigName: 'Old Config',
+              modelOverride: 'openai/gpt-5',
+              effortOverride: 'high',
+            },
+          ],
+        },
+      ]);
+
+      await delegate.renameProviderConfigInProjectPresets('proj-1', {
+        profileId: 'profile-target',
+        oldName: 'Old Config',
+        newName: 'New Config',
+        agents: [{ name: 'Coder', profileId: 'profile-target' }],
+      });
+
+      const configs = delegate.getProjectPresets('proj-1')[0].agentConfigs;
+      expect(configs[0].providerConfigName).toBe('New Config');
+      expect(configs[0].modelOverride).toBe('openai/gpt-5');
+      expect(configs[0].effortOverride).toBe('high');
+    });
+
+    it('preserves effortOverride when updateProjectPreset replaces agentConfigs', async () => {
+      await delegate.setProjectPresets('proj-1', [
+        {
+          name: 'Preset A',
+          agentConfigs: [{ agentName: 'Coder', providerConfigName: 'cfg', effortOverride: 'low' }],
+        },
+      ]);
+
+      await delegate.updateProjectPreset('proj-1', 'Preset A', {
+        agentConfigs: [{ agentName: 'Coder', providerConfigName: 'cfg', effortOverride: 'high' }],
+      });
+
+      const configs = delegate.getProjectPresets('proj-1')[0].agentConfigs;
+      expect(configs[0].effortOverride).toBe('high');
+    });
   });
 });

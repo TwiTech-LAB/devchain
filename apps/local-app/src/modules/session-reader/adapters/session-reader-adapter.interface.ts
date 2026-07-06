@@ -120,6 +120,24 @@ export interface IncrementalResult {
 }
 
 /**
+ * Provider-agnostic metadata extracted from a candidate transcript file's content.
+ *
+ * Populated by adapters that implement the optional
+ * {@link SessionReaderAdapter.extractCandidateMetadata} method. The discovery
+ * pipeline uses these fields for candidate matching (provider session id,
+ * workspace path, timestamp) without any provider-specific knowledge. Each field
+ * is optional — the adapter surfaces only what its native format carries.
+ */
+export interface TranscriptCandidateMetadata {
+  /** Provider-specific session identifier parsed from the file content. */
+  providerSessionId?: string;
+  /** Absolute workspace path the session was launched from. */
+  workspacePath?: string;
+  /** Session start timestamp as encoded in the file (ISO 8601 or provider-native). */
+  timestamp?: string;
+}
+
+/**
  * Provider-agnostic adapter interface for reading session files.
  *
  * Each provider (claude, codex, opencode, agy, copilot) implements this to encapsulate
@@ -219,4 +237,31 @@ export interface SessionReaderAdapter {
    * @param sourceRef - Resolved source reference
    */
   getFreshnessToken?(sourceRef: SessionSourceRef): Promise<unknown>;
+
+  /**
+   * Extract candidate-discovery metadata from raw transcript content (file head).
+   *
+   * Optional: when implemented, the transcript discovery pipeline uses the
+   * returned metadata to match candidates by provider session id, workspace
+   * path, and timestamp — with zero provider-specific knowledge in the pipeline.
+   * When omitted, the pipeline skips metadata-based matching for this provider.
+   *
+   * @param content - Raw file content (typically the first few KB)
+   * @returns Extracted metadata, or `undefined` when no metadata is present
+   *   (malformed content, missing session header, etc.)
+   */
+  extractCandidateMetadata?(content: string): TranscriptCandidateMetadata | undefined;
+
+  /**
+   * Extract a timestamp from raw transcript content for candidate matching.
+   *
+   * Optional: when omitted, the discovery pipeline falls back to its generic
+   * default extractor (a regex matching any `"timestamp": "..."` JSON field).
+   * Override only when the provider's timestamp encoding differs from that
+   * generic format.
+   *
+   * @param content - Raw file content
+   * @returns Parsed timestamp, or `null` when none is found
+   */
+  extractContentTimestamp?(content: string): Date | null;
 }

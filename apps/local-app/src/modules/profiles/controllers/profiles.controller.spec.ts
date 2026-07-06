@@ -51,6 +51,8 @@ describe('ProfilesController', () => {
     description: null,
     options: '--model test',
     env: { API_KEY: 'test-key' },
+    model: null,
+    effort: null,
     position: 0,
     createdAt: '2024-01-01T00:00:00.000Z',
     updatedAt: '2024-01-01T00:00:00.000Z',
@@ -63,6 +65,8 @@ describe('ProfilesController', () => {
     providerConfigId: 'config-1',
     name: 'Test Agent',
     description: null,
+    modelOverride: null,
+    effortOverride: null,
     createdAt: '2024-01-01T00:00:00.000Z',
     updatedAt: '2024-01-01T00:00:00.000Z',
   };
@@ -302,8 +306,40 @@ describe('ProfilesController', () => {
         description: null,
         options: '--model test',
         env: { API_KEY: 'test-key' },
+        model: null,
+        effort: null,
       });
       expect(result.id).toBe('config-1');
+    });
+
+    it('POST /api/profiles/:id/provider-configs creates config with structured model/effort', async () => {
+      const configWithDefaults = {
+        ...baseProviderConfig,
+        model: 'claude-sonnet-4-5',
+        effort: 'high',
+      };
+      storage.getAgentProfile.mockResolvedValue(baseProfile);
+      storage.createProfileProviderConfig.mockResolvedValue(configWithDefaults);
+
+      const result = await controller.createProviderConfig('profile-1', {
+        providerId: 'provider-1',
+        name: 'configured-config',
+        model: 'claude-sonnet-4-5',
+        effort: 'high',
+      });
+
+      expect(storage.createProfileProviderConfig).toHaveBeenCalledWith({
+        profileId: 'profile-1',
+        providerId: 'provider-1',
+        name: 'configured-config',
+        description: null,
+        options: null,
+        env: null,
+        model: 'claude-sonnet-4-5',
+        effort: 'high',
+      });
+      expect(result.model).toBe('claude-sonnet-4-5');
+      expect(result.effort).toBe('high');
     });
 
     it('POST /api/profiles/:id/provider-configs creates config with null env', async () => {
@@ -323,6 +359,8 @@ describe('ProfilesController', () => {
         description: null,
         options: null,
         env: null,
+        model: null,
+        effort: null,
       });
       expect(result.env).toBeNull();
     });

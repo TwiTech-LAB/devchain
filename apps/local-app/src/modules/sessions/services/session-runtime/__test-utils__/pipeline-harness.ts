@@ -14,6 +14,7 @@ export function fakeAgent(overrides: Record<string, unknown> = {}) {
     profileId: 'profile-1',
     providerConfigId: 'ppc-1',
     modelOverride: null,
+    effortOverride: null,
     name: 'test-agent',
     description: null,
     createdAt: '2025-01-01T00:00:00Z',
@@ -98,6 +99,8 @@ export function fakeProfileProviderConfig(overrides: Record<string, unknown> = {
     description: null,
     options: null,
     env: null,
+    model: null,
+    effort: null,
     position: 0,
     createdAt: '2025-01-01T00:00:00Z',
     updatedAt: '2025-01-01T00:00:00Z',
@@ -186,12 +189,14 @@ export function createLaunchPipelineHarness() {
 
   const ptyService = {
     startStreaming: jest.fn().mockResolvedValue(undefined),
+    stopStreaming: jest.fn(),
   };
 
   const terminalSessionRegistry = {
     create: jest.fn(),
     dispose: jest.fn(),
     bind: jest.fn(),
+    get: jest.fn(),
   };
 
   const hooksConfigService = {
@@ -305,12 +310,14 @@ export function createRestorePipelineHarness() {
 
   const ptyService = {
     startStreaming: jest.fn().mockResolvedValue(undefined),
+    stopStreaming: jest.fn(),
   };
 
   const terminalSessionRegistry = {
     create: jest.fn(),
     dispose: jest.fn(),
     bind: jest.fn(),
+    get: jest.fn(),
   };
 
   const eventsService = {

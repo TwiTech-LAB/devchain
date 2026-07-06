@@ -41,6 +41,7 @@ export class AgentStorageDelegate extends BaseStorageDelegate {
       description: data.description ?? null,
       providerConfigId: data.providerConfigId,
       modelOverride: data.modelOverride ?? null,
+      effortOverride: data.effortOverride ?? null,
       createdAt: now,
       updatedAt: now,
     };
@@ -71,6 +72,7 @@ export class AgentStorageDelegate extends BaseStorageDelegate {
       profileId: agent.profileId,
       providerConfigId: agent.providerConfigId,
       modelOverride: agent.modelOverride,
+      effortOverride: agent.effortOverride,
       name: agent.name,
       description: agent.description,
       createdAt: agent.createdAt,
@@ -260,6 +262,7 @@ export class AgentStorageDelegate extends BaseStorageDelegate {
     profileId: string;
     providerConfigId: string;
     modelOverride?: string | null;
+    effortOverride?: string | null;
     name: string;
     description: string | null;
     createdAt: string;
@@ -271,6 +274,7 @@ export class AgentStorageDelegate extends BaseStorageDelegate {
       profileId: row.profileId,
       providerConfigId: row.providerConfigId,
       modelOverride: row.modelOverride ?? null,
+      effortOverride: row.effortOverride ?? null,
       name: row.name,
       description: row.description,
       createdAt: row.createdAt,

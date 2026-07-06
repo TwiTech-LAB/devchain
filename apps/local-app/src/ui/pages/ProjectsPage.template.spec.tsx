@@ -47,6 +47,35 @@ function renderWithQuery(ui: React.ReactElement) {
   );
 }
 
+/** Setup-preview response for a provider-less "empty" template (no providers/families/teams). */
+function emptySetupPreview() {
+  return {
+    payload: { version: 1, profiles: [], agents: [], teams: [] },
+    providerSummary: [],
+    familyAlternatives: [],
+    presetProviderCoverage: [],
+    localAvailability: { installedProviders: [] },
+  };
+}
+
+/**
+ * Drive the create setup wizard for an empty template: "Continue" opens it (fetches setup-preview),
+ * then step Providers → Agents (Teams skipped) and confirm with "Create". The final mutation only
+ * fires on this last "Create" — nothing is created earlier.
+ */
+async function stepThroughCreateWizard() {
+  fireEvent.click(screen.getByRole('button', { name: /^Continue$/ }));
+  // Wait for the setup-preview to resolve and the Providers step to become interactive: for an empty
+  // template there is nothing to select, so "Next" enables once the step renders (the gate passes on
+  // `providerSummary.length === 0`). Decoupled from the Step-1 component's internal copy.
+  await waitFor(() => expect(screen.getByRole('button', { name: /^Next$/ })).toBeEnabled());
+  fireEvent.click(screen.getByRole('button', { name: /^Next$/ }));
+  // Agents is the last visible step (Teams skipped) → confirm with "Create". For these empty
+  // templates the step renders no rows, so key off the step container rather than any agent copy.
+  await screen.findByTestId('wizard-agents-step');
+  fireEvent.click(screen.getByRole('button', { name: /^Create$/ }));
+}
+
 describe('ProjectsPage — template creation and badge', () => {
   const originalFetch = global.fetch;
 
@@ -161,6 +190,9 @@ describe('ProjectsPage — template creation and badge', () => {
       if (url === '/api/fs/stat' && init?.method === 'POST') {
         return { ok: true, json: async () => ({}) } as Response;
       }
+      if (url === '/api/projects/setup-preview' && init?.method === 'POST') {
+        return { ok: true, json: async () => emptySetupPreview() } as Response;
+      }
       return { ok: true, json: async () => ({}) } as Response;
     }) as unknown as typeof fetch;
     global.fetch = fetchMock;
@@ -178,8 +210,8 @@ describe('ProjectsPage — template creation and badge', () => {
     // Validate path endpoint returns ok
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/fs/stat', expect.anything()));
 
-    // Submit
-    fireEvent.click(screen.getByRole('button', { name: /^Create$/ }));
+    // "Continue" opens the setup wizard (fetches setup-preview once); step through it and Create.
+    await stepThroughCreateWizard();
 
     await waitFor(() => {
       // POST called to template endpoint
@@ -240,6 +272,9 @@ describe('ProjectsPage — template creation and badge', () => {
       if (url === '/api/fs/stat' && init?.method === 'POST') {
         return { ok: true, json: async () => ({}) } as Response;
       }
+      if (url === '/api/projects/setup-preview' && init?.method === 'POST') {
+        return { ok: true, json: async () => emptySetupPreview() } as Response;
+      }
       return { ok: true, json: async () => ({}) } as Response;
     }) as unknown as typeof fetch;
     global.fetch = fetchMock;
@@ -251,7 +286,7 @@ describe('ProjectsPage — template creation and badge', () => {
     fireEvent.change(screen.getByLabelText('Name *'), { target: { value: 'Warned Project' } });
     fireEvent.change(screen.getByLabelText('Root Path *'), { target: { value: '/tmp/warned' } });
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/fs/stat', expect.anything()));
-    fireEvent.click(screen.getByRole('button', { name: /^Create$/ }));
+    await stepThroughCreateWizard();
 
     await waitFor(() => {
       expect(screen.getByText('Provider Mismatch Warning')).toBeInTheDocument();
@@ -317,6 +352,9 @@ describe('ProjectsPage — template creation and badge', () => {
       if (url === '/api/fs/stat' && init?.method === 'POST') {
         return { ok: true, json: async () => ({}) } as Response;
       }
+      if (url === '/api/projects/setup-preview' && init?.method === 'POST') {
+        return { ok: true, json: async () => emptySetupPreview() } as Response;
+      }
       return { ok: true, json: async () => ({}) } as Response;
     }) as unknown as typeof fetch;
     global.fetch = fetchMock;
@@ -332,7 +370,7 @@ describe('ProjectsPage — template creation and badge', () => {
       target: { value: '/tmp/warned-board' },
     });
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/fs/stat', expect.anything()));
-    fireEvent.click(screen.getByRole('button', { name: /^Create$/ }));
+    await stepThroughCreateWizard();
 
     await waitFor(() => expect(screen.getByText('Provider Mismatch Warning')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: 'Continue to Board' }));

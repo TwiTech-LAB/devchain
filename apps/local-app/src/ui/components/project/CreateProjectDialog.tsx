@@ -62,9 +62,6 @@ interface CreateProjectDialogProps {
   templates?: CreateProjectTemplate[];
   selectedTemplateSource?: TemplateSource;
   sortedVersions: string[];
-  availablePresets: string[];
-  selectedPreset: string;
-  onSelectedPresetChange: (preset: string) => void;
   onTemplateChange: (slug: string) => void;
   onTemplatePathChange: (path: string) => Promise<void> | void;
   onTemplateFilePathChange: (path: string) => Promise<void> | void;
@@ -85,9 +82,6 @@ export function CreateProjectDialog({
   templates,
   selectedTemplateSource,
   sortedVersions,
-  availablePresets,
-  selectedPreset,
-  onSelectedPresetChange,
   onTemplateChange,
   onTemplatePathChange,
   onTemplateFilePathChange,
@@ -170,33 +164,6 @@ export function CreateProjectDialog({
                       ))}
                     </SelectContent>
                   </Select>
-                </div>
-              )}
-
-              {availablePresets.length > 0 && (
-                <div>
-                  <Label htmlFor="template-preset">Preset (Optional)</Label>
-                  <Select
-                    value={selectedPreset || '__none__'}
-                    onValueChange={(value) =>
-                      onSelectedPresetChange(value === '__none__' ? '' : value)
-                    }
-                  >
-                    <SelectTrigger id="template-preset">
-                      <SelectValue placeholder="Use default configuration" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__none__">Default configuration</SelectItem>
-                      {availablePresets.map((presetName) => (
-                        <SelectItem key={presetName} value={presetName}>
-                          {presetName}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Optionally select a preset to pre-configure agent providers
-                  </p>
                 </div>
               )}
             </TabsContent>
@@ -335,7 +302,7 @@ export function CreateProjectDialog({
             </Button>
             <Button type="submit" disabled={isSubmitting}>
               {isSubmitting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              Create
+              Continue
             </Button>
           </DialogFooter>
         </form>

@@ -34,6 +34,8 @@ interface TemplateProfileConfig {
   description: string | null;
   options: string | null;
   env: Record<string, string> | null;
+  model: string | null;
+  effort: string | null;
 }
 
 interface TemplateProfile {
@@ -93,6 +95,8 @@ export class ProviderProjectSyncService {
             description: candidate.description ?? null,
             options: candidate.options ?? null,
             env: candidate.env ?? undefined,
+            model: candidate.model ?? null,
+            effort: candidate.effort ?? null,
           });
 
           if (createResult.inserted) {
@@ -147,10 +151,21 @@ export class ProviderProjectSyncService {
     description: string | null;
     options: string | null;
     env: Record<string, string> | null;
+    model: string | null;
+    effort: string | null;
   }> {
     if (!templateProfiles) {
       warnings.push({ projectId, reason: 'no_template' });
-      return [{ name: providerOriginalName, description: null, options: null, env: null }];
+      return [
+        {
+          name: providerOriginalName,
+          description: null,
+          options: null,
+          env: null,
+          model: null,
+          effort: null,
+        },
+      ];
     }
 
     const profileNameLower = profileName.trim().toLowerCase();
@@ -160,7 +175,16 @@ export class ProviderProjectSyncService {
 
     if (!manifestProfile || !manifestProfile.providerConfigs?.length) {
       warnings.push({ projectId, reason: 'no_manifest_match' });
-      return [{ name: providerOriginalName, description: null, options: null, env: null }];
+      return [
+        {
+          name: providerOriginalName,
+          description: null,
+          options: null,
+          env: null,
+          model: null,
+          effort: null,
+        },
+      ];
     }
 
     const matchingConfigs = manifestProfile.providerConfigs.filter(
@@ -169,7 +193,16 @@ export class ProviderProjectSyncService {
 
     if (matchingConfigs.length === 0) {
       warnings.push({ projectId, reason: 'no_manifest_match' });
-      return [{ name: providerOriginalName, description: null, options: null, env: null }];
+      return [
+        {
+          name: providerOriginalName,
+          description: null,
+          options: null,
+          env: null,
+          model: null,
+          effort: null,
+        },
+      ];
     }
 
     return matchingConfigs.map((c) => ({
@@ -177,6 +210,8 @@ export class ProviderProjectSyncService {
       description: c.description ?? null,
       options: c.options ?? null,
       env: c.env ?? null,
+      model: c.model ?? null,
+      effort: c.effort ?? null,
     }));
   }
 

@@ -14,7 +14,9 @@ import type { StorageService } from '../../storage/interfaces/storage.interface'
 import type {
   SessionReaderAdapter,
   SessionFileInfo,
+  TranscriptCandidateMetadata,
 } from '../adapters/session-reader-adapter.interface';
+import { CodexSessionReaderAdapter } from '../adapters/codex-session-reader.adapter';
 import { readFileHead } from '../adapters/utils/file-search.util';
 import type { ClaudeHooksSessionStartedEventPayload } from '../../events/catalog/claude.hooks.session.started';
 import type { SessionStartedEventPayload } from '../../events/catalog/session.started';
@@ -26,6 +28,11 @@ jest.mock('../adapters/utils/file-search.util', () => ({
 jest.mock('node:fs/promises', () => ({
   realpath: jest.fn(),
 }));
+
+// Real Codex metadata parser, reused so the shared adapter mock extracts
+// session_meta byte-identically to production. extractCandidateMetadata parses
+// content only (no pricing / fs), so a bare instance is sufficient.
+const codexMetadataParser = new CodexSessionReaderAdapter(undefined as unknown as never);
 
 const mockReadFileHead = readFileHead as jest.MockedFunction<typeof readFileHead>;
 const mockRealpath = fsPromises.realpath as jest.MockedFunction<
@@ -52,6 +59,13 @@ function createMockDb() {
   const mockGetPersistRow = jest.fn();
   const mockGetStartedAt = jest.fn();
   const mockAllAssignedTranscriptPaths = jest.fn().mockReturnValue([]);
+  // DB-backed exclusivity probe (excludeAssignedDbCandidates): rows already
+  // owning a (transcriptPath, providerSessionId) pair. Distinct from the
+  // file-backed exclusion query above — matched by the `IS NOT NULL` clause.
+  const mockAllAssignedDbCandidates = jest.fn().mockReturnValue([]);
+  // DB-backed uniqueness guard (persistDiscoveredPath): a conflicting session
+  // id when the same (providerSessionId, transcriptPath) is already bound.
+  const mockGetDbUniquenessConflict = jest.fn().mockReturnValue(undefined);
   const mockRun = jest.fn().mockReturnValue({ changes: 1 });
   const mockBeginRun = jest.fn().mockReturnValue({ changes: 0 });
   const mockCommitRun = jest.fn().mockReturnValue({ changes: 0 });
@@ -72,6 +86,11 @@ function createMockDb() {
     if (sql.includes('SELECT id, transcript_path FROM sessions')) {
       return { all: mockAllAssignedTranscriptPaths };
     }
+    // DB-backed exclusivity probe — must precede the generic two-column gate
+    // query (both start with `SELECT transcript_path, provider_session_id`).
+    if (sql.includes('provider_session_id IS NOT NULL')) {
+      return { all: mockAllAssignedDbCandidates };
+    }
     if (sql.includes('SELECT transcript_path, provider_session_id')) {
       return { get: mockGetTranscriptPath };
     }
@@ -80,6 +99,10 @@ function createMockDb() {
     }
     if (sql.includes('UPDATE sessions')) {
       return { run: mockRun };
+    }
+    // DB-backed uniqueness guard on (providerSessionId, transcriptPath).
+    if (sql.includes('SELECT id FROM sessions') && sql.includes('provider_session_id = ?')) {
+      return { get: mockGetDbUniquenessConflict };
     }
     return { get: jest.fn(), run: jest.fn() };
   });
@@ -99,6 +122,8 @@ function createMockDb() {
     mockGetPersistRow,
     mockGetStartedAt,
     mockAllAssignedTranscriptPaths,
+    mockAllAssignedDbCandidates,
+    mockGetDbUniquenessConflict,
   };
 }
 
@@ -148,9 +173,65 @@ function createMockAdapterFactory(
   };
 }
 
-function createMockAdapter(): jest.Mocked<Pick<SessionReaderAdapter, 'discoverSessionFile'>> {
+function createMockAdapter(): jest.Mocked<
+  Pick<SessionReaderAdapter, 'discoverSessionFile' | 'extractCandidateMetadata'>
+> {
   return {
     discoverSessionFile: jest.fn().mockResolvedValue([]),
+    // The discovery pipeline sources candidate metadata through the adapter
+    // seam, so the shared mock parses session_meta exactly as the real Codex
+    // adapter does. Non-session_meta content yields undefined, leaving generic
+    // content/short-id/timestamp matching unchanged.
+    extractCandidateMetadata: jest.fn((content: string) =>
+      codexMetadataParser.extractCandidateMetadata(content),
+    ),
+  };
+}
+
+/**
+ * A DB-backed session-reader adapter mock (`sourceKind: 'db'`). The listener
+ * routes DB-backed sources through `handleDbBackedDiscovery` before any file
+ * strategy, so only `discoverSessionFile` + the `sourceKind` marker are needed.
+ */
+function createMockDbBackedAdapter(providerName: string): jest.Mocked<
+  Pick<SessionReaderAdapter, 'discoverSessionFile' | 'sourceKind' | 'providerName'>
+> & {
+  providerName: string;
+  sourceKind: 'db';
+} {
+  return {
+    providerName,
+    sourceKind: 'db',
+    incrementalMode: 'snapshot',
+    discoverSessionFile: jest.fn().mockResolvedValue([]),
+  } as never;
+}
+
+/** OpenCode candidate: every session shares one container `opencode.db`,
+ *  distinguished by its `ses_…` providerSessionId. Mirrors the real adapter
+ *  shape (`opencode-session-reader.adapter.ts:87-93`). */
+function opencodeCandidate(overrides: Partial<SessionFileInfo> = {}): SessionFileInfo {
+  return {
+    filePath: '/home/user/.local/share/opencode/opencode.db',
+    providerName: 'opencode',
+    providerSessionId: 'ses_01HTEST0000000000000000001',
+    sizeBytes: 0,
+    lastModified: '2026-02-25T10:00:00.000Z',
+    ...overrides,
+  };
+}
+
+/** agy candidate: one per-conversation `conversations/<convId>.db`, carrying
+ *  the conversationId as `providerSessionId`. Mirrors the real adapter shape
+ *  (`antigravity-session-reader.adapter.ts:98-107`). */
+function agyCandidate(overrides: Partial<SessionFileInfo> = {}): SessionFileInfo {
+  return {
+    filePath: '/home/user/.gemini/antigravity-cli/conversations/conv-test-0001.db',
+    providerName: 'agy',
+    providerSessionId: 'conv-test-0001',
+    sizeBytes: 0,
+    lastModified: '2026-02-25T10:00:00.000Z',
+    ...overrides,
   };
 }
 
@@ -194,6 +275,8 @@ describe('TranscriptPersistenceListener', () => {
   let mockGetPersistRow: jest.Mock;
   let mockGetStartedAt: jest.Mock;
   let mockAllAssignedTranscriptPaths: jest.Mock;
+  let mockAllAssignedDbCandidates: jest.Mock;
+  let mockGetDbUniquenessConflict: jest.Mock;
   let mockPrepare: jest.Mock;
   let mockStorage: ReturnType<typeof createMockStorage>;
   let mockAdapterFactory: ReturnType<typeof createMockAdapterFactory>;
@@ -228,6 +311,8 @@ describe('TranscriptPersistenceListener', () => {
     mockGetPersistRow = db.mockGetPersistRow;
     mockGetStartedAt = db.mockGetStartedAt;
     mockAllAssignedTranscriptPaths = db.mockAllAssignedTranscriptPaths;
+    mockAllAssignedDbCandidates = db.mockAllAssignedDbCandidates;
+    mockGetDbUniquenessConflict = db.mockGetDbUniquenessConflict;
     mockRealpath.mockImplementation(async (filePath: string) => filePath);
 
     mockValidator = {
@@ -256,9 +341,25 @@ describe('TranscriptPersistenceListener', () => {
         if (name === 'claude') {
           return {
             providerName: 'claude',
+            hooksEnabled: true,
+            hooksProvideTranscriptPath: true,
             transcriptDiscoveryStrategy: 'first',
             transcriptContentSearchMaxBytes: 16_384,
             providerSessionIdRequiredForRestore: false,
+          };
+        }
+        if (name === 'copilot') {
+          return {
+            providerName: 'copilot',
+            hooksEnabled: true,
+            hooksProvideTranscriptPath: false,
+          };
+        }
+        if (name === 'acme') {
+          return {
+            providerName: 'acme',
+            hooksEnabled: true,
+            hooksProvideTranscriptPath: true,
           };
         }
         if (name === 'codex') {
@@ -514,6 +615,89 @@ describe('TranscriptPersistenceListener', () => {
 
       expect(mockValidator.validateShape).not.toHaveBeenCalled();
       expect(mockRun).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Legacy-default characterization: absent providerName → 'claude' → bind.
+  // Locks the fail-safe contract so the generic capability lookup can never
+  // accidentally change the legacy Claude path.
+  // -------------------------------------------------------------------------
+
+  describe('handleHookSessionStarted — legacy-default characterization', () => {
+    it('absent providerName binds with identical validation root, DB writes, and event payload as pre-generic', async () => {
+      const legacyPayload: ClaudeHooksSessionStartedEventPayload = {
+        claudeSessionId: 'claude-sess-123',
+        source: 'startup',
+        transcriptPath: '/home/user/.claude/projects/my-proj/session.jsonl',
+        tmuxSessionName: 'agent-session',
+        projectId: '11111111-1111-1111-1111-111111111111',
+        agentId: '22222222-2222-2222-2222-222222222222',
+        sessionId: '33333333-3333-3333-3333-333333333333',
+        // providerName deliberately absent → defaults to 'claude'
+      };
+
+      await listener.handleHookSessionStarted(legacyPayload);
+
+      // Validation uses the resolved provider name ('claude'), not a hardcode.
+      expect(mockValidator.validateShape).toHaveBeenCalledWith(
+        legacyPayload.transcriptPath,
+        'claude',
+      );
+      // DB write uses claudeSessionId (providerSessionId absent → fallback).
+      expect(mockRun).toHaveBeenCalledWith(
+        '/normalized/path/session.jsonl',
+        'claude-sess-123',
+        expect.any(String),
+        '33333333-3333-3333-3333-333333333333',
+      );
+      // Event carries the resolved provider name, not a hardcode.
+      expect(mockEvents.publish).toHaveBeenCalledWith(
+        'session.transcript.discovered',
+        expect.objectContaining({
+          providerName: 'claude',
+          providerSessionId: 'claude-sess-123',
+        }),
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Fake-adapter proof: a hypothetical hook-capable provider with
+  // hooksProvideTranscriptPath=true binds through the generic path with
+  // ZERO listener edits — the capability lookup does all the work.
+  // -------------------------------------------------------------------------
+
+  describe('handleHookSessionStarted — generic bind proof (fake hook-capable provider)', () => {
+    it('a provider with hooksProvideTranscriptPath=true binds via the generic capability path', async () => {
+      const acmePayload: ClaudeHooksSessionStartedEventPayload = {
+        claudeSessionId: 'acme-sess-1',
+        providerName: 'acme',
+        providerSessionId: 'acme-sess-1',
+        source: 'startup',
+        transcriptPath: '/home/user/.acme/sessions/session.jsonl',
+        tmuxSessionName: 'agent-session',
+        projectId: '11111111-1111-1111-1111-111111111111',
+        agentId: '22222222-2222-2222-2222-222222222222',
+        sessionId: '33333333-3333-3333-3333-333333333333',
+      };
+
+      await listener.handleHookSessionStarted(acmePayload);
+
+      expect(mockValidator.validateShape).toHaveBeenCalledWith(acmePayload.transcriptPath, 'acme');
+      expect(mockRun).toHaveBeenCalledWith(
+        '/normalized/path/session.jsonl',
+        'acme-sess-1',
+        expect.any(String),
+        '33333333-3333-3333-3333-333333333333',
+      );
+      expect(mockEvents.publish).toHaveBeenCalledWith(
+        'session.transcript.discovered',
+        expect.objectContaining({
+          providerName: 'acme',
+          providerSessionId: 'acme-sess-1',
+        }),
+      );
     });
   });
 
@@ -1414,13 +1598,23 @@ describe('TranscriptPersistenceListener', () => {
       );
     });
 
-    it('should not run timestamp heuristic on non-final retries', async () => {
+    // NOTE: this exercises a GENERIC file-backed fake (the default mockAdapter
+    // has no `sourceKind`, so the listener treats it as a file source). It does
+    // NOT represent production `agy`, which is DB-backed (`sourceKind: 'db'`)
+    // and routes through handleDbBackedDiscovery — covered by the parameterized
+    // DB-backed suite below. The `name: 'agy'` here only selects a non-claude /
+    // non-codex provider so the 'all' file strategy runs.
+    it('should not run timestamp heuristic on non-final retries (generic file-backed fake, not production agy)', async () => {
       mockStorage.getProvider.mockResolvedValue({
         id: 'provider-1',
         name: 'agy',
         binPath: null,
         mcpConfigured: false,
       });
+      // A provider WITHOUT extractCandidateMetadata: the metadata pipeline (and
+      // its getSessionStartedAt read) must not run, so this fake proves the
+      // generic path is untouched by the presence-based gate.
+      mockAdapter.extractCandidateMetadata = undefined;
       mockAdapter.discoverSessionFile
         .mockResolvedValue([])
         .mockResolvedValueOnce([makeFileInfo({ providerName: 'agy' })])
@@ -1952,6 +2146,458 @@ describe('TranscriptPersistenceListener', () => {
           await promise;
         })(),
       ).resolves.not.toThrow();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // DB-backed auto-discovery (OpenCode + agy): parameterized safety net.
+  //
+  // sourceKind='db' routes through handleDbBackedDiscovery BEFORE any file
+  // strategy (transcriptDiscoveryStrategy is never consulted), so these cases
+  // never touch content/short-id/timestamp logic. Each provider's candidates
+  // mirror its real adapter shape (shared-container ses_ ids for opencode;
+  // per-conversation conv ids for agy).
+  // -------------------------------------------------------------------------
+
+  describe('handleSessionStarted (DB-backed auto-discovery)', () => {
+    describe.each([
+      {
+        providerName: 'opencode' as const,
+        candA: opencodeCandidate({ providerSessionId: 'ses_01HWZTEST00000000000000A' }),
+        candB: opencodeCandidate({ providerSessionId: 'ses_01HWZTEST00000000000000B' }),
+      },
+      {
+        providerName: 'agy' as const,
+        candA: agyCandidate({
+          providerSessionId: 'conv-aaaa-0001',
+          filePath: '/home/user/.gemini/antigravity-cli/conversations/conv-aaaa-0001.db',
+        }),
+        candB: agyCandidate({
+          providerSessionId: 'conv-aaaa-0002',
+          filePath: '/home/user/.gemini/antigravity-cli/conversations/conv-aaaa-0002.db',
+        }),
+      },
+    ])('$providerName', ({ providerName, candA, candB }) => {
+      let dbAdapter: ReturnType<typeof createMockDbBackedAdapter>;
+
+      beforeEach(() => {
+        dbAdapter = createMockDbBackedAdapter(providerName);
+        mockAdapterFactory.getAdapter.mockReturnValue(dbAdapter as unknown as SessionReaderAdapter);
+        mockStorage.getProvider.mockResolvedValue({
+          id: 'provider-1',
+          name: providerName,
+          binPath: null,
+          mcpConfigured: false,
+        });
+        // Fresh session row (no transcript bound yet) + a launch timestamp.
+        mockGetTranscriptPath.mockReturnValue({
+          transcript_path: null,
+          provider_session_id: null,
+        });
+        mockGetPersistRow.mockReturnValue({
+          transcript_path: null,
+          provider_session_id: null,
+          provider_name_at_launch: providerName,
+        });
+        mockGetStartedAt.mockReturnValue({ started_at: '2026-02-25T10:00:00.000Z' });
+      });
+
+      it('persists when exactly one unassigned candidate is discovered', async () => {
+        dbAdapter.discoverSessionFile.mockResolvedValue([candA]);
+
+        const promise = listener.handleSessionStarted(sessionStartedPayload);
+        await jest.advanceTimersByTimeAsync(0);
+        await promise;
+
+        // DB discovery context carries the launch timestamp + sessionId.
+        expect(dbAdapter.discoverSessionFile).toHaveBeenCalledWith({
+          projectRoot: '/home/user/my-project',
+          sessionStartedAt: expect.any(Date),
+          sessionId: sessionStartedPayload.sessionId,
+        });
+        expect(dbAdapter.discoverSessionFile).toHaveBeenCalledTimes(1);
+
+        expect(mockValidator.validateShape).toHaveBeenCalledWith(candA.filePath, providerName);
+        expect(mockRun).toHaveBeenCalledWith(
+          '/normalized/path/session.jsonl',
+          candA.providerSessionId,
+          expect.any(String),
+          sessionStartedPayload.sessionId,
+        );
+        expect(mockEvents.publish).toHaveBeenCalledWith(
+          'session.transcript.discovered',
+          expect.objectContaining({
+            sessionId: sessionStartedPayload.sessionId,
+            providerName,
+            providerSessionId: candA.providerSessionId,
+          }),
+        );
+        // File-path logic is never reached for DB-backed sources.
+        expect(mockReadFileHead).not.toHaveBeenCalled();
+      });
+
+      it('warns and retries while more than one candidate stays ambiguous', async () => {
+        dbAdapter.discoverSessionFile.mockResolvedValue([candA, candB]);
+        const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+
+        try {
+          const promise = listener.handleSessionStarted(sessionStartedPayload);
+          await jest.advanceTimersByTimeAsync(0);
+          await advanceAllDiscoveryRetries();
+          await promise;
+
+          expect(dbAdapter.discoverSessionFile).toHaveBeenCalledTimes(7);
+          expect(mockRun).not.toHaveBeenCalled();
+          expect(mockEvents.publish).not.toHaveBeenCalled();
+
+          const ambiguousCalls = warnSpy.mock.calls.filter(
+            (call) =>
+              call[1] ===
+              'Ambiguous DB-backed session match (multiple unassigned candidates) — retrying instead of guessing',
+          );
+          const finalCalls = warnSpy.mock.calls.filter(
+            (call) =>
+              call[1] ===
+              'DB-backed discovery still ambiguous after final attempt — left unassigned',
+          );
+          expect(ambiguousCalls.length).toBeGreaterThanOrEqual(1);
+          expect(finalCalls).toHaveLength(1);
+        } finally {
+          warnSpy.mockRestore();
+        }
+      });
+
+      it('retries with no candidates and warns on the final attempt', async () => {
+        dbAdapter.discoverSessionFile.mockResolvedValue([]);
+        const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+
+        try {
+          const promise = listener.handleSessionStarted(sessionStartedPayload);
+          await jest.advanceTimersByTimeAsync(0);
+          await advanceAllDiscoveryRetries();
+          await promise;
+
+          expect(dbAdapter.discoverSessionFile).toHaveBeenCalledTimes(7);
+          expect(mockRun).not.toHaveBeenCalled();
+          expect(mockEvents.publish).not.toHaveBeenCalled();
+
+          const finalCalls = warnSpy.mock.calls.filter(
+            (call) =>
+              call[1] === 'No DB-backed session candidate found after final discovery attempt',
+          );
+          expect(finalCalls).toHaveLength(1);
+        } finally {
+          warnSpy.mockRestore();
+        }
+      });
+
+      it('excludes candidates already assigned to another session', async () => {
+        // candA is already owned by a different session row.
+        mockAllAssignedDbCandidates.mockReturnValue([
+          { transcript_path: candA.filePath, provider_session_id: candA.providerSessionId },
+        ]);
+        dbAdapter.discoverSessionFile.mockResolvedValue([candA, candB]);
+
+        const promise = listener.handleSessionStarted(sessionStartedPayload);
+        await jest.advanceTimersByTimeAsync(0);
+        await promise;
+
+        // Only the unassigned candB is persisted.
+        expect(mockRun).toHaveBeenCalledWith(
+          '/normalized/path/session.jsonl',
+          candB.providerSessionId,
+          expect.any(String),
+          sessionStartedPayload.sessionId,
+        );
+        expect(mockEvents.publish).toHaveBeenCalledWith(
+          'session.transcript.discovered',
+          expect.objectContaining({ providerSessionId: candB.providerSessionId }),
+        );
+        expect(dbAdapter.discoverSessionFile).toHaveBeenCalledTimes(1);
+      });
+
+      it('skips persist when the (providerSessionId, path) uniqueness guard fires', async () => {
+        dbAdapter.discoverSessionFile.mockResolvedValue([candA]);
+        mockGetDbUniquenessConflict.mockReturnValue({ id: 'other-session-id' });
+        const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+
+        try {
+          const promise = listener.handleSessionStarted(sessionStartedPayload);
+          await jest.advanceTimersByTimeAsync(0);
+          await promise;
+
+          // The path-writing UPDATE never runs; discovery stops on the skipped outcome.
+          expect(mockRun).not.toHaveBeenCalled();
+          expect(mockEvents.publish).not.toHaveBeenCalled();
+
+          const conflictCalls = warnSpy.mock.calls.filter(
+            (call) => call[1] === 'Provider session id already bound to another session — skipping',
+          );
+          expect(conflictCalls).toHaveLength(1);
+          expect(dbAdapter.discoverSessionFile).toHaveBeenCalledTimes(1);
+        } finally {
+          warnSpy.mockRestore();
+        }
+      });
+
+      it('exits early via the discovery gate when transcript metadata is already complete', async () => {
+        dbAdapter.discoverSessionFile.mockResolvedValue([candA]);
+        mockGetTranscriptPath.mockReturnValue({
+          transcript_path: '/already/bound.db',
+          provider_session_id: 'ses_already_bound',
+        });
+
+        const promise = listener.handleSessionStarted(sessionStartedPayload);
+        await jest.advanceTimersByTimeAsync(0);
+        await promise;
+
+        expect(dbAdapter.discoverSessionFile).not.toHaveBeenCalled();
+        expect(mockRun).not.toHaveBeenCalled();
+        expect(mockEvents.publish).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Provider-agnostic seam proof.
+  //
+  // These two fakes are NOT known to the listener; the provider-adapter factory
+  // returns a bare `{ providerName }` (no discovery strategy → the 'all' file
+  // path). They prove the presence-based opt-in with ZERO listener edits:
+  //   - a fake that IMPLEMENTS extractCandidateMetadata drives the full metadata
+  //     pipeline (30s window, cwd filter, content disambiguation) using its own
+  //     non-Codex content format.
+  //   - a fake that implements NEITHER optional method keeps generic content /
+  //     short-id / timestamp matching (via the listener's default extractor).
+  // -------------------------------------------------------------------------
+
+  describe('handleSessionStarted (provider-agnostic seam proof)', () => {
+    /** Non-Codex metadata line: `#fakemeta sid=… ts=… cwd=…` on the first line. */
+    function fakeMetaContent(fields: {
+      sid?: string;
+      ts?: string;
+      cwd?: string;
+      body?: string;
+    }): string {
+      return `#fakemeta sid=${fields.sid ?? ''} ts=${fields.ts ?? ''} cwd=${fields.cwd ?? ''}\n${fields.body ?? ''}`;
+    }
+
+    function createFakeMetadataAdapter(): jest.Mocked<
+      Pick<SessionReaderAdapter, 'discoverSessionFile' | 'extractCandidateMetadata'>
+    > & { providerName: string } {
+      return {
+        providerName: 'fakeprov',
+        discoverSessionFile: jest.fn().mockResolvedValue([]),
+        extractCandidateMetadata: jest.fn(
+          (content: string): TranscriptCandidateMetadata | undefined => {
+            const firstLine = content.split('\n', 1)[0] ?? '';
+            const sid = firstLine.match(/sid=(\S+)/)?.[1];
+            const ts = firstLine.match(/ts=(\S+)/)?.[1];
+            const cwd = firstLine.match(/cwd=(\S+)/)?.[1];
+            if (!sid && !ts && !cwd) {
+              return undefined;
+            }
+            return { providerSessionId: sid, timestamp: ts, workspacePath: cwd };
+          },
+        ),
+      };
+    }
+
+    /** A fake implementing NEITHER optional metadata method. */
+    function createNoMethodAdapter(): jest.Mocked<
+      Pick<SessionReaderAdapter, 'discoverSessionFile'>
+    > & {
+      providerName: string;
+    } {
+      return {
+        providerName: 'nometh',
+        discoverSessionFile: jest.fn().mockResolvedValue([]),
+      };
+    }
+
+    beforeEach(() => {
+      mockGetTranscriptPath.mockReturnValue({ transcript_path: null, provider_session_id: null });
+      mockGetStartedAt.mockReturnValue({ started_at: '2026-02-25T10:00:00.000Z' });
+    });
+
+    it('drives the metadata pipeline for a fake adapter — cwd filter narrows to the project root', async () => {
+      mockStorage.getProvider.mockResolvedValue({
+        id: 'provider-1',
+        name: 'fakeprov',
+        binPath: null,
+        mcpConfigured: false,
+      });
+      mockGetPersistRow.mockReturnValue({
+        transcript_path: null,
+        provider_session_id: null,
+        provider_name_at_launch: 'fakeprov',
+      });
+      const fake = createFakeMetadataAdapter();
+      mockAdapterFactory.getAdapter.mockReturnValue(fake as unknown as SessionReaderAdapter);
+      fake.discoverSessionFile.mockResolvedValue([
+        makeFileInfo({ filePath: '/tmp/fake-wrong.jsonl', providerName: 'fakeprov' }),
+        makeFileInfo({ filePath: '/tmp/fake-right.jsonl', providerName: 'fakeprov' }),
+      ]);
+      mockReadFileHead.mockImplementation(async (filePath: string) =>
+        filePath === '/tmp/fake-wrong.jsonl'
+          ? fakeMetaContent({
+              sid: 'fake-wrong',
+              ts: '2026-02-25T10:00:01.000Z',
+              cwd: '/home/user/other-project',
+            })
+          : fakeMetaContent({
+              sid: 'fake-right',
+              ts: '2026-02-25T10:00:02.000Z',
+              cwd: '/home/user/my-project',
+            }),
+      );
+
+      const promise = listener.handleSessionStarted(sessionStartedPayload);
+      await jest.advanceTimersByTimeAsync(0);
+      await promise;
+
+      expect(fake.extractCandidateMetadata).toHaveBeenCalled();
+      expect(mockValidator.validateShape).toHaveBeenCalledWith('/tmp/fake-right.jsonl', 'fakeprov');
+      expect(mockValidator.validateShape).not.toHaveBeenCalledWith(
+        '/tmp/fake-wrong.jsonl',
+        'fakeprov',
+      );
+      expect(mockEvents.publish).toHaveBeenCalledWith(
+        'session.transcript.discovered',
+        expect.objectContaining({ providerName: 'fakeprov', providerSessionId: 'fake-right' }),
+      );
+    });
+
+    it('disambiguates tied fake-metadata matches by session-id content (metadata+content)', async () => {
+      mockStorage.getProvider.mockResolvedValue({
+        id: 'provider-1',
+        name: 'fakeprov',
+        binPath: null,
+        mcpConfigured: false,
+      });
+      mockGetPersistRow.mockReturnValue({
+        transcript_path: null,
+        provider_session_id: null,
+        provider_name_at_launch: 'fakeprov',
+      });
+      const logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation();
+      const fake = createFakeMetadataAdapter();
+      mockAdapterFactory.getAdapter.mockReturnValue(fake as unknown as SessionReaderAdapter);
+      fake.discoverSessionFile.mockResolvedValue([
+        makeFileInfo({ filePath: '/tmp/fake-a.jsonl', providerName: 'fakeprov' }),
+        makeFileInfo({ filePath: '/tmp/fake-b.jsonl', providerName: 'fakeprov' }),
+      ]);
+      mockReadFileHead.mockImplementation(async (filePath: string) =>
+        filePath === '/tmp/fake-a.jsonl'
+          ? fakeMetaContent({
+              sid: 'fake-a',
+              ts: '2026-02-25T10:00:01.000Z',
+              cwd: '/home/user/my-project',
+            })
+          : fakeMetaContent({
+              sid: 'fake-b',
+              ts: '2026-02-25T10:00:02.000Z',
+              cwd: '/home/user/my-project',
+              body: `session=${sessionStartedPayload.sessionId}`,
+            }),
+      );
+
+      try {
+        const promise = listener.handleSessionStarted(sessionStartedPayload);
+        await jest.advanceTimersByTimeAsync(0);
+        await promise;
+
+        expect(mockValidator.validateShape).toHaveBeenCalledWith('/tmp/fake-b.jsonl', 'fakeprov');
+        expect(logSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ filePath: '/tmp/fake-b.jsonl', matchType: 'metadata+content' }),
+          'Auto-discovered transcript via Codex metadata match',
+        );
+      } finally {
+        logSpy.mockRestore();
+      }
+    });
+
+    it('keeps generic content matching for a fake WITHOUT the optional methods', async () => {
+      mockStorage.getProvider.mockResolvedValue({
+        id: 'provider-1',
+        name: 'nometh',
+        binPath: null,
+        mcpConfigured: false,
+      });
+      mockGetPersistRow.mockReturnValue({
+        transcript_path: null,
+        provider_session_id: null,
+        provider_name_at_launch: 'nometh',
+      });
+      const fake = createNoMethodAdapter();
+      mockAdapterFactory.getAdapter.mockReturnValue(fake as unknown as SessionReaderAdapter);
+      fake.discoverSessionFile.mockResolvedValue([
+        makeFileInfo({
+          filePath: '/tmp/nometh.jsonl',
+          providerName: 'nometh',
+          providerSessionId: 'nometh-1',
+        }),
+      ]);
+      mockReadFileHead.mockResolvedValue(`session=${sessionStartedPayload.sessionId}`);
+
+      const promise = listener.handleSessionStarted(sessionStartedPayload);
+      await jest.advanceTimersByTimeAsync(0);
+      await promise;
+
+      expect(mockValidator.validateShape).toHaveBeenCalledWith('/tmp/nometh.jsonl', 'nometh');
+      expect(mockEvents.publish).toHaveBeenCalledWith(
+        'session.transcript.discovered',
+        expect.objectContaining({ providerName: 'nometh' }),
+      );
+    });
+
+    it('keeps the default timestamp extractor for a no-method fake — ranks all in-window matches (no cwd filter)', async () => {
+      mockStorage.getProvider.mockResolvedValue({
+        id: 'provider-1',
+        name: 'nometh',
+        binPath: null,
+        mcpConfigured: false,
+      });
+      mockGetPersistRow.mockReturnValue({
+        transcript_path: null,
+        provider_session_id: null,
+        provider_name_at_launch: 'nometh',
+      });
+      const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+      const fake = createNoMethodAdapter();
+      mockAdapterFactory.getAdapter.mockReturnValue(fake as unknown as SessionReaderAdapter);
+      fake.discoverSessionFile.mockResolvedValue([
+        makeFileInfo({ filePath: '/tmp/far.jsonl', providerName: 'nometh' }),
+        makeFileInfo({ filePath: '/tmp/close.jsonl', providerName: 'nometh' }),
+      ]);
+      mockReadFileHead.mockImplementation(async (filePath: string) =>
+        filePath === '/tmp/far.jsonl'
+          ? `{"timestamp":"2026-02-25T10:00:20.000Z"}`
+          : `{"timestamp":"2026-02-25T10:00:05.000Z"}`,
+      );
+
+      try {
+        const promise = listener.handleSessionStarted(sessionStartedPayload);
+        await jest.advanceTimersByTimeAsync(0);
+        await advanceAllDiscoveryRetries();
+        await promise;
+
+        expect(mockValidator.validateShape).toHaveBeenCalledWith('/tmp/close.jsonl', 'nometh');
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            filePath: '/tmp/close.jsonl',
+            matchType: 'timestamp-fallback',
+          }),
+          'Auto-discovered transcript via timestamp heuristic fallback',
+        );
+        // No workspacePath metadata ⇒ the pipeline must NOT resolve the project
+        // root for cwd narrowing.
+        expect(
+          mockRealpath.mock.calls.filter((call) => call[0] === '/home/user/my-project'),
+        ).toHaveLength(0);
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
   });
 });

@@ -2,7 +2,9 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { GitWorktreeService } from '../../git/services/git-worktree.service';
 import { OrchestratorDatabase } from '../../orchestrator-storage/db/orchestrator.provider';
 import { mergedAgents, mergedEpics } from '../../../storage/db/schema';
-import { OrchestratorDockerService } from '../../docker/services/docker.service';
+import { ContainerRuntime } from '../../worktrees/runtime/container-runtime';
+import { ProcessRuntime } from '../../worktrees/runtime/process-runtime';
+import { FakeProcessExecutor } from '../../../terminal/services/process-executor/fake-process-executor';
 import { SeedPreparationService } from '../../docker/services/seed-preparation.service';
 import {
   CreateWorktreeRecordInput,
@@ -170,7 +172,7 @@ describe('Task merge workflow integration', () => {
         taskMergeService.handleTaskMergeRequested(payload),
     );
 
-    const docker = {
+    const containerRuntime = {
       stopContainer: jest.fn().mockResolvedValue(undefined),
       removeContainer: jest.fn().mockResolvedValue(undefined),
       waitForHealthy: jest.fn().mockResolvedValue(true),
@@ -178,7 +180,7 @@ describe('Task merge workflow integration', () => {
       startContainer: jest.fn(),
       getContainerLogs: jest.fn(),
       subscribeToContainerEvents: jest.fn(async () => () => undefined),
-    } as unknown as OrchestratorDockerService;
+    } as unknown as ContainerRuntime;
 
     const git = {
       executeMerge: jest.fn().mockResolvedValue({
@@ -212,7 +214,8 @@ describe('Task merge workflow integration', () => {
 
     worktreesService = new WorktreesService(
       store,
-      docker,
+      containerRuntime,
+      new ProcessRuntime(new FakeProcessExecutor()),
       git,
       seed,
       eventEmitter,

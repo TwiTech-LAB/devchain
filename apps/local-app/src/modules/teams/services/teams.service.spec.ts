@@ -2557,4 +2557,224 @@ describe('TeamsService', () => {
       expect(eventsService.publish).toHaveBeenCalledWith('agent.deleted', expect.anything());
     });
   });
+
+  // createTeam and updateTeam share one validation rule set, but update only
+  // runs a rule when its field is present in the delta. The two suites below
+  // lock both halves of that contract: identical reject outcomes for the rules
+  // both paths run (equivalence), and the intentional skip-when-unchanged path
+  // that lets a scoped update succeed against stale stored state
+  // (non-equivalence).
+  describe('create≡update validation equivalence (shared rules)', () => {
+    beforeEach(() => {
+      teamsStore.getTeam.mockResolvedValue(
+        makeTeamWithMembers(
+          { maxMembers: 5, maxConcurrentTasks: 5 },
+          [makeMember('team-1', AGENT_A), makeMember('team-1', AGENT_B)],
+          [PROFILE_A],
+        ),
+      );
+      teamsStore.updateTeam.mockResolvedValue(makeTeam());
+      teamsStore.createTeam.mockResolvedValue(makeTeam());
+    });
+
+    const baseCreate = {
+      projectId: PROJECT_ID,
+      name: 'Equivalence Team',
+      teamLeadAgentId: AGENT_A,
+      memberAgentIds: [AGENT_A, AGENT_B],
+    };
+
+    // Each row exercises the field that triggers the rule so update actually
+    // runs it; the two paths must reject with the same error type and message.
+    const sharedRuleCases: ReadonlyArray<{
+      rule: string;
+      create: Record<string, unknown>;
+      update: Record<string, unknown>;
+      message: string;
+    }> = [
+      {
+        rule: 'member emptiness rejects identically',
+        create: { memberAgentIds: [] },
+        update: { memberAgentIds: [] },
+        message: 'at least 1 member',
+      },
+      {
+        rule: 'team lead not in members rejects identically',
+        create: { teamLeadAgentId: AGENT_C, memberAgentIds: [AGENT_A, AGENT_B] },
+        update: { teamLeadAgentId: AGENT_C, memberAgentIds: [AGENT_A, AGENT_B] },
+        message: 'Team lead must be included',
+      },
+      {
+        rule: 'cross-project agent rejects identically',
+        create: { memberAgentIds: [AGENT_A, AGENT_OTHER_PROJECT] },
+        update: { memberAgentIds: [AGENT_A, AGENT_OTHER_PROJECT] },
+        message: 'different project',
+      },
+      {
+        rule: 'cross-project profile rejects identically',
+        create: { memberAgentIds: [AGENT_A], profileIds: [PROFILE_OTHER_PROJECT] },
+        update: { profileIds: [PROFILE_OTHER_PROJECT] },
+        message: 'different project',
+      },
+      {
+        rule: 'selection for unlinked profile rejects identically',
+        create: {
+          memberAgentIds: [AGENT_A],
+          profileIds: [PROFILE_A],
+          profileConfigSelections: [{ profileId: PROFILE_B, configIds: ['cfg-1'] }],
+        },
+        update: {
+          profileConfigSelections: [{ profileId: PROFILE_B, configIds: ['cfg-1'] }],
+        },
+        message: 'not linked to this team',
+      },
+      {
+        rule: 'maxConcurrentTasks above maxMembers rejects identically',
+        create: { memberAgentIds: [AGENT_A], maxMembers: 3, maxConcurrentTasks: 5 },
+        update: { maxMembers: 3, maxConcurrentTasks: 5 },
+        message: 'maxConcurrentTasks cannot exceed maxMembers',
+      },
+    ];
+
+    it.each(sharedRuleCases)('$rule', async ({ create, update, message }) => {
+      const createErr = await service
+        .createTeam({ ...(baseCreate as Record<string, unknown>), ...create } as never)
+        .then(
+          () => null,
+          (e: unknown) => e,
+        );
+      const updateErr = await service.updateTeam('team-1', update as never).then(
+        () => null,
+        (e: unknown) => e,
+      );
+
+      expect(createErr).toBeInstanceOf(ValidationError);
+      expect(updateErr).toBeInstanceOf(ValidationError);
+      expect((createErr as Error).message).toContain(message);
+      expect((updateErr as Error).message).toContain(message);
+      // Both paths must surface the identical message for the shared rules.
+      expect((updateErr as Error).message).toBe((createErr as Error).message);
+
+      expect(teamsStore.createTeam).not.toHaveBeenCalled();
+      expect(teamsStore.updateTeam).not.toHaveBeenCalled();
+    });
+
+    it('positive: a fully-valid create and an all-fields update both succeed', async () => {
+      await service.createTeam({
+        projectId: PROJECT_ID,
+        name: 'Valid Team',
+        teamLeadAgentId: AGENT_A,
+        memberAgentIds: [AGENT_A, AGENT_B],
+        profileIds: [PROFILE_A, PROFILE_B],
+      });
+      await service.updateTeam('team-1', {
+        teamLeadAgentId: AGENT_B,
+        memberAgentIds: [AGENT_A, AGENT_B],
+        profileIds: [PROFILE_A, PROFILE_B],
+      });
+
+      expect(teamsStore.createTeam).toHaveBeenCalledTimes(1);
+      expect(teamsStore.updateTeam).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('create≢update stale-data non-equivalence (skip-when-unchanged)', () => {
+    it('name-only update does not revalidate stale members', async () => {
+      // Lead stays valid; a non-lead member has drifted to another project. A
+      // fresh create rejects, but a name-only update skips member validation.
+      storageService.getAgent.mockImplementation((id: string) =>
+        id === AGENT_B
+          ? Promise.resolve(makeAgent(id, 'other-project'))
+          : Promise.resolve(makeAgent(id, PROJECT_ID)),
+      );
+      teamsStore.getTeam.mockResolvedValue(
+        makeTeamWithMembers({ teamLeadAgentId: AGENT_A }, [
+          makeMember('team-1', AGENT_A),
+          makeMember('team-1', AGENT_B),
+        ]),
+      );
+      teamsStore.updateTeam.mockResolvedValue(makeTeam());
+
+      await expect(
+        service.createTeam({
+          projectId: PROJECT_ID,
+          name: 'Stale',
+          teamLeadAgentId: AGENT_A,
+          memberAgentIds: [AGENT_A, AGENT_B],
+        }),
+      ).rejects.toThrow('different project');
+
+      // Only the create threw on AGENT_B; the name-only update must not iterate
+      // members at all (event enrichment queries the lead only).
+      storageService.getAgent.mockClear();
+      await expect(service.updateTeam('team-1', { name: 'Renamed' })).resolves.toBeDefined();
+      expect(storageService.getAgent).not.toHaveBeenCalledWith(AGENT_B);
+      expect(teamsStore.updateTeam).toHaveBeenCalledTimes(1);
+    });
+
+    it('capacity-only update does not revalidate profiles', async () => {
+      // Stored profileIds have drifted to another project; a fresh create with
+      // them rejects, but a maxMembers-only update skips profile validation.
+      storageService.getAgentProfile.mockImplementation((id: string) =>
+        Promise.resolve(makeProfile(id, 'other-project')),
+      );
+      teamsStore.getTeam.mockResolvedValue(
+        makeTeamWithMembers(
+          { maxMembers: 5, maxConcurrentTasks: 5 },
+          [makeMember('team-1', AGENT_A), makeMember('team-1', AGENT_B)],
+          [PROFILE_A],
+        ),
+      );
+      teamsStore.updateTeam.mockResolvedValue({ ...makeTeam(), maxMembers: 8 });
+
+      await expect(
+        service.createTeam({
+          projectId: PROJECT_ID,
+          name: 'Stale Profiles',
+          teamLeadAgentId: AGENT_A,
+          memberAgentIds: [AGENT_A],
+          profileIds: [PROFILE_A],
+        }),
+      ).rejects.toThrow('different project');
+
+      storageService.getAgentProfile.mockClear();
+      await expect(service.updateTeam('team-1', { maxMembers: 8 })).resolves.toBeDefined();
+      expect(storageService.getAgentProfile).not.toHaveBeenCalled();
+      expect(teamsStore.updateTeam).toHaveBeenCalledTimes(1);
+    });
+
+    it('profile-only update does not revalidate members', async () => {
+      // Lead stays valid; a non-lead member has drifted to another project. A
+      // fresh create rejects, but a profileIds-only update skips member
+      // validation.
+      storageService.getAgent.mockImplementation((id: string) =>
+        id === AGENT_B
+          ? Promise.resolve(makeAgent(id, 'other-project'))
+          : Promise.resolve(makeAgent(id, PROJECT_ID)),
+      );
+      teamsStore.getTeam.mockResolvedValue(
+        makeTeamWithMembers({ teamLeadAgentId: AGENT_A }, [
+          makeMember('team-1', AGENT_A),
+          makeMember('team-1', AGENT_B),
+        ]),
+      );
+      teamsStore.updateTeam.mockResolvedValue(makeTeam());
+
+      await expect(
+        service.createTeam({
+          projectId: PROJECT_ID,
+          name: 'Stale Members',
+          teamLeadAgentId: AGENT_A,
+          memberAgentIds: [AGENT_A, AGENT_B],
+        }),
+      ).rejects.toThrow('different project');
+
+      storageService.getAgent.mockClear();
+      await expect(
+        service.updateTeam('team-1', { profileIds: [PROFILE_A, PROFILE_B] }),
+      ).resolves.toBeDefined();
+      expect(storageService.getAgent).not.toHaveBeenCalledWith(AGENT_B);
+      expect(teamsStore.updateTeam).toHaveBeenCalledTimes(1);
+    });
+  });
 });

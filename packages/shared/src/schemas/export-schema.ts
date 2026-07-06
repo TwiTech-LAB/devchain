@@ -91,6 +91,13 @@ export const ExportSchema = z
                 description: z.string().nullable().optional(),
                 options: z.string().nullable().optional(), // Provider-specific options (CLI flags)
                 env: EnvVarsSchema,
+                // Structured defaults selected from provider catalogs (verbatim, provider-native)
+                model: z.string().nullable().optional(),
+                effort: z.string().nullable().optional(),
+                // Explicit ordering for the profile's provider configs. OPTIONAL and NOT defaulted:
+                // an absent position keeps storage's auto-assign (max+1) so legacy templates
+                // (which never carried position) import unchanged — all-fields-optional, no version bump.
+                position: z.number().int().optional(),
               }),
             )
             .optional(),
@@ -106,6 +113,7 @@ export const ExportSchema = z
           profileId: z.string().uuid().optional(),
           description: z.string().nullable().optional(),
           modelOverride: z.string().nullable().optional(),
+          effortOverride: z.string().nullable().optional(),
           // Provider config reference (new in v2)
           // References a config by name within the agent's profile
           providerConfigName: z.string().nullable().optional(),
@@ -256,6 +264,16 @@ export const ExportSchema = z
       )
       .optional()
       .default([]),
+    // Provider effort catalogs (mirrors providerModels; verbatim provider-native effort values)
+    providerEfforts: z
+      .array(
+        z.object({
+          providerName: z.string().min(1),
+          efforts: z.array(z.string()),
+        }),
+      )
+      .optional()
+      .default([]),
     // Template presets - named configurations mapping agents to provider configs
     // Used for quick setup when creating a project from template
     presets: z
@@ -268,6 +286,7 @@ export const ExportSchema = z
               agentName: z.string().min(1),
               providerConfigName: z.string().min(1),
               modelOverride: z.string().nullable().optional(),
+              effortOverride: z.string().nullable().optional(),
             }),
           ),
         }),

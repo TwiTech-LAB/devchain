@@ -1,10 +1,9 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { useQueryClient, useQuery, useMutation } from '@tanstack/react-query';
+import { useQueryClient, useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { Loader2, AlertCircle, MessageSquare } from 'lucide-react';
-import { validatePresetAvailability, type PresetAvailability } from '@/ui/lib/preset-validation';
 import type { Preset } from '@/ui/lib/preset-types';
-import { restartKeyForMain, restartKeyForWorktree } from '@/ui/lib/restart-keys';
+import { restartKeyForMain } from '@/ui/lib/restart-keys';
 import {
   useTerminalWindowManager,
   useTerminalWindows,
@@ -12,19 +11,18 @@ import {
 } from '@/ui/terminal-windows';
 import { parseMentions } from '@/ui/lib/chat';
 import { useChatLauncher } from '@/ui/components/chat/ChatLauncher';
-import { useToast } from '@/ui/hooks/use-toast';
+import { useToastHelpers } from '@/ui/lib/toast-helpers';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import { usePointerCoarse } from '@/ui/hooks/usePointerCoarse';
 import { useActiveSessionConfirm } from '@/ui/hooks/useActiveSessionConfirm';
 import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
 import { useWorktreeAgents, type WorktreeAgentGroup } from '@/ui/hooks/useWorktreeAgents';
+import { useWorktreeSessionControls } from '@/ui/hooks/useWorktreeSessionControls';
+import { useTeamQuickEdit } from '@/ui/hooks/chat/useTeamQuickEdit';
+import { usePresetApply } from '@/ui/hooks/chat/usePresetApply';
+import { useAgentConfigSwitch } from '@/ui/hooks/chat/useAgentConfigSwitch';
+import { useAgentAdminActions } from '@/ui/hooks/chat/useAgentAdminActions';
 import { useWorktreeSocket } from '@/ui/hooks/useWorktreeSocket';
-import {
-  launchSession,
-  restartSession,
-  terminateSession,
-  SessionApiError,
-} from '@/ui/lib/sessions';
 
 // Inline terminal components
 import { InlineTerminalPanel } from '@/ui/components/chat/InlineTerminalPanel';
@@ -40,9 +38,7 @@ import { SessionViewerPanel } from '@/ui/components/session-reader/SessionViewer
 import { isPagedTranscriptEnabled } from '@/ui/hooks/usePagedTranscript';
 
 // Extracted hooks
-import { useChatQueries, chatQueryKeys } from '@/ui/hooks/useChatQueries';
-import type { AgentOrGuest } from '@/ui/hooks/useChatQueries';
-import { teamsQueryKeys, updateTeam } from '@/ui/lib/teams';
+import { useChatQueries } from '@/ui/hooks/useChatQueries';
 import { Checkbox } from '@/ui/components/ui/checkbox';
 import { Slider } from '@/ui/components/ui/slider';
 import { Label } from '@/ui/components/ui/label';
@@ -60,7 +56,12 @@ import { useChatThreadUiState } from '@/ui/hooks/useChatThreadUiState';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 // Extracted components
-import { ChatSidebar } from '@/ui/components/chat/ChatSidebar';
+import {
+  ChatSidebar,
+  type ChatSidebarData,
+  type ChatSidebarSessionController,
+  type ChatSidebarAdminActions,
+} from '@/ui/components/chat/ChatSidebar';
 import { ChatThreadHeader } from '@/ui/components/chat/ChatThreadHeader';
 import { ChatMessageList } from '@/ui/components/chat/ChatMessageList';
 import { ChatComposer } from '@/ui/components/chat/ChatComposer';
@@ -89,16 +90,6 @@ interface ProviderConfig {
   providerId: string;
 }
 
-interface ApplyPresetResult {
-  applied: number;
-  warnings: string[];
-  agents: Array<{
-    id: string;
-    name: string;
-    providerConfigId?: string | null;
-  }>;
-}
-
 interface SelectedWorktreeAgent {
   worktreeName: string;
   agentId: string;
@@ -112,8 +103,6 @@ interface WorktreeInlineTerminalProps {
   isWindowOpen: boolean;
   windowId?: string | null;
 }
-
-type WorktreeSessionAction = 'launching' | 'restarting' | 'terminating';
 
 function WorktreeInlineTerminal({
   worktreeName,
@@ -146,23 +135,9 @@ async function fetchPresets(
   return res.json();
 }
 
-async function applyPreset(
-  projectId: string,
-  presetName: string,
-  fetchFn: FetchFn,
-): Promise<ApplyPresetResult> {
-  const res = await fetchFn(`/api/projects/${projectId}/presets/apply`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ presetName }),
-  });
-  if (!res.ok) throw new Error('Failed to apply preset');
-  return res.json();
-}
-
 export function ChatPage() {
   const queryClient = useQueryClient();
-  const { toast } = useToast();
+  const { toast } = useToastHelpers();
   const { confirmIfActiveSessions, dialogProps: activeSessionDialogProps } =
     useActiveSessionConfirm();
   const { selectedProjectId, selectedProject, projectsLoading } = useSelectedProject();
@@ -193,9 +168,6 @@ export function ChatPage() {
   const [selectedWorktreeAgent, setSelectedWorktreeAgent] = useState<SelectedWorktreeAgent | null>(
     null,
   );
-  const [worktreeSessionActionsByAgentKey, setWorktreeSessionActionsByAgentKey] = useState<
-    Record<string, WorktreeSessionAction | undefined>
-  >({});
 
   // ============================================
   // Initialize Hooks
@@ -353,571 +325,62 @@ export function ChatPage() {
     enabled: hasSelectedProject && agentsWithProfiles.length > 0,
   });
 
-  // Validate presets and sort (available first, then by update time within each group)
-  const validatedPresets = useMemo((): PresetAvailability[] => {
-    if (!configsMap || presets.length === 0) return [];
-    // Track original index to preserve storage order (which represents update time)
-    const validated = presets.map((p, index) => ({
-      ...validatePresetAvailability(p, agentsWithProfiles, configsMap),
-      originalIndex: index,
-    }));
-    return validated.sort((a, b) => {
-      if (a.available && !b.available) return -1;
-      if (!a.available && b.available) return 1;
-      // Within same availability, most recently updated first
-      return b.originalIndex - a.originalIndex;
-    });
-  }, [presets, agentsWithProfiles, configsMap]);
-
-  // Apply preset mutation with affected agent detection
-  const applyPresetMutation = useMutation({
-    mutationFn: ({ presetName }: { presetName: string }) =>
-      applyPreset(projectId!, presetName, apiFetch),
-    onSuccess: (result) => {
-      // Build map of agentId -> providerConfigId (using stable IDs, not names)
-      const currentConfigMap = new Map(queries.agents.map((a) => [a.id, a.providerConfigId]));
-
-      // Find agents whose providerConfigId changed (compare by agent.id)
-      const affectedAgentIds: string[] = [];
-      for (const updatedAgent of result.agents) {
-        const oldConfigId = currentConfigMap.get(updatedAgent.id);
-        if (oldConfigId !== updatedAgent.providerConfigId) {
-          affectedAgentIds.push(updatedAgent.id);
-        }
-      }
-
-      // Only mark online agents for restart (offline agents will use new config on next launch)
-      const onlineAgentIds = affectedAgentIds.filter(
-        (id) => queries.agentPresence[id]?.online === true,
-      );
-      if (onlineAgentIds.length > 0) {
-        markAgentsForRestart(onlineAgentIds.map(restartKeyForMain));
-      }
-
-      queryClient.invalidateQueries({ queryKey: ['agents', projectId] });
-
-      toast({
-        title: 'Preset applied',
-        description: `${result.applied} agent(s) updated. Restart sessions to apply.`,
-      });
-    },
-    onError: (error) => {
-      toast({
-        title: 'Failed to apply preset',
-        description: error instanceof Error ? error.message : 'Unknown error',
-        variant: 'destructive',
-      });
-    },
+  const { validatedPresets, handleApplyPreset, applyingPreset } = usePresetApply({
+    projectId,
+    apiFetch,
+    presets,
+    agentsWithProfiles,
+    configsMap,
+    agents: queries.agents,
+    agentPresence: queries.agentPresence,
+    markAgentsForRestart,
+    confirmIfActiveSessions,
   });
-
-  // Handle preset apply with active sessions confirmation
-  const handleApplyPreset = useCallback(
-    async (presetName: string) => {
-      // Check if preset is available (all configs exist)
-      const validated = validatedPresets.find((v) => v.preset.name === presetName);
-      if (!validated?.available) {
-        toast({
-          title: 'Cannot apply preset',
-          description: 'Some required provider configurations are missing.',
-          variant: 'destructive',
-        });
-        return;
-      }
-
-      // Find agents that would be affected by this preset
-      const preset = presets.find((p) => p.name === presetName);
-      if (!preset) return;
-
-      // Build set of agent names in preset (lowercase for matching)
-      const agentNamesInPreset = new Set(
-        preset.agentConfigs.map((ac) => ac.agentName.trim().toLowerCase()),
-      );
-
-      const activeAgentNames = queries.agents
-        .filter(
-          (a) =>
-            agentNamesInPreset.has(a.name.trim().toLowerCase()) &&
-            queries.agentPresence[a.id]?.online,
-        )
-        .map((a) => a.name);
-
-      confirmIfActiveSessions(activeAgentNames, () => {
-        applyPresetMutation.mutate({ presetName });
-      });
-    },
-    [
-      presets,
-      validatedPresets,
-      queries.agents,
-      queries.agentPresence,
-      applyPresetMutation,
-      toast,
-      confirmIfActiveSessions,
-    ],
-  );
 
   // ============================================
   // Provider Config Switching
   // ============================================
 
-  // Track which agent is being updated
-  const [updatingConfigAgentId, setUpdatingConfigAgentId] = useState<string | null>(null);
-
-  // Track which worktree agent is being updated (composite key: `${apiBase}:${agentId}`)
-  const [updatingWorktreeConfigKey, setUpdatingWorktreeConfigKey] = useState<string | null>(null);
-
-  // Update agent provider config mutation
-  const updateAgentConfigMutation = useMutation({
-    mutationFn: async ({
-      agentId,
-      providerConfigId,
-      modelOverride,
-    }: {
-      agentId: string;
-      providerConfigId: string;
-      modelOverride?: string | null;
-    }) => {
-      const body: { providerConfigId: string; modelOverride?: string | null } = {
-        providerConfigId,
-      };
-      if (modelOverride !== undefined) {
-        body.modelOverride = modelOverride;
-      }
-
-      const res = await apiFetch(`/api/agents/${agentId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error('Failed to update agent config');
-      return res.json();
-    },
-    onMutate: ({ agentId }) => {
-      setUpdatingConfigAgentId(agentId);
-    },
-    onSuccess: (_, { agentId, modelOverride }) => {
-      const isOnline = queries.agentPresence[agentId]?.online === true;
-      const isModelOverrideUpdate = modelOverride !== undefined;
-
-      // Mark for restart if agent has active session
-      if (isOnline) {
-        markAgentsForRestart([restartKeyForMain(agentId)]);
-      }
-
-      queryClient.invalidateQueries({ queryKey: ['agents', projectId] });
-      toast({
-        title: isModelOverrideUpdate ? 'Model override updated' : 'Config updated',
-        description: isOnline ? 'Restart to apply changes.' : 'Will apply on next launch.',
-      });
-    },
-    onError: (error) => {
-      toast({
-        title: 'Failed to update config',
-        description: error instanceof Error ? error.message : 'Unknown error',
-        variant: 'destructive',
-      });
-    },
-    onSettled: () => {
-      setUpdatingConfigAgentId(null);
-    },
+  const {
+    handleSwitchConfig,
+    handleSwitchWorktreeConfig,
+    fetchProviderConfigsForProfile,
+    updatingConfigAgentIds,
+    updatingWorktreeConfigKey,
+  } = useAgentConfigSwitch({
+    apiFetch,
+    projectId,
+    agentPresence: queries.agentPresence,
+    worktreeAgentGroups,
+    markAgentsForRestart,
   });
 
-  // Handle switching provider config for an agent
-  const handleSwitchConfig = useCallback(
-    (agentId: string, providerConfigId: string, modelOverride?: string | null) => {
-      updateAgentConfigMutation.mutate({ agentId, providerConfigId, modelOverride });
-    },
-    [updateAgentConfigMutation],
-  );
-
-  // Worktree agent provider config mutation
-  const updateWorktreeAgentConfigMutation = useMutation({
-    mutationFn: async ({
-      apiBase,
-      agentId,
-      providerConfigId,
-      modelOverride,
-    }: {
-      apiBase: string;
-      agentId: string;
-      providerConfigId: string;
-      modelOverride?: string | null;
-    }) => {
-      const body: { providerConfigId: string; modelOverride?: string | null } = {
-        providerConfigId,
-      };
-      if (modelOverride !== undefined) {
-        body.modelOverride = modelOverride;
-      }
-
-      const res = await fetch(`${apiBase}/api/agents/${agentId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error('Failed to update agent config');
-      return res.json();
-    },
-    onMutate: ({ apiBase, agentId }) => {
-      setUpdatingWorktreeConfigKey(`${apiBase}:${agentId}`);
-    },
-    onSuccess: (_, { apiBase, agentId, modelOverride }) => {
-      const group = worktreeAgentGroups.find((g) => g.apiBase === apiBase);
-      const isOnline = group?.agentPresence[agentId]?.online === true;
-      const isModelOverrideUpdate = modelOverride !== undefined;
-
-      // Mark for restart if agent has active session
-      if (isOnline) {
-        markAgentsForRestart([restartKeyForWorktree(apiBase, agentId)]);
-      }
-
-      queryClient.invalidateQueries({ queryKey: ['chat-worktree-agent-groups'] });
-      toast({
-        title: isModelOverrideUpdate ? 'Model override updated' : 'Config updated',
-        description: isOnline ? 'Restart to apply changes.' : 'Will apply on next launch.',
-      });
-    },
-    onError: (error) => {
-      toast({
-        title: 'Failed to update config',
-        description: error instanceof Error ? error.message : 'Unknown error',
-        variant: 'destructive',
-      });
-    },
-    onSettled: () => {
-      setUpdatingWorktreeConfigKey(null);
-    },
+  // ── Agent admin actions (clone / delete / quick-add) ──
+  const {
+    pendingCloneAgent,
+    setPendingCloneAgent,
+    pendingCloneName,
+    cloneTargetTeam,
+    handleConfirmClone,
+    cloningAgent,
+    pendingDeleteAgent,
+    setPendingDeleteAgent,
+    pendingDeleteAgentId,
+    pendingDeleteHasSession,
+    handleConfirmDelete,
+    deletingAgent,
+    handleAddTeamAgent,
+  } = useAgentAdminActions({
+    apiFetch,
+    projectId,
+    agents: queries.agents,
+    activeSessions: queries.activeSessions,
   });
 
-  // ── Clone agent ──
-  const [pendingCloneAgent, setPendingCloneAgent] = useState<{
-    agent: AgentOrGuest;
-    teamId?: string;
-    teamName?: string;
-    isTeamLead?: boolean;
-  } | null>(null);
-
-  function computeCloneName(baseName: string): string {
-    const existingNames = new Set(queries.agents.map((a) => a.name.toLowerCase()));
-    for (let n = 1; ; n++) {
-      const candidate = `${baseName} (${n})`;
-      if (!existingNames.has(candidate.toLowerCase())) return candidate;
-    }
-  }
-
-  const cloneAgentMutation = useMutation({
-    mutationFn: async (payload: {
-      projectId: string;
-      profileId: string;
-      name: string;
-      description?: string | null;
-      providerConfigId: string;
-      modelOverride?: string | null;
-      targetTeamId?: string | null;
-    }) => {
-      const res = await apiFetch('/api/agents', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          projectId: payload.projectId,
-          profileId: payload.profileId,
-          name: payload.name,
-          description: payload.description,
-          providerConfigId: payload.providerConfigId,
-          modelOverride: payload.modelOverride,
-        }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.message ?? 'Failed to clone agent');
-      }
-      const created = await res.json();
-
-      if (payload.targetTeamId) {
-        try {
-          const teamDetailRes = await apiFetch(`/api/teams/${payload.targetTeamId}`);
-          if (!teamDetailRes.ok) {
-            return { ...created, teamAddFailed: true };
-          }
-          const teamDetail = await teamDetailRes.json();
-          const currentMemberIds = (teamDetail.members ?? []).map(
-            (m: { agentId: string }) => m.agentId,
-          );
-          const putRes = await apiFetch(`/api/teams/${payload.targetTeamId}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              memberAgentIds: [...currentMemberIds, created.id],
-            }),
-          });
-          if (!putRes.ok) {
-            return { ...created, teamAddFailed: true };
-          }
-        } catch {
-          return { ...created, teamAddFailed: true };
-        }
-      }
-
-      return created;
-    },
-    onSuccess: (result) => {
-      const targetTeamName = cloneTargetTeam?.teamName;
-      const sourceAgentName = pendingCloneAgent?.agent.name ?? '';
-      setPendingCloneAgent(null);
-      if (result?.teamAddFailed && targetTeamName) {
-        toast({
-          title: `Cloned ${pendingCloneName}`,
-          description: `Couldn't add it to ${targetTeamName}. Add it manually via Teams page.`,
-          variant: 'destructive',
-        });
-      } else if (targetTeamName) {
-        toast({ title: `Cloned ${sourceAgentName} into ${targetTeamName}` });
-      } else {
-        toast({ title: 'Cloned agent' });
-      }
-      queryClient.invalidateQueries({ queryKey: chatQueryKeys.agents(projectId) });
-      queryClient.invalidateQueries({ queryKey: chatQueryKeys.agentPresence(projectId) });
-      queryClient.invalidateQueries({ queryKey: chatQueryKeys.activeSessions(projectId) });
-      if (projectId) {
-        queryClient.invalidateQueries({ queryKey: teamsQueryKeys.teams(projectId) });
-      }
-      queryClient.invalidateQueries({ queryKey: ['teams', 'detail'] });
-    },
-    onError: (error) => {
-      toast({
-        title: 'Failed to clone agent',
-        description: error instanceof Error ? error.message : 'Unknown error',
-        variant: 'destructive',
-      });
-    },
-  });
-
-  const pendingCloneName = pendingCloneAgent ? computeCloneName(pendingCloneAgent.agent.name) : '';
-  const cloneTargetTeam =
-    pendingCloneAgent?.teamId && !pendingCloneAgent?.isTeamLead
-      ? { teamId: pendingCloneAgent.teamId, teamName: pendingCloneAgent.teamName ?? '' }
-      : null;
-
-  function handleConfirmClone() {
-    if (!pendingCloneAgent || !projectId) return;
-    const src = pendingCloneAgent.agent;
-    cloneAgentMutation.mutate({
-      projectId,
-      profileId: src.profileId ?? '',
-      name: pendingCloneName,
-      description: src.description ?? null,
-      providerConfigId: src.providerConfigId ?? '',
-      modelOverride: src.modelOverride ?? null,
-      targetTeamId: cloneTargetTeam?.teamId ?? null,
-    });
-  }
-
-  // ── Delete agent ──
-  const [pendingDeleteAgent, setPendingDeleteAgent] = useState<AgentOrGuest | null>(null);
-  const [pendingDeleteAgentId, setPendingDeleteAgentId] = useState<string | null>(null);
   const [readSlideOverSessionId, setReadSlideOverSessionId] = useState<string | null>(null);
 
-  const pendingDeleteHasSession = useMemo(() => {
-    if (!pendingDeleteAgent) return false;
-    return queries.activeSessions.some(
-      (s) => s.agentId === pendingDeleteAgent.id && s.status === 'running',
-    );
-  }, [pendingDeleteAgent, queries.activeSessions]);
-
-  const deleteAgentMutation = useMutation({
-    mutationFn: async (agentId: string) => {
-      const agentSessions = queries.activeSessions.filter(
-        (s) => s.agentId === agentId && s.status === 'running',
-      );
-      if (agentSessions.length > 0) {
-        await Promise.all(agentSessions.map((s) => terminateSession(s.id, '', apiFetch)));
-      }
-      const res = await apiFetch(`/api/agents/${agentId}`, { method: 'DELETE' });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        if (res.status === 409) {
-          throw new Error("Can't delete — agent is currently running. Try again in a moment.");
-        }
-        throw new Error(body.message ?? 'Failed to delete agent');
-      }
-    },
-    onMutate: (agentId) => {
-      setPendingDeleteAgentId(agentId);
-    },
-    onSuccess: () => {
-      setPendingDeleteAgent(null);
-      toast({ title: 'Agent deleted' });
-      queryClient.invalidateQueries({ queryKey: chatQueryKeys.agents(projectId) });
-      queryClient.invalidateQueries({ queryKey: chatQueryKeys.agentPresence(projectId) });
-      queryClient.invalidateQueries({ queryKey: chatQueryKeys.activeSessions(projectId) });
-      if (projectId) {
-        queryClient.invalidateQueries({ queryKey: teamsQueryKeys.teams(projectId) });
-      }
-      queryClient.invalidateQueries({ queryKey: ['teams', 'detail'] });
-    },
-    onError: (error) => {
-      toast({
-        title: 'Failed to delete agent',
-        description: error instanceof Error ? error.message : 'Unknown error',
-        variant: 'destructive',
-      });
-    },
-    onSettled: () => {
-      setPendingDeleteAgentId(null);
-    },
-  });
-
-  function handleConfirmDelete() {
-    if (!pendingDeleteAgent) return;
-    deleteAgentMutation.mutate(pendingDeleteAgent.id);
-  }
-
-  // ── Quick-add team agent ──
-  const createTeamAgentMutation = useMutation({
-    mutationFn: async (payload: {
-      teamId: string;
-      teamName: string;
-      providerConfigId: string;
-      name: string;
-    }) => {
-      const res = await apiFetch(`/api/teams/${payload.teamId}/agents`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          providerConfigId: payload.providerConfigId,
-          name: payload.name,
-        }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.message ?? 'Failed to add agent');
-      }
-      return { agent: await res.json(), teamName: payload.teamName };
-    },
-    onSuccess: ({ agent, teamName }) => {
-      toast({ title: `Added ${agent.name} to ${teamName}` });
-      queryClient.invalidateQueries({ queryKey: chatQueryKeys.agents(projectId) });
-      queryClient.invalidateQueries({ queryKey: chatQueryKeys.agentPresence(projectId) });
-      queryClient.invalidateQueries({ queryKey: chatQueryKeys.activeSessions(projectId) });
-      if (projectId) {
-        queryClient.invalidateQueries({ queryKey: teamsQueryKeys.teams(projectId) });
-      }
-      queryClient.invalidateQueries({ queryKey: ['teams', 'detail'] });
-    },
-    onError: (error) => {
-      toast({
-        title: 'Failed to add agent',
-        description: error instanceof Error ? error.message : 'Unknown error',
-        variant: 'destructive',
-      });
-    },
-  });
-
-  function handleAddTeamAgent(
-    payload: import('@/ui/components/chat/TeamQuickAddButton').QuickAddPayload,
-  ) {
-    createTeamAgentMutation.mutate({
-      teamId: payload.teamId,
-      teamName: payload.teamName,
-      providerConfigId: payload.providerConfigId,
-      name: payload.computedName,
-    });
-  }
-
-  // ── Quick-edit team modal ──
-  const [quickEditTeam, setQuickEditTeam] = useState<{
-    teamId: string;
-    teamName: string;
-    maxMembers: number;
-    maxConcurrentTasks: number;
-    allowTeamLeadCreateAgents: boolean;
-  } | null>(null);
-  const [qeMaxMembers, setQeMaxMembers] = useState(5);
-  const [qeMaxConcurrentTasks, setQeMaxConcurrentTasks] = useState(5);
-  const [qeAllowTeamLeadCreateAgents, setQeAllowTeamLeadCreateAgents] = useState(false);
-
-  function handleOpenEditTeam(payload: {
-    teamId: string;
-    teamName: string;
-    maxMembers: number;
-    maxConcurrentTasks: number;
-    allowTeamLeadCreateAgents: boolean;
-  }) {
-    setQuickEditTeam(payload);
-    setQeMaxMembers(payload.maxMembers);
-    setQeMaxConcurrentTasks(payload.maxConcurrentTasks);
-    setQeAllowTeamLeadCreateAgents(payload.allowTeamLeadCreateAgents);
-  }
-
-  const quickEditTeamMutation = useMutation({
-    mutationFn: (payload: {
-      teamId: string;
-      maxMembers: number;
-      maxConcurrentTasks: number;
-      allowTeamLeadCreateAgents: boolean;
-    }) =>
-      updateTeam(payload.teamId, {
-        maxMembers: payload.maxMembers,
-        maxConcurrentTasks: payload.maxConcurrentTasks,
-        allowTeamLeadCreateAgents: payload.allowTeamLeadCreateAgents,
-      }),
-    onSuccess: () => {
-      const teamName = quickEditTeam?.teamName ?? '';
-      const teamId = quickEditTeam?.teamId;
-      setQuickEditTeam(null);
-      toast({ title: `Team '${teamName}' updated` });
-      if (projectId) {
-        queryClient.invalidateQueries({ queryKey: chatQueryKeys.agents(projectId) });
-        queryClient.invalidateQueries({ queryKey: chatQueryKeys.agentPresence(projectId) });
-        queryClient.invalidateQueries({ queryKey: chatQueryKeys.activeSessions(projectId) });
-        queryClient.invalidateQueries({ queryKey: teamsQueryKeys.teams(projectId) });
-      }
-      if (teamId) {
-        queryClient.invalidateQueries({ queryKey: teamsQueryKeys.detail(teamId) });
-      }
-    },
-    onError: (error) => {
-      toast({
-        title: 'Failed to update team',
-        description: error instanceof Error ? error.message : 'Unknown error',
-        variant: 'destructive',
-      });
-    },
-  });
-
-  // Handle switching provider config for a worktree agent
-  const handleSwitchWorktreeConfig = useCallback(
-    (
-      group: WorktreeAgentGroup,
-      agentId: string,
-      providerConfigId: string,
-      modelOverride?: string | null,
-    ) => {
-      updateWorktreeAgentConfigMutation.mutate({
-        apiBase: group.apiBase,
-        agentId,
-        providerConfigId,
-        modelOverride,
-      });
-    },
-    [updateWorktreeAgentConfigMutation],
-  );
-
-  // Helper to fetch provider configs for a profile (used by ChatSidebar)
-  const fetchProviderConfigsForProfile = useCallback(
-    async (profileId: string): Promise<Array<{ id: string; name: string; providerId: string }>> => {
-      const res = await apiFetch(`/api/profiles/${profileId}/provider-configs`);
-      if (!res.ok) throw new Error('Failed to fetch provider configs');
-      return res.json();
-    },
-    [apiFetch],
-  );
-
-  // Build updating config agent IDs record for ChatSidebar
-  const updatingConfigAgentIds: Record<string, boolean> = useMemo(
-    () => (updatingConfigAgentId ? { [updatingConfigAgentId]: true } : {}),
-    [updatingConfigAgentId],
-  );
+  // ── Quick-edit team modal (domain hook) ──
+  const quickEdit = useTeamQuickEdit({ projectId });
 
   // Get latest selected thread ID for socket callbacks
   const getLatestSelectedThreadId = useCallback(
@@ -1112,41 +575,6 @@ export function ChatPage() {
     };
   }, [selectedWorktreeAgent]);
 
-  const getWorktreeAgentKey = useCallback((worktreeName: string, agentId: string): string => {
-    return `${worktreeName}:${agentId}`;
-  }, []);
-
-  const setWorktreeSessionAction = useCallback(
-    (agentKey: string, action: WorktreeSessionAction | null) => {
-      setWorktreeSessionActionsByAgentKey((previous) => {
-        if (!action) {
-          if (!(agentKey in previous)) {
-            return previous;
-          }
-          const next = { ...previous };
-          delete next[agentKey];
-          return next;
-        }
-        return {
-          ...previous,
-          [agentKey]: action,
-        };
-      });
-    },
-    [],
-  );
-
-  const showWorktreeMcpToast = useCallback(
-    (providerName?: string) => {
-      toast({
-        title: 'MCP not configured',
-        description: `Switch to worktree tab to configure MCP${providerName ? ` for ${providerName}` : ''}.`,
-        variant: 'destructive',
-      });
-    },
-    [toast],
-  );
-
   const refreshWorktreeAgentGroups = useCallback(async () => {
     await queryClient.invalidateQueries({
       queryKey: ['chat-worktree-agent-groups'],
@@ -1157,6 +585,16 @@ export function ChatPage() {
       type: 'active',
     });
   }, [queryClient]);
+
+  // Worktree session lifecycle lives in its policy adapter (Seam 1); ChatPage
+  // only injects the cache-refresh and pending-restart seams it owns.
+  const {
+    worktreeSessionActionsByAgentKey,
+    getWorktreeAgentKey,
+    handleLaunchWorktreeSession,
+    handleRestartWorktreeSession,
+    handleTerminateWorktreeSession,
+  } = useWorktreeSessionControls({ refreshWorktreeAgentGroups, clearPendingRestart });
 
   const selectedWorktreeSessionId = selectedWorktreeAgentDetails?.isOnline
     ? selectedWorktreeAgentDetails.sessionId
@@ -1191,150 +629,6 @@ export function ChatPage() {
       worktreeName: selectedWorktreeAgentDetails.worktreeName,
     });
   }, [openWorktreeTerminalWindow, selectedWorktreeSessionId, selectedWorktreeAgentDetails]);
-
-  const handleLaunchWorktreeSession = useCallback(
-    async (group: WorktreeAgentGroup, agentId: string) => {
-      if (!group.devchainProjectId) {
-        toast({
-          title: 'Worktree project unavailable',
-          description: `Cannot launch session for ${group.name} because project metadata is missing.`,
-          variant: 'destructive',
-        });
-        return;
-      }
-
-      const agentKey = getWorktreeAgentKey(group.name, agentId);
-      setWorktreeSessionAction(agentKey, 'launching');
-      try {
-        await launchSession(agentId, group.devchainProjectId, undefined, group.apiBase);
-        toast({
-          title: 'Session launched',
-          description: `Session started for ${group.name}:${agentId}.`,
-        });
-        await refreshWorktreeAgentGroups();
-      } catch (error) {
-        if (error instanceof SessionApiError && error.hasCode('MCP_NOT_CONFIGURED')) {
-          const providerName =
-            typeof error.payload?.details?.providerName === 'string'
-              ? error.payload.details.providerName
-              : undefined;
-          showWorktreeMcpToast(providerName);
-          return;
-        }
-        toast({
-          title: 'Failed to launch session',
-          description:
-            error instanceof Error ? error.message : 'Unable to launch session right now.',
-          variant: 'destructive',
-        });
-      } finally {
-        setWorktreeSessionAction(agentKey, null);
-      }
-    },
-    [
-      getWorktreeAgentKey,
-      refreshWorktreeAgentGroups,
-      setWorktreeSessionAction,
-      showWorktreeMcpToast,
-      toast,
-    ],
-  );
-
-  const handleRestartWorktreeSession = useCallback(
-    async (group: WorktreeAgentGroup, agentId: string) => {
-      if (!group.devchainProjectId) {
-        toast({
-          title: 'Worktree project unavailable',
-          description: `Cannot restart session for ${group.name} because project metadata is missing.`,
-          variant: 'destructive',
-        });
-        return;
-      }
-
-      const agentKey = getWorktreeAgentKey(group.name, agentId);
-      setWorktreeSessionAction(agentKey, 'restarting');
-      try {
-        const currentSessionId = group.agentPresence[agentId]?.sessionId ?? '';
-        const result = await restartSession(
-          agentId,
-          group.devchainProjectId,
-          currentSessionId,
-          group.apiBase,
-        );
-        if (result.terminateWarning) {
-          toast({
-            title: 'Session restarted with warning',
-            description: result.terminateWarning,
-            variant: 'destructive',
-          });
-        } else {
-          toast({
-            title: 'Session restarted',
-            description: `Session ${result.session.id.slice(0, 8)} started.`,
-          });
-        }
-        clearPendingRestart(restartKeyForWorktree(group.apiBase, agentId));
-        await refreshWorktreeAgentGroups();
-      } catch (error) {
-        if (error instanceof SessionApiError && error.hasCode('MCP_NOT_CONFIGURED')) {
-          const providerName =
-            typeof error.payload?.details?.providerName === 'string'
-              ? error.payload.details.providerName
-              : undefined;
-          showWorktreeMcpToast(providerName);
-          return;
-        }
-        toast({
-          title: 'Failed to restart session',
-          description:
-            error instanceof Error ? error.message : 'Unable to restart session right now.',
-          variant: 'destructive',
-        });
-      } finally {
-        setWorktreeSessionAction(agentKey, null);
-      }
-    },
-    [
-      clearPendingRestart,
-      getWorktreeAgentKey,
-      refreshWorktreeAgentGroups,
-      setWorktreeSessionAction,
-      showWorktreeMcpToast,
-      toast,
-    ],
-  );
-
-  const handleTerminateWorktreeSession = useCallback(
-    async (group: WorktreeAgentGroup, agentId: string, sessionId: string) => {
-      const agentKey = getWorktreeAgentKey(group.name, agentId);
-      setWorktreeSessionAction(agentKey, 'terminating');
-      try {
-        await terminateSession(sessionId, group.apiBase);
-        clearPendingRestart(restartKeyForWorktree(group.apiBase, agentId));
-        toast({
-          title: 'Session terminated',
-          description: 'The worktree session was terminated.',
-        });
-        await refreshWorktreeAgentGroups();
-      } catch (error) {
-        toast({
-          title: 'Failed to terminate session',
-          description:
-            error instanceof Error ? error.message : 'Unable to terminate session right now.',
-          variant: 'destructive',
-        });
-      } finally {
-        setWorktreeSessionAction(agentKey, null);
-      }
-    },
-    [
-      clearPendingRestart,
-      getWorktreeAgentKey,
-      refreshWorktreeAgentGroups,
-      setWorktreeSessionAction,
-      toast,
-    ],
-  );
 
   const selectedWorktreeAgentKey = useMemo(() => {
     if (!selectedWorktreeAgent) {
@@ -1644,6 +938,153 @@ export function ChatPage() {
   const composerBlockedContent = directLaunchCta ?? groupLaunchCta ?? null;
 
   // ============================================
+  // ChatSidebar prop bundles (memoized for referential stability)
+  // ============================================
+
+  const sidebarData = useMemo<ChatSidebarData>(
+    () => ({
+      projectId,
+      agents: queries.agents,
+      guests: queries.guests,
+      worktreeAgentGroups,
+      worktreeAgentGroupsLoading,
+      agentPresence: queries.agentPresence,
+      userThreads: queries.userThreads,
+      agentThreads: queries.agentThreads,
+      presenceReady: queries.presenceReady,
+      offlineAgents: sessionControls.offlineAgents,
+      agentsWithSessions: sessionControls.agentsWithSessions,
+      agentsLoading: queries.agentsLoading,
+      agentsError: queries.agentsError,
+      userThreadsLoading: queries.userThreadsLoading,
+      agentThreadsLoading: queries.agentThreadsLoading,
+      selectedThreadId: threadUiState.selectedThreadId,
+      selectedWorktreeAgent: selectedWorktreeAgent
+        ? {
+            worktreeName: selectedWorktreeAgent.worktreeName,
+            agentId: selectedWorktreeAgent.agentId,
+          }
+        : null,
+      hasSelectedProject,
+      getProviderForAgent: queries.getProviderForAgent,
+      validatedPresets,
+      activePreset,
+      projectProfiles: queries.profiles,
+    }),
+    [
+      projectId,
+      queries.agents,
+      queries.guests,
+      worktreeAgentGroups,
+      worktreeAgentGroupsLoading,
+      queries.agentPresence,
+      queries.userThreads,
+      queries.agentThreads,
+      queries.presenceReady,
+      sessionControls.offlineAgents,
+      sessionControls.agentsWithSessions,
+      queries.agentsLoading,
+      queries.agentsError,
+      queries.userThreadsLoading,
+      queries.agentThreadsLoading,
+      threadUiState.selectedThreadId,
+      selectedWorktreeAgent,
+      hasSelectedProject,
+      queries.getProviderForAgent,
+      validatedPresets,
+      activePreset,
+      queries.profiles,
+    ],
+  );
+
+  const sidebarSessionController = useMemo<ChatSidebarSessionController>(
+    () => ({
+      launchingAgentIds: sessionControls.launchingAgentIds,
+      restartingAgentId: sessionControls.restartingAgentId,
+      startingAll: sessionControls.startingAll,
+      terminatingAll: sessionControls.terminatingAll,
+      isLaunchingChat,
+      onSelectThread: handleSelectThread,
+      onLaunchChat: launchChat,
+      onLaunchWorktreeAgentChat: handleLaunchWorktreeAgentChat,
+      onLaunchWorktreeSession: handleLaunchWorktreeSession,
+      onRestartWorktreeSession: handleRestartWorktreeSession,
+      onTerminateWorktreeSession: handleTerminateWorktreeSession,
+      onCreateGroup: () => threadUiState.setGroupDialogOpen(true),
+      onStartAllAgents: sessionControls.handleStartAllAgents,
+      onTerminateAllConfirm: () => sessionControls.setTerminateAllConfirm(true),
+      onLaunchSession: sessionControls.handleLaunchSession,
+      onRestartSession: handleRestartSessionWithClear,
+      onTerminateConfirm: (agentId, sessionId) =>
+        sessionControls.setTerminateConfirm({ agentId, sessionId }),
+      pendingRestartAgentIds,
+      onMarkForRestart: markAgentsForRestart,
+      worktreeSessionActionsByAgentKey,
+      onApplyPreset: handleApplyPreset,
+      applyingPreset,
+      onSwitchConfig: handleSwitchConfig,
+      fetchProviderConfigsForProfile,
+      updatingConfigAgentIds,
+      onSwitchWorktreeConfig: handleSwitchWorktreeConfig,
+      updatingWorktreeConfigKey,
+      createGroupPending: queries.createGroupMutation.isPending,
+    }),
+    [
+      sessionControls.launchingAgentIds,
+      sessionControls.restartingAgentId,
+      sessionControls.startingAll,
+      sessionControls.terminatingAll,
+      isLaunchingChat,
+      handleSelectThread,
+      launchChat,
+      handleLaunchWorktreeAgentChat,
+      handleLaunchWorktreeSession,
+      handleRestartWorktreeSession,
+      handleTerminateWorktreeSession,
+      threadUiState.setGroupDialogOpen,
+      sessionControls.handleStartAllAgents,
+      sessionControls.setTerminateAllConfirm,
+      sessionControls.handleLaunchSession,
+      handleRestartSessionWithClear,
+      sessionControls.setTerminateConfirm,
+      pendingRestartAgentIds,
+      markAgentsForRestart,
+      worktreeSessionActionsByAgentKey,
+      handleApplyPreset,
+      applyingPreset,
+      handleSwitchConfig,
+      fetchProviderConfigsForProfile,
+      updatingConfigAgentIds,
+      handleSwitchWorktreeConfig,
+      updatingWorktreeConfigKey,
+      queries.createGroupMutation.isPending,
+    ],
+  );
+
+  const sidebarAdminActions = useMemo<ChatSidebarAdminActions>(
+    () => ({
+      onCloneAgent: (agent, ctx) =>
+        setPendingCloneAgent({
+          agent,
+          teamId: ctx?.teamId,
+          teamName: ctx?.teamName,
+          isTeamLead: ctx?.isTeamLead,
+        }),
+      onDeleteAgent: setPendingDeleteAgent,
+      pendingDeleteAgentId,
+      onAddTeamAgent: handleAddTeamAgent,
+      onEditTeam: quickEdit.openEditTeam,
+    }),
+    [
+      setPendingCloneAgent,
+      setPendingDeleteAgent,
+      pendingDeleteAgentId,
+      handleAddTeamAgent,
+      quickEdit.openEditTeam,
+    ],
+  );
+
+  // ============================================
   // Early Returns
   // ============================================
 
@@ -1679,77 +1120,9 @@ export function ChatPage() {
     <div className="flex h-full gap-4">
       {/* Left Sidebar */}
       <ChatSidebar
-        projectId={projectId}
-        agents={queries.agents}
-        guests={queries.guests}
-        agentPresence={queries.agentPresence}
-        userThreads={queries.userThreads}
-        agentThreads={queries.agentThreads}
-        presenceReady={queries.presenceReady}
-        offlineAgents={sessionControls.offlineAgents}
-        agentsWithSessions={sessionControls.agentsWithSessions}
-        agentsLoading={queries.agentsLoading}
-        agentsError={queries.agentsError}
-        userThreadsLoading={queries.userThreadsLoading}
-        agentThreadsLoading={queries.agentThreadsLoading}
-        launchingAgentIds={sessionControls.launchingAgentIds}
-        restartingAgentId={sessionControls.restartingAgentId}
-        startingAll={sessionControls.startingAll}
-        terminatingAll={sessionControls.terminatingAll}
-        isLaunchingChat={isLaunchingChat}
-        selectedThreadId={threadUiState.selectedThreadId}
-        selectedWorktreeAgent={
-          selectedWorktreeAgent
-            ? {
-                worktreeName: selectedWorktreeAgent.worktreeName,
-                agentId: selectedWorktreeAgent.agentId,
-              }
-            : null
-        }
-        hasSelectedProject={hasSelectedProject}
-        onSelectThread={handleSelectThread}
-        onLaunchChat={launchChat}
-        worktreeAgentGroups={worktreeAgentGroups}
-        worktreeAgentGroupsLoading={worktreeAgentGroupsLoading}
-        onLaunchWorktreeAgentChat={handleLaunchWorktreeAgentChat}
-        onLaunchWorktreeSession={handleLaunchWorktreeSession}
-        onRestartWorktreeSession={handleRestartWorktreeSession}
-        onTerminateWorktreeSession={handleTerminateWorktreeSession}
-        onCreateGroup={() => threadUiState.setGroupDialogOpen(true)}
-        onStartAllAgents={sessionControls.handleStartAllAgents}
-        onTerminateAllConfirm={() => sessionControls.setTerminateAllConfirm(true)}
-        onLaunchSession={sessionControls.handleLaunchSession}
-        onRestartSession={handleRestartSessionWithClear}
-        onTerminateConfirm={(agentId, sessionId) =>
-          sessionControls.setTerminateConfirm({ agentId, sessionId })
-        }
-        getProviderForAgent={queries.getProviderForAgent}
-        pendingRestartAgentIds={pendingRestartAgentIds}
-        onMarkForRestart={markAgentsForRestart}
-        worktreeSessionActionsByAgentKey={worktreeSessionActionsByAgentKey}
-        validatedPresets={validatedPresets}
-        activePreset={activePreset}
-        onApplyPreset={handleApplyPreset}
-        applyingPreset={applyPresetMutation.isPending}
-        onSwitchConfig={handleSwitchConfig}
-        fetchProviderConfigsForProfile={fetchProviderConfigsForProfile}
-        updatingConfigAgentIds={updatingConfigAgentIds}
-        onSwitchWorktreeConfig={handleSwitchWorktreeConfig}
-        updatingWorktreeConfigKey={updatingWorktreeConfigKey}
-        onCloneAgent={(agent, ctx) =>
-          setPendingCloneAgent({
-            agent,
-            teamId: ctx?.teamId,
-            teamName: ctx?.teamName,
-            isTeamLead: ctx?.isTeamLead,
-          })
-        }
-        onDeleteAgent={setPendingDeleteAgent}
-        pendingDeleteAgentId={pendingDeleteAgentId}
-        onAddTeamAgent={handleAddTeamAgent}
-        projectProfiles={queries.profiles}
-        onEditTeam={handleOpenEditTeam}
-        createGroupPending={queries.createGroupMutation.isPending}
+        data={sidebarData}
+        sessionController={sidebarSessionController}
+        adminActions={sidebarAdminActions}
       />
 
       {/* Right Content Area */}
@@ -1977,8 +1350,8 @@ export function ChatPage() {
             <Button variant="outline" onClick={() => setPendingCloneAgent(null)}>
               Cancel
             </Button>
-            <Button onClick={handleConfirmClone} disabled={cloneAgentMutation.isPending}>
-              {cloneAgentMutation.isPending ? (
+            <Button onClick={handleConfirmClone} disabled={cloningAgent}>
+              {cloningAgent ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   Cloning...
@@ -2011,12 +1384,8 @@ export function ChatPage() {
             <Button variant="outline" onClick={() => setPendingDeleteAgent(null)}>
               Cancel
             </Button>
-            <Button
-              variant="destructive"
-              onClick={handleConfirmDelete}
-              disabled={deleteAgentMutation.isPending}
-            >
-              {deleteAgentMutation.isPending ? (
+            <Button variant="destructive" onClick={handleConfirmDelete} disabled={deletingAgent}>
+              {deletingAgent ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   Deleting...
@@ -2031,31 +1400,31 @@ export function ChatPage() {
 
       {/* Quick-edit team */}
       <Dialog
-        open={!!quickEditTeam}
+        open={!!quickEdit.quickEditTeam}
         onOpenChange={(open) => {
-          if (!open) setQuickEditTeam(null);
+          if (!open) quickEdit.closeEditTeam();
         }}
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Edit team &quot;{quickEditTeam?.teamName}&quot;</DialogTitle>
+            <DialogTitle>Edit team &quot;{quickEdit.quickEditTeam?.teamName}&quot;</DialogTitle>
             <DialogDescription>Adjust team capacity settings.</DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-4 py-2">
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between">
                 <Label>Max team members</Label>
-                <span className="text-xs text-muted-foreground">{qeMaxMembers}</span>
+                <span className="text-xs text-muted-foreground">{quickEdit.maxMembers}</span>
               </div>
               <Slider
                 min={2}
                 max={10}
                 step={1}
-                value={[qeMaxMembers]}
+                value={[quickEdit.maxMembers]}
                 onValueChange={([v]) => {
-                  setQeMaxMembers(v);
-                  if (qeMaxConcurrentTasks > v) {
-                    setQeMaxConcurrentTasks(v);
+                  quickEdit.setMaxMembers(v);
+                  if (quickEdit.maxConcurrentTasks > v) {
+                    quickEdit.setMaxConcurrentTasks(v);
                   }
                 }}
               />
@@ -2063,22 +1432,26 @@ export function ChatPage() {
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between">
                 <Label>Max concurrent tasks</Label>
-                <span className="text-xs text-muted-foreground">{qeMaxConcurrentTasks}</span>
+                <span className="text-xs text-muted-foreground">
+                  {quickEdit.maxConcurrentTasks}
+                </span>
               </div>
               <Slider
                 min={1}
-                max={qeMaxMembers}
+                max={quickEdit.maxMembers}
                 step={1}
-                value={[qeMaxConcurrentTasks]}
-                onValueChange={([v]) => setQeMaxConcurrentTasks(v)}
+                value={[quickEdit.maxConcurrentTasks]}
+                onValueChange={([v]) => quickEdit.setMaxConcurrentTasks(v)}
               />
             </div>
             <div className="flex flex-col gap-1">
               <div className="flex items-center gap-2">
                 <Checkbox
                   id="qe-allow-lead-create"
-                  checked={qeAllowTeamLeadCreateAgents}
-                  onCheckedChange={(checked) => setQeAllowTeamLeadCreateAgents(checked === true)}
+                  checked={quickEdit.allowTeamLeadCreateAgents}
+                  onCheckedChange={(checked) =>
+                    quickEdit.setAllowTeamLeadCreateAgents(checked === true)
+                  }
                 />
                 <Label htmlFor="qe-allow-lead-create" className="text-sm font-normal">
                   Allow team lead to autonomously create team agents
@@ -2091,22 +1464,11 @@ export function ChatPage() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setQuickEditTeam(null)}>
+            <Button variant="outline" onClick={() => quickEdit.closeEditTeam()}>
               Cancel
             </Button>
-            <Button
-              onClick={() => {
-                if (!quickEditTeam) return;
-                quickEditTeamMutation.mutate({
-                  teamId: quickEditTeam.teamId,
-                  maxMembers: qeMaxMembers,
-                  maxConcurrentTasks: qeMaxConcurrentTasks,
-                  allowTeamLeadCreateAgents: qeAllowTeamLeadCreateAgents,
-                });
-              }}
-              disabled={quickEditTeamMutation.isPending}
-            >
-              {quickEditTeamMutation.isPending ? (
+            <Button onClick={() => quickEdit.submit()} disabled={quickEdit.isPending}>
+              {quickEdit.isPending ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   Saving...

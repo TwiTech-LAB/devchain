@@ -1,20 +1,32 @@
 import { useState } from 'react';
 import { useQueries } from '@tanstack/react-query';
-import { Loader2, Plus } from 'lucide-react';
+import { Loader2, Plug, Plus } from 'lucide-react';
 import { Button } from '@/ui/components/ui/button';
-import { Popover, PopoverContent, PopoverTrigger } from '@/ui/components/ui/popover';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuPortal,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from '@/ui/components/ui/dropdown-menu';
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from '@/ui/components/ui/tooltip';
+import { getProviderIconDataUri } from '@/ui/lib/providers';
 
 interface ProviderConfigItem {
   id: string;
   name: string;
   description: string | null;
   profileId: string;
+  providerName?: string;
 }
 
 export interface QuickAddPayload {
@@ -34,6 +46,27 @@ interface TeamQuickAddButtonProps {
   profilesById: Map<string, { id: string; name: string }>;
   agents: Array<{ name: string }>;
   onAddAgent: (payload: QuickAddPayload) => void;
+}
+
+/** Provider icon (falls back to a plug glyph) + config name — the body of every config row. */
+function ConfigRowContent({ config }: { config: ProviderConfigItem }) {
+  const icon = getProviderIconDataUri(config.providerName);
+  return (
+    <>
+      {icon ? (
+        <img
+          src={icon}
+          alt=""
+          aria-hidden="true"
+          title={config.providerName ? `Provider: ${config.providerName}` : undefined}
+          className="mr-2 h-4 w-4 shrink-0"
+        />
+      ) : (
+        <Plug className="mr-2 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+      )}
+      <span className="truncate">{config.name}</span>
+    </>
+  );
 }
 
 export function computeAutoName(profileName: string, existingAgentNames: string[]): string {
@@ -150,16 +183,16 @@ export function TeamQuickAddButton({
   }
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <DropdownMenu open={open} onOpenChange={setOpen}>
       <TooltipProvider>
         <Tooltip>
           <TooltipTrigger asChild>
-            <PopoverTrigger asChild>{button}</PopoverTrigger>
+            <DropdownMenuTrigger asChild>{button}</DropdownMenuTrigger>
           </TooltipTrigger>
           <TooltipContent>Add agent</TooltipContent>
         </Tooltip>
       </TooltipProvider>
-      <PopoverContent className="w-64 p-2" align="start">
+      <DropdownMenuContent className="w-56" align="start">
         {isLoading ? (
           <div className="flex items-center justify-center py-4">
             <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
@@ -168,28 +201,41 @@ export function TeamQuickAddButton({
           <p className="px-2 py-3 text-center text-xs text-muted-foreground">
             No provider configs available. Create one in Profiles first.
           </p>
-        ) : (
-          <div className="flex flex-col gap-1">
-            {groupedConfigs.map((group) => (
-              <div key={group.profileId}>
-                <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  {group.profileName}
-                </p>
-                {group.configs.map((config) => (
-                  <button
-                    key={config.id}
-                    type="button"
-                    className="flex w-full items-center rounded px-2 py-1.5 text-left text-sm hover:bg-muted/50"
-                    onClick={() => handleSelectConfig(config, group.profileName)}
-                  >
-                    {config.name}
-                  </button>
-                ))}
-              </div>
+        ) : groupedConfigs.length === 1 ? (
+          /* Single profile: no submenu hop — a label plus its configs cannot mix. */
+          <>
+            <DropdownMenuLabel>{groupedConfigs[0].profileName}</DropdownMenuLabel>
+            {groupedConfigs[0].configs.map((config) => (
+              <DropdownMenuItem
+                key={config.id}
+                onSelect={() => handleSelectConfig(config, groupedConfigs[0].profileName)}
+              >
+                <ConfigRowContent config={config} />
+              </DropdownMenuItem>
             ))}
-          </div>
+          </>
+        ) : (
+          /* Two-level menu: profiles at the top level, each opening its provider
+             configs in a submenu — configs never sit flat next to profile names. */
+          groupedConfigs.map((group) => (
+            <DropdownMenuSub key={group.profileId}>
+              <DropdownMenuSubTrigger>{group.profileName}</DropdownMenuSubTrigger>
+              <DropdownMenuPortal>
+                <DropdownMenuSubContent className="w-52">
+                  {group.configs.map((config) => (
+                    <DropdownMenuItem
+                      key={config.id}
+                      onSelect={() => handleSelectConfig(config, group.profileName)}
+                    >
+                      <ConfigRowContent config={config} />
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuSubContent>
+              </DropdownMenuPortal>
+            </DropdownMenuSub>
+          ))
         )}
-      </PopoverContent>
-    </Popover>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

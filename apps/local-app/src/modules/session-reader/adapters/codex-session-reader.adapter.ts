@@ -8,6 +8,7 @@ import type {
   SessionFileInfo,
   ParseOptions,
   IncrementalResult,
+  TranscriptCandidateMetadata,
 } from './session-reader-adapter.interface';
 import type { UnifiedSession } from '../dtos/unified-session.types';
 import { parseCodexJsonl } from '../parsers/codex-jsonl.parser';
@@ -22,15 +23,16 @@ export interface CodexFileMetadata {
   metaCwd: string | null;
 }
 
-export function extractCodexMetadataFromContent(content: string): CodexFileMetadata {
-  const emptyMetadata: CodexFileMetadata = {
-    providerSessionId: null,
-    metaTimestamp: null,
-    metaCwd: null,
-  };
+/**
+ * Parse the first newline-terminated JSONL event of a Codex rollout and map its
+ * `session_meta` payload to the provider-agnostic
+ * {@link TranscriptCandidateMetadata} shape. Returns an empty object when the
+ * content is partial, malformed, or not a `session_meta` event.
+ */
+function parseCodexSessionMeta(content: string): TranscriptCandidateMetadata {
   const firstNewline = content.indexOf('\n');
   if (firstNewline < 0) {
-    return emptyMetadata;
+    return {};
   }
 
   try {
@@ -43,7 +45,7 @@ export function extractCodexMetadataFromContent(content: string): CodexFileMetad
       };
     };
     if (entry.type !== 'session_meta') {
-      return emptyMetadata;
+      return {};
     }
 
     const id = entry.payload?.id;
@@ -51,14 +53,29 @@ export function extractCodexMetadataFromContent(content: string): CodexFileMetad
     const cwd = entry.payload?.cwd;
 
     return {
-      providerSessionId: typeof id === 'string' && id.trim().length > 0 ? id : null,
-      metaTimestamp:
-        typeof timestamp === 'string' && timestamp.trim().length > 0 ? timestamp : null,
-      metaCwd: typeof cwd === 'string' && cwd.trim().length > 0 ? cwd : null,
+      providerSessionId: typeof id === 'string' && id.trim().length > 0 ? id : undefined,
+      timestamp:
+        typeof timestamp === 'string' && timestamp.trim().length > 0 ? timestamp : undefined,
+      workspacePath: typeof cwd === 'string' && cwd.trim().length > 0 ? cwd : undefined,
     };
   } catch {
-    return emptyMetadata;
+    return {};
   }
+}
+
+/**
+ * Compatibility wrapper around {@link parseCodexSessionMeta} that preserves the
+ * `CodexFileMetadata` shape (null instead of undefined) for existing consumers.
+ * The transcript-persistence listener uses this until it migrates to the
+ * adapter's `extractCandidateMetadata` method.
+ */
+export function extractCodexMetadataFromContent(content: string): CodexFileMetadata {
+  const meta = parseCodexSessionMeta(content);
+  return {
+    providerSessionId: meta.providerSessionId ?? null,
+    metaTimestamp: meta.timestamp ?? null,
+    metaCwd: meta.workspacePath ?? null,
+  };
 }
 
 @Injectable()
@@ -221,11 +238,21 @@ export class CodexSessionReaderAdapter implements SessionReaderAdapter {
   }
 
   /**
+   * Extract candidate-discovery metadata (provider session id, workspace path,
+   * timestamp) from the first line of a Codex rollout. Returns `undefined`
+   * when no `session_meta` event is found.
+   */
+  extractCandidateMetadata(content: string): TranscriptCandidateMetadata | undefined {
+    const meta = parseCodexSessionMeta(content);
+    return meta.providerSessionId || meta.timestamp || meta.workspacePath ? meta : undefined;
+  }
+
+  /**
    * Extract the canonical Codex provider session id from an already-read file
    * head. Only the first newline-terminated JSONL event is considered.
    */
-  extractProviderSessionIdFromContent(content: string): string | null {
-    return extractCodexMetadataFromContent(content).providerSessionId;
+  private extractProviderSessionIdFromContent(content: string): string | undefined {
+    return this.extractCandidateMetadata(content)?.providerSessionId;
   }
 
   /**
@@ -242,8 +269,9 @@ export class CodexSessionReaderAdapter implements SessionReaderAdapter {
       if (bytesRead === 0) {
         return null;
       }
-      return this.extractProviderSessionIdFromContent(
-        buffer.subarray(0, bytesRead).toString('utf8'),
+      return (
+        this.extractProviderSessionIdFromContent(buffer.subarray(0, bytesRead).toString('utf8')) ??
+        null
       );
     } catch {
       return null;

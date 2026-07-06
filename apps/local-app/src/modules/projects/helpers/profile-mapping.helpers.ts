@@ -51,17 +51,33 @@ type NamedEntity = {
   name: string;
 };
 
+/**
+ * Build the transient selected-provider allowlist as a lowercased Set, or `undefined` when the
+ * field is absent. Absent → every availability derivation below is byte-identical to today; a
+ * present (validated non-empty) list restricts the effective availability to exactly its members.
+ */
+function toProviderAllowlist(selectedProviderNames: string[] | undefined): Set<string> | undefined {
+  if (!selectedProviderNames) return undefined;
+  return new Set(selectedProviderNames.map((name) => name.trim().toLowerCase()));
+}
+
 export async function resolveProvidersFromStorage(
   storage: Pick<StorageService, 'listProviders'>,
   providerNames: Set<string>,
+  selectedProviderNames?: string[],
 ): Promise<{
   available: Map<string, string>;
   missing: string[];
 }> {
   const providers = await storage.listProviders();
+  const allow = toProviderAllowlist(selectedProviderNames);
   const available = new Map<string, string>();
   for (const prov of providers.items) {
-    available.set(prov.name.trim().toLowerCase(), prov.id);
+    const key = prov.name.trim().toLowerCase();
+    // Providers outside the transient allowlist are treated as if uninstalled: excluded from the
+    // available map (so their configs are never created) AND reported as missing below.
+    if (allow && !allow.has(key)) continue;
+    available.set(key, prov.id);
   }
   const missing = Array.from(providerNames).filter((name) => !available.has(name));
   return { available, missing };
@@ -72,10 +88,14 @@ export async function computeFamilyAlternativesFromStorage(
   templateProfiles: FamilyTemplateProfile[],
   templateAgents: FamilyTemplateAgent[],
   logger?: LoggerLike,
+  selectedProviderNames?: string[],
 ): Promise<FamilyAlternativesResult> {
   const localProviders = await storage.listProviders();
+  const allow = toProviderAllowlist(selectedProviderNames);
   const availableProviderNames = new Set(
-    localProviders.items.map((provider) => provider.name.trim().toLowerCase()),
+    localProviders.items
+      .map((provider) => provider.name.trim().toLowerCase())
+      .filter((name) => !allow || allow.has(name)),
   );
   return computeFamilyAlternatives(
     templateProfiles,
@@ -180,6 +200,173 @@ export function computeFamilyAlternatives(
   };
 }
 
+export interface PresetProviderCoverage {
+  /** Preset name (original case as declared in the template). */
+  presetName: string;
+  /** Agent name (lowercase) → resolved provider name (lowercase). */
+  agentResolvedProviders: Map<string, string>;
+  /** Agent names (lowercase) whose resolved provider is locally available. */
+  coveredAgentNames: Set<string>;
+  /** True when every template agent is covered by an available provider via this preset. */
+  coversAllAgents: boolean;
+  /** Sorted unique provider names this preset's agentConfigs resolve to. */
+  referencedProviders: string[];
+}
+
+/**
+ * Derive, per template preset, the providers its agentConfigs resolve to by walking
+ * agentConfig → agent → profile → providerConfig → providerName. SINGLE source of truth for
+ * preset→provider derivation: consumed by BOTH the setup-preview endpoint (all presets) and
+ * the create-path preset-coverage gate (selected preset) — do not fork this logic.
+ *
+ * Pure (no IO): pass `availableProviderNames` (lowercased) from storage. Pass
+ * `options.selectedPresetName` to short-circuit to a single preset (create-path use).
+ */
+export function derivePresetProviderCoverage(
+  presets: Array<{
+    name: string;
+    agentConfigs: Array<{ agentName: string; providerConfigName: string }>;
+  }>,
+  profiles: FamilyTemplateProfile[],
+  agents: FamilyTemplateAgent[],
+  availableProviderNames: Set<string>,
+  options?: { selectedPresetName?: string },
+): PresetProviderCoverage[] {
+  // profileId → Map<configName(lower), providerName(lower)>
+  const profileConfigsByProfileId = new Map<string, Map<string, string>>();
+  for (const prof of profiles) {
+    if (!prof.id) continue;
+    const providerConfigs = prof.providerConfigs;
+    if (!providerConfigs) continue;
+    const configMap = new Map<string, string>();
+    for (const pc of providerConfigs) {
+      configMap.set(pc.name.trim().toLowerCase(), pc.providerName.trim().toLowerCase());
+    }
+    profileConfigsByProfileId.set(prof.id, configMap);
+  }
+
+  // agentName(lower) → profileId
+  const agentNameToProfileId = new Map<string, string>();
+  for (const agent of agents) {
+    if (agent.profileId) {
+      agentNameToProfileId.set(agent.name.trim().toLowerCase(), agent.profileId);
+    }
+  }
+
+  const allTemplateAgentNames = new Set(agents.map((a) => a.name.trim().toLowerCase()));
+
+  const results: PresetProviderCoverage[] = [];
+  for (const preset of presets) {
+    if (options?.selectedPresetName && preset.name !== options.selectedPresetName) continue;
+
+    const agentResolvedProviders = new Map<string, string>();
+    const coveredAgentNames = new Set<string>();
+    let allCovered = true;
+
+    for (const ac of preset.agentConfigs) {
+      const agentKey = ac.agentName.trim().toLowerCase();
+      const profileId = agentNameToProfileId.get(agentKey);
+      if (!profileId) {
+        allCovered = false;
+        continue;
+      }
+      const configMap = profileConfigsByProfileId.get(profileId);
+      const providerName = configMap?.get(ac.providerConfigName.trim().toLowerCase());
+      if (providerName) {
+        agentResolvedProviders.set(agentKey, providerName);
+      }
+      if (providerName && availableProviderNames.has(providerName)) {
+        coveredAgentNames.add(agentKey);
+      } else {
+        allCovered = false;
+      }
+    }
+
+    const coversAllAgents =
+      allCovered && [...allTemplateAgentNames].every((n) => coveredAgentNames.has(n));
+
+    results.push({
+      presetName: preset.name,
+      agentResolvedProviders,
+      coveredAgentNames,
+      coversAllAgents,
+      referencedProviders: Array.from(new Set(agentResolvedProviders.values())).sort(),
+    });
+  }
+
+  return results;
+}
+
+export interface ProviderSummaryEntry {
+  /** Provider name (lowercase canonical). */
+  name: string;
+  /** Whether the provider is locally installed. */
+  available: boolean;
+  /** familySlugs that reference this provider (sorted). */
+  families: string[];
+  /** Number of agents whose profile's default provider is this provider. */
+  agentCount: number;
+}
+
+/**
+ * Summarize every provider referenced by a template — the union of profile default
+ * providers (`profiles[].provider.name`) and profile providerConfig providers
+ * (`profiles[].providerConfigs[].providerName`) — each annotated with its families, an
+ * agent count (agents attributed via their profile's default provider), and local
+ * availability. Pure: pass `availableProviderNames` (lowercased) from storage.
+ */
+export function buildProviderSummary(
+  profiles: FamilyTemplateProfile[],
+  agents: FamilyTemplateAgent[],
+  availableProviderNames: Set<string>,
+): ProviderSummaryEntry[] {
+  const providerFamilies = new Map<string, Set<string>>();
+  const profileDefaultProvider = new Map<string, string>();
+
+  const recordFamily = (providerName: string, familySlug: string | null | undefined) => {
+    if (!familySlug) return;
+    const key = providerName.trim().toLowerCase();
+    let fams = providerFamilies.get(key);
+    if (!fams) {
+      fams = new Set();
+      providerFamilies.set(key, fams);
+    }
+    fams.add(familySlug);
+  };
+
+  for (const prof of profiles) {
+    const defaultProvider = prof.provider.name.trim().toLowerCase();
+    if (prof.id) {
+      profileDefaultProvider.set(prof.id, defaultProvider);
+    }
+    recordFamily(defaultProvider, prof.familySlug);
+    if (prof.providerConfigs) {
+      for (const config of prof.providerConfigs) {
+        recordFamily(config.providerName, prof.familySlug);
+      }
+    }
+  }
+
+  const providerAgentCount = new Map<string, number>();
+  for (const agent of agents) {
+    if (!agent.profileId) continue;
+    const providerName = profileDefaultProvider.get(agent.profileId);
+    if (!providerName) continue;
+    providerAgentCount.set(providerName, (providerAgentCount.get(providerName) ?? 0) + 1);
+  }
+
+  const allProviders = new Set<string>([...providerFamilies.keys(), ...providerAgentCount.keys()]);
+
+  return Array.from(allProviders)
+    .sort()
+    .map((name) => ({
+      name,
+      available: availableProviderNames.has(name),
+      families: Array.from(providerFamilies.get(name) ?? []).sort(),
+      agentCount: providerAgentCount.get(name) ?? 0,
+    }));
+}
+
 export function selectProfilesForFamilies<TProfile extends FamilyTemplateProfile>(
   templateProfiles: TProfile[],
   templateAgents: FamilyTemplateAgent[],
@@ -236,6 +423,20 @@ export function selectProfilesForFamilies<TProfile extends FamilyTemplateProfile
     const familyMap = profilesByFamilyAndProvider.get(prof.familySlug)!;
     if (!familyMap.has(providerName)) {
       familyMap.set(providerName, prof);
+    }
+    // Asymmetry fix: index the family selection map by each providerConfig provider too, mirroring
+    // computeFamilyAlternatives (which counts config providers as alternatives). Without this a
+    // family mapped to a config-only provider — one present only in providerConfigs[].providerName,
+    // never as a profile default — has no entry here, so the mapping is silently ignored and the
+    // agent falls back to the profile default. First-writer-wins keeps ordering consistent with the
+    // alternatives map (defaults iterated before their configs, in template order).
+    if (prof.providerConfigs) {
+      for (const config of prof.providerConfigs) {
+        const configProviderName = config.providerName.trim().toLowerCase();
+        if (!familyMap.has(configProviderName)) {
+          familyMap.set(configProviderName, prof);
+        }
+      }
     }
   }
 
@@ -310,7 +511,14 @@ export function selectProfilesForFamilies<TProfile extends FamilyTemplateProfile
     const providerName = prof.provider.name.trim().toLowerCase();
 
     if (availableProviders.has(providerName)) {
-      // Provider is installed — always import as-is
+      // Provider is installed — import as-is, UNLESS the family already selected a DIFFERENT
+      // profile (e.g. a config-only-provider mapping picked a sibling whose default provider is
+      // unavailable). Without this guard both this profile and the selected one would be created,
+      // violating the project_id+family_slug uniqueness. Mirrors the fallback branch's guard.
+      if (prof.familySlug) {
+        const selectedId = selectedProfileIdsByFamily.get(prof.familySlug);
+        if (selectedId && selectedId !== prof.id) continue;
+      }
       usedProfileIds.add(prof.id);
       profilesToCreate.push(prof);
     } else if (fallbackProviderName) {
@@ -455,6 +663,23 @@ export function buildNameToIdMaps(
 
 export function buildProviderConfigLookupKey(profileId: string, configName: string): string {
   return `${profileId}:${configName.trim().toLowerCase()}`;
+}
+
+/**
+ * Preserve env entries from an imported template, including redacted ones
+ * (value === '***'). Keeping redacted keys lets the user see which secrets the
+ * config expects so they can fill in real values after import — stripping them
+ * silently was confusing because the var would just disappear from the UI.
+ *
+ * This is the SINGLE definition of the config-level (`providerConfigs[].env`) import env
+ * rule, shared by the import path, the create path, and the profiles codec. It is DISTINCT
+ * from the provider-level (`providerSettings[].env`) non-destructive merge — never unified.
+ */
+export function preserveImportedEnv(
+  env: Record<string, string> | null | undefined,
+): Record<string, string> | null {
+  if (!env) return null;
+  return Object.keys(env).length > 0 ? env : null;
 }
 
 export function mergeProjectSettingsWithInitialPrompt(

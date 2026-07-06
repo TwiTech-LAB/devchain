@@ -13,6 +13,7 @@ import {
   type AgentPresenceMap,
 } from '@/ui/lib/sessions';
 import { fetchPreflightChecks, type PreflightResult } from '@/ui/lib/preflight';
+import { providersQueryKeys } from '@/ui/lib/providers-query-keys';
 import {
   fetchThreads,
   fetchThread,
@@ -41,12 +42,16 @@ export type AgentOrGuest = {
   // Provider info enriched from providerConfig by backend
   providerConfigId?: string | null;
   modelOverride?: string | null;
+  effortOverride?: string | null;
   providerConfig?: {
     id: string;
     name: string;
     providerId: string;
     providerName?: string;
     options?: string | null;
+    /** Structured default model/effort from the selected config (dialog effective defaults) */
+    model?: string | null;
+    effort?: string | null;
   } | null;
 };
 
@@ -131,7 +136,7 @@ export const chatQueryKeys = {
   activeSessions: (projectId: string | null) => ['active-sessions', projectId] as const,
   agents: (projectId: string | null) => ['agents', projectId] as const,
   profiles: (projectId: string | null) => ['profiles', projectId] as const,
-  providers: () => ['providers'] as const,
+  providers: () => providersQueryKeys.list(),
   preflight: (rootPath?: string) => ['preflight', 'chat-page', rootPath ?? 'global'] as const,
   userThreads: (projectId: string | null) => ['threads', projectId, 'user'] as const,
   agentThreads: (projectId: string | null) => ['threads', projectId, 'agent'] as const,

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useRef, type ReactNode } from 'react';
 import {
   AlertTriangle,
   Circle,
@@ -7,6 +7,7 @@ import {
   Pencil,
   Power,
   RotateCcw,
+  SlidersHorizontal,
   Trash2,
 } from 'lucide-react';
 import { AgentContextBar } from './AgentContextBar';
@@ -39,6 +40,7 @@ interface AgentRowProps {
   providerIconUri: string | null;
   providerName: string | null;
   configDisplayName: string | null;
+  configDisplayTitle?: string | null;
   contextTrackingEnabled: boolean;
   hasSelectedProject: boolean;
   hasSession: boolean;
@@ -47,7 +49,10 @@ interface AgentRowProps {
   isRestarting: boolean;
   isLaunchingChat: boolean;
   activityBadge?: ReactNode;
-  providerConfigSubmenu: ReactNode;
+  /** Whether to show the "Overrides…" context-menu entry (hidden for guests). */
+  canOverride?: boolean;
+  /** Opens the shared Overrides dialog; receives the row trigger for focus restoration. */
+  onOpenOverrides?: (trigger: HTMLElement | null) => void;
   isTeamLead?: boolean;
   canClone?: boolean;
   onClone?: () => void;
@@ -66,6 +71,8 @@ interface AgentRowProps {
 interface AgentIdentityProps {
   agentName: string;
   configDisplayName: string | null;
+  /** Full-detail tooltip for the config label (e.g. "model: X · effort: Y"). */
+  configDisplayTitle?: string | null;
   currentActivityTitle?: string | null;
   isTeamLead?: boolean;
 }
@@ -73,6 +80,7 @@ interface AgentIdentityProps {
 export function AgentIdentity({
   agentName,
   configDisplayName,
+  configDisplayTitle,
   currentActivityTitle,
   isTeamLead = false,
 }: AgentIdentityProps) {
@@ -91,7 +99,7 @@ export function AgentIdentity({
         {configDisplayName && (
           <span
             className="max-w-[45%] shrink truncate text-[11px] font-normal text-muted-foreground"
-            title={configDisplayName}
+            title={configDisplayTitle ?? configDisplayName}
           >
             {configDisplayName}
           </span>
@@ -117,6 +125,7 @@ export function AgentRow({
   providerIconUri,
   providerName,
   configDisplayName,
+  configDisplayTitle,
   contextTrackingEnabled,
   hasSelectedProject,
   hasSession,
@@ -125,7 +134,8 @@ export function AgentRow({
   isRestarting,
   isLaunchingChat,
   activityBadge,
-  providerConfigSubmenu,
+  canOverride = false,
+  onOpenOverrides,
   isTeamLead = false,
   canClone = false,
   onClone,
@@ -141,11 +151,13 @@ export function AgentRow({
   onToggleContextTracking,
 }: AgentRowProps) {
   const anyBusy = isLaunching || isRestarting;
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
         <button
+          ref={triggerRef}
           onClick={onClick}
           disabled={isLaunchingChat}
           className={cn(
@@ -192,6 +204,7 @@ export function AgentRow({
           <AgentIdentity
             agentName={agent.name}
             configDisplayName={configDisplayName}
+            configDisplayTitle={configDisplayTitle}
             isTeamLead={isTeamLead}
             currentActivityTitle={
               isOnline && activityState === 'busy' ? currentActivityTitle : null
@@ -216,7 +229,18 @@ export function AgentRow({
         </div>
       )}
       <ContextMenuContent className="w-56">
-        {providerConfigSubmenu}
+        {canOverride && onOpenOverrides && (
+          <ContextMenuItem
+            onSelect={(event) => {
+              event.preventDefault();
+              onOpenOverrides(triggerRef.current);
+            }}
+            disabled={!hasSelectedProject || anyBusy}
+          >
+            <SlidersHorizontal className="mr-2 h-4 w-4" />
+            Overrides…
+          </ContextMenuItem>
+        )}
         <ContextMenuSeparator />
         <ContextMenuCheckboxItem
           checked={contextTrackingEnabled}

@@ -24,6 +24,7 @@ import { PtyService } from '../../../terminal/services/pty.service';
 import { TerminalSessionRegistry } from '../../../terminal/services/terminal-session/terminal-session-registry';
 import { EventsService } from '../../../events/services/events.service';
 import { resolve as resolveLaunchConfig } from '../provider-launch-config';
+import { parseProfileOptions, extractModelFromArgs } from '../../utils/profile-options';
 import { buildTmuxSessionName } from '../../utils/tmux-naming.util';
 import { CleanupStack } from './cleanup-stack';
 import type { SessionDetailDto } from '../../dtos/sessions.dto';
@@ -94,6 +95,16 @@ export class SessionRestorePipeline {
         this.checkNoRunningSession(locked.agent_id);
 
         const { agent, project, epic, provider, options, configEnv } = target;
+
+        // Effective model/effort precedence (uniform): agent override → config
+        // structured default → raw options text. Matches the launch pipeline so a
+        // restored session applies the same model/effort as a fresh launch.
+        const effectiveModel =
+          agent.modelOverride ??
+          target.configModel ??
+          extractModelFromArgs(parseProfileOptions(options));
+        const effectiveEffort = agent.effortOverride ?? target.configEffort ?? null;
+
         if (!provider.binPath) {
           throw new ValidationError(`Provider ${provider.name} is missing a binary path`, {
             providerId: provider.id,
@@ -118,7 +129,8 @@ export class SessionRestorePipeline {
           providerSessionId: locked.provider_session_id!,
           adapter,
           profileOptions: options,
-          modelOverride: agent.modelOverride,
+          modelOverride: effectiveModel,
+          effortOverride: effectiveEffort,
           providerBinPath: provider.binPath,
           providerEnv: this.storage.getProviderEnvForProject(provider.id, projectId),
           configEnv,
@@ -186,6 +198,17 @@ export class SessionRestorePipeline {
         this.terminalIO.startHealthCheck(tmuxSessionName, locked.id);
 
         // Phase 8: bindStreaming (BEFORE issuing the restore command)
+        // The row is stopped/failed (validated under the agent lock), so any
+        // surviving registry entry is stale — dispose it instead of failing
+        // with "TerminalSession already exists".
+        if (this.terminalSessionRegistry.get(locked.id)) {
+          logger.warn(
+            { sessionId: locked.id },
+            'Stale TerminalSession registry entry found during restore — disposing',
+          );
+          this.ptyService.stopStreaming(locked.id);
+          this.terminalSessionRegistry.dispose(locked.id);
+        }
         this.terminalSessionRegistry.create(locked.id, tmuxSessionName, {
           normalizeCapturedLineEndings: true,
         });
@@ -330,6 +353,11 @@ export class SessionRestorePipeline {
       provider,
       options: config.options,
       configEnv: config.env,
+      // Structured model/effort defaults from the resolved provider config
+      // (Phase-1 effort levels) — folded into the effective model/effort passed
+      // to resolveLaunchConfig so restore parity matches launch.
+      configModel: config.model,
+      configEffort: config.effort,
     };
   }
 }

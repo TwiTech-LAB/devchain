@@ -1,4 +1,6 @@
 import { OpencodeAdapter } from './opencode.adapter';
+import { ValidationError } from '../../../common/errors/error-types';
+import { EnvBuilderError } from '../../sessions/utils/env-builder';
 
 describe('OpencodeAdapter', () => {
   let adapter: OpencodeAdapter;
@@ -16,6 +18,113 @@ describe('OpencodeAdapter', () => {
   describe('mcpMode', () => {
     it('returns project_config as MCP mode', () => {
       expect(adapter.mcpMode).toBe('project_config');
+    });
+  });
+
+  describe('EffortCapability (OPENCODE_CONFIG_CONTENT env overlay)', () => {
+    const OVERLAY = 'OPENCODE_CONFIG_CONTENT';
+
+    it('exposes static metadata: requiresModelForEffort + default effort values', () => {
+      expect(adapter.requiresModelForEffort).toBe(true);
+      expect(adapter.defaultEffortValues).toEqual(['minimal', 'low', 'medium', 'high']);
+    });
+
+    it('builds the per-model overlay at provider.<pid>.models.<mid>.options.reasoningEffort (compact)', () => {
+      const { argv, env } = adapter.applyEffort([], {}, 'high', 'anthropic/claude-x');
+      // argv untouched — effort is an env overlay, never a flag
+      expect(argv).toEqual([]);
+      const value = env[OVERLAY];
+      expect(JSON.parse(value)).toEqual({
+        provider: {
+          anthropic: { models: { 'claude-x': { options: { reasoningEffort: 'high' } } } },
+        },
+      });
+      // compact serialization (env-builder rejects newlines/control chars)
+      expect(value).not.toMatch(/\n/);
+    });
+
+    it('splits pid on the FIRST slash; mid keeps any remaining slashes', () => {
+      const { env } = adapter.applyEffort([], {}, 'low', 'openrouter/anthropic/claude-x');
+      expect(JSON.parse(env[OVERLAY])).toEqual({
+        provider: {
+          openrouter: { models: { 'anthropic/claude-x': { options: { reasoningEffort: 'low' } } } },
+        },
+      });
+    });
+
+    it('deep-merges onto a pre-existing OPENCODE_CONFIG_CONTENT, preserving unrelated keys', () => {
+      const existing = JSON.stringify({
+        theme: 'tokyonight',
+        provider: {
+          anthropic: { models: { 'other-model': { options: { reasoningEffort: 'minimal' } } } },
+          openai: { models: { 'gpt-x': { options: { reasoningEffort: 'low' } } } },
+        },
+      });
+      const { env } = adapter.applyEffort(
+        [],
+        { [OVERLAY]: existing },
+        'high',
+        'anthropic/claude-x',
+      );
+      expect(JSON.parse(env[OVERLAY])).toEqual({
+        theme: 'tokyonight',
+        provider: {
+          anthropic: {
+            models: {
+              'other-model': { options: { reasoningEffort: 'minimal' } }, // sibling model preserved
+              'claude-x': { options: { reasoningEffort: 'high' } }, // new model added
+            },
+          },
+          openai: { models: { 'gpt-x': { options: { reasoningEffort: 'low' } } } }, // sibling provider preserved
+        },
+      });
+    });
+
+    it('preserves other env vars and does not write any file (argv unchanged, env-only mutation)', () => {
+      const { argv, env } = adapter.applyEffort(['--flag'], { FOO: 'bar' }, 'medium', 'a/b');
+      expect(argv).toEqual(['--flag']);
+      expect(env.FOO).toBe('bar');
+      expect(env[OVERLAY]).toBeDefined();
+    });
+
+    describe('fail-fast paths', () => {
+      it('no effectiveModel while effort active → ValidationError (no silent skip)', () => {
+        expect(() => adapter.applyEffort([], {}, 'high', undefined)).toThrow(ValidationError);
+        expect(() => adapter.applyEffort([], {}, 'high', undefined)).toThrow(/requires a model/);
+      });
+
+      it('bare model without "/" → ValidationError', () => {
+        expect(() => adapter.applyEffort([], {}, 'high', 'claude-x')).toThrow(ValidationError);
+        expect(() => adapter.applyEffort([], {}, 'high', 'claude-x')).toThrow(
+          /provider\/model model format/,
+        );
+      });
+
+      it('trailing-slash model (empty mid) → ValidationError', () => {
+        expect(() => adapter.applyEffort([], {}, 'high', 'anthropic/')).toThrow(ValidationError);
+      });
+
+      it('pre-existing OPENCODE_CONFIG_CONTENT that is invalid JSON → EnvBuilderError', () => {
+        expect(() => adapter.applyEffort([], { [OVERLAY]: '{not json' }, 'high', 'a/b')).toThrow(
+          EnvBuilderError,
+        );
+      });
+
+      it('pre-existing OPENCODE_CONFIG_CONTENT that is a non-object (array/scalar) → EnvBuilderError', () => {
+        expect(() => adapter.applyEffort([], { [OVERLAY]: '[1,2]' }, 'high', 'a/b')).toThrow(
+          EnvBuilderError,
+        );
+        expect(() => adapter.applyEffort([], { [OVERLAY]: '"scalar"' }, 'high', 'a/b')).toThrow(
+          EnvBuilderError,
+        );
+      });
+
+      it('merged result exceeding 32KB → EnvBuilderError (fail fast, actionable)', () => {
+        const huge = JSON.stringify({ pad: 'x'.repeat(33000) });
+        expect(() => adapter.applyEffort([], { [OVERLAY]: huge }, 'high', 'a/b')).toThrow(
+          /exceeds 32KB/,
+        );
+      });
     });
   });
 

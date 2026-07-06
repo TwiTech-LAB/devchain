@@ -8,6 +8,21 @@ const MAX_LOG_ENTRIES = 500;
 const MAX_LOG_BYTES = 2 * 1024 * 1024;
 const LOG_WARNING_THRESHOLD = 0.8;
 
+/**
+ * Retention floor for a mobile idempotent send after it reaches a terminal state:
+ * the entry stays non-prunable for this long so mobile's `getPendingMessages`
+ * reconciliation (and any in-window auto-retry, ≤2 min after createdAt) still
+ * finds it. Sized well above the auto-retry window.
+ */
+const MOBILE_PROTECT_FLOOR_MS = 15 * 60 * 1000;
+
+/**
+ * Hard cap on protected mobile entries. Beyond this the OLDEST protected entries
+ * revert to prunable (with a WARN) so a burst of stuck mobile sends can never
+ * pin the whole log and starve normal pruning.
+ */
+const MAX_PROTECTED_MOBILE_ENTRIES = 100;
+
 @Injectable()
 export class MessageLogService {
   private messageLog: MessageLogEntry[] = [];
@@ -31,6 +46,30 @@ export class MessageLogService {
     const index = this.logIndex.get(messageId);
     if (index === undefined) return null;
     return this.messageLog[index] ?? null;
+  }
+
+  /**
+   * Synchronous idempotency lookup: the earliest entry matching
+   * `clientMessageId` + `agentId` + `source`, or null. Intentionally synchronous
+   * so the caller can run it and {@link addEntry} back-to-back with ZERO
+   * intervening `await` — that adjacency is the load-bearing dedup invariant in
+   * `SessionsMessagePoolService.enqueue`.
+   */
+  findByClientMessageId(
+    clientMessageId: string,
+    agentId: string,
+    source: string,
+  ): MessageLogEntry | null {
+    for (const entry of this.messageLog) {
+      if (
+        entry.clientMessageId === clientMessageId &&
+        entry.agentId === agentId &&
+        entry.source === source
+      ) {
+        return entry;
+      }
+    }
+    return null;
   }
 
   update(
@@ -107,22 +146,27 @@ export class MessageLogService {
     }
 
     let pruned = false;
+    const protectedIds = this.computeProtectedMobileIds(Date.now());
 
     while (
       this.messageLog.length + 1 > MAX_LOG_ENTRIES ||
       this.logBytes + incomingBytes > MAX_LOG_BYTES
     ) {
-      const idx = this.messageLog.findIndex((e) => e.status !== 'queued');
+      // Never prune a still-queued entry (undelivered) or a protected mobile
+      // idempotent entry (non-terminal, or within its terminal retention floor).
+      const idx = this.messageLog.findIndex(
+        (e) => e.status !== 'queued' && !protectedIds.has(e.id),
+      );
 
       if (idx === -1) {
         logger.warn(
           {
             entryCount: this.messageLog.length,
-            queuedCount: this.messageLog.length,
+            protectedCount: protectedIds.size,
             bytesUsed: this.logBytes,
             incomingBytes,
           },
-          'Cannot prune message log: all entries are queued',
+          'Cannot prune message log: all remaining entries are queued or protected',
         );
         break;
       }
@@ -139,5 +183,40 @@ export class MessageLogService {
         this.logIndex.set(entry.id, idx);
       });
     }
+  }
+
+  /**
+   * Ids of mobile idempotent entries currently protected from pruning. An entry
+   * qualifies when `source==='mobile'` and it carries a `clientMessageId` AND it
+   * is either non-terminal (queued|unconfirmed) or within
+   * {@link MOBILE_PROTECT_FLOOR_MS} of reaching a terminal state. If more than
+   * {@link MAX_PROTECTED_MOBILE_ENTRIES} qualify, only the NEWEST cap-many stay
+   * protected — the oldest revert to prunable (WARN) so protection can't starve
+   * the log.
+   */
+  private computeProtectedMobileIds(now: number): Set<string> {
+    const protectedEntries = this.messageLog.filter((e) => this.isMobileProtected(e, now));
+    if (protectedEntries.length <= MAX_PROTECTED_MOBILE_ENTRIES) {
+      return new Set(protectedEntries.map((e) => e.id));
+    }
+
+    logger.warn(
+      { protectedCount: protectedEntries.length, cap: MAX_PROTECTED_MOBILE_ENTRIES },
+      'Protected mobile entries exceed cap; oldest revert to prunable',
+    );
+    const keep = [...protectedEntries]
+      .sort((a, b) => a.timestamp - b.timestamp)
+      .slice(protectedEntries.length - MAX_PROTECTED_MOBILE_ENTRIES);
+    return new Set(keep.map((e) => e.id));
+  }
+
+  private isMobileProtected(entry: MessageLogEntry, now: number): boolean {
+    if (entry.source !== 'mobile' || !entry.clientMessageId) return false;
+    if (entry.status === 'queued' || entry.status === 'unconfirmed') return true;
+    // Terminal (delivered|failed): protected until the retention floor lapses.
+    // `deliveredAt` marks the terminal transition; a failed entry has none, so
+    // fall back to creation time (failure lands ~immediately after enqueue).
+    const terminalAt = entry.deliveredAt ?? entry.timestamp;
+    return now - terminalAt < MOBILE_PROTECT_FLOOR_MS;
   }
 }

@@ -10,13 +10,17 @@ import { EventsService } from '../../events/services/events.service';
 import { TranscriptPathValidator } from './transcript-path-validator.service';
 import { SessionReaderAdapterFactory } from '../adapters/session-reader-adapter.factory';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
-import { ProviderAdapterFactory, isTranscriptDiscoveryCapable } from '../../providers/adapters';
-import { readFileHead } from '../adapters/utils/file-search.util';
-import type { SessionFileInfo } from '../adapters/session-reader-adapter.interface';
 import {
-  extractCodexMetadataFromContent,
-  type CodexFileMetadata,
-} from '../adapters/codex-session-reader.adapter';
+  ProviderAdapterFactory,
+  isHookCapable,
+  isTranscriptDiscoveryCapable,
+} from '../../providers/adapters';
+import { readFileHead } from '../adapters/utils/file-search.util';
+import type {
+  SessionFileInfo,
+  SessionReaderAdapter,
+  TranscriptCandidateMetadata,
+} from '../adapters/session-reader-adapter.interface';
 import type { ClaudeHooksSessionStartedEventPayload } from '../../events/catalog/claude.hooks.session.started';
 import type { SessionStartedEventPayload } from '../../events/catalog/session.started';
 
@@ -48,7 +52,7 @@ interface CandidateReadResult {
   file: SessionFileInfo;
   content: string;
   contentTimestamp: Date | null;
-  codexMetadata?: CodexFileMetadata;
+  candidateMetadata?: TranscriptCandidateMetadata;
 }
 
 type MatchType = 'metadata' | 'metadata+content' | 'content' | 'short-id' | 'timestamp-fallback';
@@ -143,22 +147,24 @@ export class TranscriptPersistenceListener {
   // ---------------------------------------------------------------------------
 
   private async processHookPayload(payload: ClaudeHooksSessionStartedEventPayload): Promise<void> {
-    // Provider branch. Claude (absent providerName ⇒ 'claude') binds its transcript
-    // FROM the hook — the original path below, kept byte-identical. Providers that
-    // bind deterministically at launch (Copilot, HookCapability adopter #2) are
-    // already bound by Phase-1, so their hook is an idempotent CONFIRMATION.
     const providerName = (payload.providerName ?? 'claude').toLowerCase();
-    if (providerName !== 'claude') {
+
+    // Bind-vs-confirm derives from HookCapability.hooksProvideTranscriptPath:
+    // claude (=true) binds from the hook; copilot (=false) confirms a launch-time
+    // binding. Legacy default: absent providerName → 'claude' → bind (identical).
+    // Unresolvable or non-hook-capable adapter → confirm-only (fail-safe).
+    if (!this.hooksBindTranscriptPath(providerName)) {
       this.confirmProviderHookLifecycle(payload, providerName);
       return;
     }
 
-    const { transcriptPath, claudeSessionId, sessionId, agentId, projectId } = payload;
+    const { transcriptPath, sessionId, agentId, projectId } = payload;
+    const providerSessionId = payload.providerSessionId ?? payload.claudeSessionId;
 
     // Skip if no transcript path provided
     if (!transcriptPath) {
       this.logger.debug(
-        { sessionId, claudeSessionId },
+        { sessionId, providerSessionId },
         'No transcriptPath in hook payload — skipping persistence',
       );
       return;
@@ -167,7 +173,7 @@ export class TranscriptPersistenceListener {
     // Skip if no session to update
     if (!sessionId) {
       this.logger.warn(
-        { claudeSessionId, transcriptPath },
+        { providerSessionId, transcriptPath },
         'Hook payload missing sessionId — cannot persist transcript path',
       );
       return;
@@ -176,7 +182,7 @@ export class TranscriptPersistenceListener {
     // Validate path shape (does not check file existence)
     let normalizedPath: string;
     try {
-      normalizedPath = this.validator.validateShape(transcriptPath, 'claude');
+      normalizedPath = this.validator.validateShape(transcriptPath, providerName);
     } catch (error) {
       this.logger.warn(
         { error, transcriptPath, sessionId },
@@ -192,18 +198,18 @@ export class TranscriptPersistenceListener {
          SET transcript_path = ?, provider_session_id = ?, updated_at = ?
          WHERE id = ?`,
       )
-      .run(normalizedPath, claudeSessionId, now, sessionId);
+      .run(normalizedPath, providerSessionId, now, sessionId);
 
     if (result.changes === 0) {
       this.logger.warn(
-        { sessionId, claudeSessionId },
+        { sessionId, providerSessionId },
         'Session not found for transcript persistence — hook may have arrived before session record was created',
       );
       return;
     }
 
     this.logger.log(
-      { sessionId, transcriptPath: normalizedPath, claudeSessionId },
+      { sessionId, transcriptPath: normalizedPath, providerSessionId },
       'Persisted transcript metadata to session',
     );
 
@@ -214,9 +220,23 @@ export class TranscriptPersistenceListener {
         agentId,
         projectId,
         transcriptPath: normalizedPath,
-        providerName: 'claude',
-        providerSessionId: claudeSessionId ?? undefined,
+        providerName,
+        providerSessionId: providerSessionId ?? undefined,
       });
+    }
+  }
+
+  /**
+   * Resolve whether the provider's hook provides the transcript path (bind) or
+   * merely confirms a deterministic Phase-1 binding. Returns false when the
+   * adapter is unresolvable or lacks HookCapability (fail-safe → confirm-only).
+   */
+  private hooksBindTranscriptPath(providerName: string): boolean {
+    try {
+      const adapter = this.providerAdapterFactory.getAdapter(providerName);
+      return isHookCapable(adapter) && adapter.hooksProvideTranscriptPath;
+    } catch {
+      return false;
     }
   }
 
@@ -396,14 +416,14 @@ export class TranscriptPersistenceListener {
           continue;
         }
 
-        const readCandidates = await this.readCandidates(files, providerName, sessionId);
+        const readCandidates = await this.readCandidates(files, providerName, adapter, sessionId);
         const candidates = await this.excludeAlreadyAssignedCandidates(
           readCandidates,
           sessionId,
           realpathCache,
         );
 
-        if (providerName === 'codex') {
+        if (adapter.extractCandidateMetadata) {
           const sessionStartedAt = this.getSessionStartedAt(sessionId);
           if (sessionStartedAt) {
             const metadataMatch = await this.findByMetadata(candidates, {
@@ -476,11 +496,17 @@ export class TranscriptPersistenceListener {
         if (isFinalAttempt) {
           const sessionStartedAt = this.getSessionStartedAt(sessionId);
           if (sessionStartedAt) {
+            // Workspace filtering is presence-based: narrow by cwd only when at
+            // least one candidate surfaced a workspacePath. Providers whose
+            // adapter yields no workspace metadata rank all in-window matches.
+            const hasWorkspaceMetadata = candidates.some(
+              (candidate) => candidate.candidateMetadata?.workspacePath,
+            );
             const timestampHeuristicMatch = await this.findByContentTimestampWindow(
               candidates,
               sessionStartedAt,
               CONTENT_TIMESTAMP_WINDOW_MS,
-              providerName === 'codex' ? await getResolvedProjectRoot() : null,
+              hasWorkspaceMetadata ? await getResolvedProjectRoot() : null,
               realpathCache,
             );
             if (timestampHeuristicMatch) {
@@ -996,6 +1022,7 @@ export class TranscriptPersistenceListener {
   private async readCandidates(
     files: SessionFileInfo[],
     providerName: string,
+    adapter: SessionReaderAdapter,
     sessionId?: string,
   ): Promise<CandidateReadResult[]> {
     const maxBytes = this.getSearchMaxBytes(providerName);
@@ -1007,20 +1034,18 @@ export class TranscriptPersistenceListener {
       if (content === null) {
         continue;
       }
-      const codexMetadata =
-        providerName.toLowerCase() === 'codex'
-          ? extractCodexMetadataFromContent(content)
-          : undefined;
+      const candidateMetadata = adapter.extractCandidateMetadata?.(content);
       const fileWithProviderSessionId =
-        codexMetadata?.providerSessionId && !file.providerSessionId
-          ? { ...file, providerSessionId: codexMetadata.providerSessionId }
+        candidateMetadata?.providerSessionId && !file.providerSessionId
+          ? { ...file, providerSessionId: candidateMetadata.providerSessionId }
           : file;
 
       candidates.push({
         file: fileWithProviderSessionId,
         content,
-        contentTimestamp: this.extractContentTimestamp(content),
-        codexMetadata,
+        contentTimestamp:
+          adapter.extractContentTimestamp?.(content) ?? this.extractContentTimestamp(content),
+        candidateMetadata,
       });
 
       if (sessionId && content.includes(sessionId)) {
@@ -1120,17 +1145,17 @@ export class TranscriptPersistenceListener {
     const metadataCandidates: CandidateReadResult[] = [];
 
     for (const candidate of candidates) {
-      const metadata = candidate.codexMetadata;
-      if (!metadata?.providerSessionId || !metadata.metaCwd || !metadata.metaTimestamp) {
+      const metadata = candidate.candidateMetadata;
+      if (!metadata?.providerSessionId || !metadata.workspacePath || !metadata.timestamp) {
         continue;
       }
 
-      const metaTimestamp = new Date(metadata.metaTimestamp);
+      const metaTimestamp = new Date(metadata.timestamp);
       if (Number.isNaN(metaTimestamp.getTime())) {
         continue;
       }
 
-      const metaCwd = await this.safeRealpathCached(metadata.metaCwd, ctx.realpathCache);
+      const metaCwd = await this.safeRealpathCached(metadata.workspacePath, ctx.realpathCache);
       if (metaCwd !== ctx.projectRootRealpath) {
         continue;
       }
@@ -1146,8 +1171,8 @@ export class TranscriptPersistenceListener {
     }
 
     metadataCandidates.sort((a, b) => {
-      const aTimestamp = new Date(a.codexMetadata?.metaTimestamp ?? 0).getTime();
-      const bTimestamp = new Date(b.codexMetadata?.metaTimestamp ?? 0).getTime();
+      const aTimestamp = new Date(a.candidateMetadata?.timestamp ?? 0).getTime();
+      const bTimestamp = new Date(b.candidateMetadata?.timestamp ?? 0).getTime();
       return (
         Math.abs(aTimestamp - ctx.sessionStartedAt.getTime()) -
         Math.abs(bTimestamp - ctx.sessionStartedAt.getTime())
@@ -1167,9 +1192,9 @@ export class TranscriptPersistenceListener {
   }
 
   private extractContentTimestamp(content: string): Date | null {
-    const codexTimestampMatch = content.match(/"timestamp"\s*:\s*"([^"]+)"/);
-    if (codexTimestampMatch?.[1]) {
-      const parsed = new Date(codexTimestampMatch[1]);
+    const timestampMatch = content.match(/"timestamp"\s*:\s*"([^"]+)"/);
+    if (timestampMatch?.[1]) {
+      const parsed = new Date(timestampMatch[1]);
       if (!Number.isNaN(parsed.getTime())) {
         return parsed;
       }
@@ -1204,11 +1229,11 @@ export class TranscriptPersistenceListener {
     const cwdFilteredMatches: CandidateReadResult[] = [];
     if (projectRootRealpath) {
       for (const candidate of matchesInWindow) {
-        if (!candidate.codexMetadata?.metaCwd) {
+        if (!candidate.candidateMetadata?.workspacePath) {
           continue;
         }
         const metaCwd = await this.safeRealpathCached(
-          candidate.codexMetadata.metaCwd,
+          candidate.candidateMetadata.workspacePath,
           realpathCache,
         );
         if (metaCwd === projectRootRealpath) {

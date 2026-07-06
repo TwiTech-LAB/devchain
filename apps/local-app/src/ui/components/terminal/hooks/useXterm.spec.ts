@@ -1,5 +1,5 @@
 import { renderHook, waitFor } from '@testing-library/react';
-import { useRef } from 'react';
+import { act, useRef } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { useXterm } from './useXterm';
@@ -30,6 +30,8 @@ jest.mock('@xterm/xterm', () => {
       dispose: jest.fn(),
       attachCustomWheelEventHandler: jest.fn(),
       scrollLines: jest.fn(),
+      scrollToBottom: jest.fn(),
+      scrollToLine: jest.fn(),
       onData: jest.fn().mockReturnValue({ dispose: jest.fn() }),
       onScroll: jest.fn().mockReturnValue({ dispose: jest.fn() }),
       onSelectionChange: jest.fn().mockReturnValue({ dispose: jest.fn() }),
@@ -245,7 +247,6 @@ describe('useXterm', () => {
         'form', // inputMode
         undefined, // hasHistoryRef
         undefined, // isLoadingHistoryRef
-        undefined, // historyViewportOffsetRef
         undefined, // isHistoryInFlightRef
         undefined, // pendingHistoryFramesRef
         customScrollback,
@@ -278,7 +279,6 @@ describe('useXterm', () => {
           'form',
           undefined,
           undefined,
-          undefined,
           undefined, // isHistoryInFlightRef
           undefined, // pendingHistoryFramesRef
           belowMin,
@@ -308,7 +308,6 @@ describe('useXterm', () => {
           fitAddonRef,
           undefined,
           'form',
-          undefined,
           undefined,
           undefined,
           undefined, // isHistoryInFlightRef
@@ -366,7 +365,6 @@ describe('useXterm', () => {
           fitAddonRef,
           undefined,
           'form',
-          undefined,
           undefined,
           undefined,
           undefined, // isHistoryInFlightRef
@@ -525,7 +523,6 @@ describe('useXterm', () => {
           undefined,
           undefined,
           undefined,
-          undefined,
           DEFAULT_TERMINAL_SCROLLBACK,
           undefined,
           'ocean',
@@ -554,7 +551,6 @@ describe('useXterm', () => {
           fitAddonRef,
           undefined,
           'form',
-          undefined,
           undefined,
           undefined,
           undefined,
@@ -600,7 +596,6 @@ describe('useXterm', () => {
           undefined,
           undefined,
           undefined,
-          undefined,
           DEFAULT_TERMINAL_SCROLLBACK,
           undefined,
           appTheme,
@@ -617,6 +612,389 @@ describe('useXterm', () => {
       expect(result.current.xtermRef.current).toBe(terminal);
       expect(terminal!.dispose).not.toHaveBeenCalled();
       expect(terminal!.options.theme).toBe(DARK_XTERM_THEME);
+    });
+  });
+
+  describe('visibility-aware scroll guard and re-show restore', () => {
+    /**
+     * Test layer: UI hook (jsdom). Proves the WIRING between useXterm and the detector seam —
+     * that visibility is read from `offsetParent`, gates the history request, and drives the
+     * deterministic re-show restore. The policy math itself is proven cheaper in
+     * `scroll-history-detector.spec.ts`; here we only simulate viewport moves via the mock buffer
+     * and make no claim about real-browser scroll event ordering.
+     */
+    const mockSocket = { emit: jest.fn(), connected: true, id: 'sock-1' };
+
+    function setVisible(el: HTMLElement, visible: boolean) {
+      Object.defineProperty(el, 'offsetParent', {
+        configurable: true,
+        get: () => (visible ? document.body : null),
+      });
+    }
+
+    function renderScrollHook(hasHistory: boolean, inputMode: 'form' | 'tty' = 'form') {
+      const hasHistoryRef = { current: hasHistory };
+      const isLoadingHistoryRef = { current: false };
+      const isHistoryInFlightRef = { current: false };
+      const pendingHistoryFramesRef = { current: [] as { sequence: number; data: string }[] };
+      const terminalRef = { current: mockContainerElement };
+
+      const { result } = renderHook(() => {
+        const xtermRef = useRef<Terminal | null>(null);
+        const fitAddonRef = useRef<FitAddon | null>(null);
+        useXterm(
+          terminalRef,
+          'test-session',
+          xtermRef,
+          fitAddonRef,
+          undefined,
+          inputMode,
+          hasHistoryRef,
+          isLoadingHistoryRef,
+          isHistoryInFlightRef,
+          pendingHistoryFramesRef,
+          DEFAULT_TERMINAL_SCROLLBACK,
+          mockSocket as never,
+        );
+        return { xtermRef, fitAddonRef };
+      });
+
+      const terminal = result.current.xtermRef.current as unknown as {
+        buffer: { active: { viewportY: number; baseY: number } };
+        scrollToBottom: jest.Mock;
+        scrollToLine: jest.Mock;
+      };
+      return { terminal, isHistoryInFlightRef };
+    }
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+      mockSocket.emit.mockClear();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    function emittedFullHistory() {
+      return mockSocket.emit.mock.calls.some(
+        ([event]) => event === 'terminal:request_full_history',
+      );
+    }
+
+    // Dispatch the capture-phase Shift+PageUp keyboard gesture on the terminal container,
+    // mirroring a real user scroll intent. Fake timers freeze Date.now(), so the stamped
+    // timestamp tracks jest.advanceTimersByTime.
+    function stampKeyboardGesture() {
+      act(() => {
+        mockContainerElement.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            shiftKey: true,
+            code: 'PageUp',
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      });
+    }
+
+    it('requests full history on a genuine scroll-up while visible', () => {
+      setVisible(mockContainerElement, true);
+      const { terminal } = renderScrollHook(true);
+
+      // Establish at-bottom baseline.
+      terminal.buffer.active.baseY = 100;
+      terminal.buffer.active.viewportY = 100;
+      act(() => {
+        jest.advanceTimersByTime(100);
+      });
+      expect(emittedFullHistory()).toBe(false);
+
+      // A real user gesture authorizes the request.
+      stampKeyboardGesture();
+
+      // Scroll up (leaving the bottom).
+      terminal.buffer.active.viewportY = 40;
+      act(() => {
+        jest.advanceTimersByTime(100);
+      });
+      expect(emittedFullHistory()).toBe(true);
+    });
+
+    it('does NOT request on a programmatic scroll-up with no user gesture', () => {
+      setVisible(mockContainerElement, true);
+      const { terminal } = renderScrollHook(true);
+
+      terminal.buffer.active.baseY = 100;
+      terminal.buffer.active.viewportY = 100;
+      act(() => {
+        jest.advanceTimersByTime(100);
+      });
+
+      // Programmatic leaving-bottom with no gesture (resize reflow / stale-scrollTop sync).
+      terminal.buffer.active.viewportY = 40;
+      act(() => {
+        jest.advanceTimersByTime(100);
+      });
+      expect(emittedFullHistory()).toBe(false);
+    });
+
+    it('never requests full history while hidden even if the buffer jumps to the top', () => {
+      setVisible(mockContainerElement, false);
+      const { terminal } = renderScrollHook(true);
+
+      // Buffer viewport races to the top while hidden (the corruption we defend against).
+      terminal.buffer.active.baseY = 100;
+      terminal.buffer.active.viewportY = 0;
+      act(() => {
+        jest.advanceTimersByTime(100);
+      });
+
+      expect(emittedFullHistory()).toBe(false);
+    });
+
+    it('restores the viewport to bottom on re-show and re-enables genuine scroll-up', () => {
+      setVisible(mockContainerElement, true);
+      const { terminal } = renderScrollHook(true);
+
+      // Visible, at bottom.
+      terminal.buffer.active.baseY = 100;
+      terminal.buffer.active.viewportY = 100;
+      act(() => {
+        jest.advanceTimersByTime(100);
+      });
+
+      // Hide the container (poll arms the pending-restore latch).
+      setVisible(mockContainerElement, false);
+      act(() => {
+        jest.advanceTimersByTime(100);
+      });
+
+      // Re-show with a corrupted (top) viewport; a raced poll must be suppressed, not emit.
+      setVisible(mockContainerElement, true);
+      terminal.buffer.active.viewportY = 0;
+      act(() => {
+        jest.advanceTimersByTime(100);
+      });
+      expect(emittedFullHistory()).toBe(false);
+      expect(terminal.scrollToBottom).not.toHaveBeenCalled();
+
+      // After the settle delay the deterministic restore runs.
+      act(() => {
+        jest.advanceTimersByTime(300);
+      });
+      expect(terminal.scrollToBottom).toHaveBeenCalled();
+
+      // Detector was reset (intent cleared) → a programmatic scroll-up alone must NOT emit.
+      terminal.buffer.active.viewportY = 40;
+      act(() => {
+        jest.advanceTimersByTime(100);
+      });
+      expect(emittedFullHistory()).toBe(false);
+
+      // A fresh genuine gesture re-enables the request after restore.
+      terminal.buffer.active.viewportY = 100;
+      act(() => {
+        jest.advanceTimersByTime(100);
+      });
+      stampKeyboardGesture();
+      terminal.buffer.active.viewportY = 40;
+      act(() => {
+        jest.advanceTimersByTime(100);
+      });
+      expect(emittedFullHistory()).toBe(true);
+    });
+
+    it('restores the viewport to the saved offset (not bottom) on re-show when the user was browsing history', () => {
+      setVisible(mockContainerElement, true);
+      const { terminal } = renderScrollHook(true);
+
+      // At bottom.
+      terminal.buffer.active.baseY = 100;
+      terminal.buffer.active.viewportY = 100;
+      act(() => {
+        jest.advanceTimersByTime(100);
+      });
+
+      // User had scrolled up into history (30 lines above the bottom). lastVisible tracking is
+      // independent of the gesture gate, so a programmatic move is enough to seed the offset the
+      // restore must return to — no request fires here.
+      terminal.buffer.active.viewportY = 70;
+      act(() => {
+        jest.advanceTimersByTime(100);
+      });
+      expect(emittedFullHistory()).toBe(false);
+
+      // Hide → re-show with the stale-scrollTop race (viewport clamped to top while hidden).
+      setVisible(mockContainerElement, false);
+      act(() => {
+        jest.advanceTimersByTime(100);
+      });
+      setVisible(mockContainerElement, true);
+      terminal.buffer.active.viewportY = 0;
+      act(() => {
+        jest.advanceTimersByTime(100);
+      });
+      expect(emittedFullHistory()).toBe(false);
+
+      // After the settle delay the deterministic restore runs the NON-bottom branch:
+      // scrollToLine(baseY - offsetFromBottom) = scrollToLine(100 - 30) = 70.
+      act(() => {
+        jest.advanceTimersByTime(300);
+      });
+      expect(terminal.scrollToBottom).not.toHaveBeenCalled();
+      expect(terminal.scrollToLine).toHaveBeenCalledWith(70);
+    });
+
+    function getWheelCallback(terminal: unknown): (e: WheelEvent) => boolean {
+      const t = terminal as { attachCustomWheelEventHandler: jest.Mock };
+      return t.attachCustomWheelEventHandler.mock.calls[0][0] as (e: WheelEvent) => boolean;
+    }
+
+    function wheelEvent(deltaY: number): WheelEvent {
+      return { deltaY, preventDefault: jest.fn() } as unknown as WheelEvent;
+    }
+
+    function establishAtBottom(terminal: {
+      buffer: { active: { viewportY: number; baseY: number } };
+    }) {
+      terminal.buffer.active.baseY = 100;
+      terminal.buffer.active.viewportY = 100;
+      act(() => {
+        jest.advanceTimersByTime(100);
+      });
+      mockSocket.emit.mockClear();
+    }
+
+    it('host-path wheel-up stamps intent and triggers a request', () => {
+      setVisible(mockContainerElement, true);
+      const { terminal } = renderScrollHook(true);
+      establishAtBottom(terminal);
+
+      // Host-scroll wheel-up (form mode, no mouse tracking) stamps intent before scrollLines.
+      const wheel = getWheelCallback(terminal);
+      act(() => {
+        wheel(wheelEvent(-120));
+      });
+
+      // The scroll lands above the bottom; the poll sees fresh intent → emits.
+      terminal.buffer.active.viewportY = 40;
+      act(() => {
+        jest.advanceTimersByTime(100);
+      });
+      expect(emittedFullHistory()).toBe(true);
+    });
+
+    it('wheel forwarded to a TUI with mouse tracking does NOT stamp intent', () => {
+      setVisible(mockContainerElement, true);
+      const { terminal } = renderScrollHook(true, 'tty');
+      // TUI has wheel-capable mouse tracking → the wheel handler bypasses to xterm.
+      (terminal as unknown as { modes: { mouseTrackingMode: string } }).modes.mouseTrackingMode =
+        'any';
+      establishAtBottom(terminal);
+
+      const wheel = getWheelCallback(terminal);
+      act(() => {
+        // Returns true (forwarded to TUI); must NOT stamp intent.
+        expect(wheel(wheelEvent(-120))).toBe(true);
+      });
+
+      terminal.buffer.active.viewportY = 40;
+      act(() => {
+        jest.advanceTimersByTime(100);
+      });
+      expect(emittedFullHistory()).toBe(false);
+    });
+
+    it('Shift+PageDown also stamps intent (xterm viewport scroll key)', () => {
+      setVisible(mockContainerElement, true);
+      const { terminal } = renderScrollHook(true);
+      establishAtBottom(terminal);
+
+      act(() => {
+        mockContainerElement.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            shiftKey: true,
+            code: 'PageDown',
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      });
+
+      terminal.buffer.active.viewportY = 40;
+      act(() => {
+        jest.advanceTimersByTime(100);
+      });
+      expect(emittedFullHistory()).toBe(true);
+    });
+
+    it('unmodified PageUp (a shell key sequence) does NOT stamp intent', () => {
+      setVisible(mockContainerElement, true);
+      const { terminal } = renderScrollHook(true);
+      establishAtBottom(terminal);
+
+      act(() => {
+        mockContainerElement.dispatchEvent(
+          new KeyboardEvent('keydown', { code: 'PageUp', bubbles: true, cancelable: true }),
+        );
+      });
+
+      terminal.buffer.active.viewportY = 40;
+      act(() => {
+        jest.advanceTimersByTime(100);
+      });
+      expect(emittedFullHistory()).toBe(false);
+    });
+
+    it('pointerdown on the viewport stamps intent', () => {
+      setVisible(mockContainerElement, true);
+      // The scrollbar lives on .xterm-viewport; provide one for the listener to attach to.
+      const viewport = document.createElement('div');
+      viewport.className = 'xterm-viewport';
+      mockContainerElement.appendChild(viewport);
+      const { terminal } = renderScrollHook(true);
+      establishAtBottom(terminal);
+
+      act(() => {
+        viewport.dispatchEvent(new Event('pointerdown'));
+      });
+
+      terminal.buffer.active.viewportY = 40;
+      act(() => {
+        jest.advanceTimersByTime(100);
+      });
+      expect(emittedFullHistory()).toBe(true);
+    });
+
+    it('slow scrollbar drag past the decay window still loads history via pointermove refresh', () => {
+      setVisible(mockContainerElement, true);
+      const viewport = document.createElement('div');
+      viewport.className = 'xterm-viewport';
+      mockContainerElement.appendChild(viewport);
+      const { terminal } = renderScrollHook(true);
+      establishAtBottom(terminal);
+
+      // Drag starts (pointerdown stamps intent).
+      act(() => {
+        viewport.dispatchEvent(new Event('pointerdown'));
+      });
+
+      // Hold the drag longer than SCROLL_GESTURE_STALE_MS without moving the viewport.
+      act(() => {
+        jest.advanceTimersByTime(2500);
+      });
+
+      // A pointermove mid-drag refreshes intent so it does not expire.
+      act(() => {
+        viewport.dispatchEvent(new Event('pointermove'));
+      });
+
+      terminal.buffer.active.viewportY = 40;
+      act(() => {
+        jest.advanceTimersByTime(100);
+      });
+      expect(emittedFullHistory()).toBe(true);
     });
   });
 });

@@ -178,6 +178,40 @@ describe('ProviderProjectSyncService', () => {
 
         expect(result.insertedCount).toBe(1);
       });
+
+      it('propagates template config model/effort structured defaults to createIfMissing', async () => {
+        mockTemplateService.getBundledTemplate.mockReturnValue({
+          content: {
+            profiles: [
+              {
+                name: 'Default Profile',
+                providerConfigs: [
+                  {
+                    name: 'Claude Config',
+                    providerName: 'Claude',
+                    options: null,
+                    env: null,
+                    model: 'opus',
+                    effort: 'high',
+                  },
+                ],
+              },
+            ],
+          },
+          source: 'bundled',
+        });
+        mockStorage.createIfMissing.mockResolvedValue({ inserted: true });
+
+        await service.syncProviderToAllProjects('provider-1');
+
+        expect(mockStorage.createIfMissing).toHaveBeenCalledWith(
+          expect.objectContaining({
+            name: 'Claude Config',
+            model: 'opus',
+            effort: 'high',
+          }),
+        );
+      });
     });
 
     describe('options passthrough', () => {

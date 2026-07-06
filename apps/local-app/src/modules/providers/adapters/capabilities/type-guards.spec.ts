@@ -8,6 +8,7 @@ import {
   isMcpCli,
   isGlobalMcpConfigCapable,
   isContextWindowCapable,
+  isEffortCapable,
   isHookCapable,
   isProjectProvisioningCapable,
   isTranscriptDiscoveryCapable,
@@ -90,6 +91,35 @@ describe('type-guards', () => {
         expect(typeof claude.applyContextWindowConfig).toBe('function');
         expect(typeof claude.getCompactThreshold).toBe('function');
         expect(typeof claude.getReadTimeContextWindow).toBe('function');
+      }
+    });
+  });
+
+  describe('isEffortCapable', () => {
+    it('returns true for the effort adopters (claude, codex, copilot argv + opencode env overlay)', () => {
+      expect(isEffortCapable(claude)).toBe(true);
+      expect(isEffortCapable(codex)).toBe(true);
+      expect(isEffortCapable(copilot)).toBe(true);
+      expect(isEffortCapable(opencode)).toBe(true);
+    });
+
+    it('returns false for agy (not effort-capable — effort is embedded in model names)', () => {
+      expect(isEffortCapable(antigravity)).toBe(false);
+    });
+
+    it('flags opencode as per-model (requiresModelForEffort) but not the argv adopters', () => {
+      if (isEffortCapable(opencode)) {
+        expect(opencode.requiresModelForEffort).toBe(true);
+      }
+      if (isEffortCapable(claude)) {
+        expect(claude.requiresModelForEffort).toBeUndefined();
+      }
+    });
+
+    it('narrows type to EffortCapability, exposing defaultEffortValues + applyEffort', () => {
+      if (isEffortCapable(claude)) {
+        expect(Array.isArray(claude.defaultEffortValues)).toBe(true);
+        expect(typeof claude.applyEffort).toBe('function');
       }
     });
   });

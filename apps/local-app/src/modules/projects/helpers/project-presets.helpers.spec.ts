@@ -3,6 +3,7 @@ import type { SettingsService } from '../../settings/services/settings.service';
 import { PresetSettingsDelegate } from '../../settings/local/delegates/preset-settings.delegate';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import {
+  applyAgentConfigs,
   applyPresetWithHelper,
   doesProjectMatchPresetWithHelper,
   type ProjectPreset,
@@ -538,6 +539,317 @@ describe('project-presets.helpers', () => {
         providerConfigId: 'cfg-claude',
         modelOverride: null,
       });
+    });
+  });
+
+  describe('applyAgentConfigs (shared inner loop)', () => {
+    // agentName(lowercased) -> agentId, and buildProviderConfigLookupKey(profileId, name) -> configId
+    const nameMaps = {
+      agentNameToId: new Map([['coder', 'agent-1']]),
+      configLookupMap: new Map([['profile-1:claude-config', 'cfg-claude']]),
+    };
+
+    const mockAgentsList = (agent: Record<string, unknown>) => {
+      storage.listAgents.mockResolvedValue({
+        items: [{ id: 'agent-1', name: 'Coder', profileId: 'profile-1', ...agent }],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+    };
+
+    it('resolves the provider config via configLookupMap and preserves overrides when omitted (undefined)', async () => {
+      mockAgentsList({
+        providerConfigId: 'old-cfg',
+        modelOverride: 'keep-me',
+        effortOverride: 'low',
+      });
+      storage.updateAgent.mockResolvedValue({} as never);
+
+      const result = await applyAgentConfigs(
+        projectId,
+        [{ agentName: 'Coder', providerConfigName: 'claude-config' }],
+        { storage: storage as unknown as StorageService },
+        nameMaps,
+      );
+
+      expect(result).toEqual({ applied: 1, warnings: [] });
+      // Only providerConfigId is written; model/effort omitted → existing values preserved.
+      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', {
+        providerConfigId: 'cfg-claude',
+      });
+      // Never mutates active-preset state (that is applyPresetWithHelper's job only).
+      expect(settings.setProjectActivePreset).not.toHaveBeenCalled();
+    });
+
+    it('clears overrides when explicitly set to null', async () => {
+      mockAgentsList({
+        providerConfigId: 'old-cfg',
+        modelOverride: 'stale',
+        effortOverride: 'high',
+      });
+      storage.updateAgent.mockResolvedValue({} as never);
+
+      await applyAgentConfigs(
+        projectId,
+        [
+          {
+            agentName: 'Coder',
+            providerConfigName: 'claude-config',
+            modelOverride: null,
+            effortOverride: null,
+          },
+        ],
+        { storage: storage as unknown as StorageService },
+        nameMaps,
+      );
+
+      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', {
+        providerConfigId: 'cfg-claude',
+        modelOverride: null,
+        effortOverride: null,
+      });
+    });
+
+    it('applies a concrete value even when it equals the config default (no default-stripping)', async () => {
+      mockAgentsList({ providerConfigId: 'old-cfg', modelOverride: null });
+      storage.updateAgent.mockResolvedValue({} as never);
+
+      await applyAgentConfigs(
+        projectId,
+        [
+          {
+            agentName: 'Coder',
+            providerConfigName: 'claude-config',
+            modelOverride: 'openai/gpt-5',
+            effortOverride: 'medium',
+          },
+        ],
+        { storage: storage as unknown as StorageService },
+        nameMaps,
+      );
+
+      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', {
+        providerConfigId: 'cfg-claude',
+        modelOverride: 'openai/gpt-5',
+        effortOverride: 'medium',
+      });
+    });
+
+    it('warns (not silent) and skips when the agent name is unknown', async () => {
+      mockAgentsList({ providerConfigId: 'old-cfg' });
+      storage.updateAgent.mockResolvedValue({} as never);
+
+      const result = await applyAgentConfigs(
+        projectId,
+        [{ agentName: 'Ghost', providerConfigName: 'claude-config' }],
+        { storage: storage as unknown as StorageService },
+        nameMaps,
+      );
+
+      expect(result.applied).toBe(0);
+      expect(result.warnings).toEqual(['Agent "Ghost" not found in project']);
+      expect(storage.updateAgent).not.toHaveBeenCalled();
+    });
+
+    it('warns (not silent) and skips when the provider config is not found for the agent', async () => {
+      mockAgentsList({ providerConfigId: 'old-cfg' });
+      storage.updateAgent.mockResolvedValue({} as never);
+
+      const result = await applyAgentConfigs(
+        projectId,
+        [{ agentName: 'Coder', providerConfigName: 'missing-config' }],
+        { storage: storage as unknown as StorageService },
+        nameMaps,
+      );
+
+      expect(result.applied).toBe(0);
+      expect(result.warnings).toEqual([
+        'Provider config "missing-config" not found for agent "Coder"',
+      ]);
+      expect(storage.updateAgent).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('effortOverride semantics (mirrors modelOverride)', () => {
+    const baseAgent = {
+      id: 'agent-1',
+      name: 'Coder',
+      profileId: 'profile-1',
+      providerConfigId: 'old-cfg',
+      modelOverride: null,
+    };
+    const baseProfileItems = [
+      {
+        id: 'profile-1',
+        projectId,
+        name: 'Code Profile',
+        providerId: 'provider-1',
+        familySlug: null,
+        instructions: null,
+        temperature: null,
+        maxTokens: null,
+        options: null,
+        createdAt: '',
+        updatedAt: '',
+      },
+    ];
+    const baseConfigs = [
+      {
+        id: 'cfg-claude',
+        profileId: 'profile-1',
+        providerId: 'provider-1',
+        name: 'claude-config',
+        options: null,
+        env: null,
+        createdAt: '',
+        updatedAt: '',
+      },
+    ];
+
+    const setupApply = (agentOverrides: Partial<typeof baseAgent>, preset: ProjectPreset) => {
+      settings.getProjectPresets.mockReturnValue([preset]);
+      storage.listAgents.mockResolvedValue({
+        items: [{ ...baseAgent, ...agentOverrides }],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+      storage.listAgentProfiles.mockResolvedValue({
+        items: baseProfileItems,
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+      storage.listProfileProviderConfigsByProfile.mockResolvedValue(baseConfigs);
+      storage.updateAgent.mockResolvedValue({} as never);
+    };
+
+    it('sets effortOverride when preset explicitly defines it', async () => {
+      setupApply(
+        { effortOverride: 'low' },
+        {
+          name: 'default',
+          description: 'Default',
+          agentConfigs: [
+            { agentName: 'Coder', providerConfigName: 'claude-config', effortOverride: 'high' },
+          ],
+        },
+      );
+
+      const result = await applyPresetWithHelper(projectId, 'default', {
+        storage: storage as unknown as StorageService,
+        settings: settings as unknown as SettingsService,
+      });
+
+      expect(result).toEqual({ applied: 1, warnings: [] });
+      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', {
+        providerConfigId: 'cfg-claude',
+        effortOverride: 'high',
+      });
+    });
+
+    it('omits effortOverride from update payload when preset does not define it (preserves existing)', async () => {
+      setupApply(
+        { effortOverride: 'medium' },
+        {
+          name: 'default',
+          description: 'Default',
+          agentConfigs: [{ agentName: 'Coder', providerConfigName: 'claude-config' }],
+        },
+      );
+
+      await applyPresetWithHelper(projectId, 'default', {
+        storage: storage as unknown as StorageService,
+        settings: settings as unknown as SettingsService,
+      });
+
+      const payload = storage.updateAgent.mock.calls[0]?.[1] as Record<string, unknown>;
+      expect(payload).toEqual(expect.objectContaining({ providerConfigId: 'cfg-claude' }));
+      expect(payload).toEqual(expect.not.objectContaining({ effortOverride: expect.anything() }));
+    });
+
+    it('clears effortOverride when preset explicitly sets it to null', async () => {
+      setupApply(
+        { effortOverride: 'high' },
+        {
+          name: 'default',
+          description: 'Default',
+          agentConfigs: [
+            { agentName: 'Coder', providerConfigName: 'claude-config', effortOverride: null },
+          ],
+        },
+      );
+
+      await applyPresetWithHelper(projectId, 'default', {
+        storage: storage as unknown as StorageService,
+        settings: settings as unknown as SettingsService,
+      });
+
+      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', {
+        providerConfigId: 'cfg-claude',
+        effortOverride: null,
+      });
+    });
+
+    it('doesProjectMatchPreset detects effortOverride drift', async () => {
+      storage.listAgents.mockResolvedValue({
+        items: [
+          {
+            id: 'agent-1',
+            name: 'Coder',
+            profileId: 'profile-1',
+            providerConfigId: 'cfg-claude',
+            modelOverride: null,
+            effortOverride: 'medium',
+          },
+        ],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+      storage.listProfileProviderConfigsByIds.mockResolvedValue(baseConfigs);
+
+      const result = await doesProjectMatchPresetWithHelper(
+        projectId,
+        {
+          agentConfigs: [
+            { agentName: 'Coder', providerConfigName: 'claude-config', effortOverride: 'high' },
+          ],
+        },
+        { storage: storage as unknown as StorageService },
+      );
+
+      expect(result).toBe(false);
+    });
+
+    it('doesProjectMatchPreset ignores effortOverride when preset omits it', async () => {
+      storage.listAgents.mockResolvedValue({
+        items: [
+          {
+            id: 'agent-1',
+            name: 'Coder',
+            profileId: 'profile-1',
+            providerConfigId: 'cfg-claude',
+            modelOverride: null,
+            effortOverride: 'high',
+          },
+        ],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+      storage.listProfileProviderConfigsByIds.mockResolvedValue(baseConfigs);
+
+      const result = await doesProjectMatchPresetWithHelper(
+        projectId,
+        {
+          agentConfigs: [{ agentName: 'Coder', providerConfigName: 'claude-config' }],
+        },
+        { storage: storage as unknown as StorageService },
+      );
+
+      expect(result).toBe(true);
     });
   });
 });

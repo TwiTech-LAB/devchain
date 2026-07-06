@@ -57,37 +57,41 @@ describe('CodexSessionReaderAdapter provider session id extraction', () => {
     jest.clearAllMocks();
   });
 
-  describe('extractProviderSessionIdFromContent', () => {
-    it('returns payload id from a valid first-line session_meta event', () => {
+  describe('extractCandidateMetadata', () => {
+    it('returns providerSessionId, timestamp, and workspacePath from a valid first-line session_meta event', () => {
       const adapter = createAdapter();
 
       expect(
-        adapter.extractProviderSessionIdFromContent(
+        adapter.extractCandidateMetadata(
           `${sessionMetaLine()}\n${JSON.stringify({ type: 'turn_context', payload: {} })}\n`,
         ),
-      ).toBe(SESSION_ID);
+      ).toEqual({
+        providerSessionId: SESSION_ID,
+        timestamp: '2026-05-11T10:00:00.000Z',
+        workspacePath: '/tmp/project',
+      });
     });
 
-    it('returns null for malformed first-line JSON without throwing', () => {
+    it('returns undefined for malformed first-line JSON without throwing', () => {
       const adapter = createAdapter();
 
-      expect(adapter.extractProviderSessionIdFromContent('{not-json}\n')).toBeNull();
+      expect(adapter.extractCandidateMetadata('{not-json}\n')).toBeUndefined();
     });
 
-    it('returns null when the first line is not session_meta', () => {
+    it('returns undefined when the first line is not session_meta', () => {
       const adapter = createAdapter();
 
       expect(
-        adapter.extractProviderSessionIdFromContent(
+        adapter.extractCandidateMetadata(
           `${JSON.stringify({ type: 'turn_context', payload: { id: SESSION_ID } })}\n`,
         ),
-      ).toBeNull();
+      ).toBeUndefined();
     });
 
-    it('returns null when the first line has not terminated yet', () => {
+    it('returns undefined when the first line has not terminated yet', () => {
       const adapter = createAdapter();
 
-      expect(adapter.extractProviderSessionIdFromContent(sessionMetaLine())).toBeNull();
+      expect(adapter.extractCandidateMetadata(sessionMetaLine())).toBeUndefined();
     });
   });
 

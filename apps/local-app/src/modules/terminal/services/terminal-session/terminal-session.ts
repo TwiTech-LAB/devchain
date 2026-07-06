@@ -172,6 +172,42 @@ export class TerminalSession {
     }
   }
 
+  /**
+   * Latch initial geometry authority to the imminent subscriber. Grants iff authority is
+   * currently unheld; there is deliberately NO await between the check and the write, so
+   * concurrent handleSubscribe invocations resolve to exactly one winner (single-threaded
+   * atomicity is the whole point — it collapses reconnect/mount bursts to one geometry apply).
+   *
+   * Unlike {@link claimAuthority} this does NOT require subscriber membership — it grants to a
+   * client that is about to subscribe. Safe because {@link unsubscribe} releases authority keyed
+   * on `authority === clientId` with no membership requirement, so a client that latches then
+   * dies before subscribing still has its authority swept on disconnect.
+   *
+   * Emits NO focus_changed: at the gateway call site the frame listener isn't wired and the
+   * socket hasn't joined the room, so the frame would be lost. The gateway forwards the grant
+   * via {@link notifyInitialAuthority} after wiring + room join.
+   */
+  claimInitialAuthority(clientId: string): boolean {
+    if (this.authority !== null) return false;
+    this.authority = clientId;
+    return true;
+  }
+
+  /**
+   * Forward a previously-latched initial-authority grant as a focus_changed frame. The gateway
+   * calls this AFTER wiring the frame listener and joining the room ({@link claimInitialAuthority}
+   * granted silently because the frame would otherwise be lost pre-wiring). No-ops unless
+   * `clientId` still holds authority — a mid-subscribe steal or disconnect voids the grant.
+   */
+  notifyInitialAuthority(clientId: string): void {
+    if (this.authority !== clientId) return;
+    this.stream.emit('frame', {
+      type: 'focus_changed',
+      sessionId: this.sessionId,
+      payload: { clientId, granted: true },
+    });
+  }
+
   claimAuthority(clientId: string): AuthorityResult {
     if (!this.subscribers.has(clientId)) {
       return { granted: false };

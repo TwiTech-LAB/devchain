@@ -6,10 +6,12 @@ import { SessionsReadModule } from '../sessions/sessions-read.module';
 import { SessionsLifecycleModule } from '../sessions/sessions-lifecycle.module';
 import { SessionReaderModule } from '../session-reader/session-reader.module';
 import { AgentMessageDeliveryModule } from '../agent-message-delivery/agent-message-delivery.module';
+import { SessionsMessageLogReadModule } from '../sessions/sessions-message-log-read.module';
 import { TeamsModule } from '../teams/teams.module';
 import { EpicsModule } from '../epics/epics.module';
 import { HooksModule } from '../hooks/hooks.module';
 import { TerminalViewportModule } from '../terminal/terminal-viewport.module';
+import { TerminalKeyInputModule } from '../terminal/terminal-key-input.module';
 import { E2eeModule } from '../e2ee/e2ee.module';
 import { TunnelKeypairService } from './services/tunnel-keypair.service';
 import { TunnelHandlerService } from './services/tunnel-handler.service';
@@ -41,6 +43,10 @@ import { ViewportFrameSink } from './services/viewport-frame-sink';
     SessionsLifecycleModule,
     SessionReaderModule,
     AgentMessageDeliveryModule,
+    // NARROW message-log read facade (SessionsMessageLogReadFacade only) for
+    // chat.getPendingMessages. Imported instead of SessionsModule wholesale so
+    // CloudTunnel never depends on SessionsMessagePoolService directly.
+    SessionsMessageLogReadModule,
     TeamsModule,
     // Board mutations + comments route through EpicsService (events/invariants).
     // EpicsModule exports EpicsService and pulls Teams + AMD transitively (an SCC
@@ -56,6 +62,10 @@ import { ViewportFrameSink } from './services/viewport-frame-sink';
     // streamer. Imported instead of TerminalModule wholesale so CloudTunnel stays a
     // leaf/transitive consumer of the Sessions↔Terminal SCC (docs/cycle-allowlist.md).
     TerminalViewportModule,
+    // NARROW key-input facade (TerminalKeyInputFacade only) for discrete mobile key presses
+    // (terminal.sendKey). Same leaf-consumer rationale as TerminalViewportModule above;
+    // TerminalIOService is never injected into CloudTunnel — the facade owns the tmux send.
+    TerminalKeyInputModule,
     // E2EE keypair (public-key export only) so the attest handshake can advertise this
     // PC's capability + X25519 public key for relayed delivery (Task:5). E2eeModule is a
     // DbModule-only leaf — no import cycle.

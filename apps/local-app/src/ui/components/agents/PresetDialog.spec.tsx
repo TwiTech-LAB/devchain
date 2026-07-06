@@ -25,6 +25,14 @@ global.fetch = mockFetch;
 const mockProfileConfigs = (
   profileConfigs: Record<string, Array<{ id: string; name: string; providerId?: string }>>,
   providerModels: Record<string, Array<{ id?: string; name: string }>> = {},
+  providerEfforts: Record<
+    string,
+    {
+      efforts: Array<{ name: string }>;
+      supportsEffort: boolean;
+      requiresModelForEffort: boolean;
+    }
+  > = {},
 ) => {
   mockFetch.mockImplementation((url: string) => {
     if (url.includes('/provider-configs')) {
@@ -55,6 +63,29 @@ const mockProfileConfigs = (
       return Promise.resolve({
         ok: true,
         json: async () => [],
+      });
+    }
+    if (url.includes('/providers/') && url.includes('/efforts')) {
+      const match = url.match(/\/providers\/([^\/]+)\/efforts/);
+      if (match) {
+        const providerId = match[1];
+        return Promise.resolve({
+          ok: true,
+          json: async () =>
+            providerEfforts[providerId] || {
+              efforts: [],
+              supportsEffort: false,
+              requiresModelForEffort: false,
+            },
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          efforts: [],
+          supportsEffort: false,
+          requiresModelForEffort: false,
+        }),
       });
     }
     // Preset create/update API
@@ -632,6 +663,167 @@ describe('PresetDialog', () => {
 
       // Select should be disabled when no configs available
       expect(coderSelect).toBeDisabled();
+    });
+  });
+
+  describe('effortOverride parity with modelOverride', () => {
+    const effortAgents = [
+      {
+        id: 'agent-1',
+        name: 'Coder',
+        profileId: 'profile-1',
+        providerConfigId: 'config-1',
+        modelOverride: 'opus',
+        effortOverride: 'high',
+        providerConfig: { id: 'config-1', name: 'claude-config' },
+      },
+      {
+        id: 'agent-2',
+        name: 'Reviewer',
+        profileId: 'profile-1',
+        providerConfigId: 'config-2',
+        modelOverride: null,
+        effortOverride: null,
+        providerConfig: { id: 'config-2', name: 'codex-config' },
+      },
+    ];
+
+    const setupEffortMocks = (
+      efforts = {
+        efforts: [{ name: 'high' }, { name: 'low' }],
+        supportsEffort: true,
+        requiresModelForEffort: false,
+      },
+    ) => {
+      mockProfileConfigs(
+        {
+          'profile-1': [
+            { id: 'config-1', name: 'claude-config', providerId: 'provider-1' },
+            { id: 'config-2', name: 'codex-config', providerId: 'provider-1' },
+          ],
+        },
+        { 'provider-1': [{ id: 'm1', name: 'opus' }] },
+        { 'provider-1': efforts },
+      );
+    };
+
+    const findCreateBody = () => {
+      const createCall = mockFetch.mock.calls.find(
+        ([url, init]) =>
+          typeof url === 'string' &&
+          url.endsWith('/api/projects/project-123/presets') &&
+          typeof init === 'object' &&
+          (init as { method?: string }).method === 'POST',
+      );
+      return JSON.parse((createCall![1] as { body: string }).body);
+    };
+
+    it('auto-populates effortOverride from agents on create and includes it in the save payload', async () => {
+      setupEffortMocks();
+      renderWithQueryClient(<PresetDialog {...defaultProps} agents={effortAgents} />);
+
+      const nameInput = await screen.findByLabelText('Name *');
+      await userEvent.type(nameInput, 'effort-preset');
+      const saveButton = screen.getByRole('button', { name: 'Save Preset' });
+      await waitFor(() => expect(saveButton).toBeEnabled());
+      await userEvent.click(saveButton);
+
+      await waitFor(() => {
+        const body = findCreateBody();
+        expect(body.agentConfigs).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              agentName: 'Coder',
+              effortOverride: 'high',
+            }),
+            expect.objectContaining({
+              agentName: 'Reviewer',
+              effortOverride: null,
+            }),
+          ]),
+        );
+      });
+    });
+
+    it('edit mode preserves existing preset effortOverride values on save', async () => {
+      setupEffortMocks();
+      renderWithQueryClient(
+        <PresetDialog
+          {...defaultProps}
+          presetToEdit={{
+            name: 'existing-effort-preset',
+            description: null,
+            agentConfigs: [
+              {
+                agentName: 'Coder',
+                providerConfigName: 'claude-config',
+                modelOverride: 'opus',
+                effortOverride: 'high',
+              },
+            ],
+          }}
+          agents={effortAgents}
+        />,
+      );
+
+      const saveButton = screen.getByRole('button', { name: 'Update Preset' });
+      await waitFor(() => expect(saveButton).toBeEnabled());
+      await userEvent.click(saveButton);
+
+      await waitFor(() => {
+        const updateCall = mockFetch.mock.calls.find(
+          ([url, init]) =>
+            typeof url === 'string' &&
+            url.endsWith('/api/projects/project-123/presets') &&
+            (init as { method?: string }).method === 'PATCH',
+        );
+        expect(updateCall).toBeDefined();
+        const body = JSON.parse((updateCall![1] as { body: string }).body);
+        expect(body.updates.agentConfigs).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              agentName: 'Coder',
+              effortOverride: 'high',
+            }),
+          ]),
+        );
+      });
+    });
+
+    it('does not render the effort selector when supportsEffort is false', async () => {
+      // No efforts mock → supportsEffort defaults false
+      mockProfileConfigs(
+        { 'profile-1': [{ id: 'config-1', name: 'claude-config', providerId: 'provider-1' }] },
+        { 'provider-1': [{ id: 'm1', name: 'opus' }] },
+      );
+      renderWithQueryClient(<PresetDialog {...defaultProps} agents={effortAgents} />);
+
+      await screen.findByText('Coder');
+      expect(screen.queryByTestId('preset-effort-select-agent-1')).not.toBeInTheDocument();
+    });
+
+    it('renders the effort selector enabled when supported with a non-empty catalog', async () => {
+      setupEffortMocks();
+      renderWithQueryClient(<PresetDialog {...defaultProps} agents={effortAgents} />);
+
+      const effortSelect = await screen.findByTestId('preset-effort-select-agent-1');
+      expect(effortSelect).not.toBeDisabled();
+    });
+
+    it('disables the effort selector when requiresModelForEffort and no model is resolvable', async () => {
+      // Coder agent has modelOverride 'opus' (resolvable); Reviewer has null modelOverride.
+      // Use a config with no structured model so Reviewer is not resolvable.
+      setupEffortMocks({
+        efforts: [{ name: 'high' }],
+        supportsEffort: true,
+        requiresModelForEffort: true,
+      });
+      renderWithQueryClient(<PresetDialog {...defaultProps} agents={effortAgents} />);
+
+      await screen.findByText('Reviewer');
+      const reviewerEffortSelect = await screen.findByTestId('preset-effort-select-agent-2');
+      // Reviewer has no modelOverride and config has no structured model → disabled
+      expect(reviewerEffortSelect).toBeDisabled();
     });
   });
 });

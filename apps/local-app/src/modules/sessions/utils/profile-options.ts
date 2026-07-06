@@ -105,6 +105,41 @@ export function injectModelOverride(args: string[], model: string): string[] {
 }
 
 /**
+ * Remove every occurrence of a flag and its value from an argv array, handling
+ * BOTH the two-token `--flag value` form and the single-token `--flag=value`
+ * form. Used by effort adapters to strip conflicting raw effort flags before
+ * injecting their structured native form (so the UI's effort selection is
+ * deterministic and never contradicted by leftover raw options).
+ *
+ * Not for `-c key=value` config flags whose VALUE carries the key (codex) —
+ * that needs key-targeted matching and is handled inside the codex adapter.
+ */
+export function stripFlag(args: string[], flag: string): string[] {
+  const result: string[] = [];
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+
+    if (arg === flag) {
+      // Two-token form: drop the flag and its following value token (if present).
+      if (i + 1 < args.length) {
+        i += 1;
+      }
+      continue;
+    }
+
+    if (arg.startsWith(`${flag}=`)) {
+      // Single-token `--flag=value` form.
+      continue;
+    }
+
+    result.push(arg);
+  }
+
+  return result;
+}
+
+/**
  * Rewrite the --model/-m value to the [1m] alias variant for 1M context.
  * Only opus family models are rewritten: "opus" → opus[1m]. Sonnet and unknown → unchanged.
  * When no model flag is present, defaults to --model opus[1m].

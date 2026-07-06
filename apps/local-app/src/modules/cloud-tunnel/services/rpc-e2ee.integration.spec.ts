@@ -159,6 +159,39 @@ describe('RPC lane E2EE — backend integration (real :memory: SQLite key servic
     expect(opened).toEqual({ ok: true, data: { statuses: ['todo', 'done'] } });
   });
 
+  // ── terminal.sendKey rides the SAME crypto seam (no special handling) ─────────────
+  // The input method is content-shaped like any other RPC; the crypto seam is method-
+  // agnostic, so a sealed key press decrypts → dispatches → re-seals without any crypto-
+  // layer change. This is the acceptance round-trip for the terminal.sendKey input path.
+  it('round-trips a terminal.sendKey request through the existing crypto seam unchanged', async () => {
+    const method = 'terminal.sendKey';
+    const plainParams = { sessionId: 's1', projectId: 'proj-own', key: 'Up' };
+    const sealedParams = (await mobileEnvelope.seal(plainParams, reqCtx(method))) as E2eeEnvelope;
+
+    // The bridge-facing payload is opaque ciphertext — the key value is never bridge-visible.
+    expect(JSON.stringify(sealedParams)).not.toContain('"key":"Up"');
+
+    let dispatchSaw: unknown = null;
+    const dispatch = jest.fn(async (plain: JsonRpcRequestLike): Promise<JsonRpcResponseLike> => {
+      dispatchSaw = plain.params; // dispatch receives PLAINTEXT (decrypt happened first)
+      return { jsonrpc: '2.0', id: plain.id, result: { ok: true } };
+    });
+
+    const resp = await svc.handle(
+      { jsonrpc: '2.0', id: 'tk1', method, params: sealedParams },
+      INSTANCE_ID,
+      dispatch,
+    );
+
+    expect(dispatch).toHaveBeenCalled();
+    expect(dispatchSaw).toEqual(plainParams); // PC dispatch got plaintext, not ciphertext
+    expect(resp.error).toBeUndefined();
+    expect(isE2eeEnvelope(resp.result)).toBe(true);
+
+    const opened = (await mobileEnvelope.open(resp.result, resCtx(method))) as SealedRpcResult;
+    expect(opened).toEqual({ ok: true, data: { ok: true } });
+  });
+
   // ── 2. Negative: tampered ciphertext rejected (no dispatch) ───────────────────────
   it('rejects tampered ciphertext (AAD/tag) — dispatch never runs', async () => {
     const method = 'chat.getTranscriptTail';

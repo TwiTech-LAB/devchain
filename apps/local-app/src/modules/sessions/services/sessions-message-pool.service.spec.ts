@@ -1916,4 +1916,85 @@ describe('SessionsMessagePoolService', () => {
       expect(pasteCall[2]?.postPasteDelayMs).toBeUndefined();
     });
   });
+
+  describe('clientMessageId idempotency', () => {
+    it('dedups two CONCURRENT same-clientMessageId immediate enqueues (one delivery, one row)', async () => {
+      // Delay resolveProjectInfo (its only await is storage.getAgent) so BOTH
+      // enqueues suspend past the method entry before either reaches the dedup
+      // check — the exact race the atomic check→addEntry invariant must survive.
+      const resolvers: Array<(agent: unknown) => void> = [];
+      mockStorage.getAgent.mockImplementation(
+        () => new Promise((res) => resolvers.push(res as (agent: unknown) => void)),
+      );
+
+      const opts = { source: 'mobile', immediate: true, clientMessageId: 'client-1' };
+      const p1 = service.enqueue('agent-1', 'Hello', opts);
+      const p2 = service.enqueue('agent-1', 'Hello', opts);
+
+      // Both calls have reached the getAgent await; release them together.
+      expect(resolvers).toHaveLength(2);
+      resolvers.forEach((res) => res(createMockAgent()));
+
+      const [r1, r2] = await Promise.all([p1, p2]);
+
+      // Exactly ONE tmux delivery and ONE log row survive the race.
+      expect(mockTerminalIO.deliverImmediate).toHaveBeenCalledTimes(1);
+      const rows = service.getMessageLog({ source: 'mobile' });
+      expect(rows).toHaveLength(1);
+
+      // The second call returns the FIRST entry's ids instead of re-enqueuing.
+      expect(r1.logEntryId).toBe(rows[0].id);
+      expect(r2.logEntryId).toBe(r1.logEntryId);
+    });
+
+    it('dedups a SEQUENTIAL retry with the same clientMessageId (no second delivery)', async () => {
+      const opts = { source: 'mobile', immediate: true, clientMessageId: 'client-2' };
+
+      const first = await service.enqueue('agent-1', 'Hello', opts);
+      const second = await service.enqueue('agent-1', 'Hello', opts);
+
+      expect(mockTerminalIO.deliverImmediate).toHaveBeenCalledTimes(1);
+      expect(service.getMessageLog({ source: 'mobile' })).toHaveLength(1);
+      expect(second.logEntryId).toBe(first.logEntryId);
+    });
+
+    it('does NOT dedup across a different source or agent (dedup key is id+agent+source)', async () => {
+      mockSessionsService.listActiveSessions.mockResolvedValue([
+        createActiveSession('agent-1'),
+        createActiveSession('agent-2', 'tmux-2'),
+      ]);
+
+      await service.enqueue('agent-1', 'A', {
+        source: 'mobile',
+        immediate: true,
+        clientMessageId: 'shared',
+      });
+      // Same clientMessageId but different source → distinct entry, delivered again.
+      await service.enqueue('agent-1', 'B', {
+        source: 'other',
+        immediate: true,
+        clientMessageId: 'shared',
+      });
+      // Same clientMessageId+source but different agent → distinct entry.
+      await service.enqueue('agent-2', 'C', {
+        source: 'mobile',
+        immediate: true,
+        clientMessageId: 'shared',
+      });
+
+      expect(mockTerminalIO.deliverImmediate).toHaveBeenCalledTimes(3);
+      expect(service.getMessageLog()).toHaveLength(3);
+    });
+
+    it('threads clientMessageId onto the created log entry', async () => {
+      await service.enqueue('agent-1', 'Hello', {
+        source: 'mobile',
+        immediate: true,
+        clientMessageId: 'client-3',
+      });
+
+      const rows = service.getMessageLog({ source: 'mobile' });
+      expect(rows[0].clientMessageId).toBe('client-3');
+    });
+  });
 });

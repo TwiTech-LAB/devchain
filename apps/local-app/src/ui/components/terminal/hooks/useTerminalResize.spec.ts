@@ -27,13 +27,21 @@ describe('useTerminalResize', () => {
     mockTerminal = {
       cols: 80,
       rows: 24,
-    } as Terminal;
+      scrollToBottom: jest.fn(),
+    } as unknown as Terminal;
 
     mockFitAddon = {
       fit: jest.fn(),
     } as unknown as FitAddon;
 
     mockContainerElement = document.createElement('div');
+    // jsdom reports offsetParent === null for every element (no layout engine). Default the
+    // mock container to "visible" so the existing resize path runs; the hidden-container test
+    // overrides this per-case.
+    Object.defineProperty(mockContainerElement, 'offsetParent', {
+      configurable: true,
+      get: () => document.body,
+    });
 
     // Mock ResizeObserver
     mockResizeObserver = jest.fn().mockImplementation((callback) => ({
@@ -209,6 +217,75 @@ describe('useTerminalResize', () => {
     });
   });
 
+  it('scrolls to bottom on a non-initial resize without force-setting hasHistory', () => {
+    const terminalRef = { current: mockContainerElement };
+    const xtermRef = { current: mockTerminal };
+    const fitAddonRef = { current: mockFitAddon };
+    const sessionId = 'test-session';
+
+    renderHook(() => useTerminalResize(terminalRef, xtermRef, fitAddonRef, sessionId));
+
+    const callback = (
+      mockContainerElement as HTMLElement & { _resizeCallback?: ResizeObserverCallback }
+    )._resizeCallback;
+
+    // First (initial) resize establishes the dimension baseline.
+    act(() => {
+      callback?.([] as ResizeObserverEntry[], {} as ResizeObserver);
+      jest.advanceTimersByTime(250);
+    });
+    expect(mockTerminal.scrollToBottom).not.toHaveBeenCalled();
+
+    // Change dimensions and resize again (non-initial).
+    (mockTerminal as Terminal & { cols: number; rows: number }).cols = 100;
+    (mockTerminal as Terminal & { rows: number }).rows = 30;
+    act(() => {
+      callback?.([] as ResizeObserverEntry[], {} as ResizeObserver);
+      jest.advanceTimersByTime(250);
+    });
+
+    // scrollToBottom is scheduled 300ms after the resize settles.
+    expect(mockTerminal.scrollToBottom).not.toHaveBeenCalled();
+    act(() => {
+      jest.advanceTimersByTime(300);
+    });
+    expect(mockTerminal.scrollToBottom).toHaveBeenCalledTimes(1);
+
+    // The log no longer carries hasHistoryReset: this hook is no longer the hasHistory owner.
+    expect(termLog).toHaveBeenCalledWith('resize_scroll_bottom', {
+      sessionId,
+      cols: 100,
+      rows: 30,
+    });
+  });
+
+  it('should skip fit and resize emission while the container is hidden', () => {
+    // Hidden container: offsetParent === null (a display:none ancestor).
+    Object.defineProperty(mockContainerElement, 'offsetParent', {
+      configurable: true,
+      get: () => null,
+    });
+
+    const terminalRef = { current: mockContainerElement };
+    const xtermRef = { current: mockTerminal };
+    const fitAddonRef = { current: mockFitAddon };
+    const sessionId = 'test-session';
+
+    renderHook(() => useTerminalResize(terminalRef, xtermRef, fitAddonRef, sessionId));
+
+    const callback = (
+      mockContainerElement as HTMLElement & { _resizeCallback?: ResizeObserverCallback }
+    )._resizeCallback;
+    act(() => {
+      callback?.([] as ResizeObserverEntry[], {} as ResizeObserver);
+      jest.advanceTimersByTime(250);
+    });
+
+    expect(mockFitAddon.fit).not.toHaveBeenCalled();
+    expect(mockSocket.emit).not.toHaveBeenCalled();
+    expect(termLog).toHaveBeenCalledWith('resize_skipped', { sessionId, reason: 'hidden' });
+  });
+
   it('should emit resize via provided socket when supplied', () => {
     const terminalRef = { current: mockContainerElement };
     const xtermRef = { current: mockTerminal };
@@ -226,7 +303,6 @@ describe('useTerminalResize', () => {
         xtermRef,
         fitAddonRef,
         sessionId,
-        undefined,
         undefined,
         providedSocket as never,
       ),

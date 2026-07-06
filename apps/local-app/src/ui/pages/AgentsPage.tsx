@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { WsEnvelope } from '@/ui/lib/socket';
 import { useAppSocket } from '@/ui/hooks/useAppSocket';
 import type { Socket } from 'socket.io-client';
+import { providersQueryKeys } from '@/ui/lib/providers-query-keys';
 import { Button } from '@/ui/components/ui/button';
 import {
   Dialog,
@@ -12,7 +13,15 @@ import {
   DialogFooter,
   DialogDescription,
 } from '@/ui/components/ui/dialog';
-import { useToast } from '@/ui/hooks/use-toast';
+import { getErrorMessage } from '@/ui/lib/toast-helpers';
+import { useConfirmDialog } from '@/ui/hooks/useFormDialog';
+import {
+  optimisticAdd,
+  optimisticMergeById,
+  optimisticRemoveById,
+  useCrudMutation,
+  type ListContainer,
+} from '@/ui/hooks/useCrudMutations';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import { Plus, Bot, AlertCircle, Save } from 'lucide-react';
 import { PresetSelector, PresetDialog, DeletePresetDialog } from '@/ui/components/agents';
@@ -34,6 +43,7 @@ interface Agent {
   profileId: string;
   providerConfigId?: string | null;
   modelOverride?: string | null;
+  effortOverride?: string | null;
   name: string;
   description?: string | null;
   profile?: AgentProfile;
@@ -68,13 +78,6 @@ interface Provider {
   binPath?: string | null;
 }
 
-interface AgentsQueryData {
-  items: Agent[];
-  total?: number;
-  limit?: number;
-  offset?: number;
-}
-
 // ============================================
 // Fetch functions
 // ============================================
@@ -102,6 +105,7 @@ async function createAgent(data: {
   profileId: string;
   providerConfigId?: string | null;
   modelOverride?: string | null;
+  effortOverride?: string | null;
   name: string;
   description?: string | null;
 }) {
@@ -132,6 +136,7 @@ async function updateAgentRequest(
     profileId?: string;
     providerConfigId?: string | null;
     modelOverride?: string | null;
+    effortOverride?: string | null;
     description?: string | null;
   },
 ): Promise<Agent> {
@@ -154,7 +159,7 @@ async function updateAgentRequest(
 export const agentsPageQueryKeys = {
   agents: (projectId: string) => ['agents', projectId] as const,
   profiles: (projectId: string) => ['profiles', projectId] as const,
-  providers: () => ['providers'] as const,
+  providers: () => providersQueryKeys.list(),
   presets: (projectId: string) => ['project-presets', projectId] as const,
   preflight: (rootPath?: string) => ['preflight', 'agents-page', rootPath ?? 'global'] as const,
 };
@@ -165,7 +170,6 @@ export const agentsPageQueryKeys = {
 
 export function AgentsPage() {
   const queryClient = useQueryClient();
-  const { toast } = useToast();
   const { selectedProjectId, selectedProject: activeProject } = useSelectedProject();
 
   // ---- Data queries ----
@@ -282,7 +286,8 @@ export function AgentsPage() {
   // ---- Dialog state ----
   const [showDialog, setShowDialog] = useState(false);
   const [editAgent, setEditAgent] = useState<Agent | null>(null);
-  const [deleteConfirm, setDeleteConfirm] = useState<Agent | null>(null);
+  const deleteDialog = useConfirmDialog<Agent>();
+  const deleteConfirm = deleteDialog.target;
   const [updatingAgentId, setUpdatingAgentId] = useState<string | null>(null);
 
   // ---- Preset state ----
@@ -310,200 +315,134 @@ export function AgentsPage() {
   };
 
   // ---- Create mutation ----
-  const createMutation = useMutation({
+  const agentsKey = agentsPageQueryKeys.agents(selectedProjectId as string);
+  type AgentsList = ListContainer<Agent>;
+
+  const createMutation = useCrudMutation<Agent, Parameters<typeof createAgent>[0], void>({
     mutationFn: createAgent,
-    onMutate: async (newAgent) => {
-      await queryClient.cancelQueries({
-        queryKey: agentsPageQueryKeys.agents(selectedProjectId as string),
-      });
-      const previousData = queryClient.getQueryData(
-        agentsPageQueryKeys.agents(selectedProjectId as string),
-      );
-
-      const profile =
-        profilesById.get(newAgent.profileId) ||
-        profilesData?.items.find((p: AgentProfile) => p.id === newAgent.profileId);
-
-      queryClient.setQueryData(
-        agentsPageQueryKeys.agents(selectedProjectId as string),
-        (old: AgentsQueryData | undefined) => ({
-          ...old,
-          items: [
-            {
-              id: 'temp-' + Date.now(),
-              ...newAgent,
-              profile,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-            },
-            ...(old?.items || []),
-          ],
-        }),
-      );
-
-      return { previousData };
+    optimistic: {
+      queryKey: agentsKey,
+      // temp-id prepend; profile resolved from the loaded profile maps.
+      project: (previous, newAgent) => {
+        const list = previous as AgentsList | undefined;
+        if (!list) return previous;
+        const profile =
+          profilesById.get(newAgent.profileId) ||
+          profilesData?.items.find((p: AgentProfile) => p.id === newAgent.profileId);
+        const optimistic: Agent = {
+          id: `temp-${Date.now()}`,
+          ...newAgent,
+          profile,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        return optimisticAdd(list, optimistic);
+      },
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: agentsPageQueryKeys.agents(selectedProjectId as string),
-      });
-      setShowDialog(false);
-      toast({
-        title: 'Success',
-        description: 'Agent created successfully',
-      });
-    },
-    onError: (error, _variables, context) => {
-      if (context?.previousData) {
-        queryClient.setQueryData(
-          agentsPageQueryKeys.agents(selectedProjectId as string),
-          context.previousData,
-        );
-      }
-      toast({
+    invalidateKeys: [agentsKey],
+    toast: {
+      success: () => ({ title: 'Success', description: 'Agent created successfully' }),
+      error: (error) => ({
         title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to create agent',
-        variant: 'destructive',
-      });
+        description: getErrorMessage(error, 'Failed to create agent'),
+      }),
     },
+    onSuccessSideEffects: () => setShowDialog(false),
   });
 
   // ---- Delete mutation ----
-  const deleteMutation = useMutation({
+  const deleteMutation = useCrudMutation<void, string, void>({
     mutationFn: deleteAgent,
-    onMutate: async (id) => {
-      await queryClient.cancelQueries({
-        queryKey: agentsPageQueryKeys.agents(selectedProjectId as string),
-      });
-      const previousData = queryClient.getQueryData(
-        agentsPageQueryKeys.agents(selectedProjectId as string),
-      );
-
-      queryClient.setQueryData(
-        agentsPageQueryKeys.agents(selectedProjectId as string),
-        (old: AgentsQueryData | undefined) => ({
-          ...old,
-          items: old?.items.filter((a: Agent) => a.id !== id),
-        }),
-      );
-
-      return { previousData };
+    optimistic: {
+      queryKey: agentsKey,
+      // filter-out.
+      project: (previous, id) => {
+        const list = previous as AgentsList | undefined;
+        if (!list) return previous;
+        return optimisticRemoveById(list, id);
+      },
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: agentsPageQueryKeys.agents(selectedProjectId as string),
-      });
-      setDeleteConfirm(null);
-      toast({
-        title: 'Success',
-        description: 'Agent deleted successfully',
-      });
-    },
-    onError: (error, _variables, context) => {
-      if (context?.previousData) {
-        queryClient.setQueryData(
-          agentsPageQueryKeys.agents(selectedProjectId as string),
-          context.previousData,
-        );
-      }
-      setDeleteConfirm(null);
-      toast({
+    invalidateKeys: [agentsKey],
+    toast: {
+      success: () => ({ title: 'Success', description: 'Agent deleted successfully' }),
+      error: (error) => ({
         title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to delete agent',
-        variant: 'destructive',
-      });
+        description: getErrorMessage(error, 'Failed to delete agent'),
+      }),
     },
+    // The confirm dialog closes on both outcomes (success and error).
+    onSuccessSideEffects: () => deleteDialog.close(),
+    onErrorSideEffects: () => deleteDialog.close(),
   });
 
   // ---- Update mutation ----
-  const updateMutation = useMutation({
-    mutationFn: ({
-      id,
-      name,
-      profileId,
-      providerConfigId,
-      modelOverride,
-      description,
-    }: {
-      id: string;
-      name: string;
-      profileId: string;
-      providerConfigId: string | null;
-      modelOverride: string | null;
-      description: string | null;
-    }) => updateAgentRequest(id, { name, profileId, providerConfigId, modelOverride, description }),
-    onMutate: async (variables) => {
-      setUpdatingAgentId(variables.id);
-      await queryClient.cancelQueries({
-        queryKey: agentsPageQueryKeys.agents(selectedProjectId as string),
-      });
-      const previousData = queryClient.getQueryData(
-        agentsPageQueryKeys.agents(selectedProjectId as string),
-      );
+  type UpdateAgentVars = {
+    id: string;
+    name: string;
+    profileId: string;
+    providerConfigId: string | null;
+    modelOverride: string | null;
+    effortOverride: string | null;
+    description: string | null;
+  };
 
-      queryClient.setQueryData(
-        agentsPageQueryKeys.agents(selectedProjectId as string),
-        (old: AgentsQueryData | undefined) => {
-          if (!old) return old;
-          return {
-            ...old,
-            items: old.items.map((agent) =>
-              agent.id === variables.id
-                ? {
-                    ...agent,
-                    name: variables.name,
-                    profileId: variables.profileId,
-                    providerConfigId: variables.providerConfigId,
-                    modelOverride: variables.modelOverride,
-                    description: variables.description,
-                    profile:
-                      profilesById.get(variables.profileId) ||
-                      profilesData?.items.find((p: AgentProfile) => p.id === variables.profileId) ||
-                      agent.profile,
-                    updatedAt: new Date().toISOString(),
-                  }
-                : agent,
-            ),
-          };
-        },
-      );
-
-      return { previousData };
+  const updateMutation = useCrudMutation<Agent, UpdateAgentVars, void>({
+    mutationFn: (vars) =>
+      updateAgentRequest(vars.id, {
+        name: vars.name,
+        profileId: vars.profileId,
+        providerConfigId: vars.providerConfigId,
+        modelOverride: vars.modelOverride,
+        effortOverride: vars.effortOverride,
+        description: vars.description,
+      }),
+    optimistic: {
+      queryKey: agentsKey,
+      // in-place merge with the same per-field precedence + profile rebind.
+      project: (previous, vars) => {
+        const list = previous as AgentsList | undefined;
+        if (!list) return previous;
+        return optimisticMergeById(list, vars.id, (agent: Agent) => ({
+          ...agent,
+          name: vars.name,
+          profileId: vars.profileId,
+          providerConfigId: vars.providerConfigId,
+          modelOverride: vars.modelOverride,
+          effortOverride: vars.effortOverride,
+          description: vars.description,
+          profile:
+            profilesById.get(vars.profileId) ||
+            profilesData?.items.find((p: AgentProfile) => p.id === vars.profileId) ||
+            agent.profile,
+          updatedAt: new Date().toISOString(),
+        }));
+      },
     },
-    onSuccess: (updatedAgent) => {
-      queryClient.setQueryData(
-        agentsPageQueryKeys.agents(selectedProjectId as string),
-        (old: AgentsQueryData | undefined) => {
-          if (!old) return old;
-          return {
-            ...old,
-            items: old.items.map((agent) => (agent.id === updatedAgent.id ? updatedAgent : agent)),
-          };
-        },
-      );
-      toast({
-        title: 'Agent updated',
-        description: 'Agent updated successfully.',
+    invalidateKeys: [agentsKey],
+    toast: {
+      success: () => ({ title: 'Agent updated', description: 'Agent updated successfully.' }),
+      error: (error) => ({
+        title: 'Update failed',
+        description: getErrorMessage(error, 'Failed to update agent'),
+      }),
+    },
+    // Replace the optimistic row with the authoritative server response, close
+    // the edit dialog, and release the per-row spinner. The invalidate (error
+    // path too, matching the prior onSettled) + spinner clear happen in the
+    // error side effect.
+    onSuccessSideEffects: (updatedAgent) => {
+      queryClient.setQueryData(agentsKey, (old: AgentsList | undefined) => {
+        if (!old) return old;
+        return {
+          ...old,
+          items: old.items.map((agent) => (agent.id === updatedAgent.id ? updatedAgent : agent)),
+        };
       });
       setEditAgent(null);
+      setUpdatingAgentId(null);
     },
-    onError: (error, _variables, context) => {
-      if (context?.previousData) {
-        queryClient.setQueryData(
-          agentsPageQueryKeys.agents(selectedProjectId as string),
-          context.previousData,
-        );
-      }
-      toast({
-        title: 'Update failed',
-        description: error instanceof Error ? error.message : 'Failed to update agent',
-        variant: 'destructive',
-      });
-    },
-    onSettled: () => {
-      queryClient.invalidateQueries({
-        queryKey: agentsPageQueryKeys.agents(selectedProjectId as string),
-      });
+    onErrorSideEffects: () => {
+      queryClient.invalidateQueries({ queryKey: agentsKey });
       setUpdatingAgentId(null);
     },
   });
@@ -517,25 +456,28 @@ export function AgentsPage() {
       profileId: data.profileId,
       providerConfigId: data.providerConfigId,
       modelOverride: data.modelOverride,
+      effortOverride: data.effortOverride,
       description: data.description,
     });
   };
 
   const handleEditSubmit = (data: AgentFormSubmitData) => {
     if (!editAgent) return;
+    setUpdatingAgentId(editAgent.id);
     updateMutation.mutate({
       id: editAgent.id,
       name: data.name,
       profileId: data.profileId,
       providerConfigId: data.providerConfigId,
       modelOverride: data.modelOverride,
+      effortOverride: data.effortOverride,
       description: data.description,
     });
   };
 
   // ---- Delete handlers ----
   const handleDelete = (agent: Agent) => {
-    setDeleteConfirm(agent);
+    deleteDialog.open(agent);
   };
 
   const confirmDelete = () => {
@@ -551,6 +493,7 @@ export function AgentsPage() {
         profileId: editAgent.profileId,
         providerConfigId: editAgent.providerConfigId ?? '',
         modelOverride: editAgent.modelOverride ?? null,
+        effortOverride: editAgent.effortOverride ?? null,
         description: editAgent.description ?? '',
       }
     : undefined;
@@ -701,7 +644,7 @@ export function AgentsPage() {
       />
 
       {/* Delete Confirmation Dialog */}
-      <Dialog open={!!deleteConfirm} onOpenChange={(open) => !open && setDeleteConfirm(null)}>
+      <Dialog open={deleteDialog.isOpen} onOpenChange={deleteDialog.onOpenChange}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Delete Agent</DialogTitle>
@@ -711,7 +654,7 @@ export function AgentsPage() {
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteConfirm(null)}>
+            <Button variant="outline" onClick={() => deleteDialog.close()}>
               Cancel
             </Button>
             <Button

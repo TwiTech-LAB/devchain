@@ -19,6 +19,8 @@ import {
   CreateProvider,
   ProviderModel,
   CreateProviderModel,
+  ProviderEffort,
+  CreateProviderEffort,
   UpdateProvider,
   ProviderMcpMetadata,
   UpdateProviderMcpMetadata,
@@ -216,79 +218,29 @@ export interface ListReviewCommentsOptions extends ListOptions {
  * Provides CRUD operations for all domain entities
  * Implementation: LocalStorage (SQLite)
  */
-export interface TemplateImportPayload {
-  prompts: Array<{
-    id?: string;
-    title: string;
-    content?: string;
-    version?: number;
-    tags?: string[];
-  }>;
-  profiles: Array<{
-    id?: string;
-    name: string;
-    providerId: string;
-    familySlug?: string | null;
-    options?: string | null;
-    instructions?: string | null;
-    temperature?: number | null;
-    maxTokens?: number | null;
-    providerConfigs?: Array<{
-      name: string;
-      providerName: string;
-      options?: string | null;
-      env?: Record<string, string> | null;
-      position?: number;
-    }>;
-  }>;
-  agents: Array<{
-    id?: string;
-    name: string;
-    profileId?: string;
-    description?: string | null;
-    modelOverride?: string | null;
-  }>;
-  statuses: Array<{
-    id?: string;
-    label: string;
-    color: string;
-    position: number;
-    mcpHidden?: boolean;
-  }>;
-  initialPrompt?: {
-    promptId?: string;
-    title?: string;
-  } | null;
-}
-
-export interface CreateProjectWithTemplateResult {
-  project: Project;
-  imported: {
-    prompts: number;
-    profiles: number;
-    agents: number;
-    statuses: number;
-  };
-  mappings: {
-    promptIdMap: Record<string, string>;
-    profileIdMap: Record<string, string>;
-    agentIdMap: Record<string, string>;
-    statusIdMap: Record<string, string>;
-  };
-  initialPromptSet: boolean;
-}
-
 export interface CreateProjectWithTemplateOptions {
   projectId?: string;
 }
 
 export interface ProjectStorage {
   createProject(data: CreateProject): Promise<Project>;
-  createProjectWithTemplate(
+  /**
+   * Run `fn` inside a single WAL-safe IMMEDIATE transaction. Storage calls made by `fn`
+   * (which share the connection) participate in the transaction and roll back together on
+   * throw. Used by the pipeline create-new core so the project row + statuses + prompts +
+   * profiles + configs + agents are atomic (no orphan project row on mid-core failure).
+   */
+  runInTransaction<T>(fn: () => Promise<T>): Promise<T>;
+  /**
+   * Insert a project row and seed enabled skill sources, WITHOUT default statuses and WITHOUT
+   * opening its own transaction (must be called inside `runInTransaction`). The template
+   * supplies statuses via the statuses codec, so — unlike `createProject` — no defaults are
+   * seeded. Replaces the project-row + sourceProjectEnabled seeding the create-core delegate did.
+   */
+  createProjectShell(
     data: CreateProject,
-    template: TemplateImportPayload,
     options?: CreateProjectWithTemplateOptions,
-  ): Promise<CreateProjectWithTemplateResult>;
+  ): Promise<Project>;
   getProject(id: string): Promise<Project>;
   findProjectByPath(path: string): Promise<Project | null>;
   listProjects(options?: ListOptions): Promise<ListResult<Project>>;
@@ -376,6 +328,14 @@ export interface ProviderStorage {
     providerId: string,
     names: string[],
   ): Promise<{ added: string[]; existing: string[] }>;
+  createProviderEffort(data: CreateProviderEffort): Promise<ProviderEffort>;
+  listProviderEffortsByProvider(providerId: string): Promise<ProviderEffort[]>;
+  listProviderEffortsByProviderIds(providerIds: string[]): Promise<ProviderEffort[]>;
+  deleteProviderEffort(id: string): Promise<void>;
+  bulkCreateProviderEfforts(
+    providerId: string,
+    names: string[],
+  ): Promise<{ added: string[]; existing: string[] }>;
   getProvider(id: string): Promise<Provider>;
   listProviders(options?: ListOptions): Promise<ListResult<Provider>>;
   listProvidersByIds(ids: string[]): Promise<Provider[]>;
@@ -441,6 +401,8 @@ export interface CreateIfMissingInput {
   description?: string | null;
   options?: string | null;
   env?: Record<string, string>;
+  model?: string | null;
+  effort?: string | null;
 }
 
 export interface CreateIfMissingResult {

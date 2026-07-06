@@ -2,6 +2,7 @@ export interface PresetAgentConfig {
   agentName: string;
   providerConfigName: string;
   modelOverride?: string | null;
+  effortOverride?: string | null;
 }
 
 export interface Preset {

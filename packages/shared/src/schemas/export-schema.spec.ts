@@ -306,6 +306,139 @@ describe('ExportSchema', () => {
     });
   });
 
+  describe('effort fields (providerEfforts, config model/effort, agent effortOverride, preset effortOverride)', () => {
+    const baseTemplate = {
+      version: 1,
+      exportedAt: '2024-01-01T00:00:00Z',
+      prompts: [],
+      profiles: [],
+      agents: [],
+      statuses: [],
+    };
+
+    it('defaults providerEfforts to [] when omitted (legacy template imports unchanged)', () => {
+      const result = ExportSchema.safeParse(baseTemplate);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.providerEfforts).toEqual([]);
+      }
+    });
+
+    it('accepts valid providerEfforts payload', () => {
+      const template = {
+        ...baseTemplate,
+        providerEfforts: [{ providerName: 'claude', efforts: ['low', 'medium', 'high'] }],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.providerEfforts).toEqual(template.providerEfforts);
+      }
+    });
+
+    it('rejects providerEfforts with non-string effort values', () => {
+      const template = {
+        ...baseTemplate,
+        providerEfforts: [{ providerName: 'claude', efforts: ['high', 42] }],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(false);
+    });
+
+    it('accepts providerConfig model/effort structured defaults', () => {
+      const template = {
+        ...baseTemplate,
+        profiles: [
+          {
+            name: 'default',
+            provider: { name: 'claude' },
+            providerConfigs: [
+              { name: 'cfg', providerName: 'claude', model: 'opus', effort: 'high' },
+            ],
+          },
+        ],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.profiles[0].providerConfigs![0].model).toBe('opus');
+        expect(result.data.profiles[0].providerConfigs![0].effort).toBe('high');
+      }
+    });
+
+    it('accepts providerConfig with null model/effort and omits them when absent (legacy)', () => {
+      const legacy = {
+        ...baseTemplate,
+        profiles: [
+          {
+            name: 'default',
+            provider: { name: 'claude' },
+            providerConfigs: [{ name: 'cfg', providerName: 'claude' }],
+          },
+        ],
+      };
+      const result = ExportSchema.safeParse(legacy);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.profiles[0].providerConfigs![0].model).toBeUndefined();
+        expect(result.data.profiles[0].providerConfigs![0].effort).toBeUndefined();
+      }
+    });
+
+    it('accepts agent effortOverride as string, null, or omitted', () => {
+      const withValue = ExportSchema.safeParse({
+        ...baseTemplate,
+        agents: [{ name: 'Coder', effortOverride: 'high' }],
+      });
+      expect(withValue.success).toBe(true);
+      if (withValue.success) {
+        expect(withValue.data.agents[0].effortOverride).toBe('high');
+      }
+
+      const withNull = ExportSchema.safeParse({
+        ...baseTemplate,
+        agents: [{ name: 'Coder', effortOverride: null }],
+      });
+      expect(withNull.success).toBe(true);
+      if (withNull.success) {
+        expect(withNull.data.agents[0].effortOverride).toBeNull();
+      }
+
+      const omitted = ExportSchema.safeParse({
+        ...baseTemplate,
+        agents: [{ name: 'Coder' }],
+      });
+      expect(omitted.success).toBe(true);
+      if (omitted.success) {
+        expect(omitted.data.agents[0].effortOverride).toBeUndefined();
+      }
+    });
+
+    it('accepts preset agentConfig effortOverride (undefined preserves / null clears semantics)', () => {
+      const template = {
+        ...baseTemplate,
+        presets: [
+          {
+            name: 'default',
+            agentConfigs: [
+              { agentName: 'Coder', providerConfigName: 'cfg', effortOverride: 'medium' },
+              { agentName: 'Reviewer', providerConfigName: 'cfg', effortOverride: null },
+              { agentName: 'Architect', providerConfigName: 'cfg' },
+            ],
+          },
+        ],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        const configs = result.data.presets[0].agentConfigs;
+        expect(configs[0].effortOverride).toBe('medium');
+        expect(configs[1].effortOverride).toBeNull();
+        expect(configs[2].effortOverride).toBeUndefined();
+      }
+    });
+  });
+
   describe('teams', () => {
     it('defaults to empty array when omitted', () => {
       const result = ExportSchema.parse({ profiles: [], statuses: [] });
@@ -418,9 +551,7 @@ describe('ExportSchema', () => {
             {
               name: 'Team A',
               memberAgentNames: ['Agent-A'],
-              profileSelections: [
-                { profileName: 'P', configNames: ['C'], extra: true } as never,
-              ],
+              profileSelections: [{ profileName: 'P', configNames: ['C'], extra: true } as never],
             },
           ],
         }),
@@ -739,6 +870,7 @@ describe('ExportSchema', () => {
     });
 
     it('should reject scheduledEpic without enabled field', () => {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { enabled, ...noEnabled } = validScheduledEpic;
       const template = { ...baseTemplate, scheduledEpics: [noEnabled] };
       const result = ExportSchema.safeParse(template);
@@ -948,9 +1080,7 @@ describe('ExportSchema', () => {
         profiles: [
           {
             ...baseTemplate.profiles[0],
-            providerConfigs: [
-              { name: 'c', providerName: 'claude', env: { 'bad-key': 'val' } },
-            ],
+            providerConfigs: [{ name: 'c', providerName: 'claude', env: { 'bad-key': 'val' } }],
           },
         ],
       };
@@ -1000,9 +1130,7 @@ describe('ExportSchema', () => {
     it('should accept providerSettings with valid env', () => {
       const template = {
         ...baseTemplate,
-        providerSettings: [
-          { name: 'claude', env: { API_BASE: 'https://api.example.com' } },
-        ],
+        providerSettings: [{ name: 'claude', env: { API_BASE: 'https://api.example.com' } }],
       };
       const result = ExportSchema.safeParse(template);
       expect(result.success).toBe(true);
@@ -1068,6 +1196,88 @@ describe('ExportSchema', () => {
         expect(result.data.providerSettings![0].env).toBeUndefined();
         expect(result.data.providerSettings![0].autoCompactThreshold).toBe(80);
       }
+    });
+
+    describe('providerConfigs[].position', () => {
+      const baseTemplate = {
+        version: 1,
+        exportedAt: '2024-01-01T00:00:00Z',
+        prompts: [],
+        profiles: [
+          {
+            name: 'P',
+            provider: { name: 'claude' },
+            providerConfigs: [
+              { name: 'a', providerName: 'claude' },
+              { name: 'b', providerName: 'claude' },
+              { name: 'c', providerName: 'claude' },
+            ],
+          },
+        ],
+        agents: [],
+        statuses: [],
+      };
+
+      it('round-trips explicit providerConfig positions (non-array-order / sparse)', () => {
+        const template = {
+          ...baseTemplate,
+          profiles: [
+            {
+              ...baseTemplate.profiles[0],
+              providerConfigs: [
+                { name: 'a', providerName: 'claude', position: 5 },
+                { name: 'b', providerName: 'claude', position: 1 },
+                { name: 'c', providerName: 'claude', position: 9 },
+              ],
+            },
+          ],
+        };
+        const result = ExportSchema.safeParse(template);
+        expect(result.success).toBe(true);
+        if (result.success) {
+          expect(result.data.profiles[0].providerConfigs!.map((c) => c.position)).toEqual([
+            5, 1, 9,
+          ]);
+        }
+      });
+
+      it('absent position still parses and stays undefined (legacy templates unchanged)', () => {
+        const result = ExportSchema.safeParse(baseTemplate);
+        expect(result.success).toBe(true);
+        if (result.success) {
+          for (const config of result.data.profiles[0].providerConfigs!) {
+            expect(config.position).toBeUndefined();
+          }
+        }
+      });
+
+      it('rejects non-integer position', () => {
+        const template = {
+          ...baseTemplate,
+          profiles: [
+            {
+              ...baseTemplate.profiles[0],
+              providerConfigs: [{ name: 'a', providerName: 'claude', position: 1.5 }],
+            },
+          ],
+        };
+        const result = ExportSchema.safeParse(template);
+        expect(result.success).toBe(false);
+      });
+
+      it('rejects non-number position', () => {
+        const template = {
+          ...baseTemplate,
+          profiles: [
+            {
+              ...baseTemplate.profiles[0],
+              providerConfigs: [{ name: 'a', providerName: 'claude', position: '5' }],
+            },
+          ],
+        };
+        const result = ExportSchema.safeParse(template);
+        expect(result.success).toBe(false);
+      });
     });
   });
 });

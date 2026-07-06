@@ -496,6 +496,42 @@ describe('TeamsPage', () => {
     queryClient.clear();
   });
 
+  it('cancel closes the create dialog (kit onOpenChange)', async () => {
+    global.fetch = buildFetchMock() as unknown as typeof fetch;
+    const { Wrapper, queryClient } = createWrapper();
+    render(<TeamsPage />, { wrapper: Wrapper });
+
+    await screen.findByText('Backend Squad');
+
+    fireEvent.click(screen.getAllByRole('button', { name: /create team/i })[0]);
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('Create Team')).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole('button', { name: /^cancel$/i }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+    queryClient.clear();
+  });
+
+  it('cancel closes the disband confirm and clears the target (kit onOpenChange)', async () => {
+    global.fetch = buildFetchMock() as unknown as typeof fetch;
+    const { Wrapper, queryClient } = createWrapper();
+    render(<TeamsPage />, { wrapper: Wrapper });
+
+    await screen.findByText('Backend Squad');
+
+    const card = screen.getByTestId('team-card-team-1');
+    fireEvent.click(within(card).getAllByRole('button')[1]); // disband
+
+    await screen.findByText('Disband Team');
+    fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+    await waitFor(() => expect(screen.queryByText('Disband Team')).not.toBeInTheDocument());
+
+    queryClient.clear();
+  });
+
   it('shows "Configure allowed configs" button when profiles are selected and hides it when none', async () => {
     global.fetch = buildFetchMock() as unknown as typeof fetch;
     const { Wrapper, queryClient } = createWrapper();

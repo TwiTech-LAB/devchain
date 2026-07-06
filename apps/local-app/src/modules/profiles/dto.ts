@@ -38,6 +38,8 @@ export const ProfileProviderConfigSchema = z.object({
   description: z.string().nullable(),
   options: z.string().nullable(),
   env: z.record(z.string()).nullable(),
+  model: z.string().nullable().default(null),
+  effort: z.string().nullable().default(null),
   position: z.number().int().nonnegative(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -59,6 +61,19 @@ export const CreateProviderConfigSchema = z.object({
     .optional()
     .transform((v) => (v === undefined ? null : v)),
   env: EnvVarsSchema.transform((v) => (v === undefined ? null : v)),
+  // Structured default model/effort from the provider catalog. Provider-native
+  // verbatim storage (UI-only validation; no backend catalog-membership check).
+  // Nullable; omitted → null (no structured default; raw options pass through).
+  model: z
+    .string()
+    .nullable()
+    .optional()
+    .transform((v) => (v === undefined ? null : v)),
+  effort: z
+    .string()
+    .nullable()
+    .optional()
+    .transform((v) => (v === undefined ? null : v)),
   position: z.number().int().nonnegative().optional(),
 });
 
@@ -70,6 +85,10 @@ export const UpdateProviderConfigSchema = z.object({
   description: z.string().nullable().optional(),
   options: z.string().nullable().optional(),
   env: EnvVarsSchema,
+  // Structured default model/effort. Nullable (null = clear structured default,
+  // raw options pass through); omitted = preserve existing value.
+  model: z.string().nullable().optional(),
+  effort: z.string().nullable().optional(),
   position: z.number().int().nonnegative().optional(),
 });
 

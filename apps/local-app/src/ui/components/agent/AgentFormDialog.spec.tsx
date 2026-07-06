@@ -63,6 +63,10 @@ function setupFetchMock(
     },
   ],
   modelsByProviderId: Record<string, Array<{ id: string; name: string }>> = {},
+  effortsByProviderId: Record<
+    string,
+    { efforts: Array<{ name: string }>; supportsEffort: boolean; requiresModelForEffort: boolean }
+  > = {},
 ) {
   const fetchMock = jest.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
@@ -75,6 +79,19 @@ function setupFetchMock(
       return {
         ok: true,
         json: async () => modelsByProviderId[providerId] ?? [],
+      } as Response;
+    }
+    const providerEffortsMatch = url.match(/\/api\/providers\/([^/]+)\/efforts/);
+    if (providerEffortsMatch) {
+      const providerId = providerEffortsMatch[1];
+      return {
+        ok: true,
+        json: async () =>
+          effortsByProviderId[providerId] ?? {
+            efforts: [],
+            supportsEffort: false,
+            requiresModelForEffort: false,
+          },
       } as Response;
     }
     return { ok: true, json: async () => ({}) } as Response;
@@ -538,5 +555,178 @@ describe('AgentFormDialog', () => {
     render(<AgentFormDialog {...buildProps({ profiles: [] })} />, { wrapper: Wrapper });
 
     expect(screen.getByText('No profiles available. Create a profile first.')).toBeInTheDocument();
+  });
+
+  // ---- Effort override state matrix (parity with model) ----
+
+  async function selectProfileAndConfig(user: ReturnType<typeof userEvent.setup>) {
+    await user.type(screen.getByLabelText('Name *'), 'Effort Agent');
+    await user.selectOptions(screen.getByLabelText('Profile *'), 'profile-1');
+    await waitFor(() => {
+      expect(screen.getByLabelText(/provider configuration/i)).toBeInTheDocument();
+    });
+  }
+
+  it('hides the effort selector when supportsEffort is false', async () => {
+    // Default mock returns supportsEffort:false for efforts
+    setupFetchMock();
+    const user = userEvent.setup();
+    const { Wrapper } = createWrapper();
+    render(<AgentFormDialog {...buildProps()} />, { wrapper: Wrapper });
+
+    await selectProfileAndConfig(user);
+
+    expect(screen.queryByLabelText('Effort override')).not.toBeInTheDocument();
+  });
+
+  it('shows an enabled effort selector when supported with a non-empty catalog', async () => {
+    setupFetchMock(
+      undefined,
+      { 'provider-1': [{ id: 'm1', name: 'opus' }] },
+      {
+        'provider-1': {
+          efforts: [{ name: 'high' }, { name: 'low' }],
+          supportsEffort: true,
+          requiresModelForEffort: false,
+        },
+      },
+    );
+    const user = userEvent.setup();
+    const { Wrapper } = createWrapper();
+    render(<AgentFormDialog {...buildProps()} />, { wrapper: Wrapper });
+
+    await selectProfileAndConfig(user);
+
+    const effortSelect = (await screen.findByLabelText('Effort override')) as HTMLSelectElement;
+    // Wait for catalog options to populate
+    await waitFor(() => {
+      expect([...effortSelect.options].map((o) => o.value)).toEqual(
+        expect.arrayContaining(['high', 'low']),
+      );
+    });
+    expect(effortSelect).not.toBeDisabled();
+    expect(effortSelect.options).toHaveLength(3); // Default + high + low
+    expect(screen.queryByText('No effort levels configured')).not.toBeInTheDocument();
+    expect(screen.queryByText('Select a model first')).not.toBeInTheDocument();
+  });
+
+  it('disables the effort selector with hint when supported but catalog empty', async () => {
+    setupFetchMock(undefined, undefined, {
+      'provider-1': { efforts: [], supportsEffort: true, requiresModelForEffort: false },
+    });
+    const user = userEvent.setup();
+    const { Wrapper } = createWrapper();
+    render(<AgentFormDialog {...buildProps()} />, { wrapper: Wrapper });
+
+    await selectProfileAndConfig(user);
+
+    const effortSelect = (await screen.findByLabelText('Effort override')) as HTMLSelectElement;
+    expect(effortSelect).toBeDisabled();
+    expect(screen.getByText('No effort levels configured')).toBeInTheDocument();
+  });
+
+  it('disables the effort selector with "Select a model first" when requiresModelForEffort and no resolvable model', async () => {
+    setupFetchMock(
+      [
+        {
+          id: 'config-1',
+          profileId: 'profile-1',
+          providerId: 'provider-1',
+          name: 'default',
+          options: null,
+          env: null,
+          model: null,
+          effort: null,
+        },
+      ],
+      undefined,
+      {
+        'provider-1': {
+          efforts: [{ name: 'high' }],
+          supportsEffort: true,
+          requiresModelForEffort: true,
+        },
+      },
+    );
+    const user = userEvent.setup();
+    const { Wrapper } = createWrapper();
+    render(<AgentFormDialog {...buildProps()} />, { wrapper: Wrapper });
+
+    await selectProfileAndConfig(user);
+
+    const effortSelect = (await screen.findByLabelText('Effort override')) as HTMLSelectElement;
+    expect(effortSelect).toBeDisabled();
+    expect(screen.getByText('Select a model first')).toBeInTheDocument();
+  });
+
+  it('enables the effort selector when requiresModelForEffort but the config carries a structured model', async () => {
+    setupFetchMock(
+      [
+        {
+          id: 'config-1',
+          profileId: 'profile-1',
+          providerId: 'provider-1',
+          name: 'default',
+          options: null,
+          env: null,
+          model: 'opus',
+          effort: null,
+        },
+      ],
+      undefined,
+      {
+        'provider-1': {
+          efforts: [{ name: 'high' }],
+          supportsEffort: true,
+          requiresModelForEffort: true,
+        },
+      },
+    );
+    const user = userEvent.setup();
+    const { Wrapper } = createWrapper();
+    render(<AgentFormDialog {...buildProps()} />, { wrapper: Wrapper });
+
+    await selectProfileAndConfig(user);
+
+    const effortSelect = (await screen.findByLabelText('Effort override')) as HTMLSelectElement;
+    expect(effortSelect).not.toBeDisabled();
+    expect(screen.queryByText('Select a model first')).not.toBeInTheDocument();
+  });
+
+  it('persists effortOverride on create and clears to null via "Default"', async () => {
+    setupFetchMock(
+      undefined,
+      { 'provider-1': [{ id: 'm1', name: 'opus' }] },
+      {
+        'provider-1': {
+          efforts: [{ name: 'high' }, { name: 'low' }],
+          supportsEffort: true,
+          requiresModelForEffort: false,
+        },
+      },
+    );
+    const onSubmit = jest.fn();
+    const user = userEvent.setup();
+    const { Wrapper } = createWrapper();
+    render(<AgentFormDialog {...buildProps({ onSubmit })} />, { wrapper: Wrapper });
+
+    await selectProfileAndConfig(user);
+
+    const effortSelect = (await screen.findByLabelText('Effort override')) as HTMLSelectElement;
+    // Wait for the catalog to populate before interacting
+    await waitFor(() => {
+      expect([...effortSelect.options].map((o) => o.value)).toEqual(
+        expect.arrayContaining(['high']),
+      );
+    });
+    await user.selectOptions(effortSelect, 'high');
+    await user.click(screen.getByRole('button', { name: /^create$/i }));
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ effortOverride: 'high' }));
+
+    // "Default" (first option) clears to null
+    await user.selectOptions(effortSelect, effortSelect.options[0]);
+    await user.click(screen.getByRole('button', { name: /^create$/i }));
+    expect(onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({ effortOverride: null }));
   });
 });

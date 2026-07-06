@@ -13,9 +13,11 @@ import type {
   ProvisioningResult,
   AuthProbeCapability,
   AuthProbeResult,
+  EffortCapability,
   HookCapability,
   HookEnvContext,
 } from './capabilities';
+import { stripFlag } from '../../sessions/utils/profile-options';
 import { CopilotTrustedFoldersService } from '../../core/services/copilot-trusted-folders.service';
 import {
   CopilotAuthProbeService,
@@ -62,9 +64,14 @@ export class CopilotAdapter
     TranscriptDiscoveryCapability,
     ProjectProvisioningCapability,
     AuthProbeCapability,
+    EffortCapability,
     HookCapability
 {
   readonly providerName = 'copilot';
+
+  // Effort (`--effort=<value>`, alias `--reasoning-effort`). Static seed/endpoint
+  // metadata — model, effort, and context tier all flow through profileOptionArgs.
+  readonly defaultEffortValues = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 
   // Copilot = ProjectProvisioningCapability adopter #3. Spike S1 proved the
   // untrusted-folder `-i` TUI HARD-BLOCKS on a trust modal that NO launch flag
@@ -162,6 +169,19 @@ export class CopilotAdapter
     }
     argv.push(...profileOptionArgs);
     return { argv };
+  }
+
+  applyEffort(
+    args: string[],
+    env: Record<string, string>,
+    effortValue: string,
+  ): { argv: string[]; env: Record<string, string> } {
+    // Strip both the canonical `--effort` and its `--reasoning-effort` alias (each
+    // in `--flag value` and `--flag=value` forms) so no raw effort flag survives
+    // to contradict the structured value, then inject the native `--effort=<v>`.
+    let stripped = stripFlag(args, '--effort');
+    stripped = stripFlag(stripped, '--reasoning-effort');
+    return { argv: [`--effort=${effortValue}`, ...stripped], env };
   }
 
   // ── McpCliCapability ───────────────────────────────────────────────────────

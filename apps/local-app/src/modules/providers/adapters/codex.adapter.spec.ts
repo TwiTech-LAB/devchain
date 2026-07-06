@@ -128,6 +128,100 @@ describe('CodexAdapter', () => {
     });
   });
 
+  describe('EffortCapability', () => {
+    it('exposes the seeded default effort values (static metadata)', () => {
+      expect(adapter.defaultEffortValues).toEqual(['minimal', 'low', 'medium', 'high', 'xhigh']);
+    });
+
+    it('injects `-c model_reasoning_effort=<value>` into the args', () => {
+      const { argv } = adapter.applyEffort(['-m', 'o3'], {}, 'high');
+      expect(argv).toEqual(['-c', 'model_reasoning_effort=high', '-m', 'o3']);
+    });
+
+    it('strips a conflicting raw `-c model_reasoning_effort=...` before injecting (deterministic)', () => {
+      const { argv } = adapter.applyEffort(
+        ['-c', 'model_reasoning_effort=low', '-m', 'o3'],
+        {},
+        'high',
+      );
+      expect(argv).toEqual(['-c', 'model_reasoning_effort=high', '-m', 'o3']);
+      // exactly one occurrence of the key survives
+      expect(argv.filter((t) => t.startsWith('model_reasoning_effort='))).toEqual([
+        'model_reasoning_effort=high',
+      ]);
+    });
+
+    it('KEY-TARGETED strip preserves the update-check prelude and unrelated user `-c` keys', () => {
+      // Simulate profileOptionArgs that already carry the forced prelude key AND
+      // an unrelated user `-c`; only the effort key may be rewritten.
+      const { argv } = adapter.applyEffort(
+        [
+          '-c',
+          'check_for_update_on_startup=false',
+          '-c',
+          'sandbox_mode=danger-full-access',
+          '-c',
+          'model_reasoning_effort=low',
+        ],
+        {},
+        'high',
+      );
+      expect(argv).toContain('check_for_update_on_startup=false');
+      expect(argv).toContain('sandbox_mode=danger-full-access');
+      expect(argv.filter((t) => t.startsWith('model_reasoning_effort='))).toEqual([
+        'model_reasoning_effort=high',
+      ]);
+    });
+
+    it('never blanket-strips `-c`: a lone unrelated `-c` pair survives untouched', () => {
+      const { argv } = adapter.applyEffort(['-c', 'hide_agent_reasoning=true'], {}, 'medium');
+      expect(argv).toEqual([
+        '-c',
+        'model_reasoning_effort=medium',
+        '-c',
+        'hide_agent_reasoning=true',
+      ]);
+    });
+
+    it('returns env unchanged', () => {
+      const env = { FOO: 'bar' };
+      expect(adapter.applyEffort([], env, 'low').env).toBe(env);
+    });
+
+    it('final three-layer argv ordering — new: [prelude, ...args-with-effort]', () => {
+      // buildLaunchArgs prepends the prelude; applyEffort output is the middle.
+      const withEffort = adapter.applyEffort(['-m', 'o3'], {}, 'high').argv;
+      const { argv } = adapter.buildLaunchArgs({ mode: 'new', profileOptionArgs: withEffort });
+      expect(argv).toEqual([
+        '-c',
+        'check_for_update_on_startup=false',
+        '-c',
+        'model_reasoning_effort=high',
+        '-m',
+        'o3',
+      ]);
+    });
+
+    it('final three-layer argv ordering — restore: [prelude, resume, ...args-with-effort, sessionId]', () => {
+      const withEffort = adapter.applyEffort(['-m', 'o3'], {}, 'high').argv;
+      const { argv } = adapter.buildLaunchArgs({
+        mode: 'restore',
+        providerSessionId: 'sess-1',
+        profileOptionArgs: withEffort,
+      });
+      expect(argv).toEqual([
+        '-c',
+        'check_for_update_on_startup=false',
+        'resume',
+        '-c',
+        'model_reasoning_effort=high',
+        '-m',
+        'o3',
+        'sess-1',
+      ]);
+    });
+  });
+
   describe('parseListOutput', () => {
     it('parses output with single entry', () => {
       const stdout = 'devchain  http://127.0.0.1:3000/mcp';

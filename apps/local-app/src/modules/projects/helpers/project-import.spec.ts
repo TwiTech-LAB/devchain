@@ -2,11 +2,11 @@ import type { StorageService } from '../../storage/interfaces/storage.interface'
 import {
   importProviderSettings,
   importProjectWithHelper,
-  preserveImportedEnv,
   createImportedTeams,
-  applyTeamOverrides,
   pruneUnavailableTeamProfileSelections,
 } from './project-import';
+import { preserveImportedEnv } from './profile-mapping.helpers';
+import { applyTeamOverrides } from './team-overrides.helpers';
 import { ConflictError, ValidationError } from '../../../common/errors/error-types';
 
 jest.mock('../../../common/logging/logger', () => ({
@@ -900,32 +900,38 @@ describe('applyTeamOverrides', () => {
       expect(result[0].profileNames).toEqual(['Profile A']);
     });
 
-    it('remaps override profileNames through the remap map', () => {
-      const remapMap = new Map([['codex-default', 'claude-default']]);
-      const teams = [{ ...baseTeam, profileNames: ['codex-default'] }];
+    it('remaps override profileNames through the remap map, re-resolving original casing', () => {
+      // Realistic family substitution: 'Coder Codex' -> 'Coder Claude'. The remap
+      // map value is the selected profile name lowercased, matching profile-mapping.helpers.
+      const remapMap = new Map([['coder codex', 'coder claude']]);
+      const resolvedProfiles = [{ name: 'Coder Claude' }];
+      const teams = [{ ...baseTeam, profileNames: ['Coder Codex'] }];
       const result = applyTeamOverrides(
         teams,
-        [{ teamName: 'Dev Team', profileNames: ['codex-default'] }],
+        [{ teamName: 'Dev Team', profileNames: ['Coder Codex'] }],
         remapMap,
+        resolvedProfiles,
       );
-      expect(result[0].profileNames).toEqual(['claude-default']);
+      expect(result[0].profileNames).toEqual(['Coder Claude']);
     });
 
-    it('remaps override profileSelections.profileName through the remap map', () => {
-      const remapMap = new Map([['codex-default', 'claude-default']]);
+    it('remaps override profileSelections.profileName through the remap map, re-resolving casing', () => {
+      const remapMap = new Map([['coder codex', 'coder claude']]);
+      const resolvedProfiles = [{ name: 'Coder Claude' }];
       const teams = [baseTeam];
       const result = applyTeamOverrides(
         teams,
         [
           {
             teamName: 'Dev Team',
-            profileSelections: [{ profileName: 'codex-default', configNames: ['claude-local'] }],
+            profileSelections: [{ profileName: 'Coder Codex', configNames: ['claude-local'] }],
           },
         ],
         remapMap,
+        resolvedProfiles,
       );
       expect(result[0].profileSelections).toEqual([
-        { profileName: 'claude-default', configNames: ['claude-local'] },
+        { profileName: 'Coder Claude', configNames: ['claude-local'] },
       ]);
     });
 
@@ -950,14 +956,16 @@ describe('applyTeamOverrides', () => {
     });
 
     it('remap is case-insensitive on the profile name lookup', () => {
-      const remapMap = new Map([['codex-default', 'claude-default']]);
+      const remapMap = new Map([['coder codex', 'coder claude']]);
+      const resolvedProfiles = [{ name: 'Coder Claude' }];
       const teams = [baseTeam];
       const result = applyTeamOverrides(
         teams,
-        [{ teamName: 'Dev Team', profileNames: ['CODEX-DEFAULT'] }],
+        [{ teamName: 'Dev Team', profileNames: ['CODER CODEX'] }],
         remapMap,
+        resolvedProfiles,
       );
-      expect(result[0].profileNames).toEqual(['claude-default']);
+      expect(result[0].profileNames).toEqual(['Coder Claude']);
     });
 
     it('integration: override with remapped profileSelections resolves against post-remap profileIdMap', async () => {
@@ -998,6 +1006,8 @@ describe('applyTeamOverrides', () => {
           },
         ],
         remapMap,
+        // Resolved profiles that will be created; re-resolution lands on 'claude-default'.
+        [{ name: 'claude-default' }],
       );
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await createImportedTeams('proj-1', overridden, deps as any);
@@ -1124,6 +1134,7 @@ describe('importProjectWithHelper — session preservation', () => {
     createSubscribersFromPayload: jest.fn().mockResolvedValue({ created: 0, subscriberIdMap: {} }),
     applyProjectSettings: jest.fn().mockResolvedValue({ initialPromptSet: false }),
     getImportErrorMessage: jest.fn().mockImplementation((e: unknown) => String(e)),
+    applyAgentConfigs: jest.fn().mockResolvedValue({ applied: 0, warnings: [] }),
   });
 
   it('(a) preserves sessions when old agent name matches new template agent name', async () => {
@@ -1158,6 +1169,53 @@ describe('importProjectWithHelper — session preservation', () => {
       [{ sessionId: 'sess-1', newAgentId: 'new-coder-id' }],
       [],
     );
+  });
+
+  it('applies agentOverrides after the profiles+agents batch and leaves batch-6 preset semantics untouched', async () => {
+    const storage = makeStorage();
+    const deps = makeDeps(storage);
+    const agentOverrides = [
+      { agentName: 'Coder', providerConfigName: 'claude-config', modelOverride: 'openai/gpt-5' },
+    ];
+
+    const result = await importProjectWithHelper(
+      {
+        projectId: PROJECT_ID,
+        payload: makePayload([makeTemplateAgent('Coder')]),
+        agentOverrides,
+      },
+      deps,
+    );
+
+    expect(result).toMatchObject({ success: true });
+
+    // agentOverrides are applied via the shared helper, using the freshly-built name maps that
+    // the profiles/agents codecs published (proving the apply runs AFTER that batch).
+    expect(deps.applyAgentConfigs).toHaveBeenCalledTimes(1);
+    const [calledProjectId, calledConfigs, calledMaps] = deps.applyAgentConfigs.mock.calls[0];
+    expect(calledProjectId).toBe(PROJECT_ID);
+    expect(calledConfigs).toEqual(agentOverrides);
+    expect(calledMaps.agentNameToId).toBeInstanceOf(Map);
+    expect(calledMaps.agentNameToId.get('coder')).toBe('new-agent-coder');
+    expect(calledMaps.configLookupMap).toBeInstanceOf(Map);
+
+    // Regression: batch-6 presets codec still runs unchanged (payload has no presets → clear).
+    expect(
+      (deps.settings as unknown as { clearProjectPresets: jest.Mock }).clearProjectPresets,
+    ).toHaveBeenCalledWith(PROJECT_ID);
+  });
+
+  it('does not invoke applyAgentConfigs when no agentOverrides are provided', async () => {
+    const storage = makeStorage();
+    const deps = makeDeps(storage);
+
+    const result = await importProjectWithHelper(
+      { projectId: PROJECT_ID, payload: makePayload([makeTemplateAgent('Coder')]) },
+      deps,
+    );
+
+    expect(result).toMatchObject({ success: true });
+    expect(deps.applyAgentConfigs).not.toHaveBeenCalled();
   });
 
   it('(b) deletes sessions when old agent name has no match in new template', async () => {

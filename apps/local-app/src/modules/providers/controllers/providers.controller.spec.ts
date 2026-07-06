@@ -11,6 +11,7 @@ import { ProbeProofService } from '../services/probe-proof.service';
 import { ProviderStateManager } from '../services/provider-state-manager.service';
 import { ProviderProjectSyncService } from '../services/provider-project-sync.service';
 import { ProviderDiscoveryService } from '../services/provider-discovery.service';
+import { ProviderEffortSeedingService } from '../services/provider-effort-seeding.service';
 import {
   BadRequestException,
   InternalServerErrorException,
@@ -82,6 +83,7 @@ describe('ProvidersController', () => {
   let providerStateManager: ProviderStateManager;
   let mockSyncService: { syncProviderToAllProjects: jest.Mock };
   let mockDiscoveryService: { discoverInstalledBinaries: jest.Mock };
+  let mockEffortSeeding: { seedForProvider: jest.Mock; backfillAll: jest.Mock };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -154,6 +156,11 @@ describe('ProvidersController', () => {
       }),
     };
 
+    mockEffortSeeding = {
+      seedForProvider: jest.fn().mockResolvedValue({ added: [], existing: [] }),
+      backfillAll: jest.fn().mockResolvedValue({ providers: 0, seededProviders: 0 }),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       controllers: [ProvidersController],
       providers: [
@@ -195,6 +202,7 @@ describe('ProvidersController', () => {
         },
         ProbeProofService,
         ProviderStateManager,
+        { provide: ProviderEffortSeedingService, useValue: mockEffortSeeding },
         { provide: DB_CONNECTION, useValue: buildProofDb() },
         {
           provide: ProcessExecutor,
@@ -2089,6 +2097,44 @@ describe('ProvidersController', () => {
       expect(storage.createProvider).toHaveBeenCalledTimes(2);
       expect(mockSyncService.syncProviderToAllProjects).toHaveBeenCalledWith('new-1');
       expect(mockSyncService.syncProviderToAllProjects).toHaveBeenCalledWith('new-2');
+    });
+
+    it('seeds the effort catalog for each rescan-discovered provider (same shared path)', async () => {
+      mockDiscoveryService.discoverInstalledBinaries.mockResolvedValue({
+        discovered: [
+          { name: 'claude', binPath: '/usr/bin/claude' },
+          { name: 'codex', binPath: '/usr/bin/codex' },
+        ],
+        alreadyPresent: [],
+        notFound: [],
+      });
+      storage.createProvider
+        .mockResolvedValueOnce({ id: 'new-1', name: 'claude' })
+        .mockResolvedValueOnce({ id: 'new-2', name: 'codex' });
+
+      await controller.rescanProviders();
+
+      expect(mockEffortSeeding.seedForProvider).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'new-1', name: 'claude' }),
+      );
+      expect(mockEffortSeeding.seedForProvider).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'new-2', name: 'codex' }),
+      );
+    });
+
+    it('still completes rescan when effort seeding throws (non-fatal)', async () => {
+      mockDiscoveryService.discoverInstalledBinaries.mockResolvedValue({
+        discovered: [{ name: 'claude', binPath: '/usr/bin/claude' }],
+        alreadyPresent: [],
+        notFound: [],
+      });
+      storage.createProvider.mockResolvedValueOnce({ id: 'new-1', name: 'claude' });
+      mockEffortSeeding.seedForProvider.mockRejectedValueOnce(new Error('seed boom'));
+
+      const result = await controller.rescanProviders();
+
+      expect(result.discovered).toHaveLength(1);
+      expect(mockSyncService.syncProviderToAllProjects).toHaveBeenCalledWith('new-1');
     });
 
     it('returns empty discovered when nothing new found', async () => {

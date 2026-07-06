@@ -48,6 +48,8 @@ export interface AgentOrGuestItem {
   type: 'agent' | 'guest';
   /** Model override for agents; null for guests */
   modelOverride: string | null;
+  /** Effort override for agents; null for guests (mirrors modelOverride) */
+  effortOverride: string | null;
   /** For guests, their tmux session ID */
   tmuxSessionId?: string;
   /** Provider config ID for agents (Phase 4+) */
@@ -58,6 +60,9 @@ export interface AgentOrGuestItem {
     name: string;
     providerId: string;
     providerName: string;
+    /** Structured default model/effort from the selected config (chat dialog effective defaults) */
+    model: string | null;
+    effort: string | null;
   } | null;
 }
 
@@ -79,6 +84,7 @@ const CreateAgentSchema = z.object({
   description: z.string().nullable().optional(),
   providerConfigId: z.string().min(1, 'providerConfigId is required'),
   modelOverride: z.string().trim().min(1).nullable().optional(),
+  effortOverride: z.string().trim().min(1).nullable().optional(),
 });
 
 const UpdateAgentSchema = z.object({
@@ -88,6 +94,9 @@ const UpdateAgentSchema = z.object({
   // providerConfigId can be updated but NOT set to null (DB column is NOT NULL)
   providerConfigId: z.string().min(1).optional(),
   modelOverride: z.string().min(1).nullable().optional(),
+  // effortOverride mirrors modelOverride: verbatim storage, nullable (null = clear),
+  // omitted = preserve. Online agents require a restart to apply (same as modelOverride).
+  effortOverride: z.string().min(1).nullable().optional(),
 });
 
 @Controller('api/agents')
@@ -178,6 +187,7 @@ export class AgentsController {
         description: agent.description,
         type: 'agent' as const,
         modelOverride: agent.modelOverride,
+        effortOverride: agent.effortOverride,
         providerConfigId: agent.providerConfigId,
         providerConfig:
           config && provider
@@ -186,6 +196,8 @@ export class AgentsController {
                 name: config.name,
                 providerId: config.providerId,
                 providerName: provider.name,
+                model: config.model,
+                effort: config.effort,
               }
             : null,
       };
@@ -198,6 +210,7 @@ export class AgentsController {
       description: null,
       type: 'guest' as const,
       modelOverride: null,
+      effortOverride: null,
       tmuxSessionId: guest.tmuxSessionId,
       providerConfigId: null,
       providerConfig: null,

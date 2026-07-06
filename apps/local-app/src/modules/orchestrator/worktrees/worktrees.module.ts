@@ -7,6 +7,8 @@ import { OrchestratorStorageModule } from '../orchestrator-storage/orchestrator-
 import { ProcessExecutorModule } from '../../terminal/services/process-executor/process-executor.module';
 import { WorktreesController } from './controllers/worktrees.controller';
 import { LocalWorktreesStore } from './local-worktrees.store';
+import { ContainerRuntime } from './runtime/container-runtime';
+import { ProcessRuntime } from './runtime/process-runtime';
 import { WorktreesService } from './services/worktrees.service';
 import { WORKTREES_STORE } from './worktrees.store';
 
@@ -22,6 +24,10 @@ import { WORKTREES_STORE } from './worktrees.store';
   controllers: [WorktreesController],
   providers: [
     WorktreesService,
+    // Module-private runtime seam: the two transport adapters are NOT exported —
+    // external callers keep knowing only WorktreesService.
+    ContainerRuntime,
+    ProcessRuntime,
     LocalWorktreesStore,
     {
       provide: WORKTREES_STORE,

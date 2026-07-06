@@ -54,7 +54,12 @@ jest.mock('../provider-launch-config', () => ({
 
 // ── Imports ────────────────────────────────────────────────────────────
 
-import { createRestorePipelineHarness, fakeProvider } from './__test-utils__/pipeline-harness';
+import {
+  createRestorePipelineHarness,
+  fakeProvider,
+  fakeAgent,
+  fakeProfileProviderConfig,
+} from './__test-utils__/pipeline-harness';
 import { ConflictError, ValidationError } from '../../../../common/errors/error-types';
 import { resolve as resolveLaunchConfig } from '../provider-launch-config';
 
@@ -63,6 +68,68 @@ import { resolve as resolveLaunchConfig } from '../provider-launch-config';
 describe('SessionRestorePipeline', () => {
   const sessionId = 'session-1';
   const projectId = 'project-1';
+
+  // ── Effective model/effort resolution (restore parity with launch) ───────
+  // Restore must apply the same effective model/effort as a fresh launch. Layer:
+  // pipeline unit test with the shared harness (resolve is mocked) — asserts the
+  // pipeline passes the resolved values; argv strip/inject is proven at the
+  // resolver layer (provider-launch-config.spec).
+  describe('effective model/effort resolution (parity with launch)', () => {
+    it('passes agent.effortOverride when set (highest precedence)', async () => {
+      const { pipeline, mocks } = createRestorePipelineHarness();
+      const resolveMock = resolveLaunchConfig as jest.Mock;
+      resolveMock.mockClear();
+      mocks.storage.getAgent.mockResolvedValue(fakeAgent({ effortOverride: 'high' }));
+      mocks.storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        fakeProfileProviderConfig({ effort: 'low' }),
+      ]);
+
+      await pipeline.restore(sessionId, projectId);
+
+      expect(resolveMock).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: 'restore', effortOverride: 'high' }),
+      );
+    });
+
+    it('falls back to config.effort when the agent override is null', async () => {
+      const { pipeline, mocks } = createRestorePipelineHarness();
+      const resolveMock = resolveLaunchConfig as jest.Mock;
+      resolveMock.mockClear();
+      mocks.storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        fakeProfileProviderConfig({ effort: 'medium' }),
+      ]);
+
+      await pipeline.restore(sessionId, projectId);
+
+      expect(resolveMock).toHaveBeenCalledWith(
+        expect.objectContaining({ effortOverride: 'medium' }),
+      );
+    });
+
+    it('passes effortOverride null when neither agent nor config sets an effort', async () => {
+      const { pipeline } = createRestorePipelineHarness();
+      const resolveMock = resolveLaunchConfig as jest.Mock;
+      resolveMock.mockClear();
+
+      await pipeline.restore(sessionId, projectId);
+
+      expect(resolveMock).toHaveBeenCalledWith(expect.objectContaining({ effortOverride: null }));
+    });
+
+    it('BEHAVIOR CHANGE: config.model set + raw --model in options → structured model wins', async () => {
+      const { pipeline, mocks } = createRestorePipelineHarness();
+      const resolveMock = resolveLaunchConfig as jest.Mock;
+      resolveMock.mockClear();
+      mocks.storage.getAgent.mockResolvedValue(fakeAgent({ modelOverride: null }));
+      mocks.storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        fakeProfileProviderConfig({ model: 'opus', options: '--model sonnet' }),
+      ]);
+
+      await pipeline.restore(sessionId, projectId);
+
+      expect(resolveMock).toHaveBeenCalledWith(expect.objectContaining({ modelOverride: 'opus' }));
+    });
+  });
 
   // Scenario 5: Restore tmux create fails after flipToRunning
   describe('Scenario 5: tmux create fails after flipToRunning — status flipped back', () => {
@@ -451,6 +518,35 @@ describe('SessionRestorePipeline', () => {
         'session.transcript.discovered',
         expect.anything(),
       );
+    });
+  });
+
+  // Scenario 12: a stale registry entry (tmux died but the entry was never
+  // disposed — e.g. flipped to stopped by the orphan reconciler) must not
+  // block restore with "TerminalSession already exists".
+  describe('Scenario 12: stale registry entry — disposed, restore proceeds', () => {
+    it('disposes the stale entry (and its streaming) before creating a fresh one', async () => {
+      const { pipeline, mocks } = createRestorePipelineHarness();
+      mocks.terminalSessionRegistry.get.mockReturnValue({ sessionId });
+
+      const callOrder: string[] = [];
+      mocks.terminalSessionRegistry.dispose.mockImplementation(() => callOrder.push('dispose'));
+      mocks.terminalSessionRegistry.create.mockImplementation(() => callOrder.push('create'));
+
+      await pipeline.restore(sessionId, projectId);
+
+      expect(mocks.ptyService.stopStreaming).toHaveBeenCalledWith(sessionId);
+      expect(mocks.terminalSessionRegistry.dispose).toHaveBeenCalledWith(sessionId);
+      expect(callOrder).toEqual(['dispose', 'create']);
+    });
+
+    it('does not dispose anything when no stale entry exists', async () => {
+      const { pipeline, mocks } = createRestorePipelineHarness();
+
+      await pipeline.restore(sessionId, projectId);
+
+      expect(mocks.terminalSessionRegistry.dispose).not.toHaveBeenCalled();
+      expect(mocks.ptyService.stopStreaming).not.toHaveBeenCalled();
     });
   });
 });

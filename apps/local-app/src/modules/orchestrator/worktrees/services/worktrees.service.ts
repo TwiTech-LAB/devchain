@@ -10,7 +10,6 @@ import {
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { randomUUID } from 'crypto';
-import { existsSync } from 'fs';
 import { createLogger } from '../../../../common/logging/logger';
 import { getEnvConfig } from '../../../../common/config/env.config';
 import { EventLogService } from '../../../events/services/event-log.service';
@@ -26,11 +25,12 @@ import {
 } from '../dtos/worktree.dto';
 import { WORKTREES_STORE, WorktreeRecord, WorktreesStore } from '../worktrees.store';
 import { GitWorktreeService } from '../../git/services/git-worktree.service';
-import { OrchestratorDockerService } from '../../docker/services/docker.service';
 import { SeedPreparationService } from '../../docker/services/seed-preparation.service';
+import { ContainerRuntime } from '../runtime/container-runtime';
+import { ProcessRuntime } from '../runtime/process-runtime';
 import { WORKTREE_TASK_MERGE_REQUESTED_EVENT } from '../../sync/events/task-merge.events';
 import { WORKTREE_CHANGED_EVENT, WorktreeChangedEvent } from '../events/worktree.events';
-import { cp, mkdir, readFile, rm } from 'fs/promises';
+import { cp, mkdir, rm } from 'fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { isValidGitBranchName, isValidWorktreeName } from '../worktree-validation';
 import {
@@ -42,7 +42,6 @@ import {
   validatePathWithinRoot,
   validateResolvedPathWithinRoot,
 } from '../../../../common/validation/path-validation';
-import { ProcessExecutor } from '../../../terminal/services/process-executor/process-executor.port';
 
 const logger = createLogger('OrchestratorWorktreesService');
 
@@ -51,13 +50,6 @@ const HEALTH_MONITOR_INTERVAL_MS = 15_000;
 const HEALTH_MONITOR_PROBE_TIMEOUT_MS = 1_500;
 const MAX_CONSECUTIVE_HEALTH_FAILURES = 3;
 const OVERVIEW_FETCH_TIMEOUT_MS = 2_500;
-const PROCESS_SHUTDOWN_TIMEOUT_MS = 30_000;
-const PROCESS_KILL_TIMEOUT_MS = 5_000;
-const PROCESS_LOG_FILE_NAME = 'devchain.log';
-const PROCESS_DB_FILE_NAME = 'devchain.db';
-const PROCESS_RUNTIME_PORT_FILE = 'runtime-port.json';
-const PROCESS_HEALTH_POLL_INTERVAL_MS = 1_000;
-const PROCESS_RUNTIME_TIMEOUT_MS = 1_500;
 const WORKTREE_ACTIVITY_EVENT_NAME = 'orchestrator.worktree.activity';
 
 const WORKTREE_STATUS_VALUES = WorktreeStatusSchema.options;
@@ -93,17 +85,6 @@ interface RegisterProjectResult {
   projectId: string;
 }
 
-interface RuntimeMetadataResponse {
-  runtimeToken?: string;
-}
-
-interface StartedProcessRuntime {
-  processId: number;
-  hostPort: number;
-  runtimeToken: string;
-  startedAt: Date;
-}
-
 interface WorktreeContainerEvent {
   id?: string;
   status?: string;
@@ -124,21 +105,37 @@ interface ContainerAgentsResponse {
   total?: number;
 }
 
+// Operations covered by the per-worktree in-flight guard (user-approved fix-set).
+// Create-by-name is intentionally NOT here: worktrees.name has a UNIQUE constraint
+// that is the guard for create races.
+type GuardedOperation = 'start' | 'stop' | 'merge' | 'rebase' | 'delete';
+
+interface InFlightOperation {
+  operation: GuardedOperation;
+  // Shared promise so same-op duplicates resolve together. Typed loosely because
+  // different operations return different DTOs.
+  promise: Promise<unknown>;
+}
+
 @Injectable()
 export class WorktreesService implements OnModuleInit, OnModuleDestroy {
   private monitorTimer?: NodeJS.Timeout;
   private unsubscribeDockerEvents?: () => void;
   private readonly consecutiveHealthFailures = new Map<string, number>();
+  // Per-worktree in-flight operation guard state. In-memory only: a process restart
+  // clears it, and reconcileProcessOrphans + status transitions restore consistency
+  // for any row left mid-operation.
+  private readonly inFlightOperations = new Map<string, InFlightOperation>();
 
   constructor(
     @Inject(WORKTREES_STORE) private readonly store: WorktreesStore,
-    private readonly dockerService: OrchestratorDockerService,
+    private readonly containerRuntime: ContainerRuntime,
+    private readonly processRuntime: ProcessRuntime,
     private readonly gitService: GitWorktreeService,
     private readonly seedPreparationService: SeedPreparationService,
     private readonly eventEmitter: EventEmitter2,
     private readonly eventLogService: EventLogService,
     @Optional() @Inject(STORAGE_SERVICE) private readonly storage?: StorageService,
-    @Optional() private readonly executor?: ProcessExecutor,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -153,7 +150,7 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
     });
 
     try {
-      this.unsubscribeDockerEvents = await this.dockerService.subscribeToContainerEvents(
+      this.unsubscribeDockerEvents = await this.containerRuntime.subscribeToContainerEvents(
         (event) => {
           this.handleContainerEvent(event).catch((error) => {
             logger.error({ error, event }, 'Failed handling docker container event');
@@ -268,7 +265,7 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
       await this.seedPreparationService.prepareSeedData(dataPath);
 
       if (runtimeType === 'process') {
-        const runtime = await this.startProcessRuntime({
+        const runtime = await this.processRuntime.startProcessRuntime({
           worktreePath,
           dataPath,
           projectId,
@@ -295,7 +292,7 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
           errorMessage: null,
         })) as WorktreeRecord;
       } else {
-        const container = await this.dockerService.createContainer({
+        const container = await this.containerRuntime.createContainer({
           name: containerName,
           worktreePath,
           dataPath,
@@ -313,11 +310,11 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
           },
         });
         containerId = container.id;
-        await this.dockerService
+        await this.containerRuntime
           .ensureWorktreeOnComposeNetwork(input.name, container.id)
           .catch(() => undefined);
 
-        const healthy = await this.dockerService.waitForHealthy(
+        const healthy = await this.containerRuntime.waitForHealthy(
           container.id,
           CONTAINER_HEALTH_TIMEOUT_MS,
         );
@@ -368,10 +365,10 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
       });
 
       if (containerId) {
-        await this.dockerService.removeContainer(containerId, true).catch(() => undefined);
+        await this.containerRuntime.removeContainer(containerId, true).catch(() => undefined);
       }
       if (processId) {
-        await this.terminateProcess(processId).catch(() => undefined);
+        await this.processRuntime.terminateProcess(processId).catch(() => undefined);
       }
 
       if (gitWorktreeCreated) {
@@ -393,17 +390,12 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
       }
 
       // Log child process output before cleanup for debugging
-      const logPath = this.resolveProcessLogPath(dataPath);
-      try {
-        const logContent = await readFile(logPath, 'utf-8');
-        if (logContent.trim()) {
-          logger.error(
-            { worktreeId: created.id, logContent: logContent.slice(-2000) },
-            'Process runtime log before cleanup',
-          );
-        }
-      } catch {
-        // Log file may not exist
+      const crashLog = await this.processRuntime.readRecentLog(dataPath);
+      if (crashLog) {
+        logger.error(
+          { worktreeId: created.id, logContent: crashLog },
+          'Process runtime log before cleanup',
+        );
       }
 
       await rm(dataPath, { recursive: true, force: true }).catch(() => undefined);
@@ -447,6 +439,15 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
       deleteBranch?: boolean;
     } = {},
   ): Promise<{ success: true }> {
+    return this.withOperationGuard(id, 'delete', () => this.executeDelete(id, options));
+  }
+
+  private async executeDelete(
+    id: string,
+    options: {
+      deleteBranch?: boolean;
+    },
+  ): Promise<{ success: true }> {
     const row = await this.requireWorktree(id);
     const runtimeType = this.resolveRuntimeType(row.runtimeType);
     const shouldDeleteBranch = options.deleteBranch ?? true;
@@ -458,29 +459,31 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
     const dataPath = this.resolveDataPath(repoPath, row.name);
 
     if (runtimeType === 'container' || row.containerId) {
-      await this.dockerService
+      await this.containerRuntime
         .cleanupWorktreeProjectContainers(row.name, row.containerId)
         .catch((error) =>
           logger.warn({ error, worktreeId: row.id }, 'Failed cleaning project sub-containers'),
         );
 
       if (row.containerId) {
-        await this.dockerService.stopContainer(row.containerId).catch(() => undefined);
-        await this.dockerService.removeContainer(row.containerId, true).catch(() => undefined);
+        await this.containerRuntime.stopContainer(row.containerId).catch(() => undefined);
+        await this.containerRuntime.removeContainer(row.containerId, true).catch(() => undefined);
       }
 
-      await this.dockerService
+      await this.containerRuntime
         .removeWorktreeNetwork(row.name)
         .catch((error) =>
           logger.warn({ error, worktreeId: row.id }, 'Failed removing worktree docker network'),
         );
     } else {
-      await this.terminateProcess(row.processId).catch((error) =>
-        logger.warn(
-          { error, worktreeId: row.id },
-          'Failed stopping worktree process during delete',
-        ),
-      );
+      await this.processRuntime
+        .terminateProcess(row.processId)
+        .catch((error) =>
+          logger.warn(
+            { error, worktreeId: row.id },
+            'Failed stopping worktree process during delete',
+          ),
+        );
     }
 
     if (worktreePath) {
@@ -519,6 +522,10 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
   }
 
   async startWorktree(id: string): Promise<WorktreeResponseDto> {
+    return this.withOperationGuard(id, 'start', () => this.executeStart(id));
+  }
+
+  private async executeStart(id: string): Promise<WorktreeResponseDto> {
     const row = await this.requireWorktree(id);
     const runtimeType = this.resolveRuntimeType(row.runtimeType);
 
@@ -533,7 +540,7 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
       await mkdir(dataPath, { recursive: true });
 
       try {
-        const runtime = await this.startProcessRuntime({
+        const runtime = await this.processRuntime.startProcessRuntime({
           worktreePath,
           dataPath,
           projectId,
@@ -560,8 +567,8 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
       throw new BadRequestException('Worktree has no container to start');
     }
 
-    await this.dockerService.startContainer(row.containerId);
-    const healthy = await this.dockerService.waitForHealthy(
+    await this.containerRuntime.startContainer(row.containerId);
+    const healthy = await this.containerRuntime.waitForHealthy(
       row.containerId,
       CONTAINER_HEALTH_TIMEOUT_MS,
     );
@@ -572,11 +579,11 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
       throw new BadRequestException('Container started but failed readiness check');
     }
 
-    await this.dockerService
+    await this.containerRuntime
       .ensureWorktreeOnComposeNetwork(row.name, row.containerId)
       .catch(() => undefined);
 
-    const hostPort = await this.dockerService
+    const hostPort = await this.containerRuntime
       .getContainerHostPort(row.containerId)
       .catch(() => null);
 
@@ -588,11 +595,15 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
   }
 
   async stopWorktree(id: string): Promise<WorktreeResponseDto> {
+    return this.withOperationGuard(id, 'stop', () => this.executeStop(id));
+  }
+
+  private async executeStop(id: string): Promise<WorktreeResponseDto> {
     const row = await this.requireWorktree(id);
     const runtimeType = this.resolveRuntimeType(row.runtimeType);
 
     if (runtimeType === 'process') {
-      await this.terminateProcess(row.processId);
+      await this.processRuntime.terminateProcess(row.processId);
       this.consecutiveHealthFailures.set(row.id, 0);
       const updated = await this.tryUpdateStatus(row.id, 'stopped', {
         processId: null,
@@ -608,7 +619,7 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
       throw new BadRequestException('Worktree has no container to stop');
     }
 
-    await this.dockerService.stopContainer(row.containerId);
+    await this.containerRuntime.stopContainer(row.containerId);
     this.consecutiveHealthFailures.set(row.id, 0);
     const updated = await this.tryUpdateStatus(row.id, 'stopped');
     return this.toResponse(updated ?? row);
@@ -650,6 +661,10 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
   }
 
   async mergeWorktree(id: string): Promise<WorktreeResponseDto> {
+    return this.withOperationGuard(id, 'merge', () => this.executeMerge(id));
+  }
+
+  private async executeMerge(id: string): Promise<WorktreeResponseDto> {
     const row = await this.requireWorktree(id);
     const currentStatus = String(row.status).toLowerCase();
 
@@ -668,7 +683,7 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
     await this.extractTasksForMergedHistory(extractionRow);
 
     if (row.containerId) {
-      await this.dockerService.stopContainer(row.containerId).catch(() => undefined);
+      await this.containerRuntime.stopContainer(row.containerId).catch(() => undefined);
     }
 
     const mergeResult = await this.gitService.executeMerge(
@@ -716,6 +731,10 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
   }
 
   async rebaseWorktree(id: string): Promise<WorktreeResponseDto> {
+    return this.withOperationGuard(id, 'rebase', () => this.executeRebase(id));
+  }
+
+  private async executeRebase(id: string): Promise<WorktreeResponseDto> {
     const row = await this.requireWorktree(id);
     const currentStatus = String(row.status).toLowerCase();
     if (currentStatus === 'merged') {
@@ -728,7 +747,7 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
     await this.assertCleanWorkingTree(row.worktreePath ?? row.repoPath, 'Rebase');
 
     if (row.containerId) {
-      await this.dockerService.stopContainer(row.containerId).catch(() => undefined);
+      await this.containerRuntime.stopContainer(row.containerId).catch(() => undefined);
     }
 
     const rebaseResult = await this.gitService.executeRebase(
@@ -759,8 +778,8 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (row.containerId) {
-      await this.dockerService.startContainer(row.containerId).catch(() => undefined);
-      const healthy = await this.dockerService.waitForHealthy(
+      await this.containerRuntime.startContainer(row.containerId).catch(() => undefined);
+      const healthy = await this.containerRuntime.waitForHealthy(
         row.containerId,
         CONTAINER_HEALTH_TIMEOUT_MS,
       );
@@ -869,8 +888,8 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      await this.dockerService.startContainer(row.containerId).catch(() => undefined);
-      const healthy = await this.dockerService.waitForHealthy(
+      await this.containerRuntime.startContainer(row.containerId).catch(() => undefined);
+      const healthy = await this.containerRuntime.waitForHealthy(
         row.containerId,
         CONTAINER_HEALTH_TIMEOUT_MS,
       );
@@ -939,27 +958,14 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
   async getWorktreeLogs(id: string, query: WorktreeLogsQueryDto): Promise<{ logs: string }> {
     const row = await this.requireWorktree(id);
     if (this.resolveRuntimeType(row.runtimeType) === 'process') {
-      const logPath = this.resolveProcessLogPath(this.resolveDataPath(row.repoPath, row.name));
-      const content = await readFile(logPath, 'utf8').catch((error: NodeJS.ErrnoException) => {
-        if (error?.code === 'ENOENT') {
-          return '';
-        }
-        throw error;
-      });
-      const lines = content.split(/\r?\n/).filter((line, index, all) => {
-        if (line.length > 0) {
-          return true;
-        }
-        return index < all.length - 1;
-      });
-      const tailed = lines.slice(-query.tail).join('\n');
-      return { logs: tailed ? `${tailed}\n` : '' };
+      const dataPath = this.resolveDataPath(row.repoPath, row.name);
+      return { logs: await this.processRuntime.readLogs(dataPath, query.tail) };
     }
 
     if (!row.containerId) {
       throw new BadRequestException('Worktree has no container');
     }
-    const logs = await this.dockerService.getContainerLogs(row.containerId, query.tail);
+    const logs = await this.containerRuntime.getContainerLogs(row.containerId, query.tail);
     return { logs };
   }
 
@@ -1067,11 +1073,11 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
           return;
         }
 
-        await this.dockerService
+        await this.containerRuntime
           .ensureWorktreeOnComposeNetwork(row.name, row.containerId)
           .catch(() => undefined);
 
-        const healthy = await this.dockerService.waitForHealthy(
+        const healthy = await this.containerRuntime.waitForHealthy(
           row.containerId,
           HEALTH_MONITOR_PROBE_TIMEOUT_MS,
         );
@@ -1099,8 +1105,16 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async monitorProcessWorktree(row: WorktreeRecord): Promise<void> {
-    const pid = row.processId ?? null;
-    if (!pid || !this.isProcessAlive(pid)) {
+    const verdict = await this.processRuntime.probeHealth({
+      pid: row.processId ?? null,
+      hostPort: row.containerPort ?? null,
+      runtimeToken: row.runtimeToken?.trim() || null,
+    });
+
+    // A dead pid or a reused-port token mismatch is `stopped`, not a health
+    // failure: the counter resets and runtime fields clear. Only an alive-but-
+    // unreachable runtime counts toward the 3-strike enforcement below.
+    if (verdict === 'dead' || verdict === 'token-mismatch') {
       this.consecutiveHealthFailures.set(row.id, 0);
       await this.tryUpdateStatus(row.id, 'stopped', {
         processId: null,
@@ -1112,30 +1126,8 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const hostPort = row.containerPort ?? null;
-    const runtimeToken = row.runtimeToken?.trim() || null;
-    if (!hostPort || !runtimeToken) {
+    if (verdict === 'unreachable') {
       await this.handleProcessProbeFailure(row.id, row.status);
-      return;
-    }
-
-    const healthy = await this.checkRuntimeReady(hostPort);
-    if (!healthy) {
-      await this.handleProcessProbeFailure(row.id, row.status);
-      return;
-    }
-
-    const runtimeMetadata = await this.fetchRuntimeMetadata(hostPort);
-    const runtimeTokenMatches = runtimeMetadata?.runtimeToken === runtimeToken;
-    if (!runtimeTokenMatches) {
-      this.consecutiveHealthFailures.set(row.id, 0);
-      await this.tryUpdateStatus(row.id, 'stopped', {
-        processId: null,
-        runtimeToken: null,
-        startedAt: null,
-        containerPort: null,
-        errorMessage: null,
-      });
       return;
     }
 
@@ -1167,7 +1159,7 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
     await Promise.all(
       candidates.map(async (row) => {
         const pid = row.processId ?? null;
-        if (!pid || !this.isProcessAlive(pid)) {
+        if (!pid || !this.processRuntime.isProcessAlive(pid)) {
           await this.tryUpdateStatus(row.id, 'stopped', {
             processId: null,
             runtimeToken: null,
@@ -1189,7 +1181,7 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
           return;
         }
 
-        const metadata = await this.fetchRuntimeMetadata(row.containerPort);
+        const metadata = await this.processRuntime.fetchRuntimeMetadata(row.containerPort);
         if (!metadata || metadata.runtimeToken !== row.runtimeToken) {
           await this.tryUpdateStatus(row.id, 'stopped', {
             processId: null,
@@ -1205,292 +1197,6 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
 
   private resolveRuntimeType(runtimeType?: string | null): WorktreeRuntimeType {
     return runtimeType === 'process' ? 'process' : 'container';
-  }
-
-  private async startProcessRuntime(input: {
-    worktreePath: string;
-    dataPath: string;
-    projectId: string;
-  }): Promise<StartedProcessRuntime> {
-    const runtimeToken = randomUUID();
-    const portFilePath = join(input.dataPath, PROCESS_RUNTIME_PORT_FILE);
-
-    // Clean up stale port file from a previous attempt
-    await rm(portFilePath, { force: true }).catch(() => undefined);
-
-    const processId = await this.spawnProcessRuntime({
-      worktreePath: input.worktreePath,
-      dataPath: input.dataPath,
-      projectId: input.projectId,
-      runtimeToken,
-    });
-
-    // Wait for child to report its OS-assigned port via the port file
-    const portInfo = await this.waitForRuntimePortFile(
-      portFilePath,
-      CONTAINER_HEALTH_TIMEOUT_MS,
-      processId,
-    );
-
-    if (!portInfo) {
-      await this.terminateProcess(processId).catch(() => undefined);
-      throw new Error('Process runtime did not report its port before timeout');
-    }
-
-    // Verify the port file was written by our child (token match)
-    if (portInfo.runtimeToken !== runtimeToken) {
-      await this.terminateProcess(processId).catch(() => undefined);
-      throw new Error(
-        `Runtime port file token mismatch: expected ${runtimeToken}, ` +
-          `got ${portInfo.runtimeToken ?? 'none'}`,
-      );
-    }
-
-    const hostPort = portInfo.port;
-
-    // Confirm the server is ready to accept requests
-    const healthy = await this.waitForRuntimeHealthy(
-      hostPort,
-      CONTAINER_HEALTH_TIMEOUT_MS,
-      processId,
-    );
-    if (!healthy) {
-      await this.terminateProcess(processId).catch(() => undefined);
-      throw new Error('Process runtime did not become healthy before timeout');
-    }
-
-    return { processId, hostPort, runtimeToken, startedAt: new Date() };
-  }
-
-  private async spawnProcessRuntime(input: {
-    worktreePath: string;
-    dataPath: string;
-    projectId: string;
-    runtimeToken: string;
-  }): Promise<number> {
-    const cliPath = this.resolveCliPath();
-    const logPath = this.resolveProcessLogPath(input.dataPath);
-    const portFilePath = join(input.dataPath, PROCESS_RUNTIME_PORT_FILE);
-    await mkdir(input.dataPath, { recursive: true });
-
-    const result = await this.executor!.spawnDaemon({
-      argv: [
-        process.execPath,
-        cliPath,
-        'start',
-        '--foreground',
-        '--worktree-runtime',
-        'process',
-        '--port',
-        '0',
-      ],
-      cwd: input.worktreePath,
-      logPath,
-      env: {
-        ...process.env,
-        PORT: '0',
-        HOST: '127.0.0.1',
-        NODE_ENV: 'production',
-        DB_PATH: input.dataPath,
-        DB_FILENAME: PROCESS_DB_FILE_NAME,
-        DEVCHAIN_MODE: 'normal',
-        CONTAINER_PROJECT_ID: input.projectId,
-        RUNTIME_TOKEN: input.runtimeToken,
-        RUNTIME_PORT_FILE: portFilePath,
-      },
-    });
-
-    return result.pid;
-  }
-
-  private async waitForRuntimeHealthy(
-    hostPort: number,
-    timeoutMs: number,
-    pid?: number,
-  ): Promise<boolean> {
-    if (timeoutMs <= 0) {
-      return false;
-    }
-
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      // Early exit if child process died (e.g., EADDRINUSE with strict port binding)
-      if (pid && !this.isProcessAlive(pid)) {
-        logger.warn({ pid, hostPort }, 'Child process exited during health polling');
-        return false;
-      }
-
-      const isReady = await this.checkRuntimeReady(hostPort);
-      if (isReady) {
-        return true;
-      }
-      await this.sleep(PROCESS_HEALTH_POLL_INTERVAL_MS);
-    }
-
-    return false;
-  }
-
-  private async waitForRuntimePortFile(
-    filePath: string,
-    timeoutMs: number,
-    pid?: number,
-  ): Promise<{ port: number; runtimeToken: string | null } | null> {
-    if (timeoutMs <= 0) {
-      return null;
-    }
-
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      // Early exit if child process died before writing the port file
-      if (pid && !this.isProcessAlive(pid)) {
-        logger.warn({ pid, filePath }, 'Child process exited before writing port file');
-        return null;
-      }
-
-      try {
-        const raw = await readFile(filePath, 'utf-8');
-        const parsed = JSON.parse(raw) as { port?: number; runtimeToken?: string | null };
-        if (typeof parsed.port === 'number' && parsed.port > 0) {
-          return { port: parsed.port, runtimeToken: parsed.runtimeToken ?? null };
-        }
-      } catch {
-        // File doesn't exist yet or is being written — keep polling
-      }
-
-      await this.sleep(PROCESS_HEALTH_POLL_INTERVAL_MS);
-    }
-
-    return null;
-  }
-
-  private async checkRuntimeReady(hostPort: number): Promise<boolean> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), PROCESS_RUNTIME_TIMEOUT_MS);
-    try {
-      const response = await fetch(`http://127.0.0.1:${hostPort}/health/ready`, {
-        signal: controller.signal,
-      });
-      return response.ok;
-    } catch {
-      return false;
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
-  private async fetchRuntimeMetadata(hostPort: number): Promise<RuntimeMetadataResponse | null> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), PROCESS_RUNTIME_TIMEOUT_MS);
-    try {
-      const response = await fetch(`http://127.0.0.1:${hostPort}/api/runtime`, {
-        headers: { accept: 'application/json' },
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        return null;
-      }
-      return (await response.json()) as RuntimeMetadataResponse;
-    } catch {
-      return null;
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
-  private resolveCliPath(): string {
-    const candidates = [
-      // Dev mode: scripts/cli.js in repo root
-      resolve(process.cwd(), 'scripts', 'cli.js'),
-      resolve(__dirname, '../../../../../../../../scripts/cli.js'),
-      resolve(__dirname, '../../../../../../../scripts/cli.js'),
-      // Installed CLI: dist/cli.js relative to compiled service location
-      resolve(__dirname, '../../../../../cli.js'),
-    ];
-
-    // Also try the entry point of the currently running process
-    if (process.argv[1] && !candidates.includes(resolve(process.argv[1]))) {
-      candidates.push(resolve(process.argv[1]));
-    }
-
-    for (const candidate of candidates) {
-      if (existsSync(candidate)) {
-        return candidate;
-      }
-    }
-
-    throw new Error(
-      'Unable to locate CLI entry point for process runtime start. ' +
-        `Searched: ${candidates.join(', ')}`,
-    );
-  }
-
-  private resolveProcessLogPath(dataPath: string): string {
-    return join(dataPath, PROCESS_LOG_FILE_NAME);
-  }
-
-  private async terminateProcess(pid?: number | null): Promise<void> {
-    if (!pid) {
-      return;
-    }
-
-    const stillRunningAfterSigterm = await this.signalProcessAndAwaitExit(
-      pid,
-      'SIGTERM',
-      PROCESS_SHUTDOWN_TIMEOUT_MS,
-    );
-    if (!stillRunningAfterSigterm) {
-      return;
-    }
-
-    await this.signalProcessAndAwaitExit(pid, 'SIGKILL', PROCESS_KILL_TIMEOUT_MS).catch((error) => {
-      logger.warn({ error, pid }, 'Failed sending SIGKILL to worktree process');
-    });
-  }
-
-  private async signalProcessAndAwaitExit(
-    pid: number,
-    signal: NodeJS.Signals,
-    timeoutMs: number,
-  ): Promise<boolean> {
-    const signalPid = process.platform === 'win32' ? pid : -pid;
-    try {
-      process.kill(signalPid, signal);
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === 'ESRCH') {
-        return false;
-      }
-      throw error;
-    }
-
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      if (!this.isProcessAlive(pid)) {
-        return false;
-      }
-      await this.sleep(200);
-    }
-    return this.isProcessAlive(pid);
-  }
-
-  private isProcessAlive(pid: number): boolean {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === 'ESRCH') {
-        return false;
-      }
-      if (code === 'EPERM') {
-        return true;
-      }
-      return false;
-    }
-  }
-
-  private async sleep(ms: number): Promise<void> {
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
   }
 
   private async handleContainerEvent(event: WorktreeContainerEvent): Promise<void> {
@@ -1531,6 +1237,39 @@ export class WorktreesService implements OnModuleInit, OnModuleDestroy {
       throw new NotFoundException(`Worktree not found: ${id}`);
     }
     return row;
+  }
+
+  /**
+   * Per-worktree in-flight operation guard (user-approved fix-set). Contract:
+   * - SAME-op duplicate (e.g. double-click start) → awaits and SHARES the in-flight
+   *   result: the underlying work runs exactly once and both callers resolve with
+   *   the same value (no new error surface).
+   * - CONFLICTING op (e.g. merge-during-start) → 409 ConflictException naming the
+   *   in-flight operation.
+   * The check + register pair is synchronous up to the wrapped call's first await,
+   * so two calls in the same tick cannot both miss the registration. Registration
+   * is cleared in a finally so a thrown/404 result never wedges a worktree.
+   */
+  private withOperationGuard<T>(
+    worktreeId: string,
+    operation: GuardedOperation,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    const inFlight = this.inFlightOperations.get(worktreeId);
+    if (inFlight) {
+      if (inFlight.operation === operation) {
+        return inFlight.promise as Promise<T>;
+      }
+      throw new ConflictException(
+        `Worktree is already running an in-flight "${inFlight.operation}" operation`,
+      );
+    }
+
+    const promise = run().finally(() => {
+      this.inFlightOperations.delete(worktreeId);
+    });
+    this.inFlightOperations.set(worktreeId, { operation, promise });
+    return promise;
   }
 
   private async registerProjectInContainer(

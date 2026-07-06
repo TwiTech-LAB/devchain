@@ -30,6 +30,7 @@ describe('ProjectsService', () => {
     listProvidersByIds: jest.Mock;
     listEnvScopesByProviderIds: jest.Mock;
     listProviderModelsByProviderIds: jest.Mock;
+    listProviderEffortsByProviderIds: jest.Mock;
     bulkCreateProviderModels: jest.Mock;
     listPrompts: jest.Mock;
     getPrompt: jest.Mock;
@@ -111,6 +112,7 @@ describe('ProjectsService', () => {
       listProvidersByIds: jest.fn().mockResolvedValue([]),
       listEnvScopesByProviderIds: jest.fn().mockReturnValue(new Map()),
       listProviderModelsByProviderIds: jest.fn().mockResolvedValue([]),
+      listProviderEffortsByProviderIds: jest.fn().mockResolvedValue([]),
       bulkCreateProviderModels: jest.fn().mockResolvedValue({ added: [], existing: [] }),
       listPrompts: jest.fn(),
       getPrompt: jest.fn(),
@@ -928,6 +930,24 @@ describe('ProjectsService', () => {
           updatedAt: '',
         },
       ]);
+      storage.listProviderEffortsByProviderIds.mockResolvedValue([
+        {
+          id: 'effort-1',
+          providerId: 'prov-1',
+          name: 'high',
+          position: 2,
+          createdAt: '',
+          updatedAt: '',
+        },
+        {
+          id: 'effort-2',
+          providerId: 'prov-1',
+          name: 'low',
+          position: 0,
+          createdAt: '',
+          updatedAt: '',
+        },
+      ]);
       storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
       storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
       storage.getInitialSessionPrompt.mockResolvedValue(null);
@@ -943,6 +963,11 @@ describe('ProjectsService', () => {
           providerName: 'claude',
           models: ['anthropic/claude-sonnet-4-5', 'anthropic/claude-opus-4-1'],
         },
+      ]);
+      expect(storage.listProviderEffortsByProviderIds).toHaveBeenCalledTimes(1);
+      expect(storage.listProviderEffortsByProviderIds).toHaveBeenCalledWith(['prov-1']);
+      expect(result.providerEfforts).toEqual([
+        { providerName: 'claude', efforts: ['high', 'low'] },
       ]);
     });
 

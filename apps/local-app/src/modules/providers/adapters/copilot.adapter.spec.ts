@@ -42,6 +42,33 @@ describe('CopilotAdapter', () => {
     });
   });
 
+  describe('EffortCapability', () => {
+    it('exposes the seeded default effort values (static metadata)', () => {
+      expect(adapter.defaultEffortValues).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+    });
+
+    it('injects the native `--effort=<value>` form', () => {
+      const { argv } = adapter.applyEffort(['-m', 'gpt-5'], {}, 'high');
+      expect(argv).toEqual(['--effort=high', '-m', 'gpt-5']);
+    });
+
+    it('strips conflicting raw `--effort` AND the `--reasoning-effort` alias (both value forms)', () => {
+      expect(
+        adapter.applyEffort(['--effort', 'low', '--reasoning-effort=minimal', '-x'], {}, 'high')
+          .argv,
+      ).toEqual(['--effort=high', '-x']);
+      expect(
+        adapter.applyEffort(['--effort=low', '--reasoning-effort', 'minimal', '-x'], {}, 'high')
+          .argv,
+      ).toEqual(['--effort=high', '-x']);
+    });
+
+    it('returns env unchanged', () => {
+      const env = { FOO: 'bar' };
+      expect(adapter.applyEffort([], env, 'medium').env).toBe(env);
+    });
+  });
+
   describe('HookCapability (2nd adopter; P3 lifecycle hooks)', () => {
     it('is recognized as hook-capable by the type guard', () => {
       expect(isHookCapable(adapter)).toBe(true);

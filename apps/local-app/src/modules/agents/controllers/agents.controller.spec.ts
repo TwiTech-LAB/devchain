@@ -54,6 +54,7 @@ describe('AgentsController', () => {
     profileId: 'profile-1',
     providerConfigId: 'config-1', // Required after Phase 4
     modelOverride: null,
+    effortOverride: null,
     name: 'Test Agent',
     description: null,
     createdAt: '2024-01-01T00:00:00.000Z',
@@ -93,6 +94,8 @@ describe('AgentsController', () => {
     description: null,
     options: '--model opus',
     env: { API_KEY: 'test-key' },
+    model: 'claude-sonnet-4-5',
+    effort: 'high',
     position: 0,
     createdAt: '2024-01-01T00:00:00.000Z',
     updatedAt: '2024-01-01T00:00:00.000Z',
@@ -258,11 +261,14 @@ describe('AgentsController', () => {
         profileId: 'profile-1',
         type: 'agent',
         modelOverride: 'openai/gpt-4.1',
+        effortOverride: null,
         providerConfigId: 'config-1',
         providerConfig: {
           id: 'config-1',
           providerId: 'provider-1',
           providerName: 'claude-code',
+          model: 'claude-sonnet-4-5',
+          effort: 'high',
         },
       });
 
@@ -276,6 +282,7 @@ describe('AgentsController', () => {
         profileId: null,
         type: 'guest',
         modelOverride: null,
+        effortOverride: null,
         tmuxSessionId: 'tmux-guest-1',
         providerConfigId: null,
         providerConfig: null,
@@ -429,6 +436,29 @@ describe('AgentsController', () => {
       expect(result).toBeDefined();
     });
 
+    it('accepts optional effortOverride and trims it (parity with modelOverride)', async () => {
+      const createData = {
+        projectId: 'project-1',
+        profileId: 'profile-1',
+        name: 'New Agent',
+        providerConfigId: 'config-1',
+        effortOverride: '  high  ',
+      };
+      storage.getProfileProviderConfig.mockResolvedValue(mockConfig);
+      storage.createAgent.mockResolvedValue({
+        ...mockAgent,
+        ...createData,
+        effortOverride: 'high',
+      });
+
+      const result = await controller.createAgent(createData);
+
+      expect(storage.createAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ effortOverride: 'high' }),
+      );
+      expect(result.effortOverride).toBe('high');
+    });
+
     it('creates without modelOverride (backward compat)', async () => {
       const createData = {
         projectId: 'project-1',
@@ -554,6 +584,44 @@ describe('AgentsController', () => {
 
     it('rejects empty modelOverride string', async () => {
       await expect(controller.updateAgent('agent-1', { modelOverride: '' })).rejects.toThrow();
+      expect(storage.updateAgent).not.toHaveBeenCalled();
+    });
+
+    // effortOverride mirrors modelOverride: set, clear via null, omit preserves,
+    // reject empty. Identical restart-requirement semantics for online agents
+    // (backend is pure persistence; restart is conveyed to the client elsewhere).
+    it('sets effortOverride with a non-empty string', async () => {
+      storage.updateAgent.mockResolvedValue({ ...mockAgent, effortOverride: 'high' });
+
+      const result = await controller.updateAgent('agent-1', { effortOverride: 'high' });
+
+      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', { effortOverride: 'high' });
+      expect(result.effortOverride).toBe('high');
+    });
+
+    it('clears effortOverride via null', async () => {
+      storage.updateAgent.mockResolvedValue({ ...mockAgent, effortOverride: null });
+
+      const result = await controller.updateAgent('agent-1', { effortOverride: null });
+
+      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', { effortOverride: null });
+      expect(result.effortOverride).toBeNull();
+    });
+
+    it('omitting effortOverride preserves it (not passed to storage)', async () => {
+      storage.updateAgent.mockResolvedValue({ ...mockAgent, name: 'Renamed' });
+
+      await controller.updateAgent('agent-1', { name: 'Renamed' });
+
+      // updateAgent receives only the provided field — effortOverride is absent.
+      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', { name: 'Renamed' });
+      expect(
+        (storage.updateAgent.mock.calls[0][1] as { effortOverride?: unknown }).effortOverride,
+      ).toBeUndefined();
+    });
+
+    it('rejects empty effortOverride string', async () => {
+      await expect(controller.updateAgent('agent-1', { effortOverride: '' })).rejects.toThrow();
       expect(storage.updateAgent).not.toHaveBeenCalled();
     });
   });

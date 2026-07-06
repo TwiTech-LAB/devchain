@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueries, useQuery } from '@tanstack/react-query';
 import { AlertCircle, Crown, Loader2, Pencil, Plus, Trash2, Users, UsersRound } from 'lucide-react';
 
 import { ConfirmDialog, EmptyState, PageHeader } from '@/ui/components/shared';
@@ -22,8 +22,15 @@ import { ScrollArea } from '@/ui/components/ui/scroll-area';
 import { Skeleton } from '@/ui/components/ui/skeleton';
 import { Slider } from '@/ui/components/ui/slider';
 import { Textarea } from '@/ui/components/ui/textarea';
-import { useToast } from '@/ui/hooks/use-toast';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
+import { useConfirmDialog, useFormDialog } from '@/ui/hooks/useFormDialog';
+import {
+  optimisticAdd,
+  optimisticMergeById,
+  optimisticRemoveById,
+  useCrudMutation,
+  type ListContainer,
+} from '@/ui/hooks/useCrudMutations';
 import { getAgentAvatarDataUri, getAgentInitials } from '@/ui/lib/multiavatar';
 import {
   createTeam,
@@ -33,6 +40,7 @@ import {
   teamsQueryKeys,
   type CreateTeamPayload,
   type ListResult,
+  type TeamDetail,
   type TeamListItem,
   type UpdateTeamPayload,
   updateTeam,
@@ -711,13 +719,12 @@ function TeamCard({
 
 export function TeamsPage() {
   const { selectedProjectId, selectedProject } = useSelectedProject();
-  const queryClient = useQueryClient();
-  const { toast } = useToast();
 
-  // ── Dialog state ──
-  const [showCreateDialog, setShowCreateDialog] = useState(false);
-  const [editingTeam, setEditingTeam] = useState<TeamListItem | null>(null);
-  const [disbandingTeam, setDisbandingTeam] = useState<TeamListItem | null>(null);
+  // ── Dialog state (headless kit) ──
+  const formDialog = useFormDialog<TeamListItem>();
+  const disbandDialog = useConfirmDialog<TeamListItem>();
+  const editingTeam = formDialog.isEdit ? formDialog.entity : null;
+  const disbandingTeam = disbandDialog.target;
 
   // ── Queries ──
   const { data, isLoading } = useQuery({
@@ -790,158 +797,106 @@ export function TeamsPage() {
     };
   }, [editTeamDetail]);
 
-  // ── Mutations ──
-  const createMutation = useMutation({
-    mutationFn: (payload: CreateTeamPayload) => createTeam(payload),
-    onMutate: async (payload) => {
-      await queryClient.cancelQueries({
-        queryKey: teamsQueryKeys.teams(selectedProjectId!),
-      });
-      const previous = queryClient.getQueryData<ListResult<TeamListItem>>(
-        teamsQueryKeys.teams(selectedProjectId!),
-      );
-      queryClient.setQueryData<ListResult<TeamListItem>>(
-        teamsQueryKeys.teams(selectedProjectId!),
-        (old) => {
-          if (!old) return old;
-          const optimistic: TeamListItem = {
-            id: `temp-${Date.now()}`,
-            projectId: selectedProjectId!,
-            name: payload.name,
-            description: payload.description ?? null,
-            teamLeadAgentId: payload.teamLeadAgentId,
-            teamLeadAgentName:
-              payload.teamLeadAgentId === null
+  // ── Mutations (headless CRUD kit) ──
+  const teamsKey = teamsQueryKeys.teams(selectedProjectId ?? '');
+  type TeamsList = ListContainer<TeamListItem>;
+
+  const createMutation = useCrudMutation<TeamDetail, CreateTeamPayload, void>({
+    mutationFn: (payload) => createTeam(payload),
+    optimistic: {
+      queryKey: teamsKey,
+      // temp-id add — Teams appends the new row.
+      project: (previous, payload) => {
+        const list = previous as TeamsList | undefined;
+        if (!list) return previous;
+        const optimistic: TeamListItem = {
+          id: `temp-${Date.now()}`,
+          projectId: selectedProjectId ?? '',
+          name: payload.name,
+          description: payload.description ?? null,
+          teamLeadAgentId: payload.teamLeadAgentId,
+          teamLeadAgentName:
+            payload.teamLeadAgentId === null
+              ? null
+              : (agents.find((a) => a.id === payload.teamLeadAgentId)?.name ?? null),
+          maxMembers: payload.maxMembers ?? 5,
+          maxConcurrentTasks: payload.maxConcurrentTasks ?? payload.maxMembers ?? 5,
+          allowTeamLeadCreateAgents: payload.allowTeamLeadCreateAgents ?? false,
+          memberCount: payload.memberAgentIds.length,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        return optimisticAdd(list, optimistic, { position: 'append' });
+      },
+    },
+    invalidateKeys: [teamsKey],
+    toast: {
+      success: () => ({ title: 'Team created', description: 'Team created successfully.' }),
+      error: () => ({ title: 'Error', description: 'Failed to create team.' }),
+    },
+    onSuccessSideEffects: () => formDialog.close(),
+  });
+
+  const updateMutation = useCrudMutation<
+    TeamDetail,
+    { id: string; payload: UpdateTeamPayload },
+    void
+  >({
+    mutationFn: ({ id, payload }) => updateTeam(id, payload),
+    optimistic: {
+      queryKey: teamsKey,
+      // in-place merge — same per-field precedence as before.
+      project: (previous, { id, payload }) => {
+        const list = previous as TeamsList | undefined;
+        if (!list) return previous;
+        return optimisticMergeById(list, id, (t) => ({
+          ...t,
+          name: payload.name ?? t.name,
+          description:
+            payload.description !== undefined ? (payload.description ?? null) : t.description,
+          teamLeadAgentId:
+            payload.teamLeadAgentId !== undefined ? payload.teamLeadAgentId : t.teamLeadAgentId,
+          teamLeadAgentName:
+            payload.teamLeadAgentId !== undefined
+              ? payload.teamLeadAgentId === null
                 ? null
-                : (agents.find((a) => a.id === payload.teamLeadAgentId)?.name ?? null),
-            maxMembers: payload.maxMembers ?? 5,
-            maxConcurrentTasks: payload.maxConcurrentTasks ?? payload.maxMembers ?? 5,
-            allowTeamLeadCreateAgents: payload.allowTeamLeadCreateAgents ?? false,
-            memberCount: payload.memberAgentIds.length,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          };
-          return { ...old, items: [...old.items, optimistic], total: old.total + 1 };
-        },
-      );
-      return { previous };
+                : (agents.find((a) => a.id === payload.teamLeadAgentId)?.name ?? null)
+              : t.teamLeadAgentName,
+          memberCount: payload.memberAgentIds ? payload.memberAgentIds.length : t.memberCount,
+        }));
+      },
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: teamsQueryKeys.teams(selectedProjectId!),
-      });
-      toast({ title: 'Team created', description: 'Team created successfully.' });
-      setShowCreateDialog(false);
+    // Dual invalidation: list + the updated team's detail (keyed off the vars id).
+    invalidateKeys: ({ id }) => [teamsKey, teamsQueryKeys.detail(id)],
+    toast: {
+      success: () => ({ title: 'Team updated', description: 'Team updated successfully.' }),
+      error: () => ({ title: 'Error', description: 'Failed to update team.' }),
     },
-    onError: (_error, _vars, context) => {
-      if (context?.previous) {
-        queryClient.setQueryData(teamsQueryKeys.teams(selectedProjectId!), context.previous);
-      }
-      toast({ title: 'Error', description: 'Failed to create team.', variant: 'destructive' });
-    },
+    onSuccessSideEffects: () => formDialog.close(),
   });
 
-  const updateMutation = useMutation({
-    mutationFn: ({ id, payload }: { id: string; payload: UpdateTeamPayload }) =>
-      updateTeam(id, payload),
-    onMutate: async ({ id, payload }) => {
-      await queryClient.cancelQueries({
-        queryKey: teamsQueryKeys.teams(selectedProjectId!),
-      });
-      const previous = queryClient.getQueryData<ListResult<TeamListItem>>(
-        teamsQueryKeys.teams(selectedProjectId!),
-      );
-      queryClient.setQueryData<ListResult<TeamListItem>>(
-        teamsQueryKeys.teams(selectedProjectId!),
-        (old) => {
-          if (!old) return old;
-          return {
-            ...old,
-            items: old.items.map((t) =>
-              t.id === id
-                ? {
-                    ...t,
-                    name: payload.name ?? t.name,
-                    description:
-                      payload.description !== undefined
-                        ? (payload.description ?? null)
-                        : t.description,
-                    teamLeadAgentId:
-                      payload.teamLeadAgentId !== undefined
-                        ? payload.teamLeadAgentId
-                        : t.teamLeadAgentId,
-                    teamLeadAgentName:
-                      payload.teamLeadAgentId !== undefined
-                        ? payload.teamLeadAgentId === null
-                          ? null
-                          : (agents.find((a) => a.id === payload.teamLeadAgentId)?.name ?? null)
-                        : t.teamLeadAgentName,
-                    memberCount: payload.memberAgentIds
-                      ? payload.memberAgentIds.length
-                      : t.memberCount,
-                  }
-                : t,
-            ),
-          };
-        },
-      );
-      return { previous };
+  const disbandMutation = useCrudMutation<void, string, { teamName: string }>({
+    mutationFn: (teamId) => disbandTeam(teamId),
+    optimistic: {
+      queryKey: teamsKey,
+      // filter-out.
+      project: (previous, teamId) => {
+        const list = previous as TeamsList | undefined;
+        if (!list) return previous;
+        return optimisticRemoveById(list, teamId);
+      },
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: teamsQueryKeys.teams(selectedProjectId!),
-      });
-      queryClient.invalidateQueries({
-        queryKey: teamsQueryKeys.detail(editingTeam?.id ?? ''),
-      });
-      toast({ title: 'Team updated', description: 'Team updated successfully.' });
-      setEditingTeam(null);
+    contextMetadata: (teamId, previous) => {
+      const list = previous as TeamsList | undefined;
+      return { teamName: list?.items.find((t) => t.id === teamId)?.name ?? 'Team' };
     },
-    onError: (_error, _vars, context) => {
-      if (context?.previous) {
-        queryClient.setQueryData(teamsQueryKeys.teams(selectedProjectId!), context.previous);
-      }
-      toast({ title: 'Error', description: 'Failed to update team.', variant: 'destructive' });
-    },
-  });
-
-  const disbandMutation = useMutation({
-    mutationFn: disbandTeam,
-    onMutate: async (teamId: string) => {
-      await queryClient.cancelQueries({
-        queryKey: teamsQueryKeys.teams(selectedProjectId!),
-      });
-      const previous = queryClient.getQueryData<ListResult<TeamListItem>>(
-        teamsQueryKeys.teams(selectedProjectId!),
-      );
-      const teamName = previous?.items.find((t) => t.id === teamId)?.name ?? 'Team';
-      queryClient.setQueryData<ListResult<TeamListItem>>(
-        teamsQueryKeys.teams(selectedProjectId!),
-        (old) => {
-          if (!old) return old;
-          return {
-            ...old,
-            items: old.items.filter((t) => t.id !== teamId),
-            total: old.total - 1,
-          };
-        },
-      );
-      return { previous, teamName };
-    },
-    onSuccess: (_data, _vars, context) => {
-      queryClient.invalidateQueries({
-        queryKey: teamsQueryKeys.teams(selectedProjectId!),
-      });
-      toast({
+    invalidateKeys: [teamsKey],
+    toast: {
+      success: (_data, _vars, meta) => ({
         title: 'Team disbanded',
-        description: `${context?.teamName} has been disbanded.`,
-      });
-    },
-    onError: (_error, _vars, context) => {
-      if (context?.previous) {
-        queryClient.setQueryData(teamsQueryKeys.teams(selectedProjectId!), context.previous);
-      }
-      toast({ title: 'Error', description: 'Failed to disband team.', variant: 'destructive' });
+        description: `${meta.teamName} has been disbanded.`,
+      }),
+      error: () => ({ title: 'Error', description: 'Failed to disband team.' }),
     },
   });
 
@@ -982,11 +937,11 @@ export function TeamsPage() {
   function handleDisbandConfirm() {
     if (disbandingTeam) {
       disbandMutation.mutate(disbandingTeam.id);
-      setDisbandingTeam(null);
+      disbandDialog.close();
     }
   }
 
-  const openCreateDialog = () => setShowCreateDialog(true);
+  const openCreateDialog = () => formDialog.openCreate();
 
   return (
     <div className="flex flex-col gap-6 p-6">
@@ -1031,8 +986,8 @@ export function TeamsPage() {
             <TeamCard
               key={team.id}
               team={team}
-              onEdit={() => setEditingTeam(team)}
-              onDisband={() => setDisbandingTeam(team)}
+              onEdit={() => formDialog.openEdit(team)}
+              onDisband={() => disbandDialog.open(team)}
             />
           ))}
         </div>
@@ -1041,8 +996,8 @@ export function TeamsPage() {
       {/* Create Dialog */}
       <TeamFormDialog
         mode="create"
-        open={showCreateDialog}
-        onOpenChange={setShowCreateDialog}
+        open={formDialog.isCreate}
+        onOpenChange={formDialog.onOpenChange}
         onSubmit={handleCreateSubmit}
         isSubmitting={createMutation.isPending}
         agents={pickerAgents}
@@ -1054,10 +1009,8 @@ export function TeamsPage() {
       {/* Edit Dialog */}
       <TeamFormDialog
         mode="edit"
-        open={!!editingTeam}
-        onOpenChange={(open) => {
-          if (!open) setEditingTeam(null);
-        }}
+        open={formDialog.isEdit}
+        onOpenChange={formDialog.onOpenChange}
         onSubmit={handleEditSubmit}
         isSubmitting={updateMutation.isPending}
         agents={pickerAgents}
@@ -1070,10 +1023,8 @@ export function TeamsPage() {
 
       {/* Disband Confirm Dialog */}
       <ConfirmDialog
-        open={!!disbandingTeam}
-        onOpenChange={(open) => {
-          if (!open) setDisbandingTeam(null);
-        }}
+        open={disbandDialog.isOpen}
+        onOpenChange={disbandDialog.onOpenChange}
         onConfirm={handleDisbandConfirm}
         title="Disband Team"
         description={`Are you sure you want to disband ${disbandingTeam?.name ?? 'this team'}? This will remove all team assignments.`}

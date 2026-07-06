@@ -88,23 +88,14 @@ describe('LocalStorageService - source_project_enabled integration', () => {
   it('seeds community sources as enabled when creating a project from template', async () => {
     await createCommunitySource('template-source');
 
-    const result = await service.createProjectWithTemplate(
-      {
-        name: 'Project From Template',
-        description: null,
-        rootPath: '/tmp/source-project-enabled-template',
-        isTemplate: false,
-      },
-      {
-        prompts: [],
-        profiles: [],
-        agents: [],
-        statuses: [{ label: 'Todo', color: '#6c757d', position: 0 }],
-        initialPrompt: null,
-      },
-    );
+    const project = await service.createProjectShell({
+      name: 'Project From Template',
+      description: null,
+      rootPath: '/tmp/source-project-enabled-template',
+      isTemplate: false,
+    });
 
-    await expect(service.listSourceProjectEnabled(result.project.id)).resolves.toEqual([
+    await expect(service.listSourceProjectEnabled(project.id)).resolves.toEqual([
       { sourceName: 'template-source', enabled: true },
     ]);
   });
@@ -112,7 +103,7 @@ describe('LocalStorageService - source_project_enabled integration', () => {
   it('uses provided projectId when creating a project from template', async () => {
     const deterministicProjectId = '11111111-1111-4111-8111-111111111111';
 
-    const result = await service.createProjectWithTemplate(
+    const project = await service.createProjectShell(
       {
         name: 'Deterministic Project',
         description: null,
@@ -120,30 +111,16 @@ describe('LocalStorageService - source_project_enabled integration', () => {
         isTemplate: false,
       },
       {
-        prompts: [],
-        profiles: [],
-        agents: [],
-        statuses: [{ label: 'Todo', color: '#6c757d', position: 0 }],
-        initialPrompt: null,
-      },
-      {
         projectId: deterministicProjectId,
       },
     );
 
-    expect(result.project.id).toBe(deterministicProjectId);
+    expect(project.id).toBe(deterministicProjectId);
   });
 
   it('throws ConflictError when provided projectId already exists', async () => {
     const deterministicProjectId = '22222222-2222-4222-8222-222222222222';
     const now = new Date().toISOString();
-    const templatePayload = {
-      prompts: [],
-      profiles: [],
-      agents: [],
-      statuses: [{ label: 'Todo', color: '#6c757d', position: 0 }],
-      initialPrompt: null as null,
-    };
 
     sqlite
       .prepare(
@@ -162,36 +139,34 @@ describe('LocalStorageService - source_project_enabled integration', () => {
         now,
       );
 
+    // A client-supplied projectId colliding with an existing row must surface as a domain
+    // ConflictError (409), not a raw SQLite unique-constraint error — preserving the mapping the
+    // create-core delegate provided before the pipeline cutover.
     const duplicateAttempt = await service
-      .createProjectWithTemplate(
+      .createProjectShell(
         {
           name: 'Second Project',
           description: null,
           rootPath: '/tmp/source-project-enabled-deterministic-second',
           isTemplate: false,
         },
-        templatePayload,
         {
           projectId: deterministicProjectId,
         },
       )
       .then(() => null)
-      .catch((error) => error);
+      .catch((error: unknown) => error);
 
-    if (duplicateAttempt) {
-      const isConflictError = duplicateAttempt instanceof ConflictError;
-      const isSqliteUniqueError =
-        typeof duplicateAttempt === 'object' &&
-        duplicateAttempt !== null &&
-        'message' in duplicateAttempt &&
-        typeof (duplicateAttempt as { message?: unknown }).message === 'string' &&
-        ((duplicateAttempt as { message: string }).message.includes('UNIQUE constraint failed') ||
-          (duplicateAttempt as { message: string }).message.includes('projects.id already exists'));
+    expect(duplicateAttempt).toBeInstanceOf(ConflictError);
+    expect((duplicateAttempt as ConflictError).message).toBe(
+      `Project ID "${deterministicProjectId}" already exists.`,
+    );
+    expect((duplicateAttempt as ConflictError).details).toMatchObject({
+      field: 'projectId',
+      projectId: deterministicProjectId,
+    });
 
-      expect(isConflictError || isSqliteUniqueError).toBe(true);
-      return;
-    }
-
+    // The pre-existing row is untouched and no second row was inserted.
     const row = sqlite
       .prepare('SELECT COUNT(*) as count FROM projects WHERE id = ?')
       .get(deterministicProjectId) as { count: number };

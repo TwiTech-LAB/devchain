@@ -109,9 +109,10 @@ export function useTerminalSubscription(
       rows: terminal.rows,
     });
 
-    activeSocket.emit('terminal:focus', { sessionId });
-    // Note: Resize is handled by server during subscribe (using cols/rows from payload)
-    // No need to emit separate resize - it would be deduplicated anyway
+    // Initial authority now originates server-side at subscribe time (the gateway's
+    // claimInitialAuthority latch + TerminalSession.subscribe()'s first-subscriber grant), so
+    // the subscribe hook no longer auto-steals it. Genuine user intent (focusin) still claims
+    // authority via useTerminalFocus. Resize likewise rides the subscribe payload's cols/rows.
 
     termLog('subscribe_success', { sessionId, expectingSeed: expectingSeedRef.current });
     hasEverSubscribedRef.current = true;

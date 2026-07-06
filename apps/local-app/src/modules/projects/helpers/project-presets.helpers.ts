@@ -10,6 +10,7 @@ export interface PresetAgentConfig {
   agentName: string;
   providerConfigName: string;
   modelOverride?: string | null;
+  effortOverride?: string | null;
 }
 
 export interface ProjectPreset {
@@ -72,33 +73,37 @@ export async function doesProjectMatchPresetWithHelper(
         return false;
       }
     }
+
+    // Omitted effortOverride means "don't care" for preset matching.
+    if (agentConfig.effortOverride !== undefined) {
+      const expectedEffortOverride = agentConfig.effortOverride ?? null;
+      const currentEffortOverride = agent.effortOverride ?? null;
+      if (currentEffortOverride !== expectedEffortOverride) {
+        return false;
+      }
+    }
   }
 
   return true;
 }
 
-export async function applyPresetWithHelper(
+/**
+ * Apply an array of per-agent provider-config assignments (+ optional model/effort overrides)
+ * to a project. This is the shared inner loop behind BOTH stored-preset application
+ * (`applyPresetWithHelper`) and the wizard/API `agentOverrides` path (create + import).
+ *
+ * It NEVER touches active-preset state — that is a preset-name-only concern owned by
+ * `applyPresetWithHelper`. Unknown agent / unknown provider-config names are surfaced as
+ * warnings (not silent) and that agentConfig is skipped, mirroring preset-apply semantics.
+ * Override semantics: `undefined` = preserve existing, `null` = clear.
+ */
+export async function applyAgentConfigs(
   projectId: string,
-  presetName: string,
-  deps: PresetDeps,
+  agentConfigs: PresetAgentConfig[],
+  deps: Pick<PresetDeps, 'storage'>,
   nameMaps?: ApplyPresetNameMaps,
 ): Promise<{ applied: number; warnings: string[] }> {
-  logger.info({ projectId, presetName }, 'applyPreset');
-
   const warnings: string[] = [];
-
-  const presets = deps.settings.getProjectPresets(projectId) as ProjectPreset[];
-  const selectedPreset = presets.find((preset) => preset.name === presetName);
-
-  if (!selectedPreset) {
-    throw new NotFoundError('Preset', presetName);
-  }
-
-  if (!selectedPreset.agentConfigs || !Array.isArray(selectedPreset.agentConfigs)) {
-    throw new ValidationError(`Preset "${presetName}" has invalid or missing agentConfigs`, {
-      presetName,
-    });
-  }
 
   const agentsRes = await deps.storage.listAgents(projectId, { limit: 1000, offset: 0 });
   const agentNameToId = nameMaps?.agentNameToId ?? buildAgentNameToIdMap(agentsRes.items);
@@ -108,7 +113,7 @@ export async function applyPresetWithHelper(
   let applied = 0;
   const agentsById = new Map(agentsRes.items.map((agent) => [agent.id, agent]));
 
-  for (const agentConfig of selectedPreset.agentConfigs) {
+  for (const agentConfig of agentConfigs) {
     const agentId = agentNameToId.get(agentConfig.agentName.trim().toLowerCase());
     if (!agentId) {
       warnings.push(`Agent "${agentConfig.agentName}" not found in project`);
@@ -130,11 +135,18 @@ export async function applyPresetWithHelper(
       continue;
     }
 
-    const updatePayload: { providerConfigId: string; modelOverride?: string | null } = {
+    const updatePayload: {
+      providerConfigId: string;
+      modelOverride?: string | null;
+      effortOverride?: string | null;
+    } = {
       providerConfigId,
     };
     if (agentConfig.modelOverride !== undefined) {
       updatePayload.modelOverride = agentConfig.modelOverride;
+    }
+    if (agentConfig.effortOverride !== undefined) {
+      updatePayload.effortOverride = agentConfig.effortOverride;
     }
     await deps.storage.updateAgent(agentId, updatePayload);
     applied++;
@@ -147,10 +159,44 @@ export async function applyPresetWithHelper(
         ...(agentConfig.modelOverride !== undefined
           ? { modelOverride: agentConfig.modelOverride }
           : {}),
+        ...(agentConfig.effortOverride !== undefined
+          ? { effortOverride: agentConfig.effortOverride }
+          : {}),
       },
-      'Applied preset: updated agent provider config and model override',
+      'Applied agent config: updated agent provider config and overrides',
     );
   }
+
+  return { applied, warnings };
+}
+
+export async function applyPresetWithHelper(
+  projectId: string,
+  presetName: string,
+  deps: PresetDeps,
+  nameMaps?: ApplyPresetNameMaps,
+): Promise<{ applied: number; warnings: string[] }> {
+  logger.info({ projectId, presetName }, 'applyPreset');
+
+  const presets = deps.settings.getProjectPresets(projectId) as ProjectPreset[];
+  const selectedPreset = presets.find((preset) => preset.name === presetName);
+
+  if (!selectedPreset) {
+    throw new NotFoundError('Preset', presetName);
+  }
+
+  if (!selectedPreset.agentConfigs || !Array.isArray(selectedPreset.agentConfigs)) {
+    throw new ValidationError(`Preset "${presetName}" has invalid or missing agentConfigs`, {
+      presetName,
+    });
+  }
+
+  const { applied, warnings } = await applyAgentConfigs(
+    projectId,
+    selectedPreset.agentConfigs,
+    deps,
+    nameMaps,
+  );
 
   const fullMatch = warnings.length === 0 && applied === selectedPreset.agentConfigs.length;
   if (fullMatch) {

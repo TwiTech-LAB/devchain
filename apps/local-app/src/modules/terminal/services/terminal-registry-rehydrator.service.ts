@@ -42,6 +42,10 @@ export class TerminalRegistryRehydrator implements OnApplicationBootstrap {
           normalizeCapturedLineEndings: true,
         });
         this.registry.bind(meta.sessionId, this.terminalIO);
+        // Launch/restore both start a health check; rehydrated sessions need
+        // one too, or a later tmux death never emits session.crashed and the
+        // registry entry goes stale.
+        this.terminalIO.startHealthCheck(meta.tmuxSessionName, meta.sessionId);
         logger.info(
           { sessionId: meta.sessionId, tmuxSessionName: meta.tmuxSessionName },
           'Rehydrated registry entry',

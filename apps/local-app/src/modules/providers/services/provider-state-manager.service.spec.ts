@@ -10,6 +10,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { ProviderStateManager } from './provider-state-manager.service';
 import { ProbeProofService } from './probe-proof.service';
 import { ProviderProjectSyncService } from './provider-project-sync.service';
+import { ProviderEffortSeedingService } from './provider-effort-seeding.service';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { DB_CONNECTION } from '../../storage/db/db.provider';
 import { ValidationError } from '../../../common/errors/error-types';
@@ -82,6 +83,7 @@ describe('ProviderStateManager', () => {
   };
   let mockExecutor: jest.Mocked<Pick<ProcessExecutor, 'run'>>;
   let mockSyncService: { syncProviderToAllProjects: jest.Mock };
+  let mockEffortSeeding: { seedForProvider: jest.Mock; backfillAll: jest.Mock };
 
   beforeEach(async () => {
     mockStorage = {
@@ -114,6 +116,11 @@ describe('ProviderStateManager', () => {
       }),
     };
 
+    mockEffortSeeding = {
+      seedForProvider: jest.fn().mockResolvedValue({ added: [], existing: [] }),
+      backfillAll: jest.fn().mockResolvedValue({ providers: 0, seededProviders: 0 }),
+    };
+
     mockDisableClaudeAutoCompact.mockReset();
     mockEnableClaudeAutoCompact.mockReset();
 
@@ -124,12 +131,32 @@ describe('ProviderStateManager', () => {
         { provide: STORAGE_SERVICE, useValue: mockStorage },
         { provide: ProviderProjectSyncService, useValue: mockSyncService },
         { provide: ProcessExecutor, useValue: mockExecutor },
+        { provide: ProviderEffortSeedingService, useValue: mockEffortSeeding },
         { provide: DB_CONNECTION, useValue: buildProofDb() },
       ],
     }).compile();
 
     service = module.get<ProviderStateManager>(ProviderStateManager);
     probeProofService = module.get<ProbeProofService>(ProbeProofService);
+  });
+
+  describe('create — effort catalog seeding (shared path)', () => {
+    it('seeds the effort catalog from adapter defaults for the created provider', async () => {
+      const result = await service.create({ name: 'claude', binPath: null, env: null });
+
+      expect(mockEffortSeeding.seedForProvider).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'provider-1', name: 'claude' }),
+      );
+      expect(result.provider.id).toBe('provider-1');
+    });
+
+    it('does not fail provider creation when seeding throws (non-fatal)', async () => {
+      mockEffortSeeding.seedForProvider.mockRejectedValueOnce(new Error('seed boom'));
+
+      const result = await service.create({ name: 'claude', binPath: null, env: null });
+
+      expect(result.provider.id).toBe('provider-1');
+    });
   });
 
   describe('update — enable-1M with valid proof', () => {

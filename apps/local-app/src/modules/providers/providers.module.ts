@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ProvidersController } from './controllers/providers.controller';
 import { ProviderModelsController } from './controllers/provider-models.controller';
+import { ProviderEffortsController } from './controllers/provider-efforts.controller';
 import { StorageModule } from '../storage/storage.module';
 import { ProviderAdaptersModule } from './adapters';
 import { ProbeProofService } from './services/probe-proof.service';
@@ -18,6 +19,7 @@ import {
 import { SettingsModule } from '../settings/settings.module';
 import { RegistryModule } from '../registry/registry.module';
 import { ProcessExecutorModule } from '../terminal/services/process-executor/process-executor.module';
+import { ProviderEffortSeedingModule } from './services/provider-effort-seeding.module';
 
 @Module({
   imports: [
@@ -26,8 +28,9 @@ import { ProcessExecutorModule } from '../terminal/services/process-executor/pro
     SettingsModule,
     RegistryModule,
     ProcessExecutorModule,
+    ProviderEffortSeedingModule,
   ],
-  controllers: [ProvidersController, ProviderModelsController],
+  controllers: [ProvidersController, ProviderModelsController, ProviderEffortsController],
   providers: [
     ProbeProofService,
     ProviderStateManager,

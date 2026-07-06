@@ -112,13 +112,14 @@ export function useProjectsPageController() {
     familyAlternatives: FamilyAlternative[];
     canImport: boolean;
   } | null>(null);
-  const [pendingTemplateData, setPendingTemplateData] = useState<{
-    name: string;
-    description: string;
-    rootPath: string;
-    templateId: string;
-    version: string;
-  } | null>(null);
+  // The ACTUAL submitted create-payload, captured from the mutation variables so the
+  // providerMappingRequired retry preserves every wizard field (selectedProviderNames,
+  // presetName/agentOverrides, teamOverrides) — NOT the pre-wizard form state, which would drop
+  // server-enforced selections and per-agent/team config (phase DoD). Typed as the create input so
+  // it tracks new fields automatically (e.g. familyProviderMappings once the emission helper lands).
+  const [pendingTemplateData, setPendingTemplateData] = useState<
+    Parameters<typeof createProjectFromTemplate>[0] | null
+  >(null);
   const [showProviderWarningModal, setShowProviderWarningModal] = useState(false);
   const [providerWarnings, setProviderWarnings] = useState<CreateFromTemplateResponse['warnings']>(
     [],
@@ -145,9 +146,6 @@ export function useProjectsPageController() {
     setTemplateFormData,
     templatePathValidation,
     templateFilePathValidation,
-    availablePresets,
-    selectedPreset,
-    setSelectedPreset,
     selectedTemplate,
     sortedVersions,
     resetTemplateForm,
@@ -347,11 +345,14 @@ export function useProjectsPageController() {
 
   const createFromTemplateMutation = useMutation({
     mutationFn: createProjectFromTemplate,
-    onSuccess: async (data) => {
+    onSuccess: async (data, variables) => {
       // Check if provider mapping is required
       if (data.providerMappingRequired) {
-        // Store the pending form data and show the provider mapping modal
-        setPendingTemplateData({ ...templateFormData });
+        // Preserve the ACTUAL submitted wizard payload (variables) for the retry — selectedProviderNames,
+        // presetName/agentOverrides, teamOverrides — so the retry only merges the user-confirmed
+        // familyProviderMappings on top. Storing the pre-wizard templateFormData here would silently
+        // drop every server-enforced selection and per-agent/team config.
+        setPendingTemplateData(variables);
         setProviderMappingData(data.providerMappingRequired);
         setShowTemplateDialog(false);
         setShowProviderMappingModal(true);
@@ -401,7 +402,8 @@ export function useProjectsPageController() {
   const handleProviderMappingConfirm = async (mappings: Record<string, string>) => {
     if (!pendingTemplateData) return;
 
-    // Re-submit with provider mappings
+    // Re-submit the verbatim submitted payload with only the user-confirmed familyProviderMappings
+    // merged on top (overriding any mappings that may have been in the original emission).
     createFromTemplateMutation.mutate({
       ...pendingTemplateData,
       familyProviderMappings: mappings,
@@ -625,9 +627,6 @@ export function useProjectsPageController() {
     setTemplateFormData,
     selectedTemplate,
     sortedVersions,
-    availablePresets,
-    selectedPreset,
-    setSelectedPreset,
     handleTemplateChange,
     handleTemplatePathChange,
     handleTemplateFilePathChange,

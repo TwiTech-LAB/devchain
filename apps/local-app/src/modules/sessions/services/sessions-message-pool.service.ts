@@ -172,6 +172,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       preDelayMs,
       senderAgentId,
       immediate = false,
+      clientMessageId,
     } = options;
 
     const { projectId, agentName } = await this.resolveProjectInfo(agentId, options);
@@ -196,9 +197,27 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
         text,
         source,
         senderAgentId,
+        clientMessageId,
         status: 'queued',
         immediate: true,
       };
+      // IDEMPOTENCY INVARIANT: this dedup check and `addEntry` below MUST stay
+      // adjacent with ZERO `await` between them. `findByClientMessageId` and
+      // `addEntry` are both synchronous, so under JS single-threading the
+      // check→return-or-add is atomic: two concurrent same-clientMessageId
+      // enqueues (both suspended at `resolveProjectInfo` above) cannot both miss.
+      // Do NOT hoist this to method entry — that placement is racy (both callers
+      // pass it while suspended, then both add).
+      if (clientMessageId) {
+        const existing = this.messageLog.findByClientMessageId(clientMessageId, agentId, source);
+        if (existing) {
+          logger.debug(
+            { agentId, source, clientMessageId, logEntryId: existing.id },
+            'Duplicate clientMessageId — returning existing entry, skipping re-delivery',
+          );
+          return { status: existing.status, logEntryId: existing.id };
+        }
+      }
       this.messageLog.addEntry(logEntry);
       this.activityStream.broadcastEnqueued(logEntry);
       this.broadcastPoolsUpdate();
@@ -232,7 +251,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
             this.activityStream.broadcastDelivered(logEntryId, [updatedEntry]);
           }
         }
-        return { status };
+        return { status, logEntryId };
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         logger.error({ agentId, source, error: errorMsg }, 'Immediate delivery failed');
@@ -245,7 +264,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
         if (failedEntry) {
           this.activityStream.broadcastFailed(failedEntry);
         }
-        return { status: 'failed', error: errorMsg };
+        return { status: 'failed', error: errorMsg, logEntryId };
       }
     }
 
@@ -309,9 +328,23 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       text,
       source,
       senderAgentId,
+      clientMessageId,
       status: 'queued',
       immediate: false,
     };
+    // IDEMPOTENCY INVARIANT (pooled path): same rule as the immediate path above
+    // — dedup check and `addEntry` stay adjacent with ZERO intervening `await`
+    // so the check→return-or-add block is atomic under JS single-threading.
+    if (clientMessageId) {
+      const existing = this.messageLog.findByClientMessageId(clientMessageId, agentId, source);
+      if (existing) {
+        logger.debug(
+          { agentId, source, clientMessageId, logEntryId: existing.id },
+          'Duplicate clientMessageId — returning existing entry, skipping re-enqueue',
+        );
+        return { status: existing.status, logEntryId: existing.id };
+      }
+    }
     this.messageLog.addEntry(logEntry);
     this.activityStream.broadcastEnqueued(logEntry);
     this.broadcastPoolsUpdate();
@@ -323,6 +356,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       submitKeys,
       senderAgentId,
       logEntryId,
+      clientMessageId,
     };
     pool.messages.push(message);
 
@@ -353,7 +387,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       });
     }, pool.config.delayMs);
 
-    return { status: 'queued', poolSize: pool.messages.length };
+    return { status: 'queued', poolSize: pool.messages.length, logEntryId };
   }
 
   async flushNow(agentId: string): Promise<FlushResult> {

@@ -66,6 +66,9 @@ const createGateway = (options?: {
     getFramesSince: jest.fn().mockReturnValue(options?.bufferedFrames ?? []),
     getCurrentSequence: jest.fn().mockReturnValue(7),
     addFrame: jest.fn(),
+    // Disconnect paths schedule a delayed clearBuffer; without this stub the timer
+    // crashes the process after teardown when open handles outlive the suite.
+    clearBuffer: jest.fn(),
   };
 
   const settingsService: Partial<SettingsService> = {
@@ -556,6 +559,46 @@ describe('TerminalGateway.handleRequestFullHistory', () => {
     // Verify resolveSeedingConfig was called to get the shared maxBytes
     expect(seedService.resolveSeedingConfig).toHaveBeenCalled();
   });
+
+  it('samples capturedSequence after the tmux capture completes (tail-duplication race)', async () => {
+    const { gateway, streamService, settingsService, terminalIO } = createGateway();
+    const client = createMockSocket('client-race');
+
+    (settingsService.getScrollbackLines as jest.Mock).mockReturnValue(10000);
+
+    // Simulate frames being stamped WHILE capture-pane runs: the live counter sits at 7
+    // when the request arrives and advances to 12 during the pending capture. Those
+    // frames' content is inside the returned snapshot, so the emitted capturedSequence
+    // must cover them or the client replays them on top of the snapshot.
+    let liveSequence = 7;
+    (streamService.getCurrentSequence as jest.Mock).mockImplementation(() => liveSequence);
+    (terminalIO.captureHistory as jest.Mock).mockImplementation(async () => {
+      liveSequence = 12;
+      return { ok: true, output: 'line-1\nline-2\nline-3' };
+    });
+
+    gateway.handleConnection(client as unknown as Socket);
+
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'session-race',
+      rows: 24,
+      cols: 80,
+    });
+
+    await gateway.handleRequestFullHistory(client as unknown as Socket, {
+      sessionId: 'session-race',
+      maxLines: 1000,
+    });
+
+    const historyCall = (client.emit as jest.Mock).mock.calls.find(
+      ([event, envelope]) =>
+        event === 'message' && (envelope as { type?: string }).type === 'full_history',
+    );
+    expect(historyCall).toBeTruthy();
+    expect(
+      (historyCall![1] as { payload: { capturedSequence?: number } }).payload.capturedSequence,
+    ).toBe(12);
+  });
 });
 
 describe('TerminalGateway session lifecycle registry policy', () => {
@@ -844,6 +887,203 @@ describe('TerminalGateway.handleSubscribe', () => {
     // On reconnection, no seeding should happen
     expect(seedService.emitSeedToClient).not.toHaveBeenCalled();
     expect(streamService.getFramesSince).toHaveBeenCalledWith('session-3', 42);
+  });
+});
+
+describe('TerminalGateway initial-geometry authority latch', () => {
+  it('two interleaved subscribes apply pty geometry exactly once (latch collapses the burst)', async () => {
+    const { gateway, ptyService, registry } = createGateway();
+    const a = createMockSocket('client-int-a');
+    const b = createMockSocket('client-int-b');
+
+    gateway.handleConnection(a as unknown as Socket);
+    gateway.handleConnection(b as unknown as Socket);
+
+    // Fire both WITHOUT awaiting so they interleave across handleSubscribe's internal awaits.
+    const pa = gateway.handleSubscribe(a as unknown as Socket, {
+      sessionId: 'int-sess',
+      rows: 30,
+      cols: 120,
+    });
+    const pb = gateway.handleSubscribe(b as unknown as Socket, {
+      sessionId: 'int-sess',
+      rows: 24,
+      cols: 80,
+    });
+    await Promise.all([pa, pb]);
+
+    const resizeCalls = (ptyService.resize as jest.Mock).mock.calls.filter(
+      ([sid]: [string]) => sid === 'int-sess',
+    );
+    expect(resizeCalls).toHaveLength(1);
+    // A single client owns authority; the pty was flipped to that winner's width only.
+    const session = registry.get('int-sess')!;
+    expect(session.getAuthority()).not.toBeNull();
+    expect([
+      [120, 30],
+      [80, 24],
+    ]).toContainEqual([resizeCalls[0][1], resizeCalls[0][2]]);
+  });
+
+  it('reconnect burst applies pty geometry exactly once', async () => {
+    const { gateway, ptyService } = createGateway();
+    const clients = ['r1', 'r2', 'r3', 'r4'].map((id) => createMockSocket(id));
+    clients.forEach((c) => gateway.handleConnection(c as unknown as Socket));
+
+    await Promise.all(
+      clients.map((c, i) =>
+        gateway.handleSubscribe(c as unknown as Socket, {
+          sessionId: 'burst-sess',
+          lastSequence: 5 + i,
+          rows: 24,
+          cols: 80,
+        }),
+      ),
+    );
+
+    const resizeCalls = (ptyService.resize as jest.Mock).mock.calls.filter(
+      ([sid]: [string]) => sid === 'burst-sess',
+    );
+    expect(resizeCalls).toHaveLength(1);
+  });
+
+  it('first-attach latch loser neither resizes nor invalidates the seed cache', async () => {
+    const { gateway, ptyService, seedService, registry } = createGateway();
+    const winner = createMockSocket('client-fa-win');
+    const loser = createMockSocket('client-fa-lose');
+
+    gateway.handleConnection(winner as unknown as Socket);
+    gateway.handleConnection(loser as unknown as Socket);
+
+    // Winner claims the latch first and applies its geometry.
+    await gateway.handleSubscribe(winner as unknown as Socket, {
+      sessionId: 'fa-sess',
+      rows: 30,
+      cols: 120,
+    });
+    (ptyService.resize as jest.Mock).mockClear();
+    (seedService.invalidateCache as jest.Mock).mockClear();
+
+    // Loser is ALSO a first attach but the latch is already held → no resize, no invalidation,
+    // no 50ms settle; it seeds at the winner's width.
+    await gateway.handleSubscribe(loser as unknown as Socket, {
+      sessionId: 'fa-sess',
+      rows: 24,
+      cols: 80,
+    });
+
+    expect(ptyService.resize).not.toHaveBeenCalled();
+    expect(seedService.invalidateCache).not.toHaveBeenCalled();
+    expect(registry.get('fa-sess')!.getAuthority()).toBe('client-fa-win');
+  });
+
+  it('bails without subscribing when the client disconnects inside the 50ms seed window', async () => {
+    const { gateway, registry } = createGateway();
+    const client = createMockSocket('client-midwindow');
+
+    gateway.handleConnection(client as unknown as Socket);
+
+    // Start the subscribe but do not await — it wins the latch, applies resize, then parks on
+    // the 50ms seed settle before wiring/subscribing.
+    const pending = gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'midwindow-sess',
+      rows: 24,
+      cols: 80,
+    });
+    // Flush microtasks past sessionExists + ensurePtyStreaming so we are inside the 50ms window.
+    await new Promise((r) => setTimeout(r, 5));
+
+    const session = registry.get('midwindow-sess')!;
+    expect(session.getAuthority()).toBe('client-midwindow'); // latched
+    const cs = (
+      gateway as unknown as { clientSessions: Map<string, { subscriptions: Set<string> }> }
+    ).clientSessions.get('client-midwindow')!;
+    // Only session/<id> is held mid-window — terminal/<id> is added after the settle.
+    expect(cs.subscriptions.has('session/midwindow-sess')).toBe(true);
+    expect(cs.subscriptions.has('terminal/midwindow-sess')).toBe(false);
+
+    // Client dies mid-window; the sweep must clear the latched authority via session/<id>.
+    gateway.handleDisconnect(client as unknown as Socket);
+    expect(session.getAuthority()).toBeNull();
+
+    await pending; // resumes, hits the liveness guard, and bails
+    expect(session.hasSubscriber('client-midwindow')).toBe(false);
+  });
+});
+
+describe('TerminalGateway disconnect authority sweep', () => {
+  it('clears authority on ALL of a multi-session socket, not just the last one', async () => {
+    const { gateway, registry } = createGateway();
+    const client = createMockSocket('client-multi-disc');
+
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'md-a',
+      rows: 24,
+      cols: 80,
+    });
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'md-b',
+      rows: 24,
+      cols: 80,
+    });
+
+    const a = registry.get('md-a')!;
+    const b = registry.get('md-b')!;
+    expect(a.getAuthority()).toBe('client-multi-disc');
+    expect(b.getAuthority()).toBe('client-multi-disc');
+
+    gateway.handleDisconnect(client as unknown as Socket);
+
+    expect(a.getAuthority()).toBeNull();
+    expect(b.getAuthority()).toBeNull();
+  });
+
+  it('is idempotent — a second disconnect is a harmless no-op', async () => {
+    const { gateway, registry } = createGateway();
+    const client = createMockSocket('client-idem');
+
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'idem-sess',
+      rows: 24,
+      cols: 80,
+    });
+    const session = registry.get('idem-sess')!;
+
+    gateway.handleDisconnect(client as unknown as Socket);
+    expect(session.getAuthority()).toBeNull();
+
+    expect(() => gateway.handleDisconnect(client as unknown as Socket)).not.toThrow();
+    expect(session.getAuthority()).toBeNull();
+  });
+
+  it('heartbeat timeout sweeps authority through the same release helper', async () => {
+    jest.useFakeTimers();
+    try {
+      const { gateway, registry } = createGateway();
+      const client = createMockSocket('client-hb');
+
+      gateway.handleConnection(client as unknown as Socket);
+      // Dimensionless subscribe → no 50ms latch settle to advance past; subscribe() still grants
+      // first-subscriber authority.
+      await gateway.handleSubscribe(client as unknown as Socket, { sessionId: 'hb-sess' });
+      const session = registry.get('hb-sess')!;
+      expect(session.getAuthority()).toBe('client-hb');
+
+      gateway.afterInit(); // starts the heartbeat interval
+      // Two interval ticks (30s each) → elapsed since lastHeartbeat exceeds HEARTBEAT_TIMEOUT (45s).
+      jest.advanceTimersByTime(60_001);
+
+      expect(session.getAuthority()).toBeNull();
+      expect(
+        (gateway as unknown as { clientSessions: Map<string, unknown> }).clientSessions.has(
+          'client-hb',
+        ),
+      ).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 
@@ -1479,8 +1719,10 @@ describe('TerminalGateway.handleTheme', () => {
     expect(terminalIO.applyWindowTheme).toHaveBeenCalledTimes(1);
   });
 
-  it('clears theme cache for session on session.crashed', async () => {
-    const { gateway, terminalIO, registry } = createGateway({ autoCreateRegistrySessions: false });
+  it('clears theme cache and disposes terminal state on session.crashed', async () => {
+    const { gateway, terminalIO, registry, sessionsService, ptyService } = createGateway({
+      autoCreateRegistrySessions: false,
+    });
     registry.create('crashed-sess', 'tmux_crashed-sess');
     const client = createMockSocket('client-theme-crashed');
 
@@ -1493,6 +1735,17 @@ describe('TerminalGateway.handleTheme', () => {
 
     gateway.handleSessionCrashed({ sessionId: 'crashed-sess', sessionName: 'tmux_crashed-sess' });
 
+    // Crash cleanup: DB marked failed, streaming stopped, registry entry gone —
+    // a stale entry here would block a later restore.
+    expect(sessionsService.markSessionFailed).toHaveBeenCalledWith(
+      'crashed-sess',
+      expect.any(String),
+    );
+    expect(ptyService.stopStreaming).toHaveBeenCalledWith('crashed-sess');
+    expect(registry.get('crashed-sess')).toBeUndefined();
+
+    // Theme cache cleared: once a restore re-creates the entry, the theme is re-applied.
+    registry.create('crashed-sess', 'tmux_crashed-sess');
     (terminalIO.applyWindowTheme as jest.Mock).mockClear();
     await gateway.handleTheme(client as unknown as Socket, {
       foregroundHex: fg,
@@ -1518,8 +1771,13 @@ describe('TerminalGateway.handleTheme', () => {
   });
 
   it('triggers redraw after successful theme application', async () => {
-    const { gateway, ptyService, registry } = createGateway({ autoCreateRegistrySessions: false });
+    const { gateway, ptyService, sessionsService, registry } = createGateway({
+      autoCreateRegistrySessions: false,
+    });
     registry.create('redraw-sess', 'tmux_redraw-sess');
+    // Alt-screen providers (agy/opencode/copilot) keep the redraw jiggle — state intent
+    // explicitly so the assertion can't pass vacuously under the non-alt-screen default.
+    (sessionsService.usesAlternateScreenFor as jest.Mock).mockReturnValue(true);
     const client = createMockSocket('client-redraw');
 
     gateway.handleConnection(client as unknown as Socket);
@@ -1533,8 +1791,13 @@ describe('TerminalGateway.handleTheme', () => {
   });
 
   it('does not trigger redraw when theme is unchanged (skipped by dedup cache)', async () => {
-    const { gateway, ptyService, registry } = createGateway({ autoCreateRegistrySessions: false });
+    const { gateway, ptyService, sessionsService, registry } = createGateway({
+      autoCreateRegistrySessions: false,
+    });
     registry.create('nodedup-sess', 'tmux_nodedup-sess');
+    // Alt-screen true: the FIRST apply provably redraws, so the SECOND call's no-redraw is
+    // genuinely the dedup cache — not the non-alt-screen gate passing vacuously.
+    (sessionsService.usesAlternateScreenFor as jest.Mock).mockReturnValue(true);
     const client = createMockSocket('client-nodedup');
 
     gateway.handleConnection(client as unknown as Socket);
@@ -1543,6 +1806,7 @@ describe('TerminalGateway.handleTheme', () => {
       foregroundHex: fg,
       backgroundHex: bg,
     });
+    expect(ptyService.triggerRedraw).toHaveBeenCalledWith('nodedup-sess');
 
     (ptyService.triggerRedraw as jest.Mock).mockClear();
 
@@ -1556,10 +1820,13 @@ describe('TerminalGateway.handleTheme', () => {
   });
 
   it('does not trigger redraw when applyWindowTheme fails', async () => {
-    const { gateway, terminalIO, ptyService, registry } = createGateway({
+    const { gateway, terminalIO, ptyService, sessionsService, registry } = createGateway({
       autoCreateRegistrySessions: false,
     });
     registry.create('failredraw-sess', 'tmux_failredraw-sess');
+    // Alt-screen true so the apply FAILURE (not the non-alt-screen gate) is what suppresses
+    // the redraw — without this the assertion passes vacuously.
+    (sessionsService.usesAlternateScreenFor as jest.Mock).mockReturnValue(true);
     (terminalIO.applyWindowTheme as jest.Mock).mockRejectedValueOnce(new Error('gone'));
     const client = createMockSocket('client-failredraw');
 
@@ -1570,6 +1837,29 @@ describe('TerminalGateway.handleTheme', () => {
       backgroundHex: bg,
     });
 
+    expect(ptyService.triggerRedraw).not.toHaveBeenCalled();
+  });
+
+  it('non-alt-screen session: applies tmux window theme but never triggers the redraw jiggle', async () => {
+    // The factory stubs usesAlternateScreenFor to a constant false (spec fixture policy) —
+    // this is the claude/codex default. The gate must skip ONLY the SIGWINCH jiggle; tmux
+    // window style + the dedup cache keep working for every provider.
+    const { gateway, terminalIO, ptyService, sessionsService, registry } = createGateway({
+      autoCreateRegistrySessions: false,
+    });
+    registry.create('nonalt-sess', 'tmux_nonalt-sess');
+    expect((sessionsService.usesAlternateScreenFor as jest.Mock)()).toBe(false);
+    const client = createMockSocket('client-nonalt');
+
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, { sessionId: 'nonalt-sess' });
+    await gateway.handleTheme(client as unknown as Socket, {
+      foregroundHex: fg,
+      backgroundHex: bg,
+    });
+
+    // Style is applied; the redraw jiggle is gated out.
+    expect(terminalIO.applyWindowTheme).toHaveBeenCalledWith({ name: 'tmux_nonalt-sess' }, fg, bg);
     expect(ptyService.triggerRedraw).not.toHaveBeenCalled();
   });
 });

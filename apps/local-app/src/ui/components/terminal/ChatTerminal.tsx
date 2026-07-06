@@ -104,7 +104,6 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
   // Create refs that will be shared between hooks
   const xtermRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
-  const historyViewportOffsetRef = useRef<number | null>(null);
 
   // Subscription management
   const { lastSequenceRef, isSubscribedRef, expectingSeedRef, attemptSubscription } =
@@ -124,7 +123,6 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
     inputMode,
     hasHistoryRef,
     isLoadingHistoryRef,
-    historyViewportOffsetRef,
     isHistoryInFlightRef,
     pendingHistoryFramesRef,
     scrollbackLines,
@@ -164,17 +162,9 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
     scrollbackLines,
   );
 
-  // Resize handling - pass expectingSeedRef to skip resize events during seed loading
-  // Also pass hasHistoryRef to reset it after resize so user can reload history
-  useTerminalResize(
-    terminalRef,
-    xtermRef,
-    fitAddonRef,
-    sessionId,
-    expectingSeedRef,
-    hasHistoryRef,
-    socket,
-  );
+  // Resize handling - pass expectingSeedRef to skip resize events during seed loading.
+  // hasHistoryRef is intentionally NOT passed: the seed and full_history handlers own that flag.
+  useTerminalResize(terminalRef, xtermRef, fitAddonRef, sessionId, expectingSeedRef, socket);
 
   // Focus handling
   useTerminalFocus(containerRef, sessionId, isSubscribedRef, socket);
@@ -190,7 +180,6 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
     isSubscribedRef,
     hasHistoryRef,
     isLoadingHistoryRef,
-    historyViewportOffsetRef,
     isHistoryInFlightRef,
     pendingHistoryFramesRef,
     lastCapturedSequenceRef,

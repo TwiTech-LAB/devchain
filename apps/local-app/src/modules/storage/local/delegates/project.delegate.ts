@@ -1,17 +1,10 @@
 import type {
   CreateProjectWithTemplateOptions,
-  CreateProjectWithTemplateResult,
   ListOptions,
   ListResult,
-  TemplateImportPayload,
 } from '../../interfaces/storage.interface';
 import type { CreateProject, Project, UpdateProject } from '../../models/domain.models';
-import {
-  ConflictError,
-  StorageError,
-  ValidationError,
-  NotFoundError,
-} from '../../../../common/errors/error-types';
+import { ConflictError, StorageError, NotFoundError } from '../../../../common/errors/error-types';
 import { createLogger } from '../../../../common/logging/logger';
 import { isSqliteUniqueConstraint } from '../helpers/storage-helpers';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
@@ -124,11 +117,20 @@ export class ProjectStorageDelegate extends BaseStorageDelegate {
     return project;
   }
 
-  async createProjectWithTemplate(
+  /** Run `fn` inside a single WAL-safe IMMEDIATE transaction (create-core atomicity). */
+  runInTransaction<T>(fn: () => Promise<T>): Promise<T> {
+    return this.txRunner.runImmediateAsync(fn);
+  }
+
+  /**
+   * Insert a project row + seed enabled skill sources, transaction-free (must run inside
+   * `runInTransaction`) and WITHOUT default statuses (the template statuses codec supplies
+   * them). Mirrors the project-row + sourceProjectEnabled seeding the create-core delegate did.
+   */
+  async createProjectShell(
     data: CreateProject,
-    template: TemplateImportPayload,
     options?: CreateProjectWithTemplateOptions,
-  ): Promise<CreateProjectWithTemplateResult> {
+  ): Promise<Project> {
     const { randomUUID } = await import('crypto');
     const now = new Date().toISOString();
     const providedProjectId = options?.projectId?.trim();
@@ -141,271 +143,54 @@ export class ProjectStorageDelegate extends BaseStorageDelegate {
     };
 
     const seedableSourceNames = await this.listSeedableSourceNamesForNewProject();
-    const {
-      projects,
-      statuses,
-      prompts,
-      agentProfiles,
-      agents,
-      tags,
-      promptTags,
-      profileProviderConfigs,
-      providers,
-      sourceProjectEnabled,
-    } = await import('../../db/schema');
+    const { projects, sourceProjectEnabled } = await import('../../db/schema');
 
-    const statusIdMap: Record<string, string> = {};
-    const promptIdMap: Record<string, string> = {};
-    const profileIdMap: Record<string, string> = {};
-    const configIdMap: Record<string, string> = {}; // Maps newProfileId -> configId
-    const agentIdMap: Record<string, string> = {};
-
-    await this.txRunner
-      .runImmediateAsync(async () => {
-        // 1. Create project
-        await this.db.insert(projects).values({
-          id: project.id,
-          name: project.name,
-          description: project.description,
-          rootPath: project.rootPath,
-          isTemplate: project.isTemplate,
-          createdAt: project.createdAt,
-          updatedAt: project.updatedAt,
-        });
-
-        // 2. Create statuses from template
-        for (const s of template.statuses.sort((a, b) => a.position - b.position)) {
-          const statusId = randomUUID();
-          await this.db.insert(statuses).values({
-            id: statusId,
-            projectId: project.id,
-            label: s.label,
-            color: s.color,
-            position: s.position,
-            mcpHidden: s.mcpHidden ?? false,
-            createdAt: now,
-            updatedAt: now,
-          });
-          if (s.id) statusIdMap[s.id] = statusId;
-        }
-
-        if (seedableSourceNames.length > 0) {
-          await this.db.insert(sourceProjectEnabled).values(
-            seedableSourceNames.map((sourceName) => ({
-              id: randomUUID(),
-              projectId: project.id,
-              sourceName,
-              enabled: true,
-              createdAt: now,
-            })),
-          );
-        }
-
-        // 3. Create prompts from template with tags
-        const { eq, and, or, isNull } = await import('drizzle-orm');
-        for (const p of template.prompts) {
-          const promptId = randomUUID();
-          await this.db.insert(prompts).values({
-            id: promptId,
-            projectId: project.id,
-            title: p.title,
-            content: p.content ?? '',
-            version: 1,
-            createdAt: now,
-            updatedAt: now,
-          });
-          if (p.id) promptIdMap[p.id] = promptId;
-
-          // Handle tags for this prompt
-          if (p.tags?.length) {
-            for (const tagName of p.tags) {
-              // Find or create the tag
-              let tag = await this.db
-                .select()
-                .from(tags)
-                .where(
-                  and(
-                    eq(tags.name, tagName),
-                    or(eq(tags.projectId, project.id), isNull(tags.projectId)),
-                  ),
-                )
-                .limit(1);
-
-              if (!tag[0]) {
-                const tagId = randomUUID();
-                await this.db.insert(tags).values({
-                  id: tagId,
-                  projectId: project.id,
-                  name: tagName,
-                  createdAt: now,
-                  updatedAt: now,
-                });
-                tag = [
-                  {
-                    id: tagId,
-                    projectId: project.id,
-                    name: tagName,
-                    createdAt: now,
-                    updatedAt: now,
-                  },
-                ];
-              }
-
-              // Create prompt-tag junction
-              await this.db.insert(promptTags).values({
-                promptId,
-                tagId: tag[0].id,
-                createdAt: now,
-              });
-            }
-          }
-        }
-
-        // 4. Create profiles from template
-        // Note: providerId and options are now on profile_provider_configs, not on agent_profiles
-        for (const prof of template.profiles) {
-          const profileId = randomUUID();
-          await this.db.insert(agentProfiles).values({
-            id: profileId,
-            projectId: project.id,
-            name: prof.name,
-            familySlug: prof.familySlug ?? null,
-            systemPrompt: null,
-            instructions: prof.instructions,
-            // Temperature stored as integer (×100) to match createAgentProfile convention
-            temperature: prof.temperature != null ? Math.round(prof.temperature * 100) : null,
-            maxTokens: prof.maxTokens,
-            createdAt: now,
-            updatedAt: now,
-          });
-          if (prof.id) profileIdMap[prof.id] = profileId;
-
-          // Handle provider configs for this profile
-          // New format: providerConfigs array with positions
-          // Fallback: Old format with single providerId/options
-          if (prof.providerConfigs && prof.providerConfigs.length > 0) {
-            // New format: multiple configs with positions
-            // Sort by position (fallback to array index if position missing)
-            const sortedConfigs = [...prof.providerConfigs].sort((a, b) => {
-              const posA = a.position ?? 0;
-              const posB = b.position ?? 0;
-              return posA - posB;
-            });
-
-            for (const config of sortedConfigs) {
-              // Resolve provider by name
-              const provider = await this.db
-                .select()
-                .from(providers)
-                .where(eq(providers.name, config.providerName))
-                .limit(1);
-
-              if (!provider[0]) {
-                throw new ValidationError(`Provider not found: ${config.providerName}`);
-              }
-
-              const configId = randomUUID();
-              await this.db.insert(profileProviderConfigs).values({
-                id: configId,
-                profileId: profileId,
-                providerId: provider[0].id,
-                name: config.name,
-                options: config.options ?? null,
-                env: config.env ? JSON.stringify(config.env) : null,
-                position: config.position ?? sortedConfigs.indexOf(config), // Fallback to array index
-                createdAt: now,
-                updatedAt: now,
-              });
-              // Store first config as default for agents
-              if (!configIdMap[profileId]) {
-                configIdMap[profileId] = configId;
-              }
-            }
-          } else {
-            // Fallback for old templates: create single config from providerId/options
-            const configId = randomUUID();
-            await this.db.insert(profileProviderConfigs).values({
-              id: configId,
-              profileId: profileId,
-              providerId: prof.providerId,
-              name: prof.name, // Use profile name as config name
-              options: prof.options ?? null,
-              env: null,
-              position: 0,
-              createdAt: now,
-              updatedAt: now,
-            });
-            configIdMap[profileId] = configId;
-          }
-        }
-
-        // 5. Create agents from template (remap profile ids)
-        for (const a of template.agents) {
-          const oldProfileId = a.profileId ?? '';
-          const newProfileId =
-            oldProfileId && profileIdMap[oldProfileId] ? profileIdMap[oldProfileId] : undefined;
-          if (!newProfileId) {
-            throw new ValidationError(`Profile mapping missing for agent ${a.name}`, {
-              profileId: oldProfileId || null,
-            });
-          }
-          const configId = configIdMap[newProfileId];
-          if (!configId) {
-            throw new ValidationError(`Config mapping missing for agent ${a.name}`, {
-              profileId: newProfileId,
-            });
-          }
-          const agentId = randomUUID();
-          await this.db.insert(agents).values({
-            id: agentId,
-            projectId: project.id,
-            name: a.name,
-            profileId: newProfileId,
-            providerConfigId: configId,
-            description: a.description ?? null,
-            modelOverride: a.modelOverride ?? null,
-            createdAt: now,
-            updatedAt: now,
-          });
-          if (a.id) agentIdMap[a.id] = agentId;
-        }
-
-        logger.info(
-          { projectId: project.id, counts: template },
-          'Created project with template (transactional)',
-        );
-      })
-      .catch((error) => {
-        const errorMessage = error instanceof Error ? error.message : '';
-        if (
-          providedProjectId &&
-          isSqliteUniqueConstraint(error) &&
-          errorMessage.includes('projects.id')
-        ) {
-          throw new ConflictError(`Project ID "${providedProjectId}" already exists.`, {
-            field: 'projectId',
-            projectId: providedProjectId,
-          });
-        }
-        throw error;
+    try {
+      await this.db.insert(projects).values({
+        id: project.id,
+        name: project.name,
+        description: project.description,
+        rootPath: project.rootPath,
+        isTemplate: project.isTemplate,
+        createdAt: project.createdAt,
+        updatedAt: project.updatedAt,
       });
+    } catch (error) {
+      // Preserve the create-core behavior: a client-supplied projectId colliding with an
+      // existing row surfaces as a domain ConflictError (409), not a raw SQLite constraint
+      // error. This insert only targets the projects table and `id` is the sole
+      // caller-controlled unique/primary-key column, so any PK/UNIQUE violation here IS the
+      // duplicate id — gate strictly on an explicitly-provided id. Match on the stable error
+      // `code` (better-sqlite3's `message` getter is unreliable under load, and `projects.id`
+      // is a PRIMARY KEY, whose violation code the message-based helper alone does not cover).
+      const code = (error as { code?: unknown }).code;
+      const isDuplicateId =
+        code === 'SQLITE_CONSTRAINT_PRIMARYKEY' ||
+        code === 'SQLITE_CONSTRAINT_UNIQUE' ||
+        code === 'SQLITE_CONSTRAINT' ||
+        isSqliteUniqueConstraint(error);
+      if (providedProjectId && isDuplicateId) {
+        throw new ConflictError(`Project ID "${providedProjectId}" already exists.`, {
+          field: 'projectId',
+          projectId: providedProjectId,
+        });
+      }
+      throw error;
+    }
 
-    return {
-      project,
-      imported: {
-        prompts: template.prompts.length,
-        profiles: template.profiles.length,
-        agents: template.agents.length,
-        statuses: template.statuses.length,
-      },
-      mappings: {
-        promptIdMap,
-        profileIdMap,
-        agentIdMap,
-        statusIdMap,
-      },
-      initialPromptSet: false, // Will be set by controller if needed
-    };
+    if (seedableSourceNames.length > 0) {
+      await this.db.insert(sourceProjectEnabled).values(
+        seedableSourceNames.map((sourceName) => ({
+          id: randomUUID(),
+          projectId: project.id,
+          sourceName,
+          enabled: true,
+          createdAt: now,
+        })),
+      );
+    }
+
+    return project;
   }
 
   async getProject(id: string): Promise<Project> {

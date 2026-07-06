@@ -87,6 +87,24 @@ describe('MessageEnqueueService', () => {
     expect(pool.enqueue.mock.calls[0][2]?.submitKeys).not.toBe(submitKeys);
   });
 
+  it('threads clientMessageId through to the pool', async () => {
+    pool.enqueue.mockResolvedValueOnce({ status: 'delivered', logEntryId: 'log-1' });
+
+    await expect(
+      service.enqueue([
+        {
+          agentId: 'agent-1',
+          text: 'hello',
+          source: 'mobile',
+          immediate: true,
+          clientMessageId: 'client-1',
+        },
+      ]),
+    ).resolves.toEqual([{ agentId: 'agent-1', status: 'delivered', logEntryId: 'log-1' }]);
+
+    expect(pool.enqueue.mock.calls[0][2]).toMatchObject({ clientMessageId: 'client-1' });
+  });
+
   it('does not swallow enqueue rejections', async () => {
     pool.enqueue.mockRejectedValue(new Error('pool failed'));
 

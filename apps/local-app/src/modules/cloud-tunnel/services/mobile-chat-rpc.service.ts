@@ -18,6 +18,10 @@ import {
 } from '../../session-reader/services/session-reader.service';
 import { TranscriptWatcherService } from '../../session-reader/services/transcript-watcher.service';
 import { AgentMessageDeliveryService } from '../../agent-message-delivery/agent-message-delivery.service';
+import {
+  SessionsMessageLogReadFacade,
+  type PendingMobileMessage,
+} from '../../sessions/services/sessions-message-log-read.facade';
 import { TeamsService } from '../../teams/services/teams.service';
 import { PendingAskUserQuestionService } from '../../hooks/services/pending-ask-user-question.service';
 import type { NormalizedAskUserQuestion } from '../../events/catalog/claude.hooks.ask_user_question.pending';
@@ -120,6 +124,10 @@ interface AgentPresence {
 /** Result of `chat.sendMessage`. */
 export interface SendMessageResult {
   status: 'queued' | 'delivered';
+  /** Server log-entry id of the send — mobile's stable messageId for reconciliation. */
+  messageId?: string;
+  /** Echoed idempotency key when the caller supplied one, so mobile can correlate. */
+  clientMessageId?: string;
 }
 
 /** Immediate result of an async lifecycle RPC — the client polls getOperationStatus next. */
@@ -200,6 +208,7 @@ export class MobileChatRpcService {
     private readonly sessionReader: SessionReaderService,
     private readonly transcriptWatcher: TranscriptWatcherService,
     private readonly agentMessageDelivery: AgentMessageDeliveryService,
+    private readonly messageLogRead: SessionsMessageLogReadFacade,
     private readonly sessionLifecycle: SessionLifecycleFacade,
     private readonly operationTracker: LifecycleOperationTracker,
     private readonly teamsService: TeamsService,
@@ -479,8 +488,12 @@ export class MobileChatRpcService {
   }
 
   /**
-   * `chat.sendMessage({ agentId, projectId, text })` — deliver a user message to
-   * the agent's running tmux session via the thread-free `mcp.direct` path.
+   * `chat.sendMessage({ agentId, projectId, text, clientMessageId? })` — deliver a
+   * user message to the agent's running tmux session via the thread-free
+   * `mcp.direct` path. An optional `clientMessageId` makes the send idempotent: a
+   * relay-timeout retry with the same key returns the original ledger entry
+   * instead of double-delivering. The result echoes `messageId` (the server
+   * log-entry id) + `clientMessageId` so mobile can track true send state.
    *
    * Deliver-only: hard-errors with `SESSION_NOT_RUNNING` when the agent has no
    * active session and never auto-launches (launching would exceed the relay
@@ -494,6 +507,10 @@ export class MobileChatRpcService {
     const agentId = params['agentId'] as string;
     const projectId = params['projectId'] as string;
     const text = params['text'] as string;
+    // Optional idempotency key: threaded into the pool so a relay-timeout retry
+    // with the same key dedups instead of double-delivering. Absent for older
+    // clients (additive-optional); echoed back so mobile can correlate.
+    const clientMessageId = params['clientMessageId'] as string | undefined;
 
     // Ownership: the agent must belong to the requested project.
     const agent = await this.storage.getAgent(agentId);
@@ -533,6 +550,7 @@ export class MobileChatRpcService {
         projectId,
         senderName: MOBILE_SENDER_NAME,
         senderType: 'user',
+        clientMessageId,
         // Plain framing: a human user's turn lands in the agent's tmux as raw
         // text — no agent-oriented banner (devchain_send_message can't address a
         // human and would pollute the agent's context). The formatter default
@@ -576,8 +594,34 @@ export class MobileChatRpcService {
       // In-memory clear; swallow so the send result stays clean.
     }
 
-    // 'unconfirmed' is still in-flight (enqueued) → report as queued.
-    return { status: result.status === 'delivered' ? 'delivered' : 'queued' };
+    // 'unconfirmed' is still in-flight (enqueued) → report as queued. messageId
+    // (the server log-entry id) + the echoed clientMessageId let mobile track true
+    // send state via chat.getPendingMessages until the message lands in the transcript.
+    return {
+      status: result.status === 'delivered' ? 'delivered' : 'queued',
+      ...(result.messageId ? { messageId: result.messageId } : {}),
+      ...(clientMessageId ? { clientMessageId } : {}),
+    };
+  }
+
+  /**
+   * `chat.getPendingMessages({ agentId, projectId, clientMessageIds })` — the
+   * mobile send-state reconciliation read. Returns the server ledger rows for the
+   * requested `clientMessageIds` that belong to this agent and originated from
+   * mobile (`source==='mobile'`), so the outbox can render true send state
+   * (queued/delivered/failed) until each message appears in the canonical
+   * transcript. Source-side auth is identical to `sendMessage` — the agent must
+   * belong to `projectId` (cross-project → `AGENT_PROJECT_MISMATCH`) — enforced
+   * BEFORE any log read. `delivered` here means the tmux paste succeeded, NOT
+   * transcript presence (mobile's 'confirmed' comes only from a transcript match).
+   */
+  async getPendingMessages(params: Record<string, unknown>): Promise<PendingMobileMessage[]> {
+    const agentId = params['agentId'] as string;
+    const projectId = params['projectId'] as string;
+    const clientMessageIds = params['clientMessageIds'] as string[];
+
+    await this.assertAgentInProject(agentId, projectId);
+    return this.messageLogRead.queryPendingMobile(agentId, projectId, clientMessageIds);
   }
 
   /**

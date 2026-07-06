@@ -141,6 +141,15 @@ export interface ProviderModel {
   updatedAt: string;
 }
 
+export interface ProviderEffort {
+  id: string;
+  providerId: string;
+  name: string;
+  position: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ProviderMcpMetadata {
   mcpConfigured: boolean;
   mcpEndpoint: string | null;
@@ -171,6 +180,8 @@ export interface ProfileProviderConfig {
   description: string | null;
   options: string | null; // JSON string for provider-specific options
   env: Record<string, string> | null; // Environment variables (stored as JSON)
+  model: string | null; // Structured default model selected from provider catalog
+  effort: string | null; // Structured default effort selected from provider catalog
   position: number; // Order within profile (0, 1, 2, ...)
   createdAt: string;
   updatedAt: string;
@@ -195,6 +206,7 @@ export interface Agent {
   profileId: string;
   providerConfigId: string; // FK to profile_provider_configs.id
   modelOverride: string | null;
+  effortOverride: string | null;
   name: string;
   description: string | null;
   createdAt: string;
@@ -278,6 +290,12 @@ export type CreateProviderModel = Omit<
 > & {
   position?: number;
 };
+export type CreateProviderEffort = Omit<
+  ProviderEffort,
+  'id' | 'createdAt' | 'updatedAt' | 'position'
+> & {
+  position?: number;
+};
 export type UpdateProvider = Partial<Omit<Provider, 'id' | 'createdAt' | 'updatedAt'>>;
 export type UpdateProviderMcpMetadata = Partial<ProviderMcpMetadata>;
 
@@ -297,6 +315,8 @@ export type CreateProfileProviderConfig = {
   description?: string | null;
   options: string | null;
   env: Record<string, string> | null;
+  model?: string | null;
+  effort?: string | null;
   position?: number; // Optional - defaults to max(position)+1 in storage service
 };
 export type UpdateProfileProviderConfig = Partial<
@@ -316,11 +336,18 @@ export type UpdateDocument = Partial<Omit<Document, 'id' | 'createdAt' | 'update
 
 export type CreateAgent = Omit<
   Agent,
-  'id' | 'createdAt' | 'updatedAt' | 'description' | 'providerConfigId' | 'modelOverride'
+  | 'id'
+  | 'createdAt'
+  | 'updatedAt'
+  | 'description'
+  | 'providerConfigId'
+  | 'modelOverride'
+  | 'effortOverride'
 > & {
   description?: string | null;
   providerConfigId: string;
   modelOverride?: string | null;
+  effortOverride?: string | null;
 };
 export type UpdateAgent = Partial<Omit<Agent, 'id' | 'createdAt' | 'updatedAt'>>;
 

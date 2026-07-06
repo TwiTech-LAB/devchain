@@ -4,6 +4,7 @@ import type { FitAddon } from '@xterm/addon-fit';
 import type { Socket } from 'socket.io-client';
 import { termLog } from '@/ui/lib/debug';
 import { resolveTerminalSocket } from '../socket';
+import { isTerminalContainerVisible } from '../xterm-utils';
 
 /**
  * Simple debounce helper for resize events
@@ -32,15 +33,13 @@ function debounce<T extends (...args: never[]) => void>(
  * @param fitAddonRef - React ref to the FitAddon instance
  * @param sessionId - Terminal session ID for logging and WebSocket emissions
  * @param expectingSeedRef - Ref tracking if we're expecting a seed (skip resize during seed)
- * @param hasHistoryRef - Ref tracking if history is available (reset to true after resize)
  */
 export function useTerminalResize(
   terminalRef: React.RefObject<HTMLDivElement>,
-  xtermRef: React.RefObject<Terminal | null>,
-  fitAddonRef: React.RefObject<FitAddon | null>,
+  xtermRef: React.MutableRefObject<Terminal | null>,
+  fitAddonRef: React.MutableRefObject<FitAddon | null>,
   sessionId: string,
   expectingSeedRef?: React.MutableRefObject<boolean>,
-  hasHistoryRef?: React.MutableRefObject<boolean>,
   socket?: Socket | null,
 ) {
   // Track last dimensions to avoid duplicate resize events
@@ -62,6 +61,15 @@ export function useTerminalResize(
         return;
       }
 
+      // Defer fit + resize emission while the container is hidden. A hidden container reports
+      // computed height 0px; FitAddon can then propose a garbage 2×1 geometry and we would emit
+      // a bogus PTY resize. Skipping here defers both fit and the `terminal:resize` emit until a
+      // resize fires again once visible (re-show triggers the observer), where correct dims exist.
+      if (!isTerminalContainerVisible(terminalRef.current)) {
+        termLog('resize_skipped', { sessionId, reason: 'hidden' });
+        return;
+      }
+
       fitAddonRef.current?.fit();
       if (xtermRef.current) {
         const activeSocket = resolveTerminalSocket(socket);
@@ -79,27 +87,28 @@ export function useTerminalResize(
             activeSocket.emit('terminal:resize', { sessionId, cols, rows });
           }
 
-          // After resize, TUI might output more than viewport size, creating scrollback
-          // We can't clear only scrollback (clear() wipes viewport too)
-          // Instead, just scroll to bottom. If user scrolls up, history reload will replace any garbage
+          // After a non-initial resize, snap back to the bottom so newly-wrapped lines don't
+          // leave the viewport parked above the prompt.
+          //
+          // Deliberate behavioral change: this hook no longer force-sets `hasHistoryRef = true`
+          // after a resize. The seed handler and the full_history handler are the sole owners of
+          // that flag. Force-arming it here re-authorized scroll-up reloads for sessions whose
+          // seed advertised `hasHistory: false` (notably alternate-screen TUIs), which was a
+          // side effect, not a feature contract. Proper per-session refresh vs hasMore semantics
+          // is tracked as a backlog item; do not re-add the force-set.
           if (!isInitialResize) {
-            // Reset hasHistoryRef so user can reload clean history from tmux after resize
-            if (hasHistoryRef) {
-              hasHistoryRef.current = true;
-            }
-
             const xterm = xtermRef.current;
             setTimeout(() => {
               if (xterm) {
                 xterm.scrollToBottom();
-                termLog('resize_scroll_bottom', { sessionId, cols, rows, hasHistoryReset: true });
+                termLog('resize_scroll_bottom', { sessionId, cols, rows });
               }
             }, 300);
           }
         }
       }
     }, 250), // Debounce: wait 250ms after last resize
-    [sessionId, xtermRef, fitAddonRef, expectingSeedRef, hasHistoryRef, socket],
+    [sessionId, terminalRef, xtermRef, fitAddonRef, expectingSeedRef, socket],
   );
 
   // Handle window resize with debouncing and dimension change detection

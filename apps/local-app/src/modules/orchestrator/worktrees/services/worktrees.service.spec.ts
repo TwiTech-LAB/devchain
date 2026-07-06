@@ -5,7 +5,8 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { resetEnvConfig } from '../../../../common/config/env.config';
 import { GitWorktreeService } from '../../git/services/git-worktree.service';
-import { OrchestratorDockerService } from '../../docker/services/docker.service';
+import { ContainerRuntime } from '../runtime/container-runtime';
+import { ProcessRuntime } from '../runtime/process-runtime';
 import { SeedPreparationService } from '../../docker/services/seed-preparation.service';
 import { WORKTREE_TASK_MERGE_REQUESTED_EVENT } from '../../sync/events/task-merge.events';
 import { WORKTREE_CHANGED_EVENT } from '../events/worktree.events';
@@ -112,13 +113,14 @@ describe('WorktreesService', () => {
   let tempRoot: string;
   let repoPath: string;
   let store: InMemoryWorktreesStore;
-  let docker: jest.Mocked<Partial<OrchestratorDockerService>>;
+  let containerRuntime: jest.Mocked<Partial<ContainerRuntime>>;
   let git: jest.Mocked<Partial<GitWorktreeService>>;
   let seedPreparation: jest.Mocked<Partial<SeedPreparationService>>;
   let eventEmitter: jest.Mocked<Pick<EventEmitter2, 'emitAsync' | 'emit'>>;
   let eventLogService: jest.Mocked<Pick<EventLogService, 'recordPublished'>>;
   let storage: jest.Mocked<Pick<StorageService, 'getProject'>>;
   let executor: FakeProcessExecutor;
+  let processRuntime: ProcessRuntime;
   let service: WorktreesService;
   let dockerEventHandler:
     | ((event: { id?: string; status?: string; Action?: string }) => void)
@@ -138,7 +140,7 @@ describe('WorktreesService', () => {
     await mkdir(repoPath, { recursive: true });
 
     store = new InMemoryWorktreesStore();
-    docker = {
+    containerRuntime = {
       cleanupWorktreeProjectContainers: jest.fn().mockResolvedValue(undefined),
       removeWorktreeNetwork: jest.fn().mockResolvedValue(undefined),
       ensureWorktreeOnComposeNetwork: jest.fn().mockResolvedValue(undefined),
@@ -222,16 +224,17 @@ describe('WorktreesService', () => {
     };
 
     executor = new FakeProcessExecutor();
+    processRuntime = new ProcessRuntime(executor);
 
     service = new WorktreesService(
       store,
-      docker as unknown as OrchestratorDockerService,
+      containerRuntime as unknown as ContainerRuntime,
+      processRuntime,
       git as unknown as GitWorktreeService,
       seedPreparation as unknown as SeedPreparationService,
       eventEmitter as unknown as EventEmitter2,
       eventLogService as unknown as EventLogService,
       storage,
-      executor,
     );
 
     global.fetch = jest.fn(async (url: string, init?: RequestInit) => {
@@ -292,14 +295,14 @@ describe('WorktreesService', () => {
   });
 
   it('creates a worktree and marks it running', async () => {
-    docker.createContainer?.mockResolvedValue({
+    containerRuntime.createContainer?.mockResolvedValue({
       id: 'container-1',
       name: 'devchain-wt-feature-auth',
       image: 'devchain:latest',
       hostPort: 41001,
       state: 'running',
     });
-    docker.waitForHealthy?.mockResolvedValue(true);
+    containerRuntime.waitForHealthy?.mockResolvedValue(true);
 
     const result = await service.createWorktree({
       name: 'feature-auth',
@@ -313,7 +316,7 @@ describe('WorktreesService', () => {
     expect(result.status).toBe('running');
     expect(result.ownerProjectId).toBe('project-main');
     expect(result.containerId).toBe('container-1');
-    const createContainerInput = docker.createContainer?.mock.calls[0]?.[0] as {
+    const createContainerInput = containerRuntime.createContainer?.mock.calls[0]?.[0] as {
       env?: Record<string, string>;
     };
     const containerProjectId = createContainerInput.env?.CONTAINER_PROJECT_ID;
@@ -333,7 +336,7 @@ describe('WorktreesService', () => {
     expect(seedPreparation.prepareSeedData).toHaveBeenCalledWith(
       join(repoPath, 'worktrees-data', 'feature-auth', 'data'),
     );
-    expect(docker.createContainer).toHaveBeenCalledTimes(1);
+    expect(containerRuntime.createContainer).toHaveBeenCalledTimes(1);
     expect(eventLogService.recordPublished).toHaveBeenCalledWith(
       expect.objectContaining({
         name: 'orchestrator.worktree.activity',
@@ -351,14 +354,14 @@ describe('WorktreesService', () => {
     process.env.DEVCHAIN_CLOUD_UI_ENABLED = '0';
     resetEnvConfig();
 
-    docker.createContainer?.mockResolvedValue({
+    containerRuntime.createContainer?.mockResolvedValue({
       id: 'container-1',
       name: 'devchain-wt-feature-auth',
       image: 'devchain:latest',
       hostPort: 41001,
       state: 'running',
     });
-    docker.waitForHealthy?.mockResolvedValue(true);
+    containerRuntime.waitForHealthy?.mockResolvedValue(true);
 
     await service.createWorktree({
       name: 'feature-auth',
@@ -369,7 +372,7 @@ describe('WorktreesService', () => {
       repoPath,
     });
 
-    const createContainerInput = docker.createContainer?.mock.calls[0]?.[0] as {
+    const createContainerInput = containerRuntime.createContainer?.mock.calls[0]?.[0] as {
       env?: Record<string, string>;
     };
     expect(createContainerInput.env?.DEVCHAIN_CLOUD_UI_ENABLED).toBe('0');
@@ -380,14 +383,14 @@ describe('WorktreesService', () => {
     // (the key must be absent, not forwarded as undefined/empty).
     expect(process.env.DEVCHAIN_CLOUD_UI_ENABLED).toBeUndefined();
 
-    docker.createContainer?.mockResolvedValue({
+    containerRuntime.createContainer?.mockResolvedValue({
       id: 'container-1',
       name: 'devchain-wt-feature-auth',
       image: 'devchain:latest',
       hostPort: 41001,
       state: 'running',
     });
-    docker.waitForHealthy?.mockResolvedValue(true);
+    containerRuntime.waitForHealthy?.mockResolvedValue(true);
 
     await service.createWorktree({
       name: 'feature-auth',
@@ -398,7 +401,7 @@ describe('WorktreesService', () => {
       repoPath,
     });
 
-    const createContainerInput = docker.createContainer?.mock.calls[0]?.[0] as {
+    const createContainerInput = containerRuntime.createContainer?.mock.calls[0]?.[0] as {
       env?: Record<string, string>;
     };
     expect(createContainerInput.env).toBeDefined();
@@ -412,14 +415,14 @@ describe('WorktreesService', () => {
       rootPath: ownerProjectRoot,
     } as never);
 
-    docker.createContainer?.mockResolvedValue({
+    containerRuntime.createContainer?.mockResolvedValue({
       id: 'container-1',
       name: 'devchain-wt-feature-auth',
       image: 'devchain:latest',
       hostPort: 41001,
       state: 'running',
     });
-    docker.waitForHealthy?.mockResolvedValue(true);
+    containerRuntime.waitForHealthy?.mockResolvedValue(true);
 
     await service.createWorktree({
       name: 'feature-auth',
@@ -448,14 +451,14 @@ describe('WorktreesService', () => {
       { path: '.env.local', type: 'file', defaultIncluded: true },
       { path: 'node_modules/', type: 'directory', defaultIncluded: true },
     ]);
-    docker.createContainer?.mockResolvedValue({
+    containerRuntime.createContainer?.mockResolvedValue({
       id: 'container-1',
       name: 'devchain-wt-feature-auth',
       image: 'devchain:latest',
       hostPort: 41001,
       state: 'running',
     });
-    docker.waitForHealthy?.mockResolvedValue(true);
+    containerRuntime.waitForHealthy?.mockResolvedValue(true);
 
     const result = await service.createWorktree({
       name: 'feature-auth',
@@ -482,7 +485,7 @@ describe('WorktreesService', () => {
     });
     const listIgnoredFilesOrder = git.listIgnoredFiles?.mock.invocationCallOrder[0] ?? 0;
     const seedPreparationOrder = seedPreparation.prepareSeedData?.mock.invocationCallOrder[0] ?? 0;
-    const createContainerOrder = docker.createContainer?.mock.invocationCallOrder[0] ?? 0;
+    const createContainerOrder = containerRuntime.createContainer?.mock.invocationCallOrder[0] ?? 0;
     expect(listIgnoredFilesOrder).toBeGreaterThan(0);
     expect(listIgnoredFilesOrder).toBeLessThan(seedPreparationOrder);
     expect(listIgnoredFilesOrder).toBeLessThan(createContainerOrder);
@@ -495,7 +498,9 @@ describe('WorktreesService', () => {
     ]);
     const startProcessRuntimeSpy = jest
       .spyOn(
-        service as unknown as { startProcessRuntime: (...args: unknown[]) => Promise<unknown> },
+        processRuntime as unknown as {
+          startProcessRuntime: (...args: unknown[]) => Promise<unknown>;
+        },
         'startProcessRuntime',
       )
       .mockResolvedValue({
@@ -545,7 +550,7 @@ describe('WorktreesService', () => {
 
     expect(git.createWorktree).toHaveBeenCalledTimes(1);
     expect(git.removeWorktree).toHaveBeenCalled();
-    expect(docker.createContainer).not.toHaveBeenCalled();
+    expect(containerRuntime.createContainer).not.toHaveBeenCalled();
   });
 
   it('rejects includeIgnoredFiles path traversal even if path appears in allowlist', async () => {
@@ -565,7 +570,7 @@ describe('WorktreesService', () => {
     ).rejects.toThrow(BadRequestException);
 
     expect(git.removeWorktree).toHaveBeenCalled();
-    expect(docker.createContainer).not.toHaveBeenCalled();
+    expect(containerRuntime.createContainer).not.toHaveBeenCalled();
   });
 
   it('rejects includeIgnoredFiles symlink escapes even if path appears in allowlist', async () => {
@@ -588,7 +593,7 @@ describe('WorktreesService', () => {
     ).rejects.toThrow(BadRequestException);
 
     expect(git.removeWorktree).toHaveBeenCalled();
-    expect(docker.createContainer).not.toHaveBeenCalled();
+    expect(containerRuntime.createContainer).not.toHaveBeenCalled();
   });
 
   it('continues worktree creation when ignored-file copy has IO failures and returns warnings', async () => {
@@ -597,14 +602,14 @@ describe('WorktreesService', () => {
       { path: '.env.copy-ok', type: 'file', defaultIncluded: true },
       { path: 'missing.file', type: 'file', defaultIncluded: false },
     ]);
-    docker.createContainer?.mockResolvedValue({
+    containerRuntime.createContainer?.mockResolvedValue({
       id: 'container-1',
       name: 'devchain-wt-feature-auth',
       image: 'devchain:latest',
       hostPort: 41001,
       state: 'running',
     });
-    docker.waitForHealthy?.mockResolvedValue(true);
+    containerRuntime.waitForHealthy?.mockResolvedValue(true);
 
     const result = await service.createWorktree({
       name: 'feature-copy-warnings',
@@ -623,7 +628,7 @@ describe('WorktreesService', () => {
       }),
     ]);
     expect(result.copyResults?.failed[0]?.error).toContain('ENOENT');
-    expect(docker.createContainer).toHaveBeenCalledTimes(1);
+    expect(containerRuntime.createContainer).toHaveBeenCalledTimes(1);
   });
 
   it('fails closed when owner project lookup fails even if repoPath is provided', async () => {
@@ -667,7 +672,8 @@ describe('WorktreesService', () => {
   it('uses provided repoPath when storage is not wired (legacy compat path)', async () => {
     const serviceWithoutStorage = new WorktreesService(
       store,
-      docker as unknown as OrchestratorDockerService,
+      containerRuntime as unknown as ContainerRuntime,
+      processRuntime,
       git as unknown as GitWorktreeService,
       seedPreparation as unknown as SeedPreparationService,
       eventEmitter as unknown as EventEmitter2,
@@ -676,14 +682,14 @@ describe('WorktreesService', () => {
     const legacyRepoPath = join(tempRoot, 'legacy-client-path');
     await mkdir(legacyRepoPath, { recursive: true });
 
-    docker.createContainer?.mockResolvedValue({
+    containerRuntime.createContainer?.mockResolvedValue({
       id: 'container-1',
       name: 'devchain-wt-feature-auth',
       image: 'devchain:latest',
       hostPort: 41001,
       state: 'running',
     });
-    docker.waitForHealthy?.mockResolvedValue(true);
+    containerRuntime.waitForHealthy?.mockResolvedValue(true);
 
     await serviceWithoutStorage.createWorktree({
       name: 'feature-auth',
@@ -720,7 +726,7 @@ describe('WorktreesService', () => {
 
     expect(git.removeWorktree).toHaveBeenCalled();
     expect(git.deleteBranch).toHaveBeenCalledWith('feature/auth', repoPath, true);
-    expect(docker.createContainer).not.toHaveBeenCalled();
+    expect(containerRuntime.createContainer).not.toHaveBeenCalled();
   });
 
   it('rejects duplicate worktree names', async () => {
@@ -764,7 +770,7 @@ describe('WorktreesService', () => {
     }
 
     expect(git.createWorktree).not.toHaveBeenCalled();
-    expect(docker.createContainer).not.toHaveBeenCalled();
+    expect(containerRuntime.createContainer).not.toHaveBeenCalled();
   });
 
   it('rejects invalid branch names at service layer', async () => {
@@ -794,14 +800,14 @@ describe('WorktreesService', () => {
   });
 
   it('marks worktree error and cleans up when create flow fails', async () => {
-    docker.createContainer?.mockResolvedValue({
+    containerRuntime.createContainer?.mockResolvedValue({
       id: 'container-1',
       name: 'devchain-wt-feature-auth',
       image: 'devchain:latest',
       hostPort: 41001,
       state: 'running',
     });
-    docker.waitForHealthy?.mockResolvedValue(false);
+    containerRuntime.waitForHealthy?.mockResolvedValue(false);
 
     await expect(
       service.createWorktree({
@@ -814,7 +820,7 @@ describe('WorktreesService', () => {
       }),
     ).rejects.toThrow(BadRequestException);
 
-    expect(docker.removeContainer).toHaveBeenCalledWith('container-1', true);
+    expect(containerRuntime.removeContainer).toHaveBeenCalledWith('container-1', true);
     expect(git.removeWorktree).toHaveBeenCalled();
     expect(git.deleteBranch).toHaveBeenCalledWith('feature/auth', repoPath, true);
     const [row] = await store.list();
@@ -833,7 +839,7 @@ describe('WorktreesService', () => {
       status: 'stopped',
       containerId: 'container-1',
     });
-    docker.waitForHealthy?.mockResolvedValue(true);
+    containerRuntime.waitForHealthy?.mockResolvedValue(true);
 
     const started = await service.startWorktree(row.id);
     expect(started.status).toBe('running');
@@ -871,7 +877,9 @@ describe('WorktreesService', () => {
   it('creates a process worktree with worktreePath registration rootPath', async () => {
     const startProcessRuntimeSpy = jest
       .spyOn(
-        service as unknown as { startProcessRuntime: (...args: unknown[]) => Promise<unknown> },
+        processRuntime as unknown as {
+          startProcessRuntime: (...args: unknown[]) => Promise<unknown>;
+        },
         'startProcessRuntime',
       )
       .mockResolvedValue({
@@ -895,7 +903,7 @@ describe('WorktreesService', () => {
     expect(result.processId).toBe(4321);
     expect(result.containerPort).toBe(43123);
     expect(result.runtimeToken).toBe('runtime-token-1');
-    expect(docker.createContainer).not.toHaveBeenCalled();
+    expect(containerRuntime.createContainer).not.toHaveBeenCalled();
     expect(startProcessRuntimeSpy).toHaveBeenCalledTimes(1);
 
     const createProjectCall = (global.fetch as jest.Mock).mock.calls.find((call) =>
@@ -910,14 +918,14 @@ describe('WorktreesService', () => {
   });
 
   it('forwards presetName to project registration in container runtime', async () => {
-    docker.createContainer?.mockResolvedValue({
+    containerRuntime.createContainer?.mockResolvedValue({
       id: 'container-1',
       name: 'devchain-wt-preset-test',
       image: 'devchain:latest',
       hostPort: 41001,
       state: 'running',
     });
-    docker.waitForHealthy?.mockResolvedValue(true);
+    containerRuntime.waitForHealthy?.mockResolvedValue(true);
 
     await service.createWorktree({
       name: 'preset-test',
@@ -941,7 +949,9 @@ describe('WorktreesService', () => {
   it('forwards presetName to project registration in process runtime', async () => {
     jest
       .spyOn(
-        service as unknown as { startProcessRuntime: (...args: unknown[]) => Promise<unknown> },
+        processRuntime as unknown as {
+          startProcessRuntime: (...args: unknown[]) => Promise<unknown>;
+        },
         'startProcessRuntime',
       )
       .mockResolvedValue({
@@ -972,14 +982,14 @@ describe('WorktreesService', () => {
   });
 
   it('omits presetName from project registration when not provided', async () => {
-    docker.createContainer?.mockResolvedValue({
+    containerRuntime.createContainer?.mockResolvedValue({
       id: 'container-1',
       name: 'devchain-wt-no-preset',
       image: 'devchain:latest',
       hostPort: 41001,
       state: 'running',
     });
-    docker.waitForHealthy?.mockResolvedValue(true);
+    containerRuntime.waitForHealthy?.mockResolvedValue(true);
 
     await service.createWorktree({
       name: 'no-preset',
@@ -1015,7 +1025,9 @@ describe('WorktreesService', () => {
 
     jest
       .spyOn(
-        service as unknown as { startProcessRuntime: (...args: unknown[]) => Promise<unknown> },
+        processRuntime as unknown as {
+          startProcessRuntime: (...args: unknown[]) => Promise<unknown>;
+        },
         'startProcessRuntime',
       )
       .mockResolvedValue({
@@ -1031,41 +1043,7 @@ describe('WorktreesService', () => {
     expect(started.processId).toBe(5555);
     expect(started.containerPort).toBe(45555);
     expect(started.runtimeToken).toBe('runtime-token-2');
-    expect(docker.startContainer).not.toHaveBeenCalled();
-  });
-
-  it('passes --port 0 and RUNTIME_PORT_FILE when spawning process runtime', async () => {
-    const dataPath = join(repoPath, 'worktrees-data', 'feature-process', 'data');
-    await mkdir(dataPath, { recursive: true });
-
-    executor.enqueueDaemonPid(7777);
-
-    const pid = await (
-      service as unknown as {
-        spawnProcessRuntime: (input: {
-          worktreePath: string;
-          dataPath: string;
-          projectId: string;
-          runtimeToken: string;
-        }) => Promise<number>;
-      }
-    ).spawnProcessRuntime({
-      worktreePath: repoPath,
-      dataPath,
-      projectId: '11111111-1111-4111-8111-111111111111',
-      runtimeToken: 'runtime-token-test',
-    });
-
-    expect(pid).toBe(7777);
-    expect(executor.daemonCalls).toHaveLength(1);
-
-    const call = executor.daemonCalls[0]!;
-    expect(call.argv).toEqual(
-      expect.arrayContaining(['--worktree-runtime', 'process', '--port', '0']),
-    );
-    expect(call.env?.PORT).toBe('0');
-    expect(call.env?.RUNTIME_TOKEN).toBe('runtime-token-test');
-    expect(call.env?.RUNTIME_PORT_FILE).toContain('runtime-port.json');
+    expect(containerRuntime.startContainer).not.toHaveBeenCalled();
   });
 
   it('stops process worktree runtime and clears runtime metadata', async () => {
@@ -1087,7 +1065,7 @@ describe('WorktreesService', () => {
 
     const terminateSpy = jest
       .spyOn(
-        service as unknown as { terminateProcess: (pid?: number | null) => Promise<void> },
+        processRuntime as unknown as { terminateProcess: (pid?: number | null) => Promise<void> },
         'terminateProcess',
       )
       .mockResolvedValue(undefined);
@@ -1098,87 +1076,6 @@ describe('WorktreesService', () => {
     expect(stopped.processId).toBeNull();
     expect(stopped.runtimeToken).toBeNull();
     expect(stopped.containerPort).toBeNull();
-  });
-
-  it('escalates process termination from SIGTERM to SIGKILL when needed', async () => {
-    const signalSpy = jest
-      .spyOn(
-        service as unknown as {
-          signalProcessAndAwaitExit: (
-            pid: number,
-            signal: NodeJS.Signals,
-            timeoutMs: number,
-          ) => Promise<boolean>;
-        },
-        'signalProcessAndAwaitExit',
-      )
-      .mockResolvedValueOnce(true)
-      .mockResolvedValueOnce(false);
-
-    await (
-      service as unknown as { terminateProcess: (pid?: number | null) => Promise<void> }
-    ).terminateProcess(8888);
-
-    expect(signalSpy).toHaveBeenNthCalledWith(1, 8888, 'SIGTERM', 30000);
-    expect(signalSpy).toHaveBeenNthCalledWith(2, 8888, 'SIGKILL', 5000);
-  });
-
-  it('signals detached process group with negative pid during termination', async () => {
-    const killSpy = jest.spyOn(process, 'kill').mockReturnValue(true);
-    const isAliveSpy = jest
-      .spyOn(service as unknown as { isProcessAlive: (pid: number) => boolean }, 'isProcessAlive')
-      .mockReturnValue(false);
-
-    try {
-      const stillRunning = await (
-        service as unknown as {
-          signalProcessAndAwaitExit: (
-            pid: number,
-            signal: NodeJS.Signals,
-            timeoutMs: number,
-          ) => Promise<boolean>;
-        }
-      ).signalProcessAndAwaitExit(7777, 'SIGTERM', 0);
-
-      expect(stillRunning).toBe(false);
-      const expectedSignalPid = process.platform === 'win32' ? 7777 : -7777;
-      expect(killSpy).toHaveBeenCalledWith(expectedSignalPid, 'SIGTERM');
-    } finally {
-      killSpy.mockRestore();
-      isAliveSpy.mockRestore();
-    }
-  });
-
-  it('treats ESRCH from process-group signal as already exited', async () => {
-    const error = new Error('missing process') as NodeJS.ErrnoException;
-    error.code = 'ESRCH';
-    const killSpy = jest.spyOn(process, 'kill').mockImplementation(() => {
-      throw error;
-    });
-    const isAliveSpy = jest.spyOn(
-      service as unknown as { isProcessAlive: (pid: number) => boolean },
-      'isProcessAlive',
-    );
-
-    try {
-      const stillRunning = await (
-        service as unknown as {
-          signalProcessAndAwaitExit: (
-            pid: number,
-            signal: NodeJS.Signals,
-            timeoutMs: number,
-          ) => Promise<boolean>;
-        }
-      ).signalProcessAndAwaitExit(7777, 'SIGTERM', 30000);
-
-      expect(stillRunning).toBe(false);
-      expect(isAliveSpy).not.toHaveBeenCalled();
-      const expectedSignalPid = process.platform === 'win32' ? 7777 : -7777;
-      expect(killSpy).toHaveBeenCalledWith(expectedSignalPid, 'SIGTERM');
-    } finally {
-      killSpy.mockRestore();
-      isAliveSpy.mockRestore();
-    }
   });
 
   it('deletes process worktree and skips docker cleanup', async () => {
@@ -1203,7 +1100,7 @@ describe('WorktreesService', () => {
 
     const terminateSpy = jest
       .spyOn(
-        service as unknown as { terminateProcess: (pid?: number | null) => Promise<void> },
+        processRuntime as unknown as { terminateProcess: (pid?: number | null) => Promise<void> },
         'terminateProcess',
       )
       .mockResolvedValue(undefined);
@@ -1211,8 +1108,8 @@ describe('WorktreesService', () => {
     const result = await service.deleteWorktree(row.id);
     expect(result).toEqual({ success: true });
     expect(terminateSpy).toHaveBeenCalledWith(1111);
-    expect(docker.cleanupWorktreeProjectContainers).not.toHaveBeenCalled();
-    expect(docker.removeWorktreeNetwork).not.toHaveBeenCalled();
+    expect(containerRuntime.cleanupWorktreeProjectContainers).not.toHaveBeenCalled();
+    expect(containerRuntime.removeWorktreeNetwork).not.toHaveBeenCalled();
     expect(git.removeWorktree).toHaveBeenCalledWith(worktreePath, repoPath, true);
   });
 
@@ -1264,11 +1161,11 @@ describe('WorktreesService', () => {
       status: 'running',
       containerId: 'container-1',
     });
-    docker.getContainerLogs?.mockResolvedValue('line1\nline2\n');
+    containerRuntime.getContainerLogs?.mockResolvedValue('line1\nline2\n');
 
     const result = await service.getWorktreeLogs(row.id, { tail: 50 });
     expect(result.logs).toContain('line1');
-    expect(docker.getContainerLogs).toHaveBeenCalledWith('container-1', 50);
+    expect(containerRuntime.getContainerLogs).toHaveBeenCalledWith('container-1', 50);
   });
 
   it('returns merge preview for a worktree', async () => {
@@ -1327,7 +1224,7 @@ describe('WorktreesService', () => {
   });
 
   it('allows merge retry after conflict is resolved and clean preview clears conflict state', async () => {
-    docker.waitForHealthy?.mockResolvedValue(true);
+    containerRuntime.waitForHealthy?.mockResolvedValue(true);
 
     const row = await store.create({
       name: 'feature-auth',
@@ -1383,7 +1280,7 @@ describe('WorktreesService', () => {
       'main',
       expect.objectContaining({ message: 'Merge feature/auth' }),
     );
-    expect(docker.stopContainer).toHaveBeenCalledWith('container-1');
+    expect(containerRuntime.stopContainer).toHaveBeenCalledWith('container-1');
     expect(merged.status).toBe('merged');
     expect(merged.mergeCommit).toBe('abc123');
     expect(eventLogService.recordPublished).toHaveBeenCalledWith(
@@ -1401,7 +1298,7 @@ describe('WorktreesService', () => {
   });
 
   it('auto-starts a stopped worktree container before merge-time task extraction', async () => {
-    docker.waitForHealthy?.mockResolvedValue(true);
+    containerRuntime.waitForHealthy?.mockResolvedValue(true);
     const row = await store.create({
       name: 'feature-auth',
       branchName: 'feature/auth',
@@ -1416,8 +1313,8 @@ describe('WorktreesService', () => {
 
     const merged = await service.mergeWorktree(row.id);
 
-    expect(docker.startContainer).toHaveBeenCalledWith('container-1');
-    expect(docker.waitForHealthy).toHaveBeenCalledWith('container-1', 60000);
+    expect(containerRuntime.startContainer).toHaveBeenCalledWith('container-1');
+    expect(containerRuntime.waitForHealthy).toHaveBeenCalledWith('container-1', 60000);
     expect(eventEmitter.emitAsync).toHaveBeenCalledWith(WORKTREE_TASK_MERGE_REQUESTED_EVENT, {
       worktreeId: row.id,
     });
@@ -1425,7 +1322,7 @@ describe('WorktreesService', () => {
   });
 
   it('recovers from initial extraction failure by restarting container and retrying once', async () => {
-    docker.waitForHealthy?.mockResolvedValue(true);
+    containerRuntime.waitForHealthy?.mockResolvedValue(true);
     eventEmitter.emitAsync
       .mockRejectedValueOnce(new Error('ECONNREFUSED'))
       .mockResolvedValueOnce([{ worktreeId: 'wt-1', epicsMerged: 2, agentsMerged: 2 }]);
@@ -1444,13 +1341,13 @@ describe('WorktreesService', () => {
 
     const merged = await service.mergeWorktree(row.id);
 
-    expect(docker.startContainer).toHaveBeenCalledWith('container-1');
+    expect(containerRuntime.startContainer).toHaveBeenCalledWith('container-1');
     expect(eventEmitter.emitAsync).toHaveBeenCalledTimes(2);
     expect(merged.status).toBe('merged');
   });
 
   it('fails merge with actionable error when stopped container cannot be recovered', async () => {
-    docker.waitForHealthy?.mockResolvedValue(false);
+    containerRuntime.waitForHealthy?.mockResolvedValue(false);
 
     const row = await store.create({
       name: 'feature-auth',
@@ -1518,7 +1415,7 @@ describe('WorktreesService', () => {
 
     await expect(service.mergeWorktree(row.id)).rejects.toThrow(BadRequestException);
     expect(git.executeMerge).not.toHaveBeenCalled();
-    expect(docker.stopContainer).not.toHaveBeenCalled();
+    expect(containerRuntime.stopContainer).not.toHaveBeenCalled();
 
     const updated = await store.getById(row.id);
     expect(updated?.status).toBe('error');
@@ -1526,7 +1423,7 @@ describe('WorktreesService', () => {
   });
 
   it('stores non-conflict merge failures in errorMessage only and allows future retry', async () => {
-    docker.waitForHealthy?.mockResolvedValue(true);
+    containerRuntime.waitForHealthy?.mockResolvedValue(true);
     git
       .executeMerge!.mockResolvedValueOnce({
         sourceBranch: 'feature/auth',
@@ -1578,17 +1475,17 @@ describe('WorktreesService', () => {
       status: 'running',
       containerId: 'container-1',
     });
-    docker.waitForHealthy?.mockResolvedValue(true);
+    containerRuntime.waitForHealthy?.mockResolvedValue(true);
 
     const rebased = await service.rebaseWorktree(row.id);
 
-    expect(docker.stopContainer).toHaveBeenCalledWith('container-1');
+    expect(containerRuntime.stopContainer).toHaveBeenCalledWith('container-1');
     expect(git.executeRebase).toHaveBeenCalledWith(
       join(repoPath, 'worktrees', 'feature-auth'),
       'feature/auth',
       'main',
     );
-    expect(docker.startContainer).toHaveBeenCalledWith('container-1');
+    expect(containerRuntime.startContainer).toHaveBeenCalledWith('container-1');
     expect(rebased.status).toBe('running');
     expect(eventLogService.recordPublished).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1651,13 +1548,13 @@ describe('WorktreesService', () => {
 
     const result = await service.deleteWorktree(row.id);
     expect(result).toEqual({ success: true });
-    expect(docker.cleanupWorktreeProjectContainers).toHaveBeenCalledWith(
+    expect(containerRuntime.cleanupWorktreeProjectContainers).toHaveBeenCalledWith(
       'feature-auth',
       'container-1',
     );
-    expect(docker.stopContainer).toHaveBeenCalledWith('container-1');
-    expect(docker.removeContainer).toHaveBeenCalledWith('container-1', true);
-    expect(docker.removeWorktreeNetwork).toHaveBeenCalledWith('feature-auth');
+    expect(containerRuntime.stopContainer).toHaveBeenCalledWith('container-1');
+    expect(containerRuntime.removeContainer).toHaveBeenCalledWith('container-1', true);
+    expect(containerRuntime.removeWorktreeNetwork).toHaveBeenCalledWith('feature-auth');
     expect(git.removeWorktree).toHaveBeenCalledWith(worktreePath, repoPath, true);
     expect(git.deleteBranch).toHaveBeenCalledWith('feature/auth', repoPath, true);
     const removeWorktreeCallOrder = (git.removeWorktree as jest.Mock).mock.invocationCallOrder[0];
@@ -1703,7 +1600,7 @@ describe('WorktreesService', () => {
 
     expect(git.removeWorktree).toHaveBeenCalledWith(worktreePath, repoPath, true);
     expect(git.deleteBranch).toHaveBeenCalledWith('feature/auth', repoPath, true);
-    expect(docker.removeWorktreeNetwork).toHaveBeenCalledWith('feature-auth');
+    expect(containerRuntime.removeWorktreeNetwork).toHaveBeenCalledWith('feature-auth');
     expect(await store.getById(row.id)).toBeNull();
   });
 
@@ -1781,7 +1678,7 @@ describe('WorktreesService', () => {
       status: 'running',
       containerId: 'container-1',
     });
-    docker.waitForHealthy?.mockResolvedValue(false);
+    containerRuntime.waitForHealthy?.mockResolvedValue(false);
 
     await service['monitorRunningWorktrees']();
     await service['monitorRunningWorktrees']();
@@ -1821,7 +1718,10 @@ describe('WorktreesService', () => {
     });
 
     jest
-      .spyOn(service as unknown as { isProcessAlive: (pid: number) => boolean }, 'isProcessAlive')
+      .spyOn(
+        processRuntime as unknown as { isProcessAlive: (pid: number) => boolean },
+        'isProcessAlive',
+      )
       .mockReturnValue(false);
 
     await service['monitorRunningWorktrees']();
@@ -1851,7 +1751,10 @@ describe('WorktreesService', () => {
     });
 
     jest
-      .spyOn(service as unknown as { isProcessAlive: (pid: number) => boolean }, 'isProcessAlive')
+      .spyOn(
+        processRuntime as unknown as { isProcessAlive: (pid: number) => boolean },
+        'isProcessAlive',
+      )
       .mockReturnValue(true);
     global.fetch = jest.fn(async (url: string) => {
       if (url.endsWith('/health/ready')) {
@@ -1888,7 +1791,10 @@ describe('WorktreesService', () => {
     });
 
     jest
-      .spyOn(service as unknown as { isProcessAlive: (pid: number) => boolean }, 'isProcessAlive')
+      .spyOn(
+        processRuntime as unknown as { isProcessAlive: (pid: number) => boolean },
+        'isProcessAlive',
+      )
       .mockReturnValue(true);
     global.fetch = jest.fn(async (url: string) => {
       if (url.endsWith('/health/ready')) {
@@ -1925,7 +1831,10 @@ describe('WorktreesService', () => {
     });
 
     jest
-      .spyOn(service as unknown as { isProcessAlive: (pid: number) => boolean }, 'isProcessAlive')
+      .spyOn(
+        processRuntime as unknown as { isProcessAlive: (pid: number) => boolean },
+        'isProcessAlive',
+      )
       .mockReturnValue(true);
     global.fetch = jest.fn(async (url: string) => {
       if (url.endsWith('/health/ready')) {
@@ -1967,7 +1876,10 @@ describe('WorktreesService', () => {
     });
 
     jest
-      .spyOn(service as unknown as { isProcessAlive: (pid: number) => boolean }, 'isProcessAlive')
+      .spyOn(
+        processRuntime as unknown as { isProcessAlive: (pid: number) => boolean },
+        'isProcessAlive',
+      )
       .mockReturnValue(true);
     global.fetch = jest.fn(async (url: string) => {
       if (url.endsWith('/api/runtime')) {
@@ -2007,7 +1919,7 @@ describe('WorktreesService', () => {
     });
 
     await service.onModuleInit();
-    expect(docker.subscribeToContainerEvents).toHaveBeenCalledTimes(1);
+    expect(containerRuntime.subscribeToContainerEvents).toHaveBeenCalledTimes(1);
     expect(dockerEventHandler).toBeTruthy();
 
     dockerEventHandler?.({ id: 'container-1', status: 'die' });
@@ -2110,14 +2022,14 @@ describe('WorktreesService', () => {
   });
 
   it('emits WORKTREE_CHANGED_EVENT after successful createWorktree', async () => {
-    docker.createContainer?.mockResolvedValue({
+    containerRuntime.createContainer?.mockResolvedValue({
       id: 'container-1',
       name: 'devchain-wt-feature-auth',
       image: 'devchain:latest',
       hostPort: 41001,
       state: 'running',
     });
-    docker.waitForHealthy?.mockResolvedValue(true);
+    containerRuntime.waitForHealthy?.mockResolvedValue(true);
 
     await service.createWorktree({
       name: 'feature-auth',
@@ -2171,7 +2083,7 @@ describe('WorktreesService', () => {
       status: 'stopped',
       containerId: 'container-evt',
     });
-    docker.waitForHealthy?.mockResolvedValue(true);
+    containerRuntime.waitForHealthy?.mockResolvedValue(true);
 
     await service.startWorktree(row.id);
 
@@ -2200,7 +2112,7 @@ describe('WorktreesService', () => {
       status: 'running',
       containerId: 'container-same',
     });
-    docker.waitForHealthy?.mockResolvedValue(true);
+    containerRuntime.waitForHealthy?.mockResolvedValue(true);
 
     await service.onModuleInit();
     expect(dockerEventHandler).toBeTruthy();
@@ -2219,14 +2131,14 @@ describe('WorktreesService', () => {
 
   it('continues worktree operations when event recording fails (fire-and-forget)', async () => {
     eventLogService.recordPublished.mockRejectedValueOnce(new Error('event sink unavailable'));
-    docker.createContainer?.mockResolvedValue({
+    containerRuntime.createContainer?.mockResolvedValue({
       id: 'container-1',
       name: 'devchain-wt-feature-auth',
       image: 'devchain:latest',
       hostPort: 41001,
       state: 'running',
     });
-    docker.waitForHealthy?.mockResolvedValue(true);
+    containerRuntime.waitForHealthy?.mockResolvedValue(true);
 
     const result = await service.createWorktree({
       name: 'feature-auth',
@@ -2240,179 +2152,531 @@ describe('WorktreesService', () => {
     expect(result.status).toBe('running');
   });
 
-  describe('port file discovery and token verification', () => {
-    let spawnProcessRuntimeSpy: jest.SpyInstance;
-    let waitForRuntimePortFileSpy: jest.SpyInstance;
-    let waitForRuntimeHealthySpy: jest.SpyInstance;
-    let terminateProcessSpy: jest.SpyInstance;
-
-    beforeEach(() => {
-      spawnProcessRuntimeSpy = jest.spyOn(
+  // ===========================================================================
+  // Container-event coverage expansion (Phase 1 Task 1 safety net).
+  // Existing coverage: die→stopped (:1996), same-status start no-op (:2191).
+  // These tests cover the remaining docker event actions and counter resets via
+  // direct handleContainerEvent calls (cheaper than the subscription dance).
+  // ===========================================================================
+  describe('container event coverage (handleContainerEvent)', () => {
+    const handle = (event: { id?: string; status?: string; Action?: string }) =>
+      (
         service as unknown as {
-          spawnProcessRuntime: (input: {
-            worktreePath: string;
-            dataPath: string;
-            projectId: string;
-            runtimeToken: string;
-          }) => Promise<number>;
-        },
-        'spawnProcessRuntime',
-      );
+          handleContainerEvent: (e: typeof event) => Promise<void>;
+        }
+      ).handleContainerEvent(event);
 
-      waitForRuntimePortFileSpy = jest.spyOn(
-        service as unknown as {
-          waitForRuntimePortFile: (
-            filePath: string,
-            timeoutMs: number,
-            pid?: number,
-          ) => Promise<{ port: number; runtimeToken: string | null } | null>;
-        },
-        'waitForRuntimePortFile',
-      );
+    const failuresMap = () =>
+      (service as unknown as { consecutiveHealthFailures: Map<string, number> })
+        .consecutiveHealthFailures;
 
-      waitForRuntimeHealthySpy = jest.spyOn(
-        service as unknown as {
-          waitForRuntimeHealthy: (
-            hostPort: number,
-            timeoutMs: number,
-            pid?: number,
-          ) => Promise<boolean>;
-        },
-        'waitForRuntimeHealthy',
-      );
+    it('marks a running worktree stopped on a "stop" event', async () => {
+      const row = await store.create({
+        name: 'feature-stop',
+        branchName: 'feature/stop',
+        baseBranch: 'main',
+        repoPath,
+        worktreePath: join(repoPath, 'worktrees', 'feature-stop'),
+        templateSlug: '3-agent-dev',
+        ownerProjectId: 'project-main',
+        status: 'running',
+        containerId: 'ctr-stop',
+      });
 
-      terminateProcessSpy = jest
-        .spyOn(
-          service as unknown as { terminateProcess: (pid?: number | null) => Promise<void> },
-          'terminateProcess',
-        )
-        .mockResolvedValue(undefined);
+      await handle({ id: 'ctr-stop', status: 'stop' });
+
+      const updated = await store.getById(row.id);
+      expect(updated?.status).toBe('stopped');
+      expect(updated?.errorMessage).toBeNull();
     });
 
-    it('proceeds when port file token matches and health check passes', async () => {
-      spawnProcessRuntimeSpy.mockImplementation(async (input: { runtimeToken: string }) => {
-        // Simulate child writing port file with matching token
-        waitForRuntimePortFileSpy.mockResolvedValue({
-          port: 43000,
-          runtimeToken: input.runtimeToken,
+    it('marks a running worktree stopped on a "kill" event', async () => {
+      const row = await store.create({
+        name: 'feature-kill',
+        branchName: 'feature/kill',
+        baseBranch: 'main',
+        repoPath,
+        worktreePath: join(repoPath, 'worktrees', 'feature-kill'),
+        templateSlug: '3-agent-dev',
+        ownerProjectId: 'project-main',
+        status: 'running',
+        containerId: 'ctr-kill',
+      });
+
+      await handle({ id: 'ctr-kill', status: 'kill' });
+
+      expect((await store.getById(row.id))?.status).toBe('stopped');
+    });
+
+    it('marks a running worktree stopped on a "destroy" event', async () => {
+      const row = await store.create({
+        name: 'feature-destroy',
+        branchName: 'feature/destroy',
+        baseBranch: 'main',
+        repoPath,
+        worktreePath: join(repoPath, 'worktrees', 'feature-destroy'),
+        templateSlug: '3-agent-dev',
+        ownerProjectId: 'project-main',
+        status: 'running',
+        containerId: 'ctr-destroy',
+      });
+
+      await handle({ id: 'ctr-destroy', status: 'destroy' });
+
+      expect((await store.getById(row.id))?.status).toBe('stopped');
+    });
+
+    it('transitions a stopped worktree to running on a "restart" event', async () => {
+      const row = await store.create({
+        name: 'feature-restart',
+        branchName: 'feature/restart',
+        baseBranch: 'main',
+        repoPath,
+        worktreePath: join(repoPath, 'worktrees', 'feature-restart'),
+        templateSlug: '3-agent-dev',
+        ownerProjectId: 'project-main',
+        status: 'stopped',
+        containerId: 'ctr-restart',
+      });
+
+      await handle({ id: 'ctr-restart', status: 'restart' });
+
+      expect((await store.getById(row.id))?.status).toBe('running');
+    });
+
+    it('transitions a stopped worktree to running on a "start" event (status change, unlike :2191 no-op)', async () => {
+      const row = await store.create({
+        name: 'feature-start',
+        branchName: 'feature/start',
+        baseBranch: 'main',
+        repoPath,
+        worktreePath: join(repoPath, 'worktrees', 'feature-start'),
+        templateSlug: '3-agent-dev',
+        ownerProjectId: 'project-main',
+        status: 'stopped',
+        containerId: 'ctr-start',
+      });
+
+      await handle({ id: 'ctr-start', status: 'start' });
+
+      const updated = await store.getById(row.id);
+      expect(updated?.status).toBe('running');
+      // A real status transition emits the change event.
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        WORKTREE_CHANGED_EVENT,
+        expect.objectContaining({ worktreeId: row.id }),
+      );
+    });
+
+    it('restores an errored worktree to running via a "start" event (error→running via events)', async () => {
+      const row = await store.create({
+        name: 'feature-err-recover',
+        branchName: 'feature/err-recover',
+        baseBranch: 'main',
+        repoPath,
+        worktreePath: join(repoPath, 'worktrees', 'feature-err-recover'),
+        templateSlug: '3-agent-dev',
+        ownerProjectId: 'project-main',
+        status: 'error',
+        errorMessage: 'Container failed readiness check',
+        containerId: 'ctr-err',
+      });
+
+      await handle({ id: 'ctr-err', status: 'start' });
+
+      const updated = await store.getById(row.id);
+      expect(updated?.status).toBe('running');
+      expect(updated?.errorMessage).toBeNull();
+    });
+
+    it('resets the health-failure counter to 0 on a "die" event', async () => {
+      const row = await store.create({
+        name: 'feature-counter-die',
+        branchName: 'feature/counter-die',
+        baseBranch: 'main',
+        repoPath,
+        worktreePath: join(repoPath, 'worktrees', 'feature-counter-die'),
+        templateSlug: '3-agent-dev',
+        ownerProjectId: 'project-main',
+        status: 'running',
+        containerId: 'ctr-counter-die',
+      });
+      failuresMap().set(row.id, 2);
+
+      await handle({ id: 'ctr-counter-die', status: 'die' });
+
+      expect(failuresMap().get(row.id)).toBe(0);
+    });
+
+    it('resets the health-failure counter to 0 on a "start" event', async () => {
+      const row = await store.create({
+        name: 'feature-counter-start',
+        branchName: 'feature/counter-start',
+        baseBranch: 'main',
+        repoPath,
+        worktreePath: join(repoPath, 'worktrees', 'feature-counter-start'),
+        templateSlug: '3-agent-dev',
+        ownerProjectId: 'project-main',
+        status: 'stopped',
+        containerId: 'ctr-counter-start',
+      });
+      failuresMap().set(row.id, 3);
+
+      await handle({ id: 'ctr-counter-start', status: 'start' });
+
+      expect(failuresMap().get(row.id)).toBe(0);
+    });
+
+    it('ignores events for an unknown container id (no row matched)', async () => {
+      await store.create({
+        name: 'feature-known',
+        branchName: 'feature/known',
+        baseBranch: 'main',
+        repoPath,
+        worktreePath: join(repoPath, 'worktrees', 'feature-known'),
+        templateSlug: '3-agent-dev',
+        ownerProjectId: 'project-main',
+        status: 'running',
+        containerId: 'ctr-known',
+      });
+
+      await handle({ id: 'ctr-unknown', status: 'die' });
+
+      // No throw, no state change for the known row.
+      const [known] = await store.list();
+      expect(known.status).toBe('running');
+    });
+
+    it('ignores events with no id or no action', async () => {
+      await store.create({
+        name: 'feature-noop',
+        branchName: 'feature/noop',
+        baseBranch: 'main',
+        repoPath,
+        worktreePath: join(repoPath, 'worktrees', 'feature-noop'),
+        templateSlug: '3-agent-dev',
+        ownerProjectId: 'project-main',
+        status: 'running',
+        containerId: 'ctr-noop',
+      });
+
+      await handle({ status: 'die' });
+      await handle({ id: 'ctr-noop' });
+
+      const [row] = await store.list();
+      expect(row.status).toBe('running');
+    });
+  });
+
+  // ===========================================================================
+  // Runtime-kind row-shape regression rows (Phase 1 Task 1).
+  // These rows are the likeliest accidental-cleanup targets during adapter
+  // extraction. They lock the CURRENT conditional-on-row-shape behavior so a
+  // future "normalize to runtime kind" refactor trips these tests. See
+  // docs/worktree-runtime-matrix.md → Regression Rows.
+  // ===========================================================================
+  describe('runtime-kind row-shape regression rows', () => {
+    const worktreeDirsFor = async (name: string) => {
+      const worktreePath = join(repoPath, 'worktrees', name);
+      const dataPath = join(repoPath, 'worktrees-data', name, 'data');
+      await mkdir(worktreePath, { recursive: true });
+      await mkdir(dataPath, { recursive: true });
+      return { worktreePath, dataPath };
+    };
+
+    describe('deleteWorktree cleanup branch selection', () => {
+      it('process row WITHOUT containerId → terminateProcess only; no docker cleanup', async () => {
+        const { worktreePath } = await worktreeDirsFor('proc-pure');
+        const row = await store.create({
+          name: 'proc-pure',
+          branchName: 'feature/proc-pure',
+          baseBranch: 'main',
+          repoPath,
+          worktreePath,
+          templateSlug: '3-agent-dev',
+          ownerProjectId: 'project-main',
+          status: 'running',
+          runtimeType: 'process',
+          processId: 23456,
+          containerId: null,
         });
-        return 8888;
-      });
-      waitForRuntimeHealthySpy.mockResolvedValue(true);
+        const terminateSpy = jest
+          .spyOn(
+            processRuntime as unknown as {
+              terminateProcess: (pid?: number | null) => Promise<void>;
+            },
+            'terminateProcess',
+          )
+          .mockResolvedValue(undefined);
 
-      const result = await (
-        service as unknown as {
-          startProcessRuntime: (input: {
-            worktreePath: string;
-            dataPath: string;
-            projectId: string;
-          }) => Promise<{
-            processId: number;
-            hostPort: number;
-            runtimeToken: string;
-            startedAt: Date;
-          }>;
-        }
-      ).startProcessRuntime({
-        worktreePath: repoPath,
-        dataPath: join(repoPath, 'data'),
-        projectId: 'project-1',
+        await service.deleteWorktree(row.id);
+
+        expect(terminateSpy).toHaveBeenCalledWith(23456);
+        expect(containerRuntime.cleanupWorktreeProjectContainers).not.toHaveBeenCalled();
+        expect(containerRuntime.stopContainer).not.toHaveBeenCalled();
+        expect(containerRuntime.removeContainer).not.toHaveBeenCalled();
+        expect(containerRuntime.removeWorktreeNetwork).not.toHaveBeenCalled();
       });
 
-      expect(result.processId).toBe(8888);
-      expect(result.hostPort).toBe(43000);
-      expect(result.runtimeToken).toBeDefined();
-      expect(terminateProcessSpy).not.toHaveBeenCalled();
-      expect(waitForRuntimeHealthySpy).toHaveBeenCalledWith(43000, expect.any(Number), 8888);
+      it('REGRESSION ROW: process row WITH containerId → docker+network cleanup; terminateProcess NOT called', async () => {
+        const { worktreePath } = await worktreeDirsFor('proc-legacy');
+        const row = await store.create({
+          name: 'proc-legacy',
+          branchName: 'feature/proc-legacy',
+          baseBranch: 'main',
+          repoPath,
+          worktreePath,
+          templateSlug: '3-agent-dev',
+          ownerProjectId: 'project-main',
+          status: 'running',
+          runtimeType: 'process',
+          processId: 34567,
+          containerId: 'ctr-legacy',
+        });
+        const terminateSpy = jest
+          .spyOn(
+            processRuntime as unknown as {
+              terminateProcess: (pid?: number | null) => Promise<void>;
+            },
+            'terminateProcess',
+          )
+          .mockResolvedValue(undefined);
+
+        await service.deleteWorktree(row.id);
+
+        // The conditional keys on `runtimeType === 'container' || row.containerId`;
+        // a process row that still carries a legacy containerId MUST get the full
+        // docker + network cleanup path.
+        expect(containerRuntime.cleanupWorktreeProjectContainers).toHaveBeenCalledWith(
+          'proc-legacy',
+          'ctr-legacy',
+        );
+        expect(containerRuntime.stopContainer).toHaveBeenCalledWith('ctr-legacy');
+        expect(containerRuntime.removeContainer).toHaveBeenCalledWith('ctr-legacy', true);
+        expect(containerRuntime.removeWorktreeNetwork).toHaveBeenCalledWith('proc-legacy');
+        // The process branch is NOT taken — the pid is left untouched.
+        expect(terminateSpy).not.toHaveBeenCalled();
+      });
     });
 
-    it('terminates PID and throws on port file token mismatch', async () => {
-      spawnProcessRuntimeSpy.mockResolvedValue(8888);
-      waitForRuntimePortFileSpy.mockResolvedValue({
-        port: 43000,
-        runtimeToken: 'wrong-token',
+    describe('mergeWorktree container-stop behavior', () => {
+      it('REGRESSION ROW: process-runtime merge does NOT stop a container (no containerId)', async () => {
+        const row = await store.create({
+          name: 'proc-merge',
+          branchName: 'feature/proc-merge',
+          baseBranch: 'main',
+          repoPath,
+          worktreePath: join(repoPath, 'worktrees', 'proc-merge'),
+          templateSlug: '3-agent-dev',
+          ownerProjectId: 'project-main',
+          status: 'running',
+          runtimeType: 'process',
+          processId: 45678,
+          containerId: null,
+        });
+
+        const merged = await service.mergeWorktree(row.id);
+
+        // Merge stop keys on `row.containerId`; a process row never stops a
+        // container around the merge.
+        expect(containerRuntime.stopContainer).not.toHaveBeenCalled();
+        expect(containerRuntime.startContainer).not.toHaveBeenCalled();
+        expect(git.executeMerge).toHaveBeenCalledWith(
+          repoPath,
+          'feature/proc-merge',
+          'main',
+          expect.objectContaining({ message: 'Merge feature/proc-merge' }),
+        );
+        expect(merged.status).toBe('merged');
       });
 
-      await expect(
-        (
-          service as unknown as {
-            startProcessRuntime: (input: {
-              worktreePath: string;
-              dataPath: string;
-              projectId: string;
-            }) => Promise<unknown>;
-          }
-        ).startProcessRuntime({
-          worktreePath: repoPath,
-          dataPath: join(repoPath, 'data'),
-          projectId: 'project-1',
-        }),
-      ).rejects.toThrow(/Runtime port file token mismatch/);
+      it('control: container-runtime merge DOES stop the container (row.containerId present)', async () => {
+        const row = await store.create({
+          name: 'ctr-merge',
+          branchName: 'feature/ctr-merge',
+          baseBranch: 'main',
+          repoPath,
+          worktreePath: join(repoPath, 'worktrees', 'ctr-merge'),
+          templateSlug: '3-agent-dev',
+          ownerProjectId: 'project-main',
+          status: 'running',
+          containerId: 'ctr-merge-1',
+        });
 
-      expect(terminateProcessSpy).toHaveBeenCalledTimes(1);
-      expect(terminateProcessSpy).toHaveBeenCalledWith(8888);
-      expect(spawnProcessRuntimeSpy).toHaveBeenCalledTimes(1);
+        await service.mergeWorktree(row.id);
+
+        expect(containerRuntime.stopContainer).toHaveBeenCalledWith('ctr-merge-1');
+      });
     });
 
-    it('terminates PID and throws when port file is not written before timeout', async () => {
-      spawnProcessRuntimeSpy.mockResolvedValue(8888);
-      waitForRuntimePortFileSpy.mockResolvedValue(null);
+    describe('rebaseWorktree container stop/restart behavior', () => {
+      it('REGRESSION ROW: process-runtime rebase does NOT stop or restart a container (no containerId)', async () => {
+        const row = await store.create({
+          name: 'proc-rebase',
+          branchName: 'feature/proc-rebase',
+          baseBranch: 'main',
+          repoPath,
+          worktreePath: join(repoPath, 'worktrees', 'proc-rebase'),
+          templateSlug: '3-agent-dev',
+          ownerProjectId: 'project-main',
+          status: 'running',
+          runtimeType: 'process',
+          processId: 56789,
+          containerId: null,
+        });
 
-      await expect(
-        (
-          service as unknown as {
-            startProcessRuntime: (input: {
-              worktreePath: string;
-              dataPath: string;
-              projectId: string;
-            }) => Promise<unknown>;
-          }
-        ).startProcessRuntime({
-          worktreePath: repoPath,
-          dataPath: join(repoPath, 'data'),
-          projectId: 'project-1',
-        }),
-      ).rejects.toThrow(/Process runtime did not report its port before timeout/);
+        const rebased = await service.rebaseWorktree(row.id);
 
-      expect(terminateProcessSpy).toHaveBeenCalledTimes(1);
-      expect(terminateProcessSpy).toHaveBeenCalledWith(8888);
+        // Rebase stop/restart keys on `row.containerId`; a process row gets NO
+        // container stop or restart around the rebase.
+        expect(containerRuntime.stopContainer).not.toHaveBeenCalled();
+        expect(containerRuntime.startContainer).not.toHaveBeenCalled();
+        expect(containerRuntime.waitForHealthy).not.toHaveBeenCalled();
+        expect(git.executeRebase).toHaveBeenCalledWith(
+          join(repoPath, 'worktrees', 'proc-rebase'),
+          'feature/proc-rebase',
+          'main',
+        );
+        expect(rebased.status).toBe('running');
+      });
+
+      it('control: container-runtime rebase stops and restarts the container (row.containerId present)', async () => {
+        containerRuntime.waitForHealthy?.mockResolvedValue(true);
+        const row = await store.create({
+          name: 'ctr-rebase',
+          branchName: 'feature/ctr-rebase',
+          baseBranch: 'main',
+          repoPath,
+          worktreePath: join(repoPath, 'worktrees', 'ctr-rebase'),
+          templateSlug: '3-agent-dev',
+          ownerProjectId: 'project-main',
+          status: 'running',
+          containerId: 'ctr-rebase-1',
+        });
+
+        await service.rebaseWorktree(row.id);
+
+        expect(containerRuntime.stopContainer).toHaveBeenCalledWith('ctr-rebase-1');
+        expect(containerRuntime.startContainer).toHaveBeenCalledWith('ctr-rebase-1');
+        expect(containerRuntime.waitForHealthy).toHaveBeenCalledWith('ctr-rebase-1', 60000);
+      });
+    });
+  });
+
+  // ===========================================================================
+  // Per-worktree operation guard (user-approved fix-set, Task 5).
+  // Contract: same-op duplicate → shares the in-flight result (underlying work
+  // runs once); conflicting op → 409 ConflictException naming the in-flight op.
+  // Create-by-name is OUT of scope — worktrees.name UNIQUE constraint is that guard.
+  // ===========================================================================
+  describe('per-worktree operation guard', () => {
+    const createContainerRow = async (
+      overrides: Partial<{ name: string; status: string }> = {},
+    ) => {
+      const name = overrides.name ?? 'guard-wt';
+      return store.create({
+        name,
+        branchName: `feature/${name}`,
+        baseBranch: 'main',
+        repoPath,
+        worktreePath: join(repoPath, 'worktrees', name),
+        templateSlug: '3-agent-dev',
+        ownerProjectId: 'project-main',
+        status: overrides.status ?? 'stopped',
+        containerId: `ctr-${name}`,
+      });
+    };
+
+    it('concurrent start runs the underlying work exactly once and shares the result', async () => {
+      containerRuntime.waitForHealthy?.mockResolvedValue(true);
+      const row = await createContainerRow({ name: 'guard-start', status: 'stopped' });
+
+      const [a, b] = await Promise.all([
+        service.startWorktree(row.id),
+        service.startWorktree(row.id),
+      ]);
+
+      // Exactly one container start — the duplicate awaited the in-flight call.
+      expect(containerRuntime.startContainer).toHaveBeenCalledTimes(1);
+      expect(containerRuntime.startContainer).toHaveBeenCalledWith('ctr-guard-start');
+      // Both callers resolve with the SAME value (shared promise, reference-equal).
+      expect(a).toBe(b);
     });
 
-    it('fails fast when child process exits during health polling (PID dead)', async () => {
-      const checkRuntimeReadySpy = jest
-        .spyOn(
-          service as unknown as {
-            checkRuntimeReady: (hostPort: number) => Promise<boolean>;
-          },
-          'checkRuntimeReady',
-        )
-        .mockResolvedValue(false);
+    it('duplicate stop shares the result and stops the container exactly once', async () => {
+      const row = await createContainerRow({ name: 'guard-stop', status: 'running' });
 
-      const isProcessAliveSpy = jest
-        .spyOn(service as unknown as { isProcessAlive: (pid: number) => boolean }, 'isProcessAlive')
-        .mockReturnValue(false);
+      const [a, b] = await Promise.all([
+        service.stopWorktree(row.id),
+        service.stopWorktree(row.id),
+      ]);
 
-      // Restore the real waitForRuntimeHealthy so PID-alive check runs
-      waitForRuntimeHealthySpy.mockRestore();
+      expect(containerRuntime.stopContainer).toHaveBeenCalledTimes(1);
+      expect(containerRuntime.stopContainer).toHaveBeenCalledWith('ctr-guard-stop');
+      expect(a).toBe(b);
+    });
 
-      const result = await (
-        service as unknown as {
-          waitForRuntimeHealthy: (
-            hostPort: number,
-            timeoutMs: number,
-            pid?: number,
-          ) => Promise<boolean>;
-        }
-      ).waitForRuntimeHealthy(43000, 60_000, 8888);
+    it('rejects a conflicting operation with 409 naming the in-flight operation (merge-during-start)', async () => {
+      containerRuntime.waitForHealthy?.mockResolvedValue(true);
+      const row = await createContainerRow({ name: 'guard-conflict', status: 'stopped' });
 
-      expect(result).toBe(false);
-      // Should return immediately — health check should NOT have been called
-      // because PID-alive check fails first in the loop
-      expect(checkRuntimeReadySpy).not.toHaveBeenCalled();
-      expect(isProcessAliveSpy).toHaveBeenCalledWith(8888);
+      // The in-flight start is registered synchronously when this call returns.
+      const startPromise = service.startWorktree(row.id);
+      // A conflicting merge dispatched in the same tick sees the in-flight 'start'.
+      await expect(service.mergeWorktree(row.id)).rejects.toThrow(ConflictException);
+      await expect(service.mergeWorktree(row.id)).rejects.toThrow(/in-flight "start"/);
 
-      checkRuntimeReadySpy.mockRestore();
-      isProcessAliveSpy.mockRestore();
+      await startPromise;
+    });
+
+    it('rejects delete-during-merge with 409 naming "merge"', async () => {
+      const row = await createContainerRow({ name: 'guard-delete-merge', status: 'running' });
+
+      // The merge guard is registered synchronously; delete sees it immediately.
+      const mergePromise = service.mergeWorktree(row.id);
+      await expect(service.deleteWorktree(row.id)).rejects.toThrow(/in-flight "merge"/);
+      // Only the merge ran; delete never reached container cleanup.
+      expect(containerRuntime.cleanupWorktreeProjectContainers).not.toHaveBeenCalled();
+
+      await mergePromise;
+    });
+
+    it('clears the guard after completion so a later same-op runs fresh (not a 409)', async () => {
+      containerRuntime.waitForHealthy?.mockResolvedValue(true);
+      const row = await createContainerRow({ name: 'guard-clear', status: 'stopped' });
+
+      await service.startWorktree(row.id);
+      expect(containerRuntime.startContainer).toHaveBeenCalledTimes(1);
+
+      // The first call settled and cleared its registration; this runs the work again.
+      await service.startWorktree(row.id);
+      expect(containerRuntime.startContainer).toHaveBeenCalledTimes(2);
+    });
+
+    it('blocks task extraction from a conflicting op (start during extraction → 409)', async () => {
+      // Park task extraction (emitAsync) on a deferred so the merge is held
+      // mid-extraction, then prove a conflicting start is rejected while it runs.
+      let resolveExtraction!: (value: unknown[]) => void;
+      const extractionBlocked = new Promise<unknown[]>((resolve) => {
+        resolveExtraction = resolve;
+      });
+      const emitSpy = eventEmitter.emitAsync.mockImplementation(() => extractionBlocked);
+
+      const row = await createContainerRow({ name: 'guard-extract', status: 'running' });
+      const mergePromise = service.mergeWorktree(row.id);
+
+      // Flush microtasks until extraction (emitAsync) is actually in-flight — the
+      // guard is registered synchronously, but extraction is reached only after the
+      // merge body's earlier awaits resolve.
+      while (emitSpy.mock.calls.length === 0) {
+        await Promise.resolve();
+      }
+      // Extraction is parked; the merge guard is held — a conflicting start is rejected.
+      await expect(service.startWorktree(row.id)).rejects.toThrow(/in-flight "merge"/);
+
+      // Release extraction so the merge completes and the guard clears.
+      resolveExtraction([{ worktreeId: row.id, epicsMerged: 0, agentsMerged: 0 }]);
+      await mergePromise;
     });
   });
 });

@@ -6,12 +6,17 @@ import {
   restartSession,
   terminateSession,
   restoreSession,
-  SessionApiError,
   type ActiveSession,
   type AgentPresenceMap,
 } from '@/ui/lib/sessions';
 import { chatQueryKeys, type AgentOrGuest } from './useChatQueries';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
+import {
+  getMcpProviderDetails,
+  isMcpNotConfigured,
+  restoreConflictTitle,
+  useLifecyclePendingTracker,
+} from '@/ui/hooks/lifecycle/session-lifecycle-core';
 
 // ============================================
 // Types
@@ -93,9 +98,13 @@ export function useChatSessionControls({
   const { toast } = useToast();
   const apiFetch = useFetchFactory();
 
-  // Loading states
-  const [launchingAgentIds, setLaunchingAgentIds] = useState<Record<string, boolean>>({});
-  const [restartingAgentId, setRestartingAgentId] = useState<string | null>(null);
+  // Loading states — launching/restarting/terminating go through the shared
+  // lifecycle core; chat folds single-terminate into `launchingAgentIds` (its
+  // historical surface) and keeps restore/batch state chat-local.
+  const pending = useLifecyclePendingTracker();
+  const { setAction: setPendingAction, clear: clearPending } = pending;
+  const launchingAgentIds = pending.recordOf('launching', 'terminating');
+  const restartingAgentId = pending.singleKeyOf('restarting');
   const [restoringSessionIds, setRestoringSessionIds] = useState<Record<string, boolean>>({});
   const [startingAll, setStartingAll] = useState(false);
   const [terminatingAll, setTerminatingAll] = useState(false);
@@ -180,7 +189,7 @@ export function useChatSessionControls({
         return null;
       }
 
-      setLaunchingAgentIds((prev) => ({ ...prev, [agentId]: true }));
+      setPendingAction(agentId, 'launching');
       try {
         const raw = await launchSession(agentId, projectId, { silent }, '', apiFetch);
         if (!raw || typeof raw !== 'object' || !('id' in raw)) {
@@ -221,21 +230,21 @@ export function useChatSessionControls({
         return session;
       } catch (error) {
         // Check if this is an MCP_NOT_CONFIGURED error from the backend
-        if (error instanceof SessionApiError && error.hasCode('MCP_NOT_CONFIGURED')) {
-          const details = error.payload?.details;
+        if (isMcpNotConfigured(error)) {
+          const details = getMcpProviderDetails(error);
           queryClient.invalidateQueries({ queryKey: ['preflight'] });
 
           if (silent) {
             toast({
               title: 'MCP not configured',
-              description: `Provider "${details?.providerName ?? 'Unknown'}" requires MCP configuration.`,
+              description: `Provider "${details.providerName ?? 'Unknown'}" requires MCP configuration.`,
               variant: 'destructive',
             });
           } else {
             setPendingLaunchAgent({
               agentId,
-              providerId: details?.providerId ?? '',
-              providerName: details?.providerName ?? 'Unknown',
+              providerId: details.providerId ?? '',
+              providerName: details.providerName ?? 'Unknown',
               options: { attach, silent },
             });
             setMcpModalOpen(true);
@@ -253,11 +262,7 @@ export function useChatSessionControls({
         }
         return null;
       } finally {
-        setLaunchingAgentIds((prev) => {
-          const next = { ...prev };
-          delete next[agentId];
-          return next;
-        });
+        clearPending(agentId);
       }
     },
     [
@@ -269,6 +274,9 @@ export function useChatSessionControls({
       onInlineTerminalAttach,
       onTerminalMenuClose,
       primeRunningSessionCache,
+      apiFetch,
+      setPendingAction,
+      clearPending,
     ],
   );
 
@@ -285,7 +293,7 @@ export function useChatSessionControls({
       }
       const presence = agentPresence[agentId];
       const sessionId = presence?.sessionId ?? null;
-      setRestartingAgentId(agentId);
+      setPendingAction(agentId, 'restarting');
       try {
         let session: ActiveSession;
         let terminateWarning: string | undefined;
@@ -326,7 +334,7 @@ export function useChatSessionControls({
           variant: 'destructive',
         });
       } finally {
-        setRestartingAgentId(null);
+        clearPending(agentId);
       }
     },
     [
@@ -337,6 +345,8 @@ export function useChatSessionControls({
       onInlineTerminalAttach,
       toast,
       primeRunningSessionCache,
+      setPendingAction,
+      clearPending,
     ],
   );
 
@@ -360,18 +370,9 @@ export function useChatSessionControls({
           onTerminalMenuClose?.();
         }
       } catch (error) {
-        let title = 'Restore failed';
+        const title = restoreConflictTitle(error);
         const description =
           error instanceof Error ? error.message : 'Unable to restore session right now.';
-        if (error instanceof SessionApiError && error.status === 409) {
-          if (error.hasCode('PROVIDER_MISMATCH')) {
-            title = 'Provider mismatch';
-          } else if (error.hasCode('NO_PROVIDER_SESSION_ID')) {
-            title = 'Cannot restore';
-          } else if (error.hasCode('INVALID_SESSION_STATE')) {
-            title = 'Invalid session state';
-          }
-        }
         toast({ title, description, variant: 'destructive' });
       } finally {
         setRestoringSessionIds((prev) => {
@@ -404,7 +405,7 @@ export function useChatSessionControls({
         return;
       }
       setTerminateConfirm(null);
-      setLaunchingAgentIds((prev) => ({ ...prev, [agentId]: true }));
+      setPendingAction(agentId, 'terminating');
       try {
         await terminateSession(sessionId, '', apiFetch);
         toast({ title: 'Session terminated', description: 'The session was terminated.' });
@@ -417,14 +418,10 @@ export function useChatSessionControls({
           variant: 'destructive',
         });
       } finally {
-        setLaunchingAgentIds((prev) => {
-          const next = { ...prev };
-          delete next[agentId];
-          return next;
-        });
+        clearPending(agentId);
       }
     },
-    [projectId, queryClient, toast],
+    [projectId, queryClient, toast, apiFetch, setPendingAction, clearPending],
   );
 
   // Start all agents handler

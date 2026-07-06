@@ -52,7 +52,11 @@ jest.mock('../provider-launch-config', () => ({
 
 // ── Imports ────────────────────────────────────────────────────────────
 
-import { createLaunchPipelineHarness } from './__test-utils__/pipeline-harness';
+import {
+  createLaunchPipelineHarness,
+  fakeAgent,
+  fakeProfileProviderConfig,
+} from './__test-utils__/pipeline-harness';
 import { resolve as resolveLaunchConfig } from '../provider-launch-config';
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -657,6 +661,116 @@ describe('SessionLaunchPipeline', () => {
       // Existing out-of-band paste still happens
       expect(mocks.terminalIO.deliver).toHaveBeenCalled();
       expect(mocks.terminalIO.deliverImmediate).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── Effective model/effort resolution (Phase-1 effort levels) ────────────
+  // The pipeline folds agent overrides + config structured defaults + raw options
+  // into the effective model/effort passed to resolveLaunchConfig. Layer: pipeline
+  // unit test with the shared harness (resolve is mocked) — cheapest layer that
+  // proves the pipeline computes precedence and passes both values; the actual
+  // argv strip/inject is proven at the resolver layer (provider-launch-config.spec).
+  describe('effective model/effort resolution', () => {
+    const noRunningSelect = (sql: string) => {
+      if (sql.includes('SELECT') && sql.includes("status = 'running'")) {
+        return {
+          run: jest.fn(),
+          get: jest.fn().mockReturnValue(undefined),
+          all: jest.fn().mockReturnValue([]),
+        };
+      }
+      return { run: jest.fn().mockReturnValue({ changes: 1 }), get: jest.fn(), all: jest.fn() };
+    };
+
+    it('passes agent.effortOverride when set (highest precedence, beats config.effort)', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      const resolveMock = resolveLaunchConfig as jest.Mock;
+      resolveMock.mockClear();
+      mocks.storage.getAgent.mockResolvedValue(fakeAgent({ effortOverride: 'high' }));
+      mocks.storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        fakeProfileProviderConfig({ effort: 'low' }),
+      ]);
+      mocks.sqliteMock.prepare.mockImplementation(noRunningSelect);
+
+      await runWithTimers(() => pipeline.launch(launchDto));
+
+      expect(resolveMock).toHaveBeenCalledWith(expect.objectContaining({ effortOverride: 'high' }));
+    });
+
+    it('falls back to config.effort when the agent effort override is null', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      const resolveMock = resolveLaunchConfig as jest.Mock;
+      resolveMock.mockClear();
+      mocks.storage.getAgent.mockResolvedValue(fakeAgent({ effortOverride: null }));
+      mocks.storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        fakeProfileProviderConfig({ effort: 'medium' }),
+      ]);
+      mocks.sqliteMock.prepare.mockImplementation(noRunningSelect);
+
+      await runWithTimers(() => pipeline.launch(launchDto));
+
+      expect(resolveMock).toHaveBeenCalledWith(
+        expect.objectContaining({ effortOverride: 'medium' }),
+      );
+    });
+
+    it('passes effortOverride null when neither agent nor config sets an effort', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      const resolveMock = resolveLaunchConfig as jest.Mock;
+      resolveMock.mockClear();
+      mocks.sqliteMock.prepare.mockImplementation(noRunningSelect);
+
+      await runWithTimers(() => pipeline.launch(launchDto));
+
+      expect(resolveMock).toHaveBeenCalledWith(expect.objectContaining({ effortOverride: null }));
+    });
+
+    it('BEHAVIOR CHANGE: config.model set + raw --model in options → structured model wins', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      const resolveMock = resolveLaunchConfig as jest.Mock;
+      resolveMock.mockClear();
+      mocks.storage.getAgent.mockResolvedValue(fakeAgent({ modelOverride: null }));
+      mocks.storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        fakeProfileProviderConfig({ model: 'opus', options: '--model sonnet' }),
+      ]);
+      mocks.sqliteMock.prepare.mockImplementation(noRunningSelect);
+
+      await runWithTimers(() => pipeline.launch(launchDto));
+
+      // Effective model is the structured config.model, not the raw --model text.
+      // (The resolver then strips the raw --model — proven in the resolver spec.)
+      expect(resolveMock).toHaveBeenCalledWith(expect.objectContaining({ modelOverride: 'opus' }));
+    });
+
+    it('agent.modelOverride wins over config.model', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      const resolveMock = resolveLaunchConfig as jest.Mock;
+      resolveMock.mockClear();
+      mocks.storage.getAgent.mockResolvedValue(fakeAgent({ modelOverride: 'haiku' }));
+      mocks.storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        fakeProfileProviderConfig({ model: 'opus' }),
+      ]);
+      mocks.sqliteMock.prepare.mockImplementation(noRunningSelect);
+
+      await runWithTimers(() => pipeline.launch(launchDto));
+
+      expect(resolveMock).toHaveBeenCalledWith(expect.objectContaining({ modelOverride: 'haiku' }));
+    });
+
+    it('folds a raw --model into the effective model when no structured override exists', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      const resolveMock = resolveLaunchConfig as jest.Mock;
+      resolveMock.mockClear();
+      mocks.storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        fakeProfileProviderConfig({ options: '--model sonnet' }),
+      ]);
+      mocks.sqliteMock.prepare.mockImplementation(noRunningSelect);
+
+      await runWithTimers(() => pipeline.launch(launchDto));
+
+      expect(resolveMock).toHaveBeenCalledWith(
+        expect.objectContaining({ modelOverride: 'sonnet' }),
+      );
     });
   });
 

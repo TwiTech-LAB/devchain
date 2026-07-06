@@ -108,6 +108,11 @@ export class SessionsService {
         { sessionId, status: session.status },
         'Session already stopped, treating as success',
       );
+      // The DB row may have been flipped by another path (orphan reconciler,
+      // crash handler) while in-memory terminal state survived — clean it up
+      // so a stale registry entry cannot block a later restore.
+      this.ptyService.stopStreaming(sessionId);
+      this.terminalSessionRegistry.dispose(sessionId);
       return;
     }
 
@@ -487,6 +492,11 @@ export class SessionsService {
           `,
             )
             .run('stopped', now, now, row.id);
+
+          // Drop any surviving in-memory terminal state; a stale registry
+          // entry would block restoring this session later.
+          this.ptyService.stopStreaming(row.id);
+          this.terminalSessionRegistry.dispose(row.id);
 
           // Update row status for return value
           row.status = 'stopped';

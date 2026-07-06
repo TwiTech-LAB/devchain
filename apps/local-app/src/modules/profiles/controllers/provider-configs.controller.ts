@@ -50,6 +50,8 @@ export class ProviderConfigsController {
       description?: string | null;
       options?: string | null;
       env?: Record<string, string> | null;
+      model?: string | null;
+      effort?: string | null;
     } = {};
 
     if (data.providerId !== undefined) {
@@ -66,6 +68,12 @@ export class ProviderConfigsController {
     }
     if (data.env !== undefined) {
       updateData.env = data.env;
+    }
+    if (data.model !== undefined) {
+      updateData.model = data.model;
+    }
+    if (data.effort !== undefined) {
+      updateData.effort = data.effort;
     }
 
     const config = await this.providerConfigsService.updateProviderConfig(id, updateData);

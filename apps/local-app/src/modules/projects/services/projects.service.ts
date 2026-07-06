@@ -1,5 +1,6 @@
 import { Injectable, Inject, Optional } from '@nestjs/common';
-import { type ManifestData } from '@devchain/shared';
+import { ExportSchema, type ExportData, type ManifestData } from '@devchain/shared';
+import { ValidationError } from '../../../common/errors/error-types';
 import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { SessionsService } from '../../sessions/services/sessions.service';
 import { SettingsService } from '../../settings/services/settings.service';
@@ -17,15 +18,20 @@ import {
   type ProvisioningWarning,
 } from './project-provider-provisioning.service';
 import type { Project, UpdateProject } from '../../storage/models/domain.models';
+import { TemplatePipeline } from '../template-codec/template-pipeline';
 import { importProjectWithHelper } from '../helpers/project-import';
 import { exportProjectWithHelper } from '../helpers/project-export';
 import { createFromTemplateWithHelper } from '../helpers/template-loader';
 import {
+  buildProviderSummary,
+  computeFamilyAlternatives,
   computeFamilyAlternativesFromStorage,
+  derivePresetProviderCoverage,
   type FamilyAlternative,
   type FamilyAlternativesResult,
 } from '../helpers/profile-mapping.helpers';
 import {
+  applyAgentConfigs,
   applyPresetWithHelper,
   doesProjectMatchPresetWithHelper,
   type PresetAgentConfig,
@@ -50,6 +56,7 @@ import {
   listTemplatesWithHelper,
   slugify,
 } from '../helpers/template-file.helpers';
+import type { SetupPreviewInput, SetupPreviewResponse } from '../dtos/setup-preview.dto';
 
 export interface TemplateInfo {
   id: string;
@@ -66,6 +73,9 @@ export interface CreateFromTemplateInput {
   templatePath?: string;
   familyProviderMappings?: Record<string, string>;
   presetName?: string;
+  agentOverrides?: PresetAgentConfig[];
+  /** Transient, server-enforced provider allowlist (Step-1 wizard). Not persisted. */
+  selectedProviderNames?: string[];
   teamOverrides?: Array<{
     teamName: string;
     allowTeamLeadCreateAgents?: boolean;
@@ -90,6 +100,9 @@ export interface ImportProjectInput {
   dryRun?: boolean;
   statusMappings?: Record<string, string>;
   familyProviderMappings?: Record<string, string>;
+  agentOverrides?: PresetAgentConfig[];
+  /** Transient, server-enforced provider allowlist (Step-1 wizard). Not persisted. */
+  selectedProviderNames?: string[];
   teamOverrides?: Array<{
     teamName: string;
     allowTeamLeadCreateAgents?: boolean;
@@ -113,6 +126,8 @@ export class ProjectsService {
     private readonly provisioning: ProjectProviderProvisioningService,
     private readonly executor: ProcessExecutor,
     @Optional()
+    private readonly templatePipeline?: TemplatePipeline,
+    @Optional()
     @Inject(SCHEDULED_EPIC_RUNNER_REFRESH)
     private readonly scheduledEpicRunnerRefresh?: ScheduledEpicRunnerRefresh,
   ) {}
@@ -126,13 +141,14 @@ export class ProjectsService {
   }
 
   async createFromTemplate(input: CreateFromTemplateInput) {
+    await this.assertSelectedProvidersInstalled(input.selectedProviderNames);
     const result = await createFromTemplateWithHelper(input, {
       storage: this.storage,
       settings: this.settings,
       unifiedTemplateService: this.unifiedTemplateService,
       deriveSlugFromPath,
-      computeFamilyAlternatives: (profiles, agents) =>
-        this.computeFamilyAlternatives(profiles, agents),
+      computeFamilyAlternatives: (profiles, agents, selectedProviderNames) =>
+        this.computeFamilyAlternatives(profiles, agents, selectedProviderNames),
       normalizeProfileOptions,
       applyProjectSettings: (projectId, projectSettings, maps, archiveStatusId) =>
         applyProjectSettingsWithHelper(
@@ -146,6 +162,10 @@ export class ProjectsService {
         createWatchersFromPayloadWithHelper(projectId, watchers, maps, this.watchersService),
       createSubscribersFromPayload: (projectId, subscribers) =>
         createSubscribersFromPayloadWithHelper(projectId, subscribers, this.storage),
+      // Real watchers service so the create-path watchers codec starts runners for enabled
+      // watchers (the create orchestrator's seam falls back to storage.createWatcher only when
+      // this is absent, e.g. reduced test deps).
+      watchersService: this.watchersService,
       probe1m: (binPath: string) => probe1mSupport(this.executor, binPath),
       teamsService: this.teamsService,
       scheduledEpicsRefresh: this.scheduledEpicRunnerRefresh,
@@ -157,6 +177,8 @@ export class ProjectsService {
           { storage: this.storage, settings: this.settings },
           nameMaps,
         ),
+      applyAgentConfigs: (projectId, agentConfigs, nameMaps) =>
+        applyAgentConfigs(projectId, agentConfigs, { storage: this.storage }, nameMaps),
     });
 
     if (result?.success && result.project && !('providerMappingRequired' in result)) {
@@ -182,6 +204,7 @@ export class ProjectsService {
           agentName: string;
           providerConfigName: string;
           modelOverride?: string | null;
+          effortOverride?: string | null;
         }>;
       }>;
     },
@@ -221,15 +244,17 @@ export class ProjectsService {
   }
 
   async importProject(input: ImportProjectInput) {
+    await this.assertSelectedProvidersInstalled(input.selectedProviderNames);
     const result = await importProjectWithHelper(input, {
       storage: this.storage,
       settings: this.settings,
+      templatePipeline: this.templatePipeline,
       watchersService: this.watchersService,
       sessions: this.sessions,
       unifiedTemplateService: this.unifiedTemplateService,
       cleanupTeamsForProject: (projectId) => this.teamsService.deleteTeamsByProject(projectId),
-      computeFamilyAlternatives: (templateProfiles, templateAgents) =>
-        this.computeFamilyAlternatives(templateProfiles, templateAgents),
+      computeFamilyAlternatives: (templateProfiles, templateAgents, selectedProviderNames) =>
+        this.computeFamilyAlternatives(templateProfiles, templateAgents, selectedProviderNames),
       createWatchersFromPayload: (projectId, watchers, maps) =>
         createWatchersFromPayloadWithHelper(projectId, watchers, maps, this.watchersService),
       createSubscribersFromPayload: (projectId, subscribers) =>
@@ -243,6 +268,8 @@ export class ProjectsService {
           this.settings,
         ),
       getImportErrorMessage,
+      applyAgentConfigs: (projectId, agentConfigs, nameMaps) =>
+        applyAgentConfigs(projectId, agentConfigs, { storage: this.storage }, nameMaps),
       probe1m: (binPath: string) => probe1mSupport(this.executor, binPath),
       teamsService: this.teamsService,
       scheduledEpicsRefresh: this.scheduledEpicRunnerRefresh,
@@ -288,8 +315,104 @@ export class ProjectsService {
       name: string;
       profileId?: string;
     }>,
+    selectedProviderNames?: string[],
   ): Promise<FamilyAlternativesResult> {
-    return computeFamilyAlternativesFromStorage(this.storage, templateProfiles, templateAgents);
+    return computeFamilyAlternativesFromStorage(
+      this.storage,
+      templateProfiles,
+      templateAgents,
+      undefined,
+      selectedProviderNames,
+    );
+  }
+
+  /**
+   * Enforce the transient `selectedProviderNames` allowlist contract: every selected name must
+   * correspond to a locally installed provider (case-insensitive). Unknown names → 400. This is
+   * the storage-dependent half of the contract; the request-shape half (non-empty, lowercased) is
+   * validated at the controller. No-op when the field is absent (byte-identical to today).
+   */
+  private async assertSelectedProvidersInstalled(
+    selectedProviderNames: string[] | undefined,
+  ): Promise<void> {
+    if (!selectedProviderNames) return;
+    const installed = await this.storage.listProviders();
+    const installedNames = new Set(installed.items.map((p) => p.name.trim().toLowerCase()));
+    const unknown = selectedProviderNames.filter(
+      (name) => !installedNames.has(name.trim().toLowerCase()),
+    );
+    if (unknown.length > 0) {
+      throw new ValidationError('Unknown provider names in selectedProviderNames', {
+        unknownProviders: unknown,
+        hint: 'selectedProviderNames must reference locally installed providers.',
+      });
+    }
+  }
+
+  /**
+   * Preview a template BEFORE creating/importing anything: resolve content from exactly one of
+   * {slug(+version) | templatePath | rawContent}, ExportSchema.parse it (ZodError → 400 with
+   * details via the global filter), and enrich with providerSummary + familyAlternatives +
+   * per-preset referenced providers + local availability. Additive only; no persistence.
+   */
+  async setupPreview(input: SetupPreviewInput): Promise<SetupPreviewResponse> {
+    const payload = await this.resolveSetupPreviewPayload(input);
+
+    const localProviders = await this.storage.listProviders();
+    const availableProviderNames = new Set(
+      localProviders.items.map((p) => p.name.trim().toLowerCase()),
+    );
+
+    const providerSummary = buildProviderSummary(
+      payload.profiles,
+      payload.agents,
+      availableProviderNames,
+    );
+    const familyResult = computeFamilyAlternatives(
+      payload.profiles,
+      payload.agents,
+      availableProviderNames,
+    );
+    const coverage = derivePresetProviderCoverage(
+      payload.presets,
+      payload.profiles,
+      payload.agents,
+      availableProviderNames,
+    );
+
+    return {
+      payload,
+      providerSummary,
+      familyAlternatives: familyResult.alternatives,
+      presetProviderCoverage: coverage.map((c) => ({
+        presetName: c.presetName,
+        referencedProviders: c.referencedProviders,
+        coversAllAgents: c.coversAllAgents,
+        coveredAgentNames: Array.from(c.coveredAgentNames).sort(),
+        agentResolvedProviders: Object.fromEntries(c.agentResolvedProviders),
+      })),
+      localAvailability: {
+        installedProviders: localProviders.items.map((p) => ({ id: p.id, name: p.name })),
+      },
+    };
+  }
+
+  /** Resolve + ExportSchema.parse the template payload for setup-preview. Throws ZodError on
+   * invalid payloads (mapped to 400 with details by the global filter); throws the
+   * unified-template-service domain errors (NotFound/Forbidden/Validation) for slug/path issues. */
+  private async resolveSetupPreviewPayload(input: SetupPreviewInput): Promise<ExportData> {
+    let content: Record<string, unknown>;
+    if (input.rawContent !== undefined) {
+      content = input.rawContent;
+    } else if (input.templatePath) {
+      content = this.unifiedTemplateService.getTemplateFromFilePath(input.templatePath)
+        .content as Record<string, unknown>;
+    } else {
+      content = (
+        await this.unifiedTemplateService.getTemplate(input.slug!, input.version ?? undefined)
+      ).content as Record<string, unknown>;
+    }
+    return ExportSchema.parse(content) as ExportData;
   }
 
   async getTemplateManifestForProject(projectId: string): Promise<ManifestData | null> {

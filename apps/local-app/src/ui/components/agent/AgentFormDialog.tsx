@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Button } from '@/ui/components/ui/button';
 import { Input } from '@/ui/components/ui/input';
@@ -19,7 +19,8 @@ import {
   getAgentAvatarDataUri,
   getAgentInitials,
 } from '@/ui/lib/multiavatar';
-import { providerModelQueryKeys } from '@/ui/lib/provider-model-query-keys';
+import { useProviderModels } from '@/ui/hooks/useProviderModels';
+import { useProviderEfforts } from '@/ui/hooks/useProviderEfforts';
 import { shortModelName } from '@/ui/lib/model-utils';
 
 // ============================================
@@ -33,6 +34,8 @@ export interface ProviderConfig {
   name: string;
   options: string | null;
   env: Record<string, string> | null;
+  model: string | null;
+  effort: string | null;
 }
 
 export interface AgentProfile {
@@ -58,6 +61,7 @@ export interface AgentFormValues {
   providerConfigId: string;
   description: string;
   modelOverride: string | null;
+  effortOverride: string | null;
 }
 
 export interface AgentFormSubmitData {
@@ -66,6 +70,7 @@ export interface AgentFormSubmitData {
   providerConfigId: string | null;
   description: string | null;
   modelOverride: string | null;
+  effortOverride: string | null;
 }
 
 export interface AgentFormDialogProps {
@@ -96,50 +101,16 @@ const EMPTY_FORM: AgentFormValues = {
   providerConfigId: '',
   description: '',
   modelOverride: null,
+  effortOverride: null,
 };
 
 const DEFAULT_MODEL_OVERRIDE = '__default_model_override__';
-
-interface ProviderModelOption {
-  id: string;
-  name: string;
-}
+const DEFAULT_EFFORT_OVERRIDE = '__default_effort_override__';
 
 async function fetchProviderConfigs(profileId: string): Promise<ProviderConfig[]> {
   const res = await fetch(`/api/profiles/${profileId}/provider-configs`);
   if (!res.ok) throw new Error('Failed to fetch provider configs');
   return res.json();
-}
-
-function parseProviderModels(payload: unknown, providerId: string): ProviderModelOption[] {
-  if (!Array.isArray(payload)) {
-    return [];
-  }
-
-  return payload
-    .map((rawModel, index) => {
-      if (
-        !rawModel ||
-        typeof rawModel !== 'object' ||
-        Array.isArray(rawModel) ||
-        typeof (rawModel as { name?: unknown }).name !== 'string'
-      ) {
-        return null;
-      }
-
-      const model = rawModel as { id?: unknown; name: string };
-      const name = model.name.trim();
-      if (!name) {
-        return null;
-      }
-
-      const id =
-        typeof model.id === 'string' && model.id.trim().length > 0
-          ? model.id
-          : `${providerId}:${name}:${index}`;
-      return { id, name };
-    })
-    .filter((model): model is ProviderModelOption => Boolean(model));
 }
 
 function useDebouncedValue<T>(value: T, delay = 250): T {
@@ -196,6 +167,7 @@ export function AgentFormDialog({
         ...EMPTY_FORM,
         ...(initialValues ?? EMPTY_FORM),
         modelOverride: initialValues?.modelOverride ?? null,
+        effortOverride: initialValues?.effortOverride ?? null,
       });
     }
   }, [open, initialValues]);
@@ -216,18 +188,37 @@ export function AgentFormDialog({
     );
   }, [providerConfigs, formData.providerConfigId]);
 
-  const { data: providerModels = [], isLoading: isProviderModelsLoading } = useQuery({
-    queryKey: providerModelQueryKeys.main(selectedProviderId ?? 'none'),
-    queryFn: async () => {
-      if (!selectedProviderId) return [] as ProviderModelOption[];
-      const res = await fetch(`/api/providers/${selectedProviderId}/models`);
-      if (!res.ok) return [] as ProviderModelOption[];
-      const payload = (await res.json().catch(() => [])) as unknown;
-      return parseProviderModels(payload, selectedProviderId);
-    },
-    enabled: !!selectedProviderId,
-    staleTime: 5 * 60 * 1000,
+  // Stable clearers so the hook stale-selection effects don't churn each render.
+  const clearStaleModelOverride = useCallback(
+    (next: string | null) => setFormData((prev) => ({ ...prev, modelOverride: next })),
+    [],
+  );
+  const clearStaleEffortOverride = useCallback(
+    (next: string | null) => setFormData((prev) => ({ ...prev, effortOverride: next })),
+    [],
+  );
+
+  const { models: providerModels } = useProviderModels({
+    providerId: selectedProviderId,
+    modelOverride: formData.modelOverride,
+    onStaleSelection: clearStaleModelOverride,
   });
+
+  const {
+    efforts: providerEfforts,
+    supportsEffort,
+    requiresModelForEffort,
+  } = useProviderEfforts({
+    providerId: selectedProviderId,
+    effortOverride: formData.effortOverride,
+    onStaleSelection: clearStaleEffortOverride,
+  });
+
+  // Structured model on the selected config (for the "Select a model first" gating)
+  const selectedConfigStructuredModel = useMemo(() => {
+    if (!providerConfigs || !formData.providerConfigId) return null;
+    return providerConfigs.find((config) => config.id === formData.providerConfigId)?.model ?? null;
+  }, [providerConfigs, formData.providerConfigId]);
 
   // Auto-select config when profile changes
   useEffect(() => {
@@ -243,6 +234,7 @@ export function AgentFormDialog({
           ...prev,
           providerConfigId: singleConfigId,
           modelOverride: null,
+          effortOverride: null,
         };
       });
       return;
@@ -253,7 +245,7 @@ export function AgentFormDialog({
         if (prev.providerConfigId === '' && prev.modelOverride === null) {
           return prev;
         }
-        return { ...prev, providerConfigId: '', modelOverride: null };
+        return { ...prev, providerConfigId: '', modelOverride: null, effortOverride: null };
       });
       return;
     }
@@ -266,19 +258,9 @@ export function AgentFormDialog({
       if (stillValid) {
         return prev;
       }
-      return { ...prev, providerConfigId: '', modelOverride: null };
+      return { ...prev, providerConfigId: '', modelOverride: null, effortOverride: null };
     });
   }, [providerConfigs]);
-
-  useEffect(() => {
-    if (!selectedProviderId) return;
-    if (isProviderModelsLoading) return;
-    if (!formData.modelOverride) return;
-    const hasSelectedModel = providerModels.some((model) => model.name === formData.modelOverride);
-    if (!hasSelectedModel) {
-      setFormData((prev) => ({ ...prev, modelOverride: null }));
-    }
-  }, [selectedProviderId, providerModels, formData.modelOverride, isProviderModelsLoading]);
 
   // ---- Duplicate name check ----
   const isDuplicateName = useMemo(() => {
@@ -298,7 +280,13 @@ export function AgentFormDialog({
 
   // ---- Handlers ----
   const handleProfileChange = (profileId: string) => {
-    setFormData((prev) => ({ ...prev, profileId, providerConfigId: '', modelOverride: null }));
+    setFormData((prev) => ({
+      ...prev,
+      profileId,
+      providerConfigId: '',
+      modelOverride: null,
+      effortOverride: null,
+    }));
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -311,6 +299,7 @@ export function AgentFormDialog({
       providerConfigId: formData.providerConfigId || null,
       description: formData.description.trim() || null,
       modelOverride: formData.modelOverride || null,
+      effortOverride: formData.effortOverride || null,
     });
   };
 
@@ -499,6 +488,51 @@ export function AgentFormDialog({
               </select>
             </div>
           )}
+
+          {/* Effort Override Selector (parity with model; hidden when unsupported) */}
+          {formData.profileId &&
+            formData.providerConfigId &&
+            supportsEffort &&
+            (() => {
+              const hasResolvableModel = Boolean(
+                formData.modelOverride || selectedConfigStructuredModel,
+              );
+              const modelRequired = requiresModelForEffort && !hasResolvableModel;
+              const emptyCatalog = providerEfforts.length === 0;
+              const disabled = modelRequired || emptyCatalog;
+              const hint = modelRequired
+                ? 'Select a model first'
+                : emptyCatalog
+                  ? 'No effort levels configured'
+                  : null;
+              return (
+                <div>
+                  <Label htmlFor={`${idPrefix}-effort-override`}>Effort Override</Label>
+                  <select
+                    id={`${idPrefix}-effort-override`}
+                    value={formData.effortOverride ?? DEFAULT_EFFORT_OVERRIDE}
+                    onChange={(e) =>
+                      setFormData((prev) => ({
+                        ...prev,
+                        effortOverride:
+                          e.target.value === DEFAULT_EFFORT_OVERRIDE ? null : e.target.value,
+                      }))
+                    }
+                    disabled={disabled}
+                    aria-label="Effort override"
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <option value={DEFAULT_EFFORT_OVERRIDE}>Default</option>
+                    {providerEfforts.map((effort) => (
+                      <option key={effort.id} value={effort.name} title={effort.name}>
+                        {effort.name}
+                      </option>
+                    ))}
+                  </select>
+                  {hint && <p className="text-xs text-muted-foreground mt-1">{hint}</p>}
+                </div>
+              );
+            })()}
 
           {/* Description */}
           <div>

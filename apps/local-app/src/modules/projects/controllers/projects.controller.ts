@@ -31,6 +31,7 @@ import { ProjectsService, type ImportProjectInput } from '../services/projects.s
 import { SettingsService } from '../../settings/services/settings.service';
 import {
   RegistryTemplateMetadataDto,
+  TemplatePresetAgentConfigSchema,
   TemplatePresetSchema,
 } from '../../settings/dtos/settings.dto';
 import { ExportWithOverridesSchema } from '../dtos/export.dto';
@@ -111,6 +112,21 @@ function normalizeFamilyProviderMappings(
     normalized[key.trim().toLowerCase()] = value.trim().toLowerCase();
   }
   return normalized;
+}
+
+/**
+ * Transient provider allowlist (Step-1 wizard). Non-empty when present; each entry a non-empty
+ * string. Unknown-provider rejection is enforced in the service (needs installed-provider storage).
+ */
+const SelectedProviderNamesSchema = z.array(z.string().min(1)).min(1).optional();
+
+/**
+ * Case-normalize + dedupe selectedProviderNames (lowercased, like familyProviderMappings values).
+ * Returns undefined when absent so the downstream "field absent" path stays byte-identical.
+ */
+function normalizeSelectedProviderNames(names: string[] | undefined): string[] | undefined {
+  if (!names) return undefined;
+  return Array.from(new Set(names.map((name) => name.trim().toLowerCase())));
 }
 
 /**
@@ -472,6 +488,50 @@ export class ProjectsController {
   // Project creation must go through POST /api/projects/from-template which
   // requires a template selection and performs transactional import.
 
+  @Post('setup-preview')
+  @HttpCode(HttpStatus.OK)
+  async setupPreview(@Body() body: unknown) {
+    logger.info('POST /api/projects/setup-preview');
+
+    // Accept exactly one of {slug(+version) | templatePath | rawContent}. rawContent is
+    // ExportSchema.parse-validated in the service; request-shape ZodErrors and parse
+    // ZodErrors both surface as 400 with details via the global exception filter.
+    const SetupPreviewSchema = z
+      .object({
+        slug: z.preprocess(
+          normalizeOptionalStringField,
+          z.string().min(1).regex(SLUG_PATTERN, VALIDATION_MESSAGES.INVALID_SLUG).optional(),
+        ),
+        version: z
+          .string()
+          .regex(SEMVER_PATTERN, VALIDATION_MESSAGES.INVALID_VERSION)
+          .nullable()
+          .optional(),
+        templatePath: z.preprocess(normalizeOptionalStringField, z.string().min(1).optional()),
+        rawContent: z.record(z.string(), z.unknown()).optional(),
+      })
+      .refine(
+        (data) => {
+          const sources = [!!data.slug, !!data.templatePath, !!data.rawContent].filter(Boolean);
+          return sources.length === 1;
+        },
+        { message: 'Provide exactly one of slug, templatePath, or rawContent' },
+      )
+      .refine((data) => !(data.version && (data.templatePath || data.rawContent)), {
+        message: 'version can only be specified together with slug',
+        path: ['version'],
+      });
+
+    const parsed = SetupPreviewSchema.parse(body);
+
+    return this.projects.setupPreview({
+      ...(parsed.slug ? { slug: parsed.slug } : {}),
+      ...(parsed.version ? { version: parsed.version } : {}),
+      ...(parsed.templatePath ? { templatePath: parsed.templatePath } : {}),
+      ...(parsed.rawContent ? { rawContent: parsed.rawContent } : {}),
+    });
+  }
+
   @Post('from-template')
   @HttpCode(HttpStatus.CREATED)
   async createProjectFromTemplate(@Body() body: unknown) {
@@ -500,6 +560,11 @@ export class ProjectsController {
         templatePath: z.preprocess(normalizeOptionalStringField, z.string().min(1).optional()), // File-based template path
         familyProviderMappings: FamilyProviderMappingsSchema,
         presetName: z.string().min(1).optional(),
+        // Per-agent config overrides (wizard/API). Exactly TemplatePresetAgentConfigSchema;
+        // mutually exclusive with presetName (refine below). Stripped from the template payload.
+        agentOverrides: z.array(TemplatePresetAgentConfigSchema).optional(),
+        // Transient, server-enforced provider allowlist (Step-1 wizard). Non-empty when present.
+        selectedProviderNames: SelectedProviderNamesSchema,
         teamOverrides: z
           .array(
             z
@@ -549,7 +614,11 @@ export class ProjectsController {
           message: 'version cannot be specified when using templatePath',
           path: ['version'],
         },
-      );
+      )
+      .refine((data) => !(data.presetName && data.agentOverrides), {
+        message: 'Provide either presetName or agentOverrides, but not both',
+        path: ['agentOverrides'],
+      });
 
     const parsed = CreateFromTemplateSchema.parse(body);
 
@@ -563,6 +632,12 @@ export class ProjectsController {
           templatePath: parsed.templatePath,
           familyProviderMappings: normalizeFamilyProviderMappings(parsed.familyProviderMappings),
           presetName: parsed.presetName,
+          ...(parsed.agentOverrides ? { agentOverrides: parsed.agentOverrides } : {}),
+          ...(parsed.selectedProviderNames
+            ? {
+                selectedProviderNames: normalizeSelectedProviderNames(parsed.selectedProviderNames),
+              }
+            : {}),
           ...(parsed.teamOverrides ? { teamOverrides: parsed.teamOverrides } : {}),
         }
       : {
@@ -574,6 +649,12 @@ export class ProjectsController {
           version: parsed.version ?? null,
           familyProviderMappings: normalizeFamilyProviderMappings(parsed.familyProviderMappings),
           presetName: parsed.presetName,
+          ...(parsed.agentOverrides ? { agentOverrides: parsed.agentOverrides } : {}),
+          ...(parsed.selectedProviderNames
+            ? {
+                selectedProviderNames: normalizeSelectedProviderNames(parsed.selectedProviderNames),
+              }
+            : {}),
           ...(parsed.teamOverrides ? { teamOverrides: parsed.teamOverrides } : {}),
         };
     return this.projects.createFromTemplate(input);
@@ -631,15 +712,25 @@ export class ProjectsController {
       statusMappings?: Record<string, string>;
       familyProviderMappings?: Record<string, string>;
       teamOverrides?: unknown;
+      presetName?: unknown;
+      agentOverrides?: unknown;
+      selectedProviderNames?: unknown;
       [key: string]: unknown;
     },
   ) {
     logger.info({ projectId: id, dryRun }, 'POST /api/projects/:id/import');
     const isDryRun = (dryRun ?? '').toString().toLowerCase() === 'true';
+    // Strip control fields (statusMappings/familyProviderMappings/teamOverrides/agentOverrides/
+    // presetName/selectedProviderNames) so ONLY the template export reaches `...payload` →
+    // ExportSchema.parse. Without this explicit destructure the catch-all `...payload` would
+    // silently swallow these control fields into the template.
     const {
       statusMappings,
       familyProviderMappings: rawMappings,
       teamOverrides: rawTeamOverrides,
+      presetName: rawPresetName,
+      agentOverrides: rawAgentOverrides,
+      selectedProviderNames: rawSelectedProviderNames,
       ...payload
     } = body ?? {};
 
@@ -692,12 +783,47 @@ export class ProjectsController {
       teamOverrides = parseResult.data;
     }
 
+    // presetName XOR agentOverrides: reject when both are provided (import never applies a
+    // preset by name, but the guard is symmetric with the create endpoint).
+    if (rawPresetName !== undefined && rawAgentOverrides !== undefined) {
+      throw new BadRequestException('Provide either presetName or agentOverrides, but not both');
+    }
+
+    // Validate agentOverrides if provided (exactly TemplatePresetAgentConfigSchema).
+    let agentOverrides: ImportProjectInput['agentOverrides'];
+    if (rawAgentOverrides !== undefined) {
+      const parseResult = z.array(TemplatePresetAgentConfigSchema).safeParse(rawAgentOverrides);
+      if (!parseResult.success) {
+        const errors = parseResult.error.errors
+          .map((e) => `${e.path.join('.')}: ${e.message}`)
+          .join('; ');
+        throw new BadRequestException(`Invalid agentOverrides: ${errors}`);
+      }
+      agentOverrides = parseResult.data;
+    }
+
+    // Validate selectedProviderNames if provided (non-empty list of non-empty strings). Unknown
+    // provider rejection happens in the service (needs installed-provider storage).
+    let selectedProviderNames: ImportProjectInput['selectedProviderNames'];
+    if (rawSelectedProviderNames !== undefined) {
+      const parseResult = SelectedProviderNamesSchema.safeParse(rawSelectedProviderNames);
+      if (!parseResult.success) {
+        const errors = parseResult.error.errors
+          .map((e) => `${e.path.join('.')}: ${e.message}`)
+          .join('; ');
+        throw new BadRequestException(`Invalid selectedProviderNames: ${errors}`);
+      }
+      selectedProviderNames = normalizeSelectedProviderNames(parseResult.data);
+    }
+
     return this.projects.importProject({
       projectId: id,
       payload,
       dryRun: isDryRun,
       statusMappings,
       familyProviderMappings,
+      ...(agentOverrides ? { agentOverrides } : {}),
+      ...(selectedProviderNames ? { selectedProviderNames } : {}),
       ...(teamOverrides ? { teamOverrides } : {}),
     });
   }
@@ -835,15 +961,7 @@ export class ProjectsController {
           .object({
             name: z.string().min(1).optional(),
             description: z.string().nullable().optional(),
-            agentConfigs: z
-              .array(
-                z.object({
-                  agentName: z.string().min(1),
-                  providerConfigName: z.string().min(1),
-                  modelOverride: z.string().nullable().optional(),
-                }),
-              )
-              .optional(),
+            agentConfigs: z.array(TemplatePresetAgentConfigSchema).optional(),
           })
           .strict(),
       })

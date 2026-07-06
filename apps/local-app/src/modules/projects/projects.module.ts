@@ -5,6 +5,7 @@ import { ProjectsService } from './services/projects.service';
 import { ProjectProviderProvisioningService } from './services/project-provider-provisioning.service';
 import { ProjectTemplateUpgradeService } from './services/project-template-upgrade.service';
 import { ProjectRegistryImportService } from './services/project-registry-import.service';
+import { TemplatePipeline } from './template-codec/template-pipeline';
 import { StorageModule } from '../storage/storage.module';
 import { SessionsModule } from '../sessions/sessions.module';
 import { SettingsModule } from '../settings/settings.module';
@@ -36,6 +37,7 @@ import { ScheduledEpicsModule } from '../scheduled-epics/scheduled-epics.module'
     ProjectProviderProvisioningService,
     ProjectTemplateUpgradeService,
     ProjectRegistryImportService,
+    TemplatePipeline,
   ],
   exports: [
     ProjectsService,
