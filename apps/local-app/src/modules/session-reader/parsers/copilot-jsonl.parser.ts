@@ -99,6 +99,8 @@ export interface CopilotParseOptions {
   byteOffset?: number;
   includeToolCalls?: boolean;
   pricingService?: PricingServiceInterface;
+  /** Metrics-only scan: preserve current-turn state without retaining all messages. */
+  retainMessages?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -132,9 +134,12 @@ export async function parseCopilotJsonl(
   const maxMessages = options?.maxMessages;
   const includeToolCalls = options?.includeToolCalls ?? true;
   const pricing = options?.pricingService;
+  const retainMessages = options?.retainMessages ?? true;
 
   const messages: UnifiedMessage[] = [];
   let messageIndex = 0;
+  let messageCount = 0;
+  let lastMessage: UnifiedMessage | null = null;
 
   // Session metadata
   let sessionId: string | undefined;
@@ -195,6 +200,16 @@ export async function parseCopilotJsonl(
     if (!lastTimestamp || ts > lastTimestamp) lastTimestamp = ts;
   }
 
+  function pushMessage(message: UnifiedMessage): void {
+    messageCount++;
+    lastMessage = message;
+    if (retainMessages) messages.push(message);
+  }
+
+  function getLastMessageId(): string | null {
+    return lastMessage?.id ?? null;
+  }
+
   function flushAssistantBuffer(): void {
     if (!assistantBuffer) return;
     const buf = assistantBuffer;
@@ -206,7 +221,7 @@ export async function parseCopilotJsonl(
     }
     const msg: UnifiedMessage = {
       id: `copilot-asst-${messageIndex++}`,
-      parentId: messages.length > 0 ? messages[messages.length - 1].id : null,
+      parentId: lastMessage?.id ?? null,
       role: 'assistant',
       timestamp: buf.timestamp,
       content: buf.content,
@@ -221,7 +236,7 @@ export async function parseCopilotJsonl(
       // assistant (always a new interaction) as a new turn, never a continuation.
       stopReason: 'end_turn',
     };
-    messages.push(msg);
+    pushMessage(msg);
     visibleContextTokens += estimateMessageTokens(msg.content);
   }
 
@@ -256,7 +271,7 @@ export async function parseCopilotJsonl(
       assistantBuffer.toolResults.push(resultEntry);
       return;
     }
-    const last = messages.length > 0 ? messages[messages.length - 1] : null;
+    const last = lastMessage;
     if (last && last.role === 'assistant') {
       last.content.push(block);
       last.toolResults.push(resultEntry);
@@ -264,7 +279,7 @@ export async function parseCopilotJsonl(
     }
     const msg: UnifiedMessage = {
       id: `copilot-toolresult-${messageIndex++}`,
-      parentId: messages.length > 0 ? messages[messages.length - 1].id : null,
+      parentId: lastMessage?.id ?? null,
       role: 'user',
       timestamp: ts,
       content: [block],
@@ -273,7 +288,7 @@ export async function parseCopilotJsonl(
       isMeta: true,
       isSidechain: false,
     };
-    messages.push(msg);
+    pushMessage(msg);
   }
 
   try {
@@ -397,7 +412,7 @@ export async function parseCopilotJsonl(
           if (!content) break;
           const msg: UnifiedMessage = {
             id: `copilot-user-${messageIndex++}`,
-            parentId: messages.length > 0 ? messages[messages.length - 1].id : null,
+            parentId: getLastMessageId(),
             role: 'user',
             timestamp: ts,
             content: [{ type: 'text', text: content }],
@@ -406,7 +421,7 @@ export async function parseCopilotJsonl(
             isMeta: false,
             isSidechain: false,
           };
-          messages.push(msg);
+          pushMessage(msg);
           visibleContextTokens += estimateMessageTokens(msg.content);
           break;
         }
@@ -514,7 +529,7 @@ export async function parseCopilotJsonl(
           break;
       }
 
-      if (maxMessages && messages.length >= maxMessages) break;
+      if (maxMessages && messageCount >= maxMessages) break;
     }
   } finally {
     rl.close();
@@ -627,7 +642,7 @@ export async function parseCopilotJsonl(
     primaryModel,
     modelsUsed,
     durationMs,
-    messageCount: messages.length,
+    messageCount,
     isOngoing,
   };
 

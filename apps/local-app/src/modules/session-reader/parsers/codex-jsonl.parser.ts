@@ -94,6 +94,8 @@ export interface CodexParseOptions {
   byteOffset?: number;
   includeToolCalls?: boolean;
   pricingService?: PricingServiceInterface;
+  /** Metrics-only scan: preserve turn state without retaining the full message array. */
+  retainMessages?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -124,9 +126,12 @@ export async function parseCodexJsonl(
   const maxMessages = options?.maxMessages;
   const includeToolCalls = options?.includeToolCalls ?? true;
   const pricing = options?.pricingService;
+  const retainMessages = options?.retainMessages ?? true;
 
   const messages: UnifiedMessage[] = [];
   let messageIndex = 0;
+  let messageCount = 0;
+  let lastMessageId: string | null = null;
 
   // For incremental parses, establish baseline cumulative totals before byteOffset.
   const baselineSnapshot =
@@ -232,6 +237,12 @@ export async function parseCodexJsonl(
     crlfDelay: Infinity,
   });
 
+  function pushMessage(message: UnifiedMessage): void {
+    messageCount++;
+    lastMessageId = message.id;
+    if (retainMessages) messages.push(message);
+  }
+
   function flushAssistantBuffer(): void {
     if (!assistantBuffer) return;
     if (
@@ -245,7 +256,7 @@ export async function parseCodexJsonl(
 
     const msg: UnifiedMessage = {
       id: `codex-msg-${messageIndex++}`,
-      parentId: messages.length > 0 ? messages[messages.length - 1].id : null,
+      parentId: lastMessageId,
       role: 'assistant',
       timestamp: assistantBuffer.timestamp,
       content: assistantBuffer.content,
@@ -256,10 +267,12 @@ export async function parseCodexJsonl(
       isSidechain: false,
     };
 
-    messages.push(msg);
+    pushMessage(msg);
     lastAssistantMessage = msg;
     if (turnStack.length > 0) {
-      turnStack[turnStack.length - 1].lastAssistantMsgIndex = messages.length - 1;
+      turnStack[turnStack.length - 1].lastAssistantMsgIndex = retainMessages
+        ? messages.length - 1
+        : -1;
     }
     visibleContextTokens += estimateMessageTokens(msg.content);
     assistantBuffer = null;
@@ -295,7 +308,7 @@ export async function parseCodexJsonl(
       // user-role message so it still renders.
       const msg: UnifiedMessage = {
         id: `codex-msg-${messageIndex++}`,
-        parentId: messages.length > 0 ? messages[messages.length - 1].id : null,
+        parentId: lastMessageId,
         role: 'user',
         timestamp: ts,
         content: pendingToolResultContent,
@@ -305,7 +318,7 @@ export async function parseCodexJsonl(
         isSidechain: false,
       };
 
-      messages.push(msg);
+      pushMessage(msg);
       visibleContextTokens += estimateMessageTokens(msg.content);
     }
 
@@ -423,7 +436,7 @@ export async function parseCodexJsonl(
                 if (textParts.length > 0) {
                   const msg: UnifiedMessage = {
                     id: `codex-msg-${messageIndex++}`,
-                    parentId: messages.length > 0 ? messages[messages.length - 1].id : null,
+                    parentId: lastMessageId,
                     role: 'user',
                     timestamp: ts,
                     content: [{ type: 'text', text: textParts.join('\n') }],
@@ -432,7 +445,7 @@ export async function parseCodexJsonl(
                     isMeta: false,
                     isSidechain: false,
                   };
-                  messages.push(msg);
+                  pushMessage(msg);
                   visibleContextTokens += estimateMessageTokens(msg.content);
                 }
               } else if (role === 'assistant') {
@@ -650,7 +663,7 @@ export async function parseCodexJsonl(
           const compactionText = (payload.message as string) ?? 'Context compacted';
           const msg: UnifiedMessage = {
             id: `codex-msg-${messageIndex++}`,
-            parentId: messages.length > 0 ? messages[messages.length - 1].id : null,
+            parentId: lastMessageId,
             role: 'user',
             timestamp: ts,
             content: [{ type: 'text', text: compactionText }],
@@ -660,7 +673,7 @@ export async function parseCodexJsonl(
             isSidechain: false,
             isCompactSummary: true,
           };
-          messages.push(msg);
+          pushMessage(msg);
           visibleContextTokens += estimateMessageTokens(msg.content);
           break;
         }
@@ -672,7 +685,7 @@ export async function parseCodexJsonl(
       }
 
       // Check max messages limit
-      if (maxMessages && messages.length >= maxMessages) break;
+      if (maxMessages && messageCount >= maxMessages) break;
     }
   } finally {
     rl.close();
@@ -751,7 +764,7 @@ export async function parseCodexJsonl(
     primaryModel,
     modelsUsed,
     durationMs,
-    messageCount: messages.length,
+    messageCount,
     isOngoing,
   };
 

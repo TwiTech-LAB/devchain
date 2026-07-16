@@ -142,6 +142,63 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('OpencodeSqliteReader', () => {
+  describe('readSummary — native aggregate parity', () => {
+    it('matches every exact full-parse metric without constructing message graphs', () => {
+      const pricing = makePricing();
+      const dbPath = seedDb(newDbPath(), {
+        messages: [
+          {
+            id: 'msg_user',
+            timeCreated: 1_000,
+            data: { role: 'user' },
+            parts: [{ data: { type: 'text', text: 'Hello' } }],
+          },
+          {
+            id: 'msg_assistant',
+            timeCreated: 2_000,
+            data: {
+              role: 'assistant',
+              modelID: 'glm-5.1',
+              tokens: { input: 10, output: 3, cache: { read: 2, write: 1 } },
+            },
+            parts: [
+              { data: { type: 'text', text: 'Hi' } },
+              {
+                data: {
+                  type: 'step-finish',
+                  tokens: { input: 10, output: 3, reasoning: 1, cache: { read: 2, write: 1 } },
+                },
+              },
+            ],
+          },
+        ],
+      });
+      const reader = new OpencodeSqliteReader(pricing);
+
+      const full = reader.readSession(dbPath, 'ses_test').session.metrics;
+      const summary = reader.readSummary(dbPath, 'ses_test').metrics;
+
+      for (const field of [
+        'inputTokens',
+        'outputTokens',
+        'cacheReadTokens',
+        'cacheCreationTokens',
+        'totalTokens',
+        'compactionCount',
+        'totalContextTokens',
+        'contextWindowTokens',
+        'costUsd',
+        'primaryModel',
+        'modelsUsed',
+        'durationMs',
+        'messageCount',
+        'isOngoing',
+      ] as const) {
+        expect(summary[field]).toEqual(full[field]);
+      }
+    });
+  });
+
   describe('readSession — normalization', () => {
     it('reconstructs roles, thinking, tool calls/results, tokens, model, timestamps', () => {
       const pricing = makePricing();

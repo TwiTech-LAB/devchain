@@ -37,8 +37,8 @@ export function Step3Teams({
   );
 
   const configsByProfile = useMemo(() => {
-    // Only offer configs whose provider survived Step 1 — the created project won't have the
-    // others, so listing them would let a team pin configs that cannot exist.
+    // Step 3 remains scoped to the providers chosen in Step 1 even though other installed
+    // provider configs may still be preserved in the created project.
     const selected = new Set(selectedProviderNames.map((name) => name.trim().toLowerCase()));
     const result: Record<string, ConfigItem<string>[]> = {};
     for (const profile of profiles) {

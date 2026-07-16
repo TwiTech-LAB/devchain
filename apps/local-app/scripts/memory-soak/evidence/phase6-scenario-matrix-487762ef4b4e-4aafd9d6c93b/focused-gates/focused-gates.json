@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "reportKind": "remediation-focused-gates",
+  "generatedAt": "2026-07-15T01:19:46.173Z",
+  "target": {
+    "sourceCommit": "487762ef4b4e2673030199851f3c92b5edee82ac",
+    "sourceTree": "4058dd8137802ded1f2569b2cb4b1d41649b21ca",
+    "sourceDirty": false,
+    "distFingerprint": {
+      "algorithm": "sha256",
+      "digest": "4aafd9d6c93b0340a0d0933b29a90c96bc6416de39e7948571b102d06e016b5e",
+      "subjectKind": "directory-tree",
+      "fileCount": 2007,
+      "totalBytes": 11462551
+    }
+  },
+  "gates": [
+    {
+      "id": "targeted-seed-admission",
+      "command": "pnpm --filter local-app test -- --runInBand --runTestsByPath src/modules/terminal/services/terminal-seed.service.spec.ts src/modules/terminal/services/terminal-send-scheduler.service.spec.ts src/modules/terminal/gateways/terminal.gateway.spec.ts",
+      "log": "terminal-jest.txt",
+      "logSha256": "52f420ce80b7803c9663d87d9b36f574f57f97bf59c01f96b47309176c644242",
+      "suites": {
+        "passed": 3,
+        "total": 3
+      },
+      "tests": {
+        "passed": 133,
+        "total": 133
+      },
+      "pass": true,
+      "requiredOutcomes": [
+        "real scheduler integration owns initial-seed aggregate overflow while preserving the sibling lane",
+        "overflowed stalled viewer converges through one bounded seed and a gap-free covered tail while another viewer stays current",
+        "unrecoverable admission uses deterministic reconnect fallback without bypassing scheduler policy"
+      ]
+    },
+    {
+      "id": "reader-generation-integrity-local",
+      "command": "pnpm --filter local-app test -- --runInBand --runTestsByPath src/modules/session-reader/services/session-cache.service.spec.ts src/modules/session-reader/services/session-cache.replacement.spec.ts src/modules/session-reader/services/session-reader.service.spec.ts src/modules/session-reader/services/session-reader.replacement.integration.spec.ts src/modules/session-reader/controllers/session-reader.controller.spec.ts src/modules/session-reader/services/transcript-cursor.spec.ts src/ui/hooks/useSessionTranscript.spec.tsx src/ui/components/session-reader/PagedSessionMessageList.spec.tsx",
+      "log": "reader-web-jest.txt",
+      "logSha256": "9c75f747b11ff8a4f0642bbee4b452ea5e0372d910e81b3b1747071885542f6a",
+      "suites": {
+        "passed": 8,
+        "total": 8
+      },
+      "tests": {
+        "passed": 235,
+        "total": 235
+      },
+      "pass": true,
+      "requiredOutcomes": [
+        "proof-to-parse path rotation discards the tentative incremental result and canonically parses only the current generation",
+        "the unsafe tail is cursor-free full-refetch-required and the next stable tail is a true empty same-cursor delta",
+        "stable proven append remains incremental while full and paged web commit only complete validated generations"
+      ]
+    },
+    {
+      "id": "reader-generation-integrity-mobile",
+      "command": "pnpm --filter mobile-app test -- --runInBand --runTestsByPath __tests__/tail-delta.spec.ts __tests__/useTranscript.spec.tsx __tests__/useTranscript-swr.spec.tsx __tests__/phase2-push-pipeline.spec.tsx",
+      "log": "mobile-jest.txt",
+      "logSha256": "006227888c3f052fdea428f741b2e06060639107fbe622c6b8eb1b27ae5910c9",
+      "suites": {
+        "passed": 4,
+        "total": 4
+      },
+      "tests": {
+        "passed": 44,
+        "total": 44
+      },
+      "pass": true,
+      "requiredOutcomes": [
+        "unsafe replacement retains the old mobile generation until canonical bootstrap and true-empty stable-cursor validation succeed",
+        "canonical failure preserves old state and retries without adopting the replacement cursor early"
+      ]
+    },
+    {
+      "id": "mobile-types",
+      "command": "pnpm --filter mobile-app exec tsc --noEmit",
+      "log": "mobile-tsc.txt",
+      "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "pass": true
+    },
+    {
+      "id": "memory-soak-contract",
+      "command": "pnpm --filter local-app memory-soak:test",
+      "log": "memory-soak-contract.txt",
+      "logSha256": "df7554c392f597f191db048a13581fe3d7ce09bba5b956928926598e8113f3ed",
+      "tests": {
+        "passed": 88,
+        "total": 88
+      },
+      "pass": true
+    },
+    {
+      "id": "canonical-local-app-build",
+      "command": "pnpm --filter local-app build",
+      "log": "local-app-build.txt",
+      "logSha256": "eaa7ed95707c938780e19f880696c86fe4becf2cd914fe2806465f4da11893f5",
+      "pass": true,
+      "distFingerprint": {
+        "algorithm": "sha256",
+        "digest": "4aafd9d6c93b0340a0d0933b29a90c96bc6416de39e7948571b102d06e016b5e",
+        "subjectKind": "directory-tree",
+        "fileCount": 2007,
+        "totalBytes": 11462551
+      },
+      "generatedPricingDriftRemoved": true,
+      "sourceDirtyAfterCleanup": false
+    }
+  ],
+  "evaluatorReplay": {
+    "command": "node /tmp/rem15-task3.fRgaUO/replay-reports.js",
+    "log": "evaluator-replay.txt",
+    "logSha256": "90eb5c57870cd5c7001c0af554cd3a6c0cef8f3b26281d0c1993b6b61ca4c2ca",
+    "reports": {
+      "exact": 17,
+      "total": 17
+    },
+    "pass": true
+  },
+  "pass": true
+}

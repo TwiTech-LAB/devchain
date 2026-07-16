@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "reportKind": "remediation-focused-gates",
+  "generatedAt": "2026-07-14T23:15:28.074Z",
+  "target": {
+    "sourceCommit": "34e222d57850706e83323894b075cc0c6edd6eed",
+    "sourceTree": "376367c2a509458618a2ec5c7b18714e33a91ee3",
+    "sourceDirty": false,
+    "distFingerprint": {
+      "algorithm": "sha256",
+      "digest": "ea0452dd2b6660e2f044b82dc6ec0f68fa89e8e67c78991c93c654f4266dfa34",
+      "subjectKind": "directory-tree",
+      "fileCount": 2007,
+      "totalBytes": 11459541
+    }
+  },
+  "gates": [
+    {
+      "id": "targeted-seed-admission",
+      "command": "pnpm --filter local-app test -- --runInBand --runTestsByPath src/modules/terminal/services/terminal-seed.service.spec.ts src/modules/terminal/services/terminal-send-scheduler.service.spec.ts src/modules/terminal/gateways/terminal.gateway.spec.ts",
+      "log": "terminal-jest.log",
+      "logSha256": "53d579c5a56f3ad3f982bce21ba3e7cf3f883ab54fcd8eda8021e650924ffa29",
+      "suites": {
+        "passed": 3,
+        "total": 3
+      },
+      "tests": {
+        "passed": 133,
+        "total": 133
+      },
+      "pass": true,
+      "requiredOutcomes": [
+        "real scheduler integration owns initial-seed aggregate overflow while preserving the sibling lane",
+        "overflowed stalled viewer converges through one bounded seed and a gap-free covered tail while another viewer stays current",
+        "unrecoverable admission uses deterministic reconnect fallback without bypassing scheduler policy"
+      ]
+    },
+    {
+      "id": "reader-generation-integrity-local",
+      "command": "pnpm --filter local-app test -- --runInBand --runTestsByPath src/modules/session-reader/services/session-cache.service.spec.ts src/modules/session-reader/services/session-cache.replacement.spec.ts src/modules/session-reader/services/session-reader.service.spec.ts src/modules/session-reader/services/session-reader.replacement.integration.spec.ts src/modules/session-reader/controllers/session-reader.controller.spec.ts src/modules/session-reader/services/transcript-cursor.spec.ts src/ui/hooks/useSessionTranscript.spec.tsx src/ui/components/session-reader/PagedSessionMessageList.spec.tsx",
+      "log": "reader-web-jest.log",
+      "logSha256": "b4be75ac10f37064ccab01fbe42f1bfcba00315a6894418c639dcc9bb82f9291",
+      "suites": {
+        "passed": 8,
+        "total": 8
+      },
+      "tests": {
+        "passed": 232,
+        "total": 232
+      },
+      "pass": true,
+      "requiredOutcomes": [
+        "equal-size and count-growing replacements return full-refetch-required without a cursor splice",
+        "full web rejects dirty candidates and commits only a complete stable-cursor generation",
+        "paged web retains the old generation through retries and atomically commits cursor-bracketed pages"
+      ]
+    },
+    {
+      "id": "reader-generation-integrity-mobile",
+      "command": "pnpm --filter mobile-app test -- --runInBand --runTestsByPath __tests__/tail-delta.spec.ts __tests__/useTranscript.spec.tsx __tests__/useTranscript-swr.spec.tsx __tests__/phase2-push-pipeline.spec.tsx",
+      "log": "mobile-jest.log",
+      "logSha256": "205fb2c9b7da8dfe92b2c39c4b3e2783dcc58611f56c5faaf1b95c39c2aed9ec",
+      "suites": {
+        "passed": 4,
+        "total": 4
+      },
+      "tests": {
+        "passed": 44,
+        "total": 44
+      },
+      "pass": true,
+      "requiredOutcomes": [
+        "unsafe replacement retains the old mobile generation until canonical bootstrap and true-empty stable-cursor validation succeed",
+        "canonical failure preserves old state and retries without adopting the replacement cursor early"
+      ]
+    },
+    {
+      "id": "mobile-types",
+      "command": "pnpm --filter mobile-app exec tsc --noEmit",
+      "log": "mobile-tsc.log",
+      "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "pass": true
+    },
+    {
+      "id": "memory-soak-contract",
+      "command": "pnpm --filter local-app memory-soak:test",
+      "log": "memory-soak-contract.log",
+      "logSha256": "c5e8d489480c9385df2493c24dd712ea24cccfed22da9510ccd28e5005d5b162",
+      "tests": {
+        "passed": 88,
+        "total": 88
+      },
+      "pass": true
+    },
+    {
+      "id": "canonical-local-app-build",
+      "command": "pnpm --filter local-app build",
+      "pass": true,
+      "distFingerprint": {
+        "algorithm": "sha256",
+        "digest": "ea0452dd2b6660e2f044b82dc6ec0f68fa89e8e67c78991c93c654f4266dfa34",
+        "subjectKind": "directory-tree",
+        "fileCount": 2007,
+        "totalBytes": 11459541
+      },
+      "generatedPricingDriftRemoved": true,
+      "sourceDirtyAfterCleanup": false
+    }
+  ],
+  "pass": true
+}

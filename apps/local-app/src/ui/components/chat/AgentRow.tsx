@@ -36,6 +36,7 @@ interface AgentRowProps {
   activityState: string | null;
   currentActivityTitle: string | null;
   sessionMetrics?: AgentContextMetrics;
+  contextMetricsKey?: string;
   pendingRestart: boolean;
   providerIconUri: string | null;
   providerName: string | null;
@@ -121,6 +122,7 @@ export function AgentRow({
   activityState,
   currentActivityTitle,
   sessionMetrics,
+  contextMetricsKey,
   pendingRestart,
   providerIconUri,
   providerName,
@@ -169,6 +171,7 @@ export function AgentRow({
           role="listitem"
           aria-label={`Chat with ${agent.name}${isOnline ? ' (online)' : ' (offline)'}`}
           aria-current={isSelected ? 'true' : undefined}
+          data-context-metrics-key={contextTrackingEnabled ? contextMetricsKey : undefined}
         >
           {providerIconUri ? (
             <span

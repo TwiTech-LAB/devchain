@@ -1,18 +1,85 @@
 import { TerminalGateway } from './terminal.gateway';
 import { WsException } from '@nestjs/websockets';
 
-import { TerminalStreamService } from '../services/terminal-stream.service';
+import { TerminalStreamService, type FrameReplayResult } from '../services/terminal-stream.service';
 import {
   SettingsService,
   DEFAULT_TERMINAL_SEED_MAX_BYTES,
 } from '../../settings/services/settings.service';
 import { PtyService } from '../services/pty.service';
-import { TerminalSeedService } from '../services/terminal-seed.service';
+import {
+  TerminalSeedDelivery,
+  TerminalSeedService,
+  type TerminalSeedDeliveryDecision,
+} from '../services/terminal-seed.service';
 import { TerminalIOService } from '../services/terminal-io/terminal-io.service';
 import { TerminalSessionRegistry } from '../services/terminal-session/terminal-session-registry';
 import { createEnvelope } from '../dtos/ws-envelope.dto';
 import { SessionsService } from '../../sessions/services/sessions.service';
 import type { Socket } from 'socket.io';
+import { TerminalViewportFacade } from '../services/terminal-viewport/terminal-viewport.facade';
+import {
+  TerminalSendAdmission,
+  TerminalSendSchedulerService,
+} from '../services/terminal-send-scheduler.service';
+import { TerminalSocketDrainAdapter } from '../services/terminal-socket-drain.adapter';
+
+/** The stable sequence-domain epoch the mock stream service reports for every session. */
+const MOCK_SEQUENCE_EPOCH = 'epoch-1';
+
+class GatewayDrainAdapter {
+  readonly sent: ReturnType<typeof createEnvelope>[] = [];
+  private readonly sentBySocket = new Map<string, ReturnType<typeof createEnvelope>[]>();
+  private readonly writable = new Map<string, boolean>();
+  private readonly completion = new Map<string, () => void>();
+  private readonly ready = new Map<string, () => void>();
+
+  setWritable(socket: Socket, writable: boolean): void {
+    this.writable.set(socket.id, writable);
+    if (writable) {
+      const ready = this.ready.get(socket.id);
+      this.ready.delete(socket.id);
+      ready?.();
+    }
+  }
+
+  isWritable(socket: Socket): boolean {
+    return this.writable.get(socket.id) ?? false;
+  }
+
+  send(socket: Socket, envelope: ReturnType<typeof createEnvelope>, complete: () => void): boolean {
+    if (!this.isWritable(socket)) return false;
+    this.sent.push(envelope);
+    const sent = this.sentBySocket.get(socket.id) ?? [];
+    sent.push(envelope);
+    this.sentBySocket.set(socket.id, sent);
+    this.writable.set(socket.id, false);
+    this.completion.set(socket.id, complete);
+    return true;
+  }
+
+  onWritable(socket: Socket, listener: () => void): () => void {
+    this.ready.set(socket.id, listener);
+    return () => {
+      if (this.ready.get(socket.id) === listener) this.ready.delete(socket.id);
+    };
+  }
+
+  complete(socket: Socket): void {
+    const completion = this.completion.get(socket.id);
+    this.completion.delete(socket.id);
+    completion?.();
+    this.setWritable(socket, true);
+  }
+
+  sentTo(socket: Socket): ReturnType<typeof createEnvelope>[] {
+    return this.sentBySocket.get(socket.id) ?? [];
+  }
+
+  getBufferedPacketCount(): number {
+    return 0;
+  }
+}
 
 function createMockSocket(
   id: string,
@@ -23,12 +90,14 @@ function createMockSocket(
     id,
     emit: jest.fn(),
     join: jest.fn(),
+    leave: jest.fn(),
     disconnect: jest.fn(),
     connected: true,
     conn: {
       transport: {
         name: 'websocket',
       },
+      close: jest.fn(),
     } as unknown,
     trigger(event: string, ...args: unknown[]) {
       for (const handler of handlers.get(event) ?? []) {
@@ -58,18 +127,81 @@ const createGateway = (options?: {
   seedMaxBytes?: number;
   snapshot?: string;
   bufferedFrames?: ReturnType<typeof createEnvelope>[];
+  replayResult?: FrameReplayResult;
   scrollbackLines?: number;
   autoCreateRegistrySessions?: boolean;
+  sendScheduler?: TerminalSendSchedulerService;
 }) => {
   const streamService: Partial<TerminalStreamService> = {
     initializeBuffer: jest.fn(),
-    getFramesSince: jest.fn().mockReturnValue(options?.bufferedFrames ?? []),
+    getFramesSince: jest.fn().mockReturnValue(
+      options?.replayResult ?? {
+        status: 'covered',
+        frames: options?.bufferedFrames ?? [],
+        currentSequence: 7,
+      },
+    ),
     getCurrentSequence: jest.fn().mockReturnValue(7),
-    addFrame: jest.fn(),
+    addFrame: jest
+      .fn()
+      .mockImplementation((sessionId: string, data: string) => [
+        createEnvelope(`terminal/${sessionId}`, 'data', { data, sequence: 1 }),
+      ]),
+    markDiscontinuous: jest.fn().mockReturnValue(8),
+    resumeRetention: jest.fn(),
     // Disconnect paths schedule a delayed clearBuffer; without this stub the timer
     // crashes the process after teardown when open handles outlive the suite.
     clearBuffer: jest.fn(),
   };
+  // Sequence-domain (epoch) surface. sampleCursor/getReconnectReplay track the mocked
+  // getCurrentSequence so tests that override the live sequence still line up. The recovery counter
+  // increments per session (mirrors the buffer-owned counter) so monotonic-epoch assertions hold.
+  const recoveryCounters = new Map<string, number>();
+  streamService.getSequenceEpoch = jest.fn().mockReturnValue(MOCK_SEQUENCE_EPOCH);
+  streamService.sampleCursor = jest.fn(() => ({
+    sequenceEpoch: MOCK_SEQUENCE_EPOCH,
+    currentSequence: (streamService.getCurrentSequence as jest.Mock)(),
+  }));
+  streamService.getReconnectReplay = jest.fn(() => ({
+    ...(options?.replayResult ?? {
+      status: 'covered',
+      frames: options?.bufferedFrames ?? [],
+      currentSequence: (streamService.getCurrentSequence as jest.Mock)(),
+    }),
+    sequenceEpoch: MOCK_SEQUENCE_EPOCH,
+  }));
+  streamService.nextRecoveryCounter = jest.fn((sessionId: string) => {
+    const next = (recoveryCounters.get(sessionId) ?? 0) + 1;
+    recoveryCounters.set(sessionId, next);
+    return next;
+  });
+  // Delayed-clear ownership now lives in the stream service; the mock mirrors the real timer so the
+  // gateway's stop/subscribe/restore delegation still drives the 60s-retain → clearBuffer path under
+  // fake timers, and the constructor's setClearExpiryHandler wiring has a target. On expiry it runs
+  // the mocked clearBuffer plus the registered expiry handler (retireSessionRecoveries).
+  const scheduledClears = new Map<string, { timer: NodeJS.Timeout; delayMs: number }>();
+  let clearExpiryHandler: ((sessionId: string) => void) | undefined;
+  streamService.setClearExpiryHandler = jest.fn((handler: (sessionId: string) => void) => {
+    clearExpiryHandler = handler;
+  });
+  streamService.cancelScheduledClear = jest.fn((sessionId: string) => {
+    const existing = scheduledClears.get(sessionId);
+    if (!existing) return null;
+    clearTimeout(existing.timer);
+    scheduledClears.delete(sessionId);
+    return existing.delayMs;
+  });
+  streamService.scheduleClear = jest.fn((sessionId: string, delayMs: number) => {
+    const existing = scheduledClears.get(sessionId);
+    if (existing) clearTimeout(existing.timer);
+    const timer = setTimeout(() => {
+      scheduledClears.delete(sessionId);
+      (streamService.clearBuffer as jest.Mock)(sessionId);
+      clearExpiryHandler?.(sessionId);
+    }, delayMs);
+    timer.unref();
+    scheduledClears.set(sessionId, { timer, delayMs });
+  });
 
   const settingsService: Partial<SettingsService> = {
     getSetting: jest.fn((key: string) => {
@@ -97,7 +229,20 @@ const createGateway = (options?: {
     resolveSeedingConfig: jest.fn().mockReturnValue({
       maxBytes: options?.seedMaxBytes ?? DEFAULT_TERMINAL_SEED_MAX_BYTES,
     }),
-    emitSeedToClient: jest.fn().mockResolvedValue(undefined),
+    emitSeedToClient: jest
+      .fn()
+      .mockImplementation(
+        async (seedOptions: Parameters<TerminalSeedService['emitSeedToClient']>[0]) => {
+          if (!seedOptions.recovery) return undefined;
+          const capturedSequence = seedOptions.recovery.getCurrentSequence();
+          seedOptions.recovery.onCapturedSequence?.(capturedSequence);
+          return {
+            sequenceEpoch: seedOptions.recovery.sequenceEpoch,
+            recoveryEpoch: seedOptions.recovery.recoveryEpoch,
+            capturedSequence,
+          };
+        },
+      ),
     invalidateCache: jest.fn(),
     truncateToMaxBytes: jest.fn().mockImplementation((text: string, maxBytes: number) => ({
       truncated: text.slice(0, maxBytes),
@@ -131,6 +276,34 @@ const createGateway = (options?: {
   };
 
   const mockRealtimeBroadcast = { setServer: jest.fn(), broadcastEvent: jest.fn() };
+  const mockMetricsService = {
+    registerCacheStatsProvider: jest.fn(),
+    registerStatsProvider: jest.fn(),
+  } as never;
+  const sendScheduler = {
+    registerSocket: jest.fn(),
+    removeSocket: jest.fn(),
+    removeLane: jest.fn(),
+    removeSession: jest.fn(),
+    enqueueLive: jest.fn((client: Socket, envelope: unknown) => {
+      client.emit('message', envelope);
+      return TerminalSendAdmission.Accepted;
+    }),
+    enqueueRecovery: jest.fn().mockReturnValue(TerminalSendAdmission.Accepted),
+    beginRecovery: jest.fn().mockReturnValue(true),
+    markSynchronized: jest.fn(),
+    isDesynchronized: jest.fn().mockReturnValue(false),
+    getStats: jest.fn().mockReturnValue({
+      terminalQueuedBytes: 0,
+      terminalInFlightBytes: 0,
+      terminalDesynchronizedClients: 0,
+      terminalDesynchronizedLanes: 0,
+      terminalDroppedFrames: 0,
+      terminalDroppedBytes: 0,
+      terminalQueues: {},
+    }),
+    dispose: jest.fn(),
+  };
   const gateway = new TerminalGateway(
     streamService as TerminalStreamService,
     settingsService as SettingsService,
@@ -140,6 +313,8 @@ const createGateway = (options?: {
     registry,
     sessionsService as SessionsService,
     mockRealtimeBroadcast as never,
+    options?.sendScheduler ?? (sendScheduler as never),
+    mockMetricsService,
   );
 
   (gateway as unknown as { ensurePtyStreaming: jest.Mock }).ensurePtyStreaming = jest
@@ -166,6 +341,7 @@ const createGateway = (options?: {
     sessionsService,
     registry,
     roomEmit,
+    sendScheduler,
   };
 };
 
@@ -560,6 +736,137 @@ describe('TerminalGateway.handleRequestFullHistory', () => {
     expect(seedService.resolveSeedingConfig).toHaveBeenCalled();
   });
 
+  it('echoes the correlation token on the full_history response', async () => {
+    const { gateway, settingsService } = createGateway();
+    const client = createMockSocket('client-correlate');
+
+    (settingsService.getScrollbackLines as jest.Mock).mockReturnValue(10000);
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'session-correlate',
+      rows: 24,
+      cols: 80,
+    });
+
+    await gateway.handleRequestFullHistory(client as unknown as Socket, {
+      sessionId: 'session-correlate',
+      maxLines: 1000,
+      correlationId: 'req-42',
+    });
+
+    const historyCall = (client.emit as jest.Mock).mock.calls.find(
+      ([event, envelope]) =>
+        event === 'message' && (envelope as { type?: string }).type === 'full_history',
+    );
+    expect((historyCall![1] as { payload: { correlationId?: string } }).payload.correlationId).toBe(
+      'req-42',
+    );
+  });
+
+  it('omits correlationId from full_history when the request carried none', async () => {
+    const { gateway, settingsService } = createGateway();
+    const client = createMockSocket('client-no-correlate');
+
+    (settingsService.getScrollbackLines as jest.Mock).mockReturnValue(10000);
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'session-no-correlate',
+      rows: 24,
+      cols: 80,
+    });
+
+    await gateway.handleRequestFullHistory(client as unknown as Socket, {
+      sessionId: 'session-no-correlate',
+      maxLines: 1000,
+    });
+
+    const historyCall = (client.emit as jest.Mock).mock.calls.find(
+      ([event, envelope]) =>
+        event === 'message' && (envelope as { type?: string }).type === 'full_history',
+    );
+    expect((historyCall![1] as { payload: Record<string, unknown> }).payload).not.toHaveProperty(
+      'correlationId',
+    );
+  });
+
+  it('throws WsException for a non-string correlationId', async () => {
+    const { gateway, settingsService } = createGateway();
+    const client = createMockSocket('client-bad-correlate');
+
+    (settingsService.getScrollbackLines as jest.Mock).mockReturnValue(10000);
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'session-bad-correlate',
+      rows: 24,
+      cols: 80,
+    });
+
+    await expect(
+      gateway.handleRequestFullHistory(client as unknown as Socket, {
+        sessionId: 'session-bad-correlate',
+        maxLines: 1000,
+        correlationId: 123 as unknown as string,
+      }),
+    ).rejects.toThrow(WsException);
+  });
+
+  it('captures freshly on every accepted history request', async () => {
+    const { gateway, settingsService, terminalIO } = createGateway();
+    const client = createMockSocket('client-fresh');
+
+    (settingsService.getScrollbackLines as jest.Mock).mockReturnValue(10000);
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'session-fresh',
+      rows: 24,
+      cols: 80,
+    });
+
+    // Distinct output per capture proves the response is not a cached first snapshot: a stale
+    // cache would echo 'fresh-capture-1' on the second request. Each accepted request must
+    // re-run capture-pane and emit whatever the terminal holds at that moment.
+    (terminalIO.captureHistory as jest.Mock).mockClear();
+    (terminalIO.captureHistory as jest.Mock)
+      .mockResolvedValueOnce({ ok: true, output: 'fresh-capture-1\r\n' })
+      .mockResolvedValueOnce({ ok: true, output: 'fresh-capture-2\r\n' });
+
+    await gateway.handleRequestFullHistory(client as unknown as Socket, {
+      sessionId: 'session-fresh',
+      maxLines: 1000,
+    });
+    await gateway.handleRequestFullHistory(client as unknown as Socket, {
+      sessionId: 'session-fresh',
+      maxLines: 1000,
+    });
+
+    expect(terminalIO.captureHistory).toHaveBeenCalledTimes(2);
+    expect(terminalIO.captureHistory).toHaveBeenNthCalledWith(
+      1,
+      { name: 'tmux_session-fresh' },
+      1000,
+      true,
+    );
+    expect(terminalIO.captureHistory).toHaveBeenNthCalledWith(
+      2,
+      { name: 'tmux_session-fresh' },
+      1000,
+      true,
+    );
+
+    const histories = (client.emit as jest.Mock).mock.calls
+      .filter(
+        ([event, envelope]) =>
+          event === 'message' && (envelope as { type?: string }).type === 'full_history',
+      )
+      .map(([, envelope]) => (envelope as { payload: { history: string } }).payload.history);
+
+    expect(histories).toHaveLength(2);
+    expect(histories[0]).toContain('fresh-capture-1');
+    expect(histories[0]).not.toContain('fresh-capture-2');
+    expect(histories[1]).toContain('fresh-capture-2');
+    expect(histories[1]).not.toContain('fresh-capture-1');
+  });
+
   it('samples capturedSequence after the tmux capture completes (tail-duplication race)', async () => {
     const { gateway, streamService, settingsService, terminalIO } = createGateway();
     const client = createMockSocket('client-race');
@@ -623,9 +930,11 @@ describe('TerminalGateway session lifecycle registry policy', () => {
 });
 
 describe('TerminalGateway.handleSubscribe', () => {
-  it('SeedStrategy drives seeding on first attach — no legacy emitSeedToClient for registry sessions', async () => {
+  it('uses the configured targeted seed service on a registry-backed first attach', async () => {
+    const seedMaxBytes = 128 * 1024;
     const { gateway, seedService, ptyService, registry } = createGateway({
       bufferedFrames: [],
+      seedMaxBytes,
     });
     const client = createMockSocket('client-1');
 
@@ -637,11 +946,200 @@ describe('TerminalGateway.handleSubscribe', () => {
       cols: 120,
     });
 
-    expect(seedService.emitSeedToClient).not.toHaveBeenCalled();
+    expect(seedService.emitSeedToClient).toHaveBeenCalledTimes(1);
+    expect(seedService.emitSeedToClient).toHaveBeenCalledWith({
+      deliver: expect.any(Function),
+      sessionId: 'session-1',
+      maxBytes: seedMaxBytes,
+      cols: 120,
+      rows: 30,
+      allowEmpty: true,
+      getCurrentSequence: expect.any(Function),
+    });
     expect(ptyService.resize).toHaveBeenCalledWith('session-1', 120, 30);
 
     const session = registry.get('session-1')!;
     expect(session.hasSubscriber('client-1')).toBe(true);
+  });
+
+  const findSubscribed = (client: { emit: jest.Mock }) =>
+    (client.emit as jest.Mock).mock.calls
+      .filter(([event]) => event === 'message')
+      .map(([, envelope]) => envelope)
+      .find((envelope) => (envelope as { type?: string }).type === 'subscribed') as
+      | { payload: Record<string, unknown> }
+      | undefined;
+
+  it('publishes historyRefreshable=true for a line-oriented provider on the subscribed ack', async () => {
+    const { gateway, sessionsService } = createGateway();
+    (sessionsService.usesAlternateScreenFor as jest.Mock).mockReturnValue(false);
+    const client = createMockSocket('client-refreshable');
+
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'session-refreshable',
+      rows: 24,
+      cols: 80,
+    });
+
+    expect(findSubscribed(client)?.payload).toMatchObject({
+      replayStatus: 'seed',
+      historyRefreshable: true,
+    });
+  });
+
+  it('publishes historyRefreshable=false for an alternate-screen provider on the subscribed ack', async () => {
+    const { gateway, sessionsService } = createGateway();
+    (sessionsService.usesAlternateScreenFor as jest.Mock).mockReturnValue(true);
+    const client = createMockSocket('client-altscreen');
+
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'session-altscreen',
+      rows: 24,
+      cols: 80,
+    });
+
+    expect(findSubscribed(client)?.payload).toMatchObject({ historyRefreshable: false });
+  });
+
+  it('publishes historyRefreshable on the fallback (no-registry) subscribed ack', async () => {
+    const { gateway, sessionsService, registry } = createGateway();
+    (sessionsService.usesAlternateScreenFor as jest.Mock).mockReturnValue(true);
+    registry.get = () => undefined;
+    const client = createMockSocket('client-fallback-cap');
+
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'session-fallback-cap',
+      rows: 24,
+      cols: 80,
+    });
+
+    expect(findSubscribed(client)?.payload).toMatchObject({ historyRefreshable: false });
+  });
+
+  it('routes a successful empty first capture through the scheduler-admission guard', async () => {
+    const { gateway, seedService, sendScheduler } = createGateway();
+    (seedService.emitSeedToClient as jest.Mock).mockImplementation(
+      async (seedOptions: Parameters<TerminalSeedService['emitSeedToClient']>[0]) => {
+        seedOptions.deliver(
+          createEnvelope('terminal/session-empty', 'seed_empty', {
+            capturedSequence: seedOptions.getCurrentSequence?.() ?? 0,
+          }),
+        );
+        return undefined;
+      },
+    );
+    const client = createMockSocket('client-empty');
+
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'session-empty',
+      rows: 24,
+      cols: 80,
+    });
+
+    expect(sendScheduler.enqueueRecovery).toHaveBeenCalledWith(
+      client,
+      expect.objectContaining({
+        type: 'seed_empty',
+        payload: expect.objectContaining({ capturedSequence: 7 }),
+      }),
+    );
+  });
+
+  it('aborts an empty completion superseded by an active recovery', async () => {
+    const { gateway, seedService, sendScheduler } = createGateway();
+    let decision: TerminalSeedDeliveryDecision | undefined;
+    (seedService.emitSeedToClient as jest.Mock).mockImplementation(
+      async (seedOptions: Parameters<TerminalSeedService['emitSeedToClient']>[0]) => {
+        if (seedOptions.recovery) return undefined;
+        // A recovery for this socket/session lands before the empty completion delivers.
+        (gateway as unknown as { recoveries: Map<string, unknown> }).recoveries.set(
+          'client-superseded:session-superseded',
+          {},
+        );
+        decision = seedOptions.deliver(
+          createEnvelope('terminal/session-superseded', 'seed_empty', { capturedSequence: 0 }),
+        );
+        return undefined;
+      },
+    );
+    const client = createMockSocket('client-superseded');
+
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'session-superseded',
+      rows: 24,
+      cols: 80,
+    });
+
+    expect(decision).toBe(TerminalSeedDelivery.Abort);
+    expect(sendScheduler.enqueueRecovery).not.toHaveBeenCalledWith(
+      client,
+      expect.objectContaining({ type: 'seed_empty' }),
+    );
+  });
+
+  it('sends a new attaching viewer one targeted seed without broadcasting to existing viewers', async () => {
+    const { gateway, seedService, roomEmit, sendScheduler } = createGateway();
+    const firstClient = createMockSocket('viewer-1');
+    const secondClient = createMockSocket('viewer-2');
+    gateway.handleConnection(firstClient as unknown as Socket);
+    await gateway.handleSubscribe(firstClient as unknown as Socket, {
+      sessionId: 'shared-session',
+      rows: 24,
+      cols: 80,
+    });
+
+    (seedService.emitSeedToClient as jest.Mock).mockClear();
+    (seedService.emitSeedToClient as jest.Mock).mockImplementation(
+      async ({
+        deliver,
+        sessionId,
+      }: {
+        deliver: (envelope: unknown) => void;
+        sessionId: string;
+      }) => {
+        deliver(
+          createEnvelope(`terminal/${sessionId}`, 'seed_ansi', {
+            data: 'targeted seed',
+            chunk: 0,
+            totalChunks: 1,
+          }),
+        );
+      },
+    );
+    (firstClient.emit as jest.Mock).mockClear();
+    roomEmit.mockClear();
+    gateway.handleConnection(secondClient as unknown as Socket);
+    await gateway.handleSubscribe(secondClient as unknown as Socket, {
+      sessionId: 'shared-session',
+      rows: 30,
+      cols: 100,
+    });
+
+    expect(seedService.emitSeedToClient).toHaveBeenCalledTimes(1);
+    expect(seedService.emitSeedToClient).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deliver: expect.any(Function),
+        sessionId: 'shared-session',
+        maxBytes: DEFAULT_TERMINAL_SEED_MAX_BYTES,
+      }),
+    );
+    expect(roomEmit).not.toHaveBeenCalledWith(
+      'message',
+      expect.objectContaining({ type: 'seed_ansi' }),
+    );
+    expect(firstClient.emit).not.toHaveBeenCalledWith(
+      'message',
+      expect.objectContaining({ type: 'seed_ansi' }),
+    );
+    expect(sendScheduler.enqueueRecovery).toHaveBeenCalledWith(
+      secondClient,
+      expect.objectContaining({ type: 'seed_ansi' }),
+    );
   });
 
   it('applies latest debounced resize to the PTY during seed jiggle', async () => {
@@ -679,7 +1177,7 @@ describe('TerminalGateway.handleSubscribe', () => {
     }
   });
 
-  it('forwards seed_ansi from TerminalSession frame stream to socket room (integration)', async () => {
+  it('drops legacy seed_ansi frames instead of broadcasting them to the room', async () => {
     const { gateway, registry, roomEmit } = createGateway();
     const client = createMockSocket('client-seed');
 
@@ -698,7 +1196,7 @@ describe('TerminalGateway.handleSubscribe', () => {
       payload: { ansi: '<seed-content>' },
     });
 
-    expect(roomEmit).toHaveBeenCalledWith(
+    expect(roomEmit).not.toHaveBeenCalledWith(
       'message',
       expect.objectContaining({ type: 'seed_ansi' }),
     );
@@ -729,25 +1227,25 @@ describe('TerminalGateway.handleSubscribe', () => {
 
     roomEmit.mockClear();
     oldSession.stream.emit('frame', {
-      type: 'seed_ansi',
+      type: 'focus_changed',
       sessionId: 'session-restore',
-      payload: { data: 'old seed', chunk: 0, totalChunks: 1 },
+      payload: { clientId: 'old-client' },
     });
     newSession.stream.emit('frame', {
-      type: 'seed_ansi',
+      type: 'focus_changed',
       sessionId: 'session-restore',
-      payload: { data: 'new seed', chunk: 0, totalChunks: 1 },
+      payload: { clientId: 'new-client' },
     });
 
-    const seedCalls = roomEmit.mock.calls.filter(
-      ([, envelope]: [string, { type?: string; payload?: { data?: string } }]) =>
-        envelope?.type === 'seed_ansi',
+    const focusCalls = roomEmit.mock.calls.filter(
+      ([, envelope]: [string, { type?: string; payload?: { clientId?: string } }]) =>
+        envelope?.type === 'focus_changed',
     );
-    expect(seedCalls).toHaveLength(1);
-    expect(seedCalls[0][1]).toEqual(
+    expect(focusCalls).toHaveLength(1);
+    expect(focusCalls[0][1]).toEqual(
       expect.objectContaining({
-        type: 'seed_ansi',
-        payload: expect.objectContaining({ data: 'new seed' }),
+        type: 'focus_changed',
+        payload: expect.objectContaining({ clientId: 'new-client' }),
       }),
     );
   });
@@ -768,18 +1266,18 @@ describe('TerminalGateway.handleSubscribe', () => {
 
     roomEmit.mockClear();
     session.stream.emit('frame', {
-      type: 'seed_ansi',
+      type: 'focus_changed',
       sessionId: 'session-stopped-unwire',
-      payload: { data: 'late seed', chunk: 0, totalChunks: 1 },
+      payload: { clientId: 'late-client' },
     });
 
     expect(roomEmit).not.toHaveBeenCalledWith(
       'message',
-      expect.objectContaining({ type: 'seed_ansi' }),
+      expect.objectContaining({ type: 'focus_changed' }),
     );
   });
 
-  it('does not duplicate frame forwarding for multiple subscribers on the same session', async () => {
+  it('does not duplicate room-frame forwarding for multiple subscribers on one session', async () => {
     const { gateway, registry, roomEmit } = createGateway();
     const firstClient = createMockSocket('client-multi-1');
     const secondClient = createMockSocket('client-multi-2');
@@ -800,15 +1298,15 @@ describe('TerminalGateway.handleSubscribe', () => {
 
     roomEmit.mockClear();
     registry.get('session-multi')!.stream.emit('frame', {
-      type: 'seed_ansi',
+      type: 'focus_changed',
       sessionId: 'session-multi',
-      payload: { data: 'one seed', chunk: 0, totalChunks: 1 },
+      payload: { clientId: 'client-multi-2' },
     });
 
-    const seedCalls = roomEmit.mock.calls.filter(
-      ([, envelope]: [string, { type?: string }]) => envelope?.type === 'seed_ansi',
+    const focusCalls = roomEmit.mock.calls.filter(
+      ([, envelope]: [string, { type?: string }]) => envelope?.type === 'focus_changed',
     );
-    expect(seedCalls).toHaveLength(1);
+    expect(focusCalls).toHaveLength(1);
   });
 
   it('forwards resize_jiggle from TerminalSession frame stream to socket room', async () => {
@@ -852,6 +1350,13 @@ describe('TerminalGateway.handleSubscribe', () => {
     });
 
     expect(seedService.emitSeedToClient).toHaveBeenCalled();
+    expect(client.emit).toHaveBeenCalledWith(
+      'message',
+      expect.objectContaining({
+        type: 'subscribed',
+        payload: expect.objectContaining({ replayStatus: 'seed' }),
+      }),
+    );
   });
 
   it('passes client dimensions to ensurePtyStreaming to eliminate double-SIGWINCH on first attach', async () => {
@@ -882,11 +1387,940 @@ describe('TerminalGateway.handleSubscribe', () => {
     await gateway.handleSubscribe(client as unknown as Socket, {
       sessionId: 'session-3',
       lastSequence: 42,
+      sequenceEpoch: MOCK_SEQUENCE_EPOCH,
     });
 
-    // On reconnection, no seeding should happen
+    // On a same-domain reconnect (epoch matches), no seeding — replay by the epoch-scoped cursor.
     expect(seedService.emitSeedToClient).not.toHaveBeenCalled();
-    expect(streamService.getFramesSince).toHaveBeenCalledWith('session-3', 42);
+    expect(streamService.getReconnectReplay).toHaveBeenCalledWith('session-3', {
+      sequenceEpoch: MOCK_SEQUENCE_EPOCH,
+      sequence: 42,
+    });
+  });
+
+  it('emits resync_required and one bounded targeted seed when replay has a gap', async () => {
+    const { gateway, seedService, registry } = createGateway({
+      seedMaxBytes: 256 * 1024,
+      replayResult: {
+        status: 'gap',
+        currentSequence: 150,
+        earliestAvailableSequence: 51,
+      },
+    });
+    const client = createMockSocket('client-gap');
+    const session = registry.get('session-gap')!;
+    const subscribeSpy = jest.spyOn(session, 'subscribe');
+    gateway.handleConnection(client as unknown as Socket);
+
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'session-gap',
+      lastSequence: 42,
+      sequenceEpoch: MOCK_SEQUENCE_EPOCH,
+      cols: 100,
+      rows: 30,
+    });
+
+    const resyncEnvelope = (client.emit as jest.Mock).mock.calls
+      .filter(([event]: [string]) => event === 'message')
+      .map(([, envelope]: [string, ReturnType<typeof createEnvelope>]) => envelope)
+      .find((envelope: ReturnType<typeof createEnvelope>) => envelope.type === 'resync_required');
+    expect(resyncEnvelope?.payload).toEqual({
+      sessionId: 'session-gap',
+      requestedSequence: 42,
+      currentSequence: 150,
+      earliestAvailableSequence: 51,
+    });
+    expect(seedService.emitSeedToClient).toHaveBeenCalledTimes(1);
+    expect(subscribeSpy).toHaveBeenCalledWith('client-gap');
+    expect(seedService.invalidateCache).toHaveBeenCalledWith('session-gap');
+    expect(seedService.emitSeedToClient).toHaveBeenCalledWith({
+      deliver: expect.any(Function),
+      sessionId: 'session-gap',
+      maxBytes: 256 * 1024,
+      cols: 100,
+      rows: 30,
+      allowEmpty: true,
+      recovery: {
+        sequenceEpoch: MOCK_SEQUENCE_EPOCH,
+        recoveryEpoch: 1,
+        getCurrentSequence: expect.any(Function),
+        onCapturedSequence: expect.any(Function),
+      },
+    });
+  });
+
+  it('delivers output produced during a seed as a covered tail before resuming live', async () => {
+    const { gateway, streamService, seedService, sendScheduler } = createGateway();
+    const client = createMockSocket('client-recovery-tail');
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'session-recovery-tail',
+      rows: 24,
+      cols: 80,
+    });
+
+    const tail = createEnvelope('terminal/session-recovery-tail', 'data', {
+      data: 'during-seed',
+      sequence: 8,
+    });
+    (streamService.getCurrentSequence as jest.Mock).mockReturnValue(7);
+    (streamService.getFramesSince as jest.Mock).mockImplementation(
+      (_sessionId: string, afterSequence?: number) =>
+        afterSequence === 7
+          ? { status: 'covered', frames: [tail], currentSequence: 8 }
+          : { status: 'covered', frames: [], currentSequence: 8 },
+    );
+    (seedService.emitSeedToClient as jest.Mock).mockImplementation(
+      async (seedOptions: Parameters<TerminalSeedService['emitSeedToClient']>[0]) => {
+        const recovery = seedOptions.recovery!;
+        const capturedSequence = recovery.getCurrentSequence();
+        recovery.onCapturedSequence?.(capturedSequence);
+        seedOptions.deliver(
+          createEnvelope('terminal/session-recovery-tail', 'seed_ansi', {
+            data: 'snapshot',
+            chunk: 0,
+            totalChunks: 1,
+            recoveryEpoch: recovery.recoveryEpoch,
+            capturedSequence,
+          }),
+        );
+        return { recoveryEpoch: recovery.recoveryEpoch, capturedSequence };
+      },
+    );
+    (sendScheduler.enqueueRecovery as jest.Mock).mockClear();
+
+    await gateway.handleResyncRequest(client as unknown as Socket, {
+      sessionId: 'session-recovery-tail',
+      reason: 'client_write_overflow',
+    });
+
+    expect(sendScheduler.beginRecovery).toHaveBeenCalledWith(client, 'session-recovery-tail', 1);
+    expect(sendScheduler.enqueueRecovery).toHaveBeenCalledWith(
+      client,
+      expect.objectContaining({
+        type: 'seed_ansi',
+        payload: expect.objectContaining({ recoveryEpoch: 1, capturedSequence: 7 }),
+      }),
+    );
+
+    gateway.handleResyncComplete(client as unknown as Socket, {
+      sessionId: 'session-recovery-tail',
+      recoveryEpoch: 0,
+      capturedSequence: 7,
+    });
+    expect(streamService.getFramesSince).not.toHaveBeenCalled();
+
+    gateway.handleResyncComplete(client as unknown as Socket, {
+      sessionId: 'session-recovery-tail',
+      sequenceEpoch: MOCK_SEQUENCE_EPOCH,
+      recoveryEpoch: 1,
+      capturedSequence: 7,
+    });
+    const tailCall = (sendScheduler.enqueueRecovery as jest.Mock).mock.calls.find(
+      ([, envelope]: [Socket, ReturnType<typeof createEnvelope>]) => envelope.type === 'data',
+    );
+    expect(tailCall?.[1]).toBe(tail);
+    expect(sendScheduler.markSynchronized).not.toHaveBeenCalled();
+
+    tailCall?.[2]();
+    expect(streamService.getFramesSince).toHaveBeenLastCalledWith('session-recovery-tail', 8);
+    expect(sendScheduler.markSynchronized).toHaveBeenCalledWith(
+      client.id,
+      'session-recovery-tail',
+      1,
+    );
+
+    gateway.handleResyncComplete(client as unknown as Socket, {
+      sessionId: 'session-recovery-tail',
+      sequenceEpoch: MOCK_SEQUENCE_EPOCH,
+      recoveryEpoch: 1,
+      capturedSequence: 7,
+    });
+    expect(sendScheduler.markSynchronized).toHaveBeenCalledTimes(1);
+  });
+
+  it('coalesces recovery requests, permits one replacement seed, then disconnects on a repeated tail gap', async () => {
+    const { gateway, streamService, seedService, sendScheduler } = createGateway();
+    const client = createMockSocket('client-replacement');
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'session-replacement',
+      rows: 24,
+      cols: 80,
+    });
+    const epochs: number[] = [];
+    (streamService.getCurrentSequence as jest.Mock).mockReturnValue(12);
+    (streamService.getFramesSince as jest.Mock).mockReturnValue({
+      status: 'gap',
+      currentSequence: 20,
+      earliestAvailableSequence: 15,
+    });
+    (seedService.emitSeedToClient as jest.Mock).mockImplementation(
+      async (seedOptions: Parameters<TerminalSeedService['emitSeedToClient']>[0]) => {
+        const recovery = seedOptions.recovery!;
+        epochs.push(recovery.recoveryEpoch);
+        const capturedSequence = recovery.getCurrentSequence();
+        recovery.onCapturedSequence?.(capturedSequence);
+        return { recoveryEpoch: recovery.recoveryEpoch, capturedSequence };
+      },
+    );
+
+    const request = {
+      sessionId: 'session-replacement',
+      reason: 'client_write_overflow' as const,
+    };
+    await Promise.all([
+      gateway.handleResyncRequest(client as unknown as Socket, request),
+      gateway.handleResyncRequest(client as unknown as Socket, request),
+    ]);
+    expect(epochs).toEqual([1]);
+
+    gateway.handleResyncComplete(client as unknown as Socket, {
+      sessionId: 'session-replacement',
+      sequenceEpoch: MOCK_SEQUENCE_EPOCH,
+      recoveryEpoch: 1,
+      capturedSequence: 12,
+    });
+    gateway.handleResyncComplete(client as unknown as Socket, {
+      sessionId: 'session-replacement',
+      sequenceEpoch: MOCK_SEQUENCE_EPOCH,
+      recoveryEpoch: 1,
+      capturedSequence: 12,
+    });
+    await Promise.resolve();
+
+    expect(epochs).toEqual([1, 2]);
+    expect(sendScheduler.beginRecovery).toHaveBeenCalledTimes(2);
+    expect(sendScheduler.markSynchronized).not.toHaveBeenCalled();
+
+    gateway.handleResyncComplete(client as unknown as Socket, {
+      sessionId: 'session-replacement',
+      sequenceEpoch: MOCK_SEQUENCE_EPOCH,
+      recoveryEpoch: 2,
+      capturedSequence: 12,
+    });
+    expect(client.conn.close).toHaveBeenCalledTimes(1);
+    expect(sendScheduler.removeSocket).toHaveBeenCalledWith(client.id);
+  });
+
+  it('aborts only the current recovery epoch and converges through one fresh epoch', async () => {
+    const { gateway, sendScheduler, streamService } = createGateway();
+    const client = createMockSocket('client-abort-retry');
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'session-abort-retry',
+      rows: 24,
+      cols: 80,
+    });
+    (streamService.getFramesSince as jest.Mock).mockReturnValue({
+      status: 'covered',
+      frames: [],
+      currentSequence: 7,
+    });
+
+    await gateway.handleResyncRequest(client as unknown as Socket, {
+      sessionId: 'session-abort-retry',
+      reason: 'client_write_overflow',
+    });
+
+    expect(
+      gateway.handleResyncAbort(client as unknown as Socket, {
+        sessionId: 'session-abort-retry',
+        sequenceEpoch: MOCK_SEQUENCE_EPOCH,
+        recoveryEpoch: 1,
+      }),
+    ).toBe(true);
+    expect(sendScheduler.removeLane).toHaveBeenCalledWith(client.id, 'session-abort-retry');
+
+    gateway.handleResyncComplete(client as unknown as Socket, {
+      sessionId: 'session-abort-retry',
+      recoveryEpoch: 1,
+      capturedSequence: 7,
+    });
+    expect(sendScheduler.markSynchronized).not.toHaveBeenCalled();
+
+    await gateway.handleResyncRequest(client as unknown as Socket, {
+      sessionId: 'session-abort-retry',
+      reason: 'client_write_overflow',
+    });
+    expect(sendScheduler.beginRecovery).toHaveBeenLastCalledWith(client, 'session-abort-retry', 2);
+
+    gateway.handleResyncComplete(client as unknown as Socket, {
+      sessionId: 'session-abort-retry',
+      sequenceEpoch: MOCK_SEQUENCE_EPOCH,
+      recoveryEpoch: 2,
+      capturedSequence: 7,
+    });
+    expect(sendScheduler.markSynchronized).toHaveBeenCalledWith(
+      client.id,
+      'session-abort-retry',
+      2,
+    );
+  });
+
+  it('rejects malformed, stale, cross-session, and cross-socket recovery aborts', async () => {
+    const { gateway, sendScheduler } = createGateway();
+    const owner = createMockSocket('client-abort-owner');
+    const other = createMockSocket('client-abort-other');
+    gateway.handleConnection(owner as unknown as Socket);
+    gateway.handleConnection(other as unknown as Socket);
+    await gateway.handleSubscribe(owner as unknown as Socket, {
+      sessionId: 'session-abort-owner',
+    });
+    await gateway.handleResyncRequest(owner as unknown as Socket, {
+      sessionId: 'session-abort-owner',
+      reason: 'client_write_overflow',
+    });
+
+    expect(
+      gateway.handleResyncAbort(owner as unknown as Socket, {
+        sessionId: 'session-abort-owner',
+        recoveryEpoch: 1,
+        capturedSequence: 7,
+      }),
+    ).toBe(false);
+    expect(
+      gateway.handleResyncAbort(owner as unknown as Socket, {
+        sessionId: 'session-abort-owner',
+        recoveryEpoch: 0,
+      }),
+    ).toBe(false);
+    expect(
+      gateway.handleResyncAbort(owner as unknown as Socket, {
+        sessionId: 'session-abort-other',
+        recoveryEpoch: 1,
+      }),
+    ).toBe(false);
+    expect(
+      gateway.handleResyncAbort(other as unknown as Socket, {
+        sessionId: 'session-abort-owner',
+        recoveryEpoch: 1,
+      }),
+    ).toBe(false);
+    expect(sendScheduler.removeLane).not.toHaveBeenCalled();
+
+    gateway.handleResyncComplete(owner as unknown as Socket, {
+      sessionId: 'session-abort-owner',
+      sequenceEpoch: MOCK_SEQUENCE_EPOCH,
+      recoveryEpoch: 1,
+      capturedSequence: 7,
+    });
+    expect(sendScheduler.markSynchronized).toHaveBeenCalledWith(owner.id, 'session-abort-owner', 1);
+  });
+
+  it('module unit: isolates simultaneous recovery lanes on one socket and keeps unrelated live traffic admitted', async () => {
+    const drain = new GatewayDrainAdapter();
+    const scheduler = new TerminalSendSchedulerService(
+      drain as unknown as TerminalSocketDrainAdapter,
+      { queueBytes: 4096, batchBytes: 512 },
+    );
+    const { gateway, seedService, streamService } = createGateway({ sendScheduler: scheduler });
+    const client = createMockSocket('shared-recovery-socket');
+    drain.setWritable(client, false);
+    gateway.handleConnection(client);
+
+    for (const sessionId of ['session-a', 'session-b', 'session-c']) {
+      await gateway.handleSubscribe(client, { sessionId, rows: 24, cols: 80 });
+    }
+    (seedService.emitSeedToClient as jest.Mock).mockImplementation(
+      async (seedOptions: Parameters<TerminalSeedService['emitSeedToClient']>[0]) => {
+        const recovery = seedOptions.recovery;
+        if (!recovery) return undefined;
+        const capturedSequence = recovery.getCurrentSequence();
+        recovery.onCapturedSequence?.(capturedSequence);
+        seedOptions.deliver(
+          createEnvelope(`terminal/${seedOptions.sessionId}`, 'seed_ansi', {
+            data: `seed-${seedOptions.sessionId}`,
+            chunk: 0,
+            totalChunks: 1,
+            recoveryEpoch: recovery.recoveryEpoch,
+            capturedSequence,
+          }),
+        );
+        return { recoveryEpoch: recovery.recoveryEpoch, capturedSequence };
+      },
+    );
+    (streamService.getFramesSince as jest.Mock).mockReturnValue({
+      status: 'covered',
+      frames: [],
+      currentSequence: 7,
+    });
+
+    await Promise.all([
+      gateway.handleResyncRequest(client, {
+        sessionId: 'session-a',
+        reason: 'client_write_overflow',
+      }),
+      gateway.handleResyncRequest(client, {
+        sessionId: 'session-b',
+        reason: 'client_write_overflow',
+      }),
+    ]);
+
+    let queue = scheduler.getStats().terminalQueues[client.id];
+    expect(queue.lanes['session-a']).toMatchObject({
+      desynchronized: true,
+      recoveryActive: true,
+      recoveryEpoch: 1,
+    });
+    expect(queue.lanes['session-b']).toMatchObject({
+      desynchronized: true,
+      recoveryActive: true,
+      recoveryEpoch: 1,
+    });
+    expect(queue.lanes['session-a'].queuedBytes).toBeGreaterThan(0);
+    expect(queue.lanes['session-b'].queuedBytes).toBeGreaterThan(0);
+
+    drain.setWritable(client, true);
+    drain.complete(client);
+    drain.complete(client);
+    expect(new Set(drain.sent.slice(0, 2).map((envelope) => envelope.topic))).toEqual(
+      new Set(['terminal/session-a', 'terminal/session-b']),
+    );
+
+    gateway.handleResyncComplete(client, {
+      sessionId: 'session-a',
+      recoveryEpoch: 0,
+      capturedSequence: 7,
+    });
+    queue = scheduler.getStats().terminalQueues[client.id];
+    expect(queue.lanes['session-a'].desynchronized).toBe(true);
+    expect(queue.lanes['session-b'].desynchronized).toBe(true);
+
+    gateway.handleResyncComplete(client, {
+      sessionId: 'session-a',
+      sequenceEpoch: MOCK_SEQUENCE_EPOCH,
+      recoveryEpoch: 1,
+      capturedSequence: 7,
+    });
+    queue = scheduler.getStats().terminalQueues[client.id];
+    expect(queue.lanes['session-a'].desynchronized).toBe(false);
+    expect(queue.lanes['session-b'].desynchronized).toBe(true);
+    expect(queue.desynchronized).toBe(true);
+
+    gateway.broadcastTerminalData('session-c', 'unrelated-live');
+    expect(drain.sent.at(-1)).toMatchObject({
+      topic: 'terminal/session-c',
+      type: 'data',
+    });
+
+    gateway.handleResyncComplete(client, {
+      sessionId: 'session-b',
+      sequenceEpoch: MOCK_SEQUENCE_EPOCH,
+      recoveryEpoch: 1,
+      capturedSequence: 7,
+    });
+    queue = scheduler.getStats().terminalQueues[client.id];
+    expect(queue.lanes['session-b'].desynchronized).toBe(false);
+    expect(queue.desynchronized).toBe(false);
+    expect(scheduler.getStats().terminalDesynchronizedClients).toBe(0);
+  });
+
+  it('module unit (real scheduler integration): owns initial-seed aggregate overflow while preserving the sibling lane', async () => {
+    const drain = new GatewayDrainAdapter();
+    const scheduler = new TerminalSendSchedulerService(
+      drain as unknown as TerminalSocketDrainAdapter,
+      { queueBytes: 650, batchBytes: 400 },
+    );
+    const { gateway, seedService, streamService } = createGateway({ sendScheduler: scheduler });
+    const client = createMockSocket('shared-initial-seed-overflow');
+    drain.setWritable(client, false);
+    gateway.handleConnection(client);
+    await gateway.handleSubscribe(client, { sessionId: 'sibling-lane' });
+    gateway.broadcastTerminalData('sibling-lane', 's'.repeat(160));
+
+    const initialDecisions: TerminalSeedDeliveryDecision[] = [];
+    let staleInitialDelivery:
+      | Parameters<TerminalSeedService['emitSeedToClient']>[0]['deliver']
+      | undefined;
+    (seedService.emitSeedToClient as jest.Mock)
+      .mockClear()
+      .mockImplementation(
+        async (seedOptions: Parameters<TerminalSeedService['emitSeedToClient']>[0]) => {
+          const recovery = seedOptions.recovery;
+          if (!recovery) {
+            staleInitialDelivery = seedOptions.deliver;
+            for (let chunk = 0; chunk < 3; chunk += 1) {
+              const decision = seedOptions.deliver(
+                createEnvelope(`terminal/${seedOptions.sessionId}`, 'seed_ansi', {
+                  data: 'i'.repeat(160),
+                  chunk,
+                  totalChunks: 3,
+                }),
+              );
+              if (decision) initialDecisions.push(decision);
+              if (decision === TerminalSeedDelivery.Abort) break;
+            }
+            return undefined;
+          }
+
+          const capturedSequence = recovery.getCurrentSequence();
+          recovery.onCapturedSequence?.(capturedSequence);
+          seedOptions.deliver(
+            createEnvelope(`terminal/${seedOptions.sessionId}`, 'seed_ansi', {
+              data: 'recovered',
+              chunk: 0,
+              totalChunks: 1,
+              recoveryEpoch: recovery.recoveryEpoch,
+              capturedSequence,
+            }),
+          );
+          return { recoveryEpoch: recovery.recoveryEpoch, capturedSequence };
+        },
+      );
+    (streamService.getFramesSince as jest.Mock).mockReturnValue({
+      status: 'covered',
+      frames: [],
+      currentSequence: 7,
+    });
+
+    await gateway.handleSubscribe(client, { sessionId: 'new-lane' });
+
+    expect(initialDecisions).toEqual([TerminalSeedDelivery.Continue, TerminalSeedDelivery.Abort]);
+    expect(seedService.emitSeedToClient).toHaveBeenCalledTimes(2);
+    let queue = scheduler.getStats().terminalQueues[client.id];
+    expect(queue.queuedBytes).toBeLessThanOrEqual(650);
+    expect(queue.lanes['sibling-lane']).toMatchObject({
+      desynchronized: false,
+      recoveryActive: false,
+    });
+    expect(queue.lanes['new-lane']).toMatchObject({
+      desynchronized: true,
+      recoveryActive: true,
+      recoveryEpoch: 1,
+    });
+
+    const queuedBeforeStaleDelivery = queue.queuedBytes;
+    expect(
+      staleInitialDelivery?.(
+        createEnvelope('terminal/new-lane', 'seed_ansi', {
+          data: 'stale-after-escalation',
+          chunk: 2,
+          totalChunks: 3,
+        }),
+      ),
+    ).toBe(TerminalSeedDelivery.Abort);
+    expect(seedService.emitSeedToClient).toHaveBeenCalledTimes(2);
+    expect(scheduler.getStats().terminalQueues[client.id].queuedBytes).toBe(
+      queuedBeforeStaleDelivery,
+    );
+
+    drain.setWritable(client, true);
+    drain.complete(client);
+    drain.complete(client);
+    expect(
+      drain.sentTo(client).find((envelope) => envelope.topic === 'terminal/sibling-lane'),
+    ).toMatchObject({ type: 'data', payload: expect.objectContaining({ data: 's'.repeat(160) }) });
+    expect(
+      drain.sentTo(client).filter((envelope) => envelope.topic === 'terminal/new-lane'),
+    ).toEqual([
+      expect.objectContaining({
+        type: 'seed_ansi',
+        payload: expect.objectContaining({ data: 'recovered', recoveryEpoch: 1 }),
+      }),
+    ]);
+
+    gateway.handleResyncComplete(client, {
+      sessionId: 'new-lane',
+      sequenceEpoch: MOCK_SEQUENCE_EPOCH,
+      recoveryEpoch: 1,
+      capturedSequence: 7,
+    });
+    queue = scheduler.getStats().terminalQueues[client.id];
+    expect(queue.lanes['new-lane'].desynchronized).toBe(false);
+    expect(queue.lanes['sibling-lane'].desynchronized).toBe(false);
+
+    const sentBeforeCompletedRecoveryStaleDelivery = drain.sentTo(client).length;
+    expect(
+      staleInitialDelivery?.(
+        createEnvelope('terminal/new-lane', 'seed_ansi', {
+          data: 'stale-after-completed-recovery',
+          chunk: 2,
+          totalChunks: 3,
+        }),
+      ),
+    ).toBe(TerminalSeedDelivery.Abort);
+    expect(drain.sentTo(client)).toHaveLength(sentBeforeCompletedRecoveryStaleDelivery);
+    expect(scheduler.getStats().terminalQueues[client.id].lanes['new-lane'].desynchronized).toBe(
+      false,
+    );
+    expect(client.conn.close).not.toHaveBeenCalled();
+  });
+
+  it('module unit (real scheduler integration): rejects an in-flight initial-seed callback after disconnect cleanup', async () => {
+    const drain = new GatewayDrainAdapter();
+    const scheduler = new TerminalSendSchedulerService(
+      drain as unknown as TerminalSocketDrainAdapter,
+      { queueBytes: 650, batchBytes: 400 },
+    );
+    const { gateway, seedService } = createGateway({ sendScheduler: scheduler });
+    const client = createMockSocket('initial-seed-disconnect');
+    drain.setWritable(client, false);
+    gateway.handleConnection(client);
+
+    let staleDelivery:
+      | Parameters<TerminalSeedService['emitSeedToClient']>[0]['deliver']
+      | undefined;
+    let markSeedStarted!: () => void;
+    let finishSeed!: () => void;
+    const seedStarted = new Promise<void>((resolve) => {
+      markSeedStarted = resolve;
+    });
+    const seedFinished = new Promise<void>((resolve) => {
+      finishSeed = resolve;
+    });
+    (seedService.emitSeedToClient as jest.Mock).mockImplementationOnce(
+      async (seedOptions: Parameters<TerminalSeedService['emitSeedToClient']>[0]) => {
+        staleDelivery = seedOptions.deliver;
+        markSeedStarted();
+        await seedFinished;
+        return undefined;
+      },
+    );
+
+    const subscribe = gateway.handleSubscribe(client, { sessionId: 'disconnect-lane' });
+    await seedStarted;
+    gateway.handleDisconnect(client);
+
+    expect(
+      staleDelivery?.(
+        createEnvelope('terminal/disconnect-lane', 'seed_ansi', {
+          data: 'must-not-recreate-the-lane',
+          chunk: 0,
+          totalChunks: 1,
+        }),
+      ),
+    ).toBe(TerminalSeedDelivery.Abort);
+    expect(scheduler.getStats().terminalQueues[client.id]).toBeUndefined();
+
+    finishSeed();
+    await subscribe;
+    expect(scheduler.getStats().terminalQueues[client.id]).toBeUndefined();
+  });
+
+  it('recovers one overflowed stalled viewer through a bounded seed and gap-free tail while another viewer stays current', async () => {
+    const drain = new GatewayDrainAdapter();
+    const scheduler = new TerminalSendSchedulerService(
+      drain as unknown as TerminalSocketDrainAdapter,
+      { queueBytes: 400, batchBytes: 320 },
+    );
+    const { gateway, seedService, streamService } = createGateway({ sendScheduler: scheduler });
+    const stalled = createMockSocket('overflow-stalled');
+    const current = createMockSocket('overflow-current');
+    drain.setWritable(stalled, false);
+    drain.setWritable(current, true);
+    gateway.handleConnection(stalled);
+    gateway.handleConnection(current);
+    await gateway.handleSubscribe(stalled, { sessionId: 'overflow-session' });
+    await gateway.handleSubscribe(current, { sessionId: 'overflow-session' });
+
+    let sequence = 0;
+    const frames: ReturnType<typeof createEnvelope>[] = [];
+    (streamService.addFrame as jest.Mock).mockImplementation((sessionId: string, data: string) => {
+      const frame = createEnvelope(`terminal/${sessionId}`, 'data', {
+        data,
+        sequence: ++sequence,
+      });
+      frames.push(frame);
+      return [frame];
+    });
+    (streamService.getCurrentSequence as jest.Mock).mockImplementation(() => sequence);
+    (streamService.getFramesSince as jest.Mock).mockImplementation(
+      (_sessionId: string, afterSequence: number) => ({
+        status: 'covered',
+        frames: frames.filter(
+          (frame) => (frame.payload as { sequence: number }).sequence > afterSequence,
+        ),
+        currentSequence: sequence,
+      }),
+    );
+    (seedService.emitSeedToClient as jest.Mock)
+      .mockClear()
+      .mockImplementation(
+        async (seedOptions: Parameters<TerminalSeedService['emitSeedToClient']>[0]) => {
+          const recovery = seedOptions.recovery;
+          if (!recovery) return undefined;
+          const capturedSequence = recovery.getCurrentSequence();
+          recovery.onCapturedSequence?.(capturedSequence);
+          seedOptions.deliver(
+            createEnvelope(`terminal/${seedOptions.sessionId}`, 'seed_ansi', {
+              data: 'fresh-overflow-seed',
+              chunk: 0,
+              totalChunks: 1,
+              recoveryEpoch: recovery.recoveryEpoch,
+              capturedSequence,
+            }),
+          );
+          return { recoveryEpoch: recovery.recoveryEpoch, capturedSequence };
+        },
+      );
+
+    gateway.broadcastTerminalData('overflow-session', 'a'.repeat(100));
+    drain.complete(current);
+    gateway.broadcastTerminalData('overflow-session', 'b'.repeat(200));
+    drain.complete(current);
+    await Promise.resolve();
+
+    expect(seedService.emitSeedToClient).toHaveBeenCalledTimes(1);
+    const stalledQueue = scheduler.getStats().terminalQueues[stalled.id];
+    expect(stalledQueue.queuedBytes).toBeLessThanOrEqual(400);
+    expect(stalledQueue.lanes['overflow-session']).toMatchObject({
+      desynchronized: true,
+      recoveryActive: true,
+      recoveryEpoch: 1,
+    });
+    expect(scheduler.getStats().terminalQueues[current.id].desynchronized).toBe(false);
+
+    gateway.broadcastTerminalData('overflow-session', 'during-recovery');
+    drain.complete(current);
+    expect(seedService.emitSeedToClient).toHaveBeenCalledTimes(1);
+
+    drain.setWritable(stalled, true);
+    drain.complete(stalled);
+    gateway.handleResyncComplete(stalled, {
+      sessionId: 'overflow-session',
+      sequenceEpoch: MOCK_SEQUENCE_EPOCH,
+      recoveryEpoch: 1,
+      capturedSequence: 2,
+    });
+    drain.complete(stalled);
+
+    const stalledDeliveries = drain.sentTo(stalled);
+    expect(stalledDeliveries.map((envelope) => envelope.type)).toEqual(['seed_ansi', 'data']);
+    expect((stalledDeliveries[1].payload as { sequence: number }).sequence).toBe(3);
+    expect(
+      drain.sentTo(current).map((envelope) => (envelope.payload as { sequence: number }).sequence),
+    ).toEqual([1, 2, 3]);
+    expect(scheduler.getStats().terminalQueues[stalled.id].desynchronized).toBe(false);
+    expect(stalled.disconnect).not.toHaveBeenCalled();
+    expect(stalled.conn.close).not.toHaveBeenCalled();
+    expect(current.disconnect).not.toHaveBeenCalled();
+    expect(current.conn.close).not.toHaveBeenCalled();
+  });
+
+  it('disconnects and cleans only the affected viewer when bounded recovery cannot be admitted, then accepts a clean reconnect', async () => {
+    const drain = new GatewayDrainAdapter();
+    const scheduler = new TerminalSendSchedulerService(
+      drain as unknown as TerminalSocketDrainAdapter,
+      { queueBytes: 400, batchBytes: 320 },
+    );
+    const { gateway, seedService } = createGateway({ sendScheduler: scheduler });
+    const stalled = createMockSocket('unrecoverable-stalled');
+    const current = createMockSocket('unrecoverable-current');
+    drain.setWritable(stalled, false);
+    drain.setWritable(current, true);
+    gateway.handleConnection(stalled);
+    gateway.handleConnection(current);
+    await gateway.handleSubscribe(stalled, { sessionId: 'fallback-session' });
+    await gateway.handleSubscribe(current, { sessionId: 'fallback-session' });
+
+    (seedService.emitSeedToClient as jest.Mock)
+      .mockClear()
+      .mockImplementation(
+        async (seedOptions: Parameters<TerminalSeedService['emitSeedToClient']>[0]) => {
+          if (!seedOptions.recovery) {
+            seedOptions.deliver(
+              createEnvelope(`terminal/${seedOptions.sessionId}`, 'seed_ansi', {
+                data: 'clean-reconnect-seed',
+                chunk: 0,
+                totalChunks: 1,
+              }),
+            );
+            return undefined;
+          }
+          const capturedSequence = seedOptions.recovery.getCurrentSequence();
+          seedOptions.recovery.onCapturedSequence?.(capturedSequence);
+          for (let chunk = 0; chunk < 2; chunk += 1) {
+            seedOptions.deliver(
+              createEnvelope(`terminal/${seedOptions.sessionId}`, 'seed_ansi', {
+                data: 'x'.repeat(400),
+                chunk,
+                totalChunks: 2,
+                recoveryEpoch: seedOptions.recovery.recoveryEpoch,
+                capturedSequence,
+              }),
+            );
+          }
+          return { recoveryEpoch: seedOptions.recovery.recoveryEpoch, capturedSequence };
+        },
+      );
+
+    gateway.broadcastTerminalData('fallback-session', 'a'.repeat(100));
+    drain.complete(current);
+    gateway.broadcastTerminalData('fallback-session', 'b'.repeat(200));
+    drain.complete(current);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(stalled.conn.close).toHaveBeenCalledTimes(1);
+    expect(current.disconnect).not.toHaveBeenCalled();
+    expect(current.conn.close).not.toHaveBeenCalled();
+    expect(scheduler.getStats().terminalQueues[stalled.id]).toBeUndefined();
+    expect(scheduler.getStats().terminalQueues[current.id].desynchronized).toBe(false);
+
+    const replacement = createMockSocket('unrecoverable-replacement');
+    drain.setWritable(replacement, true);
+    gateway.handleConnection(replacement);
+    await gateway.handleSubscribe(replacement, { sessionId: 'fallback-session' });
+    expect(drain.sentTo(replacement).at(-1)?.type).toBe('seed_ansi');
+    drain.complete(replacement);
+
+    gateway.broadcastTerminalData('fallback-session', 'after-reconnect');
+    drain.complete(current);
+    expect(drain.sentTo(replacement).at(-1)?.type).toBe('data');
+    expect(drain.sentTo(current).at(-1)?.type).toBe('data');
+  });
+
+  it('recovers only the overflowed lane on a shared socket and rejects stale completion and callbacks across newer epochs', async () => {
+    const drain = new GatewayDrainAdapter();
+    const scheduler = new TerminalSendSchedulerService(
+      drain as unknown as TerminalSocketDrainAdapter,
+      { queueBytes: 500, batchBytes: 256 },
+    );
+    const { gateway, seedService } = createGateway({ sendScheduler: scheduler });
+    const client = createMockSocket('shared-overflow-socket');
+    drain.setWritable(client, false);
+    gateway.handleConnection(client);
+    await gateway.handleSubscribe(client, { sessionId: 'lane-a' });
+    await gateway.handleSubscribe(client, { sessionId: 'lane-b' });
+
+    (seedService.emitSeedToClient as jest.Mock)
+      .mockClear()
+      .mockImplementation(
+        async (seedOptions: Parameters<TerminalSeedService['emitSeedToClient']>[0]) => {
+          const recovery = seedOptions.recovery;
+          if (!recovery) return undefined;
+          const capturedSequence = recovery.getCurrentSequence();
+          recovery.onCapturedSequence?.(capturedSequence);
+          seedOptions.deliver(
+            createEnvelope(`terminal/${seedOptions.sessionId}`, 'seed_ansi', {
+              data: `seed-${recovery.recoveryEpoch}`,
+              chunk: 0,
+              totalChunks: 1,
+              recoveryEpoch: recovery.recoveryEpoch,
+              capturedSequence,
+            }),
+          );
+          return { recoveryEpoch: recovery.recoveryEpoch, capturedSequence };
+        },
+      );
+
+    gateway.broadcastTerminalData('lane-b', 'b'.repeat(100));
+    gateway.broadcastTerminalData('lane-a', 'a'.repeat(100));
+    gateway.broadcastTerminalData('lane-a', 'x'.repeat(200));
+    gateway.broadcastTerminalData('lane-a', 'suppressed');
+    await Promise.resolve();
+
+    let queue = scheduler.getStats().terminalQueues[client.id];
+    expect(queue.queuedBytes).toBeLessThanOrEqual(500);
+    expect(queue.lanes['lane-a']).toMatchObject({
+      desynchronized: true,
+      recoveryActive: true,
+      recoveryEpoch: 1,
+    });
+    expect(queue.lanes['lane-b'].queuedBytes).toBeGreaterThan(0);
+    expect(queue.lanes['lane-b'].desynchronized).toBe(false);
+    expect(seedService.emitSeedToClient).toHaveBeenCalledTimes(1);
+
+    drain.setWritable(client, true);
+    drain.complete(client);
+    expect(new Set(drain.sent.slice(0, 2).map((envelope) => envelope.topic))).toEqual(
+      new Set(['terminal/lane-a', 'terminal/lane-b']),
+    );
+    drain.complete(client);
+
+    gateway.handleResyncComplete(client, {
+      sessionId: 'lane-a',
+      sequenceEpoch: MOCK_SEQUENCE_EPOCH,
+      recoveryEpoch: 1,
+      capturedSequence: 7,
+    });
+    await gateway.handleResyncRequest(client, {
+      sessionId: 'lane-a',
+      reason: 'client_write_overflow',
+    });
+    gateway.handleResyncComplete(client, {
+      sessionId: 'lane-a',
+      sequenceEpoch: MOCK_SEQUENCE_EPOCH,
+      recoveryEpoch: 1,
+      capturedSequence: 7,
+    });
+    queue = scheduler.getStats().terminalQueues[client.id];
+    expect(queue.lanes['lane-a']).toMatchObject({
+      desynchronized: true,
+      recoveryActive: true,
+      recoveryEpoch: 2,
+    });
+    expect(queue.lanes['lane-b'].desynchronized).toBe(false);
+
+    drain.complete(client);
+    gateway.handleResyncComplete(client, {
+      sessionId: 'lane-a',
+      sequenceEpoch: MOCK_SEQUENCE_EPOCH,
+      recoveryEpoch: 2,
+      capturedSequence: 7,
+    });
+    queue = scheduler.getStats().terminalQueues[client.id];
+    expect(queue.queuedBytes).toBeLessThanOrEqual(500);
+    expect(queue.lanes['lane-a'].desynchronized).toBe(false);
+    expect(queue.lanes['lane-b'].desynchronized).toBe(false);
+
+    const staleCallback = jest.fn(() => scheduler.markSynchronized(client.id, 'lane-a', 3));
+    scheduler.beginRecovery(client, 'lane-a', 3);
+    scheduler.enqueueRecovery(
+      client,
+      createEnvelope('terminal/lane-a', 'data', { data: 'epoch-3-tail', sequence: 8 }),
+      staleCallback,
+    );
+    scheduler.beginRecovery(client, 'lane-a', 4);
+    drain.complete(client);
+    queue = scheduler.getStats().terminalQueues[client.id];
+    expect(staleCallback).not.toHaveBeenCalled();
+    expect(queue.lanes['lane-a']).toMatchObject({
+      desynchronized: true,
+      recoveryActive: true,
+      recoveryEpoch: 4,
+    });
+    expect(queue.lanes['lane-b'].desynchronized).toBe(false);
+    expect(queue.queuedBytes).toBeLessThanOrEqual(500);
+    expect(scheduler.markSynchronized(client.id, 'lane-a', 4)).toBe(true);
+    expect(scheduler.getStats().terminalQueues[client.id].desynchronized).toBe(false);
+    expect(client.disconnect).not.toHaveBeenCalled();
+    expect(client.conn.close).not.toHaveBeenCalled();
+  });
+
+  it('keeps recovery epochs monotonic when the same session reconnects on a new socket', async () => {
+    const { gateway, seedService } = createGateway();
+    const epochs: number[] = [];
+    (seedService.emitSeedToClient as jest.Mock).mockImplementation(
+      async (seedOptions: Parameters<TerminalSeedService['emitSeedToClient']>[0]) => {
+        if (!seedOptions.recovery) return undefined;
+        const recovery = seedOptions.recovery;
+        epochs.push(recovery.recoveryEpoch);
+        const capturedSequence = recovery.getCurrentSequence();
+        recovery.onCapturedSequence?.(capturedSequence);
+        return { recoveryEpoch: recovery.recoveryEpoch, capturedSequence };
+      },
+    );
+
+    const first = createMockSocket('reconnect-first');
+    gateway.handleConnection(first as unknown as Socket);
+    await gateway.handleSubscribe(first as unknown as Socket, { sessionId: 'reconnect-session' });
+    await gateway.handleResyncRequest(first as unknown as Socket, {
+      sessionId: 'reconnect-session',
+      reason: 'client_write_overflow',
+    });
+    gateway.handleDisconnect(first as unknown as Socket);
+
+    const second = createMockSocket('reconnect-second');
+    gateway.handleConnection(second as unknown as Socket);
+    await gateway.handleSubscribe(second as unknown as Socket, { sessionId: 'reconnect-session' });
+    await gateway.handleResyncRequest(second as unknown as Socket, {
+      sessionId: 'reconnect-session',
+      reason: 'client_write_overflow',
+    });
+
+    expect(epochs).toEqual([1, 2]);
   });
 });
 
@@ -1201,34 +2635,76 @@ describe('TerminalGateway focus event ordering + cardinality (R2)', () => {
   });
 });
 
-describe('TerminalGateway activity routing (R3)', () => {
-  it('broadcastTerminalData routes data through session.pushFrame (activity tracking)', () => {
-    const { gateway, registry } = createGateway();
-    const session = registry.get('session-activity')!;
-    const pushSpy = jest.spyOn(session, 'pushFrame');
+describe('TerminalGateway activity routing', () => {
+  it('keeps pushFrame, activity, and mobile viewport triggers live with zero web subscribers', () => {
+    jest.useFakeTimers();
+    try {
+      const { gateway, registry, streamService, roomEmit } = createGateway();
+      const session = registry.get('session-activity')!;
+      const pushSpy = jest.spyOn(session, 'pushFrame');
+      const viewportDirty = jest.fn();
+      const viewport = new TerminalViewportFacade(registry, {} as never);
+      const detachViewport = viewport.onData('session-activity', viewportDirty);
 
-    gateway.broadcastTerminalData('session-activity', 'terminal output');
+      gateway.broadcastTerminalData('session-activity', 'terminal output');
 
-    expect(pushSpy).toHaveBeenCalledWith('terminal output');
-    const state = session.getActivityState();
-    expect(state.lastDataAt).toBeGreaterThan(0);
-    expect(state.busySince).not.toBeNull();
+      expect(pushSpy).toHaveBeenCalledWith('terminal output');
+      expect(viewportDirty).toHaveBeenCalledTimes(1);
+      expect(streamService.addFrame).not.toHaveBeenCalled();
+      expect(streamService.markDiscontinuous).toHaveBeenCalledWith('session-activity');
+      expect(roomEmit).not.toHaveBeenCalled();
+      expect(session.getActivityState().busySince).not.toBeNull();
+
+      jest.advanceTimersByTime(30_000);
+      expect(session.getActivityState().idleSince).not.toBeNull();
+      detachViewport();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
-  it('broadcastTerminalData still emits to socket room when session exists', () => {
-    const { gateway, roomEmit } = createGateway();
+  it('broadcastTerminalData schedules each subscribed socket without a room emit', () => {
+    const { gateway, registry, roomEmit, sendScheduler } = createGateway();
+    const client = createMockSocket('web-viewer');
+    gateway.handleConnection(client);
+    const tracked = (
+      gateway as unknown as { clientSessions: Map<string, { subscriptions: Set<string> }> }
+    ).clientSessions.get(client.id)!;
+    tracked.subscriptions.add('terminal/session-emit');
+    registry.get('session-emit')!.subscribe(client.id);
 
     gateway.broadcastTerminalData('session-emit', 'data chunk');
 
-    expect(roomEmit).toHaveBeenCalled();
+    expect(sendScheduler.enqueueLive).toHaveBeenCalledWith(
+      client,
+      expect.objectContaining({ type: 'data' }),
+    );
+    expect(roomEmit).not.toHaveBeenCalled();
   });
 
-  it('broadcastTerminalData works without registry entry (fallback)', () => {
-    const { gateway, registry, roomEmit } = createGateway();
+  it('gates fallback replay and room delivery when no web socket tracks the session', () => {
+    const { gateway, registry, streamService, roomEmit } = createGateway();
     registry.get = () => undefined;
 
     expect(() => gateway.broadcastTerminalData('no-session', 'data')).not.toThrow();
-    expect(roomEmit).toHaveBeenCalled();
+    expect(streamService.addFrame).not.toHaveBeenCalled();
+    expect(streamService.markDiscontinuous).toHaveBeenCalledWith('no-session');
+    expect(roomEmit).not.toHaveBeenCalled();
+  });
+
+  it('uses the socket subscription map when a fallback session has a web viewer', async () => {
+    const { gateway, registry, streamService, roomEmit, sendScheduler } = createGateway();
+    registry.get = () => undefined;
+    const client = createMockSocket('fallback-viewer');
+    gateway.handleConnection(client);
+    await gateway.handleSubscribe(client, { sessionId: 'fallback-session' });
+    (streamService.addFrame as jest.Mock).mockClear();
+    roomEmit.mockClear();
+
+    gateway.broadcastTerminalData('fallback-session', 'visible output');
+
+    expect(streamService.addFrame).toHaveBeenCalledWith('fallback-session', 'visible output');
+    expect(sendScheduler.enqueueLive).toHaveBeenCalledTimes(1);
   });
 
   it('handleInput calls session.signalInput for activity tracking', async () => {
@@ -1256,14 +2732,98 @@ describe('TerminalGateway activity routing (R3)', () => {
     expect(state.busySince).not.toBeNull();
   });
 
-  it('wire contract preserved: one data envelope per broadcastTerminalData call', () => {
-    const { gateway, roomEmit } = createGateway();
+  it('passes one ordered data envelope per broadcast call to the socket scheduler', () => {
+    const { gateway, registry, sendScheduler } = createGateway();
+    const client = createMockSocket('web-viewer');
+    gateway.handleConnection(client);
+    const tracked = (
+      gateway as unknown as { clientSessions: Map<string, { subscriptions: Set<string> }> }
+    ).clientSessions.get(client.id)!;
+    tracked.subscriptions.add('terminal/session-wire');
+    registry.get('session-wire')!.subscribe(client.id);
 
     gateway.broadcastTerminalData('session-wire', 'chunk-1');
     gateway.broadcastTerminalData('session-wire', 'chunk-2');
 
-    const dataCalls = (roomEmit as jest.Mock).mock.calls;
+    const dataCalls = (sendScheduler.enqueueLive as jest.Mock).mock.calls;
     expect(dataCalls).toHaveLength(2);
+  });
+
+  it('broadcasts every ordered chunk returned by the replay stream', () => {
+    const { gateway, streamService, registry, sendScheduler } = createGateway();
+    const session = registry.get('session-chunked-broadcast')!;
+    const client = createMockSocket('web-viewer');
+    gateway.handleConnection(client);
+    const tracked = (
+      gateway as unknown as { clientSessions: Map<string, { subscriptions: Set<string> }> }
+    ).clientSessions.get(client.id)!;
+    tracked.subscriptions.add('terminal/session-chunked-broadcast');
+    session.subscribe(client.id);
+    const pushSpy = jest.spyOn(session, 'pushFrame');
+    const chunks = ['first🙂', '\u001b[31msecond\u001b[0m'];
+    (streamService.addFrame as jest.Mock).mockReturnValue(
+      chunks.map((data, index) =>
+        createEnvelope('terminal/session-chunked-broadcast', 'data', {
+          data,
+          sequence: index + 1,
+        }),
+      ),
+    );
+
+    gateway.broadcastTerminalData('session-chunked-broadcast', chunks.join(''));
+
+    expect(pushSpy.mock.calls.map(([data]) => data)).toEqual(chunks);
+    expect(
+      (sendScheduler.enqueueLive as jest.Mock).mock.calls.map(
+        ([, envelope]) => (envelope as { payload: { data: string } }).payload.data,
+      ),
+    ).toEqual(chunks);
+  });
+
+  it('forces one targeted seed on the first reconnect after gated output', async () => {
+    const { gateway, registry, streamService, seedService } = createGateway({
+      replayResult: {
+        status: 'gap',
+        currentSequence: 8,
+        discontinuitySequence: 8,
+      },
+    });
+    registry.get('session-gated')!;
+    gateway.broadcastTerminalData('session-gated', 'unwatched output');
+    const client = createMockSocket('returning-viewer');
+    gateway.handleConnection(client);
+
+    await gateway.handleSubscribe(client, {
+      sessionId: 'session-gated',
+      lastSequence: 7,
+    });
+
+    expect(streamService.markDiscontinuous).toHaveBeenCalledTimes(1);
+    expect(seedService.emitSeedToClient).toHaveBeenCalledTimes(1);
+    expect(client.emit).toHaveBeenCalledWith(
+      'message',
+      expect.objectContaining({ type: 'resync_required' }),
+    );
+  });
+
+  it('does not reseed covered reconnects during rapid subscriber cycling without output', async () => {
+    const { gateway, streamService, seedService } = createGateway();
+    const client = createMockSocket('cycling-viewer');
+    gateway.handleConnection(client);
+    await gateway.handleSubscribe(client, { sessionId: 'session-cycle' });
+    (seedService.emitSeedToClient as jest.Mock).mockClear();
+
+    for (let cycle = 0; cycle < 5; cycle += 1) {
+      gateway.handleUnsubscribe(client, { sessionId: 'session-cycle' });
+      await gateway.handleSubscribe(client, {
+        sessionId: 'session-cycle',
+        lastSequence: 7,
+        sequenceEpoch: MOCK_SEQUENCE_EPOCH,
+      });
+    }
+
+    expect(streamService.markDiscontinuous).not.toHaveBeenCalled();
+    expect(seedService.emitSeedToClient).not.toHaveBeenCalled();
   });
 });
 
@@ -1354,6 +2914,216 @@ describe('TerminalGateway dead-tmux detection', () => {
     const stateChange = emitted.find((e) => e.type === 'state_change');
     expect(stateChange).toBeDefined();
     expect((stateChange!.payload as { status: string }).status).toBe('crashed');
+  });
+});
+
+describe('TerminalGateway lifecycle cleanup parity', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it.each(['crashed', 'dead-tmux'] as const)(
+    '%s immediately frees replay, seed cache, sequence state, and terminal state',
+    async (event) => {
+      const { gateway, streamService, seedService, ptyService, registry } = createGateway({
+        autoCreateRegistrySessions: false,
+      });
+      const sessionId = `cleanup-${event}`;
+      registry.create(sessionId, `tmux_${sessionId}`);
+
+      if (event === 'crashed') {
+        gateway.handleSessionCrashed({ sessionId, sessionName: `tmux_${sessionId}` });
+      } else {
+        const client = createMockSocket('cleanup-dead-client');
+        await (
+          gateway as unknown as {
+            handleDeadTmuxSession(id: string, socket: Socket): Promise<void>;
+          }
+        ).handleDeadTmuxSession(sessionId, client);
+      }
+
+      expect(streamService.clearBuffer).toHaveBeenCalledWith(sessionId);
+      expect(seedService.invalidateCache).toHaveBeenCalledWith(sessionId);
+      expect(ptyService.stopStreaming).toHaveBeenCalledWith(sessionId);
+      expect(registry.get(sessionId)).toBeUndefined();
+    },
+  );
+
+  it('stopped invalidates capture immediately but retains replay for exactly 60 seconds', () => {
+    jest.useFakeTimers();
+    const { gateway, streamService, seedService, ptyService } = createGateway();
+
+    gateway.handleSessionStopped({ sessionId: 'cleanup-stopped' });
+
+    expect(seedService.invalidateCache).toHaveBeenCalledWith('cleanup-stopped');
+    expect(streamService.clearBuffer).not.toHaveBeenCalled();
+    expect(ptyService.stopStreaming).not.toHaveBeenCalled();
+
+    jest.advanceTimersByTime(59999);
+    expect(streamService.clearBuffer).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(1);
+    expect(streamService.clearBuffer).toHaveBeenCalledWith('cleanup-stopped');
+
+    gateway.onModuleDestroy();
+  });
+
+  it('restore inside the retention window cancels the cleanup timer so the domain survives without a buffer reset', () => {
+    jest.useFakeTimers();
+    const { gateway, streamService } = createGateway({ autoCreateRegistrySessions: false });
+
+    gateway.handleSessionStopped({ sessionId: 'restore-before-expiry' });
+    expect(streamService.clearBuffer).not.toHaveBeenCalled();
+
+    // A restore inside the 60s window must cancel the pending clearBuffer so the live
+    // sequence-domain (epoch/current sequence/recovery counter) is retained, not reset.
+    jest.advanceTimersByTime(30_000);
+    gateway.handleSessionRestored({
+      sessionId: 'restore-before-expiry',
+      epicId: null,
+      agentId: 'agent-1',
+      tmuxSessionName: 'tmux_restore-before-expiry',
+      providerName: 'claude',
+    });
+
+    // Advance well beyond the original deadline: the buffer must never be cleared.
+    jest.advanceTimersByTime(60_000);
+    expect(streamService.clearBuffer).not.toHaveBeenCalled();
+
+    gateway.onModuleDestroy();
+  });
+});
+
+describe('TerminalGateway sequence-domain recovery isolation (Task 2)', () => {
+  it('retires a recovery started in the retention window so its late old-domain callbacks cannot touch the new domain', async () => {
+    jest.useFakeTimers();
+    try {
+      const { gateway, streamService, seedService, sendScheduler } = createGateway();
+      const client = createMockSocket('window-recovery');
+      gateway.handleConnection(client as unknown as Socket);
+
+      // Domain A: subscribe records the terminal subscription and samples epoch A.
+      (streamService.getSequenceEpoch as jest.Mock).mockReturnValue('epoch-A');
+      (streamService.sampleCursor as jest.Mock).mockReturnValue({
+        sequenceEpoch: 'epoch-A',
+        currentSequence: 5,
+      });
+      // Dimensionless subscribe → no 50ms seed-settle timer to advance past under fake timers.
+      await gateway.handleSubscribe(client as unknown as Socket, { sessionId: 'window-sess' });
+
+      // A deliberately pending recovery: capture its seed callbacks without completing it.
+      let lateDeliver!: (envelope: ReturnType<typeof createEnvelope>) => TerminalSeedDelivery;
+      let lateCaptured: ((sequence: number) => void) | undefined;
+      let recoveryEpochA = 0;
+      (seedService.emitSeedToClient as jest.Mock).mockImplementation(
+        async (seedOptions: Parameters<TerminalSeedService['emitSeedToClient']>[0]) => {
+          const recovery = seedOptions.recovery!;
+          recoveryEpochA = recovery.recoveryEpoch;
+          lateDeliver = seedOptions.deliver;
+          lateCaptured = recovery.onCapturedSequence;
+          return {
+            sequenceEpoch: recovery.sequenceEpoch,
+            recoveryEpoch: recovery.recoveryEpoch,
+            capturedSequence: 5,
+          };
+        },
+      );
+
+      // Stop schedules the 60s retention timer but leaves the terminal subscription recorded, so the
+      // client can still start a recovery in the window.
+      gateway.handleSessionStopped({ sessionId: 'window-sess' });
+      await gateway.handleResyncRequest(client as unknown as Socket, {
+        sessionId: 'window-sess',
+        reason: 'client_write_overflow',
+      });
+      expect(seedService.emitSeedToClient).toHaveBeenCalled();
+
+      (sendScheduler.enqueueRecovery as jest.Mock).mockClear();
+      (sendScheduler.markSynchronized as jest.Mock).mockClear();
+
+      // Timer expiry clears domain A and retires recovery A; a new domain B then establishes.
+      jest.advanceTimersByTime(60_000);
+      expect(streamService.clearBuffer).toHaveBeenCalledWith('window-sess');
+      (streamService.getSequenceEpoch as jest.Mock).mockReturnValue('epoch-B');
+
+      // Every late old-domain callback must no-op against domain B.
+      expect(
+        lateDeliver(
+          createEnvelope('terminal/window-sess', 'seed_ansi', {
+            data: 'late-A',
+            chunk: 0,
+            totalChunks: 1,
+          }),
+        ),
+      ).toBe(TerminalSeedDelivery.Abort);
+      lateCaptured?.(999);
+      gateway.handleResyncComplete(client as unknown as Socket, {
+        sessionId: 'window-sess',
+        sequenceEpoch: 'epoch-A',
+        recoveryEpoch: recoveryEpochA,
+        capturedSequence: 5,
+      });
+
+      expect(sendScheduler.enqueueRecovery).not.toHaveBeenCalled();
+      expect(sendScheduler.markSynchronized).not.toHaveBeenCalled();
+
+      gateway.onModuleDestroy();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('rejects an abort or completion whose pair still matches a lingering recovery after the live stream epoch has moved on', async () => {
+    const { gateway, streamService, seedService, sendScheduler } = createGateway();
+    const client = createMockSocket('stale-domain-complete');
+    gateway.handleConnection(client as unknown as Socket);
+
+    (streamService.getSequenceEpoch as jest.Mock).mockReturnValue('epoch-A');
+    (streamService.sampleCursor as jest.Mock).mockReturnValue({
+      sequenceEpoch: 'epoch-A',
+      currentSequence: 5,
+    });
+    await gateway.handleSubscribe(client as unknown as Socket, { sessionId: 'stale-sess' });
+
+    let recoveryEpochA = 0;
+    (seedService.emitSeedToClient as jest.Mock).mockImplementation(
+      async (seedOptions: Parameters<TerminalSeedService['emitSeedToClient']>[0]) => {
+        const recovery = seedOptions.recovery!;
+        recoveryEpochA = recovery.recoveryEpoch;
+        return {
+          sequenceEpoch: recovery.sequenceEpoch,
+          recoveryEpoch: recovery.recoveryEpoch,
+          capturedSequence: 5,
+        };
+      },
+    );
+    await gateway.handleResyncRequest(client as unknown as Socket, {
+      sessionId: 'stale-sess',
+      reason: 'client_write_overflow',
+    });
+
+    // The live stream advances to a new domain B while recovery A still sits in the map (its state
+    // pair is unchanged). An abort/completion carrying A's pair must be rejected against the live
+    // domain, so it cannot cancel or synchronize the new lane.
+    (streamService.getSequenceEpoch as jest.Mock).mockReturnValue('epoch-B');
+    (sendScheduler.removeLane as jest.Mock).mockClear();
+    (sendScheduler.markSynchronized as jest.Mock).mockClear();
+
+    expect(
+      gateway.handleResyncAbort(client as unknown as Socket, {
+        sessionId: 'stale-sess',
+        sequenceEpoch: 'epoch-A',
+        recoveryEpoch: recoveryEpochA,
+      }),
+    ).toBe(false);
+    expect(sendScheduler.removeLane).not.toHaveBeenCalled();
+
+    gateway.handleResyncComplete(client as unknown as Socket, {
+      sessionId: 'stale-sess',
+      sequenceEpoch: 'epoch-A',
+      recoveryEpoch: recoveryEpochA,
+      capturedSequence: 5,
+    });
+    expect(sendScheduler.markSynchronized).not.toHaveBeenCalled();
   });
 });
 
@@ -1939,10 +3709,12 @@ describe('TerminalGateway viewport-mode restore (Task 2)', () => {
     const client = createMockSocket('client-reconnect');
 
     gateway.handleConnection(client as unknown as Socket);
-    // lastSequence is a number → not a first attach → no client seed window.
+    // A domain cursor (lastSequence + sequenceEpoch) → covered reconnect, not a first attach → no
+    // client seed window, so the server restores viewport modes itself.
     await gateway.handleSubscribe(client as unknown as Socket, {
       sessionId: 'reconnect-sess',
       lastSequence: 5,
+      sequenceEpoch: MOCK_SEQUENCE_EPOCH,
       rows: 24,
       cols: 80,
     });

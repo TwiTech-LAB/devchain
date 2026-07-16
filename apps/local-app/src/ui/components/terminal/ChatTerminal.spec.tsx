@@ -9,6 +9,8 @@ import {
 
 jest.mock('@xterm/xterm/css/xterm.css', () => ({}), { virtual: true });
 const xtermScrollCallbacks: Array<() => void> = [];
+const heldXtermWriteCallbacks: Array<() => void> = [];
+let holdXtermWriteCallbacks = false;
 
 jest.mock('@xterm/xterm', () => {
   return {
@@ -28,7 +30,10 @@ jest.mock('@xterm/xterm', () => {
         }),
         write: jest.fn((data: string, cb?: () => void) => {
           if (container) container.textContent = (container.textContent || '') + data;
-          if (cb) cb();
+          if (cb) {
+            if (holdXtermWriteCallbacks) heldXtermWriteCallbacks.push(cb);
+            else cb();
+          }
         }),
         reset: jest.fn(() => {
           if (container) container.textContent = '';
@@ -79,6 +84,8 @@ jest.mock('@/ui/lib/debug', () => ({
 import { ChatTerminal } from './ChatTerminal';
 import { _resetThemeCacheForTesting, useTerminalThemeSync } from './hooks/useTerminalThemeSync';
 import { DEFAULT_TERMINAL_SCROLLBACK } from '@/common/constants/terminal';
+import { HISTORY_REQUEST_COOLDOWN_MS } from './scroll-history-detector';
+import { releaseAppSocket, setAppSocket } from '@/ui/lib/socket';
 
 type SocketHandlerMap = Record<string, Set<(...args: unknown[]) => void>>;
 
@@ -88,6 +95,8 @@ interface MockSocket {
   emit: jest.Mock;
   on: jest.Mock;
   off: jest.Mock;
+  disconnect: jest.Mock;
+  connect: jest.Mock;
   trigger: (event: string, ...args: unknown[]) => void;
   clearHandlers: () => void;
 }
@@ -101,6 +110,8 @@ function createMockSocket(): MockSocket {
     emit: jest.fn(),
     on: jest.fn(),
     off: jest.fn(),
+    disconnect: jest.fn(),
+    connect: jest.fn(),
     trigger(event: string, ...args: unknown[]) {
       handlers[event]?.forEach((handler) => handler(...args));
     },
@@ -158,6 +169,8 @@ describe('ChatTerminal', () => {
     }
     currentAppSocket = null;
     xtermScrollCallbacks.length = 0;
+    heldXtermWriteCallbacks.length = 0;
+    holdXtermWriteCallbacks = false;
     _resetThemeCacheForTesting();
     jest.clearAllMocks();
     jest.useRealTimers();
@@ -224,6 +237,36 @@ describe('ChatTerminal', () => {
     return { socket, history, viewport, utils };
   };
 
+  it('returns the fallback main-socket refcount to baseline across mount cycles', () => {
+    const socket = createMockSocket();
+    currentAppSocket = socket as unknown as Socket;
+    setAppSocket(currentAppSocket);
+
+    for (let cycle = 0; cycle < 5; cycle += 1) {
+      const view = render(<ChatTerminal sessionId={`fallback-${cycle}`} />);
+      view.unmount();
+    }
+
+    releaseAppSocket();
+    expect(socket.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not acquire or release the main pool for a provided socket', () => {
+    const baseline = createMockSocket();
+    const provided = createMockSocket();
+    currentAppSocket = baseline as unknown as Socket;
+    setAppSocket(currentAppSocket);
+
+    const view = render(
+      <ChatTerminal sessionId="provided-path" socket={provided as unknown as Socket} />,
+    );
+    view.unmount();
+    releaseAppSocket();
+
+    expect(baseline.disconnect).toHaveBeenCalledTimes(1);
+    expect(provided.disconnect).not.toHaveBeenCalled();
+  });
+
   it('assembles seed chunks and writes content (unified seed_ansi contract)', async () => {
     const { socket, history } = await renderTerminal();
     const { termLog } = jest.requireMock('@/ui/lib/debug');
@@ -265,12 +308,12 @@ describe('ChatTerminal', () => {
 
     // Unified seed_ansi: seed content is written directly to xterm.
     await waitFor(() => {
-      expect(history.innerHTML).toBe('AB');
+      expect(history.innerHTML).toBe('ABC');
     });
 
-    // Verify that hasHistory is resolved (and, with the server's hasHistory:true, enabled)
+    // Verify that snapshot has-more is resolved from the server's per-snapshot hasHistory:true
     const hasHistoryCalls = (termLog as jest.Mock).mock.calls.filter(
-      (c) => c[0] === 'seed_hasHistory_resolved' && c[1]?.hasHistory === true,
+      (c) => c[0] === 'seed_hasHistory_resolved' && c[1]?.snapshotHasMore === true,
     );
     expect(hasHistoryCalls.length).toBeGreaterThan(0);
 
@@ -283,7 +326,7 @@ describe('ChatTerminal', () => {
     });
   });
 
-  it('aborts incomplete seed after timeout and flushes pending writes', async () => {
+  it('aborts incomplete seed after timeout and flushes bounded staged output', async () => {
     jest.useFakeTimers();
     const { socket, history } = await renderTerminal(true);
 
@@ -313,7 +356,6 @@ describe('ChatTerminal', () => {
       jest.advanceTimersByTime(30000);
     });
 
-    // Pending writes are flushed on timeout
     await waitFor(() => {
       expect(history.innerHTML).toBe('B');
     });
@@ -332,14 +374,16 @@ describe('ChatTerminal', () => {
       });
     });
 
-    // Expect a subscribed log with expectingSeed true on first attach
+    // The subscription handler reports the current seed expectation without changing it.
     const calls = (termLog as jest.Mock).mock.calls.filter((c) => c[0] === 'subscribed');
     expect(calls.length).toBeGreaterThan(0);
     const last = calls[calls.length - 1];
-    expect(last[1]).toEqual(expect.objectContaining({ expectingSeed: true }));
+    expect(last[1]).toEqual(
+      expect.objectContaining({ currentSequence: 0, expectingSeed: expect.any(Boolean) }),
+    );
   });
 
-  it('handles subscribed on reconnect: updates sequence and flushes pending writes when not expecting seed', async () => {
+  it('handles subscribed on reconnect and flushes bounded staged output', async () => {
     const { socket, history } = await renderTerminal();
     const { termLog } = jest.requireMock('@/ui/lib/debug');
 
@@ -381,7 +425,6 @@ describe('ChatTerminal', () => {
       });
     });
 
-    // Verify flush occurred
     await waitFor(() => {
       expect(history.innerHTML).toBe('B');
     });
@@ -423,6 +466,271 @@ describe('ChatTerminal', () => {
     calls = (termLog as jest.Mock).mock.calls.filter((c) => c[0] === 'focus_changed');
     last = calls[calls.length - 1];
     expect(last[1]).toEqual(expect.objectContaining({ ours: false }));
+  });
+
+  it('requests exactly one targeted reseed when the bounded xterm queue overflows', async () => {
+    const { socket } = await renderTerminal();
+    holdXtermWriteCallbacks = true;
+    const data = 'x'.repeat(64 * 1024);
+
+    await act(async () => {
+      for (let sequence = 1; sequence <= 100; sequence += 1) {
+        socket.trigger('message', {
+          topic: 'terminal/chat-session',
+          ts: new Date().toISOString(),
+          type: 'data',
+          payload: { data, sequence },
+        });
+      }
+    });
+
+    const requests = socket.emit.mock.calls.filter(
+      ([event]) => event === 'terminal:resync_request',
+    );
+    expect(requests).toEqual([
+      ['terminal:resync_request', { sessionId: 'chat-session', reason: 'client_write_overflow' }],
+    ]);
+
+    await act(async () => {
+      for (let sequence = 101; sequence <= 120; sequence += 1) {
+        socket.trigger('message', {
+          topic: 'terminal/chat-session',
+          ts: new Date().toISOString(),
+          type: 'data',
+          payload: { data, sequence },
+        });
+      }
+    });
+    expect(
+      socket.emit.mock.calls.filter(([event]) => event === 'terminal:resync_request'),
+    ).toHaveLength(1);
+  });
+
+  it('completes a watermarked recovery once, then appends its covered tail', async () => {
+    const { socket, history } = await renderTerminal();
+    holdXtermWriteCallbacks = true;
+
+    await act(async () => {
+      socket.trigger('message', {
+        topic: 'terminal/chat-session',
+        ts: new Date().toISOString(),
+        type: 'seed_ansi',
+        payload: {
+          chunk: 0,
+          totalChunks: 1,
+          data: 'snapshot',
+          recoveryEpoch: 6,
+          capturedSequence: 12,
+        },
+      });
+    });
+    expect(
+      socket.emit.mock.calls.filter(([event]) => event === 'terminal:resync_complete'),
+    ).toHaveLength(0);
+
+    await act(async () => heldXtermWriteCallbacks.shift()?.());
+    expect(
+      socket.emit.mock.calls.filter(([event]) => event === 'terminal:resync_complete'),
+    ).toEqual([
+      [
+        'terminal:resync_complete',
+        { sessionId: 'chat-session', recoveryEpoch: 6, capturedSequence: 12 },
+      ],
+    ]);
+
+    await act(async () => {
+      socket.trigger('message', {
+        topic: 'terminal/chat-session',
+        ts: new Date().toISOString(),
+        type: 'data',
+        payload: { data: 'during-seed', sequence: 13 },
+      });
+    });
+    expect(history.textContent).toBe('snapshotduring-seed');
+
+    await act(async () => {
+      socket.trigger('message', {
+        topic: 'terminal/chat-session',
+        ts: new Date().toISOString(),
+        type: 'seed_ansi',
+        payload: {
+          chunk: 0,
+          totalChunks: 1,
+          data: 'duplicate',
+          recoveryEpoch: 6,
+          capturedSequence: 12,
+        },
+      });
+    });
+    expect(history.textContent).toBe('snapshotduring-seed');
+    expect(
+      socket.emit.mock.calls.filter(([event]) => event === 'terminal:resync_complete'),
+    ).toHaveLength(1);
+  });
+
+  it('aborts an incomplete recovery, retries once after acknowledgment, and converges on the fresh epoch', async () => {
+    const { socket, history } = await renderTerminal();
+    jest.useFakeTimers();
+
+    await act(async () => {
+      for (let chunk = 0; chunk < 4; chunk += 1) {
+        socket.trigger('message', {
+          topic: 'terminal/chat-session',
+          ts: new Date().toISOString(),
+          type: 'seed_ansi',
+          payload: {
+            chunk,
+            totalChunks: 5,
+            data: `partial-${chunk}`,
+            recoveryEpoch: 6,
+            capturedSequence: 12,
+          },
+        });
+      }
+      jest.advanceTimersByTime(30000);
+    });
+
+    expect(history.textContent).toBe('');
+    const abortCalls = socket.emit.mock.calls.filter(
+      ([event]) => event === 'terminal:resync_abort',
+    );
+    expect(abortCalls).toHaveLength(1);
+    expect(abortCalls[0]?.slice(0, 2)).toEqual([
+      'terminal:resync_abort',
+      { sessionId: 'chat-session', recoveryEpoch: 6 },
+    ]);
+    expect(socket.emit.mock.calls.filter(([event]) => event === 'terminal:resync_request')).toEqual(
+      [],
+    );
+
+    await act(async () => {
+      const acknowledge = abortCalls[0]?.[2] as ((accepted: boolean) => void) | undefined;
+      acknowledge?.(true);
+      acknowledge?.(true);
+    });
+    expect(socket.emit.mock.calls.filter(([event]) => event === 'terminal:resync_request')).toEqual(
+      [['terminal:resync_request', { sessionId: 'chat-session', reason: 'client_write_overflow' }]],
+    );
+
+    await act(async () => {
+      socket.trigger('message', {
+        topic: 'terminal/chat-session',
+        ts: new Date().toISOString(),
+        type: 'seed_ansi',
+        payload: {
+          chunk: 4,
+          totalChunks: 5,
+          data: 'late-final',
+          recoveryEpoch: 6,
+          capturedSequence: 12,
+        },
+      });
+      socket.trigger('message', {
+        topic: 'terminal/chat-session',
+        ts: new Date().toISOString(),
+        type: 'seed_ansi',
+        payload: {
+          chunk: 0,
+          totalChunks: 1,
+          data: 'fresh-snapshot',
+          recoveryEpoch: 7,
+          capturedSequence: 19,
+        },
+      });
+    });
+
+    expect(history.textContent).toBe('fresh-snapshot');
+    expect(
+      socket.emit.mock.calls.filter(([event]) => event === 'terminal:resync_complete'),
+    ).toContainEqual([
+      'terminal:resync_complete',
+      { sessionId: 'chat-session', recoveryEpoch: 7, capturedSequence: 19 },
+    ]);
+    expect(socket.disconnect).not.toHaveBeenCalled();
+  });
+
+  it('forces a clean reconnect when the single recovery retry also times out', async () => {
+    const { socket, utils } = await renderTerminal();
+    jest.useFakeTimers();
+    socket.disconnect.mockImplementation(() => {
+      socket.connected = false;
+      socket.trigger('disconnect', 'io client disconnect');
+      return socket;
+    });
+
+    await act(async () => {
+      socket.trigger('message', {
+        topic: 'terminal/chat-session',
+        ts: new Date().toISOString(),
+        type: 'seed_ansi',
+        payload: {
+          chunk: 0,
+          totalChunks: 2,
+          data: 'first-attempt',
+          recoveryEpoch: 6,
+          capturedSequence: 12,
+        },
+      });
+      jest.advanceTimersByTime(30000);
+    });
+    const acknowledge = socket.emit.mock.calls.find(
+      ([event]) => event === 'terminal:resync_abort',
+    )?.[2] as ((accepted: boolean) => void) | undefined;
+    await act(async () => acknowledge?.(true));
+
+    await act(async () => {
+      socket.trigger('message', {
+        topic: 'terminal/chat-session',
+        ts: new Date().toISOString(),
+        type: 'seed_ansi',
+        payload: {
+          chunk: 0,
+          totalChunks: 2,
+          data: 'retry-attempt',
+          recoveryEpoch: 7,
+          capturedSequence: 19,
+        },
+      });
+      jest.advanceTimersByTime(30000);
+    });
+
+    expect(
+      socket.emit.mock.calls.filter(([event]) => event === 'terminal:resync_request'),
+    ).toHaveLength(1);
+    expect(socket.disconnect).toHaveBeenCalledTimes(1);
+    expect(socket.connect).toHaveBeenCalledTimes(1);
+    expect(utils.getByRole('region')).toHaveAttribute('data-terminal-status', 'disconnected');
+  });
+
+  it('forces a clean reconnect when the recovery abort is not acknowledged', async () => {
+    const { socket } = await renderTerminal();
+    jest.useFakeTimers();
+
+    await act(async () => {
+      socket.trigger('message', {
+        topic: 'terminal/chat-session',
+        ts: new Date().toISOString(),
+        type: 'seed_ansi',
+        payload: {
+          chunk: 0,
+          totalChunks: 2,
+          data: 'partial',
+          recoveryEpoch: 6,
+          capturedSequence: 12,
+        },
+      });
+      jest.advanceTimersByTime(30000);
+      jest.advanceTimersByTime(5000);
+    });
+
+    expect(
+      socket.emit.mock.calls.filter(([event]) => event === 'terminal:resync_abort'),
+    ).toHaveLength(1);
+    expect(socket.emit.mock.calls.filter(([event]) => event === 'terminal:resync_request')).toEqual(
+      [],
+    );
+    expect(socket.disconnect).toHaveBeenCalledTimes(1);
+    expect(socket.connect).toHaveBeenCalledTimes(1);
   });
 
   it('writes data after seed completes (unified seed_ansi writes content)', async () => {
@@ -486,6 +794,16 @@ describe('ChatTerminal', () => {
 
     const envelope = { topic: 'terminal/chat-session', ts: new Date().toISOString() };
 
+    // The subscribed ack publishes the immutable provider refresh capability; without it a
+    // line provider is not refresh-eligible regardless of per-snapshot has-more.
+    await act(async () => {
+      socket.trigger('message', {
+        ...envelope,
+        type: 'subscribed',
+        payload: { currentSequence: 0, replayStatus: 'seed', historyRefreshable: true },
+      });
+    });
+
     await act(async () => {
       socket.trigger('message', {
         ...envelope,
@@ -546,22 +864,32 @@ describe('ChatTerminal', () => {
       jest.advanceTimersByTime(150);
     });
 
-    expect(socket.emit).toHaveBeenCalledWith('terminal:request_full_history', {
-      sessionId: 'chat-session',
-      maxLines: DEFAULT_TERMINAL_SCROLLBACK,
-    });
+    expect(socket.emit).toHaveBeenCalledWith(
+      'terminal:request_full_history',
+      expect.objectContaining({
+        sessionId: 'chat-session',
+        maxLines: DEFAULT_TERMINAL_SCROLLBACK,
+        correlationId: expect.any(String),
+      }),
+    );
 
     const afterFirstScrollCount = socket.emit.mock.calls.filter(
       ([event]) => event === 'terminal:request_full_history',
     ).length;
     expect(afterFirstScrollCount).toBe(initialRequestCount + 1);
 
+    // Echo the request's correlation token so the response matches the active attempt.
+    const requestCall = socket.emit.mock.calls.find(
+      ([event]) => event === 'terminal:request_full_history',
+    );
+    const correlationId = (requestCall?.[1] as { correlationId?: string })?.correlationId;
+
     await act(async () => {
       // Server sends complete history including both scrollback (H) and viewport (V)
       socket.trigger('message', {
         ...envelope,
         type: 'full_history',
-        payload: { history: 'HV' },
+        payload: { history: 'HV', correlationId },
       });
     });
 
@@ -700,7 +1028,9 @@ describe('ChatTerminal', () => {
       });
     });
 
-    document.documentElement.classList.remove('theme-ocean');
+    await act(async () => {
+      document.documentElement.classList.remove('theme-ocean');
+    });
   });
 
   it('suppresses duplicate theme emit when two hook instances share the same sessionId (per-session dedup)', () => {
@@ -798,7 +1128,9 @@ describe('ChatTerminal', () => {
     // Terminal content must survive the retheme
     expect(history.innerHTML).toBe('live-content');
 
-    document.documentElement.classList.remove('theme-ocean');
+    await act(async () => {
+      document.documentElement.classList.remove('theme-ocean');
+    });
   });
 
   it('does not emit terminal:theme when socket is not connected', async () => {
@@ -815,5 +1147,430 @@ describe('ChatTerminal', () => {
       ([event]: [string]) => event === 'terminal:theme',
     );
     expect(themeCalls).toHaveLength(0);
+  });
+
+  // Cross-layer history-ordering regression matrix. These drive the FULL normal lifecycle
+  // (subscribe → seed/empty → live output → scroll-up / recovery / disconnect) through the
+  // real component + mock socket, rather than injecting an already-enabled history gate.
+  // They assert observable outcomes (emitted requests, written content, xterm reset); the
+  // narrow-layer math (detector gesture/cooldown/visibility, owner dirtiness) is proven in
+  // scroll-history-detector.spec.ts / terminal-history-sync.spec.ts / the hook specs.
+  describe('cross-layer history ordering regressions', () => {
+    // Every scenario drives the 100ms scroll poll and other timers via fake timers; the shared
+    // afterEach restores real timers. renderTerminal(true) assumes fake timers are already active.
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    const message = (type: string, payload: unknown) => ({
+      topic: 'terminal/chat-session',
+      ts: new Date().toISOString(),
+      type,
+      payload,
+    });
+
+    const getTerminal = () => {
+      const { Terminal } = jest.requireMock('@xterm/xterm');
+      return Terminal.mock.results.at(-1)?.value;
+    };
+
+    const historyRequestCount = (socket: MockSocket) =>
+      socket.emit.mock.calls.filter(([e]: [string]) => e === 'terminal:request_full_history')
+        .length;
+
+    const lastCorrelationId = (socket: MockSocket): string | undefined => {
+      const call = [...socket.emit.mock.calls]
+        .reverse()
+        .find(([e]: [string]) => e === 'terminal:request_full_history');
+      return (call?.[1] as { correlationId?: string })?.correlationId;
+    };
+
+    // Drive a genuine bottom→scroll-up excursion: establish at-bottom, stamp a real user
+    // gesture (Shift+PageUp), then move the viewport up so the 100ms poll detects it.
+    const scrollUp = async (terminal: ReturnType<typeof getTerminal>) => {
+      const container = terminal.open.mock.calls[0]?.[0] as HTMLElement | undefined;
+      terminal.buffer.active.baseY = 10;
+      terminal.buffer.active.viewportY = 10;
+      await act(async () => {
+        jest.advanceTimersByTime(150);
+      });
+      await act(async () => {
+        container?.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            shiftKey: true,
+            code: 'PageUp',
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      });
+      terminal.buffer.active.viewportY = 0;
+      await act(async () => {
+        jest.advanceTimersByTime(150);
+      });
+    };
+
+    const seedLineProvider = async (
+      socket: MockSocket,
+      opts: { refreshable?: boolean; hasHistory?: boolean } = {},
+    ) => {
+      await act(async () => {
+        socket.trigger(
+          'message',
+          message('subscribed', {
+            currentSequence: 0,
+            replayStatus: 'seed',
+            historyRefreshable: opts.refreshable ?? true,
+            sequenceEpoch: 'epoch-A',
+          }),
+        );
+        socket.trigger(
+          'message',
+          message('seed_ansi', {
+            chunk: 0,
+            totalChunks: 1,
+            data: 'seed',
+            hasHistory: opts.hasHistory ?? true,
+          }),
+        );
+      });
+    };
+
+    it('S1: a non-truncated line seed does not suppress a later scroll-up refresh', async () => {
+      const { socket } = await renderTerminal(true);
+      const terminal = getTerminal();
+
+      // hasHistory:false = the seed was NOT truncated. Under the regression this pinned the
+      // gate off forever; now capability comes from the subscribed ack, so refresh survives.
+      await seedLineProvider(socket, { refreshable: true, hasHistory: false });
+      await act(async () => {
+        socket.trigger('message', message('data', { data: 'later', sequence: 3 }));
+      });
+
+      await scrollUp(terminal);
+
+      expect(historyRequestCount(socket)).toBe(1);
+    });
+
+    it('S2: an empty first capture resolves without resetting xterm and keeps live rows', async () => {
+      const { socket, history } = await renderTerminal(true);
+      const terminal = getTerminal();
+
+      await act(async () => {
+        socket.trigger(
+          'message',
+          message('subscribed', {
+            currentSequence: 0,
+            replayStatus: 'seed',
+            historyRefreshable: true,
+          }),
+        );
+        socket.trigger('message', message('seed_empty', { capturedSequence: 0 }));
+      });
+      await act(async () => {
+        socket.trigger('message', message('data', { data: 'LIVE', sequence: 1 }));
+      });
+
+      expect(terminal.reset).not.toHaveBeenCalled();
+      expect(history.textContent).toContain('LIVE');
+    });
+
+    it('S2b: an empty capture adopts its non-zero watermark for reconnect replay', async () => {
+      const { socket, history } = await renderTerminal(true);
+      const terminal = getTerminal();
+
+      await act(async () => {
+        socket.trigger(
+          'message',
+          message('subscribed', {
+            currentSequence: 0,
+            replayStatus: 'seed',
+            historyRefreshable: true,
+            sequenceEpoch: 'epoch-A',
+          }),
+        );
+        // This row renders while the empty capture is still in flight, but reconnect sequence
+        // adoption is deliberately frozen until the successful completion watermark arrives.
+        socket.trigger('message', message('data', { data: 'LIVE', sequence: 1 }));
+        socket.trigger('message', message('seed_empty', { capturedSequence: 1 }));
+      });
+
+      expect(terminal.reset).not.toHaveBeenCalled();
+      expect(history.textContent).toContain('LIVE');
+
+      socket.emit.mockClear();
+      socket.connected = false;
+      await act(async () => {
+        socket.trigger('disconnect');
+      });
+      socket.connected = true;
+      await act(async () => {
+        socket.trigger('connect');
+      });
+
+      const subscribeCall = socket.emit.mock.calls.find(
+        ([e]: [string]) => e === 'terminal:subscribe',
+      );
+      expect(subscribeCall?.[1]).toMatchObject({
+        sessionId: 'chat-session',
+        lastSequence: 1,
+        sequenceEpoch: 'epoch-A',
+      });
+    });
+
+    it('S3: no history request while the seed replacement write is still unsettled', async () => {
+      const { socket } = await renderTerminal(true);
+      const terminal = getTerminal();
+      holdXtermWriteCallbacks = true;
+
+      await seedLineProvider(socket, { refreshable: true, hasHistory: true });
+      // A live frame observed during the still-unsettled capture makes state dirty…
+      await act(async () => {
+        socket.trigger('message', message('data', { data: 'x', sequence: 2 }));
+      });
+
+      await scrollUp(terminal);
+      // …but history cannot emit before the replacement write settles.
+      expect(historyRequestCount(socket)).toBe(0);
+
+      // Settle the held seed write.
+      await act(async () => {
+        heldXtermWriteCallbacks.shift()?.();
+      });
+      holdXtermWriteCallbacks = false;
+
+      await scrollUp(terminal);
+      expect(historyRequestCount(socket)).toBe(1);
+    });
+
+    it('S4: capturedSequence 0 is a baseline — no recapture until new output is observed', async () => {
+      const { socket } = await renderTerminal(true);
+      const terminal = getTerminal();
+
+      await act(async () => {
+        socket.trigger(
+          'message',
+          message('subscribed', {
+            currentSequence: 0,
+            replayStatus: 'seed',
+            historyRefreshable: true,
+          }),
+        );
+        socket.trigger('message', message('seed_empty', { capturedSequence: 0 }));
+      });
+
+      // Unchanged bottom→history re-entry: baseline 0, nothing newer observed → no request.
+      await scrollUp(terminal);
+      expect(historyRequestCount(socket)).toBe(0);
+
+      // New output advances latest-observed past the baseline → now dirty.
+      await act(async () => {
+        socket.trigger('message', message('data', { data: 'new', sequence: 1 }));
+      });
+      await scrollUp(terminal);
+      expect(historyRequestCount(socket)).toBe(1);
+    });
+
+    it('S4b: an accepted full_history at capturedSequence 0 commits a baseline across the async write window with no duplicate request', async () => {
+      const { socket } = await renderTerminal(true);
+      const terminal = getTerminal();
+
+      await seedLineProvider(socket, { refreshable: true, hasHistory: true });
+
+      // A fresh non-empty seed leaves the baseline unset (null), so the first bottom→history
+      // excursion is eligible and emits exactly one request.
+      await scrollUp(terminal);
+      expect(historyRequestCount(socket)).toBe(1);
+      const token = lastCorrelationId(socket);
+      expect(token).toBeDefined();
+
+      // The accepted response carries capturedSequence 0. Hold its replacement write so the
+      // pre-write/post-write ordering window is observable: 0 must be treated as a real
+      // baseline, not "unset".
+      holdXtermWriteCallbacks = true;
+      await act(async () => {
+        socket.trigger(
+          'message',
+          message('full_history', { history: 'HIST', capturedSequence: 0, correlationId: token }),
+        );
+      });
+
+      // Pre-write: the attempt is still in-flight (replacement write unsettled) → a further
+      // excursion admits no second request.
+      await scrollUp(terminal);
+      expect(historyRequestCount(socket)).toBe(1);
+
+      // Settle the held replacement write → the baseline commits at sequence 0.
+      await act(async () => {
+        heldXtermWriteCallbacks.shift()?.();
+      });
+      holdXtermWriteCallbacks = false;
+
+      // Drain the post-request cooldown so the following assertions isolate baseline/dirtiness
+      // rather than passing merely because the 2s cooldown is still active.
+      await act(async () => {
+        jest.advanceTimersByTime(HISTORY_REQUEST_COOLDOWN_MS + 100);
+      });
+
+      // Post-write: an unchanged bottom→history re-entry sees baseline 0 with nothing newer
+      // observed → no recapture (baseline, not cooldown).
+      await scrollUp(terminal);
+      expect(historyRequestCount(socket)).toBe(1);
+
+      // Only genuinely newer output past the baseline re-dirties state and admits a fresh
+      // request — proving 0 was an established baseline, not a perpetual "unset" that recaptures.
+      await act(async () => {
+        socket.trigger('message', message('data', { data: 'newer', sequence: 1 }));
+      });
+      await scrollUp(terminal);
+      expect(historyRequestCount(socket)).toBe(2);
+    });
+
+    it('S5: recovery replaces content and adopts its own baseline/watermark; a superseded late full_history is ignored', async () => {
+      const { socket, history } = await renderTerminal(true);
+      const terminal = getTerminal();
+
+      await seedLineProvider(socket, { refreshable: true, hasHistory: true });
+      await act(async () => {
+        socket.trigger('message', message('data', { data: 'A', sequence: 3 }));
+      });
+
+      await scrollUp(terminal);
+      const token = lastCorrelationId(socket);
+      expect(token).toBeDefined();
+      expect(historyRequestCount(socket)).toBe(1);
+
+      // Recovery supersedes the in-flight history attempt.
+      await act(async () => {
+        socket.trigger('message', message('resync_required', { currentSequence: 50 }));
+      });
+
+      // Deliver the recovery seed but HOLD its replacement write so the mid-recovery window is
+      // observable. The seed text is written immediately; only the completion callback (which
+      // commits the baseline/watermark and settles the lifecycle) is deferred.
+      holdXtermWriteCallbacks = true;
+      const requestsBeforeRecoverySeed = historyRequestCount(socket);
+      await act(async () => {
+        socket.trigger(
+          'message',
+          message('seed_ansi', {
+            chunk: 0,
+            totalChunks: 1,
+            data: 'RECOVERED',
+            sequenceEpoch: 'epoch-A',
+            recoveryEpoch: 1,
+            capturedSequence: 55,
+          }),
+        );
+      });
+
+      // While recovery is still unsettled (phase = recovery), no scroll-up may emit a request.
+      await scrollUp(terminal);
+      expect(historyRequestCount(socket)).toBe(requestsBeforeRecoverySeed);
+
+      // Settle the recovery replacement write → recovery content is applied and the recovery
+      // capture (55) becomes the baseline and reconnect watermark.
+      await act(async () => {
+        heldXtermWriteCallbacks.shift()?.();
+      });
+      holdXtermWriteCallbacks = false;
+      expect(history.textContent).toContain('RECOVERED');
+
+      // The late response for the now-superseded pre-recovery attempt must be ignored: it may
+      // not rewrite xterm, and its sequence (40) must not be adopted as the baseline.
+      const contentBeforeLate = history.textContent;
+      await act(async () => {
+        socket.trigger(
+          'message',
+          message('full_history', {
+            history: 'STALE-HISTORY',
+            capturedSequence: 40,
+            correlationId: token,
+          }),
+        );
+      });
+      expect(history.textContent).toBe(contentBeforeLate);
+      expect(history.textContent).toContain('RECOVERED');
+      expect(history.textContent).not.toContain('STALE-HISTORY');
+
+      // The reconnect replays from the applied recovery capture (55) — never the late
+      // response's 40, nor the pre-recovery applied 3.
+      socket.emit.mockClear();
+      socket.connected = false;
+      await act(async () => {
+        socket.trigger('disconnect');
+      });
+      socket.connected = true;
+      await act(async () => {
+        socket.trigger('connect');
+      });
+
+      const subscribeCall = socket.emit.mock.calls.find(
+        ([e]: [string]) => e === 'terminal:subscribe',
+      );
+      expect(subscribeCall?.[1]).toMatchObject({
+        sessionId: 'chat-session',
+        lastSequence: 55,
+        sequenceEpoch: 'epoch-A',
+      });
+    });
+
+    it('S6: disconnect preserves the applied watermark; no request offline; reconnect replays from it', async () => {
+      const { socket } = await renderTerminal(true);
+      const terminal = getTerminal();
+
+      await seedLineProvider(socket, { refreshable: true, hasHistory: true });
+      // An APPLIED live frame advances the reconnect watermark to 5.
+      await act(async () => {
+        socket.trigger('message', message('data', { data: 'A', sequence: 5 }));
+      });
+
+      await scrollUp(terminal);
+      expect(historyRequestCount(socket)).toBe(1);
+
+      // A newer frame arrives while the request is in-flight → buffered (unapplied).
+      await act(async () => {
+        socket.trigger('message', message('data', { data: 'B', sequence: 9 }));
+      });
+
+      // Disconnect: clears the in-flight latch; no request may emit while offline.
+      socket.connected = false;
+      await act(async () => {
+        socket.trigger('disconnect');
+      });
+      const countAtDisconnect = historyRequestCount(socket);
+      await scrollUp(terminal);
+      expect(historyRequestCount(socket)).toBe(countAtDisconnect);
+
+      // Reconnect: the subscribe replays from the last APPLIED sequence (5), never the
+      // buffered-but-unapplied 9.
+      socket.emit.mockClear();
+      socket.connected = true;
+      await act(async () => {
+        socket.trigger('connect');
+      });
+
+      const subscribeCall = socket.emit.mock.calls.find(
+        ([e]: [string]) => e === 'terminal:subscribe',
+      );
+      expect(subscribeCall?.[1]).toMatchObject({
+        sessionId: 'chat-session',
+        lastSequence: 5,
+        sequenceEpoch: 'epoch-A',
+      });
+    });
+
+    it('S8: an alternate-screen provider stays non-refreshable (no scroll-up request)', async () => {
+      const { socket } = await renderTerminal(true);
+      const terminal = getTerminal();
+
+      await seedLineProvider(socket, { refreshable: false, hasHistory: false });
+      await act(async () => {
+        socket.trigger('message', message('data', { data: 'more', sequence: 4 }));
+      });
+
+      await scrollUp(terminal);
+      expect(historyRequestCount(socket)).toBe(0);
+    });
   });
 });

@@ -19,7 +19,7 @@ function makeRt(createProfileProviderConfig: jest.Mock): CodecApplyRuntime {
         ),
       createProfileProviderConfig,
     } as AnyRec,
-    available: new Map([['claude', 'prov-1']]),
+    installedProviders: new Map([['claude', 'prov-1']]),
   } as CodecApplyRuntime;
 }
 

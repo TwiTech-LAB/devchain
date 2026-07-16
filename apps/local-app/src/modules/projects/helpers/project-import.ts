@@ -7,6 +7,7 @@ import type { StorageService } from '../../storage/interfaces/storage.interface'
 import type { UnifiedTemplateService } from '../../registry/services/unified-template.service';
 import {
   buildProviderConfigLookupKey,
+  collectReferencedProviderNames,
   preserveImportedEnv,
   resolveProvidersFromStorage,
   selectProfilesForFamilies,
@@ -51,7 +52,10 @@ type ImportPreparation = {
   payload: ParsedTemplatePayload;
   familyResult: FamilyAlternativesResult;
   needsMapping: boolean;
-  available: Map<string, string>;
+  /** Full installed-provider map (name(lowercased) → id) — for persistence + validation. */
+  installedProviders: Map<string, string>;
+  /** Installed map narrowed to the Step-1 allowlist (≡ installed when none) — binding eligibility. */
+  selectedProviders: Map<string, string>;
   missingProviders: string[];
   selectedProfilesByFamily: SelectedProfilesByFamily;
   existing: ExistingProjectData;
@@ -71,10 +75,12 @@ export interface ImportProjectInputLike {
    */
   agentOverrides?: PresetAgentConfig[];
   /**
-   * Transient, server-enforced provider allowlist (Step-1 wizard selection). When present
-   * (validated non-empty + lowercased at the controller), providers outside it are treated as
-   * uninstalled: excluded from family resolution AND from providerConfig creation, and reflected in
-   * the dry-run counts/missingProviders. NOT persisted. Absent → byte-identical to today.
+   * Transient Step-1 wizard choice metadata. When present
+   * (validated non-empty + lowercased at the controller), it narrows the SELECTION view used for
+   * family/wizard choices — an installed provider outside it does not appear as a family
+   * alternative. It does NOT affect persistence or missing reporting: installed-but-deselected
+   * providers still have their configs created and never surface as missing (only genuinely
+   * uninstalled providers do). Not persisted.
    */
   selectedProviderNames?: string[];
   teamOverrides?: Array<{
@@ -191,7 +197,7 @@ export async function importProjectWithHelper(
   }
 
   ensureFamilyCanImport(context.familyResult);
-  ensureSelectedProvidersAvailable(context.selectedProfilesByFamily, context.available);
+  ensureSelectedProvidersAvailable(context.selectedProfilesByFamily, context.installedProviders);
   ensureNoActiveSessions(input.projectId, deps);
   ensureNoDuplicateAgentNames(context.payload.agents);
 
@@ -234,7 +240,8 @@ export async function importProjectWithHelper(
       watchersService: watcherServiceForCodec,
       statusMappings: input.statusMappings,
       existingStatuses: context.existing.statuses.items,
-      available: context.available,
+      installedProviders: context.installedProviders,
+      selectedProviders: context.selectedProviders,
       teamsService: deps.teamsService,
       teamOverrides: input.teamOverrides,
       probe1m: deps.probe1m,
@@ -274,7 +281,7 @@ export async function importProjectWithHelper(
         input.agentOverrides,
         {
           agentNameToId: new Map(Object.entries(agentNameToId)),
-          configLookupMap: pipelineCtx.get('configLookupMap'),
+          configLookupMap: pipelineCtx.get('selectionEligibleConfigLookupMap'),
         },
       );
       logger.info(
@@ -411,20 +418,24 @@ async function prepareImportContext(
   );
   const needsMapping = familyResult.alternatives.some((alt) => !alt.defaultProviderAvailable);
 
-  const providerNames = new Set(
-    payload.profiles.map((profile) => profile.provider.name.trim().toLowerCase()),
-  );
-  const { available, missing: missingProviders } = await resolveProvidersFromStorage(
+  const referencedProviderNames = collectReferencedProviderNames(payload.profiles);
+  const {
+    installed,
+    selected,
+    missing: missingProviders,
+  } = await resolveProvidersFromStorage(
     deps.storage,
-    providerNames,
+    referencedProviderNames,
     input.selectedProviderNames,
   );
 
+  // Validate against the FULL installed map: an installed-but-deselected provider is available for
+  // profile creation/binding (deselection only narrows wizard family choices, not persistence).
   const selectedProfilesByFamily = selectProfilesForFamilies(
     payload.profiles,
     payload.agents,
     input.familyProviderMappings,
-    available,
+    installed,
   );
 
   const existing = await loadExistingProjectData(input.projectId, deps.storage);
@@ -439,7 +450,8 @@ async function prepareImportContext(
     payload,
     familyResult,
     needsMapping,
-    available,
+    installedProviders: installed,
+    selectedProviders: selected,
     missingProviders,
     selectedProfilesByFamily,
     existing,

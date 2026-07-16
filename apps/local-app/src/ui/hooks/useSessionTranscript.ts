@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAppSocket } from './useAppSocket';
 import { SessionApiError, fetchTranscriptSummary, fetchTranscriptTail } from '@/ui/lib/sessions';
+import type { TranscriptSummary as TranscriptSummaryData } from '@/ui/lib/sessions';
 import type { WsEnvelope } from '@/ui/lib/socket';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 import type {
@@ -12,6 +13,7 @@ import type {
   UnifiedChunk,
   UnifiedSemanticStep,
 } from '@/modules/session-reader/dtos/unified-chunk.types';
+import type { SourceChangeKind } from '@/modules/session-reader/services/session-cache.service';
 
 // ---------------------------------------------------------------------------
 // Serialized REST types (Date fields → ISO string over HTTP)
@@ -60,6 +62,7 @@ export type { TranscriptSummary } from '@/ui/lib/sessions';
 // ---------------------------------------------------------------------------
 
 export interface WsTranscriptDeltaPayload {
+  kind: 'delta';
   sessionId: string;
   cursor: string;
   prevCursor: string;
@@ -78,6 +81,16 @@ export interface WsTranscriptDeltaPayload {
   newMessageCount: number;
 }
 
+export interface WsTranscriptFullRefetchRequiredPayload {
+  kind: 'full-refetch-required';
+  sessionId: string;
+  sourceChangeKind: SourceChangeKind;
+}
+
+export type WsTranscriptUpdatedPayload =
+  | WsTranscriptDeltaPayload
+  | WsTranscriptFullRefetchRequiredPayload;
+
 // ---------------------------------------------------------------------------
 // Query Keys
 // ---------------------------------------------------------------------------
@@ -92,6 +105,19 @@ export const transcriptQueryKeys = {
 
 const EMPTY_MESSAGES: SerializedMessage[] = [];
 const EMPTY_CHUNKS: SerializedChunk[] = [];
+const MAX_CANONICAL_RECOVERY_ATTEMPTS = 2;
+
+function isStableEmptyTail(
+  tail: Awaited<ReturnType<typeof fetchTranscriptTail>>,
+  cursor: string,
+): boolean {
+  return (
+    tail.kind === 'delta' &&
+    tail.cursor === cursor &&
+    tail.deltaChunks.length === 0 &&
+    tail.deltaMessages.length === 0
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Fetch helpers
@@ -213,6 +239,9 @@ export function useSessionTranscript(
   const summaryEnabled = enabled;
   const invalidateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clientCursorRef = useRef<string | null>(null);
+  const canonicalRecoveryRef = useRef({ epoch: 0, inFlight: false, dirty: false });
+  const [canonicalRecoveryPending, setCanonicalRecoveryPending] = useState(false);
+  const [recoverySnapshot, setRecoverySnapshot] = useState<SerializedSession | undefined>();
 
   // Summary query — lighter endpoint for real-time chip/metric updates (non-fatal).
   // Placed before transcript query so adaptive staleTime can read messageCount.
@@ -244,6 +273,84 @@ export function useSessionTranscript(
     });
   }, [queryClient, sessionId]);
 
+  const requestCanonicalRefetch = useCallback(
+    (sid: string) => {
+      if (canonicalRecoveryRef.current.inFlight) {
+        canonicalRecoveryRef.current.dirty = true;
+        return;
+      }
+
+      const epoch = canonicalRecoveryRef.current.epoch + 1;
+      canonicalRecoveryRef.current = { epoch, inFlight: true, dirty: false };
+      const transcriptKey = transcriptQueryKeys.transcript(sid);
+      const summaryKey = transcriptQueryKeys.summary(sid);
+      const oldSession = queryClient.getQueryData<SerializedSession>(transcriptKey);
+      const oldSummary = queryClient.getQueryData<TranscriptSummaryData>(summaryKey);
+      setRecoverySnapshot(oldSession);
+      setCanonicalRecoveryPending(true);
+
+      void (async () => {
+        await Promise.all([
+          queryClient.cancelQueries({ queryKey: transcriptKey, exact: true }),
+          queryClient.cancelQueries({ queryKey: summaryKey, exact: true }),
+        ]);
+        let replacement: SerializedSession | undefined;
+        for (let attempt = 0; attempt < MAX_CANONICAL_RECOVERY_ATTEMPTS; attempt += 1) {
+          canonicalRecoveryRef.current.dirty = false;
+          const candidate = await fetchTranscript(sid, apiFetch);
+          if (
+            canonicalRecoveryRef.current.epoch !== epoch ||
+            !canonicalRecoveryRef.current.inFlight
+          ) {
+            return;
+          }
+          if (canonicalRecoveryRef.current.dirty || !candidate.cursor) continue;
+
+          const validation = await fetchTranscriptTail(sid, candidate.cursor, apiFetch);
+          if (
+            canonicalRecoveryRef.current.epoch !== epoch ||
+            !canonicalRecoveryRef.current.inFlight
+          ) {
+            return;
+          }
+          if (
+            canonicalRecoveryRef.current.dirty ||
+            !isStableEmptyTail(validation, candidate.cursor)
+          ) {
+            continue;
+          }
+
+          replacement = candidate;
+          break;
+        }
+        if (!replacement) throw new Error('Canonical transcript generation did not stabilize');
+
+        queryClient.setQueryData(transcriptKey, replacement);
+        queryClient.setQueryData<TranscriptSummaryData>(summaryKey, {
+          sessionId: sid,
+          providerName: replacement.providerName,
+          metrics: replacement.metrics,
+          messageCount: replacement.metrics.messageCount,
+          isOngoing: replacement.isOngoing,
+        });
+        clientCursorRef.current = replacement.cursor ?? null;
+        canonicalRecoveryRef.current.inFlight = false;
+        setRecoverySnapshot(undefined);
+        setCanonicalRecoveryPending(false);
+        queryClient.invalidateQueries({ queryKey: summaryKey });
+      })().catch(() => {
+        if (canonicalRecoveryRef.current.epoch !== epoch) return;
+        if (oldSession) queryClient.setQueryData(transcriptKey, oldSession);
+        if (oldSummary) queryClient.setQueryData(summaryKey, oldSummary);
+        clientCursorRef.current = oldSession?.cursor ?? null;
+        canonicalRecoveryRef.current.inFlight = false;
+        setRecoverySnapshot(undefined);
+        setCanonicalRecoveryPending(false);
+      });
+    },
+    [apiFetch, queryClient],
+  );
+
   const scheduleTranscriptAndSummaryInvalidation = useCallback(() => {
     if (invalidateTimerRef.current) return;
     invalidateTimerRef.current = setTimeout(() => {
@@ -265,6 +372,10 @@ export function useSessionTranscript(
   const applyDeltaMerge = useCallback(
     (delta: WsTranscriptDeltaPayload) => {
       if (!sessionId) return;
+      if (canonicalRecoveryRef.current.inFlight) {
+        canonicalRecoveryRef.current.dirty = true;
+        return;
+      }
 
       queryClient.setQueryData<SerializedSession>(
         transcriptQueryKeys.transcript(sessionId),
@@ -273,6 +384,8 @@ export function useSessionTranscript(
 
           const existingChunks = old.chunks ?? [];
           const stableChunks = existingChunks.slice(0, delta.replaceFromChunkIndex);
+          // Full mode is the explicit rollback path and intentionally retains the complete
+          // transcript response; bounded body retention belongs to the default paged mode.
           const mergedChunks = [...stableChunks, ...delta.deltaChunks];
           const mergedMessages = [...old.messages, ...delta.deltaMessages];
 
@@ -306,14 +419,29 @@ export function useSessionTranscript(
   // Tail fetch: recover from cursor mismatch by fetching delta from server.
   const fetchTailAndMerge = useCallback(
     async (sid: string, cursor: string) => {
+      if (canonicalRecoveryRef.current.inFlight) return;
+      const recoveryEpoch = canonicalRecoveryRef.current.epoch;
       try {
         const tail = await fetchTranscriptTail(sid, cursor, apiFetch);
+        if (
+          canonicalRecoveryRef.current.inFlight ||
+          canonicalRecoveryRef.current.epoch !== recoveryEpoch
+        ) {
+          return;
+        }
+
+        if (tail.kind === 'full-refetch-required') {
+          requestCanonicalRefetch(sid);
+          return;
+        }
 
         queryClient.setQueryData<SerializedSession>(transcriptQueryKeys.transcript(sid), (old) => {
           if (!old) return old;
 
           const existingChunks = old.chunks ?? [];
           const stableChunks = existingChunks.slice(0, tail.replaceFromChunkIndex);
+          // Full mode is the explicit rollback path and intentionally retains the complete
+          // transcript response; bounded body retention belongs to the default paged mode.
           const mergedChunks = [...stableChunks, ...(tail.deltaChunks as SerializedChunk[])];
           const mergedMessages = [...old.messages, ...(tail.deltaMessages as SerializedMessage[])];
 
@@ -333,10 +461,10 @@ export function useSessionTranscript(
           queryKey: transcriptQueryKeys.summary(sid),
         });
       } catch {
-        invalidateTranscriptAndSummary();
+        requestCanonicalRefetch(sid);
       }
     },
-    [queryClient, invalidateTranscriptAndSummary],
+    [apiFetch, queryClient, requestCanonicalRefetch],
   );
 
   // Full transcript query
@@ -360,10 +488,27 @@ export function useSessionTranscript(
 
   // Update client cursor when session data changes from full fetch.
   useEffect(() => {
-    if (session?.cursor) {
+    if (!canonicalRecoveryRef.current.inFlight && session?.cursor) {
       clientCursorRef.current = session.cursor;
     }
   }, [session]);
+
+  useEffect(() => {
+    canonicalRecoveryRef.current = {
+      epoch: canonicalRecoveryRef.current.epoch + 1,
+      inFlight: false,
+      dirty: false,
+    };
+    setRecoverySnapshot(undefined);
+    setCanonicalRecoveryPending(false);
+    return () => {
+      canonicalRecoveryRef.current = {
+        epoch: canonicalRecoveryRef.current.epoch + 1,
+        inFlight: false,
+        dirty: false,
+      };
+    };
+  }, [sessionId]);
 
   // WebSocket subscription for real-time transcript events
   const handleMessage = useCallback(
@@ -382,10 +527,21 @@ export function useSessionTranscript(
           break;
 
         case 'updated': {
-          const payload = envelope.payload as WsTranscriptDeltaPayload | undefined;
+          const payload = envelope.payload as WsTranscriptUpdatedPayload | undefined;
           const clientCursor = clientCursorRef.current;
 
-          if (payload?.cursor && payload?.prevCursor && clientCursor) {
+          if (payload?.kind === 'full-refetch-required') {
+            requestCanonicalRefetch(sessionId);
+          } else if (canonicalRecoveryRef.current.inFlight) {
+            // A delta belongs to an unproven generation while canonical recovery owns the lane.
+            canonicalRecoveryRef.current.dirty = true;
+            return;
+          } else if (
+            payload?.kind === 'delta' &&
+            payload.cursor &&
+            payload.prevCursor &&
+            clientCursor
+          ) {
             if (payload.prevCursor === clientCursor) {
               // Cursor match → inline delta merge (no HTTP roundtrip)
               applyDeltaMerge(payload);
@@ -416,6 +572,7 @@ export function useSessionTranscript(
       applyDeltaMerge,
       fetchTailAndMerge,
       invalidateTranscriptAndSummary,
+      requestCanonicalRefetch,
       scheduleTranscriptAndSummaryInvalidation,
       sessionId,
     ],
@@ -426,10 +583,17 @@ export function useSessionTranscript(
   useAppSocket(handlers, [sessionId]);
 
   // Derived values
-  const messages = session?.messages ?? EMPTY_MESSAGES;
-  const chunks = session?.chunks ?? EMPTY_CHUNKS;
-  const metrics = summary?.metrics ?? session?.metrics;
-  const isLive = enabled && (summary?.isOngoing ?? session?.isOngoing ?? false);
+  const visibleSession = canonicalRecoveryPending ? recoverySnapshot : session;
+  const messages = visibleSession?.messages ?? EMPTY_MESSAGES;
+  const chunks = visibleSession?.chunks ?? EMPTY_CHUNKS;
+  const metrics = canonicalRecoveryPending
+    ? visibleSession?.metrics
+    : (summary?.metrics ?? visibleSession?.metrics);
+  const isLive =
+    enabled &&
+    (canonicalRecoveryPending
+      ? (visibleSession?.isOngoing ?? false)
+      : (summary?.isOngoing ?? visibleSession?.isOngoing ?? false));
 
   useEffect(() => {
     if (!isLive || !sessionId) return;
@@ -463,7 +627,7 @@ export function useSessionTranscript(
   }, [refetchTranscript, queryClient, sessionId, summaryEnabled, transcriptEnabled]);
 
   return {
-    session,
+    session: visibleSession,
     messages,
     chunks,
     metrics,

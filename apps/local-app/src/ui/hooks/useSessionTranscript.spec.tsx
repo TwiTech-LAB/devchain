@@ -81,6 +81,16 @@ function mockTranscriptError(status: number, message: string): void {
   } as Response);
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 function makeSession(overrides: Partial<SerializedSession> = {}): SerializedSession {
   return {
     id: 'session-1',
@@ -786,6 +796,19 @@ describe('useSessionTranscript', () => {
     const INITIAL_CURSOR = 'aW5pdGlhbC1jdXJzb3I';
     const NEXT_CURSOR = 'bmV4dC1jdXJzb3I';
 
+    function makeStableEmptyTail(cursor: string) {
+      return {
+        kind: 'delta' as const,
+        cursor,
+        replaceFromChunkIndex: 0,
+        deltaChunks: [],
+        deltaMessages: [],
+        metrics: makeSession().metrics,
+        totalChunkCount: 0,
+        totalMessageCount: 0,
+      };
+    }
+
     function makeSessionWithCursor(): SerializedSession {
       return makeSession({
         cursor: INITIAL_CURSOR,
@@ -856,6 +879,7 @@ describe('useSessionTranscript', () => {
 
     function makeDeltaPayload(prevCursor: string) {
       return {
+        kind: 'delta' as const,
         sessionId: 'session-1',
         cursor: NEXT_CURSOR,
         prevCursor,
@@ -927,15 +951,24 @@ describe('useSessionTranscript', () => {
       };
     }
 
-    async function renderWithInitialSession() {
+    async function renderWithInitialSession(
+      onRender?: (session: SerializedSession | undefined) => void,
+    ) {
       const session = makeSessionWithCursor();
       const summary = makeSummary();
       fetchTranscriptSummaryMock.mockResolvedValue(summary);
       mockTranscriptResponse(session);
 
-      const hook = renderHook(() => useSessionTranscript('session-1'), {
-        wrapper: createWrapper(queryClient),
-      });
+      const hook = renderHook(
+        () => {
+          const value = useSessionTranscript('session-1');
+          onRender?.(value.session);
+          return value;
+        },
+        {
+          wrapper: createWrapper(queryClient),
+        },
+      );
 
       await waitFor(() => {
         expect(hook.result.current.session).toBeDefined();
@@ -1033,6 +1066,7 @@ describe('useSessionTranscript', () => {
       await renderWithInitialSession();
 
       fetchTranscriptTailMock.mockResolvedValue({
+        kind: 'delta',
         cursor: NEXT_CURSOR,
         replaceFromChunkIndex: 1,
         deltaChunks: [],
@@ -1067,12 +1101,13 @@ describe('useSessionTranscript', () => {
       expect(transcriptFetches).toHaveLength(0);
     });
 
-    it('tail failure → falls back to full-transcript invalidation', async () => {
+    it('tail failure → starts owned canonical recovery', async () => {
       await renderWithInitialSession();
 
-      fetchTranscriptTailMock.mockRejectedValue(new Error('Cursor expired'));
+      fetchTranscriptTailMock
+        .mockRejectedValueOnce(new Error('Cursor expired'))
+        .mockResolvedValueOnce(makeStableEmptyTail(INITIAL_CURSOR));
 
-      const invalidateSpy = jest.spyOn(queryClient, 'invalidateQueries');
       const handler = captureWsHandler();
 
       act(() => {
@@ -1085,10 +1120,242 @@ describe('useSessionTranscript', () => {
       });
 
       await waitFor(() => {
-        expect(invalidateSpy).toHaveBeenCalledWith({
-          queryKey: transcriptQueryKeys.transcript('session-1'),
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    it('rejects a dirty canonical candidate and atomically renders only the latest complete generation', async () => {
+      const renderedGenerations: string[] = [];
+      const { result } = await renderWithInitialSession((rendered) => {
+        if (!rendered?.cursor) return;
+        renderedGenerations.push(
+          `${rendered.cursor}:${rendered.messages.map((message) => message.id).join(',')}`,
+        );
+      });
+      const oldSession = result.current.session;
+      const staleCandidate = makeSessionWithCursor();
+      staleCandidate.cursor = 'stale-candidate-cursor';
+      staleCandidate.messages = staleCandidate.messages.map((message, index) => ({
+        ...message,
+        id: `stale-message-${index}`,
+        content: [{ type: 'text', text: `stale-${index}` }],
+      }));
+      staleCandidate.chunks = staleCandidate.chunks?.map((chunk, index) => ({
+        ...chunk,
+        id: `stale-chunk-${index}`,
+        messages: [staleCandidate.messages[index]],
+      }));
+      const replacement = makeSessionWithCursor();
+      replacement.cursor = NEXT_CURSOR;
+      replacement.messages = replacement.messages.map((message, index) => ({
+        ...message,
+        id: `replacement-message-${index}`,
+        content: [{ type: 'text', text: `replacement-${index}` }],
+      }));
+      replacement.chunks = replacement.chunks?.map((chunk, index) => ({
+        ...chunk,
+        id: `replacement-chunk-${index}`,
+        messages: [replacement.messages[index]],
+      }));
+
+      const pending = deferred<Response>();
+      fetchMock
+        .mockImplementationOnce(() => pending.promise)
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          text: () => Promise.resolve(JSON.stringify(replacement)),
+          json: () => Promise.resolve(replacement),
+        } as Response);
+      fetchTranscriptTailMock.mockResolvedValue(makeStableEmptyTail(NEXT_CURSOR));
+      const handler = captureWsHandler();
+
+      act(() => {
+        handler({
+          topic: 'session/session-1/transcript',
+          type: 'updated',
+          payload: {
+            kind: 'full-refetch-required',
+            sessionId: 'session-1',
+            sourceChangeKind: 'file-replacement',
+          },
+          ts: new Date().toISOString(),
         });
       });
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      expect(result.current.session).toBe(oldSession);
+      expect(result.current.session?.cursor).toBe(INITIAL_CURSOR);
+
+      act(() => {
+        handler({
+          topic: 'session/session-1/transcript',
+          type: 'updated',
+          payload: makeDeltaPayload(INITIAL_CURSOR),
+          ts: new Date().toISOString(),
+        });
+      });
+
+      expect(result.current.session).toBe(oldSession);
+      expect(result.current.messages.map((message) => message.id)).toEqual(['msg-1', 'msg-2']);
+      expect(
+        queryClient
+          .getQueryData<SerializedSession>(transcriptQueryKeys.transcript('session-1'))
+          ?.messages.map((message) => message.id),
+      ).toEqual(['msg-1', 'msg-2']);
+
+      act(() => {
+        handler({
+          topic: 'session/session-1/transcript',
+          type: 'updated',
+          payload: {
+            kind: 'full-refetch-required',
+            sessionId: 'session-1',
+            sourceChangeKind: 'same-file-rewrite',
+          },
+          ts: new Date().toISOString(),
+        });
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        pending.resolve({
+          ok: true,
+          status: 200,
+          text: () => Promise.resolve(JSON.stringify(staleCandidate)),
+          json: () => Promise.resolve(staleCandidate),
+        } as Response);
+      });
+
+      await waitFor(() => expect(result.current.session?.cursor).toBe(NEXT_CURSOR));
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchTranscriptTailMock).toHaveBeenCalledWith(
+        'session-1',
+        NEXT_CURSOR,
+        expect.any(Function),
+      );
+      expect(result.current.messages.map((message) => message.id)).toEqual([
+        'replacement-message-0',
+        'replacement-message-1',
+      ]);
+      expect(result.current.chunks.map((chunk) => chunk.id)).toEqual([
+        'replacement-chunk-0',
+        'replacement-chunk-1',
+      ]);
+      expect(new Set(renderedGenerations)).toEqual(
+        new Set([
+          `${INITIAL_CURSOR}:msg-1,msg-2`,
+          `${NEXT_CURSOR}:replacement-message-0,replacement-message-1`,
+        ]),
+      );
+      expect(renderedGenerations.some((generation) => generation.includes('stale-message'))).toBe(
+        false,
+      );
+    });
+
+    it('tail unsafe generation replaces a growing generation without appending stale messages', async () => {
+      const { result } = await renderWithInitialSession();
+      const oldSession = result.current.session;
+      const replacement = makeSessionWithCursor();
+      replacement.cursor = NEXT_CURSOR;
+      replacement.messages = [
+        ...replacement.messages.map((message, index) => ({
+          ...message,
+          id: `new-message-${index}`,
+          content: [{ type: 'text' as const, text: `new-${index}` }],
+        })),
+        {
+          ...replacement.messages[1],
+          id: 'new-message-2',
+          parentId: 'new-message-1',
+          content: [{ type: 'text' as const, text: 'new-2' }],
+        },
+      ];
+      replacement.metrics = { ...replacement.metrics, messageCount: 3 };
+
+      fetchTranscriptTailMock
+        .mockResolvedValueOnce({
+          kind: 'full-refetch-required',
+          sourceChangeKind: 'same-file-rewrite',
+        })
+        .mockResolvedValueOnce(makeStableEmptyTail(NEXT_CURSOR));
+      const pending = deferred<Response>();
+      fetchMock.mockImplementation(() => pending.promise);
+      const handler = captureWsHandler();
+
+      act(() => {
+        handler({
+          topic: 'session/session-1/transcript',
+          type: 'updated',
+          payload: makeDeltaPayload('wrong-cursor'),
+          ts: new Date().toISOString(),
+        });
+      });
+
+      await waitFor(() => expect(fetchTranscriptTailMock).toHaveBeenCalled());
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      expect(result.current.session).toBe(oldSession);
+      expect(result.current.messages.map((message) => message.id)).toEqual(['msg-1', 'msg-2']);
+
+      await act(async () => {
+        pending.resolve({
+          ok: true,
+          status: 200,
+          text: () => Promise.resolve(JSON.stringify(replacement)),
+          json: () => Promise.resolve(replacement),
+        } as Response);
+      });
+
+      await waitFor(() => expect(result.current.session?.cursor).toBe(NEXT_CURSOR));
+      expect(result.current.messages.map((message) => message.id)).toEqual([
+        'new-message-0',
+        'new-message-1',
+        'new-message-2',
+      ]);
+      expect(result.current.messages).toHaveLength(3);
+    });
+
+    it('failed canonical refetch preserves the old cursor and retries on the next unsafe signal', async () => {
+      const { result } = await renderWithInitialSession();
+      const oldSession = result.current.session;
+      const handler = captureWsHandler();
+
+      fetchMock.mockRejectedValueOnce(new Error('network down'));
+      act(() => {
+        handler({
+          topic: 'session/session-1/transcript',
+          type: 'updated',
+          payload: {
+            kind: 'full-refetch-required',
+            sessionId: 'session-1',
+            sourceChangeKind: 'file-replacement',
+          },
+          ts: new Date().toISOString(),
+        });
+      });
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(result.current.session).toBe(oldSession);
+      expect(result.current.session?.cursor).toBe(INITIAL_CURSOR);
+
+      const replacement = makeSessionWithCursor();
+      replacement.cursor = NEXT_CURSOR;
+      fetchTranscriptTailMock.mockResolvedValue(makeStableEmptyTail(NEXT_CURSOR));
+      mockTranscriptResponse(replacement);
+      act(() => {
+        handler({
+          topic: 'session/session-1/transcript',
+          type: 'updated',
+          payload: {
+            kind: 'full-refetch-required',
+            sessionId: 'session-1',
+            sourceChangeKind: 'file-replacement',
+          },
+          ts: new Date().toISOString(),
+        });
+      });
+
+      await waitFor(() => expect(result.current.session?.cursor).toBe(NEXT_CURSOR));
     });
   });
 });

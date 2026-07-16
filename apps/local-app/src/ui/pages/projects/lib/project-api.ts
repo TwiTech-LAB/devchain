@@ -1,7 +1,7 @@
 import type { ExportData, ManifestData } from '@devchain/shared';
 import type { FamilyAlternative } from '@/ui/components/project/ProviderMappingModal';
 
-/** Per-agent config override sent to the create/import endpoints (Task 2 field). */
+/** Per-agent config override sent to the create/import endpoints. */
 export interface AgentOverridePayload {
   agentName: string;
   providerConfigName: string;
@@ -33,7 +33,7 @@ export interface SetupPreviewPresetCoverage {
   agentResolvedProviders: Record<string, string>;
 }
 
-/** Response of POST /api/projects/setup-preview (Task 1). Fetched once per wizard session. */
+/** Response of POST /api/projects/setup-preview. Fetched once per wizard session. */
 export interface SetupPreviewResponse {
   payload: ExportData;
   providerSummary: SetupPreviewProviderSummary[];
@@ -224,9 +224,9 @@ export async function createProjectFromTemplate(data: {
   version?: string;
   familyProviderMappings?: Record<string, string>;
   presetName?: string;
-  /** Per-agent config overrides (Task 2). Mutually exclusive with presetName. */
+  /** Per-agent config overrides. Mutually exclusive with presetName. */
   agentOverrides?: AgentOverridePayload[];
-  /** Transient, server-enforced provider allowlist (Task 3, Step-1 wizard selection). */
+  /** Transient provider choice metadata (Step-1 wizard selection). */
   selectedProviderNames?: string[];
   teamOverrides?: Array<{
     teamName: string;

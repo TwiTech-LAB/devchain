@@ -131,6 +131,33 @@ function createBaseFetchMock(overrides?: {
         }),
       } as Response;
     }
+    if (url === '/api/debug/metrics') {
+      return {
+        ok: true,
+        json: async () => ({
+          timestamp: new Date().toISOString(),
+          process: {
+            pid: 1,
+            memory: { rss: 0, heapTotal: 0, heapUsed: 0, external: 0, arrayBuffers: 0 },
+            eventLoopDelay: null,
+            listeners: {},
+          },
+          caches: {
+            aggregate: {
+              entries: 0,
+              bytesEstimated: 0,
+              hits: 0,
+              misses: 0,
+              hitRate: 0,
+              providersFailed: 0,
+            },
+          },
+          frameBuffers: { sessions: 0, totalFrames: 0, bytesEstimated: 0 },
+          pty: { activeSessions: 0 },
+          sockets: { connectedClients: 0 },
+        }),
+      } as Response;
+    }
     if (url === '/api/settings' && init?.method === 'PUT') {
       const payload = init.body ? JSON.parse(init.body.toString()) : {};
       return { ok: true, json: async () => ({ ...settings, ...payload }) } as Response;

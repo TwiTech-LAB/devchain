@@ -2,6 +2,8 @@
 
 This directory contains helper scripts for database migrations and verification.
 
+The opt-in memory integration harness is documented in [`memory-soak/README.md`](memory-soak/README.md). Run a named scenario with `pnpm --filter local-app memory-soak -- --scenario host-burst-plateau`; it is intentionally outside the default test gate.
+
 ## 🎯 Quick Reference
 
 ### Run Migrations

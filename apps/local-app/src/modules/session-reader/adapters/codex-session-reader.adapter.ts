@@ -10,6 +10,7 @@ import type {
   IncrementalResult,
   TranscriptCandidateMetadata,
 } from './session-reader-adapter.interface';
+import { EXACT_SUMMARY_FIELDS } from './session-reader-adapter.interface';
 import type { UnifiedSession } from '../dtos/unified-session.types';
 import { parseCodexJsonl } from '../parsers/codex-jsonl.parser';
 import { PRICING_SERVICE, type PricingServiceInterface } from '../services/pricing.interface';
@@ -234,6 +235,18 @@ export class CodexSessionReaderAdapter implements SessionReaderAdapter {
       metrics: result.metrics,
       isOngoing: result.metrics.isOngoing,
       warnings: result.warnings,
+    };
+  }
+
+  async getSummary(sourceRef: import('./session-reader-adapter.interface').SessionSourceRef) {
+    const result = await parseCodexJsonl(sourceRef.filePath, {
+      pricingService: this.pricingService,
+      retainMessages: false,
+    });
+    return {
+      metrics: result.metrics,
+      warnings: result.warnings,
+      exactFields: EXACT_SUMMARY_FIELDS,
     };
   }
 

@@ -14,6 +14,8 @@ import { ClaudeSessionReaderAdapter } from '../adapters/claude-session-reader.ad
 import { OpenCodeSessionReaderAdapter } from '../adapters/opencode-session-reader.adapter';
 import type { SessionSourceRef } from '../adapters/session-reader-adapter.interface';
 import type { PricingServiceInterface } from './pricing.interface';
+import type { UnifiedChunk } from '../dtos/unified-chunk.types';
+import { decodeCursor } from './transcript-cursor';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -37,6 +39,11 @@ const mockStorage = {
   getProfileProviderConfig: jest.fn(),
   getProvider: jest.fn(),
 };
+
+const mockMetricsService = {
+  registerCacheStatsProvider: jest.fn(),
+  registerStatsProvider: jest.fn(),
+} as never;
 
 const mockProviderAdapterFactory = {
   getAdapter: jest.fn().mockImplementation((name: string) => {
@@ -105,15 +112,22 @@ const mockAdapter = {
   providerName: 'claude',
   parseSessionFile: jest.fn(),
   parseFullSession: jest.fn(),
+  getSummary: jest.fn(),
 };
 
 const mockSessionCacheService = {
   getOrParse: jest.fn(),
   getOrParseWithMeta: jest.fn(),
+  getFreshSession: jest.fn(),
   invalidate: jest.fn(),
   clear: jest.fn(),
   getEntry: jest.fn(),
+  getChunks: jest.fn(),
+  setChunks: jest.fn(),
+  getChunksCacheStats: jest.fn(),
 };
+
+const mockChunksBySession = new Map<string, { sourceVersion: number; chunks: UnifiedChunk[] }>();
 
 // ---------------------------------------------------------------------------
 // Setup
@@ -154,6 +168,7 @@ function setupResolveChain() {
       return {
         session,
         cacheHit: false,
+        sourceChangeKind: 'unknown-full-parse',
         lastOffset: 1024,
         lastSize: 1024,
         lastMtime: Date.now(),
@@ -168,6 +183,29 @@ describe('SessionReaderService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockChunksBySession.clear();
+    mockSessionCacheService.getEntry.mockReturnValue(undefined);
+    mockSessionCacheService.getFreshSession.mockResolvedValue(undefined);
+    mockAdapter.getSummary.mockResolvedValue(null);
+    mockSessionCacheService.getChunks.mockImplementation(
+      (sessionId: string, sourceVersion: number) => {
+        const cached = mockChunksBySession.get(sessionId);
+        return cached && cached.sourceVersion === sourceVersion ? cached.chunks : undefined;
+      },
+    );
+    mockSessionCacheService.setChunks.mockImplementation(
+      (sessionId: string, sourceVersion: number, chunks: UnifiedChunk[]) => {
+        mockChunksBySession.set(sessionId, { sourceVersion, chunks });
+      },
+    );
+    mockSessionCacheService.getChunksCacheStats.mockReturnValue({
+      entries: 0,
+      bytesEstimated: 0,
+      hits: 0,
+      misses: 0,
+      hitRate: 0,
+      bytesMethod: 'deferred-to-aggregate',
+    });
     service = new SessionReaderService(
       mockAdapterFactory as unknown as SessionReaderAdapterFactory,
       mockPathValidator as unknown as TranscriptPathValidator,
@@ -186,7 +224,9 @@ describe('SessionReaderService', () => {
 
       const result = await service.getTranscript('sess-1');
 
-      expect(result).toBe(session);
+      expect(result).not.toBe(session);
+      expect(result.messages).toBe(session.messages);
+      expect(session.chunks).toBeUndefined();
       expect(mockSessionsService.getSession).toHaveBeenCalledWith('sess-1');
       expect(mockStorage.getAgent).toHaveBeenCalledWith('agent-1');
       expect(mockStorage.getProfileProviderConfig).toHaveBeenCalledWith('config-1');
@@ -599,7 +639,7 @@ describe('SessionReaderService', () => {
       );
     });
 
-    it('should return same session reference when no tool results exceed maxLength (short-circuit)', async () => {
+    it('should preserve the enriched wrapper when no tool results exceed maxLength', async () => {
       setupResolveChain();
       const session = makeSession([
         makeMessage('u1', 'user', '2026-01-01T10:00:00.000Z'),
@@ -633,10 +673,12 @@ describe('SessionReaderService', () => {
 
       const result = await service.getTranscript('sess-1', { maxToolResultLength: 2000 });
 
-      expect(result).toBe(session);
+      expect(result).not.toBe(session);
+      expect(result.messages).toBe(session.messages);
+      expect(session.chunks).toBeUndefined();
     });
 
-    it('should return same session reference when session has no tool results at all (short-circuit)', async () => {
+    it('should preserve the enriched wrapper when the session has no tool results', async () => {
       setupResolveChain();
       const session = makeSession([
         makeMessage('u1', 'user', '2026-01-01T10:00:00.000Z'),
@@ -646,7 +688,9 @@ describe('SessionReaderService', () => {
 
       const result = await service.getTranscript('sess-1', { maxToolResultLength: 2000 });
 
-      expect(result).toBe(session);
+      expect(result).not.toBe(session);
+      expect(result.messages).toBe(session.messages);
+      expect(session.chunks).toBeUndefined();
     });
   });
 
@@ -670,6 +714,7 @@ describe('SessionReaderService', () => {
       // messages it must be accepted (not expired) and report a TRUE-empty delta.
       const tail = await service.getTranscriptTail('sess-1', summary.cursor);
       expect(tail).not.toBeNull();
+      expect(tail).toMatchObject({ kind: 'delta' });
       expect(tail?.totalMessageCount).toBe(3);
       expect(tail?.deltaMessages).toEqual([]);
       expect(tail?.deltaChunks).toEqual([]);
@@ -687,6 +732,7 @@ describe('SessionReaderService', () => {
       const tail = await service.getTranscriptTail('sess-1', summary.cursor);
 
       expect(tail).not.toBeNull();
+      expect(tail).toMatchObject({ kind: 'delta' });
       expect(tail?.deltaChunks).toEqual([]);
       expect(tail?.deltaMessages).toEqual([]);
       expect(tail?.replaceFromChunkId).toBeNull();
@@ -702,15 +748,36 @@ describe('SessionReaderService', () => {
       ];
       // Mint a cursor at the 2-message state.
       mockAdapter.parseFullSession.mockResolvedValue(makeSession(twoMessages));
+      mockSessionCacheService.getOrParseWithMeta.mockResolvedValueOnce({
+        session: makeSession(twoMessages),
+        cacheHit: false,
+        sourceChangeKind: 'unknown-full-parse',
+        lastOffset: 1024,
+        lastSize: 1024,
+        lastMtime: Date.now(),
+        sourceVersion: 1024,
+        boundaryFold: false,
+      });
       const summary = await service.getTranscriptSummaryWithCursor('sess-1');
 
       // A new message arrives (transcript grew).
       const threeMessages = [...twoMessages, makeMessage('m3', 'user', '2026-01-01T10:00:10.000Z')];
       mockAdapter.parseFullSession.mockResolvedValue(makeSession(threeMessages));
+      mockSessionCacheService.getOrParseWithMeta.mockResolvedValueOnce({
+        session: makeSession(threeMessages),
+        cacheHit: false,
+        sourceChangeKind: 'same-file-append',
+        lastOffset: 2048,
+        lastSize: 2048,
+        lastMtime: Date.now(),
+        sourceVersion: 2048,
+        boundaryFold: false,
+      });
 
       const tail = await service.getTranscriptTail('sess-1', summary.cursor);
 
       expect(tail).not.toBeNull();
+      expect(tail).toMatchObject({ kind: 'delta' });
       expect(tail?.deltaChunks.length).toBeGreaterThan(0);
       expect(tail?.deltaMessages.length).toBeGreaterThan(0);
       // Anchor is authoritative and equals the first delta chunk's stable id.
@@ -735,6 +802,7 @@ describe('SessionReaderService', () => {
         .mockResolvedValueOnce({
           session,
           cacheHit: false,
+          sourceChangeKind: 'unknown-full-parse',
           lastOffset: 1024,
           lastSize: 1024,
           lastMtime: Date.now(),
@@ -743,6 +811,7 @@ describe('SessionReaderService', () => {
         .mockResolvedValueOnce({
           session,
           cacheHit: false,
+          sourceChangeKind: 'db-update',
           lastOffset: 2048,
           lastSize: 2048,
           lastMtime: Date.now(),
@@ -753,6 +822,7 @@ describe('SessionReaderService', () => {
       const tail = await service.getTranscriptTail('sess-1', summary.cursor);
 
       expect(tail).not.toBeNull();
+      expect(tail).toMatchObject({ kind: 'delta' });
       expect(tail?.totalMessageCount).toBe(3);
       // In-place last-chunk replacement: delta chunks present, but no NEW messages.
       expect(tail?.deltaChunks.length).toBeGreaterThan(0);
@@ -761,6 +831,53 @@ describe('SessionReaderService', () => {
       // Cursor advanced to the new revision (NOT a no-op).
       expect(tail?.cursor).not.toBe(summary.cursor);
     });
+
+    it.each([
+      'file-replacement',
+      'file-truncation',
+      'same-file-rewrite',
+      'cache-hit',
+      'unknown-full-parse',
+    ] as const)(
+      'requires a cursor-free full refetch for an unsafe %s revision change',
+      async (sourceChangeKind) => {
+        setupResolveChain();
+        const session = makeSession();
+        mockAdapter.parseFullSession.mockResolvedValue(session);
+        mockSessionCacheService.getOrParseWithMeta
+          .mockResolvedValueOnce({
+            session,
+            cacheHit: false,
+            sourceChangeKind: 'unknown-full-parse',
+            lastOffset: 1024,
+            lastSize: 1024,
+            lastMtime: Date.now(),
+            sourceVersion: 1024,
+            boundaryFold: false,
+          })
+          .mockResolvedValueOnce({
+            session,
+            cacheHit: sourceChangeKind === 'cache-hit',
+            sourceChangeKind,
+            lastOffset: 2048,
+            lastSize: 2048,
+            lastMtime: Date.now(),
+            sourceVersion: 2048,
+            boundaryFold: false,
+          });
+
+        const summary = await service.getTranscriptSummaryWithCursor('sess-1');
+        const tail = await service.getTranscriptTail('sess-1', summary.cursor);
+
+        expect(tail).toEqual({
+          kind: 'full-refetch-required',
+          sourceChangeKind,
+        });
+        expect(tail).not.toHaveProperty('cursor');
+        expect(tail).not.toHaveProperty('deltaChunks');
+        expect(tail).not.toHaveProperty('deltaMessages');
+      },
+    );
 
     it('returns null on an expired cursor (message count exceeds the current total)', async () => {
       setupResolveChain();
@@ -783,6 +900,144 @@ describe('SessionReaderService', () => {
   });
 
   describe('getTranscriptSummary', () => {
+    it('module-unit: serves a large cold summary without materializing messages', async () => {
+      setupResolveChain();
+      const metrics = makeMetrics({ messageCount: 50_000, isOngoing: true });
+      mockAdapter.getSummary.mockResolvedValue({ metrics, exactFields: [] });
+
+      const result = await service.getTranscriptSummary('sess-1');
+
+      expect(result).toEqual({
+        sessionId: 'sess-1',
+        providerName: 'claude',
+        metrics,
+        messageCount: 50_000,
+        isOngoing: true,
+      });
+      expect(mockAdapter.getSummary).toHaveBeenCalledWith({
+        filePath: '/home/user/.claude/projects/-test/session.jsonl',
+        providerName: 'claude',
+        kind: 'file',
+      });
+      expect(mockAdapter.parseFullSession).not.toHaveBeenCalled();
+      expect(mockSessionCacheService.getOrParseWithMeta).not.toHaveBeenCalled();
+    });
+
+    it('module-unit: applies the 1M context override to lightweight adapter metrics', async () => {
+      setupResolveChain();
+      mockStorage.getProvider.mockResolvedValue({
+        id: 'provider-1',
+        name: 'claude',
+        oneMillionContextEnabled: true,
+      });
+      const metrics = makeMetrics({
+        primaryModel: 'claude-opus-4-6',
+        contextWindowTokens: 200_000,
+      });
+      mockAdapter.getSummary.mockResolvedValue({ metrics, exactFields: [] });
+
+      const result = await service.getTranscriptSummary('sess-1');
+
+      expect(result.metrics.contextWindowTokens).toBe(1_000_000);
+      expect(metrics.contextWindowTokens).toBe(200_000);
+      expect(mockAdapter.parseFullSession).not.toHaveBeenCalled();
+    });
+
+    it('module-unit: reuses an active watcher metrics snapshot before reading the source', async () => {
+      setupResolveChain();
+      const metrics = makeMetrics({ messageCount: 11, isOngoing: true });
+      const watcher = { getLastKnownSummaryMetrics: jest.fn().mockReturnValue(metrics) };
+      const watcherBackedService = new SessionReaderService(
+        mockAdapterFactory as unknown as SessionReaderAdapterFactory,
+        mockPathValidator as unknown as TranscriptPathValidator,
+        mockSessionCacheService as unknown as SessionCacheService,
+        mockSessionsService as unknown as SessionsService,
+        mockStorage as unknown as StorageService,
+        mockProviderAdapterFactory as unknown as never,
+        watcher as never,
+      );
+
+      const result = await watcherBackedService.getTranscriptSummary('sess-1');
+
+      expect(result.metrics).toBe(metrics);
+      expect(watcher.getLastKnownSummaryMetrics).toHaveBeenCalledWith('sess-1');
+      expect(mockAdapter.getSummary).not.toHaveBeenCalled();
+      expect(mockAdapter.parseFullSession).not.toHaveBeenCalled();
+    });
+
+    it('module-unit: falls back to the existing full parse when summary capability fails', async () => {
+      setupResolveChain();
+      const session = makeSession();
+      mockAdapter.getSummary.mockRejectedValue(new Error('summary unavailable'));
+      mockAdapter.parseFullSession.mockResolvedValue(session);
+
+      await expect(service.getTranscriptSummary('sess-1')).resolves.toEqual(
+        expect.objectContaining({ messageCount: session.metrics.messageCount }),
+      );
+
+      expect(mockAdapter.parseFullSession).toHaveBeenCalledTimes(1);
+      expect(mockSessionCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(1);
+    });
+
+    it('module-unit: returns complete cached metrics without entering parsed/chunk construction', async () => {
+      setupResolveChain();
+      const cachedSession = makeSession();
+      const cachedMetrics = cachedSession.metrics;
+      Object.defineProperty(cachedSession, 'messages', {
+        get() {
+          throw new Error('summary cache hit must not materialize messages');
+        },
+      });
+      mockSessionCacheService.getEntry.mockReturnValue({ session: cachedSession });
+      mockSessionCacheService.getFreshSession.mockResolvedValue(cachedSession);
+
+      const result = await service.getTranscriptSummary('sess-1');
+
+      expect(result).toEqual({
+        sessionId: 'sess-1',
+        providerName: 'claude',
+        metrics: cachedMetrics,
+        messageCount: cachedMetrics.messageCount,
+        isOngoing: cachedMetrics.isOngoing,
+      });
+      expect(result.metrics).toBe(cachedMetrics);
+      expect(mockSessionCacheService.getOrParseWithMeta).not.toHaveBeenCalled();
+      expect(mockAdapter.parseFullSession).not.toHaveBeenCalled();
+      expect(service.getChunksCacheStats()).toMatchObject({ hits: 0, misses: 0 });
+    });
+
+    it('module-unit: preserves context-window enrichment on a parsed-cache hit', async () => {
+      setupResolveChain();
+      mockStorage.getProvider.mockResolvedValue({
+        id: 'provider-1',
+        name: 'claude',
+        oneMillionContextEnabled: true,
+      });
+      const cachedSession = makeSession();
+      cachedSession.metrics.primaryModel = 'claude-opus-4-6';
+      mockSessionCacheService.getEntry.mockReturnValue({ session: cachedSession });
+      mockSessionCacheService.getFreshSession.mockResolvedValue(cachedSession);
+
+      const result = await service.getTranscriptSummary('sess-1');
+
+      expect(result.metrics.contextWindowTokens).toBe(1_000_000);
+      expect(mockSessionCacheService.getOrParseWithMeta).not.toHaveBeenCalled();
+    });
+
+    it('module-unit: keeps the summary response field-for-field identical across cold and warm paths', async () => {
+      setupResolveChain();
+      const session = makeSession();
+      mockAdapter.parseFullSession.mockResolvedValue(session);
+
+      const cold = await service.getTranscriptSummary('sess-1');
+      mockSessionCacheService.getEntry.mockReturnValue({ session });
+      mockSessionCacheService.getFreshSession.mockResolvedValue(session);
+      const warm = await service.getTranscriptSummary('sess-1');
+
+      expect(warm).toEqual(cold);
+      expect(Object.keys(warm).sort()).toEqual(Object.keys(cold).sort());
+    });
+
     it('should return summary with metrics', async () => {
       setupResolveChain();
       const session = makeSession();
@@ -838,7 +1093,7 @@ describe('SessionReaderService', () => {
         getContextWindowSize: jest.fn().mockReturnValue(200_000),
       };
       const realClaudeAdapter = new ClaudeSessionReaderAdapter(pricing);
-      const realSessionCacheService = new SessionCacheService();
+      const realSessionCacheService = new SessionCacheService(mockMetricsService);
 
       // Wire mockSessionCacheService to delegate to the real SessionCacheService
       mockSessionCacheService.getOrParseWithMeta.mockImplementation(
@@ -885,9 +1140,9 @@ describe('SessionReaderService', () => {
           'utf8',
         );
 
-        // Invalidate real cache to force a second parse pass and clear chunks cache.
+        // Invalidate both test-owned cache layers to force a second parse pass.
         realSessionCacheService.invalidate('sess-1');
-        (service as unknown as { chunksCache: Map<string, unknown> }).chunksCache.clear();
+        mockChunksBySession.clear();
 
         const secondSummary = await service.getTranscriptSummary('sess-1');
         // Delta slice had no assistant usage snapshot, so existing value is preserved.
@@ -1091,6 +1346,39 @@ describe('SessionReaderService', () => {
       expect(result.chunkIds.length).toBe(result.totals.chunkCount);
       expect(result.providerName).toBe('claude');
       expect(result.isOngoing).toBe(false);
+      expect(decodeCursor(result.cursor)?.fileSize).toBe(1024);
+    });
+
+    it('advances the opaque index cursor when an equal-shape source revision changes', async () => {
+      setupResolveChain();
+      const session = makeSession();
+      mockSessionCacheService.getOrParseWithMeta
+        .mockResolvedValueOnce({
+          session,
+          cacheHit: false,
+          sourceChangeKind: 'unknown-full-parse',
+          lastOffset: 1024,
+          lastSize: 1024,
+          lastMtime: 1,
+          sourceVersion: 111,
+        })
+        .mockResolvedValueOnce({
+          session,
+          cacheHit: false,
+          sourceChangeKind: 'same-file-rewrite',
+          lastOffset: 1024,
+          lastSize: 1024,
+          lastMtime: 2,
+          sourceVersion: 222,
+        });
+
+      const before = await service.getTranscriptIndex('sess-1');
+      const after = await service.getTranscriptIndex('sess-1');
+
+      expect(after.totals).toEqual(before.totals);
+      expect(after.chunkIds).toEqual(before.chunkIds);
+      expect(after.cursor).not.toBe(before.cursor);
+      expect(decodeCursor(after.cursor)?.fileSize).toBe(222);
     });
 
     it('should return latestOutputPreview from last AI chunk', async () => {
@@ -1325,6 +1613,112 @@ describe('SessionReaderService', () => {
   });
 
   describe('session cache delegation', () => {
+    it('coalesces concurrent summary, index, and chunk requests into one parse flight', async () => {
+      setupResolveChain();
+      const session = makeSession();
+      let resolveParse!: (value: UnifiedSession) => void;
+      const parseDeferred = new Promise<UnifiedSession>((resolve) => {
+        resolveParse = resolve;
+      });
+      mockAdapter.parseFullSession.mockReturnValue(parseDeferred);
+
+      const summary = service.getTranscriptSummary('sess-1');
+      const index = service.getTranscriptIndex('sess-1');
+      const chunks = service.getUnifiedTranscriptChunks('sess-1');
+
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(mockAdapter.parseFullSession).toHaveBeenCalledTimes(1);
+      expect(mockSessionCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(1);
+
+      resolveParse(session);
+      const [summaryResult, indexResult, chunksResult] = await Promise.all([
+        summary,
+        index,
+        chunks,
+      ]);
+
+      expect(summaryResult.messageCount).toBe(session.messages.length);
+      expect(indexResult.totals.messageCount).toBe(session.messages.length);
+      expect(chunksResult.totalCount).toBeGreaterThan(0);
+    });
+
+    it('rejects every waiter and clears a failed parse flight so the next request retries', async () => {
+      setupResolveChain();
+      const parseError = new Error('deferred parse failed');
+      let rejectParse!: (reason: Error) => void;
+      const parseDeferred = new Promise<UnifiedSession>((_resolve, reject) => {
+        rejectParse = reject;
+      });
+      mockAdapter.parseFullSession.mockReturnValue(parseDeferred);
+
+      const summary = service.getTranscriptSummary('sess-1');
+      const index = service.getTranscriptIndex('sess-1');
+      const chunk = service.getUnifiedTranscriptChunks('sess-1');
+
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(mockAdapter.parseFullSession).toHaveBeenCalledTimes(1);
+      rejectParse(parseError);
+
+      await expect(Promise.allSettled([summary, index, chunk])).resolves.toEqual([
+        expect.objectContaining({ status: 'rejected', reason: parseError }),
+        expect.objectContaining({ status: 'rejected', reason: parseError }),
+        expect.objectContaining({ status: 'rejected', reason: parseError }),
+      ]);
+
+      const session = makeSession();
+      mockAdapter.parseFullSession.mockResolvedValue(session);
+      await expect(service.getTranscriptSummary('sess-1')).resolves.toEqual(
+        expect.objectContaining({ messageCount: session.messages.length }),
+      );
+      expect(mockAdapter.parseFullSession).toHaveBeenCalledTimes(2);
+      expect(mockSessionCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(2);
+    });
+
+    it('re-enters freshness detection after a settled flight instead of pinning its result', async () => {
+      setupResolveChain();
+      const firstSession = makeSession();
+      const changedSession = makeSession([
+        ...firstSession.messages,
+        makeMessage('m4', 'assistant', '2026-01-01T10:00:15.000Z'),
+      ]);
+      type CacheResult = Awaited<ReturnType<SessionCacheService['getOrParseWithMeta']>>;
+      let resolveFirstParse!: (value: CacheResult) => void;
+      const firstParse = new Promise<CacheResult>((resolve) => {
+        resolveFirstParse = resolve;
+      });
+      mockSessionCacheService.getOrParseWithMeta.mockReturnValueOnce(firstParse);
+
+      const firstRequest = service.getTranscriptSummary('sess-1');
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(mockSessionCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(1);
+
+      mockSessionCacheService.getOrParseWithMeta.mockResolvedValueOnce({
+        session: changedSession,
+        cacheHit: false,
+        lastOffset: 2000,
+        lastSize: 2000,
+        lastMtime: Date.now(),
+        sourceVersion: 2000,
+        boundaryFold: false,
+      });
+      resolveFirstParse({
+        session: firstSession,
+        cacheHit: false,
+        lastOffset: 1000,
+        lastSize: 1000,
+        lastMtime: Date.now(),
+        sourceVersion: 1000,
+        boundaryFold: false,
+      });
+
+      const first = await firstRequest;
+      const afterFreshnessChange = await service.getTranscriptSummary('sess-1');
+
+      expect(first.messageCount).toBe(3);
+      expect(afterFreshnessChange.messageCount).toBe(4);
+      expect(mockSessionCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(2);
+    });
+
     it('should call getOrParseWithMeta once for repeated calls (cache sharing)', async () => {
       setupResolveChain();
       const session = makeSession();
@@ -1437,34 +1831,22 @@ describe('SessionReaderService', () => {
       expect(result2.messages).toHaveLength(4);
     });
 
-    it('should evict oldest chunks entry when exceeding max size', async () => {
+    it('should store built chunks in the composite session cache', async () => {
       setupResolveChain();
+      const session = makeSession();
+      mockSessionCacheService.getOrParseWithMeta.mockResolvedValueOnce({
+        session,
+        cacheHit: false,
+        lastOffset: 1000,
+        lastSize: 1000,
+        lastMtime: Date.now(),
+        sourceVersion: 1000,
+      });
 
-      // Fill chunks cache with 21 different sessions (max is 20)
-      for (let i = 0; i < 21; i++) {
-        const sessId = `sess-${i}`;
-        const session = makeSession();
-        mockSessionsService.getSession.mockReturnValue({
-          id: sessId,
-          agentId: 'agent-1',
-          transcriptPath: '/home/user/.claude/projects/-test/session.jsonl',
-          status: 'running',
-        });
-        mockSessionCacheService.getOrParseWithMeta.mockResolvedValueOnce({
-          session,
-          cacheHit: false,
-          lastOffset: 1000,
-          lastSize: 1000,
-          lastMtime: Date.now(),
-        });
-        await service.getTranscript(sessId);
-      }
+      const result = await service.getTranscript('sess-1');
 
-      const chunksCache = (service as unknown as { chunksCache: Map<string, unknown> }).chunksCache;
-      // Should have evicted the oldest entry to stay at max 20
-      expect(chunksCache.size).toBeLessThanOrEqual(20);
-      expect(chunksCache.has('sess-0')).toBe(false);
-      expect(chunksCache.has('sess-20')).toBe(true);
+      expect(mockSessionCacheService.setChunks).toHaveBeenCalledWith('sess-1', 1000, result.chunks);
+      expect(session.chunks).toBeUndefined();
     });
   });
 
@@ -1639,7 +2021,7 @@ describe('SessionReaderService', () => {
       dbPath = path.join(tmpDir, 'opencode.db');
       seedDb();
 
-      realCache = new SessionCacheService();
+      realCache = new SessionCacheService(mockMetricsService);
       const adapter = new OpenCodeSessionReaderAdapter(makePricing());
 
       dbService = new SessionReaderService(
@@ -1705,6 +2087,7 @@ describe('SessionReaderService', () => {
       const tail = await dbService.getTranscriptTail(SES, summary.cursor);
 
       expect(tail).not.toBeNull();
+      expect(tail).toMatchObject({ kind: 'delta' });
       // Same number of messages — the change is an in-place part mutation.
       expect(tail?.totalMessageCount).toBe(2);
       expect(tail?.deltaMessages).toEqual([]);
@@ -1801,7 +2184,7 @@ describe('SessionReaderService', () => {
       dbPath = path.join(tmpDir, 'opencode.db');
       seedDb();
 
-      realCache = new SessionCacheService();
+      realCache = new SessionCacheService(mockMetricsService);
       const adapter = new OpenCodeSessionReaderAdapter(makePricing());
 
       // Real resolveAdapter chain — NOTHING about the resolve seam is stubbed.

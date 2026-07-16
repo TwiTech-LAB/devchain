@@ -28,6 +28,15 @@ describe('transcript-cursor', () => {
         chunkCount: 2500,
       });
     });
+
+    it('roundtrips a safe-integer source revision without widening the cursor shape', () => {
+      const cursor = encodeCursor(Number.MAX_SAFE_INTEGER, 2, 2);
+      expect(decodeCursor(cursor)).toEqual({
+        fileSize: Number.MAX_SAFE_INTEGER,
+        messageCount: 2,
+        chunkCount: 2,
+      });
+    });
   });
 
   describe('decodeCursor error cases', () => {

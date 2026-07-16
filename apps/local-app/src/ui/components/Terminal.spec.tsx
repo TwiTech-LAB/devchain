@@ -157,7 +157,7 @@ afterEach(() => {
 });
 
 describe('TerminalComponent', () => {
-  it('replays seed_ansi chunks once and clears buffered data (to prevent duplicates)', async () => {
+  it('replays seed_ansi once before draining bounded live data staged behind it', async () => {
     render(
       <Terminal
         sessionId="session-visual"
@@ -226,7 +226,10 @@ describe('TerminalComponent', () => {
     });
 
     // Unified seed_ansi contract: seed content IS written to xterm.
-    expect(writeMock.mock.calls.map((call) => call[0])).toEqual(['seed-chunk-aseed-chunk-b']);
+    expect(writeMock.mock.calls.map((call) => call[0])).toEqual([
+      'seed-chunk-aseed-chunk-b',
+      'live-data',
+    ]);
 
     // Wait for seed ready delay (400ms)
     await act(async () => {

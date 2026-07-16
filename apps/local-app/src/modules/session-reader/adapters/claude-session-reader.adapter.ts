@@ -9,6 +9,7 @@ import type {
   ParseOptions,
   IncrementalResult,
 } from './session-reader-adapter.interface';
+import { EXACT_SUMMARY_FIELDS } from './session-reader-adapter.interface';
 import type { UnifiedSession } from '../dtos/unified-session.types';
 import { parseClaudeJsonl } from '../parsers/claude-jsonl.parser';
 import { PRICING_SERVICE, type PricingServiceInterface } from '../services/pricing.interface';
@@ -183,6 +184,18 @@ export class ClaudeSessionReaderAdapter implements SessionReaderAdapter {
       metrics: result.metrics,
       isOngoing: result.metrics.isOngoing,
       warnings: result.warnings,
+    };
+  }
+
+  async getSummary(sourceRef: import('./session-reader-adapter.interface').SessionSourceRef) {
+    const result = await parseClaudeJsonl(sourceRef.filePath, {
+      pricingService: this.pricingService,
+      retainMessages: false,
+    });
+    return {
+      metrics: result.metrics,
+      warnings: result.warnings,
+      exactFields: EXACT_SUMMARY_FIELDS,
     };
   }
 

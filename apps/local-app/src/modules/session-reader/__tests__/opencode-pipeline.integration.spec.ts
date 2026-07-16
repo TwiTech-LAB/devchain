@@ -45,7 +45,11 @@ function buildService(
   dbPath: string,
   rows: Record<string, string>,
 ): { service: SessionReaderService; cache: SessionCacheService } {
-  const cache = new SessionCacheService();
+  const mockMetricsService = {
+    registerCacheStatsProvider: jest.fn(),
+    registerStatsProvider: jest.fn(),
+  } as never;
+  const cache = new SessionCacheService(mockMetricsService);
   const factory = new SessionReaderAdapterFactory();
   factory.registerAdapter(new OpenCodeSessionReaderAdapter(makePricing()));
 
@@ -167,6 +171,29 @@ describe('OpenCode DB pipeline integration (seeded fixture DB)', () => {
   afterEach(async () => {
     while (caches.length) caches.pop()?.onModuleDestroy();
     await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('keeps native getSummary fields in contract with a full read of the same DB fixture', async () => {
+    createOpencodeFixtureDb(dbPath, [seedSessionA()]);
+    const adapter = new OpenCodeSessionReaderAdapter(makePricing());
+    const sourceRef = {
+      filePath: dbPath,
+      providerName: 'opencode',
+      providerSessionId: 'ses_a',
+      kind: 'db' as const,
+    };
+
+    const full = await adapter.parseFullSession(dbPath, sourceRef);
+    const summary = await adapter.getSummary(sourceRef);
+
+    for (const field of summary.exactFields) {
+      expect(summary.metrics[field]).toEqual(full.metrics[field]);
+    }
+    expect(summary.approximateFields).toEqual([
+      'visibleContextTokens',
+      'totalContextConsumption',
+      'phaseBreakdowns',
+    ]);
   });
 
   it('isolates two DevChain sessions sharing one opencode.db (addressed by (path, ses_))', async () => {

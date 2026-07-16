@@ -2,9 +2,10 @@ import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import * as fs from 'node:fs';
 import * as fsPromises from 'node:fs/promises';
-import { SessionCacheService } from './session-cache.service';
+import { SessionCacheService, type SourceChangeKind } from './session-cache.service';
 import { SessionReaderAdapterFactory } from '../adapters/session-reader-adapter.factory';
 import type { SessionSourceRef } from '../adapters/session-reader-adapter.interface';
+import type { UnifiedMetrics } from '../dtos/unified-session.types';
 import { EventsService } from '../../events/services/events.service';
 import { buildChunks } from '../builders/chunk-builder';
 import { encodeCursor } from './transcript-cursor';
@@ -25,6 +26,26 @@ const STAT_POLL_INTERVAL_MS = 3_000;
 
 /** Max incremental delta before logging a warning (10 MB) */
 const MAX_INCREMENTAL_BYTES = 10 * 1024 * 1024;
+
+function requiresCanonicalRefetch(sourceChangeKind: SourceChangeKind): boolean {
+  switch (sourceChangeKind) {
+    case 'cache-hit':
+    case 'same-file-append':
+    case 'db-update':
+      return false;
+    case 'file-replacement':
+    case 'file-truncation':
+    case 'same-file-rewrite':
+    case 'unknown-full-parse':
+      return true;
+    default:
+      return assertNever(sourceChangeKind);
+  }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled source change kind: ${String(value)}`);
+}
 
 interface MetricsSnapshot {
   totalTokens: number;
@@ -47,14 +68,19 @@ interface WatcherState {
   fsWatcher: fs.FSWatcher | null;
   pollTimer: NodeJS.Timeout;
   debounceTimer: NodeJS.Timeout | null;
+  lastDev: number;
   lastIno: number;
   lastSize: number;
+  /** Set by the stat poll when it reopens a rotated file before the debounce runs. */
+  replacementPending: boolean;
   lastMessageCount: number;
   lastChunkCount: number;
   lastMetrics: MetricsSnapshot;
+  /** Complete last parsed metrics for O(1) summary reads while this watcher is active. */
+  lastSummaryMetrics: UnifiedMetrics | null;
   /** Opaque DB freshness token from the last observed revision (DB sources). */
   lastFreshnessToken?: unknown;
-  /** Numeric monotonic source version for the cursor's first component. */
+  /** Numeric source revision for the cursor's first component. */
   lastSourceVersion: number;
 }
 
@@ -175,6 +201,7 @@ export class TranscriptWatcherService implements OnModuleDestroy {
       costUsd: 0,
       messageCount: 0,
     };
+    let lastSummaryMetrics: UnifiedMetrics | null = null;
     try {
       if (adapter && sourceKind === 'db' && sourceRef) {
         const { session, sourceVersion } = await this.cacheService.getOrParseWithMeta(
@@ -186,15 +213,21 @@ export class TranscriptWatcherService implements OnModuleDestroy {
         lastChunkCount = buildChunks(session.messages).length;
         lastSourceVersion = sourceVersion;
         lastMetrics = this.toMetricsSnapshot(session.metrics);
+        lastSummaryMetrics = session.metrics;
         if (adapter.getFreshnessToken) {
           lastFreshnessToken = await adapter.getFreshnessToken(sourceRef);
         }
       } else if (adapter && stat.size > 0) {
-        const session = await this.cacheService.getOrParse(sessionId, filePath, adapter);
+        const { session, sourceVersion } = await this.cacheService.getOrParseWithMeta(
+          sessionId,
+          filePath,
+          adapter,
+        );
         lastMessageCount = session.metrics.messageCount;
         lastChunkCount = buildChunks(session.messages).length;
-        lastSourceVersion = stat.size;
+        lastSourceVersion = sourceVersion;
         lastMetrics = this.toMetricsSnapshot(session.metrics);
+        lastSummaryMetrics = session.metrics;
       }
     } catch (error) {
       this.logger.warn({ error, sessionId }, 'Failed to seed watcher state — starting from zero');
@@ -217,11 +250,14 @@ export class TranscriptWatcherService implements OnModuleDestroy {
       fsWatcher,
       pollTimer,
       debounceTimer: null,
+      lastDev: stat.dev,
       lastIno: stat.ino,
       lastSize: stat.size,
+      replacementPending: false,
       lastMessageCount,
       lastChunkCount,
       lastMetrics,
+      lastSummaryMetrics,
       lastFreshnessToken,
       lastSourceVersion,
     });
@@ -317,6 +353,10 @@ export class TranscriptWatcherService implements OnModuleDestroy {
     return this.watchers.get(sessionId)?.lastMessageCount ?? null;
   }
 
+  getLastKnownSummaryMetrics(sessionId: string): UnifiedMetrics | null {
+    return this.watchers.get(sessionId)?.lastSummaryMetrics ?? null;
+  }
+
   // ---------------------------------------------------------------------------
   // Private: Debounce & Change Detection
   // ---------------------------------------------------------------------------
@@ -398,15 +438,18 @@ export class TranscriptWatcherService implements OnModuleDestroy {
       throw error;
     }
 
-    // Inode rotation detection
-    if (stat.ino !== state.lastIno) {
+    const identityChanged = stat.dev !== state.lastDev || stat.ino !== state.lastIno;
+
+    // File identity rotation is a replacement even when the byte size is unchanged.
+    if (identityChanged) {
       this.logger.debug({ sessionId }, 'Inode rotation detected via stat-poll');
       this.reopenFsWatcher(state);
+      state.lastDev = stat.dev;
       state.lastIno = stat.ino;
+      state.replacementPending = true;
     }
 
-    // Size change → trigger debounced handler
-    if (stat.size !== state.lastSize) {
+    if (identityChanged || state.replacementPending || stat.size !== state.lastSize) {
       this.scheduleDebounce(sessionId);
     }
   }
@@ -428,15 +471,19 @@ export class TranscriptWatcherService implements OnModuleDestroy {
         throw error;
       }
 
+      const identityChanged = stat.dev !== state.lastDev || stat.ino !== state.lastIno;
+      const isReplacement = state.replacementPending || identityChanged;
+
       // Inode rotation
-      if (stat.ino !== state.lastIno) {
+      if (identityChanged) {
         this.logger.debug({ sessionId }, 'Inode rotation detected');
         this.reopenFsWatcher(state);
+        state.lastDev = stat.dev;
         state.lastIno = stat.ino;
       }
 
-      // No size change — skip
-      if (stat.size === state.lastSize) return;
+      // Same-size replacements still require a parse and full-window publication.
+      if (stat.size === state.lastSize && !isReplacement) return;
 
       // Bounded read warning
       const delta = stat.size - state.lastSize;
@@ -453,7 +500,8 @@ export class TranscriptWatcherService implements OnModuleDestroy {
         return;
       }
 
-      const session = await this.cacheService.getOrParse(sessionId, state.filePath, adapter);
+      const { session, sourceChangeKind, sourceVersion } =
+        await this.cacheService.getOrParseWithMeta(sessionId, state.filePath, adapter);
 
       // A cache-boundary tool_result fold mutates the tail assistant while adding ZERO new
       // messages — surfaced by the cache entry so we can publish an in-place tail
@@ -462,28 +510,30 @@ export class TranscriptWatcherService implements OnModuleDestroy {
 
       const newMessageCount = session.metrics.messageCount - state.lastMessageCount;
 
-      // M1 shrinkage guard: a cached session can DEFLATE its messageCount when re-parsed
-      // under a newer parser (e.g. the first read after the tool_result-fold deploy folds
-      // away phantom entries). Treat any deflation as a FULL REFRESH — replace the window
-      // from chunk 0 with the whole current transcript — instead of emitting a negative
-      // delta or an out-of-range (empty) slice. messageCount === messages.length still
-      // holds, so the slice indices below stay valid.
-      const isFullRefresh = session.metrics.messageCount < state.lastMessageCount;
+      // A replacement or a parser-driven message-count deflation invalidates every prior
+      // client chunk. Require a canonical fetch instead of slicing with stale generation
+      // indices; messageCount === messages.length keeps the watcher state valid.
+      const isFullRefresh = isReplacement || session.metrics.messageCount < state.lastMessageCount;
       if (isFullRefresh) {
         this.logger.debug(
           {
             sessionId,
+            isReplacement,
             previousMessageCount: state.lastMessageCount,
             messageCount: session.metrics.messageCount,
           },
-          'Transcript messageCount deflated — emitting full refresh',
+          'Transcript source replaced or messageCount deflated — requiring canonical refetch',
         );
       }
 
       // Build chunks for delta computation
       const chunks = buildChunks(session.messages);
-      const prevCursor = encodeCursor(state.lastSize, state.lastMessageCount, state.lastChunkCount);
-      const cursor = encodeCursor(stat.size, session.metrics.messageCount, chunks.length);
+      const prevCursor = encodeCursor(
+        state.lastSourceVersion,
+        state.lastMessageCount,
+        state.lastChunkCount,
+      );
+      const cursor = encodeCursor(sourceVersion, session.metrics.messageCount, chunks.length);
       const replaceFromChunkIndex = isFullRefresh ? 0 : Math.max(0, state.lastChunkCount - 1);
       const sliceFromMessage = isFullRefresh ? 0 : state.lastMessageCount;
       const newChunkIds = chunks.slice(replaceFromChunkIndex).map((c) => c.id);
@@ -494,7 +544,10 @@ export class TranscriptWatcherService implements OnModuleDestroy {
 
       // Update watcher state
       state.lastSize = stat.size;
+      state.lastSourceVersion = sourceVersion;
+      state.lastDev = stat.dev;
       state.lastIno = stat.ino;
+      state.replacementPending = false;
       state.lastMessageCount = session.metrics.messageCount;
       state.lastChunkCount = chunks.length;
       state.lastMetrics = {
@@ -504,6 +557,17 @@ export class TranscriptWatcherService implements OnModuleDestroy {
         costUsd: session.metrics.costUsd,
         messageCount: session.metrics.messageCount,
       };
+      state.lastSummaryMetrics = session.metrics;
+
+      if (isReplacement || requiresCanonicalRefetch(sourceChangeKind)) {
+        await this.events.publish('session.transcript.updated', {
+          kind: 'full-refetch-required',
+          sessionId,
+          transcriptPath: state.filePath,
+          sourceChangeKind,
+        });
+        return;
+      }
 
       // In-place tail replacement for a cache-boundary fold: the tail assistant changed
       // (gained a folded tool_result) but no NEW message was added, so emit a zero-count
@@ -517,6 +581,7 @@ export class TranscriptWatcherService implements OnModuleDestroy {
       // matching handleDbChanged.
       if (newMessageCount > 0 || isFullRefresh || isInPlaceTailFold) {
         await this.events.publish('session.transcript.updated', {
+          kind: 'delta',
           sessionId,
           transcriptPath: state.filePath,
           newMessageCount: Math.max(0, newMessageCount),
@@ -615,9 +680,11 @@ export class TranscriptWatcherService implements OnModuleDestroy {
       state.lastMessageCount = session.metrics.messageCount;
       state.lastChunkCount = chunks.length;
       state.lastMetrics = this.toMetricsSnapshot(session.metrics);
+      state.lastSummaryMetrics = session.metrics;
 
       // Emit on ANY revision change (newMessageCount may be 0 for in-place edits).
       await this.events.publish('session.transcript.updated', {
+        kind: 'delta',
         sessionId,
         transcriptPath: state.filePath,
         newMessageCount: Math.max(0, newMessageCount),

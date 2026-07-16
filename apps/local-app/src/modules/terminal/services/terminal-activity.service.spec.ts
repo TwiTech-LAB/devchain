@@ -45,6 +45,8 @@ describe('TerminalActivityService', () => {
   });
 
   afterEach(() => {
+    service.onModuleDestroy();
+    jest.restoreAllMocks();
     jest.clearAllMocks();
     jest.useRealTimers();
   });

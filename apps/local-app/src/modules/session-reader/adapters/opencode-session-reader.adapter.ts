@@ -21,6 +21,7 @@ import type {
   ParseOptions,
   IncrementalResult,
 } from './session-reader-adapter.interface';
+import { EXACT_SUMMARY_FIELDS } from './session-reader-adapter.interface';
 import type { UnifiedSession, UnifiedMessage } from '../dtos/unified-session.types';
 import { PRICING_SERVICE, type PricingServiceInterface } from '../services/pricing.interface';
 import { ValidationError } from '../../../common/errors/error-types';
@@ -32,6 +33,11 @@ const OPENCODE_ROOT = '.local/share/opencode';
 const OPENCODE_DB_FILE = 'opencode.db';
 /** Launch-window for discovery: match sessions created within ±2min of launch. */
 const DISCOVERY_WINDOW_MS = 120_000;
+const APPROXIMATE_SUMMARY_FIELDS = [
+  'visibleContextTokens',
+  'totalContextConsumption',
+  'phaseBreakdowns',
+] as const;
 
 @Injectable()
 export class OpenCodeSessionReaderAdapter implements SessionReaderAdapter {
@@ -107,6 +113,18 @@ export class OpenCodeSessionReaderAdapter implements SessionReaderAdapter {
       providerSessionId,
     );
     return session;
+  }
+
+  async getSummary(sourceRef: SessionSourceRef) {
+    const providerSessionId = this.requireSessionId(sourceRef.providerSessionId);
+    const { metrics } = this.reader.readSummary(this.resolveDbPath(sourceRef), providerSessionId);
+    return {
+      metrics,
+      exactFields: EXACT_SUMMARY_FIELDS.filter(
+        (field) => !APPROXIMATE_SUMMARY_FIELDS.includes(field as never),
+      ),
+      approximateFields: APPROXIMATE_SUMMARY_FIELDS,
+    };
   }
 
   /**

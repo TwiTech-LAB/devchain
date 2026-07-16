@@ -12,19 +12,40 @@ import { Injectable, Inject, forwardRef } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { Server, Socket } from 'socket.io';
 import { createLogger } from '../../../common/logging/logger';
-import { TerminalStreamService } from '../services/terminal-stream.service';
+import {
+  TerminalStreamService,
+  type ReconnectReplayResult,
+  type SequenceCursor,
+} from '../services/terminal-stream.service';
 import { PtyService } from '../services/pty.service';
 import { TerminalIOService } from '../services/terminal-io/terminal-io.service';
 import { TerminalSessionRegistry } from '../services/terminal-session/terminal-session-registry';
-import { TerminalSeedService } from '../services/terminal-seed.service';
+import { TerminalSeedDelivery, TerminalSeedService } from '../services/terminal-seed.service';
 import { isControlKey, toTmuxKeys } from '../utils/control-keys';
 import { SettingsService } from '../../settings/services/settings.service';
-import { createEnvelope, HeartbeatPayload, SessionStatePayload } from '../dtos/ws-envelope.dto';
+import {
+  createEnvelope,
+  FullHistoryRequestPayloadSchema,
+  HeartbeatPayload,
+  SessionStatePayload,
+  SubscribedPayload,
+  SubscribedPayloadSchema,
+  TerminalResyncAbortPayloadSchema,
+  TerminalResyncCompletePayloadSchema,
+  TerminalResyncRequestPayloadSchema,
+} from '../dtos/ws-envelope.dto';
 import type { FrameEvent } from '../services/terminal-session/terminal-frame-stream';
 import type { TerminalSession } from '../services/terminal-session/terminal-session';
 import { SessionsService } from '../../sessions/services/sessions.service';
 import { normalizeLineEndings, stripFinalLineEnding } from '../utils/normalize-line-endings';
 import { RealtimeBroadcastService } from '../../realtime/services/realtime-broadcast.service';
+import { MetricsService } from '../../metrics/services/metrics.service';
+import type { SocketStats } from '../../metrics/types/metrics.types';
+import {
+  TerminalSendAdmission,
+  TerminalSendSchedulerService,
+  type TerminalSendAdmissionResult,
+} from '../services/terminal-send-scheduler.service';
 
 const logger = createLogger('TerminalGateway');
 
@@ -36,6 +57,7 @@ interface ThemeStyle {
 }
 
 interface ClientSession {
+  socket: Socket;
   sessionId: string;
   lastHeartbeat: Date;
   subscriptions: Set<string>;
@@ -47,6 +69,12 @@ const HEARTBEAT_TIMEOUT = 45000;
 // Coalescing window for viewport-mode-restore redraws: collapses simultaneous viewers'
 // post-seed/reconnect requests into one resize jiggle, avoiding redraw storms.
 const VIEWPORT_RESTORE_COALESCE_MS = 500;
+const STOPPED_REPLAY_RETENTION_MS = 60000;
+
+interface LifecycleCleanupPolicy {
+  replayRetentionMs: number;
+  disposeTerminalState: boolean;
+}
 
 const INPUT_RATE_WINDOW_MS = 5000;
 const INPUT_RATE_MSG_THRESHOLD = 500; // >100 msg/sec sustained over 5s = 500 msgs in window
@@ -57,6 +85,41 @@ interface InputRateEntry {
   bytes: number;
   windowStart: number;
   warned: boolean;
+}
+
+interface TerminalRecoveryState {
+  socketId: string;
+  sessionId: string;
+  /** The sequence-domain this recovery belongs to; a domain reset retires it. */
+  sequenceEpoch: string;
+  recoveryEpoch: number;
+  phase: 'seeding' | 'tail-catch-up' | 'replacing';
+  replacementAttempt: number;
+  capturedSequence?: number;
+}
+
+/**
+ * Classification of a subscribe cursor. The epoch and sequence are treated as required TOGETHER: a
+ * correct client sends both (a domain-scoped cursor) or neither (first attach); a bare sequence is a
+ * legacy/pre-epoch client and a bare epoch is malformed.
+ */
+type SubscribeCursor =
+  | { kind: 'first-attach' }
+  | { kind: 'cursor'; cursor: { sequenceEpoch: string; sequence: number } }
+  | { kind: 'legacy-gap'; sequence: number }
+  | { kind: 'invalid' };
+
+function classifySubscribeCursor(lastSequence: unknown, sequenceEpoch: unknown): SubscribeCursor {
+  const sequence =
+    typeof lastSequence === 'number' && Number.isFinite(lastSequence) ? lastSequence : undefined;
+  const epoch =
+    typeof sequenceEpoch === 'string' && sequenceEpoch.length > 0 ? sequenceEpoch : undefined;
+  if (sequence !== undefined && epoch !== undefined) {
+    return { kind: 'cursor', cursor: { sequenceEpoch: epoch, sequence } };
+  }
+  if (sequence !== undefined) return { kind: 'legacy-gap', sequence };
+  if (epoch !== undefined) return { kind: 'invalid' };
+  return { kind: 'first-attach' };
 }
 
 @WebSocketGateway({ cors: false, transports: ['websocket'] })
@@ -75,6 +138,8 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
   private readonly themeCache = new Map<string, ThemeStyle>();
   /** Last viewport-mode-restore redraw per session — coalesces concurrent viewers. */
   private readonly viewportRestoreAt = new Map<string, number>();
+  private readonly recoveries = new Map<string, TerminalRecoveryState>();
+  private readonly targetedSeedAttempts = new Map<string, symbol>();
 
   constructor(
     private readonly streamService: TerminalStreamService,
@@ -88,12 +153,31 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
     @Inject(forwardRef(() => SessionsService))
     private readonly sessionsService: SessionsService,
     private readonly realtimeBroadcast: RealtimeBroadcastService,
-  ) {}
+    private readonly sendScheduler: TerminalSendSchedulerService,
+    private readonly metricsService: MetricsService,
+  ) {
+    // The stopped-session replay-retention timer is owned by TerminalStreamService (the FrameBuffer
+    // owner). Register the gateway-owned expiry side effect — retiring in-flight recoveries bound to
+    // the retired sequence-domain — so moving timer ownership does not lose that coupling. A runtime
+    // callback (not a constructor edge) keeps the service → gateway direction acyclic.
+    this.streamService.setClearExpiryHandler((sessionId) =>
+      this.retireSessionRecoveries(sessionId),
+    );
+  }
 
   afterInit() {
     this.realtimeBroadcast.setServer(this.server);
+    this.metricsService.registerStatsProvider('sockets', () => this.getSocketStats());
     logger.info('WebSocket gateway initialized');
     this.startHeartbeat();
+  }
+
+  getSocketStats(): SocketStats {
+    return {
+      connectedClients: this.clientSessions.size,
+      ...this.sendScheduler.getStats(),
+      ...(this.seedService.getCaptureStats?.() ?? {}),
+    };
   }
 
   handleConnection(client: Socket) {
@@ -102,10 +186,12 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
       'Client connected',
     );
     this.clientSessions.set(client.id, {
+      socket: client,
       sessionId: '',
       lastHeartbeat: new Date(),
       subscriptions: new Set(),
     });
+    this.sendScheduler.registerSocket(client);
     this.sendHeartbeat(client);
   }
 
@@ -139,6 +225,14 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
         this.registry.get(sessionId)?.unsubscribe(clientId);
       }
     }
+    this.pruneInputRateEntries((key) => key.startsWith(`${clientId}:`));
+    for (const [key, recovery] of this.recoveries) {
+      if (recovery.socketId === clientId) this.recoveries.delete(key);
+    }
+    for (const key of this.targetedSeedAttempts.keys()) {
+      if (key.startsWith(`${clientId}:`)) this.targetedSeedAttempts.delete(key);
+    }
+    this.sendScheduler.removeSocket(clientId);
     this.clientSessions.delete(clientId);
   }
 
@@ -148,45 +242,50 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
   async handleSubscribe(
     @ConnectedSocket() client: Socket,
     @MessageBody()
-    payload: { sessionId: string; lastSequence?: number; rows?: number; cols?: number },
+    payload: {
+      sessionId: string;
+      lastSequence?: number;
+      sequenceEpoch?: string;
+      rows?: number;
+      cols?: number;
+    },
   ) {
-    const { sessionId, lastSequence, rows, cols } = payload;
-    logger.info({ clientId: client.id, sessionId, lastSequence, rows, cols }, 'Client subscribing');
+    const { sessionId, lastSequence, sequenceEpoch, rows, cols } = payload;
+    logger.info(
+      { clientId: client.id, sessionId, lastSequence, sequenceEpoch, rows, cols },
+      'Client subscribing',
+    );
 
     const clientSession = this.clientSessions.get(client.id);
     if (!clientSession) return;
+
+    // Cancel any pending stopped-session replay cleanup SYNCHRONOUSLY, before buffer init or any
+    // await: a quick stop→resubscribe must keep the live sequence-domain (epoch, sequence, recovery
+    // counter) instead of letting the old retention timer clear a buffer we are about to reuse.
+    this.cancelReplayCleanup(sessionId);
 
     clientSession.sessionId = sessionId;
     clientSession.subscriptions.add(`session/${sessionId}`);
     client.join(`session:${sessionId}`);
     this.streamService.initializeBuffer(sessionId);
 
+    const cursor = classifySubscribeCursor(lastSequence, sequenceEpoch);
+
     const session = this.registry.get(sessionId);
     if (!session) {
       logger.warn({ sessionId }, 'No registry entry — using fallback seed path');
-      client.emit(
-        'message',
-        createEnvelope(`terminal/${sessionId}`, 'subscribed', {
-          sessionId,
-          currentSequence: 0,
-        }),
+      const decision = this.resolveSubscribeReplay(sessionId, cursor);
+      this.emitSubscribed(
+        client,
+        sessionId,
+        decision.cursorSnapshot.currentSequence,
+        decision.replayStatus,
+        decision.cursorSnapshot.sequenceEpoch,
       );
       clientSession.subscriptions.add(`terminal/${sessionId}`);
       client.join(`terminal:${sessionId}`);
-      if (typeof lastSequence !== 'number') {
-        const { maxBytes: seedMaxBytes } = this.seedService.resolveSeedingConfig();
-        this.seedService
-          .emitSeedToClient({
-            client,
-            sessionId,
-            maxBytes: seedMaxBytes,
-            cols,
-            rows,
-          })
-          .catch((error) => {
-            logger.error({ sessionId, clientId: client.id, error }, 'Fallback seed failed');
-          });
-      }
+      this.streamService.resumeRetention(sessionId);
+      await this.applySubscribeReplay(client, sessionId, cursor, decision, cols, rows, false);
       return;
     }
 
@@ -198,19 +297,20 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
 
     await this.ensurePtyStreaming(sessionId, session.tmuxSessionName, { cols, rows });
 
-    const isFirstAttach = typeof lastSequence !== 'number';
+    // A seed attach reseeds from a fresh capture (first attach, or an invalid/malformed cursor).
+    const isSeedAttach = cursor.kind === 'first-attach' || cursor.kind === 'invalid';
     const validDims = typeof rows === 'number' && rows > 0 && typeof cols === 'number' && cols > 0;
     // Gate the pty geometry apply on the initial-authority latch: exactly one subscriber wins
     // per session lifecycle, so a reconnect/mount burst flips geometry ONCE instead of per view.
     // Losers (and dimensionless subscribes) fall through to subscribe()'s first-subscriber grant.
-    // Seed-invalidation + the 50ms settle bind to isFirstAttach && wonInitialAuthority — two
-    // independent predicates: a reconnecting winner resizes without invalidating; a first-attach
+    // Seed-invalidation + the 50ms settle bind to a seed attach that also won authority — two
+    // independent predicates: a reconnecting winner resizes without invalidating; a seed-attach
     // loser does neither and seeds at the winner's width.
     let wonInitialAuthority = false;
     if (validDims && session.claimInitialAuthority(client.id)) {
       wonInitialAuthority = true;
       this.ptyService.resize(sessionId, cols, rows);
-      if (isFirstAttach) {
+      if (isSeedAttach) {
         this.seedService.invalidateCache(sessionId);
         await new Promise((r) => setTimeout(r, 50));
       }
@@ -224,21 +324,21 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
       return;
     }
 
-    client.emit(
-      'message',
-      createEnvelope(`terminal/${sessionId}`, 'subscribed', {
-        sessionId,
-        currentSequence: this.streamService.getCurrentSequence(sessionId),
-      }),
+    // Resolve the replay AFTER the settle so the ack's epoch + sequence and the replay decision come
+    // from one post-settle read of the live domain.
+    const decision = this.resolveSubscribeReplay(sessionId, cursor);
+
+    this.emitSubscribed(
+      client,
+      sessionId,
+      decision.cursorSnapshot.currentSequence,
+      decision.replayStatus,
+      decision.cursorSnapshot.sequenceEpoch,
     );
     clientSession.subscriptions.add(`terminal/${sessionId}`);
     client.join(`terminal:${sessionId}`);
 
     this.wireFrameListener(sessionId);
-    // Resolve the alt-screen policy onto the session so its seed advertises the correct
-    // hasHistory (alt-screen seeds → no scroll-up affordance). Set before subscribe()
-    // because subscribe() kicks off the async seed emit.
-    session.setUsesAlternateScreen(this.sessionsService.usesAlternateScreenFor(sessionId));
     // Forward the latched grant now that the listener is wired and the socket has joined
     // terminal:<id>. subscribe() below no-ops its own grant for the winner (authority already
     // set), so this is the sole focus_changed for an initial latch grant.
@@ -246,18 +346,447 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
       session.notifyInitialAuthority(client.id);
     }
     session.subscribe(client.id);
+    this.streamService.resumeRetention(sessionId);
 
-    if (!isFirstAttach) {
-      const bufferedFrames = this.streamService.getFramesSince(sessionId, lastSequence);
-      for (const frame of bufferedFrames) {
-        client.emit('message', frame);
+    await this.applySubscribeReplay(client, sessionId, cursor, decision, cols, rows, true);
+  }
+
+  /**
+   * Resolve the `subscribed` ack fields and the replay decision from ONE atomic read of the live
+   * domain. A domain-scoped cursor is classified epoch-aware (same domain → replay by number, a
+   * retired domain → gap); a legacy bare-sequence cursor is a deterministic gap; first attach and an
+   * invalid cursor reseed.
+   */
+  private resolveSubscribeReplay(
+    sessionId: string,
+    cursor: SubscribeCursor,
+  ): {
+    replayStatus: SubscribedPayload['replayStatus'];
+    cursorSnapshot: SequenceCursor;
+    replay?: ReconnectReplayResult;
+  } {
+    switch (cursor.kind) {
+      case 'cursor': {
+        const replay = this.streamService.getReconnectReplay(sessionId, cursor.cursor);
+        return {
+          replayStatus: replay.status,
+          cursorSnapshot: {
+            sequenceEpoch: replay.sequenceEpoch,
+            currentSequence: replay.currentSequence,
+          },
+          replay,
+        };
       }
-      // NO-SEED / post-restart attach: there is no client-side seed window to discard a
-      // redraw, so restore alt-screen + mouse modes now — sequenced AFTER ensurePtyStreaming
-      // above so triggerRedraw isn't a no-op on a freshly-rehydrated PTY. The seeded first
-      // attach instead requests this from the client post-seed (see terminal:restore_viewport_modes).
-      this.maybeRestoreViewportModes(sessionId);
+      case 'legacy-gap':
+        return { replayStatus: 'gap', cursorSnapshot: this.streamService.sampleCursor(sessionId) };
+      case 'first-attach':
+      case 'invalid':
+        return { replayStatus: 'seed', cursorSnapshot: this.streamService.sampleCursor(sessionId) };
     }
+  }
+
+  /** Deliver the seed / covered replay / resync for a classified subscribe, after the ack. */
+  private async applySubscribeReplay(
+    client: Socket,
+    sessionId: string,
+    cursor: SubscribeCursor,
+    decision: { cursorSnapshot: SequenceCursor; replay?: ReconnectReplayResult },
+    cols: number | undefined,
+    rows: number | undefined,
+    restoreViewportOnCovered: boolean,
+  ): Promise<void> {
+    switch (cursor.kind) {
+      case 'first-attach':
+      case 'invalid':
+        // An invalid (malformed) cursor reseeds exactly like a first attach.
+        if (cursor.kind === 'invalid') {
+          logger.warn({ sessionId, clientId: client.id }, 'Invalid subscribe cursor — reseeding');
+        }
+        await this.emitTargetedSeed(client, sessionId, cols, rows);
+        return;
+      case 'legacy-gap':
+        await this.emitReplayResync(
+          client,
+          sessionId,
+          cursor.sequence,
+          { status: 'gap', currentSequence: decision.cursorSnapshot.currentSequence },
+          cols,
+          rows,
+        );
+        return;
+      case 'cursor': {
+        const replay = decision.replay;
+        if (!replay) return;
+        if (replay.status === 'covered') {
+          for (const frame of replay.frames) this.enqueueLiveOrRecover(client, sessionId, frame);
+          // NO-SEED / post-restart attach: there is no client-side seed window to discard a
+          // redraw, so restore alt-screen + mouse modes now — sequenced AFTER ensurePtyStreaming
+          // so triggerRedraw isn't a no-op on a freshly-rehydrated PTY. The seeded first attach
+          // instead requests this from the client post-seed (terminal:restore_viewport_modes).
+          if (restoreViewportOnCovered) this.maybeRestoreViewportModes(sessionId);
+        } else {
+          await this.emitReplayResync(
+            client,
+            sessionId,
+            cursor.cursor.sequence,
+            replay,
+            cols,
+            rows,
+          );
+        }
+        return;
+      }
+    }
+  }
+
+  /**
+   * Emit the validated `subscribed` acknowledgement for both the normal and fallback
+   * attach paths. `historyRefreshable` is the immutable provider refresh capability
+   * (line-oriented providers can reload primary-buffer history; alternate-screen TUIs
+   * cannot) — published here, separate from the per-snapshot `hasHistory` on seeds.
+   */
+  private emitSubscribed(
+    client: Socket,
+    sessionId: string,
+    currentSequence: number,
+    replayStatus: SubscribedPayload['replayStatus'],
+    sequenceEpoch: string,
+  ): void {
+    const payload = SubscribedPayloadSchema.parse({
+      sessionId,
+      currentSequence,
+      sequenceEpoch,
+      replayStatus,
+      historyRefreshable: !this.sessionsService.usesAlternateScreenFor(sessionId),
+    });
+    client.emit('message', createEnvelope(`terminal/${sessionId}`, 'subscribed', payload));
+  }
+
+  private async emitReplayResync(
+    client: Socket,
+    sessionId: string,
+    requestedSequence: number,
+    replay: {
+      status: 'gap';
+      currentSequence: number;
+      earliestAvailableSequence?: number;
+    },
+    cols?: number,
+    rows?: number,
+  ): Promise<void> {
+    client.emit(
+      'message',
+      createEnvelope(`terminal/${sessionId}`, 'resync_required', {
+        sessionId,
+        requestedSequence,
+        currentSequence: replay.currentSequence,
+        earliestAvailableSequence: replay.earliestAvailableSequence,
+      }),
+    );
+
+    await this.startRecovery(client, sessionId, cols, rows);
+  }
+
+  private async emitTargetedSeed(
+    client: Socket,
+    sessionId: string,
+    cols?: number,
+    rows?: number,
+  ): Promise<void> {
+    const { maxBytes } = this.seedService.resolveSeedingConfig();
+    const recoveryKey = this.recoveryKey(client.id, sessionId);
+    const seedAttempt = Symbol();
+    this.targetedSeedAttempts.set(recoveryKey, seedAttempt);
+    let failedAdmission: TerminalSendAdmissionResult | undefined;
+    try {
+      await this.seedService.emitSeedToClient({
+        deliver: (envelope) => {
+          const clientSession = this.clientSessions.get(client.id);
+          if (
+            this.targetedSeedAttempts.get(recoveryKey) !== seedAttempt ||
+            !clientSession?.subscriptions.has(`terminal/${sessionId}`) ||
+            this.recoveries.has(recoveryKey)
+          ) {
+            return TerminalSeedDelivery.Abort;
+          }
+          const admission = this.sendScheduler.enqueueRecovery(client, envelope);
+          if (admission === TerminalSendAdmission.Accepted) {
+            return TerminalSeedDelivery.Continue;
+          }
+          failedAdmission ??= admission;
+          return TerminalSeedDelivery.Abort;
+        },
+        sessionId,
+        maxBytes,
+        cols,
+        rows,
+        // A successful empty first capture must still complete the client's seed attempt:
+        // allowEmpty routes it to a non-writing `seed_empty` carrying this baseline sequence.
+        allowEmpty: true,
+        getCurrentSequence: () => this.streamService.getCurrentSequence(sessionId),
+      });
+      if (
+        failedAdmission &&
+        this.targetedSeedAttempts.get(recoveryKey) === seedAttempt &&
+        this.clientSessions.get(client.id)?.subscriptions.has(`terminal/${sessionId}`)
+      ) {
+        logger.warn(
+          { sessionId, clientId: client.id, admission: failedAdmission },
+          'Initial targeted seed admission failed; starting bounded recovery',
+        );
+        await this.startRecovery(client, sessionId, cols, rows);
+      }
+    } catch (error) {
+      logger.error({ sessionId, clientId: client.id, error }, 'Targeted terminal seed failed');
+    } finally {
+      if (this.targetedSeedAttempts.get(recoveryKey) === seedAttempt) {
+        this.targetedSeedAttempts.delete(recoveryKey);
+      }
+    }
+  }
+
+  @SubscribeMessage('terminal:resync_request')
+  async handleResyncRequest(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: unknown,
+  ): Promise<void> {
+    const parsed = TerminalResyncRequestPayloadSchema.safeParse(payload);
+    if (!parsed.success) return;
+    const { sessionId } = parsed.data;
+    const clientSession = this.clientSessions.get(client.id);
+    if (!clientSession?.subscriptions.has(`terminal/${sessionId}`)) return;
+    await this.startRecovery(client, sessionId);
+  }
+
+  @SubscribeMessage('terminal:resync_abort')
+  handleResyncAbort(@ConnectedSocket() client: Socket, @MessageBody() payload: unknown): boolean {
+    const parsed = TerminalResyncAbortPayloadSchema.safeParse(payload);
+    if (!parsed.success) return false;
+    const { sessionId, sequenceEpoch, recoveryEpoch } = parsed.data;
+    const key = this.recoveryKey(client.id, sessionId);
+    const state = this.recoveries.get(key);
+    // Require the (sequenceEpoch, recoveryEpoch) pair to match the live recovery: an abort carrying
+    // a retired domain's epoch — or none — cannot cancel a recovery that now belongs to a fresh
+    // domain. `isCurrentRecovery` also rejects the case where the pair still matches a lingering
+    // old-domain state but the stream epoch has already moved on, so the abort cannot remove the new
+    // domain's lane.
+    if (
+      !state ||
+      !this.isCurrentRecovery(state) ||
+      state.phase !== 'seeding' ||
+      state.sequenceEpoch !== sequenceEpoch ||
+      state.recoveryEpoch !== recoveryEpoch
+    ) {
+      return false;
+    }
+
+    this.recoveries.delete(key);
+    this.sendScheduler.removeLane(client.id, sessionId);
+    return true;
+  }
+
+  @SubscribeMessage('terminal:resync_complete')
+  handleResyncComplete(@ConnectedSocket() client: Socket, @MessageBody() payload: unknown): void {
+    const parsed = TerminalResyncCompletePayloadSchema.safeParse(payload);
+    if (!parsed.success) return;
+    const completion = parsed.data;
+    const state = this.recoveries.get(this.recoveryKey(client.id, completion.sessionId));
+    // Require the full (sequenceEpoch, recoveryEpoch, capturedSequence) triple to match the live
+    // recovery so an old-domain completion cannot finalize recovery in a new domain.
+    // `isCurrentRecovery` additionally rejects a completion whose pair still matches a lingering
+    // old-domain state after the stream epoch has moved on, so it cannot synchronize the new lane.
+    if (
+      !state ||
+      !this.isCurrentRecovery(state) ||
+      state.phase !== 'seeding' ||
+      state.sequenceEpoch !== completion.sequenceEpoch ||
+      state.recoveryEpoch !== completion.recoveryEpoch ||
+      state.capturedSequence !== completion.capturedSequence
+    ) {
+      return;
+    }
+
+    state.phase = 'tail-catch-up';
+    this.deliverCoveredTail(client, state, completion.capturedSequence);
+  }
+
+  private async startRecovery(
+    client: Socket,
+    sessionId: string,
+    cols?: number,
+    rows?: number,
+  ): Promise<void> {
+    const key = this.recoveryKey(client.id, sessionId);
+    this.targetedSeedAttempts.delete(key);
+    if (this.recoveries.has(key)) return;
+    await this.launchRecovery(client, sessionId, cols, rows);
+  }
+
+  private enqueueLiveOrRecover(
+    client: Socket,
+    sessionId: string,
+    envelope: Parameters<TerminalSendSchedulerService['enqueueLive']>[1],
+  ): void {
+    const admission = this.sendScheduler.enqueueLive(client, envelope);
+    if (admission === TerminalSendAdmission.NewlyDesynchronized) {
+      void this.startRecovery(client, sessionId);
+    }
+  }
+
+  private async launchRecovery(
+    client: Socket,
+    sessionId: string,
+    cols?: number,
+    rows?: number,
+    replacementAttempt: number = 0,
+  ): Promise<void> {
+    // The recovery counter lives in the FrameBuffer, so it survives a quick stop→restore (same
+    // domain: A/6 → A/7) and resets only when a new domain is minted (B/1). Sample the domain epoch
+    // atomically with allocating the counter — both read/mutate the same live buffer.
+    const sequenceEpoch = this.streamService.sampleCursor(sessionId).sequenceEpoch;
+    const recoveryEpoch = this.streamService.nextRecoveryCounter(sessionId);
+    const state: TerminalRecoveryState = {
+      socketId: client.id,
+      sessionId,
+      sequenceEpoch,
+      recoveryEpoch,
+      phase: 'seeding',
+      replacementAttempt,
+    };
+    this.recoveries.set(this.recoveryKey(client.id, sessionId), state);
+    if (!this.sendScheduler.beginRecovery(client, sessionId, recoveryEpoch)) {
+      this.disconnectUnrecoverableRecovery(client, state, 'recovery_begin_rejected');
+      return;
+    }
+    this.seedService.invalidateCache(sessionId);
+
+    const { maxBytes } = this.seedService.resolveSeedingConfig();
+    let admissionFailed = false;
+    try {
+      const watermark = await this.seedService.emitSeedToClient({
+        deliver: (envelope) => {
+          if (!this.isCurrentRecovery(state)) return TerminalSeedDelivery.Abort;
+          const admission = this.sendScheduler.enqueueRecovery(client, envelope);
+          if (admission !== TerminalSendAdmission.Accepted) {
+            admissionFailed = true;
+            return TerminalSeedDelivery.Abort;
+          }
+          return TerminalSeedDelivery.Continue;
+        },
+        sessionId,
+        maxBytes,
+        cols,
+        rows,
+        allowEmpty: true,
+        recovery: {
+          sequenceEpoch,
+          recoveryEpoch,
+          getCurrentSequence: () => this.streamService.getCurrentSequence(sessionId),
+          onCapturedSequence: (capturedSequence) => {
+            if (this.isCurrentRecovery(state)) state.capturedSequence = capturedSequence;
+          },
+        },
+      });
+      if (!this.isCurrentRecovery(state)) return;
+      if (admissionFailed) {
+        this.disconnectUnrecoverableRecovery(client, state, 'recovery_seed_admission_failed');
+        return;
+      }
+      if (!watermark) {
+        this.disconnectUnrecoverableRecovery(client, state, 'recovery_seed_capture_failed');
+        return;
+      }
+      state.capturedSequence = watermark.capturedSequence;
+    } catch (error) {
+      logger.error(
+        { sessionId, clientId: client.id, recoveryEpoch, error },
+        'Targeted recovery seed failed',
+      );
+      this.disconnectUnrecoverableRecovery(client, state, 'recovery_seed_failed');
+    }
+  }
+
+  private deliverCoveredTail(
+    client: Socket,
+    state: TerminalRecoveryState,
+    afterSequence: number,
+  ): void {
+    if (!this.isCurrentRecovery(state)) return;
+    const replay = this.streamService.getFramesSince(state.sessionId, afterSequence);
+    if (replay.status === 'gap') {
+      this.scheduleReplacementSeed(client, state);
+      return;
+    }
+
+    if (replay.frames.length === 0) {
+      this.finishRecovery(state);
+      return;
+    }
+
+    for (let index = 0; index < replay.frames.length; index += 1) {
+      const isLast = index === replay.frames.length - 1;
+      const admission = this.sendScheduler.enqueueRecovery(
+        client,
+        replay.frames[index],
+        isLast ? () => this.deliverCoveredTail(client, state, replay.currentSequence) : undefined,
+      );
+      if (admission !== TerminalSendAdmission.Accepted) {
+        this.disconnectUnrecoverableRecovery(client, state, 'recovery_tail_admission_failed');
+        return;
+      }
+    }
+  }
+
+  private scheduleReplacementSeed(client: Socket, state: TerminalRecoveryState): void {
+    if (!this.isCurrentRecovery(state) || state.phase === 'replacing') return;
+    if (state.replacementAttempt >= 1) {
+      this.disconnectUnrecoverableRecovery(client, state, 'recovery_tail_gap_repeated');
+      return;
+    }
+    state.phase = 'replacing';
+    void this.launchRecovery(client, state.sessionId, undefined, undefined, 1);
+  }
+
+  private disconnectUnrecoverableRecovery(
+    client: Socket,
+    state: TerminalRecoveryState,
+    reason: string,
+  ): void {
+    if (!this.isCurrentRecovery(state)) return;
+    logger.warn(
+      {
+        clientId: client.id,
+        sessionId: state.sessionId,
+        recoveryEpoch: state.recoveryEpoch,
+        reason,
+      },
+      'Terminal recovery failed closed; disconnecting affected socket',
+    );
+    this.recoveries.delete(this.recoveryKey(state.socketId, state.sessionId));
+    client.conn.close();
+    this.releaseClientSession(client.id);
+  }
+
+  private finishRecovery(state: TerminalRecoveryState): void {
+    if (!this.isCurrentRecovery(state)) return;
+    this.sendScheduler.markSynchronized(state.socketId, state.sessionId, state.recoveryEpoch);
+    this.recoveries.delete(this.recoveryKey(state.socketId, state.sessionId));
+  }
+
+  private isCurrentRecovery(state: TerminalRecoveryState): boolean {
+    // Map identity alone is not enough: a recovery started before a domain reset (e.g. a stopped
+    // session's delayed replay-buffer expiry) can linger in the map after its sequence-domain is
+    // retired. Every continuation must also confirm the stream's CURRENT epoch still equals the
+    // recovery's, so an old-domain seed/tail/callback cannot enqueue frames, synchronize, or cancel a
+    // lane in the new domain. A cleared buffer reports `undefined`, which never matches.
+    return (
+      this.recoveries.get(this.recoveryKey(state.socketId, state.sessionId)) === state &&
+      this.streamService.getSequenceEpoch(state.sessionId) === state.sequenceEpoch
+    );
+  }
+
+  private recoveryKey(socketId: string, sessionId: string): string {
+    return `${socketId}:${sessionId}`;
   }
 
   @SubscribeMessage('events:subscribe')
@@ -309,6 +838,10 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
 
     const session = this.registry.get(sessionId);
     if (session) session.unsubscribe(client.id);
+    const recoveryKey = this.recoveryKey(client.id, sessionId);
+    this.recoveries.delete(recoveryKey);
+    this.targetedSeedAttempts.delete(recoveryKey);
+    this.sendScheduler.removeLane(client.id, sessionId);
   }
 
   // ── Theme sync ─────────────────────────────────────────────────────
@@ -459,9 +992,20 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
   @SubscribeMessage('terminal:request_full_history')
   async handleRequestFullHistory(
     @ConnectedSocket() client: Socket,
-    @MessageBody() payload: { sessionId: string; maxLines?: number },
+    @MessageBody()
+    payload: { sessionId: string; maxLines?: number; correlationId?: string },
   ) {
     const { sessionId } = payload;
+
+    // Validate the optional correlation token without disturbing the bespoke maxLines
+    // error contract below; a malformed token is rejected rather than silently echoed.
+    const correlationParse = FullHistoryRequestPayloadSchema.shape.correlationId.safeParse(
+      payload.correlationId,
+    );
+    if (!correlationParse.success) {
+      throw new WsException('correlationId must be a string');
+    }
+    const correlationId = correlationParse.data;
 
     let maxLines = 10000;
     if (payload.maxLines !== undefined && payload.maxLines !== null) {
@@ -481,6 +1025,11 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
 
     const target = { name: session.tmuxSessionName };
 
+    // Sample the domain epoch before capture; if it changes across the capture/cursor awaits the
+    // snapshot belongs to a retired domain and its lower `capturedSequence` would mislead the
+    // client, so we drop the response rather than emit under the wrong (or new) epoch.
+    const beforeEpoch = this.streamService.sampleCursor(sessionId).sequenceEpoch;
+
     const captureResult = await this.terminalIO.captureHistory(target, maxLines, true);
     // Sample the sequence AFTER the tmux capture completes (and before the cursor
     // lookup): frames stamped while capture-pane ran are already inside the snapshot,
@@ -488,7 +1037,7 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
     // top of the snapshot and duplicates the tail.
     const capturedSequence = this.streamService.getCurrentSequence(sessionId);
     let history = captureResult.ok ? captureResult.output : '';
-    history = stripFinalLineEnding(history);
+    history = normalizeLineEndings(stripFinalLineEnding(history));
 
     const { maxBytes } = this.seedService.resolveSeedingConfig();
     let hasHistory = false;
@@ -497,10 +1046,16 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
       history = truncated;
       hasHistory = wasTruncated;
     }
-
-    history = normalizeLineEndings(history);
-
     const cursorPos = await this.terminalIO.getCursorPosition(target);
+
+    const afterEpoch = this.streamService.sampleCursor(sessionId).sequenceEpoch;
+    if (afterEpoch !== beforeEpoch) {
+      logger.warn(
+        { sessionId, beforeEpoch, afterEpoch },
+        'Sequence domain changed during full_history capture; dropping response',
+      );
+      return;
+    }
 
     client.emit(
       'message',
@@ -510,6 +1065,12 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
         cursorY: cursorPos?.y,
         hasHistory,
         capturedSequence,
+        // The (unchanged) domain this snapshot belongs to, so the client can accept a fresh
+        // domain's lower `capturedSequence` instead of suppressing it against a stale baseline.
+        sequenceEpoch: beforeEpoch,
+        // Echo the request token so recovery can drop a response that arrives after the
+        // request it belongs to was superseded.
+        ...(correlationId !== undefined && { correlationId }),
       }),
     );
   }
@@ -543,9 +1104,33 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
   // ── Broadcasts ──────────────────────────────────────────────────────
 
   broadcastTerminalData(sessionId: string, data: string): void {
-    this.registry.get(sessionId)?.pushFrame(data);
-    const envelope = this.streamService.addFrame(sessionId, data);
-    this.server.to(`terminal:${sessionId}`).emit('message', envelope);
+    const session = this.registry.get(sessionId);
+    if (!this.hasWebSubscribers(sessionId)) {
+      session?.pushFrame(data);
+      this.streamService.markDiscontinuous(sessionId);
+      return;
+    }
+
+    this.streamService.resumeRetention(sessionId);
+    const envelopes = this.streamService.addFrame(sessionId, data);
+    for (const envelope of envelopes) {
+      const chunk = (envelope.payload as { data: string }).data;
+      session?.pushFrame(chunk);
+      for (const clientSession of this.clientSessions.values()) {
+        if (clientSession.subscriptions.has(`terminal/${sessionId}`)) {
+          this.enqueueLiveOrRecover(clientSession.socket, sessionId, envelope);
+        }
+      }
+    }
+  }
+
+  private hasWebSubscribers(sessionId: string): boolean {
+    const session = this.registry.get(sessionId);
+    if (session) return session.getSubscriberCount() > 0;
+    for (const clientSession of this.clientSessions.values()) {
+      if (clientSession.subscriptions.has(`terminal/${sessionId}`)) return true;
+    }
+    return false;
   }
 
   // ── Session lifecycle events ────────────────────────────────────────
@@ -556,9 +1141,10 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
     // and the registry entry survives, blocking a later restore with
     // "TerminalSession already exists".
     this.sessionsService.markSessionFailed(payload.sessionId, 'tmux session lost (health check)');
-    this.ptyService.stopStreaming(payload.sessionId);
-    this.unwireFrameListener(payload.sessionId);
-    this.registry.dispose(payload.sessionId);
+    this.cleanupSessionLifecycle(payload.sessionId, {
+      replayRetentionMs: 0,
+      disposeTerminalState: true,
+    });
     const ep: SessionStatePayload = {
       sessionId: payload.sessionId,
       status: 'crashed',
@@ -567,9 +1153,6 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.server
       .to(`session:${payload.sessionId}`)
       .emit('message', createEnvelope(`session/${payload.sessionId}`, 'state_change', ep));
-    setTimeout(() => this.streamService.clearBuffer(payload.sessionId), 60000);
-    this.themeCache.delete(payload.sessionId);
-    this.viewportRestoreAt.delete(payload.sessionId);
   }
 
   @OnEvent('session.started')
@@ -595,6 +1178,13 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
     tmuxSessionName: string;
     providerName: string;
   }) {
+    // Defense-in-depth: the restore pipeline already cancels the replay clear SYNCHRONOUSLY at its
+    // true start (before the first buffer-producing await), which is the boundary that actually keeps
+    // the live sequence-domain. This event fires only at pipeline Phase 9, far too late to be that
+    // guarantee; the re-cancel here is a harmless idempotent backstop for any restore path that
+    // reaches this handler without having gone through that seam.
+    this.cancelReplayCleanup(payload.sessionId);
+
     if (!this.registry.get(payload.sessionId) && payload.tmuxSessionName) {
       try {
         this.registry.create(payload.sessionId, payload.tmuxSessionName, {
@@ -615,17 +1205,16 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
 
   @OnEvent('session.stopped')
   handleSessionStopped(payload: { sessionId: string }) {
-    this.unwireFrameListener(payload.sessionId);
+    this.cleanupSessionLifecycle(payload.sessionId, {
+      replayRetentionMs: STOPPED_REPLAY_RETENTION_MS,
+      disposeTerminalState: false,
+    });
     const ep: SessionStatePayload = {
       sessionId: payload.sessionId,
       status: 'ended',
       message: 'Session terminated',
     };
     this.server.emit('message', createEnvelope('sessions', 'stopped', ep));
-    setTimeout(() => this.streamService.clearBuffer(payload.sessionId), 60000);
-    this.seedService.invalidateCache(payload.sessionId);
-    this.themeCache.delete(payload.sessionId);
-    this.viewportRestoreAt.delete(payload.sessionId);
   }
 
   // ── Heartbeat ───────────────────────────────────────────────────────
@@ -668,12 +1257,7 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
       this.frameListeners.delete(sessionId);
     }
 
-    const FORWARDED_FRAME_TYPES = new Set([
-      'focus_changed',
-      'seed_ansi',
-      'resize_jiggle',
-      'full_history',
-    ]);
+    const FORWARDED_FRAME_TYPES = new Set(['focus_changed', 'resize_jiggle', 'full_history']);
     const listener = (frame: FrameEvent) => {
       if (FORWARDED_FRAME_TYPES.has(frame.type)) {
         this.server
@@ -696,11 +1280,10 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
   private async handleDeadTmuxSession(sessionId: string, client: Socket): Promise<void> {
     logger.warn({ sessionId }, 'Dead tmux detected — marking session failed');
     this.sessionsService.markSessionFailed(sessionId, 'tmux session no longer exists');
-    this.ptyService.stopStreaming(sessionId);
-    this.unwireFrameListener(sessionId);
-    this.registry.dispose(sessionId);
-    this.themeCache.delete(sessionId);
-    this.viewportRestoreAt.delete(sessionId);
+    this.cleanupSessionLifecycle(sessionId, {
+      replayRetentionMs: 0,
+      disposeTerminalState: true,
+    });
     const ep: SessionStatePayload = {
       sessionId,
       status: 'crashed',
@@ -709,6 +1292,57 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
     const envelope = createEnvelope(`session/${sessionId}`, 'state_change', ep);
     client.emit('message', envelope);
     this.server.to(`session:${sessionId}`).emit('message', envelope);
+  }
+
+  /** Cancel a pending stopped-session replay clear, if any. Idempotent. Delegates to the replay
+   * -lifecycle owner (TerminalStreamService), which owns the timer. */
+  private cancelReplayCleanup(sessionId: string): void {
+    this.streamService.cancelScheduledClear(sessionId);
+  }
+
+  private cleanupSessionLifecycle(sessionId: string, policy: LifecycleCleanupPolicy): void {
+    this.cancelReplayCleanup(sessionId);
+
+    this.unwireFrameListener(sessionId);
+    this.seedService.invalidateCache(sessionId);
+    this.themeCache.delete(sessionId);
+    this.viewportRestoreAt.delete(sessionId);
+    this.pruneInputRateEntries((key) => key.endsWith(`:${sessionId}`));
+    this.retireSessionRecoveries(sessionId);
+    // The recovery counter is now domain-local (owned by the FrameBuffer); it is retired together
+    // with the buffer when the domain is cleared below, and retained otherwise.
+
+    if (policy.disposeTerminalState) {
+      this.ptyService.stopStreaming(sessionId);
+      this.registry.dispose(sessionId);
+    }
+
+    if (policy.replayRetentionMs === 0) {
+      this.streamService.clearBuffer(sessionId);
+      return;
+    }
+
+    // Delegate the delayed clear to the FrameBuffer owner. On expiry it clears the buffer and runs
+    // the registered expiry handler (retireSessionRecoveries): a still-subscribed client can send
+    // terminal:resync_request in the retention window (after this stop cleanup, before the timer
+    // fires), starting a recovery whose FrameBuffer domain the expiry now retires — dropping it keeps
+    // its map entry/lane from outliving the domain and its late callbacks no-ops.
+    this.streamService.scheduleClear(sessionId, policy.replayRetentionMs);
+  }
+
+  /**
+   * Drop every in-flight recovery state, targeted-seed attempt, and scheduler lane bound to
+   * `sessionId`. Run both at stop cleanup and when the delayed retention timer clears the buffer, so a
+   * recovery started in the retention window cannot outlive its retired sequence-domain.
+   */
+  private retireSessionRecoveries(sessionId: string): void {
+    for (const [key, recovery] of this.recoveries) {
+      if (recovery.sessionId === sessionId) this.recoveries.delete(key);
+    }
+    for (const clientId of this.clientSessions.keys()) {
+      this.targetedSeedAttempts.delete(this.recoveryKey(clientId, sessionId));
+    }
+    this.sendScheduler.removeSession(sessionId);
   }
 
   private async ensurePtyStreaming(
@@ -783,12 +1417,24 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
     entry.bytes += dataBytes;
   }
 
+  private pruneInputRateEntries(matches: (key: string) => boolean): void {
+    for (const key of this.inputRateTracker.keys()) {
+      if (matches(key)) this.inputRateTracker.delete(key);
+    }
+  }
+
   onModuleDestroy() {
     if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
+    // Scheduled replay clears are owned by TerminalStreamService now and retired in its own
+    // onModuleDestroy.
     for (const sessionId of [...this.frameListeners.keys()]) {
       this.unwireFrameListener(sessionId);
     }
     this.themeCache.clear();
     this.viewportRestoreAt.clear();
+    this.inputRateTracker.clear();
+    this.recoveries.clear();
+    this.sendScheduler.dispose();
+    this.clientSessions.clear();
   }
 }

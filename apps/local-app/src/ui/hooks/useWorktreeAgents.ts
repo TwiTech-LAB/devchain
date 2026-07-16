@@ -313,8 +313,34 @@ export function useWorktreeAgents(ownerProjectId?: string | null) {
     for (const name of activeNames) {
       if (!socketTracker.current.has(name)) {
         const socket = getWorktreeSocket(name);
+        const apiBase = getApiBaseForWorktree(name);
+        const transcriptRegistry: RealtimeInvalidationRegistry = [
+          'discovered',
+          'updated',
+          'ended',
+        ].map((type) => ({
+          match: (topic: string) => topic.startsWith('session/') && topic.endsWith('/transcript'),
+          type,
+          entries: [
+            {
+              kind: 'custom-handler' as const,
+              handler: (payload: Record<string, unknown>) => {
+                const sessionId = payload.sessionId;
+                if (typeof sessionId !== 'string') return;
+                queryClient.invalidateQueries({
+                  queryKey: ['transcript-summary', apiBase, sessionId],
+                  exact: true,
+                });
+              },
+            },
+          ],
+        }));
         const handler = (envelope: WsEnvelope) => {
-          dispatchRealtimeEnvelope(envelope, presenceRegistry, queryClient);
+          dispatchRealtimeEnvelope(
+            envelope,
+            [...presenceRegistry, ...transcriptRegistry],
+            queryClient,
+          );
         };
         socket.on('message', handler);
         socketTracker.current.set(name, { socket, handler });

@@ -1,0 +1,195 @@
+{
+  "schemaVersion": 1,
+  "scenarios": [
+    {
+      "id": "host-burst-plateau",
+      "title": "Isolated multi-session burst and memory plateau",
+      "state": "active",
+      "execution": "tmux-host",
+      "covers": [
+        "defined session count and deterministic output rate",
+        "burst shape with warm-up and foreground/background phases",
+        "observational GC policy with forced GC in owned workload children",
+        "host, cgroup, target-tree, child-process RSS, swap, and memory PSI",
+        "RSS plateau across two cache-churn cycles",
+        "worktree and tmux-server isolation",
+        "oversized Unicode and ANSI output generation"
+      ],
+      "phases": [
+        {
+          "name": "warmup",
+          "baselineMs": 2000,
+          "soakMs": 30000,
+          "workloadMode": "foreground"
+        },
+        {
+          "name": "foreground",
+          "baselineMs": 3000,
+          "soakMs": 60000,
+          "workloadMode": "foreground"
+        },
+        {
+          "name": "background",
+          "baselineMs": 2000,
+          "soakMs": 30000,
+          "workloadMode": "background"
+        },
+        {
+          "name": "cache-churn-1",
+          "baselineMs": 3000,
+          "soakMs": 60000,
+          "workloadMode": "churn"
+        },
+        {
+          "name": "cache-churn-2",
+          "baselineMs": 3000,
+          "soakMs": 60000,
+          "workloadMode": "churn"
+        },
+        {
+          "name": "cooldown",
+          "baselineMs": 2000,
+          "soakMs": 30000,
+          "workloadMode": "background"
+        }
+      ],
+      "thresholds": {
+        "minimumSamples": 20,
+        "minimumOutputBytesPerSession": 32768,
+        "minimumForcedGcCyclesPerSession": 2,
+        "maximumTargetPeakRssBytes": 1610612736,
+        "maximumWorkloadPeakRssBytes": 536870912,
+        "maximumTargetSwapBytes": 67108864,
+        "maximumMemoryPsiFullAvg10": 5,
+        "maximumPlateauGrowthBytes": 33554432,
+        "maximumPlateauGrowthRatio": 0.1
+      }
+    },
+    {
+      "id": "many-subscribers-one-session",
+      "title": "Many subscribers share one targeted seed capture",
+      "state": "pending",
+      "execution": "socket-fixture",
+      "activation": "Activate when the integration fixture can expose the seed-capture counter while attaching deterministic Socket.IO clients to one scratch application session.",
+      "expected": [
+        "one server capture",
+        "all subscribers converge on the same final terminal state"
+      ]
+    },
+    {
+      "id": "reconnect-replay-available",
+      "title": "Reconnect while requested sequence remains in replay ring",
+      "state": "pending",
+      "execution": "socket-fixture",
+      "activation": "Activate with the scratch application-session fixture; reconnect with a retained lastSequence and assert replay without a fresh seed.",
+      "expected": [
+        "no fresh seed",
+        "strictly ordered replay",
+        "fresh capture equivalence"
+      ]
+    },
+    {
+      "id": "reconnect-older-than-ring",
+      "title": "Reconnect older than replay ring forces reseed",
+      "state": "pending",
+      "execution": "socket-fixture",
+      "activation": "Activate when the bounded replay ring and explicit forced-reseed response are available.",
+      "expected": [
+        "forced reseed is explicit",
+        "fresh capture equivalence after reseed"
+      ]
+    },
+    {
+      "id": "zero-web-mobile-activity",
+      "title": "Mobile viewport advances with zero web subscribers",
+      "state": "pending",
+      "execution": "mobile-fixture",
+      "activation": "Activate when the harness has an authenticated bridge/mobile viewport fixture for a scratch session.",
+      "expected": [
+        "viewport advances",
+        "session activity advances",
+        "no web socket required"
+      ]
+    },
+    {
+      "id": "stalled-and-current-socket",
+      "title": "One stalled socket does not delay a current socket",
+      "state": "pending",
+      "execution": "socket-fixture",
+      "activation": "Activate with the application-owned per-socket queue and writable-transport control surface.",
+      "expected": [
+        "current socket remains bounded",
+        "stalled socket is bounded or disconnected"
+      ]
+    },
+    {
+      "id": "oversized-unicode-ansi-chunking",
+      "title": "Oversized Unicode and ANSI chunks preserve terminal state",
+      "state": "pending",
+      "execution": "socket-xterm-fixture",
+      "activation": "Activate when a scratch application session can route the active host-burst generator through Socket.IO into headless xterm.",
+      "expected": [
+        "UTF-8 boundaries intact",
+        "ANSI state intact",
+        "fresh tmux capture equivalence"
+      ]
+    },
+    {
+      "id": "seed-during-burst",
+      "title": "Seed during burst converges after resync completion",
+      "state": "pending",
+      "execution": "socket-xterm-fixture",
+      "activation": "Activate when the resync_complete protocol exists; include output emitted between capture and resync completion.",
+      "expected": [
+        "headless xterm equals fresh tmux capture",
+        "no gap during seed window"
+      ]
+    },
+    {
+      "id": "lifecycle-cleanup-parity",
+      "title": "Stopped, crashed, and dead sessions clean up identically",
+      "state": "pending",
+      "execution": "lifecycle-fixture",
+      "activation": "Activate with disposable application storage and scratch session lifecycle controls.",
+      "expected": [
+        "PTY cleanup parity",
+        "listener cleanup parity",
+        "frame-buffer cleanup parity"
+      ]
+    },
+    {
+      "id": "summary-full-provider-parity",
+      "title": "Summary and full transcript parity for every provider",
+      "state": "pending",
+      "execution": "provider-fixture",
+      "activation": "Activate when deterministic transcript fixtures for every registered provider can be loaded into disposable storage.",
+      "expected": [
+        "summary metrics equal full metrics",
+        "provider coverage matches adapter registry"
+      ]
+    },
+    {
+      "id": "eviction-concurrent-transcript-reads",
+      "title": "Eviction remains correct during summary, index, and chunk reads",
+      "state": "pending",
+      "execution": "reader-fixture",
+      "activation": "Activate when bounded transcript caches and deterministic eviction controls are available.",
+      "expected": [
+        "no mixed generations",
+        "summary/index/chunk consistency",
+        "bounded retained bytes"
+      ]
+    },
+    {
+      "id": "engine-write-buffer-bounded",
+      "title": "Engine.IO writeBuffer does not grow while transport is unwritable",
+      "state": "pending",
+      "execution": "socket-fixture",
+      "activation": "Activate with the application-owned queue and an unwritable-transport test seam.",
+      "expected": [
+        "Engine.IO writeBuffer stays bounded",
+        "application queue policy is observable"
+      ]
+    }
+  ]
+}

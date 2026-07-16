@@ -1,5 +1,13 @@
-export function encodeCursor(fileSize: number, messageCount: number, chunkCount: number): string {
-  return Buffer.from(`${fileSize}:${messageCount}:${chunkCount}`).toString('base64url');
+/**
+ * The first field is an opaque numeric source revision compared by equality.
+ * `decodeCursor().fileSize` retains its legacy name to preserve the wire/API shape.
+ */
+export function encodeCursor(
+  sourceVersion: number,
+  messageCount: number,
+  chunkCount: number,
+): string {
+  return Buffer.from(`${sourceVersion}:${messageCount}:${chunkCount}`).toString('base64url');
 }
 
 export function decodeCursor(

@@ -95,6 +95,7 @@ describe('TunnelEventForwarderService', () => {
     // encrypt; the seal wraps the registry-projected payload (routing fields stay cleartext).
     channelMode = 'encrypted';
     emitter.emit('session.transcript.updated', {
+      kind: 'delta',
       sessionId: 's1',
       transcriptPath: '/secret/path',
       newMessageCount: 2,
@@ -235,6 +236,7 @@ describe('TunnelEventForwarderService', () => {
     activeSessions.getSessionProjectScope.mockResolvedValue(null);
 
     emitter.emit('session.transcript.updated', {
+      kind: 'delta',
       sessionId: 'unknown',
       transcriptPath: '/p',
       newMessageCount: 1,
@@ -305,7 +307,11 @@ describe('TunnelEventForwarderService', () => {
   it('skips all work (no projection, no scope lookup) when the tunnel cannot push', async () => {
     tunnelClient.canPush.mockReturnValue(false);
 
-    emitter.emit('session.transcript.updated', { sessionId: 's1', transcriptPath: '/p' });
+    emitter.emit('session.transcript.updated', {
+      kind: 'delta',
+      sessionId: 's1',
+      transcriptPath: '/p',
+    });
     await flush();
 
     expect(activeSessions.getSessionProjectScope).not.toHaveBeenCalled();
@@ -456,6 +462,7 @@ describe('TunnelEventForwarderService', () => {
     // recovers the tail via the per-topic catch-up RPC (push is a hint, never the truth).
     channelMode = 'plaintext';
     emitter.emit('session.transcript.updated', {
+      kind: 'delta',
       sessionId: 's1',
       transcriptPath: '/p',
       newMessageCount: 1,
@@ -518,6 +525,7 @@ describe('TunnelEventForwarderService', () => {
   it('BLOCKS everything (even hints) when E2EE is required but the peer is not capable', async () => {
     channelMode = 'blocked';
     emitter.emit('session.transcript.updated', {
+      kind: 'delta',
       sessionId: 's1',
       transcriptPath: '/p',
       newMessageCount: 1,

@@ -1,0 +1,10 @@
+{
+  "generations": [
+    {
+      "inputTokens": 120,
+      "outputTokens": 12,
+      "modelId": "gpt-oss-120b-medium",
+      "displayName": "GPT-OSS 120B (Medium)"
+    }
+  ]
+}

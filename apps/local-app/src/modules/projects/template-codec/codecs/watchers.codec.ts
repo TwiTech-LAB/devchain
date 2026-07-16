@@ -7,9 +7,9 @@
  *  - `agentNameToId`      — written by the agents codec (Record -> Map adapter).
  *  - `profileNameToId`    — written by the profiles codec.
  *  - `profileNameRemapMap`— from the seeded `selectedProfilesByFamily` (family substitution).
- *  - `providerNameToId`   — the ambient provider map (`CodecApplyRuntime.available`); providers
- *                           are pre-existing/ambient so they live in the runtime, not the context
- *                           (consistent with Task 3's placement of `available`).
+ *  - `providerNameToId`   — the ambient installed-provider map (`CodecApplyRuntime.installedProviders`);
+ *                           providers are pre-existing/ambient so they live in the runtime, not the
+ *                           context.
  *
  * The scope-filter remap via `profileNameRemapMap` (profile-scope watchers whose target was
  * family-substituted) is preserved because it lives inside the shared helper.
@@ -134,7 +134,7 @@ class WatchersCodec implements TemplateSectionCodec<WatchersSection> {
     const maps: ScopeLookupMaps = {
       agentNameToId: new Map(Object.entries(ctx.get('agentNameToId'))),
       profileNameToId: ctx.get('profileNameToId'),
-      providerNameToId: rt.available ?? new Map<string, string>(),
+      providerNameToId: rt.installedProviders ?? new Map<string, string>(),
       profileNameRemapMap: ctx.get('selectedProfilesByFamily').profileNameRemapMap,
     };
 

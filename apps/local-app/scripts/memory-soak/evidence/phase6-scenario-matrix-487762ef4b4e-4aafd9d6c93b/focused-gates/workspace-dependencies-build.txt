@@ -1,0 +1,5 @@
+Scope: 2 of 14 workspace projects
+packages/codebase-overview build$ tsc
+packages/shared build$ tsc
+packages/codebase-overview build: Done
+packages/shared build: Done

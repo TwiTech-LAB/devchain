@@ -52,35 +52,66 @@ type NamedEntity = {
 };
 
 /**
- * Build the transient selected-provider allowlist as a lowercased Set, or `undefined` when the
- * field is absent. Absent → every availability derivation below is byte-identical to today; a
- * present (validated non-empty) list restricts the effective availability to exactly its members.
+ * Build the transient selected-provider choice set in lowercase, or `undefined` when absent.
  */
 function toProviderAllowlist(selectedProviderNames: string[] | undefined): Set<string> | undefined {
   if (!selectedProviderNames) return undefined;
   return new Set(selectedProviderNames.map((name) => name.trim().toLowerCase()));
 }
 
+/**
+ * Collect every provider a template references (name(lowercased)), from BOTH profile default
+ * providers (`profiles[].provider.name`) AND embedded provider configs
+ * (`profiles[].providerConfigs[].providerName`). Missing-provider reporting is driven by this union,
+ * so a provider referenced only by a config — never as a profile default — is still checked for
+ * installation.
+ */
+export function collectReferencedProviderNames(
+  profiles: Array<Pick<FamilyTemplateProfile, 'provider' | 'providerConfigs'>>,
+): Set<string> {
+  const referenced = new Set<string>();
+  for (const profile of profiles) {
+    referenced.add(profile.provider.name.trim().toLowerCase());
+    for (const config of profile.providerConfigs ?? []) {
+      referenced.add(config.providerName.trim().toLowerCase());
+    }
+  }
+  return referenced;
+}
+
 export async function resolveProvidersFromStorage(
   storage: Pick<StorageService, 'listProviders'>,
-  providerNames: Set<string>,
+  referencedProviderNames: Set<string>,
   selectedProviderNames?: string[],
 ): Promise<{
-  available: Map<string, string>;
+  /**
+   * Every locally installed provider (name(lowercased) → id). Authoritative for persistence,
+   * watcher/team restoration, and validation: an installed provider is available even when the
+   * Step-1 wizard did not select it.
+   */
+  installed: Map<string, string>;
+  /**
+   * The installed map narrowed to the Step-1 wizard choices (identical to `installed` when no
+   * selection is given). Drives family/wizard choices only — never persistence or missing reporting.
+   */
+  selected: Map<string, string>;
+  /**
+   * Referenced providers that are genuinely NOT installed. An installed-but-deselected provider is
+   * NOT missing — deselection is a wizard-scope concern, not an availability one.
+   */
   missing: string[];
 }> {
   const providers = await storage.listProviders();
   const allow = toProviderAllowlist(selectedProviderNames);
-  const available = new Map<string, string>();
+  const installed = new Map<string, string>();
+  const selected = new Map<string, string>();
   for (const prov of providers.items) {
     const key = prov.name.trim().toLowerCase();
-    // Providers outside the transient allowlist are treated as if uninstalled: excluded from the
-    // available map (so their configs are never created) AND reported as missing below.
-    if (allow && !allow.has(key)) continue;
-    available.set(key, prov.id);
+    installed.set(key, prov.id);
+    if (!allow || allow.has(key)) selected.set(key, prov.id);
   }
-  const missing = Array.from(providerNames).filter((name) => !available.has(name));
-  return { available, missing };
+  const missing = Array.from(referencedProviderNames).filter((name) => !installed.has(name));
+  return { installed, selected, missing };
 }
 
 export async function computeFamilyAlternativesFromStorage(
@@ -92,24 +123,35 @@ export async function computeFamilyAlternativesFromStorage(
 ): Promise<FamilyAlternativesResult> {
   const localProviders = await storage.listProviders();
   const allow = toProviderAllowlist(selectedProviderNames);
+  const installedProviderNames = new Set(
+    localProviders.items.map((provider) => provider.name.trim().toLowerCase()),
+  );
   const availableProviderNames = new Set(
-    localProviders.items
-      .map((provider) => provider.name.trim().toLowerCase())
-      .filter((name) => !allow || allow.has(name)),
+    Array.from(installedProviderNames).filter((name) => !allow || allow.has(name)),
   );
   return computeFamilyAlternatives(
     templateProfiles,
     templateAgents,
     availableProviderNames,
     logger,
+    installedProviderNames,
   );
 }
 
+/**
+ * Family resolution keeps TWO provider views: `availableProviderNames` (Step-1 selection-filtered)
+ * drives `defaultProviderAvailable`/`availableProviders`/`canImport` — the wizard-eligibility
+ * surface — while the public `missingProviders` list reports only providers absent from
+ * `installedProviderNames`. An installed-but-deselected provider is ineligible as a choice but
+ * never "missing". When `installedProviderNames` is omitted the two views coincide (no wizard
+ * selection in play).
+ */
 export function computeFamilyAlternatives(
   templateProfiles: FamilyTemplateProfile[],
   templateAgents: FamilyTemplateAgent[],
   availableProviderNames: Set<string>,
   logger?: LoggerLike,
+  installedProviderNames?: Set<string>,
 ): FamilyAlternativesResult {
   const profileById = new Map<string, FamilyTemplateProfile>();
   for (const prof of templateProfiles) {
@@ -157,6 +199,7 @@ export function computeFamilyAlternatives(
 
   const alternatives: FamilyAlternative[] = [];
   const missingProviders = new Set<string>();
+  const installed = installedProviderNames ?? availableProviderNames;
   let canImport = true;
 
   for (const familySlug of usedFamilySlugs) {
@@ -174,7 +217,7 @@ export function computeFamilyAlternatives(
     );
 
     for (const providerName of providerNamesForFamily) {
-      if (!availableProviderNames.has(providerName)) {
+      if (!installed.has(providerName)) {
         missingProviders.add(providerName);
       }
     }

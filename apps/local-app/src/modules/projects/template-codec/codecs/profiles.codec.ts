@@ -3,26 +3,30 @@
  * (there is no standalone providerConfigs codec). Apply = the legacy
  * `createImportedProfiles` + `createImportedProviderConfigs`, moved verbatim:
  *  - create each selected profile, recording `profileIdMap`;
- *  - create its provider configs (env preserved verbatim via `preserveImportedEnv` — the
- *    config-level env rule, DISTINCT from the providerSettings merge — carrying
- *    model/effort/position), recording `configLookupMap` keyed by
- *    `buildProviderConfigLookupKey(profileId, configName)`.
+ *  - create the provider config for EVERY config backed by an installed provider (env preserved
+ *    verbatim via `preserveImportedEnv` — the config-level env rule, DISTINCT from the
+ *    providerSettings merge — carrying model/effort/position); genuinely uninstalled providers
+ *    are skipped (they cannot satisfy the provider foreign key).
  *
- * Declares reads `selectedProfilesByFamily` (seeded pre-pipeline) and writes
- * `profileIdMap` + `configLookupMap`; the agents codec depends on both.
+ * Publishes TWO config lookups, both keyed by `buildProviderConfigLookupKey(profileId, configName)`:
+ *  - `configLookupMap` — every persisted config, for the teams codec + faithful restoration;
+ *  - `selectionEligibleConfigLookupMap` — the subset whose provider is Step-1-selection-eligible,
+ *    for initial agent binding. With no allowlist the two are identical.
+ *
+ * Declares reads `selectedProfilesByFamily` (seeded pre-pipeline) and writes `profileIdMap` +
+ * `configLookupMap` + `selectionEligibleConfigLookupMap`; the agents codec reads the eligible map.
  */
 import { createLogger } from '../../../../common/logging/logger';
 import {
   buildProviderConfigLookupKey,
   preserveImportedEnv,
 } from '../../helpers/profile-mapping.helpers';
-import type { ImportContext } from '../import-context';
+import type { ImportContext, SelectedProfilesByFamily } from '../import-context';
 import type {
   CodecApplyResult,
   CodecApplyRuntime,
   ParsedTemplatePayload,
   PipelineMode,
-  SelectedProfilesByFamily,
   TemplateSectionCodec,
 } from '../template-section-codec';
 
@@ -105,7 +109,12 @@ class ProfilesCodec implements TemplateSectionCodec<ProfilesSection> {
   readonly declaration = {
     section: 'profiles',
     reads: ['selectedProfilesByFamily'],
-    writes: ['profileIdMap', 'profileNameToId', 'configLookupMap'],
+    writes: [
+      'profileIdMap',
+      'profileNameToId',
+      'configLookupMap',
+      'selectionEligibleConfigLookupMap',
+    ],
     requiresState: ['existingDataCleared'],
     producesState: ['profilesPersisted'],
     modes: ['replace', 'create'],
@@ -128,14 +137,17 @@ class ProfilesCodec implements TemplateSectionCodec<ProfilesSection> {
     rt: CodecApplyRuntime,
   ): Promise<CodecApplyResult> {
     const { projectId, storage } = rt;
-    const available = rt.available ?? new Map<string, string>();
+    const installed = rt.installedProviders ?? new Map<string, string>();
+    // No allowlist → every installed provider is selection-eligible, so eligible ≡ full.
+    const selected = rt.selectedProviders ?? installed;
     const profilesToCreate = ctx.get('selectedProfilesByFamily').profilesToCreate;
 
     const profileIdMap = await this.createProfiles(projectId, profilesToCreate, storage);
-    const configLookupMap = await this.createProviderConfigs(
+    const { configLookupMap, selectionEligibleConfigLookupMap } = await this.createProviderConfigs(
       profilesToCreate,
       profileIdMap,
-      available,
+      installed,
+      selected,
       storage,
     );
 
@@ -150,10 +162,15 @@ class ProfilesCodec implements TemplateSectionCodec<ProfilesSection> {
     ctx.set('profileIdMap', profileIdMap);
     ctx.set('profileNameToId', profileNameToId);
     ctx.set('configLookupMap', configLookupMap);
+    ctx.set('selectionEligibleConfigLookupMap', selectionEligibleConfigLookupMap);
 
     return {
       section: 'profiles',
-      log: { profiles: profilesToCreate.length, configs: configLookupMap.size },
+      log: {
+        profiles: profilesToCreate.length,
+        configs: configLookupMap.size,
+        eligibleConfigs: selectionEligibleConfigLookupMap.size,
+      },
     };
   }
 
@@ -185,10 +202,15 @@ class ProfilesCodec implements TemplateSectionCodec<ProfilesSection> {
   private async createProviderConfigs(
     profilesToCreate: ProfilesToCreate,
     profileIdMap: Record<string, string>,
-    available: Map<string, string>,
+    installed: Map<string, string>,
+    selected: Map<string, string>,
     storage: CodecApplyRuntime['storage'],
-  ): Promise<Map<string, string>> {
+  ): Promise<{
+    configLookupMap: Map<string, string>;
+    selectionEligibleConfigLookupMap: Map<string, string>;
+  }> {
     const configLookupMap = new Map<string, string>();
+    const selectionEligibleConfigLookupMap = new Map<string, string>();
 
     for (const profile of profilesToCreate) {
       const profileKey = profile.id || `name:${profile.name.trim().toLowerCase()}`;
@@ -214,7 +236,8 @@ class ProfilesCodec implements TemplateSectionCodec<ProfilesSection> {
 
       if (providerConfigs && providerConfigs.length > 0) {
         for (const config of providerConfigs) {
-          const providerId = available.get(config.providerName.trim().toLowerCase());
+          const providerKey = config.providerName.trim().toLowerCase();
+          const providerId = installed.get(providerKey);
           if (!providerId) {
             logger.warn(
               { profileName: profile.name, providerName: config.providerName },
@@ -238,12 +261,15 @@ class ProfilesCodec implements TemplateSectionCodec<ProfilesSection> {
 
           const lookupKey = buildProviderConfigLookupKey(newProfileId, config.name);
           configLookupMap.set(lookupKey, created.id);
+          if (selected.has(providerKey)) {
+            selectionEligibleConfigLookupMap.set(lookupKey, created.id);
+          }
         }
         continue;
       }
 
       const providerName = profile.provider.name.trim().toLowerCase();
-      const providerId = available.get(providerName);
+      const providerId = installed.get(providerName);
       if (!providerId) {
         continue;
       }
@@ -265,9 +291,12 @@ class ProfilesCodec implements TemplateSectionCodec<ProfilesSection> {
 
       const lookupKey = buildProviderConfigLookupKey(newProfileId, 'default');
       configLookupMap.set(lookupKey, created.id);
+      if (selected.has(providerName)) {
+        selectionEligibleConfigLookupMap.set(lookupKey, created.id);
+      }
     }
 
-    return configLookupMap;
+    return { configLookupMap, selectionEligibleConfigLookupMap };
   }
 }
 

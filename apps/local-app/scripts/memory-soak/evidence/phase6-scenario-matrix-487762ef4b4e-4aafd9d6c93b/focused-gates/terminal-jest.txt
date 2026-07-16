@@ -1,0 +1,19 @@
+
+> local-app@0.0.0-internal test /home/ngsupb/repos/twitech/devchain-rem15-checkpoint/apps/local-app
+> cross-env NODE_ENV=test node --expose-gc ../../node_modules/jest/bin/jest.js --selectProjects backend-unit backend-integration ui cli-helpers --maxWorkers=50% --workerIdleMemoryLimit=512MB -- --runInBand --runTestsByPath src/modules/terminal/services/terminal-seed.service.spec.ts src/modules/terminal/services/terminal-send-scheduler.service.spec.ts src/modules/terminal/gateways/terminal.gateway.spec.ts
+
+Running 4 projects:
+- backend-integration
+- backend-unit
+- cli-helpers
+- ui
+PASS backend-unit src/modules/terminal/services/terminal-send-scheduler.service.spec.ts
+PASS backend-unit src/modules/terminal/services/terminal-seed.service.spec.ts
+PASS backend-unit src/modules/terminal/gateways/terminal.gateway.spec.ts
+A worker process has failed to exit gracefully and has been force exited. This is likely caused by tests leaking due to improper teardown. Try running with --detectOpenHandles to find leaks. Active timers can also cause this, ensure that .unref() was called on them.
+
+Test Suites: 3 passed, 3 total
+Tests:       133 passed, 133 total
+Snapshots:   0 total
+Time:        4.965 s
+Ran all test suites matching /--runInBand|--runTestsByPath|src\/modules\/terminal\/services\/terminal-seed.service.spec.ts|src\/modules\/terminal\/services\/terminal-send-scheduler.service.spec.ts|src\/modules\/terminal\/gateways\/terminal.gateway.spec.ts/i.

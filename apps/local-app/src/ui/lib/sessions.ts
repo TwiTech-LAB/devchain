@@ -1,5 +1,6 @@
 import type { PreflightResult, ProviderCheck } from './preflight';
 import type { UnifiedMetrics } from '@/modules/session-reader/dtos/unified-session.types';
+import type { SourceChangeKind } from '@/modules/session-reader/services/session-cache.service';
 
 export interface ActiveSession {
   id: string;
@@ -478,8 +479,9 @@ export async function fetchTranscriptSummary(
   );
 }
 
-/** Response from GET /api/sessions/:id/transcript/tail?since=<cursor> */
-export interface TranscriptTailResponse {
+/** Incremental response from GET /api/sessions/:id/transcript/tail?since=<cursor>. */
+export interface TranscriptTailDeltaResponse {
+  kind: 'delta';
   cursor: string;
   replaceFromChunkIndex: number;
   deltaChunks: unknown[];
@@ -488,6 +490,16 @@ export interface TranscriptTailResponse {
   totalChunkCount: number;
   totalMessageCount: number;
 }
+
+/** Unsafe generations carry no cursor or partial transcript body. */
+export interface TranscriptTailFullRefetchRequiredResponse {
+  kind: 'full-refetch-required';
+  sourceChangeKind: SourceChangeKind;
+}
+
+export type TranscriptTailResponse =
+  | TranscriptTailDeltaResponse
+  | TranscriptTailFullRefetchRequiredResponse;
 
 export async function fetchTranscriptTail(
   sessionId: string,
@@ -508,6 +520,7 @@ export async function fetchTranscriptTail(
 // ============================================
 
 export interface TranscriptIndex {
+  cursor: string;
   totals: { messageCount: number; chunkCount: number };
   chunkIds: string[];
   latestOutputPreview: string | null;

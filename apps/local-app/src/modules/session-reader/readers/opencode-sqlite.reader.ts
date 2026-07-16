@@ -75,6 +75,10 @@ export interface OpencodeSessionRead {
   freshness: OpencodeFreshness;
 }
 
+export interface OpencodeSummaryRead {
+  metrics: UnifiedMetrics;
+}
+
 /** A discovery candidate: a session created in a directory around a launch time. */
 export interface OpencodeSessionCandidate {
   providerSessionId: string;
@@ -219,6 +223,153 @@ export class OpencodeSqliteReader {
         pricing: this.pricing,
         maxToolOutputChars: this.maxToolOutputChars,
       });
+    });
+  }
+
+  /** Aggregate summary metrics in SQLite without constructing message or part graphs. */
+  readSummary(dbPath: string, providerSessionId: string): OpencodeSummaryRead {
+    return this.withDb(dbPath, (db) => {
+      this.assertSchema(db);
+      const sessionRow = db
+        .prepare(
+          `SELECT id, model, time_created, time_updated
+           FROM session WHERE id = ?`,
+        )
+        .get(providerSessionId) as
+        | Pick<SessionRow, 'id' | 'model' | 'time_created' | 'time_updated'>
+        | undefined;
+      if (!sessionRow) throw new NotFoundError('OpenCode session', providerSessionId);
+
+      const tokenRow = db
+        .prepare(
+          `SELECT
+             COALESCE(SUM(CASE WHEN json_valid(data) AND json_extract(data, '$.type') = 'step-finish'
+               THEN COALESCE(json_extract(data, '$.tokens.input'), 0) ELSE 0 END), 0) AS inputTokens,
+             COALESCE(SUM(CASE WHEN json_valid(data) AND json_extract(data, '$.type') = 'step-finish'
+               THEN COALESCE(json_extract(data, '$.tokens.output'), 0)
+                  + COALESCE(json_extract(data, '$.tokens.reasoning'), 0) ELSE 0 END), 0) AS outputTokens,
+             COALESCE(SUM(CASE WHEN json_valid(data) AND json_extract(data, '$.type') = 'step-finish'
+               THEN COALESCE(json_extract(data, '$.tokens.cache.read'), 0) ELSE 0 END), 0) AS cacheReadTokens,
+             COALESCE(SUM(CASE WHEN json_valid(data) AND json_extract(data, '$.type') = 'step-finish'
+               THEN COALESCE(json_extract(data, '$.tokens.cache.write'), 0) ELSE 0 END), 0) AS cacheCreationTokens,
+             COALESCE(SUM(CASE WHEN json_valid(data) AND json_extract(data, '$.type') = 'compaction'
+               THEN 1 ELSE 0 END), 0) AS compactionCount
+           FROM part WHERE session_id = ?`,
+        )
+        .get(providerSessionId) as {
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadTokens: number;
+        cacheCreationTokens: number;
+        compactionCount: number;
+      };
+
+      const contentPredicate = `EXISTS (
+        SELECT 1 FROM part p WHERE p.message_id = m.id AND json_valid(p.data) AND (
+          (json_extract(p.data, '$.type') IN ('text', 'reasoning')
+            AND length(trim(COALESCE(json_extract(p.data, '$.text'), ''))) > 0)
+          OR json_extract(p.data, '$.type') IN ('tool', 'compaction')
+          OR (json_extract(p.data, '$.type') = 'patch'
+            AND COALESCE(json_array_length(json_extract(p.data, '$.files')), 0) > 0)
+        )
+      )`;
+      const shapeRow = db
+        .prepare(
+          `SELECT COUNT(*) AS messageCount,
+                  MIN(time_created) AS firstTimestamp,
+                  MAX(time_created) AS lastTimestamp
+           FROM message m WHERE session_id = ? AND ${contentPredicate}`,
+        )
+        .get(providerSessionId) as {
+        messageCount: number;
+        firstTimestamp: number | null;
+        lastTimestamp: number | null;
+      };
+      const modelRows = db
+        .prepare(
+          `SELECT json_extract(data, '$.modelID') AS model
+           FROM message
+           WHERE session_id = ? AND json_valid(data)
+             AND json_type(data, '$.modelID') = 'text'
+           ORDER BY time_created, id`,
+        )
+        .all(providerSessionId) as { model: string }[];
+      const models = [...new Set(modelRows.map((row) => row.model).filter(Boolean))];
+      const primaryModel = models[0] ?? parseSessionModelId(sessionRow.model);
+
+      const contextRow = db
+        .prepare(
+          `SELECT
+             COALESCE(json_extract(data, '$.tokens.input'), 0) AS inputTokens,
+             COALESCE(json_extract(data, '$.tokens.output'), 0)
+               + COALESCE(json_extract(data, '$.tokens.reasoning'), 0) AS outputTokens,
+             COALESCE(json_extract(data, '$.tokens.cache.read'), 0) AS cacheReadTokens,
+             COALESCE(json_extract(data, '$.tokens.cache.write'), 0) AS cacheCreationTokens
+           FROM message
+           WHERE session_id = ? AND json_valid(data)
+             AND json_extract(data, '$.role') = 'assistant'
+             AND json_type(data, '$.tokens') = 'object'
+           ORDER BY time_created DESC, id DESC LIMIT 1`,
+        )
+        .get(providerSessionId) as
+        | {
+            inputTokens: number;
+            outputTokens: number;
+            cacheReadTokens: number;
+            cacheCreationTokens: number;
+          }
+        | undefined;
+
+      const totalTokens =
+        tokenRow.inputTokens +
+        tokenRow.outputTokens +
+        tokenRow.cacheReadTokens +
+        tokenRow.cacheCreationTokens;
+      const totalContextTokens = contextRow
+        ? contextRow.inputTokens +
+          contextRow.outputTokens +
+          contextRow.cacheReadTokens +
+          contextRow.cacheCreationTokens
+        : 0;
+      const costUsd =
+        this.pricing && primaryModel
+          ? this.pricing.calculateMessageCost(
+              primaryModel,
+              tokenRow.inputTokens,
+              tokenRow.outputTokens,
+              tokenRow.cacheReadTokens,
+              tokenRow.cacheCreationTokens,
+            )
+          : 0;
+      const contextWindowTokens =
+        (primaryModel && this.pricing?.getContextWindowSize(primaryModel)) ||
+        DEFAULT_CONTEXT_WINDOW_TOKENS;
+      const durationMs =
+        shapeRow.firstTimestamp != null && shapeRow.lastTimestamp != null
+          ? shapeRow.lastTimestamp - shapeRow.firstTimestamp
+          : Math.max(0, sessionRow.time_updated - sessionRow.time_created);
+
+      return {
+        metrics: {
+          inputTokens: tokenRow.inputTokens,
+          outputTokens: tokenRow.outputTokens,
+          cacheReadTokens: tokenRow.cacheReadTokens,
+          cacheCreationTokens: tokenRow.cacheCreationTokens,
+          totalTokens,
+          totalContextConsumption: 0,
+          compactionCount: tokenRow.compactionCount,
+          phaseBreakdowns: [{ phaseNumber: 1, contribution: 0, peakTokens: 0 }],
+          visibleContextTokens: 0,
+          totalContextTokens,
+          contextWindowTokens,
+          costUsd,
+          primaryModel,
+          modelsUsed: models.length > 1 ? models : undefined,
+          durationMs,
+          messageCount: shapeRow.messageCount,
+          isOngoing: false,
+        },
+      };
     });
   }
 

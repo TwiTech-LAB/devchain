@@ -27,6 +27,7 @@ import type {
   ParseOptions,
   IncrementalResult,
 } from './session-reader-adapter.interface';
+import { EXACT_SUMMARY_FIELDS } from './session-reader-adapter.interface';
 import type { UnifiedSession, UnifiedMessage } from '../dtos/unified-session.types';
 import { PRICING_SERVICE, type PricingServiceInterface } from '../services/pricing.interface';
 import { ValidationError } from '../../../common/errors/error-types';
@@ -44,6 +45,17 @@ const HISTORY_FILE = 'history.jsonl';
 const LAST_CONVERSATIONS_FILE = 'cache/last_conversations.json';
 /** Launch-window for discovery: match conversations created within ±2min of launch. */
 const DISCOVERY_WINDOW_MS = 120_000;
+const AGY_EXACT_SUMMARY_FIELDS = [
+  'inputTokens',
+  'outputTokens',
+  'cacheReadTokens',
+  'cacheCreationTokens',
+  'totalTokens',
+  'totalContextTokens',
+  'contextWindowTokens',
+  'costUsd',
+  'primaryModel',
+] as const;
 
 interface RawHistoryEntry {
   workspace?: string;
@@ -128,6 +140,68 @@ export class AntigravitySessionReaderAdapter implements SessionReaderAdapter {
     const { session } = await this.reader.readSession(dbPath, convId);
     this.applyTokenMetrics(session, dbPath, convId);
     return session;
+  }
+
+  async getSummary(sourceRef: SessionSourceRef) {
+    const convId = this.requireConversationId(sourceRef.providerSessionId);
+    const dbPath = this.resolveDbPath(sourceRef);
+    const decoded = this.metricsReader.decode(dbPath, convId);
+    const model = decoded.modelId ?? decoded.displayName ?? '';
+    const mapping = mapAgyModelToPricing(decoded.displayName, decoded.modelId);
+    let costUsd = 0;
+    let contextWindowTokens = 200_000;
+    const warnings = [...decoded.warnings];
+    if (mapping?.isFree) {
+      contextWindowTokens = mapping.freeContextWindow ?? contextWindowTokens;
+    } else if (mapping?.pricingKey) {
+      costUsd = this.pricingService.calculateMessageCost(
+        mapping.pricingKey,
+        decoded.inputTokens,
+        decoded.outputTokens,
+        decoded.cacheReadTokens,
+        decoded.cacheCreationTokens,
+      );
+      contextWindowTokens = this.pricingService.getContextWindowSize(mapping.pricingKey);
+    } else if (model) {
+      warnings.push(`agy metrics: no pricing mapping for model "${model}" — cost reported as $0`);
+    }
+    const totalTokens =
+      decoded.inputTokens +
+      decoded.outputTokens +
+      decoded.cacheReadTokens +
+      decoded.cacheCreationTokens;
+    const metrics: UnifiedSession['metrics'] = {
+      inputTokens: decoded.inputTokens,
+      outputTokens: decoded.outputTokens,
+      cacheReadTokens: decoded.cacheReadTokens,
+      cacheCreationTokens: decoded.cacheCreationTokens,
+      totalTokens,
+      totalContextConsumption: decoded.inputTokens,
+      compactionCount: 0,
+      phaseBreakdowns: [
+        {
+          phaseNumber: 1,
+          contribution: decoded.inputTokens,
+          peakTokens: decoded.lastContextTokens,
+        },
+      ],
+      visibleContextTokens: 0,
+      totalContextTokens: decoded.lastContextTokens,
+      contextWindowTokens,
+      costUsd,
+      primaryModel: model,
+      durationMs: 0,
+      messageCount: decoded.generationCount * 2,
+      isOngoing: true,
+    };
+    return {
+      metrics,
+      warnings: warnings.length > 0 ? warnings : undefined,
+      exactFields: AGY_EXACT_SUMMARY_FIELDS,
+      approximateFields: EXACT_SUMMARY_FIELDS.filter(
+        (field) => !AGY_EXACT_SUMMARY_FIELDS.includes(field as never),
+      ),
+    };
   }
 
   /**

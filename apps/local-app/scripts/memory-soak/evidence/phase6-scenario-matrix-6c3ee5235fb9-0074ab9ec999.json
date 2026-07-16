@@ -1,0 +1,641 @@
+{
+  "schemaVersion": 1,
+  "reportKind": "phase6-scenario-matrix",
+  "generatedAt": "2026-07-13T14:14:15.176Z",
+  "verdict": "GO",
+  "target": {
+    "commit": "6c3ee5235fb94f5bd7685cadd10d8c5dc6110071",
+    "buildFingerprint": {
+      "algorithm": "sha256",
+      "digest": "0074ab9ec999dafad55935ccbb415a6b51fa90a353d4e161c2f2c740393cfe7b",
+      "subjectKind": "directory-tree",
+      "subjectPath": "/home/ngsupb/repos/twitech/devchain/apps/local-app/dist",
+      "fileCount": 2007,
+      "totalBytes": 11413600
+    },
+    "expectedEntrypoint": "apps/local-app/dist/main.js",
+    "sourceCheckoutDirtyAtCapture": false,
+    "harnessCheckoutDirtyAtCapture": false,
+    "allRunDigestsIdentical": true,
+    "runCount": 16
+  },
+  "reproducibility": {
+    "profile": "soak",
+    "seed": 1337,
+    "scenarioCount": 12,
+    "confirmationRunCount": 4,
+    "confirmedScenarioIds": [
+      "many-subscribers-one-session",
+      "reconnect-replay-available",
+      "oversized-unicode-ansi-chunking",
+      "eviction-concurrent-transcript-reads"
+    ]
+  },
+  "coverage": {
+    "catalogScenarios": 12,
+    "activeScenarios": 12,
+    "executedScenarios": 12,
+    "strictPasses": 11,
+    "strictFailures": 1,
+    "acceptancePasses": 11,
+    "acceptedOutcomes": 12,
+    "environmentalDeviations": 1,
+    "quantitativePlateauPasses": 12,
+    "correctnessPasses": 11,
+    "correctnessFailures": 0,
+    "cleanupPasses": 12
+  },
+  "environmentalDeviations": [
+    {
+      "id": "memory-psi-unavailable",
+      "scenarioId": "host-burst-plateau",
+      "policy": "fail-closed",
+      "actual": null,
+      "strictCheckPass": false,
+      "hostPsiAvailable": false,
+      "cgroupPsiAvailable": false,
+      "explanation": "Neither host nor cgroup memory PSI was exposed. Unavailable is not interpreted as zero pressure."
+    }
+  ],
+  "regressions": [],
+  "resolvedRegressions": [
+    {
+      "scenarioId": "many-subscribers-one-session",
+      "original": {
+        "strictReportPass": true,
+        "correctnessPassed": true,
+        "plateau": {
+          "firstCycleTailMedianBytes": 315547648,
+          "secondCycleTailMedianBytes": 317579264,
+          "growthBytes": 2031616,
+          "growthRatio": 0.006438381058698305,
+          "pass": true
+        }
+      },
+      "confirmation": {
+        "strictReportPass": true,
+        "correctnessPassed": true,
+        "plateau": {
+          "firstCycleTailMedianBytes": 310190080,
+          "secondCycleTailMedianBytes": 310108160,
+          "growthBytes": -81920,
+          "growthRatio": -0.00026409613099168095,
+          "pass": true
+        }
+      },
+      "resolved": true
+    },
+    {
+      "scenarioId": "reconnect-replay-available",
+      "original": {
+        "strictReportPass": true,
+        "correctnessPassed": true,
+        "plateau": {
+          "firstCycleTailMedianBytes": 317620224,
+          "secondCycleTailMedianBytes": 318083072,
+          "growthBytes": 462848,
+          "growthRatio": 0.0014572371814711648,
+          "pass": true
+        }
+      },
+      "confirmation": {
+        "strictReportPass": true,
+        "correctnessPassed": true,
+        "plateau": {
+          "firstCycleTailMedianBytes": 317227008,
+          "secondCycleTailMedianBytes": 317509632,
+          "growthBytes": 282624,
+          "growthRatio": 0.0008909203594669972,
+          "pass": true
+        }
+      },
+      "resolved": true
+    },
+    {
+      "scenarioId": "oversized-unicode-ansi-chunking",
+      "original": {
+        "strictReportPass": true,
+        "correctnessPassed": true,
+        "plateau": {
+          "firstCycleTailMedianBytes": 384561152,
+          "secondCycleTailMedianBytes": 385835008,
+          "growthBytes": 1273856,
+          "growthRatio": 0.0033124926773674735,
+          "pass": true
+        }
+      },
+      "confirmation": {
+        "strictReportPass": true,
+        "correctnessPassed": true,
+        "plateau": {
+          "firstCycleTailMedianBytes": 376659968,
+          "secondCycleTailMedianBytes": 384118784,
+          "growthBytes": 7458816,
+          "growthRatio": 0.019802518541073098,
+          "pass": true
+        }
+      },
+      "resolved": true
+    },
+    {
+      "scenarioId": "eviction-concurrent-transcript-reads",
+      "original": {
+        "strictReportPass": true,
+        "correctnessPassed": true,
+        "plateau": {
+          "firstCycleTailMedianBytes": 312434688,
+          "secondCycleTailMedianBytes": 332500992,
+          "growthBytes": 20066304,
+          "growthRatio": 0.06422559584677102,
+          "pass": true
+        }
+      },
+      "confirmation": {
+        "strictReportPass": true,
+        "correctnessPassed": true,
+        "plateau": {
+          "firstCycleTailMedianBytes": 323764224,
+          "secondCycleTailMedianBytes": 337248256,
+          "growthBytes": 13484032,
+          "growthRatio": 0.041647689894236124,
+          "pass": true
+        }
+      },
+      "resolved": true
+    }
+  ],
+  "phase1Comparison": {
+    "artifact": "apps/local-app/scripts/memory-soak/baselines/phase1-instrumented-e31e970a0d41-fe11d4d4474c.json",
+    "beforeBuildDigest": "fe11d4d4474cda10e51c939a90507cf114c47cc41f86b06e06b797e18c54196d",
+    "finalBuildDigest": "0074ab9ec999dafad55935ccbb415a6b51fa90a353d4e161c2f2c740393cfe7b",
+    "targetPeakRssBytes": {
+      "before": 343027712,
+      "final": 242352128,
+      "reductionRatio": 0.29349111012931806
+    },
+    "cycleTwoCombinedRssMedianBytes": {
+      "before": 632524800,
+      "final": 508874752,
+      "reductionRatio": 0.19548648211105715
+    },
+    "finalPlateau": {
+      "firstCycleTailMedianBytes": 499863552,
+      "secondCycleTailMedianBytes": 508874752,
+      "growthBytes": 9011200,
+      "growthRatio": 0.018027319583405033,
+      "pass": true
+    }
+  },
+  "scenarioResults": [
+    {
+      "id": "host-burst-plateau",
+      "title": "Isolated multi-session burst and memory plateau",
+      "state": "active",
+      "execution": "tmux-host",
+      "artifact": "apps/local-app/scripts/memory-soak/baselines/phase6-final-6c3ee5235fb9-0074ab9ec999.json",
+      "artifactSha256": "9cbbb60e0aabeaec9bf290545e945161568778fb00b42e3052e9e02625d7c4aa",
+      "runId": "1783950874510-1780818-1337",
+      "startedAt": "2026-07-13T13:50:01.254Z",
+      "finishedAt": "2026-07-13T13:54:34.510Z",
+      "profile": "soak",
+      "strictReportPass": false,
+      "acceptanceOutcome": "environment-deviation",
+      "failedCheckIds": ["memory-psi-full-avg10"],
+      "correctnessPassed": null,
+      "plateau": {
+        "firstCycleTailMedianBytes": 499863552,
+        "secondCycleTailMedianBytes": 508874752,
+        "growthBytes": 9011200,
+        "growthRatio": 0.018027319583405033,
+        "pass": true
+      },
+      "cleanupPassed": true,
+      "sampleCount": 267,
+      "targetPeakRssBytes": 242352128,
+      "workloadPeakRssBytes": 325726208,
+      "targetBuildDigest": "0074ab9ec999dafad55935ccbb415a6b51fa90a353d4e161c2f2c740393cfe7b"
+    },
+    {
+      "id": "many-subscribers-one-session",
+      "title": "Many subscribers share one targeted seed capture",
+      "state": "active",
+      "execution": "socket-fixture",
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-6c3ee5235fb9-0074ab9ec999/many-subscribers-one-session.json",
+      "artifactSha256": "a7110db4d3e15cc56daa6214711bd93681966f5a4ebc2fe6031d3e50501a0abc",
+      "runId": "1783950974462-1872584-1337",
+      "startedAt": "2026-07-13T13:55:01.221Z",
+      "finishedAt": "2026-07-13T13:56:14.462Z",
+      "profile": "soak",
+      "strictReportPass": true,
+      "acceptanceOutcome": "pass",
+      "failedCheckIds": [],
+      "correctnessPassed": true,
+      "plateau": {
+        "firstCycleTailMedianBytes": 315547648,
+        "secondCycleTailMedianBytes": 317579264,
+        "growthBytes": 2031616,
+        "growthRatio": 0.006438381058698305,
+        "pass": true
+      },
+      "cleanupPassed": true,
+      "sampleCount": 60,
+      "targetPeakRssBytes": 199168000,
+      "workloadPeakRssBytes": 118411264,
+      "targetBuildDigest": "0074ab9ec999dafad55935ccbb415a6b51fa90a353d4e161c2f2c740393cfe7b"
+    },
+    {
+      "id": "reconnect-replay-available",
+      "title": "Reconnect while requested sequence remains in replay ring",
+      "state": "active",
+      "execution": "socket-fixture",
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-6c3ee5235fb9-0074ab9ec999/reconnect-replay-available.json",
+      "artifactSha256": "3cc40f32da90cb5120a5aac967ed9fad8d8032acc5e524fd712a3efe925ffe72",
+      "runId": "1783951049802-1895421-1337",
+      "startedAt": "2026-07-13T13:56:14.547Z",
+      "finishedAt": "2026-07-13T13:57:29.802Z",
+      "profile": "soak",
+      "strictReportPass": true,
+      "acceptanceOutcome": "pass",
+      "failedCheckIds": [],
+      "correctnessPassed": true,
+      "plateau": {
+        "firstCycleTailMedianBytes": 317620224,
+        "secondCycleTailMedianBytes": 318083072,
+        "growthBytes": 462848,
+        "growthRatio": 0.0014572371814711648,
+        "pass": true
+      },
+      "cleanupPassed": true,
+      "sampleCount": 60,
+      "targetPeakRssBytes": 194363392,
+      "workloadPeakRssBytes": 123719680,
+      "targetBuildDigest": "0074ab9ec999dafad55935ccbb415a6b51fa90a353d4e161c2f2c740393cfe7b"
+    },
+    {
+      "id": "reconnect-older-than-ring",
+      "title": "Reconnect older than replay ring forces reseed",
+      "state": "active",
+      "execution": "socket-fixture",
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-6c3ee5235fb9-0074ab9ec999/reconnect-older-than-ring.json",
+      "artifactSha256": "5702ed573b9253b5b81b259faf2d035bb12726e676f071088cf990fe63ccd9b4",
+      "runId": "1783951120000-1919869-1337",
+      "startedAt": "2026-07-13T13:57:29.886Z",
+      "finishedAt": "2026-07-13T13:58:40.000Z",
+      "profile": "soak",
+      "strictReportPass": true,
+      "acceptanceOutcome": "pass",
+      "failedCheckIds": [],
+      "correctnessPassed": true,
+      "plateau": {
+        "firstCycleTailMedianBytes": 340930560,
+        "secondCycleTailMedianBytes": 372457472,
+        "growthBytes": 31526912,
+        "growthRatio": 0.09247311827956989,
+        "pass": true
+      },
+      "cleanupPassed": true,
+      "sampleCount": 60,
+      "targetPeakRssBytes": 232607744,
+      "workloadPeakRssBytes": 173891584,
+      "targetBuildDigest": "0074ab9ec999dafad55935ccbb415a6b51fa90a353d4e161c2f2c740393cfe7b"
+    },
+    {
+      "id": "zero-web-mobile-activity",
+      "title": "Mobile viewport advances with zero web subscribers",
+      "state": "active",
+      "execution": "mobile-fixture",
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-6c3ee5235fb9-0074ab9ec999/zero-web-mobile-activity.json",
+      "artifactSha256": "eec17b63f0e3fed2783a3446cac2f053c53bddd6d746be3e931b1c68846eb963",
+      "runId": "1783951182914-1940126-1337",
+      "startedAt": "2026-07-13T13:58:40.154Z",
+      "finishedAt": "2026-07-13T13:59:42.914Z",
+      "profile": "soak",
+      "strictReportPass": true,
+      "acceptanceOutcome": "pass",
+      "failedCheckIds": [],
+      "correctnessPassed": true,
+      "plateau": {
+        "firstCycleTailMedianBytes": 411602944,
+        "secondCycleTailMedianBytes": 413556736,
+        "growthBytes": 1953792,
+        "growthRatio": 0.004746788205674253,
+        "pass": true
+      },
+      "cleanupPassed": true,
+      "sampleCount": 60,
+      "targetPeakRssBytes": 256081920,
+      "workloadPeakRssBytes": 192253952,
+      "targetBuildDigest": "0074ab9ec999dafad55935ccbb415a6b51fa90a353d4e161c2f2c740393cfe7b"
+    },
+    {
+      "id": "stalled-and-current-socket",
+      "title": "One stalled socket does not delay a current socket",
+      "state": "active",
+      "execution": "socket-fixture",
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-6c3ee5235fb9-0074ab9ec999/stalled-and-current-socket.json",
+      "artifactSha256": "3e529dd755101545bf99fdd56092cb2b916b8e51d30d52069b5524da4fdd4338",
+      "runId": "1783951249880-1959374-1337",
+      "startedAt": "2026-07-13T13:59:43.008Z",
+      "finishedAt": "2026-07-13T14:00:49.880Z",
+      "profile": "soak",
+      "strictReportPass": true,
+      "acceptanceOutcome": "pass",
+      "failedCheckIds": [],
+      "correctnessPassed": true,
+      "plateau": {
+        "firstCycleTailMedianBytes": 909344768,
+        "secondCycleTailMedianBytes": 907890688,
+        "growthBytes": -1454080,
+        "growthRatio": -0.0015990414759828474,
+        "pass": true
+      },
+      "cleanupPassed": true,
+      "sampleCount": 60,
+      "targetPeakRssBytes": 268316672,
+      "workloadPeakRssBytes": 642240512,
+      "targetBuildDigest": "0074ab9ec999dafad55935ccbb415a6b51fa90a353d4e161c2f2c740393cfe7b"
+    },
+    {
+      "id": "oversized-unicode-ansi-chunking",
+      "title": "Oversized Unicode and ANSI chunks preserve terminal state",
+      "state": "active",
+      "execution": "socket-xterm-fixture",
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-6c3ee5235fb9-0074ab9ec999/oversized-unicode-ansi-chunking.json",
+      "artifactSha256": "15948fe80ae9f9534975131f7b4aafa49cd34682440e8b4911d74bd681f15e2c",
+      "runId": "1783951325292-1979930-1337",
+      "startedAt": "2026-07-13T14:00:49.970Z",
+      "finishedAt": "2026-07-13T14:02:05.292Z",
+      "profile": "soak",
+      "strictReportPass": true,
+      "acceptanceOutcome": "pass",
+      "failedCheckIds": [],
+      "correctnessPassed": true,
+      "plateau": {
+        "firstCycleTailMedianBytes": 384561152,
+        "secondCycleTailMedianBytes": 385835008,
+        "growthBytes": 1273856,
+        "growthRatio": 0.0033124926773674735,
+        "pass": true
+      },
+      "cleanupPassed": true,
+      "sampleCount": 60,
+      "targetPeakRssBytes": 246620160,
+      "workloadPeakRssBytes": 139632640,
+      "targetBuildDigest": "0074ab9ec999dafad55935ccbb415a6b51fa90a353d4e161c2f2c740393cfe7b"
+    },
+    {
+      "id": "seed-during-burst",
+      "title": "Seed during burst converges after resync completion",
+      "state": "active",
+      "execution": "socket-xterm-fixture",
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-6c3ee5235fb9-0074ab9ec999/seed-during-burst.json",
+      "artifactSha256": "4271728fdb9fef468a51d21717b84ee165a874489d95ea3c095f3eaa34605f61",
+      "runId": "1783951391349-2002705-1337",
+      "startedAt": "2026-07-13T14:02:05.406Z",
+      "finishedAt": "2026-07-13T14:03:11.349Z",
+      "profile": "soak",
+      "strictReportPass": true,
+      "acceptanceOutcome": "pass",
+      "failedCheckIds": [],
+      "correctnessPassed": true,
+      "plateau": {
+        "firstCycleTailMedianBytes": 307322880,
+        "secondCycleTailMedianBytes": 310517760,
+        "growthBytes": 3194880,
+        "growthRatio": 0.010395841663334666,
+        "pass": true
+      },
+      "cleanupPassed": true,
+      "sampleCount": 60,
+      "targetPeakRssBytes": 230543360,
+      "workloadPeakRssBytes": 112091136,
+      "targetBuildDigest": "0074ab9ec999dafad55935ccbb415a6b51fa90a353d4e161c2f2c740393cfe7b"
+    },
+    {
+      "id": "lifecycle-cleanup-parity",
+      "title": "Stopped, crashed, and dead sessions clean up identically",
+      "state": "active",
+      "execution": "lifecycle-fixture",
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-6c3ee5235fb9-0074ab9ec999/lifecycle-cleanup-parity.json",
+      "artifactSha256": "c90fa37bda0c693c62b74e018a3e611f92a5176b427d5698c66d8bd996bcc34b",
+      "runId": "1783951609642-2022988-1337",
+      "startedAt": "2026-07-13T14:03:11.595Z",
+      "finishedAt": "2026-07-13T14:06:49.643Z",
+      "profile": "soak",
+      "strictReportPass": true,
+      "acceptanceOutcome": "pass",
+      "failedCheckIds": [],
+      "correctnessPassed": true,
+      "plateau": {
+        "firstCycleTailMedianBytes": 301285376,
+        "secondCycleTailMedianBytes": 308699136,
+        "growthBytes": 7413760,
+        "growthRatio": 0.024607102071890805,
+        "pass": true
+      },
+      "cleanupPassed": true,
+      "sampleCount": 8,
+      "targetPeakRssBytes": 236716032,
+      "workloadPeakRssBytes": 103268352,
+      "targetBuildDigest": "0074ab9ec999dafad55935ccbb415a6b51fa90a353d4e161c2f2c740393cfe7b"
+    },
+    {
+      "id": "summary-full-provider-parity",
+      "title": "Summary and full transcript parity for every provider",
+      "state": "active",
+      "execution": "provider-fixture",
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-6c3ee5235fb9-0074ab9ec999/summary-full-provider-parity.json",
+      "artifactSha256": "1f7cd26b49cca3ae92c6fbdad6e08345724d769a5eb5da549f0a17423de4fa9b",
+      "runId": "1783951614803-2091185-1337",
+      "startedAt": "2026-07-13T14:06:49.721Z",
+      "finishedAt": "2026-07-13T14:06:54.803Z",
+      "profile": "soak",
+      "strictReportPass": true,
+      "acceptanceOutcome": "pass",
+      "failedCheckIds": [],
+      "correctnessPassed": true,
+      "plateau": {
+        "firstCycleTailMedianBytes": 313204736,
+        "secondCycleTailMedianBytes": 315510784,
+        "growthBytes": 2306048,
+        "growthRatio": 0.007362749457275128,
+        "pass": true
+      },
+      "cleanupPassed": true,
+      "sampleCount": 120,
+      "targetPeakRssBytes": 253624320,
+      "workloadPeakRssBytes": 89759744,
+      "targetBuildDigest": "0074ab9ec999dafad55935ccbb415a6b51fa90a353d4e161c2f2c740393cfe7b"
+    },
+    {
+      "id": "eviction-concurrent-transcript-reads",
+      "title": "Eviction remains correct during summary, index, and chunk reads",
+      "state": "active",
+      "execution": "reader-fixture",
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-6c3ee5235fb9-0074ab9ec999/eviction-concurrent-transcript-reads.json",
+      "artifactSha256": "4fd1c76e347dac67d0abc6eaf1398b3beaaf685c91075c637f2ce260abbbf6e9",
+      "runId": "1783951679571-2092911-1337",
+      "startedAt": "2026-07-13T14:06:54.888Z",
+      "finishedAt": "2026-07-13T14:07:59.571Z",
+      "profile": "soak",
+      "strictReportPass": true,
+      "acceptanceOutcome": "pass",
+      "failedCheckIds": [],
+      "correctnessPassed": true,
+      "plateau": {
+        "firstCycleTailMedianBytes": 312434688,
+        "secondCycleTailMedianBytes": 332500992,
+        "growthBytes": 20066304,
+        "growthRatio": 0.06422559584677102,
+        "pass": true
+      },
+      "cleanupPassed": true,
+      "sampleCount": 60,
+      "targetPeakRssBytes": 246476800,
+      "workloadPeakRssBytes": 92614656,
+      "targetBuildDigest": "0074ab9ec999dafad55935ccbb415a6b51fa90a353d4e161c2f2c740393cfe7b"
+    },
+    {
+      "id": "engine-write-buffer-bounded",
+      "title": "Engine.IO writeBuffer does not grow while transport is unwritable",
+      "state": "active",
+      "execution": "socket-fixture",
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-6c3ee5235fb9-0074ab9ec999/engine-write-buffer-bounded.json",
+      "artifactSha256": "60c83a54c4ae1517c15d65c59919acf43120f7ef867d1e6e2de2f40c8aa3f19f",
+      "runId": "1783951746371-2112501-1337",
+      "startedAt": "2026-07-13T14:07:59.655Z",
+      "finishedAt": "2026-07-13T14:09:06.371Z",
+      "profile": "soak",
+      "strictReportPass": true,
+      "acceptanceOutcome": "pass",
+      "failedCheckIds": [],
+      "correctnessPassed": true,
+      "plateau": {
+        "firstCycleTailMedianBytes": 910929920,
+        "secondCycleTailMedianBytes": 909303808,
+        "growthBytes": -1626112,
+        "growthRatio": -0.0017851120753614065,
+        "pass": true
+      },
+      "cleanupPassed": true,
+      "sampleCount": 60,
+      "targetPeakRssBytes": 269582336,
+      "workloadPeakRssBytes": 641912832,
+      "targetBuildDigest": "0074ab9ec999dafad55935ccbb415a6b51fa90a353d4e161c2f2c740393cfe7b"
+    }
+  ],
+  "confirmationResults": [
+    {
+      "id": "many-subscribers-one-session",
+      "title": "Many subscribers share one targeted seed capture",
+      "state": "active",
+      "execution": "socket-fixture",
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-6c3ee5235fb9-0074ab9ec999/many-subscribers-one-session-confirmation.json",
+      "artifactSha256": "917dd263f67fa51cd7ddbe4c342c3a7769b30c3df2602b0bddbd65eb633cff7e",
+      "runId": "1783951847201-2141853-1337",
+      "startedAt": "2026-07-13T14:09:33.902Z",
+      "finishedAt": "2026-07-13T14:10:47.201Z",
+      "profile": "soak",
+      "strictReportPass": true,
+      "acceptanceOutcome": "pass",
+      "failedCheckIds": [],
+      "correctnessPassed": true,
+      "plateau": {
+        "firstCycleTailMedianBytes": 310190080,
+        "secondCycleTailMedianBytes": 310108160,
+        "growthBytes": -81920,
+        "growthRatio": -0.00026409613099168095,
+        "pass": true
+      },
+      "cleanupPassed": true,
+      "sampleCount": 60,
+      "targetPeakRssBytes": 194859008,
+      "workloadPeakRssBytes": 115400704,
+      "targetBuildDigest": "0074ab9ec999dafad55935ccbb415a6b51fa90a353d4e161c2f2c740393cfe7b"
+    },
+    {
+      "id": "reconnect-replay-available",
+      "title": "Reconnect while requested sequence remains in replay ring",
+      "state": "active",
+      "execution": "socket-fixture",
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-6c3ee5235fb9-0074ab9ec999/reconnect-replay-available-confirmation.json",
+      "artifactSha256": "7c947a1643fbc963c79a57cf1a944eb1b0ac9565d98c51b5f56ad10259bd7e12",
+      "runId": "1783951922390-2164072-1337",
+      "startedAt": "2026-07-13T14:10:47.292Z",
+      "finishedAt": "2026-07-13T14:12:02.390Z",
+      "profile": "soak",
+      "strictReportPass": true,
+      "acceptanceOutcome": "pass",
+      "failedCheckIds": [],
+      "correctnessPassed": true,
+      "plateau": {
+        "firstCycleTailMedianBytes": 317227008,
+        "secondCycleTailMedianBytes": 317509632,
+        "growthBytes": 282624,
+        "growthRatio": 0.0008909203594669972,
+        "pass": true
+      },
+      "cleanupPassed": true,
+      "sampleCount": 60,
+      "targetPeakRssBytes": 193667072,
+      "workloadPeakRssBytes": 123842560,
+      "targetBuildDigest": "0074ab9ec999dafad55935ccbb415a6b51fa90a353d4e161c2f2c740393cfe7b"
+    },
+    {
+      "id": "oversized-unicode-ansi-chunking",
+      "title": "Oversized Unicode and ANSI chunks preserve terminal state",
+      "state": "active",
+      "execution": "socket-xterm-fixture",
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-6c3ee5235fb9-0074ab9ec999/oversized-unicode-ansi-chunking-confirmation.json",
+      "artifactSha256": "0dfd24a690ccab44e7cf3038289705e2181de18e47b9f63de982ade5597a2b09",
+      "runId": "1783951990254-2188094-1337",
+      "startedAt": "2026-07-13T14:12:02.470Z",
+      "finishedAt": "2026-07-13T14:13:10.254Z",
+      "profile": "soak",
+      "strictReportPass": true,
+      "acceptanceOutcome": "pass",
+      "failedCheckIds": [],
+      "correctnessPassed": true,
+      "plateau": {
+        "firstCycleTailMedianBytes": 376659968,
+        "secondCycleTailMedianBytes": 384118784,
+        "growthBytes": 7458816,
+        "growthRatio": 0.019802518541073098,
+        "pass": true
+      },
+      "cleanupPassed": true,
+      "sampleCount": 60,
+      "targetPeakRssBytes": 244895744,
+      "workloadPeakRssBytes": 139632640,
+      "targetBuildDigest": "0074ab9ec999dafad55935ccbb415a6b51fa90a353d4e161c2f2c740393cfe7b"
+    },
+    {
+      "id": "eviction-concurrent-transcript-reads",
+      "title": "Eviction remains correct during summary, index, and chunk reads",
+      "state": "active",
+      "execution": "reader-fixture",
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-6c3ee5235fb9-0074ab9ec999/eviction-concurrent-transcript-reads-confirmation.json",
+      "artifactSha256": "c6483434fc8be131360cee639c6eaaf68a939513bb9b53ff0d6cd3e13f690c2b",
+      "runId": "1783952055176-2208974-1337",
+      "startedAt": "2026-07-13T14:13:10.363Z",
+      "finishedAt": "2026-07-13T14:14:15.176Z",
+      "profile": "soak",
+      "strictReportPass": true,
+      "acceptanceOutcome": "pass",
+      "failedCheckIds": [],
+      "correctnessPassed": true,
+      "plateau": {
+        "firstCycleTailMedianBytes": 323764224,
+        "secondCycleTailMedianBytes": 337248256,
+        "growthBytes": 13484032,
+        "growthRatio": 0.041647689894236124,
+        "pass": true
+      },
+      "cleanupPassed": true,
+      "sampleCount": 60,
+      "targetPeakRssBytes": 254078976,
+      "workloadPeakRssBytes": 92680192,
+      "targetBuildDigest": "0074ab9ec999dafad55935ccbb415a6b51fa90a353d4e161c2f2c740393cfe7b"
+    }
+  ]
+}

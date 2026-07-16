@@ -39,6 +39,7 @@ export class TerminalIOService implements OnModuleDestroy {
       clearInterval(interval);
     }
     this.healthCheckIntervals.clear();
+    this.gap.clear();
   }
 
   // ── Lifecycle ───────────────────────────────────────────────────────────
@@ -237,6 +238,8 @@ export class TerminalIOService implements OnModuleDestroy {
 class InMemorySendGap implements SendGap {
   private lastByAgent = new Map<string, number>();
   private tailByAgent = new Map<string, Promise<void>>();
+  private expiryByAgent = new Map<string, NodeJS.Timeout>();
+  private destroyed = false;
 
   async ensureGap(agentId: string, minMs = 500): Promise<void> {
     const prev = this.tailByAgent.get(agentId) ?? Promise.resolve();
@@ -251,10 +254,31 @@ class InMemorySendGap implements SendGap {
       this.lastByAgent.set(agentId, Date.now());
     });
 
-    this.tailByAgent.set(
-      agentId,
-      next.catch(() => {}),
-    );
+    const tail = next.catch(() => {});
+    this.tailByAgent.set(agentId, tail);
+    void tail.finally(() => {
+      if (this.tailByAgent.get(agentId) === tail) this.tailByAgent.delete(agentId);
+      if (this.destroyed) return;
+      const existingExpiry = this.expiryByAgent.get(agentId);
+      if (existingExpiry) clearTimeout(existingExpiry);
+      const expiry = setTimeout(
+        () => {
+          this.lastByAgent.delete(agentId);
+          this.expiryByAgent.delete(agentId);
+        },
+        5 * 60 * 1000,
+      );
+      expiry.unref();
+      this.expiryByAgent.set(agentId, expiry);
+    });
     return next;
+  }
+
+  clear(): void {
+    this.destroyed = true;
+    for (const expiry of this.expiryByAgent.values()) clearTimeout(expiry);
+    this.expiryByAgent.clear();
+    this.lastByAgent.clear();
+    this.tailByAgent.clear();
   }
 }

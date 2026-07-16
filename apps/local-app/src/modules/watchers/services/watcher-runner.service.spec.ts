@@ -109,6 +109,11 @@ describe('WatcherRunnerService', () => {
     service = module.get<WatcherRunnerService>(WatcherRunnerService);
   });
 
+  afterEach(async () => {
+    await service.onModuleDestroy();
+    jest.useRealTimers();
+  });
+
   describe('getMatchingSessions', () => {
     describe('scope: all', () => {
       it('should return all active sessions for the project', async () => {

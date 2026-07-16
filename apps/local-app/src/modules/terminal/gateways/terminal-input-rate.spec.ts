@@ -35,9 +35,28 @@ function createMockSocket(id: string): Socket {
 function createGateway() {
   const streamService: Partial<TerminalStreamService> = {
     initializeBuffer: jest.fn(),
-    getFramesSince: jest.fn().mockReturnValue([]),
+    setClearExpiryHandler: jest.fn(),
+    scheduleClear: jest.fn(),
+    cancelScheduledClear: jest.fn().mockReturnValue(null),
+    clearBuffer: jest.fn(),
+    getFramesSince: jest.fn().mockReturnValue({
+      status: 'covered',
+      frames: [],
+      currentSequence: 0,
+    }),
     getCurrentSequence: jest.fn().mockReturnValue(0),
+    getSequenceEpoch: jest.fn().mockReturnValue('epoch-1'),
+    sampleCursor: jest.fn().mockReturnValue({ sequenceEpoch: 'epoch-1', currentSequence: 0 }),
+    getReconnectReplay: jest.fn().mockReturnValue({
+      status: 'covered',
+      frames: [],
+      currentSequence: 0,
+      sequenceEpoch: 'epoch-1',
+    }),
+    nextRecoveryCounter: jest.fn().mockReturnValue(1),
     addFrame: jest.fn(),
+    markDiscontinuous: jest.fn().mockReturnValue(1),
+    resumeRetention: jest.fn(),
   };
 
   const settingsService: Partial<SettingsService> = {
@@ -85,6 +104,23 @@ function createGateway() {
     return session;
   };
   const mockRealtimeBroadcast = { setServer: jest.fn(), broadcastEvent: jest.fn() };
+  const mockMetricsService = {
+    registerCacheStatsProvider: jest.fn(),
+    registerStatsProvider: jest.fn(),
+  } as never;
+  const sendScheduler = {
+    registerSocket: jest.fn(),
+    removeSocket: jest.fn(),
+    removeLane: jest.fn(),
+    removeSession: jest.fn(),
+    enqueueLive: jest.fn().mockReturnValue(true),
+    enqueueRecovery: jest.fn().mockReturnValue(true),
+    beginRecovery: jest.fn(),
+    markSynchronized: jest.fn(),
+    isDesynchronized: jest.fn().mockReturnValue(false),
+    getStats: jest.fn().mockReturnValue({}),
+    dispose: jest.fn(),
+  };
 
   const gateway = new TerminalGateway(
     streamService as TerminalStreamService,
@@ -95,6 +131,8 @@ function createGateway() {
     registry,
     sessionsService as SessionsService,
     mockRealtimeBroadcast as never,
+    sendScheduler as never,
+    mockMetricsService,
   );
 
   (gateway as unknown as { ensurePtyStreaming: jest.Mock }).ensurePtyStreaming = jest
@@ -225,5 +263,37 @@ describe('TerminalGateway input-rate telemetry', () => {
       const serialized = JSON.stringify(call);
       expect(serialized).not.toContain(secretInput);
     }
+  });
+
+  it('prunes all client tracker entries on disconnect', async () => {
+    const { gateway } = createGateway();
+    const client = await setupAuthorizedClient(gateway, 'client-prune', 'session-a');
+    await gateway.handleInput(client, { sessionId: 'session-a', data: 'x' });
+    const tracker = (gateway as unknown as { inputRateTracker: Map<string, unknown> })
+      .inputRateTracker;
+    tracker.set('client-prune:session-b', {});
+
+    gateway.handleDisconnect(client);
+
+    expect([...tracker.keys()].filter((key) => key.startsWith('client-prune:'))).toEqual([]);
+  });
+
+  it('prunes all session tracker entries on lifecycle cleanup and clears maps on destroy', () => {
+    const { gateway } = createGateway();
+    const internals = gateway as unknown as {
+      inputRateTracker: Map<string, unknown>;
+      clientSessions: Map<string, unknown>;
+    };
+    internals.inputRateTracker.set('client-a:session-ended', {});
+    internals.inputRateTracker.set('client-b:session-ended', {});
+    internals.inputRateTracker.set('client-b:session-live', {});
+    internals.clientSessions.set('client-b', {});
+
+    gateway.handleSessionStopped({ sessionId: 'session-ended' });
+    expect([...internals.inputRateTracker.keys()]).toEqual(['client-b:session-live']);
+
+    gateway.onModuleDestroy();
+    expect(internals.inputRateTracker.size).toBe(0);
+    expect(internals.clientSessions.size).toBe(0);
   });
 });

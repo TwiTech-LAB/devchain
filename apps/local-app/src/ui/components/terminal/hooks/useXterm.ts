@@ -8,9 +8,9 @@ import {
   decodeOsc52ClipboardPayload,
   isTerminalContainerVisible,
   isTerminalInternalSequence,
-  supportsWheelMouseTracking,
 } from '../xterm-utils';
 import { createScrollHistoryDetector } from '../scroll-history-detector';
+import { createScrollIntentBinding, type ScrollIntentController } from '../scroll-intent-binding';
 import {
   DEFAULT_TERMINAL_SCROLLBACK,
   MIN_TERMINAL_SCROLLBACK,
@@ -19,6 +19,7 @@ import {
 import { resolveTerminalSocket } from '../socket';
 import { resolveTerminalTheme } from '../terminal-themes';
 import type { ThemeValue } from '@/ui/components/ThemeSelect';
+import type { TerminalHistorySync } from '../terminal-history-sync';
 
 /**
  * Buffered frame for sequence-based history deduplication
@@ -60,7 +61,8 @@ const RESHOW_RESTORE_SETTLE_MS = 300;
  * @param fitAddonRef - React ref to store the fit addon instance
  * @param onReady - Optional callback invoked after terminal is ready (fitted)
  * @param inputMode - Terminal input mode: 'form' | 'tty' | null
- * @param hasHistoryRef - Ref tracking if more history is available for loading
+ * @param historySync - History-refresh lifecycle owner; gates and correlates requests
+ * @param isSubscribedRef - Ref tracking confirmed subscription (part of the request gate)
  * @param isLoadingHistoryRef - Ref tracking if history is currently being loaded
  * @param isHistoryInFlightRef - Ref tracking if history request is in-flight (for buffering)
  * @param pendingHistoryFramesRef - Ref to buffer frames during in-flight for sequence-based dedup
@@ -73,13 +75,16 @@ export function useXterm(
   fitAddonRef: React.MutableRefObject<FitAddon | null>,
   onReady?: () => void,
   inputMode: 'form' | 'tty' | null = 'form',
-  hasHistoryRef?: React.MutableRefObject<boolean>,
+  historySync?: TerminalHistorySync,
+  isSubscribedRef?: React.MutableRefObject<boolean>,
   isLoadingHistoryRef?: React.MutableRefObject<boolean>,
   isHistoryInFlightRef?: React.MutableRefObject<boolean>,
   pendingHistoryFramesRef?: React.MutableRefObject<BufferedFrame[]>,
   scrollbackLines: number = DEFAULT_TERMINAL_SCROLLBACK,
   socket?: Socket | null,
   appTheme: ThemeValue = 'dark',
+  onTerminalChange?: (terminal: Terminal | null) => void,
+  onScrollIntentController?: (controller: ScrollIntentController | null) => void,
 ) {
   useEffect(() => {
     // C1: Clamp scrollbackLines to valid range before using
@@ -194,64 +199,23 @@ export function useXterm(
     // decision and the re-show restore can reset it. See `scroll-history-detector.ts`.
     const detector = createScrollHistoryDetector();
 
-    // Attach a custom wheel handler that respects TUI mouse tracking and dampens scrolling
-    terminal.attachCustomWheelEventHandler((event) => {
-      // When the TUI has mouse-tracking enabled, let xterm.js forward the wheel event
-      // to the running application (e.g., vim, htop) instead of scrolling the buffer.
-      // A wheel forwarded to a TUI is NOT a scrollback gesture and must not stamp intent.
-      if (inputMode === 'tty' && supportsWheelMouseTracking(terminal.modes.mouseTrackingMode)) {
-        return true;
-      }
-      if (!event.deltaY) return false;
-      // Host-scroll path: a genuine wheel gesture on our scrollback. Stamp intent for the
-      // upward direction (deltaY < 0) — that is the history-load direction — BEFORE
-      // scrollLines, so the synchronous onScroll sees fresh intent.
-      if (event.deltaY < 0) {
-        detector.stampScrollIntent(Date.now());
-      }
-      event.preventDefault();
-      // ~1–2 lines per notch depending on device delta
-      const magnitude = Math.max(1, Math.round((Math.abs(event.deltaY) / 120) * 1.5));
-      const lines = Math.sign(event.deltaY) * magnitude; // preserve direction, avoid rounding to 0
-      terminal.scrollLines(lines);
-      return false;
-    });
-
-    // Keyboard scroll intent: Shift+PageUp / Shift+PageDown are the only keys xterm uses to
-    // scroll its own viewport (unmodified PageUp/PageDown and Home/End are sent to the shell as
-    // key sequences). Capture phase is required — xterm scrolls synchronously in its own keydown
-    // handler, so intent must exist before that scroll flips `wasAtBottom`. Passive + capture so
-    // we observe without blocking xterm's handling.
+    // Scroll-intent DOM seam. xterm 6 (SmoothScrollableElement) is the SOLE owner of viewport
+    // movement for the wheel and the real vertical scrollbar; DevChain no longer scrolls the
+    // primary buffer itself (a manual `scrollLines` here would double-scroll). This seam only
+    // OBSERVES trusted input in the capture phase on the stable container and stamps upward
+    // host-history intent into the detector — it never prevents, stops, or moves. It also exposes
+    // the scrollbar-drag lifecycle (active/end/capture-loss) for the client-integration task to
+    // defer a `full_history` response until the drag has fully ended. Bound on the stable
+    // container (not the recreated `.xterm-viewport`) and disposed on terminal recreation, session
+    // change, and unmount.
     const container = terminalRef.current;
-    const onScrollKeyDown = (event: KeyboardEvent) => {
-      if (event.shiftKey && (event.code === 'PageUp' || event.code === 'PageDown')) {
-        detector.stampScrollIntent(Date.now());
-      }
-    };
-    container?.addEventListener('keydown', onScrollKeyDown, { capture: true, passive: true });
-
-    // Scrollbar / touch drag intent. pointerdown on the viewport stamps intent; pointermove
-    // refreshes it while the drag stays active so a slow scrollbar drag longer than the decay
-    // window does not expire mid-drag. pointerup/cancel (listened on window to catch a release
-    // anywhere) clear the active flag.
-    const viewport = container?.querySelector<HTMLElement>('.xterm-viewport');
-    let pointerDragActive = false;
-    const onViewportPointerDown = () => {
-      pointerDragActive = true;
-      detector.stampScrollIntent(Date.now());
-    };
-    const onViewportPointerMove = () => {
-      if (pointerDragActive) {
-        detector.stampScrollIntent(Date.now());
-      }
-    };
-    const onPointerUp = () => {
-      pointerDragActive = false;
-    };
-    viewport?.addEventListener('pointerdown', onViewportPointerDown);
-    viewport?.addEventListener('pointermove', onViewportPointerMove);
-    window.addEventListener('pointerup', onPointerUp);
-    window.addEventListener('pointercancel', onPointerUp);
+    const scrollIntent = createScrollIntentBinding({
+      container,
+      stampIntent: (nowMs) => detector.stampScrollIntent(nowMs),
+      getMouseTrackingMode: () => terminal.modes.mouseTrackingMode,
+      isTtyMode: () => inputMode === 'tty',
+    });
+    onScrollIntentController?.(scrollIntent);
 
     // Add direct TTY input handler for TTY mode
     if (inputMode === 'tty') {
@@ -277,13 +241,13 @@ export function useXterm(
     // Add scroll handler for history loading.
     let scrollDisposable: { dispose: () => void } | undefined;
 
-    if (hasHistoryRef) {
+    if (historySync) {
       // Log initial buffer state to understand scroll capacity
       const buffer = terminal.buffer.active;
       termLog('xterm_scroll_listener_registered', {
         sessionId,
-        hasHistoryRefDefined: !!hasHistoryRef,
-        initialHasHistory: hasHistoryRef.current,
+        historySyncDefined: !!historySync,
+        initialRefreshable: historySync.isRefreshable(),
         initialBufferState: {
           viewportY: buffer.viewportY,
           baseY: buffer.baseY,
@@ -296,13 +260,20 @@ export function useXterm(
       // Helper function to handle scroll state changes
       const handleScrollChange = (viewportY: number, baseY: number, source: string) => {
         const visible = isTerminalContainerVisible(terminalRef.current);
-        const inFlight = isHistoryInFlightRef?.current ?? false;
+        const inFlight = historySync.hasActiveAttempt();
+        // Owner-derived eligibility: connected + subscribed + settled lifecycle + refreshable
+        // capability + dirty state + no active attempt. The detector adds the gesture,
+        // visibility, cooldown, cycle, and leaving-bottom conditions on top.
+        const eligible = historySync.isRequestEligible({
+          connected: activeSocket.connected,
+          subscribed: isSubscribedRef?.current ?? false,
+        });
 
         const decision = detector.shouldRequestHistory({
           viewportY,
           baseY,
           visible,
-          hasHistory: hasHistoryRef.current,
+          hasHistory: eligible,
           inFlight,
           now: Date.now(),
         });
@@ -317,7 +288,7 @@ export function useXterm(
             isAtBottom: decision.isAtBottom,
             isLeavingBottom: decision.isLeavingBottom,
             suppressed: decision.suppressed,
-            hasHistory: hasHistoryRef.current,
+            eligible,
             cooldownActive: decision.cooldownActive,
             inFlight,
             source, // 'event' or 'poll'
@@ -334,16 +305,22 @@ export function useXterm(
             pendingHistoryFramesRef.current = [];
           }
 
+          // Open the correlated attempt BEFORE emit: a late response is matched to this token
+          // and recovery/disconnect invalidates it so a stale full_history is dropped.
+          const correlationId = historySync.beginAttempt();
+
           termLog('history_full_sync_request', {
             sessionId,
             viewportY,
             baseY,
+            correlationId,
             trigger: 'leaving_bottom',
           });
 
           activeSocket.emit('terminal:request_full_history', {
             sessionId,
             maxLines: clampedScrollback,
+            correlationId,
           });
         }
 
@@ -450,12 +427,13 @@ export function useXterm(
     } else {
       termLog('xterm_scroll_listener_skipped', {
         sessionId,
-        reason: 'hasHistoryRef_undefined',
+        reason: 'historySync_undefined',
       });
     }
 
     xtermRef.current = terminal;
     fitAddonRef.current = fitAddon;
+    onTerminalChange?.(terminal);
 
     // Wait for terminal to be fully rendered before fitting
     const timeoutId = setTimeout(() => {
@@ -468,12 +446,10 @@ export function useXterm(
       if (selectionCopyTimer) clearTimeout(selectionCopyTimer);
       selectionDisposable.dispose();
       scrollDisposable?.dispose();
-      container?.removeEventListener('keydown', onScrollKeyDown, { capture: true });
-      viewport?.removeEventListener('pointerdown', onViewportPointerDown);
-      viewport?.removeEventListener('pointermove', onViewportPointerMove);
-      window.removeEventListener('pointerup', onPointerUp);
-      window.removeEventListener('pointercancel', onPointerUp);
+      scrollIntent.dispose();
+      onScrollIntentController?.(null);
       termLog('terminal_dispose', { sessionId });
+      onTerminalChange?.(null);
       terminal.dispose();
       xtermRef.current = null;
       fitAddonRef.current = null;
@@ -483,12 +459,15 @@ export function useXterm(
     terminalRef,
     onReady,
     inputMode,
-    hasHistoryRef,
+    historySync,
+    isSubscribedRef,
     isLoadingHistoryRef,
     isHistoryInFlightRef,
     pendingHistoryFramesRef,
     scrollbackLines,
     socket,
+    onTerminalChange,
+    onScrollIntentController,
   ]);
 
   // Live theme update — runs independently of the initialization effect so

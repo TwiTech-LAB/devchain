@@ -372,18 +372,26 @@ export const broadcastRegistry: Record<string, BroadcastRegistryTopicEntry<P>[]>
     {
       topic: (p) => `session/${p.sessionId}/transcript`,
       type: 'updated',
-      payloadProjection: (p) => ({
-        sessionId: p.sessionId,
-        newMessageCount: p.newMessageCount,
-        metrics: p.metrics,
-        cursor: p.cursor,
-        prevCursor: p.prevCursor,
-        replaceFromChunkIndex: p.replaceFromChunkIndex,
-        newChunkIds: p.newChunkIds,
-        totalChunkCount: p.totalChunkCount,
-        deltaChunks: p.deltaChunks,
-        deltaMessages: p.deltaMessages,
-      }),
+      payloadProjection: (p) =>
+        p.kind === 'full-refetch-required'
+          ? {
+              kind: p.kind,
+              sessionId: p.sessionId,
+              sourceChangeKind: p.sourceChangeKind,
+            }
+          : {
+              kind: p.kind,
+              sessionId: p.sessionId,
+              newMessageCount: p.newMessageCount,
+              metrics: p.metrics,
+              cursor: p.cursor,
+              prevCursor: p.prevCursor,
+              replaceFromChunkIndex: p.replaceFromChunkIndex,
+              newChunkIds: p.newChunkIds,
+              totalChunkCount: p.totalChunkCount,
+              deltaChunks: p.deltaChunks,
+              deltaMessages: p.deltaMessages,
+            },
       clientReaction: { kind: 'custom-handler', owner: 'useSessionTranscript' },
       // `deltaChunks`/`deltaMessages` carry transcript body text — real content,
       // withheld on a plaintext push (mobile recovers via the per-topic catch-up RPC).

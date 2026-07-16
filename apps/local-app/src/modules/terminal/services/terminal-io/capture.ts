@@ -2,6 +2,7 @@ import type { ProcessExecutor } from '../process-executor/process-executor.port'
 import type { SessionTarget, CaptureResult, CursorPosition } from './types';
 
 const MAX_OUTPUT_BYTES = 5 * 1024 * 1024;
+const MAX_STRICT_OUTPUT_BYTES = 256 * 1024;
 
 export async function captureHistory(
   executor: ProcessExecutor,
@@ -46,6 +47,7 @@ export async function captureStrict(
   const result = await executor.run({
     argv: ['tmux', 'capture-pane', '-p', '-S', start, '-t', `=${target.name}:`],
     mode: 'pipe',
+    outputLimits: { maxBytes: MAX_STRICT_OUTPUT_BYTES },
   });
 
   if (result.success) {

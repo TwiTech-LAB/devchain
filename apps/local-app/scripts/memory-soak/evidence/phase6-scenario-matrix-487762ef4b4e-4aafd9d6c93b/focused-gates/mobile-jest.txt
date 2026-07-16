@@ -1,0 +1,39 @@
+
+> mobile-app@1.3.1 test /home/ngsupb/repos/twitech/devchain-rem15-checkpoint/apps/mobile-app
+> NODE_OPTIONS="--max-old-space-size=2048" jest -- --runInBand --runTestsByPath __tests__/tail-delta.spec.ts __tests__/useTranscript.spec.tsx __tests__/useTranscript-swr.spec.tsx __tests__/phase2-push-pipeline.spec.tsx
+
+PASS ios __tests__/tail-delta.spec.ts
+PASS ios __tests__/useTranscript.spec.tsx
+PASS ios __tests__/useTranscript-swr.spec.tsx
+PASS ios __tests__/phase2-push-pipeline.spec.tsx
+  ● Console
+
+    console.warn
+      expo-notifications: Android Push notifications (remote notifications) functionality provided by expo-notifications was removed from Expo Go with the release of SDK 53. Use a development build instead of Expo Go. Read more at https://docs.expo.dev/develop/development-builds/introduction/.
+
+    > 1 | import * as Notifications from 'expo-notifications';
+        | ^
+      2 | import * as SecureStore from 'expo-secure-store';
+      3 | import { Platform } from 'react-native';
+      4 | import { registerDevice, unregisterDevice } from '../notifications-client';
+
+      at warn (../../node_modules/expo-notifications/src/warnOfExpoGoPushUsage.ts:14:15)
+      at addPushTokenListener (../../node_modules/expo-notifications/src/TokenEmitter.ts:44:24)
+      at Object.<anonymous> (../../node_modules/expo-notifications/src/DevicePushTokenAutoRegistration.fx.ts:104:23)
+      at Object.require (../../node_modules/expo-notifications/src/getExpoPushTokenAsync.ts:5:1)
+      at Object.require (../../node_modules/expo-notifications/src/index.ts:16:1)
+      at Object.require (src/services/push/token-manager.ts:1:1)
+      at Object.require (src/services/push/index.ts:1:1)
+      at Object.require (src/services/auth/auth-context.tsx:30:1)
+      at Object.require (src/services/auth/index.ts:1:1)
+      at Object.require (src/services/stream/useBridgeStream.ts:4:1)
+      at Object.require (src/services/stream/index.ts:20:1)
+      at Object.require (src/screens/chat/useBridgeStreamSync.ts:2:1)
+      at Object.require (__tests__/phase2-push-pipeline.spec.tsx:30:1)
+
+
+Test Suites: 4 passed, 4 total
+Tests:       44 passed, 44 total
+Snapshots:   0 total
+Time:        3.771 s
+Ran all test suites matching /--runInBand|--runTestsByPath|__tests__\/tail-delta.spec.ts|__tests__\/useTranscript.spec.tsx|__tests__\/useTranscript-swr.spec.tsx|__tests__\/phase2-push-pipeline.spec.tsx/i.

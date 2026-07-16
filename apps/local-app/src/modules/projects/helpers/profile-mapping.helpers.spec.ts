@@ -1,5 +1,6 @@
 import {
   buildProviderSummary,
+  collectReferencedProviderNames,
   computeFamilyAlternatives,
   computeFamilyAlternativesFromStorage,
   derivePresetProviderCoverage,
@@ -284,36 +285,71 @@ describe('profile-mapping.helpers — setup-preview derivation', () => {
   });
 });
 
-describe('profile-mapping.helpers — transient selectedProviderNames allowlist', () => {
+describe('profile-mapping.helpers — transient selectedProviderNames choice metadata', () => {
+  describe('collectReferencedProviderNames', () => {
+    it('unions profile default providers AND embedded providerConfig provider names', () => {
+      const referenced = collectReferencedProviderNames([
+        {
+          provider: { name: 'Claude' },
+          providerConfigs: [
+            { name: 'c1', providerName: 'Codex' },
+            { name: 'c2', providerName: 'gpt' },
+          ],
+        },
+        { provider: { name: 'claude' }, providerConfigs: [] },
+      ]);
+      // Lowercased + de-duplicated; the config-only `codex`/`gpt` are included, not just defaults.
+      expect([...referenced].sort()).toEqual(['claude', 'codex', 'gpt']);
+    });
+  });
+
   describe('resolveProvidersFromStorage', () => {
-    it('returns all installed providers when no allowlist is given (byte-identical to today)', async () => {
+    it('installed and selected are identical when no allowlist is given; nothing missing', async () => {
       const storage = fakeProviderStorage(['Claude', 'Codex']);
-      const { available, missing } = await resolveProvidersFromStorage(
+      const { installed, selected, missing } = await resolveProvidersFromStorage(
         storage,
         new Set(['claude', 'codex']),
       );
-      expect([...available.keys()].sort()).toEqual(['claude', 'codex']);
+      expect([...installed.keys()].sort()).toEqual(['claude', 'codex']);
+      expect([...selected.keys()].sort()).toEqual(['claude', 'codex']);
       expect(missing).toEqual([]);
     });
 
-    it('excludes providers outside the allowlist and reports them as missing (as if uninstalled)', async () => {
+    it('narrows only the selected view for a deselected installed provider — it stays installed and is NOT missing', async () => {
       const storage = fakeProviderStorage(['Claude', 'Codex']);
-      const { available, missing } = await resolveProvidersFromStorage(
+      const { installed, selected, missing } = await resolveProvidersFromStorage(
         storage,
         new Set(['claude', 'codex']),
         ['claude'],
       );
-      // codex is installed but excluded → not available, and surfaced as missing.
-      expect([...available.keys()]).toEqual(['claude']);
-      expect(missing).toEqual(['codex']);
+      // codex is installed but deselected: present in the full installed map, absent from the
+      // selection-filtered view, and NOT missing (deselection is wizard-scope, not availability).
+      expect([...installed.keys()].sort()).toEqual(['claude', 'codex']);
+      expect([...selected.keys()]).toEqual(['claude']);
+      expect(missing).toEqual([]);
     });
 
-    it('matches the allowlist case-insensitively', async () => {
+    it('reports a genuinely uninstalled referenced provider (including a config-only one) as missing', async () => {
       const storage = fakeProviderStorage(['Claude']);
-      const { available } = await resolveProvidersFromStorage(storage, new Set(['claude']), [
-        'CLAUDE',
-      ]);
-      expect(available.has('claude')).toBe(true);
+      // `gpt` is referenced (e.g. only via a providerConfig) but not installed → genuinely missing.
+      const { installed, selected, missing } = await resolveProvidersFromStorage(
+        storage,
+        new Set(['claude', 'gpt']),
+      );
+      expect(installed.has('gpt')).toBe(false);
+      expect(selected.has('gpt')).toBe(false);
+      expect(missing).toEqual(['gpt']);
+    });
+
+    it('matches the allowlist case-insensitively (selection view)', async () => {
+      const storage = fakeProviderStorage(['Claude']);
+      const { installed, selected } = await resolveProvidersFromStorage(
+        storage,
+        new Set(['claude']),
+        ['CLAUDE'],
+      );
+      expect(installed.has('claude')).toBe(true);
+      expect(selected.has('claude')).toBe(true);
     });
   });
 
@@ -341,10 +377,33 @@ describe('profile-mapping.helpers — transient selectedProviderNames allowlist'
         undefined,
         ['claude'],
       );
-      // codex is installed but excluded → unavailable for the family and reported missing.
+      // codex is installed but excluded → ineligible as a family choice, but NOT missing:
+      // missingProviders reports installation state (installed view), never wizard deselection.
       expect(withAllowlist.alternatives[0].availableProviders).toEqual(['claude']);
-      expect(withAllowlist.missingProviders).toEqual(['codex']);
+      expect(withAllowlist.missingProviders).toEqual([]);
       expect(withAllowlist.canImport).toBe(true);
+    });
+
+    it('still reports a genuinely uninstalled provider as missing under an allowlist', async () => {
+      const storage = fakeProviderStorage(['claude', 'codex']);
+      const profiles = [
+        { id: 'p-claude', name: 'Claude Coder', provider: { name: 'claude' }, familySlug: 'coder' },
+        { id: 'p-codex', name: 'Codex Coder', provider: { name: 'codex' }, familySlug: 'coder' },
+        { id: 'p-gemini', name: 'Gemini Coder', provider: { name: 'gemini' }, familySlug: 'coder' },
+      ];
+      const agents = [{ id: 'a1', name: 'Coder', profileId: 'p-claude' }];
+
+      const result = await computeFamilyAlternativesFromStorage(
+        storage,
+        profiles,
+        agents,
+        undefined,
+        ['claude'],
+      );
+      // gemini is not installed → missing; codex is installed-but-deselected → only ineligible.
+      expect(result.alternatives[0].availableProviders).toEqual(['claude']);
+      expect(result.missingProviders).toEqual(['gemini']);
+      expect(result.canImport).toBe(true);
     });
   });
 

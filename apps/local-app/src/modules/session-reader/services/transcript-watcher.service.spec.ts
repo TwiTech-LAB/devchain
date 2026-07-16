@@ -55,10 +55,11 @@ function makeSession(overrides: Partial<UnifiedSession> = {}): UnifiedSession {
   };
 }
 
-function makeStat(size: number, ino = 12345): fs.Stats {
+function makeStat(size: number, ino = 12345, dev = 1): fs.Stats {
   return {
     size,
     ino,
+    dev,
     mtime: new Date(1706000000000),
     isFile: () => true,
     isDirectory: () => false,
@@ -133,10 +134,20 @@ function createMockAdapter(): SessionReaderAdapter {
 
 function createMocks() {
   const mockAdapter = createMockAdapter();
+  const getOrParse = jest.fn().mockResolvedValue(makeSession());
 
   const mockCacheService = {
-    getOrParse: jest.fn().mockResolvedValue(makeSession()),
-    getOrParseWithMeta: jest.fn(),
+    getOrParse,
+    getOrParseWithMeta: jest.fn(async (...args: unknown[]) => ({
+      session: await getOrParse(...args),
+      sourceVersion: 1000,
+      cacheHit: false,
+      sourceChangeKind: 'same-file-append',
+      lastOffset: 1000,
+      lastSize: 1000,
+      lastMtime: 1706000000000,
+      boundaryFold: false,
+    })),
     getEntry: jest.fn(),
     invalidate: jest.fn(),
     clear: jest.fn(),
@@ -202,6 +213,16 @@ describe('TranscriptWatcherService', () => {
 
       expect(service.activeWatcherCount).toBe(1);
       expect(mockedFsWatch).toHaveBeenCalledWith(FILE_PATH, expect.any(Function));
+    });
+
+    it('module-unit: exposes the complete last parsed metrics snapshot', async () => {
+      const session = makeSession({ metrics: makeMetrics({ totalContextTokens: 321 }) });
+      mockCacheService.getOrParse.mockResolvedValue(session);
+
+      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+
+      expect(service.getLastKnownSummaryMetrics(SESSION_ID)).toBe(session.metrics);
+      expect(service.getLastKnownSummaryMetrics('missing')).toBeNull();
     });
 
     it('should skip if watcher already exists for session', async () => {
@@ -368,6 +389,41 @@ describe('TranscriptWatcherService', () => {
   // -------------------------------------------------------------------------
 
   describe('file change detection', () => {
+    it('publishes only a cursor-free refetch action when the file generation is replaced', async () => {
+      const oldSession = makeSession({ metrics: makeMetrics({ messageCount: 2 }) });
+      const replacement = makeSession({ metrics: makeMetrics({ messageCount: 3 }) });
+      mockCacheService.getOrParse.mockResolvedValue(oldSession);
+
+      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+
+      (mockCacheService.getOrParseWithMeta as jest.Mock).mockResolvedValue({
+        session: replacement,
+        sourceVersion: 2000,
+        cacheHit: false,
+        sourceChangeKind: 'file-replacement',
+        lastOffset: 1500,
+        lastSize: 1500,
+        lastMtime: 1706000001000,
+      });
+      mockedFsPromisesStat.mockResolvedValue(makeStat(1500, 99999));
+
+      await jest.advanceTimersByTimeAsync(3000);
+      await jest.advanceTimersByTimeAsync(200);
+
+      const call = mockEvents.publish.mock.calls.find(
+        ([eventName]) => eventName === 'session.transcript.updated',
+      );
+      expect(call?.[1]).toEqual({
+        kind: 'full-refetch-required',
+        sessionId: SESSION_ID,
+        transcriptPath: FILE_PATH,
+        sourceChangeKind: 'file-replacement',
+      });
+      expect(call?.[1]).not.toHaveProperty('cursor');
+      expect(call?.[1]).not.toHaveProperty('deltaChunks');
+      expect(call?.[1]).not.toHaveProperty('deltaMessages');
+    });
+
     it('should publish transcript.updated when new messages are found', async () => {
       const session = makeSession({
         metrics: makeMetrics({ messageCount: 5, totalTokens: 500, costUsd: 0.05 }),
@@ -388,6 +444,7 @@ describe('TranscriptWatcherService', () => {
       await jest.advanceTimersByTimeAsync(200);
 
       expect(mockEvents.publish).toHaveBeenCalledWith('session.transcript.updated', {
+        kind: 'delta',
         sessionId: SESSION_ID,
         transcriptPath: FILE_PATH,
         newMessageCount: 5,
@@ -614,7 +671,7 @@ describe('TranscriptWatcherService', () => {
 
       await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
 
-      // Stat returns different inode but same size (no debounce triggered)
+      // Stat returns different inode but same size.
       mockedFsPromisesStat.mockResolvedValue(makeStat(1000, 99999));
 
       await jest.advanceTimersByTimeAsync(3000);
@@ -622,6 +679,40 @@ describe('TranscriptWatcherService', () => {
       // Old watcher should have been closed and a new one created
       expect(mockWatcher.close).toHaveBeenCalled();
       expect(service.activeWatcherCount).toBe(1);
+    });
+
+    it('treats a same-size inode rotation as a cursor-free canonical refetch', async () => {
+      const session = makeSession({ metrics: makeMetrics({ messageCount: 5 }) });
+      (mockCacheService.getOrParseWithMeta as jest.Mock)
+        .mockResolvedValueOnce({
+          session,
+          sourceVersion: 111,
+          sourceChangeKind: 'unknown-full-parse',
+        })
+        .mockResolvedValueOnce({
+          session,
+          sourceVersion: 222,
+          sourceChangeKind: 'file-replacement',
+        });
+      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+      mockCacheService.getOrParseWithMeta.mockClear();
+
+      mockedFsPromisesStat.mockResolvedValue(makeStat(1000, 99999));
+      await jest.advanceTimersByTimeAsync(3000);
+      await jest.advanceTimersByTimeAsync(200);
+
+      expect(mockCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(1);
+      expect(mockEvents.publish).toHaveBeenCalledWith('session.transcript.updated', {
+        kind: 'full-refetch-required',
+        sessionId: SESSION_ID,
+        transcriptPath: FILE_PATH,
+        sourceChangeKind: 'file-replacement',
+      });
+      const update = mockEvents.publish.mock.calls.find(
+        ([eventName]) => eventName === 'session.transcript.updated',
+      )?.[1];
+      expect(update).not.toHaveProperty('cursor');
+      expect(update).not.toHaveProperty('prevCursor');
     });
 
     it('should not schedule debounce when size is unchanged in stat-poll', async () => {

@@ -12,6 +12,7 @@ jest.mock('../readers/opencode-sqlite.reader', () => ({
     findSessionCandidates: jest.fn(),
     getFreshness: jest.fn(),
     readSession: jest.fn(),
+    readSummary: jest.fn(),
   })),
 }));
 
@@ -46,6 +47,7 @@ describe('OpenCodeSessionReaderAdapter', () => {
     findSessionCandidates: jest.Mock;
     getFreshness: jest.Mock;
     readSession: jest.Mock;
+    readSummary: jest.Mock;
   };
 
   beforeEach(() => {
@@ -137,6 +139,20 @@ describe('OpenCodeSessionReaderAdapter', () => {
 
     it('throws when sourceRef lacks providerSessionId', async () => {
       await expect(adapter.parseFullSession(DB_PATH)).rejects.toThrow(ValidationError);
+    });
+
+    it('module-unit: summary metrics match the DB-backed full read', async () => {
+      const session = makeSession({ metrics: { messageCount: 7 } as never });
+      reader.readSession.mockReturnValue({ session, sizeBytes: 10, freshness: {} });
+      reader.readSummary.mockReturnValue({ metrics: session.metrics });
+      const sourceRef = ref({ providerSessionId: 'ses_1' });
+
+      const full = await adapter.parseFullSession(DB_PATH, sourceRef);
+      const summary = await adapter.getSummary(sourceRef);
+
+      expect(summary?.metrics).toEqual(full.metrics);
+      expect(reader.readSummary).toHaveBeenCalledWith(DB_PATH, 'ses_1');
+      expect(reader.readSession).toHaveBeenCalledTimes(1);
     });
   });
 

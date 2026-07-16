@@ -342,7 +342,7 @@ export interface ConfigEmission {
 }
 
 /**
- * The shared Steps 1-3 contribution to a create/import payload: the transient provider allowlist,
+ * The shared Steps 1-3 contribution to a create/import payload: transient provider choice metadata,
  * the family→provider mappings absorbed from Step 1, the agent plan (presetName XOR agentOverrides,
  * delta-6), and the team overrides. Each field is present only when it carries content, so callers
  * can spread it directly. ONE emission path consumed by BOTH useCreateProjectWizard and

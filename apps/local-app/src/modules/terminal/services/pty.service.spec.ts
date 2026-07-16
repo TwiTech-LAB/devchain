@@ -42,12 +42,18 @@ const createService = (opts?: { usesAlternateScreen?: boolean; needsLfNormalize?
     usesAlternateScreenFor: jest.fn().mockReturnValue(opts?.usesAlternateScreen ?? false),
   } as unknown as SessionsService;
 
+  const mockMetricsService = {
+    registerCacheStatsProvider: jest.fn(),
+    registerStatsProvider: jest.fn(),
+  } as never;
+
   const service = new PtyService(
     terminalGateway,
     terminalActivity,
     terminalIO,
     settingsService,
     sessionsService,
+    mockMetricsService,
   );
 
   return { service, terminalGateway, terminalActivity };

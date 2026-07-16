@@ -1,5 +1,4 @@
-import { TerminalSession } from './terminal-session';
-import type { TerminalIORef } from './terminal-session';
+import { MAX_HISTORY_IN_FLIGHT_BYTES, TerminalSession } from './terminal-session';
 import type { FrameEvent } from './terminal-frame-stream';
 
 function createSession(overrides?: { sessionId?: string; tmuxSessionName?: string }) {
@@ -334,6 +333,40 @@ describe('TerminalSession', () => {
       expect(frames).toHaveLength(1);
       expect(frames[0].type).toBe('data');
     });
+
+    it('aborts an overflowing history window and refetches without draining stale frames', async () => {
+      const captures: Array<(result: { ok: boolean; output: string }) => void> = [];
+      const session = createSession();
+      const frames = collectFrames(session);
+      session.bindIO({
+        captureHistory: jest.fn().mockImplementation(
+          () =>
+            new Promise<{ ok: boolean; output: string }>((resolve) => {
+              captures.push(resolve);
+            }),
+        ),
+      });
+
+      const firstRequest = session.requestFullHistory();
+      session.pushFrame('x'.repeat(MAX_HISTORY_IN_FLIGHT_BYTES));
+      session.pushFrame('overflow');
+      expect(captures).toHaveLength(2);
+
+      captures[0]({ ok: true, output: 'stale-history' });
+      await firstRequest;
+      expect(
+        frames.some((frame) => (frame.payload as { ansi?: string }).ansi === 'stale-history'),
+      ).toBe(false);
+
+      captures[1]({ ok: true, output: 'fresh-history' });
+      await Promise.resolve();
+      expect(
+        frames.some((frame) => (frame.payload as { ansi?: string }).ansi === 'fresh-history'),
+      ).toBe(true);
+      expect(frames.some((frame) => (frame.payload as { data?: string }).data === 'overflow')).toBe(
+        false,
+      );
+    });
   });
 
   describe('pushFrame and activity', () => {
@@ -415,212 +448,5 @@ describe('TerminalFrameStream', () => {
     session.pushFrame('should-not-arrive');
 
     expect(received).toHaveLength(0);
-  });
-});
-
-describe('Unified seed_ansi protocol', () => {
-  it('subscribe with io emits chunked seed_ansi in client wire format', async () => {
-    const mockIO: TerminalIORef = {
-      captureHistory: jest.fn().mockResolvedValue({ ok: true, output: 'ansi-content' }),
-    };
-    const session = new TerminalSession({
-      sessionId: 'seed-test',
-      tmuxSessionName: 'tmux-seed',
-    });
-    session.bindIO(mockIO);
-
-    const frames: FrameEvent[] = [];
-    session.stream.on('frame', (f) => frames.push(f));
-
-    session.subscribe('client-1');
-
-    await new Promise((r) => setTimeout(r, 50));
-
-    const seedFrames = frames.filter((f) => f.type === 'seed_ansi');
-    expect(seedFrames).toHaveLength(1);
-    const payload = seedFrames[0].payload as {
-      data: string;
-      chunk: number;
-      totalChunks: number;
-      hasHistory?: boolean;
-    };
-    expect(payload.data).toBe('ansi-content');
-    expect(payload.chunk).toBe(0);
-    expect(payload.totalChunks).toBe(1);
-    expect(payload.hasHistory).toBe(true);
-  });
-
-  it('advertises hasHistory=false for an alt-screen session (no scroll-up affordance)', async () => {
-    const mockIO: TerminalIORef = {
-      captureHistory: jest.fn().mockResolvedValue({ ok: true, output: 'tui-screen' }),
-    };
-    const session = new TerminalSession({
-      sessionId: 'seed-alt',
-      tmuxSessionName: 'tmux-seed-alt',
-    });
-    session.bindIO(mockIO);
-    session.setUsesAlternateScreen(true);
-
-    const frames: FrameEvent[] = [];
-    session.stream.on('frame', (f) => frames.push(f));
-
-    session.subscribe('client-1');
-    await new Promise((r) => setTimeout(r, 50));
-
-    const seedFrames = frames.filter((f) => f.type === 'seed_ansi');
-    expect(seedFrames).toHaveLength(1);
-    const payload = seedFrames[0].payload as { hasHistory?: boolean };
-    expect(payload.hasHistory).toBe(false);
-  });
-
-  it('emits same chunked seed_ansi for all providers (no strategy branching)', async () => {
-    const mockIO: TerminalIORef = {
-      captureHistory: jest.fn().mockResolvedValue({ ok: true, output: 'capture' }),
-    };
-    const session = new TerminalSession({
-      sessionId: 'seed-test',
-      tmuxSessionName: 'tmux-seed',
-    });
-    session.bindIO(mockIO);
-
-    const frames: FrameEvent[] = [];
-    session.stream.on('frame', (f) => frames.push(f));
-
-    session.subscribe('client-1');
-
-    await new Promise((r) => setTimeout(r, 50));
-
-    const seedFrames = frames.filter((f) => f.type === 'seed_ansi');
-    expect(seedFrames).toHaveLength(1);
-    const payload = seedFrames[0].payload as { data: string; chunk: number; totalChunks: number };
-    expect(payload.data).toBe('capture');
-    expect(payload.totalChunks).toBe(1);
-  });
-
-  it('includes captured cursor position in final seed chunk', async () => {
-    const mockIO: TerminalIORef = {
-      captureHistory: jest.fn().mockResolvedValue({ ok: true, output: 'capture' }),
-      getCursorPosition: jest.fn().mockResolvedValue({ x: 7, y: 8 }),
-    };
-    const session = new TerminalSession({
-      sessionId: 'seed-cursor',
-      tmuxSessionName: 'tmux-seed-cursor',
-    });
-    session.bindIO(mockIO);
-
-    const frames: FrameEvent[] = [];
-    session.stream.on('frame', (f) => frames.push(f));
-
-    session.subscribe('client-1');
-
-    await new Promise((r) => setTimeout(r, 50));
-
-    const seedFrame = frames.find((f) => f.type === 'seed_ansi');
-    expect(seedFrame).toBeDefined();
-    expect(seedFrame!.payload).toEqual(expect.objectContaining({ cursorX: 7, cursorY: 8 }));
-  });
-
-  it('strips one capture separator before emitting initial seed', async () => {
-    const mockIO: TerminalIORef = {
-      captureHistory: jest.fn().mockResolvedValue({
-        ok: true,
-        output: 'line 1\r\nline 2\r\n\r\n',
-      }),
-    };
-    const session = new TerminalSession({
-      sessionId: 'seed-trailing-newline',
-      tmuxSessionName: 'tmux-trailing-newline',
-    });
-    session.bindIO(mockIO);
-
-    const frames: FrameEvent[] = [];
-    session.stream.on('frame', (f) => frames.push(f));
-
-    session.subscribe('client-1');
-
-    await new Promise((r) => setTimeout(r, 50));
-
-    const seedFrame = frames.find((f) => f.type === 'seed_ansi');
-    expect(seedFrame).toBeDefined();
-    expect((seedFrame!.payload as { data: string }).data).toBe('line 1\r\nline 2\r\n');
-  });
-
-  it('large content is chunked into multiple seed_ansi frames', async () => {
-    const largeContent = 'x'.repeat(128 * 1024);
-    const mockIO: TerminalIORef = {
-      captureHistory: jest.fn().mockResolvedValue({ ok: true, output: largeContent }),
-    };
-    const session = new TerminalSession({
-      sessionId: 'seed-large',
-      tmuxSessionName: 'tmux-large',
-    });
-    session.bindIO(mockIO);
-
-    const frames: FrameEvent[] = [];
-    session.stream.on('frame', (f) => frames.push(f));
-
-    session.subscribe('client-1');
-
-    await new Promise((r) => setTimeout(r, 50));
-
-    const seedFrames = frames.filter((f) => f.type === 'seed_ansi');
-    expect(seedFrames).toHaveLength(2);
-    const first = seedFrames[0].payload as {
-      chunk: number;
-      totalChunks: number;
-      hasHistory?: boolean;
-    };
-    const last = seedFrames[1].payload as {
-      chunk: number;
-      totalChunks: number;
-      hasHistory?: boolean;
-    };
-    expect(first.chunk).toBe(0);
-    expect(first.totalChunks).toBe(2);
-    expect(first.hasHistory).toBeUndefined();
-    expect(last.chunk).toBe(1);
-    expect(last.hasHistory).toBe(true);
-  });
-
-  it('normalizes bare LF in captured seed output when configured', async () => {
-    const mockIO: TerminalIORef = {
-      captureHistory: jest.fn().mockResolvedValue({
-        ok: true,
-        output: 'line 1\nline 2\r\nline 3',
-      }),
-    };
-    const session = new TerminalSession({
-      sessionId: 'seed-normalized',
-      tmuxSessionName: 'tmux-normalized',
-      normalizeCapturedLineEndings: true,
-    });
-    session.bindIO(mockIO);
-
-    const frames: FrameEvent[] = [];
-    session.stream.on('frame', (f) => frames.push(f));
-
-    session.subscribe('client-1');
-
-    await new Promise((r) => setTimeout(r, 50));
-
-    const seedFrame = frames.find((f) => f.type === 'seed_ansi');
-    expect(seedFrame).toBeDefined();
-    expect((seedFrame!.payload as { data: string }).data).toBe('line 1\r\nline 2\r\nline 3');
-  });
-
-  it('subscribe without io does not initiate seeding', async () => {
-    const session = new TerminalSession({
-      sessionId: 'no-io',
-      tmuxSessionName: 'tmux-no-io',
-    });
-
-    const frames: FrameEvent[] = [];
-    session.stream.on('frame', (f) => frames.push(f));
-
-    session.subscribe('client-1');
-
-    await new Promise((r) => setTimeout(r, 50));
-
-    expect(frames.filter((f) => f.type === 'seed_ansi')).toHaveLength(0);
   });
 });

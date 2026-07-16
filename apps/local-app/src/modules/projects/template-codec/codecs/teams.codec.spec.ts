@@ -154,6 +154,28 @@ describe('teams codec — apply (resolution against live storage)', () => {
     );
   });
 
+  it('throws when a profile selection references an unknown config name', async () => {
+    const teamsService = makeTeamsService();
+    await expect(
+      teamsCodec.apply(
+        teamSection([
+          {
+            name: 'Team Strict',
+            memberAgentNames: ['Agent A'],
+            profileNames: ['Profile 1'],
+            profileSelections: [{ profileName: 'Profile 1', configNames: ['mystery-cfg'] }],
+          },
+        ]),
+        seedCtx(),
+        'replace',
+        rt(teamsService),
+      ),
+    ).rejects.toThrow(
+      'Team "Team Strict" references config "mystery-cfg" for profile "Profile 1" which was not found',
+    );
+    expect(teamsService.createTeam).not.toHaveBeenCalled();
+  });
+
   it('returns 0 when teamsService is absent', async () => {
     const result = await teamsCodec.apply(
       teamSection([{ name: 'X', memberAgentNames: ['Agent A'] }]),

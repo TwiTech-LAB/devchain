@@ -1,5 +1,4 @@
 import { Injectable, Inject, forwardRef } from '@nestjs/common';
-import { Socket } from 'socket.io';
 import { createLogger } from '../../../common/logging/logger';
 import {
   SettingsService,
@@ -9,7 +8,12 @@ import {
 } from '../../settings/services/settings.service';
 import { TerminalIOService } from './terminal-io/terminal-io.service';
 import { SessionsService } from '../../sessions/services/sessions.service';
-import { createEnvelope, TerminalSeedPayload } from '../dtos/ws-envelope.dto';
+import {
+  createEnvelope,
+  TerminalSeedPayload,
+  TerminalSeedEmptyPayload,
+} from '../dtos/ws-envelope.dto';
+import type { WsEnvelope } from '../dtos/ws-envelope.dto';
 import { TerminalSessionRegistry } from './terminal-session/terminal-session-registry';
 import { normalizeLineEndings, stripFinalLineEnding } from '../utils/normalize-line-endings';
 
@@ -22,19 +26,37 @@ interface CaptureCache {
   rows: number;
 }
 
+export interface TerminalRecoverySeedWatermark {
+  sequenceEpoch: string;
+  recoveryEpoch: number;
+  capturedSequence: number;
+}
+
+export const TerminalSeedDelivery = {
+  Continue: 'continue',
+  Abort: 'abort',
+} as const;
+
+export type TerminalSeedDeliveryDecision =
+  (typeof TerminalSeedDelivery)[keyof typeof TerminalSeedDelivery];
+
+export type TerminalSeedDeliver = (envelope: WsEnvelope) => TerminalSeedDeliveryDecision;
+
 /**
  * Service responsible for terminal seeding logic:
  * - Config resolution (maxBytes from settings)
  * - Capture caching (2s TTL to reduce expensive tmux captures)
  * - Snapshot preparation (capture, strip newlines, chunk into 64KB pieces)
- * - Seed emission to WebSocket clients
+ * - Seed delivery through the caller-owned socket scheduler
  *
- * Seeding uses tmux ANSI capture exclusively. Empty snapshots are handled
- * gracefully - clients receive live PTY data as it arrives.
+ * Seeding uses tmux ANSI capture exclusively. A successful empty initial capture emits a
+ * non-writing `seed_empty` completion; a failed capture is skipped; resync may emit one
+ * empty `seed_ansi` to clear stale client output.
  */
 @Injectable()
 export class TerminalSeedService {
   private readonly captureCache = new Map<string, CaptureCache>();
+  private seedCaptureCount = 0;
   private readonly CAPTURE_CACHE_TTL = 2000; // 2 seconds
   private readonly SEED_CHUNK_SIZE = 64 * 1024; // 64KB chunks
 
@@ -104,6 +126,7 @@ export class TerminalSeedService {
 
     // Capture fresh
     try {
+      this.seedCaptureCount += 1;
       const result = await this.terminalIO.captureHistory(
         { name: tmuxSessionId },
         scrollbackLines,
@@ -121,14 +144,17 @@ export class TerminalSeedService {
         });
 
         logger.debug({ sessionId, bytes: snapshot.length }, 'Cached fresh tmux capture');
-
-        return snapshot;
       }
+      return snapshot;
     } catch (error) {
       logger.warn({ sessionId, error }, 'tmux capture failed');
     }
 
     return null;
+  }
+
+  getCaptureStats(): { terminalSeedCaptures: number } {
+    return { terminalSeedCaptures: this.seedCaptureCount };
   }
 
   /**
@@ -162,13 +188,16 @@ export class TerminalSeedService {
     }
 
     // Find line boundary to truncate from start (preserve newest lines at bottom)
+    const separator = snapshot.includes('\r\n') ? '\r\n' : '\n';
+    const separatorBytes = Buffer.byteLength(separator, 'utf-8');
     const lines = snapshot.split(/\r?\n/);
     let currentBytes = 0;
     let startLineIndex = 0;
 
     // Walk from end (newest) to find how many lines fit
     for (let i = lines.length - 1; i >= 0; i--) {
-      const lineBytes = Buffer.byteLength(lines[i] + '\n', 'utf-8');
+      const lineBytes =
+        Buffer.byteLength(lines[i], 'utf-8') + (i < lines.length - 1 ? separatorBytes : 0);
       if (currentBytes + lineBytes > maxBytes) {
         startLineIndex = i + 1;
         break;
@@ -176,7 +205,7 @@ export class TerminalSeedService {
       currentBytes += lineBytes;
     }
 
-    let truncated = lines.slice(startLineIndex).join('\n');
+    let truncated = lines.slice(startLineIndex).join(separator);
 
     // Fallback: if no complete lines fit (single very long line), use byte-based truncation
     // This preserves the newest content (from the end) even when line-based fails
@@ -195,12 +224,16 @@ export class TerminalSeedService {
         return { truncated: '', wasTruncated: true };
       }
 
-      const buffer = Buffer.from(targetLine, 'utf-8');
-      // Take last maxBytes from the line (preserves newest content)
-      const truncatedBuffer = buffer.subarray(-maxBytes);
-      // toString('utf-8') handles incomplete multi-byte chars gracefully
-      // by replacing them with replacement character (�)
-      truncated = truncatedBuffer.toString('utf-8');
+      const characters = Array.from(targetLine);
+      let suffixBytes = 0;
+      let startCharacter = characters.length;
+      for (let i = characters.length - 1; i >= 0; i -= 1) {
+        const characterBytes = Buffer.byteLength(characters[i], 'utf-8');
+        if (suffixBytes + characterBytes > maxBytes) break;
+        suffixBytes += characterBytes;
+        startCharacter = i;
+      }
+      truncated = characters.slice(startCharacter).join('');
 
       logger.info(
         {
@@ -232,14 +265,34 @@ export class TerminalSeedService {
    * Emit seed to client with snapshot generation
    */
   async emitSeedToClient(options: {
-    client: Socket;
+    deliver: TerminalSeedDeliver;
     sessionId: string;
     maxBytes: number;
     cols?: number;
     rows?: number;
-  }): Promise<void> {
-    const { client, sessionId, maxBytes } = options;
-    await this.emitSeed(client, sessionId, maxBytes);
+    allowEmpty?: boolean;
+    /**
+     * Samples the live sequence AFTER capture for the non-writing empty-completion path
+     * (successful empty initial capture, no recovery). Required for that path to carry a
+     * baseline sequence; ignored when a non-empty snapshot or a recovery context is present.
+     */
+    getCurrentSequence?: () => number;
+    recovery?: {
+      sequenceEpoch: string;
+      recoveryEpoch: number;
+      getCurrentSequence: () => number;
+      onCapturedSequence?: (capturedSequence: number) => void;
+    };
+  }): Promise<TerminalRecoverySeedWatermark | undefined> {
+    const { deliver, sessionId, maxBytes, allowEmpty = false } = options;
+    return this.emitSeed(
+      deliver,
+      sessionId,
+      maxBytes,
+      allowEmpty,
+      options.recovery,
+      options.getCurrentSequence,
+    );
   }
 
   /**
@@ -250,14 +303,30 @@ export class TerminalSeedService {
   }
 
   /**
-   * Capture tmux snapshot and emit seed to client.
-   * No warmup delay - if no content yet, skip seed and let live PTY data flow.
+   * Capture tmux snapshot and emit seed to client. A failed capture is skipped. A
+   * successful empty capture emits a non-writing `seed_empty` completion (initial attach)
+   * or an empty `seed_ansi` replacement (recovery, to clear stale client output).
    */
-  private async emitSeed(client: Socket, sessionId: string, maxBytes: number): Promise<void> {
+  private async emitSeed(
+    deliver: TerminalSeedDeliver,
+    sessionId: string,
+    maxBytes: number,
+    allowEmpty: boolean,
+    recovery?: {
+      sequenceEpoch: string;
+      recoveryEpoch: number;
+      getCurrentSequence: () => number;
+      onCapturedSequence?: (capturedSequence: number) => void;
+    },
+    getCurrentSequence?: () => number,
+  ): Promise<TerminalRecoverySeedWatermark | undefined> {
     let snapshot: string | null = null;
+    let captureSucceeded = false;
     let tmuxCursorX: number | undefined;
     let tmuxCursorY: number | undefined;
     let wasTruncated = false;
+    let recoveryWatermark: TerminalRecoverySeedWatermark | undefined;
+    let emptyCompletionSequence: number | undefined;
 
     try {
       const session = this.sessionsService.getSession(sessionId);
@@ -275,16 +344,27 @@ export class TerminalSeedService {
 
         // Use cached capture if available (2s TTL)
         snapshot = await this.getCachedCapture(sessionId, session.tmuxSessionId, scrollbackLines);
+        captureSucceeded = snapshot !== null;
+        // Sample the sequence AFTER capture completes: frames stamped while capture-pane
+        // ran are already inside the snapshot, so the baseline must sit at or below them.
+        if (captureSucceeded && recovery) {
+          recoveryWatermark = {
+            sequenceEpoch: recovery.sequenceEpoch,
+            recoveryEpoch: recovery.recoveryEpoch,
+            capturedSequence: recovery.getCurrentSequence(),
+          };
+          recovery.onCapturedSequence?.(recoveryWatermark.capturedSequence);
+        } else if (captureSucceeded && getCurrentSequence) {
+          emptyCompletionSequence = getCurrentSequence();
+        }
 
         // Strip tmux capture-pane's final separator and capture cursor position for metadata.
         if (snapshot && snapshot.length > 0) {
-          snapshot = stripFinalLineEnding(snapshot);
+          snapshot = normalizeLineEndings(stripFinalLineEnding(snapshot));
 
           const truncateResult = this.truncateToMaxBytes(snapshot, maxBytes);
           snapshot = truncateResult.truncated;
           wasTruncated = truncateResult.wasTruncated;
-
-          snapshot = normalizeLineEndings(snapshot);
 
           const cursorPos = await this.terminalIO.getCursorPosition({
             name: session.tmuxSessionId,
@@ -309,15 +389,15 @@ export class TerminalSeedService {
       logger.warn({ sessionId, error }, 'Failed to capture tmux scrollback');
     }
 
-    // If no snapshot, skip seed - client will receive live PTY data as it arrives
-    if (!snapshot || snapshot.length === 0) {
+    if ((!snapshot || snapshot.length === 0) && !(allowEmpty && captureSucceeded)) {
       logger.info({ sessionId }, 'No tmux content yet, skipping seed');
-      return;
+      return undefined;
     }
 
     // Get actual terminal dimensions to include in seed
     let actualCols: number | undefined;
     let actualRows: number | undefined;
+    let usesAlternateScreen = false;
     try {
       const dims = this.terminalSessionRegistry.get(sessionId)?.getDimensions() ?? null;
       if (dims) {
@@ -327,29 +407,70 @@ export class TerminalSeedService {
     } catch (error) {
       logger.warn({ sessionId, error }, 'Failed to get terminal dimensions for seed');
     }
+    try {
+      usesAlternateScreen = this.sessionsService.usesAlternateScreenFor(sessionId);
+    } catch (error) {
+      logger.warn({ sessionId, error }, 'Failed to resolve terminal output behavior for seed');
+    }
+
+    // Successful empty capture, no recovery: complete the client's seed attempt without
+    // writing. Recovery instead emits an empty `seed_ansi` (below) to clear stale output.
+    if ((!snapshot || snapshot.length === 0) && !recovery) {
+      this.emitEmptyCompletion(
+        deliver,
+        sessionId,
+        emptyCompletionSequence ?? 0,
+        actualCols,
+        actualRows,
+      );
+      return undefined;
+    }
 
     this.emitSeedSnapshot(
-      client,
+      deliver,
       sessionId,
-      snapshot,
+      snapshot ?? '',
       maxBytes,
       actualCols,
       actualRows,
       tmuxCursorX,
       tmuxCursorY,
       wasTruncated,
+      usesAlternateScreen,
+      allowEmpty,
+      recoveryWatermark,
     );
+    return recoveryWatermark;
+  }
+
+  /**
+   * Emit a non-writing completion for a successful empty initial capture through the
+   * caller-owned delivery guard. Distinct from `seed_ansi`: it carries no data, so the
+   * client completes its seed attempt without resetting xterm or dropping live rows.
+   */
+  private emitEmptyCompletion(
+    deliver: TerminalSeedDeliver,
+    sessionId: string,
+    capturedSequence: number,
+    cols?: number,
+    rows?: number,
+  ): void {
+    const payload: TerminalSeedEmptyPayload = {
+      capturedSequence,
+      ...(cols !== undefined && { cols }),
+      ...(rows !== undefined && { rows }),
+    };
+    logger.info({ sessionId, capturedSequence }, 'Emitting empty seed completion');
+    deliver(createEnvelope(`terminal/${sessionId}`, 'seed_empty', payload));
   }
 
   /**
    * Emit seed snapshot in chunks to client
    *
-   * @param wasTruncated - True if snapshot was truncated due to maxBytes limit.
-   *   A1 fix: hasHistory now correctly indicates "more history exists beyond seed"
-   *   rather than just "seed spans multiple screens"
+   * @param wasTruncated - True when oldest content was removed to satisfy maxBytes.
    */
   private emitSeedSnapshot(
-    client: Socket,
+    deliver: TerminalSeedDeliver,
     sessionId: string,
     snapshot: string,
     _maxBytes: number,
@@ -358,9 +479,12 @@ export class TerminalSeedService {
     cursorX?: number,
     cursorY?: number,
     wasTruncated: boolean = false,
+    usesAlternateScreen: boolean = false,
+    allowEmpty: boolean = false,
+    recoveryWatermark?: TerminalRecoverySeedWatermark,
   ): void {
     const buffer = Buffer.from(snapshot, 'utf8');
-    if (buffer.length === 0) {
+    if (buffer.length === 0 && !allowEmpty) {
       logger.debug({ sessionId }, 'Seed snapshot empty; skipping emit');
       return;
     }
@@ -372,10 +496,8 @@ export class TerminalSeedService {
     const lines = snapshot.split(/\r?\n/);
     const totalLines = lines.length;
 
-    // A1 fix: hasHistory should indicate "more history exists beyond what was sent in seed"
-    // NOT "seed spans multiple screens" (the old incorrect behavior)
-    // hasHistory is true only when we truncated the snapshot (meaning more exists)
-    const hasHistory = wasTruncated;
+    // Alternate-screen captures have no loadable primary-buffer history, even when truncated.
+    const hasHistory = wasTruncated && !usesAlternateScreen;
 
     logger.info(
       {
@@ -400,6 +522,7 @@ export class TerminalSeedService {
         data: chunkBuffer.toString('utf8'),
         chunk: chunkIndex,
         totalChunks,
+        ...recoveryWatermark,
         // Include metadata only in the LAST chunk
         ...(chunkIndex === totalChunks - 1 && {
           totalLines,
@@ -411,7 +534,7 @@ export class TerminalSeedService {
         }),
       };
       const envelope = createEnvelope(`terminal/${sessionId}`, 'seed_ansi', payload);
-      client.emit('message', envelope);
+      if (deliver(envelope) === TerminalSeedDelivery.Abort) return;
     }
   }
 }

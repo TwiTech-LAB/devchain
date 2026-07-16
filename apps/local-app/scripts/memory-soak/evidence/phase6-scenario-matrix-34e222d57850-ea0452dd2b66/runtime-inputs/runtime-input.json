@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "reportKind": "runtime-input-provenance",
+  "generatedAt": "2026-07-14T23:15:28.081Z",
+  "input": {
+    "logicalPath": "apps/local-app/scripts/memory-soak/fixtures/provider-transcripts/opencode.json",
+    "bundlePath": "runtime-inputs/opencode.json",
+    "bytes": 1239,
+    "sha256": "540d4344c5f80dfa8e109b0fade4b6e84618eb6da1353d8ec7e2034457d63c90",
+    "provisioningMethod": "byte-identical copy from prior validated local fixture after clean checkpoint omitted the globally ignored opencode.json path",
+    "sourcePath": "/home/ngsupb/repos/twitech/devchain/apps/local-app/scripts/memory-soak/fixtures/provider-transcripts/opencode.json",
+    "gitTracked": false,
+    "gitIgnoredBy": ".gitignore:5:opencode.json"
+  },
+  "verification": {
+    "sourceCommit": "34e222d57850706e83323894b075cc0c6edd6eed",
+    "sourceTree": "376367c2a509458618a2ec5c7b18714e33a91ee3",
+    "sourceDirty": false,
+    "distDigest": "ea0452dd2b6660e2f044b82dc6ec0f68fa89e8e67c78991c93c654f4266dfa34",
+    "verifiedBeforeAuthoritativeCapture": true
+  }
+}

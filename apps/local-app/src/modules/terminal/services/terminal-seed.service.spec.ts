@@ -1,4 +1,8 @@
-import { TerminalSeedService } from './terminal-seed.service';
+import {
+  TerminalSeedDelivery,
+  TerminalSeedService,
+  type TerminalSeedDeliveryDecision,
+} from './terminal-seed.service';
 import {
   SettingsService,
   DEFAULT_TERMINAL_SEED_MAX_BYTES,
@@ -32,6 +36,7 @@ describe('TerminalSeedService', () => {
 
     sessionsService = {
       getSession: jest.fn().mockReturnValue(null),
+      usesAlternateScreenFor: jest.fn().mockReturnValue(false),
     };
 
     seedService = new TerminalSeedService(
@@ -127,7 +132,7 @@ describe('TerminalSeedService', () => {
       const longLine = 'x'.repeat(100);
       const result = seedService.truncateToMaxBytes(longLine, 50);
 
-      // Should NOT return empty string (the bug this fixes)
+      // At least one complete suffix fits within this budget.
       expect(result.truncated).not.toBe('');
       // Should be truncated
       expect(result.wasTruncated).toBe(true);
@@ -145,9 +150,10 @@ describe('TerminalSeedService', () => {
       // Should NOT return empty string
       expect(result.truncated).not.toBe('');
       expect(result.wasTruncated).toBe(true);
-      // Result should be valid string (may contain replacement char if split mid-char)
+      // Result remains valid UTF-8 and never exceeds the wire budget.
       expect(typeof result.truncated).toBe('string');
       expect(Buffer.byteLength(result.truncated, 'utf-8')).toBeLessThanOrEqual(15);
+      expect(result.truncated).not.toContain('�');
     });
 
     it('should handle content with only one very long line and trailing newline', () => {
@@ -210,10 +216,15 @@ describe('TerminalSeedService', () => {
 
   describe('emitSeedToClient', () => {
     let mockClient: jest.Mocked<Partial<Socket>>;
+    let deliver: (envelope: unknown) => TerminalSeedDeliveryDecision;
 
     beforeEach(() => {
       mockClient = {
         emit: jest.fn(),
+      };
+      deliver = (envelope) => {
+        mockClient.emit!('message', envelope);
+        return TerminalSeedDelivery.Continue;
       };
 
       sessionsService.getSession = jest.fn().mockReturnValue({
@@ -234,7 +245,7 @@ describe('TerminalSeedService', () => {
 
     it('should emit seed snapshot to client', async () => {
       await seedService.emitSeedToClient({
-        client: mockClient as Socket,
+        deliver,
         sessionId: 'session-123',
         maxBytes: 1024 * 1024,
         cols: 80,
@@ -244,6 +255,40 @@ describe('TerminalSeedService', () => {
       expect(mockClient.emit).toHaveBeenCalled();
     });
 
+    it('pure service unit: stops a multi-chunk seed immediately when delivery aborts', async () => {
+      terminalIO.captureHistory = jest.fn().mockResolvedValue({
+        ok: true,
+        output: `${'x'.repeat(140 * 1024)}\n`,
+      });
+      const abortingDeliver = jest.fn().mockReturnValue(TerminalSeedDelivery.Abort);
+
+      await seedService.emitSeedToClient({
+        deliver: abortingDeliver,
+        sessionId: 'session-123',
+        maxBytes: 256 * 1024,
+      });
+
+      expect(abortingDeliver).toHaveBeenCalledTimes(1);
+      expect(
+        (abortingDeliver.mock.calls[0][0] as { payload: { chunk: number; totalChunks: number } })
+          .payload,
+      ).toMatchObject({ chunk: 0, totalChunks: 3 });
+    });
+
+    it('counts fresh seed captures but not cache hits', async () => {
+      const options = {
+        deliver,
+        sessionId: 'session-123',
+        maxBytes: 1024 * 1024,
+      };
+
+      await seedService.emitSeedToClient(options);
+      await seedService.emitSeedToClient(options);
+
+      expect(terminalIO.captureHistory).toHaveBeenCalledTimes(1);
+      expect(seedService.getCaptureStats()).toEqual({ terminalSeedCaptures: 1 });
+    });
+
     it('preserves real trailing blank rows while removing the capture separator', async () => {
       terminalIO.captureHistory = jest.fn().mockResolvedValue({
         ok: true,
@@ -251,7 +296,7 @@ describe('TerminalSeedService', () => {
       });
 
       await seedService.emitSeedToClient({
-        client: mockClient as Socket,
+        deliver,
         sessionId: 'session-123',
         maxBytes: 1024 * 1024,
       });
@@ -264,11 +309,68 @@ describe('TerminalSeedService', () => {
       );
     });
 
+    it('caps a line-provider seed by dropping oldest lines and advertises remaining history', async () => {
+      terminalIO.captureHistory = jest.fn().mockResolvedValue({
+        ok: true,
+        output: 'oldest-line\nmiddle-line\nnewest-line\n',
+      });
+
+      await seedService.emitSeedToClient({
+        deliver,
+        sessionId: 'session-123',
+        maxBytes: 20,
+      });
+
+      const envelopes = (mockClient.emit as jest.Mock).mock.calls.map(([, envelope]) => envelope);
+      const seedData = envelopes.map((envelope) => envelope.payload.data).join('');
+      expect(Buffer.byteLength(seedData, 'utf8')).toBeLessThanOrEqual(20);
+      expect(seedData).toBe('newest-line');
+      expect(envelopes.at(-1).payload.hasHistory).toBe(true);
+    });
+
+    it('applies the byte cap after line-ending normalization', async () => {
+      terminalIO.captureHistory = jest.fn().mockResolvedValue({
+        ok: true,
+        output: 'a\na\na\na\na\n',
+      });
+
+      await seedService.emitSeedToClient({
+        deliver,
+        sessionId: 'session-123',
+        maxBytes: 8,
+      });
+
+      const seedData = (mockClient.emit as jest.Mock).mock.calls
+        .map(([, envelope]) => envelope.payload.data)
+        .join('');
+      expect(Buffer.byteLength(seedData, 'utf8')).toBeLessThanOrEqual(8);
+      expect(seedData).toContain('\r\n');
+    });
+
+    it('never advertises loadable history for an alternate-screen seed', async () => {
+      terminalIO.captureHistory = jest.fn().mockResolvedValue({
+        ok: true,
+        output: 'oldest-line\nmiddle-line\nnewest-line\n',
+      });
+      sessionsService.usesAlternateScreenFor = jest.fn().mockReturnValue(true) as jest.Mock;
+
+      await seedService.emitSeedToClient({
+        deliver,
+        sessionId: 'session-123',
+        maxBytes: 20,
+      });
+
+      const finalEnvelope = (mockClient.emit as jest.Mock).mock.calls.at(-1)?.[1] as {
+        payload: { hasHistory?: boolean };
+      };
+      expect(finalEnvelope.payload.hasHistory).toBe(false);
+    });
+
     it('should handle empty snapshot gracefully', async () => {
       terminalIO.captureHistory = jest.fn().mockResolvedValue({ ok: true, output: '' });
 
       await seedService.emitSeedToClient({
-        client: mockClient as Socket,
+        deliver,
         sessionId: 'session-123',
         maxBytes: 1024 * 1024,
       });
@@ -276,11 +378,131 @@ describe('TerminalSeedService', () => {
       expect(mockClient.emit).not.toHaveBeenCalled();
     });
 
+    it('emits an empty replacement seed when resync must clear stale client output', async () => {
+      terminalIO.captureHistory = jest.fn().mockResolvedValue({ ok: true, output: '' });
+
+      await seedService.emitSeedToClient({
+        deliver,
+        sessionId: 'session-123',
+        maxBytes: 1024 * 1024,
+        allowEmpty: true,
+        recovery: {
+          recoveryEpoch: 3,
+          getCurrentSequence: () => 5,
+        },
+      });
+
+      expect(mockClient.emit).toHaveBeenCalledWith(
+        'message',
+        expect.objectContaining({
+          type: 'seed_ansi',
+          payload: expect.objectContaining({ data: '', chunk: 0, totalChunks: 1 }),
+        }),
+      );
+    });
+
+    it('emits a non-writing seed_empty completion for a successful empty initial capture', async () => {
+      terminalIO.captureHistory = jest.fn().mockResolvedValue({ ok: true, output: '' });
+
+      await seedService.emitSeedToClient({
+        deliver,
+        sessionId: 'session-123',
+        maxBytes: 1024 * 1024,
+        cols: 80,
+        rows: 24,
+        allowEmpty: true,
+        getCurrentSequence: () => 0,
+      });
+
+      const envelopes = (mockClient.emit as jest.Mock).mock.calls.map(([, envelope]) => envelope);
+      expect(envelopes).toHaveLength(1);
+      expect(envelopes[0]).toMatchObject({
+        type: 'seed_empty',
+        payload: { capturedSequence: 0, cols: 80, rows: 24 },
+      });
+      // A completion is distinct from a seed chunk: it must never write data.
+      expect(envelopes[0].payload).not.toHaveProperty('data');
+    });
+
+    it('samples the empty-completion sequence after capture', async () => {
+      let sequence = 2;
+      terminalIO.captureHistory = jest.fn().mockImplementation(async () => {
+        sequence = 6;
+        return { ok: true, output: '' };
+      });
+
+      await seedService.emitSeedToClient({
+        deliver,
+        sessionId: 'session-123',
+        maxBytes: 1024 * 1024,
+        allowEmpty: true,
+        getCurrentSequence: () => sequence,
+      });
+
+      const envelope = (mockClient.emit as jest.Mock).mock.calls.at(-1)?.[1] as {
+        type: string;
+        payload: { capturedSequence: number };
+      };
+      expect(envelope.type).toBe('seed_empty');
+      expect(envelope.payload.capturedSequence).toBe(6);
+    });
+
+    it('falls back to a 0 baseline completion when no sequence sampler is provided', async () => {
+      terminalIO.captureHistory = jest.fn().mockResolvedValue({ ok: true, output: '' });
+
+      await seedService.emitSeedToClient({
+        deliver,
+        sessionId: 'session-123',
+        maxBytes: 1024 * 1024,
+        allowEmpty: true,
+      });
+
+      const completion = (mockClient.emit as jest.Mock).mock.calls.find(
+        ([, envelope]) => (envelope as { type?: string }).type === 'seed_empty',
+      );
+      expect(completion).toBeTruthy();
+      expect(
+        (completion![1] as { payload: { capturedSequence: number } }).payload.capturedSequence,
+      ).toBe(0);
+    });
+
+    it('samples the recovery watermark after capture and includes it on every seed chunk', async () => {
+      let currentSequence = 4;
+      terminalIO.captureHistory = jest.fn().mockImplementation(async () => {
+        currentSequence = 9;
+        return { ok: true, output: `${'x'.repeat(70 * 1024)}\n` };
+      });
+      terminalIO.getCursorPosition = jest.fn().mockImplementation(async () => {
+        currentSequence = 10;
+        return { x: 1, y: 1 };
+      });
+      const captured = jest.fn();
+
+      const watermark = await seedService.emitSeedToClient({
+        deliver,
+        sessionId: 'session-123',
+        maxBytes: 1024 * 1024,
+        allowEmpty: true,
+        recovery: {
+          recoveryEpoch: 7,
+          getCurrentSequence: () => currentSequence,
+          onCapturedSequence: captured,
+        },
+      });
+
+      const envelopes = (mockClient.emit as jest.Mock).mock.calls.map(([, envelope]) => envelope);
+      expect(envelopes.length).toBeGreaterThan(1);
+      expect(envelopes.every((envelope) => envelope.payload.recoveryEpoch === 7)).toBe(true);
+      expect(envelopes.every((envelope) => envelope.payload.capturedSequence === 9)).toBe(true);
+      expect(captured).toHaveBeenCalledWith(9);
+      expect(watermark).toEqual({ recoveryEpoch: 7, capturedSequence: 9 });
+    });
+
     it('should skip seed when tmux capture returns empty (graceful handling)', async () => {
       terminalIO.captureHistory = jest.fn().mockResolvedValue({ ok: true, output: '' });
 
       await seedService.emitSeedToClient({
-        client: mockClient as Socket,
+        deliver,
         sessionId: 'session-123',
         maxBytes: 1024 * 1024,
       });

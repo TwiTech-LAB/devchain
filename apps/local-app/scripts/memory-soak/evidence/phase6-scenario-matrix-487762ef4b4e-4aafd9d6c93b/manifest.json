@@ -1,0 +1,208 @@
+{
+  "schemaVersion": 1,
+  "reportKind": "phase6-artifact-manifest",
+  "generatedAt": "2026-07-15T01:19:46.173Z",
+  "selfHashExcluded": true,
+  "matrixArtifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b.json",
+  "matrixSha256": "ef83ab8d9d71800b51e57a50d1495798dba2ace0776e86e1ac044877baaa0a54",
+  "target": {
+    "sourceCommit": "487762ef4b4e2673030199851f3c92b5edee82ac",
+    "sourceTree": "4058dd8137802ded1f2569b2cb4b1d41649b21ca",
+    "sourceDirty": false,
+    "distDigest": "4aafd9d6c93b0340a0d0933b29a90c96bc6416de39e7948571b102d06e016b5e"
+  },
+  "verification": {
+    "algorithm": "sha256",
+    "allArtifactsPresent": true,
+    "allRecordedHashesVerified": true
+  },
+  "artifactCount": 31,
+  "artifacts": [
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/baselines/phase6-final-487762ef4b4e-4aafd9d6c93b.json",
+      "sha256": "a03f8b255d32b6d07742d6e6cfb7289f7effedece773749ecd15f44f05f79c36",
+      "bytes": 1277171,
+      "classification": "authoritative-host"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b.json",
+      "sha256": "ef83ab8d9d71800b51e57a50d1495798dba2ace0776e86e1ac044877baaa0a54",
+      "bytes": 34714,
+      "classification": "authoritative-matrix"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/engine-write-buffer-bounded.json",
+      "sha256": "97a3a1dc102b18d4d568b37546e524f6629b853c55eecd475fb645382c0f328f",
+      "bytes": 145541,
+      "classification": "authoritative-scenario"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/eviction-concurrent-transcript-reads-confirmation.json",
+      "sha256": "1821532efaf90f924e8fcd88a21ee40a642632e26494d14dba3ecde83b3d2081",
+      "bytes": 198144,
+      "classification": "authoritative-scenario"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/eviction-concurrent-transcript-reads.json",
+      "sha256": "ffbe5f8708712f5d28a59667ac5847377a05a9c7e44dd7cf9faebfabcd13ad6d",
+      "bytes": 198927,
+      "classification": "authoritative-scenario"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/focused-gates/evaluator-replay.txt",
+      "sha256": "90eb5c57870cd5c7001c0af554cd3a6c0cef8f3b26281d0c1993b6b61ca4c2ca",
+      "bytes": 1393,
+      "classification": "focused-gate-evidence"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/focused-gates/focused-gates.json",
+      "sha256": "2bf9e8a246dc683b64b005892131034f9fc13aa49a33aaa1f98d9ee09704ccdd",
+      "bytes": 5180,
+      "classification": "focused-gate-evidence"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/focused-gates/local-app-build.txt",
+      "sha256": "eaa7ed95707c938780e19f880696c86fe4becf2cd914fe2806465f4da11893f5",
+      "bytes": 2155,
+      "classification": "focused-gate-evidence"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/focused-gates/memory-soak-contract.txt",
+      "sha256": "df7554c392f597f191db048a13581fe3d7ce09bba5b956928926598e8113f3ed",
+      "bytes": 19064,
+      "classification": "focused-gate-evidence"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/focused-gates/mobile-jest.txt",
+      "sha256": "006227888c3f052fdea428f741b2e06060639107fbe622c6b8eb1b27ae5910c9",
+      "bytes": 2399,
+      "classification": "focused-gate-evidence"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/focused-gates/mobile-tsc.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "classification": "focused-gate-evidence"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/focused-gates/reader-web-jest.txt",
+      "sha256": "9c75f747b11ff8a4f0642bbee4b452ea5e0372d910e81b3b1747071885542f6a",
+      "bytes": 61937,
+      "classification": "focused-gate-evidence"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/focused-gates/terminal-jest.txt",
+      "sha256": "52f420ce80b7803c9663d87d9b36f574f57f97bf59c01f96b47309176c644242",
+      "bytes": 1460,
+      "classification": "focused-gate-evidence"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/focused-gates/workspace-dependencies-build.txt",
+      "sha256": "80be290859f12ec2462be4d353120e17b60ec8faea584b6e690eb8e22267660b",
+      "bytes": 166,
+      "classification": "focused-gate-evidence"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/lifecycle-cleanup-parity.json",
+      "sha256": "f9b68a35448d3793ea722e90e1c5f9c9caae5a566f755711148a9e91144e7432",
+      "bytes": 73692,
+      "classification": "authoritative-scenario"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/many-subscribers-one-session-confirmation.json",
+      "sha256": "de0fb8143b19c3537205d2f9028f2c8ec4c017c06d18ea6de5d043ce42bdac52",
+      "bytes": 180658,
+      "classification": "authoritative-scenario"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/many-subscribers-one-session.json",
+      "sha256": "0872b7b4f41767644d5e89a2ca7360b213562c0f9f4d1b1b4a4d736ac268c4e8",
+      "bytes": 182242,
+      "classification": "authoritative-scenario"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/oversized-unicode-ansi-chunking-confirmation.json",
+      "sha256": "59a8e880870eeb989d375a453198b0b10ac8674ffd1487ccdf1eedae4bd359cd",
+      "bytes": 147984,
+      "classification": "authoritative-scenario"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/oversized-unicode-ansi-chunking.json",
+      "sha256": "ea9932c681a0f5f07d8c13425665af6932c8d0b7cfdc2b53fd39c155f2e258bf",
+      "bytes": 148772,
+      "classification": "authoritative-scenario"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/reconnect-older-than-ring-confirmation.json",
+      "sha256": "a6f21e3be66e46ccde07f4d0e11d3278b1b23465931d767b4be026f3b7805a17",
+      "bytes": 138722,
+      "classification": "authoritative-scenario"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/reconnect-older-than-ring.json",
+      "sha256": "9dd2414843e4fa9dee5a4914db0214c89e5e87f67f4a7f24a8a55bfd0448efdb",
+      "bytes": 139512,
+      "classification": "authoritative-scenario"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/reconnect-replay-available-confirmation.json",
+      "sha256": "459f6386cb865205c5da186fef2c65b8c26cd057d94b9532c60f4f0d26958c5a",
+      "bytes": 181159,
+      "classification": "authoritative-scenario"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/reconnect-replay-available.json",
+      "sha256": "2451446634ff05286b43485bbca0a61615e3115169aaa3e07b830267093b1211",
+      "bytes": 181945,
+      "classification": "authoritative-scenario"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/runtime-inputs/opencode-fixture.json",
+      "sha256": "540d4344c5f80dfa8e109b0fade4b6e84618eb6da1353d8ec7e2034457d63c90",
+      "bytes": 1239,
+      "classification": "runtime-input"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/runtime-inputs/runtime-input.json",
+      "sha256": "5abae530abfa6fec9807df399684200c85377c4905ea855bf867fcc378044636",
+      "bytes": 1213,
+      "classification": "runtime-input"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/seed-during-burst.json",
+      "sha256": "e14072aab9205ddc4a3c5fa7c78d06553d397a902c6a30f21ef2b863fd64241b",
+      "bytes": 148034,
+      "classification": "authoritative-scenario"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/stalled-and-current-socket.json",
+      "sha256": "358e1adccb2f72f4747fe7936ee1f11a9f766220564386684b52d964bfcd1f7b",
+      "bytes": 145527,
+      "classification": "authoritative-scenario"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/summary-full-provider-parity.json",
+      "sha256": "9ac496fa6cdfec4cb48a645bfa2e0dc8b786d88ae906444ae7328eb574599c74",
+      "bytes": 321939,
+      "classification": "authoritative-scenario"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/superseded/superseded-local-app-build-missing-workspace-outputs.txt",
+      "sha256": "52e9848d2195aa794fc3e3162fdda52414f07d2bb77f6ce0ba532c38d5f836c6",
+      "bytes": 63348,
+      "classification": "superseded-diagnostic"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/superseded/superseded-reader-web-dependency-layout.txt",
+      "sha256": "3e2fb628d31cbea2e7439630cfb927c8d71888293e932af95253dd9f85211c03",
+      "bytes": 57431,
+      "classification": "superseded-diagnostic"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-487762ef4b4e-4aafd9d6c93b/zero-web-mobile-activity.json",
+      "sha256": "cc5a482a20d385b88da80996ca042386097537d4f28f9448d3e674bc37edf7d6",
+      "bytes": 234367,
+      "classification": "authoritative-scenario"
+    }
+  ]
+}

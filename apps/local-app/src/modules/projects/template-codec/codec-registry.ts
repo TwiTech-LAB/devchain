@@ -25,7 +25,8 @@ import type { TemplateSectionCodec } from './template-section-codec';
 /**
  * Codecs participating in the replace-into-existing flow, in execution order. The order
  * is the validated topological order: profiles (writes profileIdMap + profileNameToId +
- * configLookupMap) MUST precede agents (reads profileIdMap + configLookupMap) and watchers
+ * configLookupMap + selectionEligibleConfigLookupMap) MUST precede agents (reads profileIdMap +
+ * selectionEligibleConfigLookupMap) and watchers
  * (reads agentNameToId + profileNameToId); teams reads all of profiles'/agents' maps and
  * requiresState `agentsPersisted`; scheduledEpics reads agentNameToId + the statuses map and
  * requiresState `epicsLoaded`; projectSettings reads createdPrompts/promptIdMap (prompts) and

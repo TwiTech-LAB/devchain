@@ -17,6 +17,8 @@ describe('aggregatePresence', () => {
     expect(entry.activityState).toBe('busy');
     expect(entry.lastActivityAt).toBeDefined();
     expect(entry.busySince).toBeDefined();
+
+    registry.dispose('s1');
   });
 
   it('returns online=false for agents without sessions in registry', () => {
@@ -42,6 +44,9 @@ describe('aggregatePresence', () => {
 
     expect(result.get('agent-1')!.online).toBe(true);
     expect(result.get('agent-2')!.online).toBe(true);
+
+    registry.dispose('s1');
+    registry.dispose('s2');
   });
 
   it('returns idle state when session has been marked idle', () => {
@@ -86,5 +91,7 @@ describe('aggregatePresence', () => {
     const result = aggregatePresence(registry, [{ sessionId: 's1', agentId: 'agent-1' }]);
 
     expect(result.get('agent-1')!.activityState).toBe('busy');
+
+    registry.dispose('s1');
   });
 });

@@ -13,7 +13,7 @@ describe('TerminalSessionRegistry', () => {
     expect(registry.get('s1')).toBe(session);
   });
 
-  it('passes captured output normalization options into created sessions', async () => {
+  it('passes captured output normalization options into full-history capture', async () => {
     const registry = new TerminalSessionRegistry();
     const session = registry.create('s1', 'tmux-s1', {
       normalizeCapturedLineEndings: true,
@@ -26,13 +26,11 @@ describe('TerminalSessionRegistry', () => {
     const frames: FrameEvent[] = [];
     session.stream.on('frame', (f) => frames.push(f));
 
-    session.subscribe('client-1');
+    await session.requestFullHistory();
 
-    await new Promise((r) => setTimeout(r, 50));
-
-    const seedFrame = frames.find((f) => f.type === 'seed_ansi');
-    expect(seedFrame).toBeDefined();
-    expect((seedFrame!.payload as { data: string }).data).toBe('one\r\ntwo');
+    const historyFrame = frames.find((f) => f.type === 'full_history');
+    expect(historyFrame).toBeDefined();
+    expect((historyFrame!.payload as { ansi: string }).ansi).toBe('one\r\ntwo');
   });
 
   it('throws on double-create with same sessionId', () => {
@@ -164,6 +162,8 @@ describe('TerminalSessionRegistry', () => {
       const dataFrames = frames.filter((f) => f.type === 'data');
       expect(dataFrames).toHaveLength(1);
       expect((dataFrames[0].payload as { data: string }).data).toBe('live-data');
+
+      registry.dispose('s1');
     });
   });
 });

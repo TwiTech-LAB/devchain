@@ -1,13 +1,21 @@
-import { forwardRef, useEffect, useImperativeHandle, useReducer, useRef, useState } from 'react';
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useReducer,
+  useRef,
+  useState,
+} from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import type { Socket } from 'socket.io-client';
 import { cn } from '@/ui/lib/utils';
 import { Input } from '@/ui/components/ui/input';
 import { Button } from '@/ui/components/ui/button';
 import '@xterm/xterm/css/xterm.css';
 import { termLog } from '@/ui/lib/debug';
 import { useAppSocket } from '@/ui/hooks/useAppSocket';
+import type { WsEnvelope } from '@/ui/lib/socket';
 import { useAppTheme } from '@/ui/hooks/useAppTheme';
 import { DEFAULT_TERMINAL_SCROLLBACK } from '@/common/constants/terminal';
 import {
@@ -18,12 +26,22 @@ import {
   useTerminalMessageHandlers,
   useTerminalFocus,
   useTerminalThemeSync,
+  useTerminalWritePump,
 } from './hooks';
 import { connectionReducer } from './connectionReducer';
-import { resolveTerminalSocket } from './socket';
+import { createTerminalHistorySync } from './terminal-history-sync';
+import type { TerminalHistorySync } from './terminal-history-sync';
+import type { ScrollIntentController } from './scroll-intent-binding';
 import { resolveTerminalTheme } from './terminal-themes';
 import { normalizeTerminalEnvelopeForTheme } from './terminal-output-theme';
 import type { ChatTerminalProps } from './types';
+import type {
+  TerminalResyncAbortPayload,
+  TerminalResyncCompletePayload,
+  TerminalResyncRequestPayload,
+} from '@/modules/terminal/dtos/ws-envelope.dto';
+
+const RECOVERY_ABORT_ACK_TIMEOUT_MS = 5000;
 
 export interface ChatTerminalHandle {
   clear: () => void;
@@ -55,26 +73,21 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
   const terminalRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const fallbackSocketRef = useRef<Socket | null>(null);
   const isAuthorityRef = useRef<boolean>(false);
-  const hasHistoryRef = useRef<boolean>(false);
   const isLoadingHistoryRef = useRef<boolean>(false);
   const isHistoryInFlightRef = useRef<boolean>(false);
   const pendingHistoryFramesRef = useRef<{ sequence: number; data: string }[]>([]);
-  const lastCapturedSequenceRef = useRef<number>(0);
+  // Single owner of the history-refresh lifecycle: provider refresh capability, phase/readiness,
+  // per-snapshot has-more, nullable accepted baseline, latest-observed sequence, active attempt.
+  const historySyncRef = useRef<TerminalHistorySync | null>(null);
+  if (!historySyncRef.current) historySyncRef.current = createTerminalHistorySync();
+  const historySync = historySyncRef.current;
   const containerClassName = cn(
     'relative flex h-full min-h-0 w-full flex-col overflow-hidden text-terminal-foreground',
     chrome === 'none' ? 'bg-transparent' : 'rounded-xl border border-border bg-terminal shadow-sm',
     className,
   );
-  const socket = _providedSocket
-    ? _providedSocket
-    : (() => {
-        if (!fallbackSocketRef.current) {
-          fallbackSocketRef.current = resolveTerminalSocket();
-        }
-        return fallbackSocketRef.current;
-      })();
+  const socket = useAppSocket({}, [], _providedSocket);
 
   // Fetch terminal settings BEFORE mounting terminal
   useEffect(() => {
@@ -104,13 +117,100 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
   // Create refs that will be shared between hooks
   const xtermRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const pendingResyncSequenceRef = useRef<number | null>(null);
+  const recoveryAbortAckTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Task 1 scrollbar-drag lifecycle controller (set by useXterm on terminal create/recreate). The
+  // message handler reads it to defer a full_history apply until a drag has fully ended.
+  const scrollIntentControllerRef = useRef<ScrollIntentController | null>(null);
+  // Populated by the message handler; invalidates a history response deferred on a controller that
+  // is about to be swapped/nulled (its drag-end can then never fire).
+  const invalidateDeferredHistoryRef = useRef<(() => void) | null>(null);
+  const setScrollIntentController = useCallback((controller: ScrollIntentController | null) => {
+    const previous = scrollIntentControllerRef.current;
+    scrollIntentControllerRef.current = controller;
+    // A terminal recreate/dispose swaps or nulls the drag controller. Any response deferred on the
+    // previous controller can no longer receive its drag-end, so invalidate it now instead of
+    // stranding the active attempt + in-flight buffer.
+    if (previous && previous !== controller) {
+      invalidateDeferredHistoryRef.current?.();
+    }
+  }, []);
 
   // Subscription management
   const { lastSequenceRef, isSubscribedRef, expectingSeedRef, attemptSubscription } =
-    useTerminalSubscription(sessionId, xtermRef, dispatchConn, socket);
+    useTerminalSubscription(sessionId, xtermRef, dispatchConn, historySync, socket);
 
   // Theme sync: emits terminal:theme after subscribe confirmation and on theme changes
   const { notifySubscribed } = useTerminalThemeSync(sessionId, appTheme, isSubscribedRef, socket);
+
+  const handleWriteOverflow = useCallback(() => {
+    expectingSeedRef.current = true;
+    pendingResyncSequenceRef.current = null;
+    dispatchConn({ type: 'SEED_START' });
+    const payload = {
+      sessionId,
+      reason: 'client_write_overflow',
+    } satisfies TerminalResyncRequestPayload;
+    socket.emit('terminal:resync_request', payload);
+  }, [expectingSeedRef, pendingResyncSequenceRef, sessionId, socket]);
+  const writePump = useTerminalWritePump(xtermRef, handleWriteOverflow);
+
+  const forceCleanRecoveryReconnect = useCallback(() => {
+    if (recoveryAbortAckTimeoutRef.current) {
+      clearTimeout(recoveryAbortAckTimeoutRef.current);
+      recoveryAbortAckTimeoutRef.current = null;
+    }
+    pendingResyncSequenceRef.current = null;
+    lastSequenceRef.current = 0;
+    expectingSeedRef.current = true;
+    isSubscribedRef.current = false;
+    // Invalidate any active history attempt and drop its unapplied buffer before reconnect.
+    historySync.invalidateAttempt();
+    historySync.suspend();
+    isHistoryInFlightRef.current = false;
+    isLoadingHistoryRef.current = false;
+    pendingHistoryFramesRef.current = [];
+    setIsTerminalReady(false);
+    writePump.setTerminal(null);
+    writePump.setTerminal(xtermRef.current);
+    socket.disconnect();
+    socket.connect();
+  }, [expectingSeedRef, historySync, isSubscribedRef, lastSequenceRef, socket, writePump]);
+
+  const handleRecoveryTimeout = useCallback(
+    (abort: TerminalResyncAbortPayload, retryAllowed: boolean) => {
+      if (!retryAllowed || !socket.connected) {
+        forceCleanRecoveryReconnect();
+        return;
+      }
+
+      let settled = false;
+      const settleAbort = (accepted: boolean) => {
+        if (settled) return;
+        settled = true;
+        if (recoveryAbortAckTimeoutRef.current) {
+          clearTimeout(recoveryAbortAckTimeoutRef.current);
+          recoveryAbortAckTimeoutRef.current = null;
+        }
+        if (accepted !== true) {
+          forceCleanRecoveryReconnect();
+          return;
+        }
+        const request = {
+          sessionId,
+          reason: 'client_write_overflow',
+        } satisfies TerminalResyncRequestPayload;
+        socket.emit('terminal:resync_request', request);
+      };
+
+      recoveryAbortAckTimeoutRef.current = setTimeout(
+        () => settleAbort(false),
+        RECOVERY_ABORT_ACK_TIMEOUT_MS,
+      );
+      socket.emit('terminal:resync_abort', abort, settleAbort);
+    },
+    [forceCleanRecoveryReconnect, sessionId, socket],
+  );
 
   // Initialize xterm terminal with onReady callback that triggers subscription.
   // Defer creation until inputMode is loaded so we can honor the configured mode.
@@ -121,31 +221,37 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
     fitAddonRef,
     attemptSubscription,
     inputMode,
-    hasHistoryRef,
+    historySync,
+    isSubscribedRef,
     isLoadingHistoryRef,
     isHistoryInFlightRef,
     pendingHistoryFramesRef,
     scrollbackLines,
     socket,
     appTheme,
+    writePump.setTerminal,
+    setScrollIntentController,
   );
 
   // Seed management
   const {
     seedStateRef,
     seedTimeoutRef,
-    pendingWritesRef,
     queueOrWrite,
+    prepareForResync,
     handleSeedChunk,
+    handleSeedEmpty,
     flushPendingWrites,
     setIgnoreWindow,
+    resetRecoveryTimeoutEpisode,
+    resetRecoveryDomain,
   } = useSeedManager(
     sessionId,
     xtermRef,
     fitAddonRef,
     dispatchConn,
     expectingSeedRef,
-    hasHistoryRef,
+    historySync,
     () => {
       setIsTerminalReady(true);
       // Auto-focus terminal after seed is ready
@@ -160,6 +266,24 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
       }
     },
     scrollbackLines,
+    writePump,
+    (payload) => {
+      lastSequenceRef.current = payload.capturedSequence;
+      pendingResyncSequenceRef.current = null;
+      const completion = {
+        sessionId,
+        sequenceEpoch: payload.sequenceEpoch,
+        recoveryEpoch: payload.recoveryEpoch,
+        capturedSequence: payload.capturedSequence,
+      } satisfies TerminalResyncCompletePayload;
+      socket.emit('terminal:resync_complete', completion);
+    },
+    handleRecoveryTimeout,
+    (payload) => {
+      // seed_empty is a successful non-writing replacement: its capture watermark is the
+      // highest sequence already represented by the preserved terminal rows.
+      lastSequenceRef.current = payload.capturedSequence;
+    },
   );
 
   // Resize handling - pass expectingSeedRef to skip resize events during seed loading.
@@ -178,26 +302,32 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
     lastSequenceRef,
     isAuthorityRef,
     isSubscribedRef,
-    hasHistoryRef,
+    historySync,
     isLoadingHistoryRef,
     isHistoryInFlightRef,
     pendingHistoryFramesRef,
-    lastCapturedSequenceRef,
     expectingSeedRef,
+    pendingResyncSequenceRef,
     seedStateRef,
+    prepareForResync,
     queueOrWrite,
     handleSeedChunk,
+    handleSeedEmpty,
     flushPendingWrites,
     setIgnoreWindow,
     onSessionEnded,
     scrollbackLines,
     socket,
     notifySubscribed,
+    writePump,
+    resetRecoveryDomain,
+    scrollIntentControllerRef,
+    invalidateDeferredHistoryRef,
   );
 
   // Socket connection and message handling
-  useAppSocket(
-    {
+  useEffect(() => {
+    const handlers = {
       connect: () => {
         dispatchConn({ type: 'SOCKET_CONNECT' });
         attemptSubscription();
@@ -206,12 +336,32 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
         termLog('socket_disconnect_event', { sessionId });
         dispatchConn({ type: 'SOCKET_DISCONNECT' });
         isSubscribedRef.current = false;
+        // Invalidate any active history attempt and drop its unapplied buffer before reconnect
+        // work, so a late full_history from the dead socket cannot touch the pump or baseline.
+        historySync.invalidateAttempt();
+        historySync.suspend();
+        isHistoryInFlightRef.current = false;
+        isLoadingHistoryRef.current = false;
+        pendingHistoryFramesRef.current = [];
+        resetRecoveryTimeoutEpisode();
       },
-      message: (envelope) => handleMessage(normalizeTerminalEnvelopeForTheme(envelope, appTheme)),
-    },
-    [attemptSubscription, handleMessage, sessionId, isSubscribedRef, appTheme],
-    _providedSocket,
-  );
+      message: (envelope: WsEnvelope) =>
+        handleMessage(normalizeTerminalEnvelopeForTheme(envelope, appTheme)),
+    };
+    for (const [event, handler] of Object.entries(handlers)) socket.on(event, handler);
+    return () => {
+      for (const [event, handler] of Object.entries(handlers)) socket.off(event, handler);
+    };
+  }, [
+    attemptSubscription,
+    handleMessage,
+    sessionId,
+    isSubscribedRef,
+    appTheme,
+    historySync,
+    resetRecoveryTimeoutEpisode,
+    socket,
+  ]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -225,26 +375,37 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
         clearTimeout(seedTimeoutRef.current);
         seedTimeoutRef.current = null;
       }
+      if (recoveryAbortAckTimeoutRef.current) {
+        clearTimeout(recoveryAbortAckTimeoutRef.current);
+        recoveryAbortAckTimeoutRef.current = null;
+      }
       seedStateRef.current = null;
-      pendingWritesRef.current = [];
       lastSequenceRef.current = 0;
       isAuthorityRef.current = false;
       expectingSeedRef.current = false;
+      pendingResyncSequenceRef.current = null;
       // Clean up history in-flight state
       isHistoryInFlightRef.current = false;
       pendingHistoryFramesRef.current = [];
-      lastCapturedSequenceRef.current = 0;
+      historySync.reset();
     };
   }, [
     sessionId,
     isSubscribedRef,
     seedTimeoutRef,
     seedStateRef,
-    pendingWritesRef,
     lastSequenceRef,
     expectingSeedRef,
+    pendingResyncSequenceRef,
+    historySync,
     socket,
   ]);
+
+  // Reset the history-refresh owner when the session changes so a prior session's capability,
+  // baseline, and active attempt never leak into a new one. Runs before the new subscribe/seed.
+  useEffect(() => {
+    historySync.reset();
+  }, [sessionId, historySync]);
 
   // Expose imperative handle for terminal operations
   useImperativeHandle(

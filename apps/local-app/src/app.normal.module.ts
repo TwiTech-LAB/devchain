@@ -37,6 +37,7 @@ import { CloudModule } from './modules/cloud/cloud.module';
 import { CloudTunnelModule } from './modules/cloud-tunnel/cloud-tunnel.module';
 import { E2eeModule } from './modules/e2ee/e2ee.module';
 import { AgentMessageDeliveryModule } from './modules/agent-message-delivery/agent-message-delivery.module';
+import { MetricsModule } from './modules/metrics/metrics.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { EventsCoreModule } from './modules/events/events-core.module';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
@@ -48,6 +49,7 @@ import { AllWsExceptionsFilter } from './common/filters/ws-exception.filter';
     CoreNormalHealthModule,
     CoreCommonModule,
     CoreNormalModule,
+    MetricsModule,
     StorageModule,
     TerminalModule,
     SessionsModule,

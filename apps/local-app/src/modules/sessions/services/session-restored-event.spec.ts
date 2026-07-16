@@ -36,6 +36,9 @@ function createGateway() {
     getFramesSince: jest.fn().mockReturnValue([]),
     getCurrentSequence: jest.fn().mockReturnValue(0),
     addFrame: jest.fn(),
+    setClearExpiryHandler: jest.fn(),
+    scheduleClear: jest.fn(),
+    cancelScheduledClear: jest.fn().mockReturnValue(null),
   } as unknown as TerminalStreamService;
   const settingsService = {
     getSetting: jest.fn(),
@@ -62,6 +65,17 @@ function createGateway() {
     seedService,
     terminalIO,
     registry,
+    {} as never,
+    { setServer: jest.fn(), broadcastEvent: jest.fn() } as never,
+    {
+      registerSocket: jest.fn(),
+      removeSocket: jest.fn(),
+      enqueueLive: jest.fn(),
+      enqueueRecovery: jest.fn(),
+      getStats: jest.fn().mockReturnValue({}),
+      dispose: jest.fn(),
+    } as never,
+    { registerCacheStatsProvider: jest.fn(), registerStatsProvider: jest.fn() } as never,
   );
 
   const serverEmit = jest.fn();

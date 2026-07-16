@@ -148,7 +148,7 @@ describe('TerminalRegistryRehydrator', () => {
     expect(registry.get('race')!.tmuxSessionName).toBe('tmux_race');
   });
 
-  it('normalizes captured line endings through captured-output policy', async () => {
+  it('normalizes full-history line endings through captured-output policy', async () => {
     const { rehydrator, registry, terminalIO } = createRehydrator({
       metas: [{ sessionId: 'raw', tmuxSessionName: 'tmux_raw', providerName: 'claude' }],
     });
@@ -164,12 +164,10 @@ describe('TerminalRegistryRehydrator', () => {
     const frames: Array<{ type: string; payload: unknown }> = [];
     session!.stream.on('frame', (frame) => frames.push(frame));
 
-    session!.subscribe('client-1');
+    await session!.requestFullHistory();
 
-    await new Promise((r) => setTimeout(r, 50));
-
-    const seedFrame = frames.find((f) => f.type === 'seed_ansi');
-    expect(seedFrame).toBeDefined();
-    expect((seedFrame!.payload as { data: string }).data).toBe('one\r\ntwo');
+    const historyFrame = frames.find((f) => f.type === 'full_history');
+    expect(historyFrame).toBeDefined();
+    expect((historyFrame!.payload as { ansi: string }).ansi).toBe('one\r\ntwo');
   });
 });

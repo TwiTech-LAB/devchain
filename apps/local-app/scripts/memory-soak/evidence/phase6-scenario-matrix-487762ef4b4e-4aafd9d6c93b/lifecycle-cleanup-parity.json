@@ -1,0 +1,2481 @@
+{
+  "schemaVersion": 2,
+  "reportKind": "fixture-scenario",
+  "runId": "1784076908354-4020425-1337",
+  "scenario": {
+    "id": "lifecycle-cleanup-parity",
+    "title": "Stopped, crashed, and dead sessions clean up identically",
+    "state": "active",
+    "execution": "lifecycle-fixture",
+    "expected": [
+      "PTY cleanup parity",
+      "listener cleanup parity",
+      "frame-buffer cleanup parity"
+    ]
+  },
+  "status": "completed",
+  "pass": true,
+  "startedAt": "2026-07-15T00:51:30.223Z",
+  "finishedAt": "2026-07-15T00:55:08.354Z",
+  "reproducibility": {
+    "seed": 1337,
+    "profile": "soak",
+    "foregroundBurstsPerSecond": 10,
+    "backgroundBurstsPerSecond": 1,
+    "chunkBytes": 1024,
+    "lifecyclePathSchedule": {
+      "cache-churn-1": [
+        "stopped",
+        "crashed",
+        "dead"
+      ],
+      "cache-churn-2": [
+        "crashed",
+        "dead",
+        "crashed",
+        "dead",
+        "crashed"
+      ]
+    },
+    "configuredStoppedReplayRetentionMs": 60000,
+    "stoppedReplayRetentionOverride": null,
+    "resourceProbe": "fixture-child-preload-observing-real-resource-maps"
+  },
+  "harness": {
+    "provenance": {
+      "method": "git-checkout",
+      "capturedAt": "2026-07-15T00:55:08.354Z",
+      "repositoryRoot": "/home/ngsupb/repos/twitech/devchain-rem15-checkpoint",
+      "commit": "487762ef4b4e2673030199851f3c92b5edee82ac",
+      "branch": null,
+      "dirty": false
+    }
+  },
+  "target": {
+    "pid": 4020535,
+    "provenance": {
+      "method": "linux-procfs-sha256-v1",
+      "capturedAt": "2026-07-15T00:51:31.256Z",
+      "repositoryRoot": "/home/ngsupb/repos/twitech/devchain-rem15-checkpoint",
+      "commit": "487762ef4b4e2673030199851f3c92b5edee82ac",
+      "branch": null,
+      "dirty": false,
+      "cwd": "/home/ngsupb/repos/twitech/devchain-rem15-checkpoint/apps/local-app",
+      "executable": {
+        "path": "/home/ngsupb/.nvm/versions/node/v22.17.0/bin/node",
+        "sha256": "8071ae0fca095a272ad698a90c7061801a86fb6392ddb81e922b68a91a4374b9",
+        "sizeBytes": 121609656,
+        "mtimeMs": 1750791151000
+      },
+      "entrypoint": {
+        "path": "/home/ngsupb/repos/twitech/devchain-rem15-checkpoint/apps/local-app/dist/main.js",
+        "sha256": "6d1882290ade153582cde2fece933a5e8e2ca598fd9218aba5e8e7a78c1b22c6",
+        "sizeBytes": 6824,
+        "mtimeMs": 1784075986937.3818
+      },
+      "buildFingerprint": {
+        "algorithm": "sha256",
+        "digest": "4aafd9d6c93b0340a0d0933b29a90c96bc6416de39e7948571b102d06e016b5e",
+        "subjectKind": "directory-tree",
+        "subjectPath": "/home/ngsupb/repos/twitech/devchain-rem15-checkpoint/apps/local-app/dist",
+        "fileCount": 2007,
+        "totalBytes": 11462551
+      }
+    }
+  },
+  "fixture": {
+    "app": {
+      "ready": true,
+      "pid": 4020535,
+      "port": 36729
+    },
+    "socket": {
+      "connected": true,
+      "runtimeTokenVerified": true,
+      "handshakeTokenPresented": true,
+      "subscribed": true,
+      "seedObserved": true,
+      "receivedTypes": [
+        "ping",
+        "subscribed",
+        "focus_changed",
+        "seed_ansi",
+        "event_created",
+        "stopped",
+        "presence",
+        "state_change",
+        "data"
+      ],
+      "clientCount": 8
+    },
+    "mobile": {
+      "pathChoice": "authenticated bridge-path fixture against Local App mobile ingress",
+      "authentication": {
+        "localAppAccepted": true,
+        "transport": "loopback-jwt-plus-ed25519-attestation",
+        "subject": "b7570db3-59b5-41a6-b787-d946c0662e00",
+        "scope": "memory-soak:viewport-project:bc2f2e4f-a9f4-4de8-bc2e-2bbc264d1675",
+        "scratchSessionId": null,
+        "scratchProjectId": "bc2f2e4f-a9f4-4de8-bc2e-2bbc264d1675",
+        "keyId": "f18f1c95-23ff-4842-8d79-ad505349dd4e",
+        "expiresAt": "2026-07-15T00:56:29.000Z",
+        "bearerAccepted": true,
+        "attestObserved": true,
+        "attestVerified": true,
+        "readyIssued": true,
+        "rpcRequests": 8,
+        "rpcResponses": 8
+      }
+    },
+    "lifecycle": {
+      "paths": [
+        {
+          "path": "stopped",
+          "phase": "cache-churn-1",
+          "cycleIndex": 0,
+          "session": {
+            "sessionId": "00978e0d-1c06-49bb-95b8-aa0a0cde42ee",
+            "tmuxSessionName": "devchain_memory-soak-mobile-project_independent_5bfdbf6f_00978e0d",
+            "panePid": 4021020,
+            "generatorPid": 4021054,
+            "outputBytes": 4096
+          },
+          "trigger": {
+            "kind": "local-app-http",
+            "method": "DELETE",
+            "resource": "/api/sessions/:id",
+            "status": 200
+          },
+          "initial": {
+            "sessionId": "00978e0d-1c06-49bb-95b8-aa0a0cde42ee",
+            "status": "running",
+            "ptyFdCount": 1,
+            "registryEntry": true,
+            "frameListener": true,
+            "ptySession": true,
+            "frameBuffer": true,
+            "globalCounts": {
+              "registryEntries": 1,
+              "frameListeners": 1,
+              "ptySessions": 1,
+              "frameBuffers": 1
+            },
+            "metricCounts": {
+              "ptySessions": 1,
+              "frameBuffers": 1,
+              "frameBufferFrames": 0,
+              "frameBufferBytes": 16
+            }
+          },
+          "post": {
+            "sessionId": "00978e0d-1c06-49bb-95b8-aa0a0cde42ee",
+            "status": "stopped",
+            "ptyFdCount": 0,
+            "registryEntry": false,
+            "frameListener": false,
+            "ptySession": false,
+            "frameBuffer": false,
+            "globalCounts": {
+              "registryEntries": 0,
+              "frameListeners": 0,
+              "ptySessions": 0,
+              "frameBuffers": 0
+            },
+            "metricCounts": {
+              "ptySessions": 0,
+              "frameBuffers": 0,
+              "frameBufferFrames": 0,
+              "frameBufferBytes": 0
+            }
+          },
+          "cleanupLatencyMs": 4943,
+          "providerProcessAliveAfterCleanup": false,
+          "socket": {
+            "connected": true,
+            "subscribed": true,
+            "seedObserved": true,
+            "receivedTypes": [
+              "ping",
+              "subscribed",
+              "focus_changed",
+              "seed_ansi",
+              "event_created",
+              "stopped",
+              "presence",
+              "state_change"
+            ]
+          }
+        },
+        {
+          "path": "crashed",
+          "phase": "cache-churn-1",
+          "cycleIndex": 1,
+          "session": {
+            "sessionId": "78c1c08e-47b0-46f1-ab76-7189d0da5d4d",
+            "tmuxSessionName": "devchain_memory-soak-mobile-project_independent_5bfdbf6f_78c1c08e",
+            "panePid": 4029680,
+            "generatorPid": 4029716,
+            "outputBytes": 4096
+          },
+          "trigger": {
+            "kind": "process-signal",
+            "signal": "SIGKILL",
+            "panePid": 4029680,
+            "generatorPid": 4029716
+          },
+          "initial": {
+            "sessionId": "78c1c08e-47b0-46f1-ab76-7189d0da5d4d",
+            "status": "running",
+            "ptyFdCount": 1,
+            "registryEntry": true,
+            "frameListener": true,
+            "ptySession": true,
+            "frameBuffer": true,
+            "globalCounts": {
+              "registryEntries": 1,
+              "frameListeners": 1,
+              "ptySessions": 1,
+              "frameBuffers": 1
+            },
+            "metricCounts": {
+              "ptySessions": 1,
+              "frameBuffers": 1,
+              "frameBufferFrames": 2,
+              "frameBufferBytes": 4488
+            }
+          },
+          "post": {
+            "sessionId": "78c1c08e-47b0-46f1-ab76-7189d0da5d4d",
+            "status": "failed",
+            "ptyFdCount": 0,
+            "registryEntry": false,
+            "frameListener": false,
+            "ptySession": false,
+            "frameBuffer": false,
+            "globalCounts": {
+              "registryEntries": 0,
+              "frameListeners": 0,
+              "ptySessions": 0,
+              "frameBuffers": 0
+            },
+            "metricCounts": {
+              "ptySessions": 0,
+              "frameBuffers": 0,
+              "frameBufferFrames": 0,
+              "frameBufferBytes": 0
+            }
+          },
+          "cleanupLatencyMs": 4921,
+          "providerProcessAliveAfterCleanup": false,
+          "socket": {
+            "connected": true,
+            "subscribed": true,
+            "seedObserved": true,
+            "receivedTypes": [
+              "ping",
+              "subscribed",
+              "focus_changed",
+              "data",
+              "seed_ansi",
+              "event_created",
+              "state_change"
+            ]
+          }
+        },
+        {
+          "path": "dead",
+          "phase": "cache-churn-1",
+          "cycleIndex": 2,
+          "session": {
+            "sessionId": "09d6828e-6da9-4168-b9b8-ca49a798b4fc",
+            "tmuxSessionName": "devchain_memory-soak-mobile-project_independent_5bfdbf6f_09d6828e",
+            "panePid": 4039320,
+            "generatorPid": 4039357,
+            "outputBytes": 4096
+          },
+          "trigger": {
+            "kind": "tmux-target-removal",
+            "tmuxSessionName": "devchain_memory-soak-mobile-project_independent_5bfdbf6f_09d6828e"
+          },
+          "initial": {
+            "sessionId": "09d6828e-6da9-4168-b9b8-ca49a798b4fc",
+            "status": "running",
+            "ptyFdCount": 1,
+            "registryEntry": true,
+            "frameListener": true,
+            "ptySession": true,
+            "frameBuffer": true,
+            "globalCounts": {
+              "registryEntries": 1,
+              "frameListeners": 1,
+              "ptySessions": 1,
+              "frameBuffers": 1
+            },
+            "metricCounts": {
+              "ptySessions": 1,
+              "frameBuffers": 1,
+              "frameBufferFrames": 0,
+              "frameBufferBytes": 16
+            }
+          },
+          "post": {
+            "sessionId": "09d6828e-6da9-4168-b9b8-ca49a798b4fc",
+            "status": "failed",
+            "ptyFdCount": 0,
+            "registryEntry": false,
+            "frameListener": false,
+            "ptySession": false,
+            "frameBuffer": false,
+            "globalCounts": {
+              "registryEntries": 0,
+              "frameListeners": 0,
+              "ptySessions": 0,
+              "frameBuffers": 0
+            },
+            "metricCounts": {
+              "ptySessions": 0,
+              "frameBuffers": 0,
+              "frameBufferFrames": 0,
+              "frameBufferBytes": 0
+            }
+          },
+          "cleanupLatencyMs": 4922,
+          "providerProcessAliveAfterCleanup": false,
+          "socket": {
+            "connected": true,
+            "subscribed": true,
+            "seedObserved": true,
+            "receivedTypes": [
+              "ping",
+              "subscribed",
+              "focus_changed",
+              "seed_ansi",
+              "data",
+              "event_created",
+              "state_change"
+            ]
+          }
+        },
+        {
+          "path": "crashed",
+          "phase": "cache-churn-2",
+          "cycleIndex": 0,
+          "session": {
+            "sessionId": "fb7ec852-0ad7-4450-828e-166fc93904b4",
+            "tmuxSessionName": "devchain_memory-soak-mobile-project_independent_5bfdbf6f_fb7ec852",
+            "panePid": 4048085,
+            "generatorPid": 4048121,
+            "outputBytes": 4096
+          },
+          "trigger": {
+            "kind": "process-signal",
+            "signal": "SIGKILL",
+            "panePid": 4048085,
+            "generatorPid": 4048121
+          },
+          "initial": {
+            "sessionId": "fb7ec852-0ad7-4450-828e-166fc93904b4",
+            "status": "running",
+            "ptyFdCount": 1,
+            "registryEntry": true,
+            "frameListener": true,
+            "ptySession": true,
+            "frameBuffer": true,
+            "globalCounts": {
+              "registryEntries": 1,
+              "frameListeners": 1,
+              "ptySessions": 1,
+              "frameBuffers": 1
+            },
+            "metricCounts": {
+              "ptySessions": 1,
+              "frameBuffers": 1,
+              "frameBufferFrames": 0,
+              "frameBufferBytes": 16
+            }
+          },
+          "post": {
+            "sessionId": "fb7ec852-0ad7-4450-828e-166fc93904b4",
+            "status": "failed",
+            "ptyFdCount": 0,
+            "registryEntry": false,
+            "frameListener": false,
+            "ptySession": false,
+            "frameBuffer": false,
+            "globalCounts": {
+              "registryEntries": 0,
+              "frameListeners": 0,
+              "ptySessions": 0,
+              "frameBuffers": 0
+            },
+            "metricCounts": {
+              "ptySessions": 0,
+              "frameBuffers": 0,
+              "frameBufferFrames": 0,
+              "frameBufferBytes": 0
+            }
+          },
+          "cleanupLatencyMs": 4919,
+          "providerProcessAliveAfterCleanup": false,
+          "socket": {
+            "connected": true,
+            "subscribed": true,
+            "seedObserved": true,
+            "receivedTypes": [
+              "ping",
+              "subscribed",
+              "focus_changed",
+              "seed_ansi",
+              "data",
+              "event_created",
+              "state_change"
+            ]
+          }
+        },
+        {
+          "path": "dead",
+          "phase": "cache-churn-2",
+          "cycleIndex": 1,
+          "session": {
+            "sessionId": "bd97b294-f45b-43a5-bbc9-4b9f357a301c",
+            "tmuxSessionName": "devchain_memory-soak-mobile-project_independent_5bfdbf6f_bd97b294",
+            "panePid": 4057646,
+            "generatorPid": 4057682,
+            "outputBytes": 4096
+          },
+          "trigger": {
+            "kind": "tmux-target-removal",
+            "tmuxSessionName": "devchain_memory-soak-mobile-project_independent_5bfdbf6f_bd97b294"
+          },
+          "initial": {
+            "sessionId": "bd97b294-f45b-43a5-bbc9-4b9f357a301c",
+            "status": "running",
+            "ptyFdCount": 1,
+            "registryEntry": true,
+            "frameListener": true,
+            "ptySession": true,
+            "frameBuffer": true,
+            "globalCounts": {
+              "registryEntries": 1,
+              "frameListeners": 1,
+              "ptySessions": 1,
+              "frameBuffers": 1
+            },
+            "metricCounts": {
+              "ptySessions": 1,
+              "frameBuffers": 1,
+              "frameBufferFrames": 0,
+              "frameBufferBytes": 16
+            }
+          },
+          "post": {
+            "sessionId": "bd97b294-f45b-43a5-bbc9-4b9f357a301c",
+            "status": "failed",
+            "ptyFdCount": 0,
+            "registryEntry": false,
+            "frameListener": false,
+            "ptySession": false,
+            "frameBuffer": false,
+            "globalCounts": {
+              "registryEntries": 0,
+              "frameListeners": 0,
+              "ptySessions": 0,
+              "frameBuffers": 0
+            },
+            "metricCounts": {
+              "ptySessions": 0,
+              "frameBuffers": 0,
+              "frameBufferFrames": 0,
+              "frameBufferBytes": 0
+            }
+          },
+          "cleanupLatencyMs": 4923,
+          "providerProcessAliveAfterCleanup": false,
+          "socket": {
+            "connected": true,
+            "subscribed": true,
+            "seedObserved": true,
+            "receivedTypes": [
+              "ping",
+              "subscribed",
+              "focus_changed",
+              "seed_ansi",
+              "data",
+              "event_created",
+              "state_change"
+            ]
+          }
+        },
+        {
+          "path": "crashed",
+          "phase": "cache-churn-2",
+          "cycleIndex": 2,
+          "session": {
+            "sessionId": "f4ec71b7-e583-4e67-825e-281d939c6d8c",
+            "tmuxSessionName": "devchain_memory-soak-mobile-project_independent_5bfdbf6f_f4ec71b7",
+            "panePid": 4066044,
+            "generatorPid": 4066080,
+            "outputBytes": 4096
+          },
+          "trigger": {
+            "kind": "process-signal",
+            "signal": "SIGKILL",
+            "panePid": 4066044,
+            "generatorPid": 4066080
+          },
+          "initial": {
+            "sessionId": "f4ec71b7-e583-4e67-825e-281d939c6d8c",
+            "status": "running",
+            "ptyFdCount": 1,
+            "registryEntry": true,
+            "frameListener": true,
+            "ptySession": true,
+            "frameBuffer": true,
+            "globalCounts": {
+              "registryEntries": 1,
+              "frameListeners": 1,
+              "ptySessions": 1,
+              "frameBuffers": 1
+            },
+            "metricCounts": {
+              "ptySessions": 1,
+              "frameBuffers": 1,
+              "frameBufferFrames": 2,
+              "frameBufferBytes": 4488
+            }
+          },
+          "post": {
+            "sessionId": "f4ec71b7-e583-4e67-825e-281d939c6d8c",
+            "status": "failed",
+            "ptyFdCount": 0,
+            "registryEntry": false,
+            "frameListener": false,
+            "ptySession": false,
+            "frameBuffer": false,
+            "globalCounts": {
+              "registryEntries": 0,
+              "frameListeners": 0,
+              "ptySessions": 0,
+              "frameBuffers": 0
+            },
+            "metricCounts": {
+              "ptySessions": 0,
+              "frameBuffers": 0,
+              "frameBufferFrames": 0,
+              "frameBufferBytes": 0
+            }
+          },
+          "cleanupLatencyMs": 4923,
+          "providerProcessAliveAfterCleanup": false,
+          "socket": {
+            "connected": true,
+            "subscribed": true,
+            "seedObserved": true,
+            "receivedTypes": [
+              "ping",
+              "subscribed",
+              "focus_changed",
+              "data",
+              "seed_ansi",
+              "event_created",
+              "state_change"
+            ]
+          }
+        },
+        {
+          "path": "dead",
+          "phase": "cache-churn-2",
+          "cycleIndex": 3,
+          "session": {
+            "sessionId": "65ef3695-d47f-4ac5-9c83-c09f32872a3b",
+            "tmuxSessionName": "devchain_memory-soak-mobile-project_independent_5bfdbf6f_65ef3695",
+            "panePid": 4075133,
+            "generatorPid": 4075171,
+            "outputBytes": 4096
+          },
+          "trigger": {
+            "kind": "tmux-target-removal",
+            "tmuxSessionName": "devchain_memory-soak-mobile-project_independent_5bfdbf6f_65ef3695"
+          },
+          "initial": {
+            "sessionId": "65ef3695-d47f-4ac5-9c83-c09f32872a3b",
+            "status": "running",
+            "ptyFdCount": 1,
+            "registryEntry": true,
+            "frameListener": true,
+            "ptySession": true,
+            "frameBuffer": true,
+            "globalCounts": {
+              "registryEntries": 1,
+              "frameListeners": 1,
+              "ptySessions": 1,
+              "frameBuffers": 1
+            },
+            "metricCounts": {
+              "ptySessions": 1,
+              "frameBuffers": 1,
+              "frameBufferFrames": 0,
+              "frameBufferBytes": 16
+            }
+          },
+          "post": {
+            "sessionId": "65ef3695-d47f-4ac5-9c83-c09f32872a3b",
+            "status": "failed",
+            "ptyFdCount": 0,
+            "registryEntry": false,
+            "frameListener": false,
+            "ptySession": false,
+            "frameBuffer": false,
+            "globalCounts": {
+              "registryEntries": 0,
+              "frameListeners": 0,
+              "ptySessions": 0,
+              "frameBuffers": 0
+            },
+            "metricCounts": {
+              "ptySessions": 0,
+              "frameBuffers": 0,
+              "frameBufferFrames": 0,
+              "frameBufferBytes": 0
+            }
+          },
+          "cleanupLatencyMs": 4920,
+          "providerProcessAliveAfterCleanup": false,
+          "socket": {
+            "connected": true,
+            "subscribed": true,
+            "seedObserved": true,
+            "receivedTypes": [
+              "ping",
+              "subscribed",
+              "focus_changed",
+              "seed_ansi",
+              "data",
+              "event_created",
+              "state_change"
+            ]
+          }
+        },
+        {
+          "path": "crashed",
+          "phase": "cache-churn-2",
+          "cycleIndex": 4,
+          "session": {
+            "sessionId": "df2f900a-2c8d-4ff1-8e18-7084676421b0",
+            "tmuxSessionName": "devchain_memory-soak-mobile-project_independent_5bfdbf6f_df2f900a",
+            "panePid": 4084455,
+            "generatorPid": 4084507,
+            "outputBytes": 0
+          },
+          "trigger": {
+            "kind": "process-signal",
+            "signal": "SIGKILL",
+            "panePid": 4084455,
+            "generatorPid": 4084507
+          },
+          "initial": {
+            "sessionId": "df2f900a-2c8d-4ff1-8e18-7084676421b0",
+            "status": "running",
+            "ptyFdCount": 1,
+            "registryEntry": true,
+            "frameListener": true,
+            "ptySession": true,
+            "frameBuffer": true,
+            "globalCounts": {
+              "registryEntries": 1,
+              "frameListeners": 1,
+              "ptySessions": 1,
+              "frameBuffers": 1
+            },
+            "metricCounts": {
+              "ptySessions": 1,
+              "frameBuffers": 1,
+              "frameBufferFrames": 0,
+              "frameBufferBytes": 16
+            }
+          },
+          "post": {
+            "sessionId": "df2f900a-2c8d-4ff1-8e18-7084676421b0",
+            "status": "failed",
+            "ptyFdCount": 0,
+            "registryEntry": false,
+            "frameListener": false,
+            "ptySession": false,
+            "frameBuffer": false,
+            "globalCounts": {
+              "registryEntries": 0,
+              "frameListeners": 0,
+              "ptySessions": 0,
+              "frameBuffers": 0
+            },
+            "metricCounts": {
+              "ptySessions": 0,
+              "frameBuffers": 0,
+              "frameBufferFrames": 0,
+              "frameBufferBytes": 0
+            }
+          },
+          "cleanupLatencyMs": 5017,
+          "providerProcessAliveAfterCleanup": false,
+          "socket": {
+            "connected": true,
+            "subscribed": true,
+            "seedObserved": true,
+            "receivedTypes": [
+              "ping",
+              "subscribed",
+              "focus_changed",
+              "seed_ansi",
+              "data",
+              "event_created",
+              "state_change"
+            ]
+          }
+        }
+      ],
+      "resourceCounts": [
+        "ptyFdCount",
+        "registryEntries",
+        "frameListeners",
+        "frameBuffers"
+      ]
+    },
+    "scratchSession": {
+      "sessionName": "lifecycle-anchor-4020425-1337",
+      "tmuxServerPid": 4020892,
+      "panePid": 4020893,
+      "generatorPid": 4020893,
+      "deterministicSeed": 1337,
+      "outputBytes": 4096
+    },
+    "cleanup": {
+      "attempted": true,
+      "socketDisconnected": true,
+      "socketObservation": {
+        "observedCount": 8,
+        "disconnectedCount": 8,
+        "disconnectErrorCount": 0,
+        "timedOut": false,
+        "waitTimeoutMs": 60000,
+        "outcomes": [
+          {
+            "index": 0,
+            "socketId": null,
+            "connectedBeforeDisconnect": false,
+            "disconnectAttempted": true,
+            "disconnectError": null,
+            "connectedAfterWait": false,
+            "disconnected": true
+          },
+          {
+            "index": 1,
+            "socketId": null,
+            "connectedBeforeDisconnect": false,
+            "disconnectAttempted": true,
+            "disconnectError": null,
+            "connectedAfterWait": false,
+            "disconnected": true
+          },
+          {
+            "index": 2,
+            "socketId": null,
+            "connectedBeforeDisconnect": false,
+            "disconnectAttempted": true,
+            "disconnectError": null,
+            "connectedAfterWait": false,
+            "disconnected": true
+          },
+          {
+            "index": 3,
+            "socketId": null,
+            "connectedBeforeDisconnect": false,
+            "disconnectAttempted": true,
+            "disconnectError": null,
+            "connectedAfterWait": false,
+            "disconnected": true
+          },
+          {
+            "index": 4,
+            "socketId": null,
+            "connectedBeforeDisconnect": false,
+            "disconnectAttempted": true,
+            "disconnectError": null,
+            "connectedAfterWait": false,
+            "disconnected": true
+          },
+          {
+            "index": 5,
+            "socketId": null,
+            "connectedBeforeDisconnect": false,
+            "disconnectAttempted": true,
+            "disconnectError": null,
+            "connectedAfterWait": false,
+            "disconnected": true
+          },
+          {
+            "index": 6,
+            "socketId": null,
+            "connectedBeforeDisconnect": false,
+            "disconnectAttempted": true,
+            "disconnectError": null,
+            "connectedAfterWait": false,
+            "disconnected": true
+          },
+          {
+            "index": 7,
+            "socketId": null,
+            "connectedBeforeDisconnect": false,
+            "disconnectAttempted": true,
+            "disconnectError": null,
+            "connectedAfterWait": false,
+            "disconnected": true
+          }
+        ]
+      },
+      "processAliveAfterCleanup": false,
+      "tmuxServerAliveAfterCleanup": false,
+      "storageCreated": true,
+      "storageExistsAfterCleanup": false,
+      "tempRootExistsAfterCleanup": false,
+      "alivePidsAfterCleanup": [],
+      "residuePaths": [],
+      "removalError": null,
+      "processesGone": true,
+      "mobileIngressStopped": true
+    }
+  },
+  "correctness": {
+    "pass": true,
+    "checks": [
+      {
+        "id": "lifecycle-stopped-resources-released",
+        "actual": [
+          {
+            "sessionId": "00978e0d-1c06-49bb-95b8-aa0a0cde42ee",
+            "status": "stopped",
+            "ptyFdCount": 0,
+            "registryEntry": false,
+            "frameListener": false,
+            "ptySession": false,
+            "frameBuffer": false,
+            "globalCounts": {
+              "registryEntries": 0,
+              "frameListeners": 0,
+              "ptySessions": 0,
+              "frameBuffers": 0
+            },
+            "metricCounts": {
+              "ptySessions": 0,
+              "frameBuffers": 0,
+              "frameBufferFrames": 0,
+              "frameBufferBytes": 0
+            }
+          }
+        ],
+        "expected": {
+          "executions": "> 0",
+          "ptyFdCount": 0,
+          "registryEntries": 0,
+          "frameListeners": 0,
+          "frameBuffers": 0
+        },
+        "pass": true
+      },
+      {
+        "id": "lifecycle-crashed-resources-released",
+        "actual": [
+          {
+            "sessionId": "78c1c08e-47b0-46f1-ab76-7189d0da5d4d",
+            "status": "failed",
+            "ptyFdCount": 0,
+            "registryEntry": false,
+            "frameListener": false,
+            "ptySession": false,
+            "frameBuffer": false,
+            "globalCounts": {
+              "registryEntries": 0,
+              "frameListeners": 0,
+              "ptySessions": 0,
+              "frameBuffers": 0
+            },
+            "metricCounts": {
+              "ptySessions": 0,
+              "frameBuffers": 0,
+              "frameBufferFrames": 0,
+              "frameBufferBytes": 0
+            }
+          },
+          {
+            "sessionId": "fb7ec852-0ad7-4450-828e-166fc93904b4",
+            "status": "failed",
+            "ptyFdCount": 0,
+            "registryEntry": false,
+            "frameListener": false,
+            "ptySession": false,
+            "frameBuffer": false,
+            "globalCounts": {
+              "registryEntries": 0,
+              "frameListeners": 0,
+              "ptySessions": 0,
+              "frameBuffers": 0
+            },
+            "metricCounts": {
+              "ptySessions": 0,
+              "frameBuffers": 0,
+              "frameBufferFrames": 0,
+              "frameBufferBytes": 0
+            }
+          },
+          {
+            "sessionId": "f4ec71b7-e583-4e67-825e-281d939c6d8c",
+            "status": "failed",
+            "ptyFdCount": 0,
+            "registryEntry": false,
+            "frameListener": false,
+            "ptySession": false,
+            "frameBuffer": false,
+            "globalCounts": {
+              "registryEntries": 0,
+              "frameListeners": 0,
+              "ptySessions": 0,
+              "frameBuffers": 0
+            },
+            "metricCounts": {
+              "ptySessions": 0,
+              "frameBuffers": 0,
+              "frameBufferFrames": 0,
+              "frameBufferBytes": 0
+            }
+          },
+          {
+            "sessionId": "df2f900a-2c8d-4ff1-8e18-7084676421b0",
+            "status": "failed",
+            "ptyFdCount": 0,
+            "registryEntry": false,
+            "frameListener": false,
+            "ptySession": false,
+            "frameBuffer": false,
+            "globalCounts": {
+              "registryEntries": 0,
+              "frameListeners": 0,
+              "ptySessions": 0,
+              "frameBuffers": 0
+            },
+            "metricCounts": {
+              "ptySessions": 0,
+              "frameBuffers": 0,
+              "frameBufferFrames": 0,
+              "frameBufferBytes": 0
+            }
+          }
+        ],
+        "expected": {
+          "executions": "> 0",
+          "ptyFdCount": 0,
+          "registryEntries": 0,
+          "frameListeners": 0,
+          "frameBuffers": 0
+        },
+        "pass": true
+      },
+      {
+        "id": "lifecycle-dead-resources-released",
+        "actual": [
+          {
+            "sessionId": "09d6828e-6da9-4168-b9b8-ca49a798b4fc",
+            "status": "failed",
+            "ptyFdCount": 0,
+            "registryEntry": false,
+            "frameListener": false,
+            "ptySession": false,
+            "frameBuffer": false,
+            "globalCounts": {
+              "registryEntries": 0,
+              "frameListeners": 0,
+              "ptySessions": 0,
+              "frameBuffers": 0
+            },
+            "metricCounts": {
+              "ptySessions": 0,
+              "frameBuffers": 0,
+              "frameBufferFrames": 0,
+              "frameBufferBytes": 0
+            }
+          },
+          {
+            "sessionId": "bd97b294-f45b-43a5-bbc9-4b9f357a301c",
+            "status": "failed",
+            "ptyFdCount": 0,
+            "registryEntry": false,
+            "frameListener": false,
+            "ptySession": false,
+            "frameBuffer": false,
+            "globalCounts": {
+              "registryEntries": 0,
+              "frameListeners": 0,
+              "ptySessions": 0,
+              "frameBuffers": 0
+            },
+            "metricCounts": {
+              "ptySessions": 0,
+              "frameBuffers": 0,
+              "frameBufferFrames": 0,
+              "frameBufferBytes": 0
+            }
+          },
+          {
+            "sessionId": "65ef3695-d47f-4ac5-9c83-c09f32872a3b",
+            "status": "failed",
+            "ptyFdCount": 0,
+            "registryEntry": false,
+            "frameListener": false,
+            "ptySession": false,
+            "frameBuffer": false,
+            "globalCounts": {
+              "registryEntries": 0,
+              "frameListeners": 0,
+              "ptySessions": 0,
+              "frameBuffers": 0
+            },
+            "metricCounts": {
+              "ptySessions": 0,
+              "frameBuffers": 0,
+              "frameBufferFrames": 0,
+              "frameBufferBytes": 0
+            }
+          }
+        ],
+        "expected": {
+          "executions": "> 0",
+          "ptyFdCount": 0,
+          "registryEntries": 0,
+          "frameListeners": 0,
+          "frameBuffers": 0
+        },
+        "pass": true
+      },
+      {
+        "id": "lifecycle-post-cleanup-parity",
+        "actual": [
+          {
+            "path": "stopped",
+            "registryEntries": 0,
+            "frameListeners": 0,
+            "ptySessions": 0,
+            "frameBuffers": 0,
+            "ptyFdCount": 0
+          },
+          {
+            "path": "crashed",
+            "registryEntries": 0,
+            "frameListeners": 0,
+            "ptySessions": 0,
+            "frameBuffers": 0,
+            "ptyFdCount": 0
+          },
+          {
+            "path": "dead",
+            "registryEntries": 0,
+            "frameListeners": 0,
+            "ptySessions": 0,
+            "frameBuffers": 0,
+            "ptyFdCount": 0
+          },
+          {
+            "path": "crashed",
+            "registryEntries": 0,
+            "frameListeners": 0,
+            "ptySessions": 0,
+            "frameBuffers": 0,
+            "ptyFdCount": 0
+          },
+          {
+            "path": "dead",
+            "registryEntries": 0,
+            "frameListeners": 0,
+            "ptySessions": 0,
+            "frameBuffers": 0,
+            "ptyFdCount": 0
+          },
+          {
+            "path": "crashed",
+            "registryEntries": 0,
+            "frameListeners": 0,
+            "ptySessions": 0,
+            "frameBuffers": 0,
+            "ptyFdCount": 0
+          },
+          {
+            "path": "dead",
+            "registryEntries": 0,
+            "frameListeners": 0,
+            "ptySessions": 0,
+            "frameBuffers": 0,
+            "ptyFdCount": 0
+          },
+          {
+            "path": "crashed",
+            "registryEntries": 0,
+            "frameListeners": 0,
+            "ptySessions": 0,
+            "frameBuffers": 0,
+            "ptyFdCount": 0
+          }
+        ],
+        "expected": {
+          "resourceSignature": {
+            "registryEntries": 0,
+            "frameListeners": 0,
+            "ptySessions": 0,
+            "frameBuffers": 0,
+            "ptyFdCount": 0
+          }
+        },
+        "pass": true
+      }
+    ]
+  },
+  "thresholds": {
+    "minimumSamples": 8,
+    "maximumPlateauGrowthBytes": 33554432,
+    "maximumPlateauGrowthRatio": 0.1
+  },
+  "evaluation": {
+    "pass": true,
+    "checks": [
+      {
+        "id": "fixture-target-provenance-bound",
+        "actual": "linux-procfs-sha256-v1",
+        "threshold": "linux-procfs-sha256-v1",
+        "comparator": "===",
+        "pass": true
+      },
+      {
+        "id": "fixture-app-runtime-ready",
+        "actual": {
+          "ready": true,
+          "pid": 4020535,
+          "port": 36729
+        },
+        "threshold": {
+          "ready": true,
+          "pidMatchesTarget": true
+        },
+        "comparator": "===",
+        "pass": true
+      },
+      {
+        "id": "fixture-socket-authenticated",
+        "actual": {
+          "connected": true,
+          "runtimeTokenVerified": true,
+          "handshakeTokenPresented": true,
+          "subscribed": true,
+          "seedObserved": true,
+          "receivedTypes": [
+            "ping",
+            "subscribed",
+            "focus_changed",
+            "seed_ansi",
+            "event_created",
+            "stopped",
+            "presence",
+            "state_change",
+            "data"
+          ],
+          "clientCount": 8
+        },
+        "threshold": {
+          "connected": true,
+          "runtimeTokenVerified": true,
+          "handshakeTokenPresented": true
+        },
+        "comparator": "===",
+        "pass": true
+      },
+      {
+        "id": "fixture-scratch-session-observed",
+        "actual": {
+          "outputBytes": 4096,
+          "subscribed": true,
+          "seedObserved": true
+        },
+        "threshold": {
+          "outputBytes": "> 0",
+          "subscribed": true,
+          "seedObserved": true
+        },
+        "comparator": "===",
+        "pass": true
+      },
+      {
+        "id": "fixture-memory-sampled",
+        "actual": {
+          "sampleCount": 8,
+          "targetPeakRssBytes": 224399360,
+          "workloadPeakRssBytes": 90456064
+        },
+        "threshold": {
+          "minimumSamples": 8,
+          "positiveTrees": true
+        },
+        "comparator": ">=",
+        "pass": true
+      },
+      {
+        "id": "fixture-process-tree-isolation",
+        "actual": {
+          "pass": true,
+          "samplerPidFailures": [],
+          "overlapFailures": [],
+          "missingDataFailures": []
+        },
+        "threshold": {
+          "samplerAbsentFromTarget": true,
+          "treesDisjoint": true
+        },
+        "comparator": "===",
+        "pass": true
+      },
+      {
+        "id": "fixture-two-cycle-rss-plateau",
+        "actual": {
+          "growthBytes": 5378048,
+          "growthRatio": 0.019390377174587234
+        },
+        "threshold": {
+          "maximumGrowthBytes": 33554432,
+          "maximumGrowthRatio": 0.1,
+          "rule": "either bound may establish a plateau"
+        },
+        "comparator": "<=",
+        "pass": true
+      },
+      {
+        "id": "fixture-scenario-correctness",
+        "actual": {
+          "pass": true,
+          "checks": [
+            {
+              "id": "lifecycle-stopped-resources-released",
+              "actual": [
+                {
+                  "sessionId": "00978e0d-1c06-49bb-95b8-aa0a0cde42ee",
+                  "status": "stopped",
+                  "ptyFdCount": 0,
+                  "registryEntry": false,
+                  "frameListener": false,
+                  "ptySession": false,
+                  "frameBuffer": false,
+                  "globalCounts": {
+                    "registryEntries": 0,
+                    "frameListeners": 0,
+                    "ptySessions": 0,
+                    "frameBuffers": 0
+                  },
+                  "metricCounts": {
+                    "ptySessions": 0,
+                    "frameBuffers": 0,
+                    "frameBufferFrames": 0,
+                    "frameBufferBytes": 0
+                  }
+                }
+              ],
+              "expected": {
+                "executions": "> 0",
+                "ptyFdCount": 0,
+                "registryEntries": 0,
+                "frameListeners": 0,
+                "frameBuffers": 0
+              },
+              "pass": true
+            },
+            {
+              "id": "lifecycle-crashed-resources-released",
+              "actual": [
+                {
+                  "sessionId": "78c1c08e-47b0-46f1-ab76-7189d0da5d4d",
+                  "status": "failed",
+                  "ptyFdCount": 0,
+                  "registryEntry": false,
+                  "frameListener": false,
+                  "ptySession": false,
+                  "frameBuffer": false,
+                  "globalCounts": {
+                    "registryEntries": 0,
+                    "frameListeners": 0,
+                    "ptySessions": 0,
+                    "frameBuffers": 0
+                  },
+                  "metricCounts": {
+                    "ptySessions": 0,
+                    "frameBuffers": 0,
+                    "frameBufferFrames": 0,
+                    "frameBufferBytes": 0
+                  }
+                },
+                {
+                  "sessionId": "fb7ec852-0ad7-4450-828e-166fc93904b4",
+                  "status": "failed",
+                  "ptyFdCount": 0,
+                  "registryEntry": false,
+                  "frameListener": false,
+                  "ptySession": false,
+                  "frameBuffer": false,
+                  "globalCounts": {
+                    "registryEntries": 0,
+                    "frameListeners": 0,
+                    "ptySessions": 0,
+                    "frameBuffers": 0
+                  },
+                  "metricCounts": {
+                    "ptySessions": 0,
+                    "frameBuffers": 0,
+                    "frameBufferFrames": 0,
+                    "frameBufferBytes": 0
+                  }
+                },
+                {
+                  "sessionId": "f4ec71b7-e583-4e67-825e-281d939c6d8c",
+                  "status": "failed",
+                  "ptyFdCount": 0,
+                  "registryEntry": false,
+                  "frameListener": false,
+                  "ptySession": false,
+                  "frameBuffer": false,
+                  "globalCounts": {
+                    "registryEntries": 0,
+                    "frameListeners": 0,
+                    "ptySessions": 0,
+                    "frameBuffers": 0
+                  },
+                  "metricCounts": {
+                    "ptySessions": 0,
+                    "frameBuffers": 0,
+                    "frameBufferFrames": 0,
+                    "frameBufferBytes": 0
+                  }
+                },
+                {
+                  "sessionId": "df2f900a-2c8d-4ff1-8e18-7084676421b0",
+                  "status": "failed",
+                  "ptyFdCount": 0,
+                  "registryEntry": false,
+                  "frameListener": false,
+                  "ptySession": false,
+                  "frameBuffer": false,
+                  "globalCounts": {
+                    "registryEntries": 0,
+                    "frameListeners": 0,
+                    "ptySessions": 0,
+                    "frameBuffers": 0
+                  },
+                  "metricCounts": {
+                    "ptySessions": 0,
+                    "frameBuffers": 0,
+                    "frameBufferFrames": 0,
+                    "frameBufferBytes": 0
+                  }
+                }
+              ],
+              "expected": {
+                "executions": "> 0",
+                "ptyFdCount": 0,
+                "registryEntries": 0,
+                "frameListeners": 0,
+                "frameBuffers": 0
+              },
+              "pass": true
+            },
+            {
+              "id": "lifecycle-dead-resources-released",
+              "actual": [
+                {
+                  "sessionId": "09d6828e-6da9-4168-b9b8-ca49a798b4fc",
+                  "status": "failed",
+                  "ptyFdCount": 0,
+                  "registryEntry": false,
+                  "frameListener": false,
+                  "ptySession": false,
+                  "frameBuffer": false,
+                  "globalCounts": {
+                    "registryEntries": 0,
+                    "frameListeners": 0,
+                    "ptySessions": 0,
+                    "frameBuffers": 0
+                  },
+                  "metricCounts": {
+                    "ptySessions": 0,
+                    "frameBuffers": 0,
+                    "frameBufferFrames": 0,
+                    "frameBufferBytes": 0
+                  }
+                },
+                {
+                  "sessionId": "bd97b294-f45b-43a5-bbc9-4b9f357a301c",
+                  "status": "failed",
+                  "ptyFdCount": 0,
+                  "registryEntry": false,
+                  "frameListener": false,
+                  "ptySession": false,
+                  "frameBuffer": false,
+                  "globalCounts": {
+                    "registryEntries": 0,
+                    "frameListeners": 0,
+                    "ptySessions": 0,
+                    "frameBuffers": 0
+                  },
+                  "metricCounts": {
+                    "ptySessions": 0,
+                    "frameBuffers": 0,
+                    "frameBufferFrames": 0,
+                    "frameBufferBytes": 0
+                  }
+                },
+                {
+                  "sessionId": "65ef3695-d47f-4ac5-9c83-c09f32872a3b",
+                  "status": "failed",
+                  "ptyFdCount": 0,
+                  "registryEntry": false,
+                  "frameListener": false,
+                  "ptySession": false,
+                  "frameBuffer": false,
+                  "globalCounts": {
+                    "registryEntries": 0,
+                    "frameListeners": 0,
+                    "ptySessions": 0,
+                    "frameBuffers": 0
+                  },
+                  "metricCounts": {
+                    "ptySessions": 0,
+                    "frameBuffers": 0,
+                    "frameBufferFrames": 0,
+                    "frameBufferBytes": 0
+                  }
+                }
+              ],
+              "expected": {
+                "executions": "> 0",
+                "ptyFdCount": 0,
+                "registryEntries": 0,
+                "frameListeners": 0,
+                "frameBuffers": 0
+              },
+              "pass": true
+            },
+            {
+              "id": "lifecycle-post-cleanup-parity",
+              "actual": [
+                {
+                  "path": "stopped",
+                  "registryEntries": 0,
+                  "frameListeners": 0,
+                  "ptySessions": 0,
+                  "frameBuffers": 0,
+                  "ptyFdCount": 0
+                },
+                {
+                  "path": "crashed",
+                  "registryEntries": 0,
+                  "frameListeners": 0,
+                  "ptySessions": 0,
+                  "frameBuffers": 0,
+                  "ptyFdCount": 0
+                },
+                {
+                  "path": "dead",
+                  "registryEntries": 0,
+                  "frameListeners": 0,
+                  "ptySessions": 0,
+                  "frameBuffers": 0,
+                  "ptyFdCount": 0
+                },
+                {
+                  "path": "crashed",
+                  "registryEntries": 0,
+                  "frameListeners": 0,
+                  "ptySessions": 0,
+                  "frameBuffers": 0,
+                  "ptyFdCount": 0
+                },
+                {
+                  "path": "dead",
+                  "registryEntries": 0,
+                  "frameListeners": 0,
+                  "ptySessions": 0,
+                  "frameBuffers": 0,
+                  "ptyFdCount": 0
+                },
+                {
+                  "path": "crashed",
+                  "registryEntries": 0,
+                  "frameListeners": 0,
+                  "ptySessions": 0,
+                  "frameBuffers": 0,
+                  "ptyFdCount": 0
+                },
+                {
+                  "path": "dead",
+                  "registryEntries": 0,
+                  "frameListeners": 0,
+                  "ptySessions": 0,
+                  "frameBuffers": 0,
+                  "ptyFdCount": 0
+                },
+                {
+                  "path": "crashed",
+                  "registryEntries": 0,
+                  "frameListeners": 0,
+                  "ptySessions": 0,
+                  "frameBuffers": 0,
+                  "ptyFdCount": 0
+                }
+              ],
+              "expected": {
+                "resourceSignature": {
+                  "registryEntries": 0,
+                  "frameListeners": 0,
+                  "ptySessions": 0,
+                  "frameBuffers": 0,
+                  "ptyFdCount": 0
+                }
+              },
+              "pass": true
+            }
+          ]
+        },
+        "threshold": {
+          "allExpectedOutcomesPass": true
+        },
+        "comparator": "===",
+        "pass": true
+      },
+      {
+        "id": "fixture-cleanup",
+        "actual": {
+          "attempted": true,
+          "socketDisconnected": true,
+          "socketObservation": {
+            "observedCount": 8,
+            "disconnectedCount": 8,
+            "disconnectErrorCount": 0,
+            "timedOut": false,
+            "waitTimeoutMs": 60000,
+            "outcomes": [
+              {
+                "index": 0,
+                "socketId": null,
+                "connectedBeforeDisconnect": false,
+                "disconnectAttempted": true,
+                "disconnectError": null,
+                "connectedAfterWait": false,
+                "disconnected": true
+              },
+              {
+                "index": 1,
+                "socketId": null,
+                "connectedBeforeDisconnect": false,
+                "disconnectAttempted": true,
+                "disconnectError": null,
+                "connectedAfterWait": false,
+                "disconnected": true
+              },
+              {
+                "index": 2,
+                "socketId": null,
+                "connectedBeforeDisconnect": false,
+                "disconnectAttempted": true,
+                "disconnectError": null,
+                "connectedAfterWait": false,
+                "disconnected": true
+              },
+              {
+                "index": 3,
+                "socketId": null,
+                "connectedBeforeDisconnect": false,
+                "disconnectAttempted": true,
+                "disconnectError": null,
+                "connectedAfterWait": false,
+                "disconnected": true
+              },
+              {
+                "index": 4,
+                "socketId": null,
+                "connectedBeforeDisconnect": false,
+                "disconnectAttempted": true,
+                "disconnectError": null,
+                "connectedAfterWait": false,
+                "disconnected": true
+              },
+              {
+                "index": 5,
+                "socketId": null,
+                "connectedBeforeDisconnect": false,
+                "disconnectAttempted": true,
+                "disconnectError": null,
+                "connectedAfterWait": false,
+                "disconnected": true
+              },
+              {
+                "index": 6,
+                "socketId": null,
+                "connectedBeforeDisconnect": false,
+                "disconnectAttempted": true,
+                "disconnectError": null,
+                "connectedAfterWait": false,
+                "disconnected": true
+              },
+              {
+                "index": 7,
+                "socketId": null,
+                "connectedBeforeDisconnect": false,
+                "disconnectAttempted": true,
+                "disconnectError": null,
+                "connectedAfterWait": false,
+                "disconnected": true
+              }
+            ]
+          },
+          "processAliveAfterCleanup": false,
+          "tmuxServerAliveAfterCleanup": false,
+          "storageCreated": true,
+          "storageExistsAfterCleanup": false,
+          "tempRootExistsAfterCleanup": false,
+          "alivePidsAfterCleanup": [],
+          "residuePaths": [],
+          "removalError": null,
+          "processesGone": true,
+          "mobileIngressStopped": true
+        },
+        "threshold": {
+          "noSocketProcessTmuxStorageOrPathResidue": true
+        },
+        "comparator": "===",
+        "pass": true
+      }
+    ],
+    "summary": {
+      "targetPeakRssBytes": 224399360,
+      "workloadPeakRssBytes": 90456064,
+      "isolation": {
+        "pass": true,
+        "samplerPidFailures": [],
+        "overlapFailures": [],
+        "missingDataFailures": []
+      },
+      "cleanupPassed": true,
+      "plateau": {
+        "firstCycleTailMedianBytes": 277356544,
+        "secondCycleTailMedianBytes": 282734592,
+        "growthBytes": 5378048,
+        "growthRatio": 0.019390377174587234,
+        "pass": true
+      },
+      "correctnessPassed": true,
+      "terminalEquivalencePassed": true,
+      "backpressurePassed": true
+    }
+  },
+  "samples": [
+    {
+      "index": 0,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-15T00:51:36.643Z",
+        "monotonicMs": 636104788,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12210499584,
+          "usedBytes": 20489891840,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 17046417408,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 4020535,
+          "processCount": 1,
+          "rssBytes": 224399360,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 4020535,
+              "ppid": 4020425,
+              "rssBytes": 224399360,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 4020892,
+          "processCount": 2,
+          "rssBytes": 81190912,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 4020892,
+              "ppid": 3723,
+              "rssBytes": 11493376,
+              "swapBytes": 0
+            },
+            {
+              "pid": 4020893,
+              "ppid": 4020892,
+              "rssBytes": 69697536,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 4020535,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-226b24ae-8b7c-4b93-9611-9961f2f9a5c7.scope",
+          "currentBytes": 1136558080,
+          "swapBytes": 72892416,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 4020425,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          4020893
+        ],
+        "alivePids": [
+          4020893
+        ]
+      },
+      "lifecycle": {
+        "path": "stopped",
+        "cycleIndex": 0,
+        "sessionId": "00978e0d-1c06-49bb-95b8-aa0a0cde42ee",
+        "cleanupLatencyMs": 4943,
+        "resources": {
+          "sessionId": "00978e0d-1c06-49bb-95b8-aa0a0cde42ee",
+          "status": "stopped",
+          "ptyFdCount": 0,
+          "registryEntry": false,
+          "frameListener": false,
+          "ptySession": false,
+          "frameBuffer": false,
+          "globalCounts": {
+            "registryEntries": 0,
+            "frameListeners": 0,
+            "ptySessions": 0,
+            "frameBuffers": 0
+          },
+          "metricCounts": {
+            "ptySessions": 0,
+            "frameBuffers": 0,
+            "frameBufferFrames": 0,
+            "frameBufferBytes": 0
+          }
+        }
+      }
+    },
+    {
+      "index": 1,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-15T00:52:06.873Z",
+        "monotonicMs": 636135018,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12240650240,
+          "usedBytes": 20459741184,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 17043636224,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 4020535,
+          "processCount": 1,
+          "rssBytes": 187322368,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 4020535,
+              "ppid": 4020425,
+              "rssBytes": 187322368,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 4020892,
+          "processCount": 2,
+          "rssBytes": 88866816,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 4020892,
+              "ppid": 3723,
+              "rssBytes": 11763712,
+              "swapBytes": 0
+            },
+            {
+              "pid": 4020893,
+              "ppid": 4020892,
+              "rssBytes": 77103104,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 4020535,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-226b24ae-8b7c-4b93-9611-9961f2f9a5c7.scope",
+          "currentBytes": 1067823104,
+          "swapBytes": 72843264,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 4020425,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          4020893
+        ],
+        "alivePids": [
+          4020893
+        ]
+      },
+      "lifecycle": {
+        "path": "crashed",
+        "cycleIndex": 1,
+        "sessionId": "78c1c08e-47b0-46f1-ab76-7189d0da5d4d",
+        "cleanupLatencyMs": 4921,
+        "resources": {
+          "sessionId": "78c1c08e-47b0-46f1-ab76-7189d0da5d4d",
+          "status": "failed",
+          "ptyFdCount": 0,
+          "registryEntry": false,
+          "frameListener": false,
+          "ptySession": false,
+          "frameBuffer": false,
+          "globalCounts": {
+            "registryEntries": 0,
+            "frameListeners": 0,
+            "ptySessions": 0,
+            "frameBuffers": 0
+          },
+          "metricCounts": {
+            "ptySessions": 0,
+            "frameBuffers": 0,
+            "frameBufferFrames": 0,
+            "frameBufferBytes": 0
+          }
+        }
+      }
+    },
+    {
+      "index": 2,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-15T00:52:37.091Z",
+        "monotonicMs": 636165235,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12160315392,
+          "usedBytes": 20540076032,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 17041883136,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 4020535,
+          "processCount": 1,
+          "rssBytes": 187981824,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 4020535,
+              "ppid": 4020425,
+              "rssBytes": 187981824,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 4020892,
+          "processCount": 2,
+          "rssBytes": 89374720,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 4020892,
+              "ppid": 3723,
+              "rssBytes": 11763712,
+              "swapBytes": 0
+            },
+            {
+              "pid": 4020893,
+              "ppid": 4020892,
+              "rssBytes": 77611008,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 4020535,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-226b24ae-8b7c-4b93-9611-9961f2f9a5c7.scope",
+          "currentBytes": 1068904448,
+          "swapBytes": 72843264,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 4020425,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          4020893
+        ],
+        "alivePids": [
+          4020893
+        ]
+      },
+      "lifecycle": {
+        "path": "dead",
+        "cycleIndex": 2,
+        "sessionId": "09d6828e-6da9-4168-b9b8-ca49a798b4fc",
+        "cleanupLatencyMs": 4922,
+        "resources": {
+          "sessionId": "09d6828e-6da9-4168-b9b8-ca49a798b4fc",
+          "status": "failed",
+          "ptyFdCount": 0,
+          "registryEntry": false,
+          "frameListener": false,
+          "ptySession": false,
+          "frameBuffer": false,
+          "globalCounts": {
+            "registryEntries": 0,
+            "frameListeners": 0,
+            "ptySessions": 0,
+            "frameBuffers": 0
+          },
+          "metricCounts": {
+            "ptySessions": 0,
+            "frameBuffers": 0,
+            "frameBufferFrames": 0,
+            "frameBufferBytes": 0
+          }
+        }
+      }
+    },
+    {
+      "index": 3,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-15T00:53:07.298Z",
+        "monotonicMs": 636195442,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12129685504,
+          "usedBytes": 20570705920,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 17036451840,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 4020535,
+          "processCount": 1,
+          "rssBytes": 189579264,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 4020535,
+              "ppid": 4020425,
+              "rssBytes": 189579264,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 4020892,
+          "processCount": 2,
+          "rssBytes": 90419200,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 4020892,
+              "ppid": 3723,
+              "rssBytes": 11771904,
+              "swapBytes": 0
+            },
+            {
+              "pid": 4020893,
+              "ppid": 4020892,
+              "rssBytes": 78647296,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 4020535,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-226b24ae-8b7c-4b93-9611-9961f2f9a5c7.scope",
+          "currentBytes": 1074843648,
+          "swapBytes": 72765440,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 4020425,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          4020893
+        ],
+        "alivePids": [
+          4020893
+        ]
+      },
+      "lifecycle": {
+        "path": "crashed",
+        "cycleIndex": 0,
+        "sessionId": "fb7ec852-0ad7-4450-828e-166fc93904b4",
+        "cleanupLatencyMs": 4919,
+        "resources": {
+          "sessionId": "fb7ec852-0ad7-4450-828e-166fc93904b4",
+          "status": "failed",
+          "ptyFdCount": 0,
+          "registryEntry": false,
+          "frameListener": false,
+          "ptySession": false,
+          "frameBuffer": false,
+          "globalCounts": {
+            "registryEntries": 0,
+            "frameListeners": 0,
+            "ptySessions": 0,
+            "frameBuffers": 0
+          },
+          "metricCounts": {
+            "ptySessions": 0,
+            "frameBuffers": 0,
+            "frameBufferFrames": 0,
+            "frameBufferBytes": 0
+          }
+        }
+      }
+    },
+    {
+      "index": 4,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-15T00:53:37.514Z",
+        "monotonicMs": 636225658,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12157796352,
+          "usedBytes": 20542595072,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 17034735616,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 4020535,
+          "processCount": 1,
+          "rssBytes": 190361600,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 4020535,
+              "ppid": 4020425,
+              "rssBytes": 190361600,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 4020892,
+          "processCount": 2,
+          "rssBytes": 90419200,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 4020892,
+              "ppid": 3723,
+              "rssBytes": 11771904,
+              "swapBytes": 0
+            },
+            {
+              "pid": 4020893,
+              "ppid": 4020892,
+              "rssBytes": 78647296,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 4020535,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-226b24ae-8b7c-4b93-9611-9961f2f9a5c7.scope",
+          "currentBytes": 1079222272,
+          "swapBytes": 72765440,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 4020425,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          4020893
+        ],
+        "alivePids": [
+          4020893
+        ]
+      },
+      "lifecycle": {
+        "path": "dead",
+        "cycleIndex": 1,
+        "sessionId": "bd97b294-f45b-43a5-bbc9-4b9f357a301c",
+        "cleanupLatencyMs": 4923,
+        "resources": {
+          "sessionId": "bd97b294-f45b-43a5-bbc9-4b9f357a301c",
+          "status": "failed",
+          "ptyFdCount": 0,
+          "registryEntry": false,
+          "frameListener": false,
+          "ptySession": false,
+          "frameBuffer": false,
+          "globalCounts": {
+            "registryEntries": 0,
+            "frameListeners": 0,
+            "ptySessions": 0,
+            "frameBuffers": 0
+          },
+          "metricCounts": {
+            "ptySessions": 0,
+            "frameBuffers": 0,
+            "frameBufferFrames": 0,
+            "frameBufferBytes": 0
+          }
+        }
+      }
+    },
+    {
+      "index": 5,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-15T00:54:07.774Z",
+        "monotonicMs": 636255919,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12093595648,
+          "usedBytes": 20606795776,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 16999133184,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 4020535,
+          "processCount": 1,
+          "rssBytes": 191393792,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 4020535,
+              "ppid": 4020425,
+              "rssBytes": 191393792,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 4020892,
+          "processCount": 2,
+          "rssBytes": 90456064,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 4020892,
+              "ppid": 3723,
+              "rssBytes": 11788288,
+              "swapBytes": 0
+            },
+            {
+              "pid": 4020893,
+              "ppid": 4020892,
+              "rssBytes": 78667776,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 4020535,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-226b24ae-8b7c-4b93-9611-9961f2f9a5c7.scope",
+          "currentBytes": 1081450496,
+          "swapBytes": 72720384,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 4020425,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          4020893
+        ],
+        "alivePids": [
+          4020893
+        ]
+      },
+      "lifecycle": {
+        "path": "crashed",
+        "cycleIndex": 2,
+        "sessionId": "f4ec71b7-e583-4e67-825e-281d939c6d8c",
+        "cleanupLatencyMs": 4923,
+        "resources": {
+          "sessionId": "f4ec71b7-e583-4e67-825e-281d939c6d8c",
+          "status": "failed",
+          "ptyFdCount": 0,
+          "registryEntry": false,
+          "frameListener": false,
+          "ptySession": false,
+          "frameBuffer": false,
+          "globalCounts": {
+            "registryEntries": 0,
+            "frameListeners": 0,
+            "ptySessions": 0,
+            "frameBuffers": 0
+          },
+          "metricCounts": {
+            "ptySessions": 0,
+            "frameBuffers": 0,
+            "frameBufferFrames": 0,
+            "frameBufferBytes": 0
+          }
+        }
+      }
+    },
+    {
+      "index": 6,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-15T00:54:37.980Z",
+        "monotonicMs": 636286125,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12401975296,
+          "usedBytes": 20298416128,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 16996757504,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 4020535,
+          "processCount": 1,
+          "rssBytes": 192278528,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 4020535,
+              "ppid": 4020425,
+              "rssBytes": 192278528,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 4020892,
+          "processCount": 2,
+          "rssBytes": 90456064,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 4020892,
+              "ppid": 3723,
+              "rssBytes": 11788288,
+              "swapBytes": 0
+            },
+            {
+              "pid": 4020893,
+              "ppid": 4020892,
+              "rssBytes": 78667776,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 4020535,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-226b24ae-8b7c-4b93-9611-9961f2f9a5c7.scope",
+          "currentBytes": 1085509632,
+          "swapBytes": 72720384,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 4020425,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          4020893
+        ],
+        "alivePids": [
+          4020893
+        ]
+      },
+      "lifecycle": {
+        "path": "dead",
+        "cycleIndex": 3,
+        "sessionId": "65ef3695-d47f-4ac5-9c83-c09f32872a3b",
+        "cleanupLatencyMs": 4920,
+        "resources": {
+          "sessionId": "65ef3695-d47f-4ac5-9c83-c09f32872a3b",
+          "status": "failed",
+          "ptyFdCount": 0,
+          "registryEntry": false,
+          "frameListener": false,
+          "ptySession": false,
+          "frameBuffer": false,
+          "globalCounts": {
+            "registryEntries": 0,
+            "frameListeners": 0,
+            "ptySessions": 0,
+            "frameBuffers": 0
+          },
+          "metricCounts": {
+            "ptySessions": 0,
+            "frameBuffers": 0,
+            "frameBufferFrames": 0,
+            "frameBufferBytes": 0
+          }
+        }
+      }
+    },
+    {
+      "index": 7,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-15T00:55:08.281Z",
+        "monotonicMs": 636316425,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12347863040,
+          "usedBytes": 20352528384,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 16992411648,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 4020535,
+          "processCount": 1,
+          "rssBytes": 193855488,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 4020535,
+              "ppid": 4020425,
+              "rssBytes": 193855488,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 4020892,
+          "processCount": 2,
+          "rssBytes": 90456064,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 4020892,
+              "ppid": 3723,
+              "rssBytes": 11788288,
+              "swapBytes": 0
+            },
+            {
+              "pid": 4020893,
+              "ppid": 4020892,
+              "rssBytes": 78667776,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 4020535,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-226b24ae-8b7c-4b93-9611-9961f2f9a5c7.scope",
+          "currentBytes": 1085394944,
+          "swapBytes": 72691712,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 4020425,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          4020893
+        ],
+        "alivePids": [
+          4020893
+        ]
+      },
+      "lifecycle": {
+        "path": "crashed",
+        "cycleIndex": 4,
+        "sessionId": "df2f900a-2c8d-4ff1-8e18-7084676421b0",
+        "cleanupLatencyMs": 5017,
+        "resources": {
+          "sessionId": "df2f900a-2c8d-4ff1-8e18-7084676421b0",
+          "status": "failed",
+          "ptyFdCount": 0,
+          "registryEntry": false,
+          "frameListener": false,
+          "ptySession": false,
+          "frameBuffer": false,
+          "globalCounts": {
+            "registryEntries": 0,
+            "frameListeners": 0,
+            "ptySessions": 0,
+            "frameBuffers": 0
+          },
+          "metricCounts": {
+            "ptySessions": 0,
+            "frameBuffers": 0,
+            "frameBufferFrames": 0,
+            "frameBufferBytes": 0
+          }
+        }
+      }
+    }
+  ]
+}

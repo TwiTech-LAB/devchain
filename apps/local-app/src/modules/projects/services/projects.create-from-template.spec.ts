@@ -833,6 +833,13 @@ describe('ProjectsService.createFromTemplate (real storage)', () => {
       return { result, ...bundle };
     }
 
+    async function getPersistedTeam(projectId: string, teamName: string) {
+      const { items } = await h.teamsStore.listTeams(projectId);
+      const summary = items.find((team) => team.name === teamName);
+      expect(summary).toBeDefined();
+      return h.teamsStore.getTeam(summary!.id);
+    }
+
     it('seeds one team from the template', async () => {
       const { result, createTeam } = await createTeams([
         {
@@ -894,18 +901,58 @@ describe('ProjectsService.createFromTemplate (real storage)', () => {
       expect(createTeam).not.toHaveBeenCalled();
     });
 
-    it('preserves the allow-all sentinel when no profileSelections are provided', async () => {
-      const { createTeam } = await createTeams([
-        {
-          name: 'AllowAll Team',
-          teamLeadAgentName: 'Lead Agent',
-          memberAgentNames: ['Lead Agent'],
-          profileNames: ['Default Profile'],
-        },
-      ]);
+    it('persists genuine allow-all so the team sees selected and unselected provider configs', async () => {
+      await h.storage.createProvider({ name: 'codex', binPath: null });
+      const { result, createTeam } = await createTeams(
+        [
+          {
+            name: 'AllowAll Team',
+            teamLeadAgentName: 'Lead Agent',
+            memberAgentNames: ['Lead Agent'],
+            profileNames: ['Default Profile'],
+          },
+        ],
+        [
+          { name: 'claude-cfg', providerName: 'claude', options: null, env: null },
+          { name: 'codex-cfg', providerName: 'codex', options: null, env: null },
+        ],
+        { selectedProviderNames: ['claude'] },
+      );
 
       expect(createTeam).toHaveBeenCalledTimes(1);
       expect(createTeam.mock.calls[0][0].profileConfigSelections).toBeUndefined();
+      const projectId = (result.project as AnyRec).id as string;
+      const persisted = await getPersistedTeam(projectId, 'AllowAll Team');
+      const availableConfigs = await h.teamsStore.listConfigsForTeam(persisted!.id);
+      expect(availableConfigs.map((config) => config.name).sort()).toEqual([
+        'claude-cfg',
+        'codex-cfg',
+      ]);
+    });
+
+    it('persists a restricted subset so the team sees only the selected config', async () => {
+      await h.storage.createProvider({ name: 'codex', binPath: null });
+      const { result } = await createTeams(
+        [
+          {
+            name: 'Restricted Team',
+            teamLeadAgentName: 'Lead Agent',
+            memberAgentNames: ['Lead Agent'],
+            profileNames: ['Default Profile'],
+            profileSelections: [{ profileName: 'Default Profile', configNames: ['claude-cfg'] }],
+          },
+        ],
+        [
+          { name: 'claude-cfg', providerName: 'claude', options: null, env: null },
+          { name: 'codex-cfg', providerName: 'codex', options: null, env: null },
+        ],
+        { selectedProviderNames: ['claude'] },
+      );
+
+      const projectId = (result.project as AnyRec).id as string;
+      const persisted = await getPersistedTeam(projectId, 'Restricted Team');
+      const availableConfigs = await h.teamsStore.listConfigsForTeam(persisted!.id);
+      expect(availableConfigs.map((config) => config.name)).toEqual(['claude-cfg']);
     });
 
     it('prunes skipped provider configs from team profileSelections', async () => {
@@ -935,8 +982,8 @@ describe('ProjectsService.createFromTemplate (real storage)', () => {
       ]);
     });
 
-    it('does not widen access when all selected provider configs are skipped', async () => {
-      const { createTeam } = await createTeams(
+    it('persists no permission when every config in a restricted subset is skipped', async () => {
+      const { result, createTeam } = await createTeams(
         [
           {
             name: 'Dev Team',
@@ -957,6 +1004,27 @@ describe('ProjectsService.createFromTemplate (real storage)', () => {
       const callArgs = createTeam.mock.calls[0][0];
       expect(callArgs.profileIds).toEqual([]);
       expect(callArgs.profileConfigSelections).toBeUndefined();
+      const projectId = (result.project as AnyRec).id as string;
+      const persisted = await getPersistedTeam(projectId, 'Dev Team');
+      expect(persisted!.profileIds).toEqual([]);
+      expect(await h.teamsStore.listConfigsForTeam(persisted!.id)).toEqual([]);
+    });
+
+    it('rejects an unknown config name instead of silently broadening team access', async () => {
+      const { result, createTeam } = await createTeams([
+        {
+          name: 'Malformed Team',
+          teamLeadAgentName: 'Lead Agent',
+          memberAgentNames: ['Lead Agent'],
+          profileNames: ['Default Profile'],
+          profileSelections: [{ profileName: 'Default Profile', configNames: ['mystery-cfg'] }],
+        },
+      ]);
+
+      expect(result.success).toBe(true);
+      expect(createTeam).not.toHaveBeenCalled();
+      const projectId = (result.project as AnyRec).id as string;
+      expect((await h.teamsStore.listTeams(projectId)).items).toEqual([]);
     });
 
     it('passes maxMembers and maxConcurrentTasks to createTeam', async () => {
@@ -1605,13 +1673,13 @@ describe('ProjectsService.createFromTemplate (real storage)', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Transient selectedProviderNames allowlist (Task 3).
+  // Transient Step-1 provider selection metadata.
   // -------------------------------------------------------------------------
-  describe('selectedProviderNames (transient allowlist)', () => {
+  describe('selectedProviderNames (wizard selection metadata)', () => {
     const spProfileId = 'a1a1a1a1-1111-4111-8111-111111111111';
     const spAgentId = 'a1a1a1a1-2222-4222-8222-222222222222';
 
-    it('does not create providerConfigs for a provider excluded by the allowlist', async () => {
+    it('creates providerConfigs for an installed-but-deselected provider (deselection does not block persistence)', async () => {
       await seedClaudeProvider(h);
       await h.storage.createProvider({ name: 'codex', binPath: null });
 
@@ -1644,10 +1712,11 @@ describe('ProjectsService.createFromTemplate (real storage)', () => {
 
       const result = (await createFromTemplateWithHelper(
         {
-          name: 'Allowlist Project',
-          rootPath: '/test/allowlist',
-          slug: 'allowlist-test',
-          // codex is installed but excluded → its config must NOT be created.
+          name: 'Provider Selection Project',
+          rootPath: '/test/provider-selection',
+          slug: 'provider-selection-test',
+          // codex is installed but deselected. Deselection narrows only wizard family choices — the
+          // config is still backed by an installed provider, so it must be persisted.
           selectedProviderNames: ['claude'],
         },
         deps as never,
@@ -1658,11 +1727,11 @@ describe('ProjectsService.createFromTemplate (real storage)', () => {
       const profile = await getProfileByName(h, projectId, 'Coder');
 
       expect(await getConfigByName(h, profile!.id, 'claude-cfg')).toBeDefined();
-      // codex was excluded by the allowlist — treated as uninstalled, so no codex config exists.
-      expect(await getConfigByName(h, profile!.id, 'codex-cfg')).toBeUndefined();
+      // codex is installed (just deselected) → its config IS created from the full installed map.
+      expect(await getConfigByName(h, profile!.id, 'codex-cfg')).toBeDefined();
     });
 
-    it('is byte-compatible with today when the allowlist covers the needed provider (back-compat)', async () => {
+    it('preserves behavior when the Step-1 choices cover the needed provider', async () => {
       await seedClaudeProvider(h);
       const { deps } = buildDeps(h, bundledUnified(claudeTemplate()));
 
@@ -1741,6 +1810,218 @@ describe('ProjectsService.createFromTemplate (real storage)', () => {
       expect(agent!.profileId).toBe(codexProfile!.id);
       expect(geminiConfig).toBeDefined();
       expect(agent!.providerConfigId).toBe(geminiConfig!.id);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Binding eligibility: an installed-but-deselected config is persisted but is
+  // never an agent's binding target (create path).
+  // -------------------------------------------------------------------------
+  describe('installed/selected binding eligibility', () => {
+    const beProfileId = 'c1c1c1c1-1111-4111-8111-111111111111';
+    const beAgentId = 'c1c1c1c1-2222-4222-8222-222222222222';
+
+    /** One profile whose configs list the DESELECTED provider first, then the selected one. */
+    function deselectedFirstTemplate(agentExtra: AnyRec = {}): AnyRec {
+      return {
+        version: 1,
+        prompts: [],
+        profiles: [
+          {
+            id: beProfileId,
+            name: 'Coder',
+            provider: { name: 'claude' },
+            providerConfigs: [
+              // codex is installed but deselected; listed FIRST so the pre-fix same-profile
+              // fallback (full map, first match) would wrongly pick it.
+              { name: 'codex-cfg', providerName: 'codex', options: null, env: null },
+              { name: 'claude-cfg', providerName: 'claude', options: null, env: null },
+            ],
+          },
+        ],
+        agents: [
+          {
+            id: beAgentId,
+            name: 'Coder',
+            profileId: beProfileId,
+            description: null,
+            ...agentExtra,
+          },
+        ],
+        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+      };
+    }
+
+    it('binds an UNPINNED agent to the selection-eligible config, not the deselected config listed first', async () => {
+      await seedClaudeProvider(h);
+      await h.storage.createProvider({ name: 'codex', binPath: null });
+      const { deps } = buildDeps(h, bundledUnified(deselectedFirstTemplate()));
+
+      const result = (await createFromTemplateWithHelper(
+        {
+          name: 'Elig Unpinned',
+          rootPath: '/test/elig-unpinned',
+          slug: 'elig-unpinned',
+          selectedProviderNames: ['claude'], // codex deselected
+        },
+        deps as never,
+      )) as AnyRec;
+
+      expect(result.success).toBe(true);
+      const projectId = (result.project as AnyRec).id as string;
+      const profile = await getProfileByName(h, projectId, 'Coder');
+      const claudeCfg = await getConfigByName(h, profile!.id, 'claude-cfg');
+      const codexCfg = await getConfigByName(h, profile!.id, 'codex-cfg');
+      const agent = await getAgentByName(h, projectId, 'Coder');
+
+      // Both configs persist (both providers installed), but binding uses the eligible map only.
+      expect(codexCfg).toBeDefined();
+      expect(claudeCfg).toBeDefined();
+      expect(agent!.providerConfigId).toBe(claudeCfg!.id);
+    });
+
+    it('falls back to a selection-eligible config when an agent is PINNED to a deselected config', async () => {
+      await seedClaudeProvider(h);
+      await h.storage.createProvider({ name: 'codex', binPath: null });
+      const { deps } = buildDeps(
+        h,
+        bundledUnified(deselectedFirstTemplate({ providerConfigName: 'codex-cfg' })),
+      );
+
+      const result = (await createFromTemplateWithHelper(
+        {
+          name: 'Elig Pinned',
+          rootPath: '/test/elig-pinned',
+          slug: 'elig-pinned',
+          selectedProviderNames: ['claude'],
+        },
+        deps as never,
+      )) as AnyRec;
+
+      expect(result.success).toBe(true);
+      const projectId = (result.project as AnyRec).id as string;
+      const profile = await getProfileByName(h, projectId, 'Coder');
+      const claudeCfg = await getConfigByName(h, profile!.id, 'claude-cfg');
+      const codexCfg = await getConfigByName(h, profile!.id, 'codex-cfg');
+      const agent = await getAgentByName(h, projectId, 'Coder');
+
+      // The pinned codex-cfg is not selection-eligible, so the explicit lookup misses and the
+      // same-profile fallback resolves to the eligible claude-cfg — never the deselected config.
+      expect(codexCfg).toBeDefined();
+      expect(agent!.providerConfigId).toBe(claudeCfg!.id);
+    });
+
+    it('remaps a template-pinned deselected config through an eligible wizard override', async () => {
+      await seedClaudeProvider(h);
+      await h.storage.createProvider({ name: 'codex', binPath: null });
+      const { deps } = buildDeps(
+        h,
+        bundledUnified(deselectedFirstTemplate({ providerConfigName: 'codex-cfg' })),
+      );
+
+      const result = (await createFromTemplateWithHelper(
+        {
+          name: 'Elig Override',
+          rootPath: '/test/elig-override',
+          slug: 'elig-override',
+          selectedProviderNames: ['claude'],
+          agentOverrides: [
+            {
+              agentName: 'Coder',
+              providerConfigName: 'claude-cfg',
+              modelOverride: 'claude-selected-model',
+            },
+          ],
+        },
+        deps as never,
+      )) as AnyRec;
+
+      expect(result.success).toBe(true);
+      const projectId = (result.project as AnyRec).id as string;
+      const profile = await getProfileByName(h, projectId, 'Coder');
+      const claudeCfg = await getConfigByName(h, profile!.id, 'claude-cfg');
+      const agent = await getAgentByName(h, projectId, 'Coder');
+
+      expect(agent!.providerConfigId).toBe(claudeCfg!.id);
+      expect(agent!.modelOverride).toBe('claude-selected-model');
+    });
+
+    it('does NOT apply a preset that selects a deselected config (preset resolves against the eligible map)', async () => {
+      await seedClaudeProvider(h);
+      await h.storage.createProvider({ name: 'codex', binPath: null });
+      const template = deselectedFirstTemplate({ providerConfigName: 'claude-cfg' });
+      template.presets = [
+        { name: 'p', agentConfigs: [{ agentName: 'Coder', providerConfigName: 'codex-cfg' }] },
+      ];
+      const { deps } = buildDeps(h, bundledUnified(template));
+
+      const result = (await createFromTemplateWithHelper(
+        {
+          name: 'Elig Preset',
+          rootPath: '/test/elig-preset',
+          slug: 'elig-preset',
+          selectedProviderNames: ['claude'],
+          presetName: 'p',
+        },
+        deps as never,
+      )) as AnyRec;
+
+      expect(result.success).toBe(true);
+      const projectId = (result.project as AnyRec).id as string;
+      const profile = await getProfileByName(h, projectId, 'Coder');
+      const claudeCfg = await getConfigByName(h, profile!.id, 'claude-cfg');
+      const agent = await getAgentByName(h, projectId, 'Coder');
+
+      // The preset's codex-cfg selection is not selection-eligible → not bound; the agent stays on
+      // the eligible claude-cfg.
+      expect(agent!.providerConfigId).toBe(claudeCfg!.id);
+    });
+
+    it('keeps an installed-but-deselected provider-scoped watcher at scope:"provider" with the provider id', async () => {
+      await seedClaudeProvider(h);
+      const codex = await h.storage.createProvider({ name: 'codex', binPath: null });
+      const template = {
+        version: 1,
+        prompts: [],
+        profiles: [
+          { id: beProfileId, name: 'Coder', provider: { name: 'claude' }, familySlug: 'coder' },
+        ],
+        agents: [{ id: beAgentId, name: 'Coder', profileId: beProfileId }],
+        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+        watchers: [
+          {
+            id: 'c1c1c1c1-3333-4333-8333-333333333333',
+            name: 'Codex Watcher',
+            enabled: true,
+            scope: 'provider' as const,
+            scopeFilterName: 'codex', // installed but deselected
+            pollIntervalMs: 1000,
+            viewportLines: 50,
+            condition: { type: 'contains' as const, pattern: 'error' },
+            cooldownMs: 5000,
+            cooldownMode: 'time' as const,
+            eventName: 'test-event',
+          },
+        ],
+      };
+      const { deps, createWatcher } = buildDeps(h, bundledUnified(template));
+
+      const result = (await createFromTemplateWithHelper(
+        {
+          name: 'Watcher Elig',
+          rootPath: '/test/watcher-elig',
+          slug: 'watcher-elig',
+          selectedProviderNames: ['claude'], // codex deselected
+        },
+        deps as never,
+      )) as AnyRec;
+
+      expect(result.success).toBe(true);
+      // The watcher resolves against the FULL installed map, so a deselected-but-installed provider
+      // keeps provider scope + its id rather than silently broadening to scope:'all'.
+      expect(createWatcher).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'provider', scopeFilterId: codex.id }),
+      );
     });
   });
 });

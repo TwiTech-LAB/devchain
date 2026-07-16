@@ -1,6 +1,7 @@
 import { renderHook, act } from '@testing-library/react';
 import type { Terminal } from '@xterm/xterm';
 import { useTerminalSubscription } from './useTerminalSubscription';
+import { createTerminalHistorySync, type TerminalHistorySync } from '../terminal-history-sync';
 import { termLog } from '@/ui/lib/debug';
 
 jest.mock('@/ui/lib/debug');
@@ -19,6 +20,7 @@ jest.mock('@/ui/lib/socket', () => ({
 describe('useTerminalSubscription', () => {
   let mockTerminal: Terminal;
   let mockDispatch: jest.Mock;
+  let historySync: TerminalHistorySync;
 
   beforeEach(() => {
     mockTerminal = {
@@ -27,6 +29,7 @@ describe('useTerminalSubscription', () => {
     } as Terminal;
 
     mockDispatch = jest.fn();
+    historySync = createTerminalHistorySync();
     mockSocket.connected = false;
     jest.clearAllMocks();
   });
@@ -35,7 +38,9 @@ describe('useTerminalSubscription', () => {
     const sessionId = 'test-session';
     const xtermRef = { current: mockTerminal };
 
-    const { result } = renderHook(() => useTerminalSubscription(sessionId, xtermRef, mockDispatch));
+    const { result } = renderHook(() =>
+      useTerminalSubscription(sessionId, xtermRef, mockDispatch, historySync),
+    );
 
     act(() => {
       const success = result.current.attemptSubscription();
@@ -55,7 +60,9 @@ describe('useTerminalSubscription', () => {
     const xtermRef = { current: null };
     mockSocket.connected = true;
 
-    const { result } = renderHook(() => useTerminalSubscription(sessionId, xtermRef, mockDispatch));
+    const { result } = renderHook(() =>
+      useTerminalSubscription(sessionId, xtermRef, mockDispatch, historySync),
+    );
 
     act(() => {
       const success = result.current.attemptSubscription();
@@ -77,7 +84,9 @@ describe('useTerminalSubscription', () => {
     const xtermRef = { current: mockTerminal };
     mockSocket.connected = true;
 
-    const { result } = renderHook(() => useTerminalSubscription(sessionId, xtermRef, mockDispatch));
+    const { result } = renderHook(() =>
+      useTerminalSubscription(sessionId, xtermRef, mockDispatch, historySync),
+    );
 
     // First subscription should succeed
     act(() => {
@@ -109,7 +118,9 @@ describe('useTerminalSubscription', () => {
     const xtermRef = { current: mockTerminal };
     mockSocket.connected = true;
 
-    const { result } = renderHook(() => useTerminalSubscription(sessionId, xtermRef, mockDispatch));
+    const { result } = renderHook(() =>
+      useTerminalSubscription(sessionId, xtermRef, mockDispatch, historySync),
+    );
 
     act(() => {
       const success = result.current.attemptSubscription();
@@ -117,9 +128,11 @@ describe('useTerminalSubscription', () => {
     });
 
     expect(mockDispatch).toHaveBeenCalledWith({ type: 'SUBSCRIBE_ATTEMPT' });
+    // First attach with no known domain: the reconnect cursor sends NEITHER field.
     expect(mockSocket.emit).toHaveBeenCalledWith('terminal:subscribe', {
       sessionId,
       lastSequence: undefined,
+      sequenceEpoch: undefined,
       cols: 80,
       rows: 24,
     });
@@ -145,7 +158,13 @@ describe('useTerminalSubscription', () => {
     };
 
     const { result } = renderHook(() =>
-      useTerminalSubscription(sessionId, xtermRef, mockDispatch, providedSocket as never),
+      useTerminalSubscription(
+        sessionId,
+        xtermRef,
+        mockDispatch,
+        historySync,
+        providedSocket as never,
+      ),
     );
 
     act(() => {
@@ -166,7 +185,9 @@ describe('useTerminalSubscription', () => {
     const xtermRef = { current: mockTerminal };
     mockSocket.connected = true;
 
-    const { result } = renderHook(() => useTerminalSubscription(sessionId, xtermRef, mockDispatch));
+    const { result } = renderHook(() =>
+      useTerminalSubscription(sessionId, xtermRef, mockDispatch, historySync),
+    );
 
     expect(result.current.expectingSeedRef.current).toBe(false);
 
@@ -177,26 +198,30 @@ describe('useTerminalSubscription', () => {
     expect(result.current.expectingSeedRef.current).toBe(true);
   });
 
-  it('should include lastSequence on reconnection', () => {
+  it('should send the {sequenceEpoch, sequence} cursor pair on reconnection once a domain is known', () => {
     const sessionId = 'test-session';
     const xtermRef = { current: mockTerminal };
     mockSocket.connected = true;
 
-    const { result } = renderHook(() => useTerminalSubscription(sessionId, xtermRef, mockDispatch));
+    const { result } = renderHook(() =>
+      useTerminalSubscription(sessionId, xtermRef, mockDispatch, historySync),
+    );
 
     // First subscription (first attach - sets hasEverSubscribedRef to true)
     act(() => {
       result.current.attemptSubscription();
     });
 
-    // Reset for reconnection scenario
+    // Reset for reconnection scenario. Adopt a domain epoch (as a `subscribed` ack would) so the
+    // reconnect cursor has a domain to pair the sequence with.
     mockSocket.emit.mockClear();
     act(() => {
       result.current.isSubscribedRef.current = false; // Allow re-subscription
+      historySync.reconcileEpoch('epoch-A');
       result.current.lastSequenceRef.current = 123;
     });
 
-    // Reconnection attempt (not first attach - should include lastSequence)
+    // Reconnection attempt (not first attach) sends BOTH cursor fields.
     act(() => {
       result.current.attemptSubscription();
     });
@@ -205,7 +230,38 @@ describe('useTerminalSubscription', () => {
       'terminal:subscribe',
       expect.objectContaining({
         lastSequence: 123,
+        sequenceEpoch: 'epoch-A',
       }),
+    );
+  });
+
+  it('sends the cursor with sequence 0 (a valid baseline) when a domain is known on reconnect', () => {
+    const sessionId = 'test-session';
+    const xtermRef = { current: mockTerminal };
+    mockSocket.connected = true;
+
+    const { result } = renderHook(() =>
+      useTerminalSubscription(sessionId, xtermRef, mockDispatch, historySync),
+    );
+
+    act(() => {
+      result.current.attemptSubscription();
+    });
+
+    mockSocket.emit.mockClear();
+    act(() => {
+      result.current.isSubscribedRef.current = false;
+      historySync.reconcileEpoch('epoch-A');
+      result.current.lastSequenceRef.current = 0; // sequence 0 is still a valid cursor
+    });
+
+    act(() => {
+      result.current.attemptSubscription();
+    });
+
+    expect(mockSocket.emit).toHaveBeenCalledWith(
+      'terminal:subscribe',
+      expect.objectContaining({ lastSequence: 0, sequenceEpoch: 'epoch-A' }),
     );
   });
 
@@ -214,7 +270,9 @@ describe('useTerminalSubscription', () => {
     const xtermRef = { current: mockTerminal };
     mockSocket.connected = true;
 
-    const { result } = renderHook(() => useTerminalSubscription(sessionId, xtermRef, mockDispatch));
+    const { result } = renderHook(() =>
+      useTerminalSubscription(sessionId, xtermRef, mockDispatch, historySync),
+    );
 
     // Call once
     act(() => {
@@ -241,7 +299,9 @@ describe('useTerminalSubscription', () => {
     const sessionId = 'test-session';
     const xtermRef = { current: mockTerminal };
 
-    const { result } = renderHook(() => useTerminalSubscription(sessionId, xtermRef, mockDispatch));
+    const { result } = renderHook(() =>
+      useTerminalSubscription(sessionId, xtermRef, mockDispatch, historySync),
+    );
 
     expect(result.current.lastSequenceRef).toBeDefined();
     expect(result.current.isSubscribedRef).toBeDefined();

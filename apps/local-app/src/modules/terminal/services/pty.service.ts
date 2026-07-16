@@ -1,4 +1,4 @@
-import { Injectable, OnModuleDestroy, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, OnModuleDestroy, OnModuleInit, Inject, forwardRef } from '@nestjs/common';
 import * as pty from 'node-pty';
 import { createLogger } from '../../../common/logging/logger';
 import { TerminalGateway } from '../gateways/terminal.gateway';
@@ -8,6 +8,8 @@ import { SettingsService } from '../../settings/services/settings.service';
 import { SessionsService } from '../../sessions/services/sessions.service';
 import { stripAlternateScreenSequences } from '../utils/ansi-sanitizer';
 import { normalizeLineEndings } from '../utils/normalize-line-endings';
+import { MetricsService } from '../../metrics/services/metrics.service';
+import type { PtyStats } from '../../metrics/types/metrics.types';
 
 const logger = createLogger('PtyService');
 
@@ -30,7 +32,7 @@ interface PtySession {
  * and stream output through MarkerParser before broadcasting to clients
  */
 @Injectable()
-export class PtyService implements OnModuleDestroy {
+export class PtyService implements OnModuleDestroy, OnModuleInit {
   private activeSessions: Map<string, PtySession> = new Map();
 
   constructor(
@@ -42,6 +44,7 @@ export class PtyService implements OnModuleDestroy {
     private readonly settingsService: SettingsService,
     @Inject(forwardRef(() => SessionsService))
     private readonly sessionsService: SessionsService,
+    private readonly metricsService: MetricsService,
   ) {
     let engine = 'xterm';
     try {
@@ -49,6 +52,14 @@ export class PtyService implements OnModuleDestroy {
       if (stored && typeof stored === 'string') engine = stored.trim().toLowerCase();
     } catch {}
     logger.info({ engine }, 'PtyService initialized (per-provider alt-screen policy)');
+  }
+
+  onModuleInit(): void {
+    this.metricsService.registerStatsProvider('pty', () => this.getPtyStats());
+  }
+
+  getPtyStats(): PtyStats {
+    return { activeSessions: this.activeSessions.size };
   }
 
   onModuleDestroy() {

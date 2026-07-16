@@ -152,7 +152,7 @@ describe('watchers codec — profile-scope remap survives', () => {
     const createWatcher = jest.fn().mockResolvedValue({ id: 'w-1' });
     const rt = makeRt({
       watchersService: { createWatcher } as AnyRec,
-      available: new Map([['claude', 'prov-1']]),
+      installedProviders: new Map([['claude', 'prov-1']]),
     });
     // profileNameToId holds the SELECTED (post-substitution) profile; the watcher references
     // the pre-substitution name, which the remap map points at the selected name.

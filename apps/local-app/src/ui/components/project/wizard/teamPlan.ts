@@ -2,9 +2,8 @@ import type { ProfileSelection } from '@/ui/components/team/ProviderGroupedConfi
 import { filterConfigurableTeams } from '@/ui/lib/teams';
 
 /**
- * Pure state + emission logic for wizard Step 3 (Configure Teams), extracted VERBATIM from the legacy
- * `ProjectTeamPreconfigDialog` so the emitted {@link TeamOverrideOutput}[] stays byte-identical across
- * the strangler cut-over (see `teamPlan.spec.ts` regression). No React — the component owns rendering.
+ * Pure state + emission logic for wizard Step 3 (Configure Teams), extracted from the legacy
+ * `ProjectTeamPreconfigDialog`. No React — the component owns rendering.
  */
 
 export interface ParsedTemplateTeam {
@@ -76,15 +75,14 @@ export interface TeamOverrideProviderFilter {
 }
 
 /**
- * Emit the team overrides (verbatim from the legacy dialog's `handleConfirm`). Removed profiles are
- * dropped; kept profiles contribute a `profileSelections` entry (subset config names, or `[]` for
- * allow-all). `allowTeamLeadCreateAgents` is always `true` for a configured team.
+ * Emit team overrides. Removed profiles are dropped; kept profiles contribute a `profileSelections`
+ * entry (subset config names, or `[]` for allow-all). `allowTeamLeadCreateAgents` is always `true`
+ * for a configured team.
  *
- * With a `providerFilter`, subset config names that resolve to an UNSELECTED provider are dropped
- * (project creation filters profile configs to the selected providers, so such names would dangle).
- * A subset that loses every config falls back to allow-all (`[]`) — the team keeps the remaining
- * selected-provider configs instead of pinning to configs that won't exist. Names that cannot be
- * resolved against the profiles are kept (we only drop what is KNOWN to be unselected).
+ * With a `providerFilter`, subset config names that resolve to an unselected provider are dropped.
+ * If no names survive, the profile permission is removed rather than broadened to allow-all (`[]`).
+ * Names that cannot be resolved against the profiles are kept so strict backend validation can
+ * report malformed templates.
  */
 export function buildTeamOverrides(
   visibleTeams: ParsedTemplateTeam[],
@@ -118,7 +116,6 @@ export function buildTeamOverrides(
 
     for (const sel of state.selections) {
       if (sel.mode === 'remove') continue;
-      profileNames.push(sel.profileKey);
       if (sel.mode === 'subset' && sel.configKeys && sel.configKeys.length > 0) {
         let configNames = sel.configKeys;
         if (configProviders && selectedProviders) {
@@ -129,11 +126,11 @@ export function buildTeamOverrides(
           });
         }
         if (configNames.length > 0) {
+          profileNames.push(sel.profileKey);
           profileSelections.push({ profileName: sel.profileKey, configNames });
-        } else {
-          profileSelections.push({ profileName: sel.profileKey, configNames: [] });
         }
-      } else {
+      } else if (sel.mode === 'allow-all') {
+        profileNames.push(sel.profileKey);
         profileSelections.push({ profileName: sel.profileKey, configNames: [] });
       }
     }

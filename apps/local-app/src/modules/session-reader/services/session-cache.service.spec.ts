@@ -5,6 +5,8 @@ import type {
   IncrementalResult,
 } from '../adapters/session-reader-adapter.interface';
 import type { UnifiedSession, UnifiedMetrics, UnifiedMessage } from '../dtos/unified-session.types';
+import type { UnifiedChunk } from '../dtos/unified-chunk.types';
+import { MetricsService } from '../../metrics/services/metrics.service';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -77,9 +79,11 @@ function makeSession(overrides: Partial<UnifiedSession> = {}): UnifiedSession {
   };
 }
 
-function makeStat(size: number, mtimeMs: number): fsPromises.FileHandle {
+function makeStat(size: number, mtimeMs: number, ino = 12345, dev = 1): fsPromises.FileHandle {
   return {
     size,
+    ino,
+    dev,
     mtime: new Date(mtimeMs),
     isFile: () => true,
     isDirectory: () => false,
@@ -110,6 +114,11 @@ function makeAdapter(overrides: Partial<SessionReaderAdapter> = {}): SessionRead
 // Tests
 // ---------------------------------------------------------------------------
 
+const mockMetricsService = {
+  registerCacheStatsProvider: jest.fn(),
+  registerStatsProvider: jest.fn(),
+} as never;
+
 describe('SessionCacheService', () => {
   let service: SessionCacheService;
   let adapter: SessionReaderAdapter;
@@ -119,7 +128,15 @@ describe('SessionCacheService', () => {
   const SESSION_ID = 'session-1';
 
   beforeEach(() => {
-    service = new SessionCacheService();
+    jest
+      .spyOn(
+        SessionCacheService.prototype as unknown as {
+          tryHashFileContent: () => Promise<{ prefixDigest: string; fullDigest: string }>;
+        },
+        'tryHashFileContent',
+      )
+      .mockResolvedValue({ prefixDigest: 'stable-prefix', fullDigest: 'stable-prefix' });
+    service = new SessionCacheService(mockMetricsService);
     adapter = makeAdapter();
     dateSpy = jest.spyOn(Date, 'now').mockReturnValue(1706000000000);
 
@@ -148,6 +165,18 @@ describe('SessionCacheService', () => {
     expect(service.size).toBe(1);
   });
 
+  it('module-unit: strips adapter-provided derived chunks from the parsed cache root', async () => {
+    const adapterSession = makeSession({ chunks: [] });
+    (adapter.parseFullSession as jest.Mock).mockResolvedValue(adapterSession);
+
+    const result = await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
+
+    expect(result).not.toBe(adapterSession);
+    expect(result.chunks).toBeUndefined();
+    expect(service.getEntry(SESSION_ID)?.session.chunks).toBeUndefined();
+    expect(adapterSession.chunks).toEqual([]);
+  });
+
   // -------------------------------------------------------------------------
   // Cache hit (file unchanged, within TTL)
   // -------------------------------------------------------------------------
@@ -170,28 +199,59 @@ describe('SessionCacheService', () => {
     expect(adapter.parseIncremental).not.toHaveBeenCalled();
   });
 
+  describe('getFreshSession', () => {
+    it('module-unit: returns a fresh cached session without invoking an adapter parse', async () => {
+      const session = makeSession();
+      (adapter.parseFullSession as jest.Mock).mockResolvedValue(session);
+      await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
+      jest.clearAllMocks();
+      mockedFsStat.mockResolvedValue(makeStat(1000, 1706000000000));
+
+      const result = await service.getFreshSession(SESSION_ID, FILE_PATH, adapter);
+
+      expect(result).toBe(session);
+      expect(adapter.parseFullSession).not.toHaveBeenCalled();
+      expect(adapter.parseIncremental).not.toHaveBeenCalled();
+    });
+
+    it('module-unit: returns undefined when cached source freshness has changed', async () => {
+      await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
+      mockedFsStat.mockResolvedValue(makeStat(1200, 1706000001000));
+
+      const result = await service.getFreshSession(SESSION_ID, FILE_PATH, adapter);
+
+      expect(result).toBeUndefined();
+      expect(adapter.parseIncremental).not.toHaveBeenCalled();
+    });
+  });
+
   // -------------------------------------------------------------------------
-  // TTL expiry
+  // Idle retention
   // -------------------------------------------------------------------------
 
-  it('should do a full reparse when TTL expires', async () => {
+  it('module-unit: does not reparse a fresh source due to entry age alone', async () => {
     const session1 = makeSession({ id: 'session-v1' });
-    const session2 = makeSession({ id: 'session-v2' });
-    (adapter.parseFullSession as jest.Mock)
-      .mockResolvedValueOnce(session1)
-      .mockResolvedValueOnce(session2);
+    (adapter.parseFullSession as jest.Mock).mockResolvedValue(session1);
 
     // First call: populates cache
     await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
 
-    // Advance time past 10-minute TTL
+    // Advance time past the former 10-minute absolute TTL without running the idle sweep.
     dateSpy.mockReturnValue(1706000000000 + 11 * 60 * 1000);
 
-    // Second call: TTL expired → full reparse
     const result = await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
 
-    expect(result).toBe(session2);
-    expect(adapter.parseFullSession).toHaveBeenCalledTimes(2);
+    expect(result).toBe(session1);
+    expect(adapter.parseFullSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('module-unit: idle sweep evicts an untouched composite entry', async () => {
+    await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
+
+    const swept = service.sweepIdleEntries(1706000000000 + 10 * 60 * 1000);
+
+    expect(swept).toBe(1);
+    expect(service.getEntry(SESSION_ID)).toBeUndefined();
   });
 
   // -------------------------------------------------------------------------
@@ -709,92 +769,149 @@ describe('SessionCacheService', () => {
   });
 
   // -------------------------------------------------------------------------
-  // LRU eviction at max capacity
+  // Composite byte-budget eviction
   // -------------------------------------------------------------------------
 
-  it('should evict the oldest entry when cache reaches max capacity', async () => {
-    const sessions: UnifiedSession[] = [];
+  it('module-unit: evicts every representation of the oldest session when over budget', async () => {
+    service = new SessionCacheService(mockMetricsService, {
+      budgetBytes: 5_000,
+      idleTtlMs: 10 * 60 * 1_000,
+      sweepIntervalMs: 60_000,
+    });
+    const first = makeSession({ id: 'session-a' });
+    (adapter.parseFullSession as jest.Mock).mockResolvedValue(first);
+    mockedFsStat.mockResolvedValue(makeStat(1_000, 1706000000000));
+    await service.getOrParse('session-a', '/tmp/a.jsonl', adapter);
+    const firstSourceVersion = service.getEntry('session-a')!.sourceVersion;
+    const chunks: UnifiedChunk[] = [];
+    service.setChunks('session-a', firstSourceVersion, chunks);
+    service.setDto('session-a', {
+      result: { messages: first.messages },
+      responseBytes: 1_500,
+      maxToolResultLength: 2_000,
+      enrichmentFingerprint: 'claude:200000',
+    });
 
-    // Fill cache to max (20 entries)
-    for (let i = 0; i < 20; i++) {
-      const session = makeSession({ id: `session-${i}` });
-      sessions.push(session);
-      (adapter.parseFullSession as jest.Mock).mockResolvedValue(session);
-      mockedFsStat.mockResolvedValue(makeStat(1000 + i, 1706000000000));
-      await service.getOrParse(`session-${i}`, `/tmp/test-${i}.jsonl`, adapter);
+    (adapter.parseFullSession as jest.Mock).mockResolvedValue(makeSession({ id: 'session-b' }));
+    await service.getOrParse('session-b', '/tmp/b.jsonl', adapter);
+
+    expect(service.getEntry('session-a')).toBeUndefined();
+    expect(service.getChunks('session-a', firstSourceVersion)).toBeUndefined();
+    expect(service.getDto('session-a', 2_000, 'claude:200000')).toBeUndefined();
+    expect(Array.from(service.getChunksRetainedRoots())).not.toContain(chunks);
+    expect(service.getCacheStats()).toMatchObject({
+      budgetUsedBytes: 2_000,
+      budgetBytes: 5_000,
+      evictions: 1,
+    });
+  });
+
+  it('module-unit heap: leaves no strong chunk root after whole-session eviction', async () => {
+    service = new SessionCacheService(mockMetricsService, {
+      budgetBytes: 2_500,
+      idleTtlMs: 10 * 60 * 1_000,
+      sweepIntervalMs: 60_000,
+    });
+    mockedFsStat.mockResolvedValue(makeStat(1_000, 1706000000000));
+    await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
+    const sourceVersion = service.getEntry(SESSION_ID)!.sourceVersion;
+
+    const weakChunks = (() => {
+      const chunks: UnifiedChunk[] = [];
+      const weak = new WeakRef(chunks);
+      service.setChunks(SESSION_ID, sourceVersion, chunks);
+      return weak;
+    })();
+
+    expect(service.getEntry(SESSION_ID)).toBeUndefined();
+    expect(Array.from(service.getChunksRetainedRoots())).toEqual([]);
+
+    const gc = (globalThis as typeof globalThis & { gc?: () => void }).gc;
+    if (!gc) {
+      throw new Error(
+        'This heap assertion requires --expose-gc; run it through the local-app test script.',
+      );
     }
-
-    expect(service.size).toBe(20);
-
-    // Add one more — should evict session-0 (oldest)
-    const newSession = makeSession({ id: 'session-new' });
-    (adapter.parseFullSession as jest.Mock).mockResolvedValue(newSession);
-    mockedFsStat.mockResolvedValue(makeStat(2000, 1706000000000));
-    await service.getOrParse('session-new', '/tmp/test-new.jsonl', adapter);
-
-    expect(service.size).toBe(20);
-
-    // session-0 should have been evicted; fetching it requires a fresh parse
-    (adapter.parseFullSession as jest.Mock).mockClear();
-    const freshSession = makeSession({ id: 'session-0-fresh' });
-    (adapter.parseFullSession as jest.Mock).mockResolvedValue(freshSession);
-    mockedFsStat.mockResolvedValue(makeStat(1000, 1706000000000));
-
-    const result = await service.getOrParse('session-0', '/tmp/test-0.jsonl', adapter);
-
-    expect(result).toBe(freshSession);
-    expect(adapter.parseFullSession).toHaveBeenCalledTimes(1);
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      gc();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    expect(weakChunks.deref()).toBeUndefined();
   });
 
   // -------------------------------------------------------------------------
-  // LRU touch moves entry to end
+  // Composite LRU touch
   // -------------------------------------------------------------------------
 
-  it('should move accessed entry to end of LRU order on cache hit', async () => {
-    // Insert session-a, session-b, session-c
-    for (const id of ['a', 'b', 'c']) {
-      const session = makeSession({ id: `session-${id}` });
-      (adapter.parseFullSession as jest.Mock).mockResolvedValue(session);
-      mockedFsStat.mockResolvedValue(makeStat(1000, 1706000000000));
+  it('module-unit: protects a recently accessed session during budget eviction', async () => {
+    service = new SessionCacheService(mockMetricsService, {
+      budgetBytes: 4_500,
+      idleTtlMs: 10 * 60 * 1_000,
+      sweepIntervalMs: 60_000,
+    });
+    mockedFsStat.mockResolvedValue(makeStat(1_000, 1706000000000));
+    for (const id of ['a', 'b']) {
+      (adapter.parseFullSession as jest.Mock).mockResolvedValue(makeSession({ id }));
       await service.getOrParse(`session-${id}`, `/tmp/${id}.jsonl`, adapter);
     }
 
-    // Access session-a (moves it to end)
-    mockedFsStat.mockResolvedValue(makeStat(1000, 1706000000000));
     await service.getOrParse('session-a', '/tmp/a.jsonl', adapter);
+    (adapter.parseFullSession as jest.Mock).mockResolvedValue(makeSession({ id: 'c' }));
+    await service.getOrParse('session-c', '/tmp/c.jsonl', adapter);
 
-    // Now fill remaining slots (17 more to reach 20)
-    for (let i = 0; i < 17; i++) {
-      const session = makeSession({ id: `filler-${i}` });
-      (adapter.parseFullSession as jest.Mock).mockResolvedValue(session);
-      mockedFsStat.mockResolvedValue(makeStat(2000 + i, 1706000000000));
-      await service.getOrParse(`filler-${i}`, `/tmp/filler-${i}.jsonl`, adapter);
+    expect(service.getEntry('session-a')).toBeDefined();
+    expect(service.getEntry('session-b')).toBeUndefined();
+    expect(service.getEntry('session-c')).toBeDefined();
+  });
+
+  it('module-unit: exposes bounded composite usage across a churn scenario', async () => {
+    const metricsService = new MetricsService();
+    service = new SessionCacheService(metricsService, {
+      budgetBytes: 5_000,
+      idleTtlMs: 10 * 60 * 1_000,
+      sweepIntervalMs: 60_000,
+    });
+    service.onModuleInit();
+    metricsService.registerCacheStatsProvider(
+      'dto',
+      () => service.getDtoCacheStats(),
+      () => service.getDtoRetainedRoots(),
+    );
+    mockedFsStat.mockResolvedValue(makeStat(1_000, 1706000000000));
+
+    try {
+      for (let i = 0; i < 5; i += 1) {
+        const sessionId = `session-${i}`;
+        (adapter.parseFullSession as jest.Mock).mockResolvedValue(makeSession({ id: sessionId }));
+        await service.getOrParse(sessionId, `/tmp/${sessionId}.jsonl`, adapter);
+        service.setChunks(sessionId, service.getEntry(sessionId)!.sourceVersion, []);
+        service.setDto(sessionId, {
+          result: { sessionId },
+          responseBytes: 1_000,
+          maxToolResultLength: 2_000,
+          enrichmentFingerprint: 'claude:200000',
+        });
+        expect(service.getCacheStats().budgetUsedBytes).toBeLessThanOrEqual(5_000);
+      }
+
+      const snapshot = metricsService.getMetrics();
+      expect(snapshot.caches).toEqual(
+        expect.objectContaining({
+          parsed: expect.objectContaining({ entries: 1 }),
+          chunks: expect.objectContaining({ entries: 1 }),
+          dto: expect.objectContaining({ entries: 1 }),
+        }),
+      );
+      expect(snapshot.caches.aggregate).toEqual(
+        expect.objectContaining({
+          budgetUsedBytes: 4_000,
+          budgetBytes: 5_000,
+          evictions: 4,
+        }),
+      );
+    } finally {
+      service.onModuleDestroy();
     }
-
-    expect(service.size).toBe(20);
-
-    // Add one more — should evict session-b (oldest after session-a was touched)
-    const newSession = makeSession({ id: 'overflow' });
-    (adapter.parseFullSession as jest.Mock).mockResolvedValue(newSession);
-    mockedFsStat.mockResolvedValue(makeStat(3000, 1706000000000));
-    await service.getOrParse('overflow', '/tmp/overflow.jsonl', adapter);
-
-    expect(service.size).toBe(20);
-
-    // session-b should be evicted, session-a should still be cached
-    (adapter.parseFullSession as jest.Mock).mockClear();
-    mockedFsStat.mockResolvedValue(makeStat(1000, 1706000000000));
-
-    // session-a: should hit cache (not evicted)
-    await service.getOrParse('session-a', '/tmp/a.jsonl', adapter);
-    expect(adapter.parseFullSession).not.toHaveBeenCalled();
-
-    // session-b: should miss cache (evicted)
-    const freshB = makeSession({ id: 'session-b-fresh' });
-    (adapter.parseFullSession as jest.Mock).mockResolvedValue(freshB);
-    const resultB = await service.getOrParse('session-b', '/tmp/b.jsonl', adapter);
-    expect(resultB).toBe(freshB);
-    expect(adapter.parseFullSession).toHaveBeenCalledTimes(1);
   });
 
   // -------------------------------------------------------------------------
@@ -1237,6 +1354,23 @@ describe('SessionCacheService', () => {
     expect(adapter.parseFullSession).toHaveBeenCalledTimes(2);
   });
 
+  it('should fully reparse when an inode replacement grows', async () => {
+    const session1 = makeSession({ id: 'old-generation' });
+    const session2 = makeSession({ id: 'new-generation' });
+    (adapter.parseFullSession as jest.Mock)
+      .mockResolvedValueOnce(session1)
+      .mockResolvedValueOnce(session2);
+
+    await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
+
+    mockedFsStat.mockResolvedValue(makeStat(1500, 1706000010000, 67890));
+    const result = await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
+
+    expect(result).toBe(session2);
+    expect(adapter.parseFullSession).toHaveBeenCalledTimes(2);
+    expect(adapter.parseIncremental).not.toHaveBeenCalled();
+  });
+
   // -------------------------------------------------------------------------
   // getOrParseWithMeta
   // -------------------------------------------------------------------------
@@ -1246,6 +1380,7 @@ describe('SessionCacheService', () => {
       const result = await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
 
       expect(result.cacheHit).toBe(false);
+      expect(result.sourceChangeKind).toBe('unknown-full-parse');
       expect(result.lastSize).toBe(1000);
       expect(result.lastMtime).toBe(1706000000000);
       expect(result.lastOffset).toBe(1000);
@@ -1257,6 +1392,7 @@ describe('SessionCacheService', () => {
       const result = await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
 
       expect(result.cacheHit).toBe(true);
+      expect(result.sourceChangeKind).toBe('cache-hit');
       expect(adapter.parseFullSession).toHaveBeenCalledTimes(1);
     });
 
@@ -1274,8 +1410,99 @@ describe('SessionCacheService', () => {
       const result = await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
 
       expect(result.cacheHit).toBe(false);
+      expect(result.sourceChangeKind).toBe('same-file-append');
       expect(result.lastOffset).toBe(1500);
       expect(result.lastSize).toBe(1500);
+    });
+
+    it.each([
+      {
+        label: 'post-parse proof is unavailable',
+        postParseProof: undefined,
+      },
+      {
+        label: 'post-parse digest differs from the proven revision',
+        postParseProof: { prefixDigest: 'rotated-generation', fullDigest: 'rotated-generation' },
+      },
+    ])('discards a tentative incremental result when the $label', async ({ postParseProof }) => {
+      const hashFileContent = (
+        service as unknown as {
+          tryHashFileContent: jest.MockedFunction<
+            () => Promise<{ prefixDigest: string; fullDigest: string } | undefined>
+          >;
+        }
+      ).tryHashFileContent;
+      hashFileContent
+        .mockReset()
+        .mockResolvedValueOnce({ prefixDigest: 'cached-prefix', fullDigest: 'cached-prefix' })
+        .mockResolvedValueOnce({
+          prefixDigest: 'cached-prefix',
+          fullDigest: 'proven-appended-revision',
+        })
+        .mockResolvedValueOnce(postParseProof)
+        .mockResolvedValue({
+          prefixDigest: 'canonical-current-revision',
+          fullDigest: 'canonical-current-revision',
+        });
+
+      const tentativeMessage = makeMessage('tentative-mixed-suffix', 1706000010000);
+      (adapter.parseIncremental as jest.Mock).mockResolvedValue({
+        entries: [tentativeMessage],
+        nextByteOffset: 1500,
+        metrics: makeMetrics({ messageCount: 3 }),
+      } satisfies IncrementalResult);
+      const canonicalSession = makeSession({
+        messages: [makeMessage('canonical-current-generation')],
+        metrics: makeMetrics({ messageCount: 1 }),
+      });
+      (adapter.parseFullSession as jest.Mock)
+        .mockResolvedValueOnce(makeSession())
+        .mockResolvedValueOnce(canonicalSession);
+
+      await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
+      mockedFsStat.mockResolvedValue(makeStat(1500, 1706000005000));
+
+      const result = await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
+
+      expect(adapter.parseIncremental).toHaveBeenCalledTimes(1);
+      expect(adapter.parseFullSession).toHaveBeenCalledTimes(2);
+      expect(result).toMatchObject({
+        cacheHit: false,
+        sourceChangeKind: 'same-file-rewrite',
+        session: canonicalSession,
+      });
+      expect(result.session.messages).not.toContain(tentativeMessage);
+      expect(service.getEntry(SESSION_ID)?.session).toBe(canonicalSession);
+    });
+
+    it.each([
+      {
+        label: 'prefix mismatch',
+        growthProof: { prefixDigest: 'changed-prefix', fullDigest: 'new-generation' },
+      },
+      { label: 'proof unavailable', growthProof: undefined },
+    ])('fails closed on growing same-inode content when the $label', async ({ growthProof }) => {
+      const hashFileContent = (
+        service as unknown as {
+          tryHashFileContent: jest.MockedFunction<
+            () => Promise<{ prefixDigest: string; fullDigest: string } | undefined>
+          >;
+        }
+      ).tryHashFileContent;
+      hashFileContent
+        .mockReset()
+        .mockResolvedValueOnce({ prefixDigest: 'cached-prefix', fullDigest: 'cached-prefix' })
+        .mockResolvedValueOnce(growthProof)
+        .mockResolvedValue({ prefixDigest: 'new-generation', fullDigest: 'new-generation' });
+
+      await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
+      mockedFsStat.mockResolvedValue(makeStat(1500, 1706000005000));
+
+      const result = await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
+
+      expect(result.sourceChangeKind).toBe('same-file-rewrite');
+      expect(adapter.parseFullSession).toHaveBeenCalledTimes(2);
+      expect(adapter.parseIncremental).not.toHaveBeenCalled();
     });
   });
 
@@ -1288,11 +1515,28 @@ describe('SessionCacheService', () => {
   // -------------------------------------------------------------------------
 
   describe('source-ref + freshness abstraction', () => {
-    it('should expose a numeric sourceVersion equal to file size', async () => {
-      mockedFsStat.mockResolvedValue(makeStat(4096, 1706000000000));
-      const result = await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
-      expect(result.sourceVersion).toBe(4096);
-      expect(service.getEntry(SESSION_ID)!.sourceVersion).toBe(4096);
+    it('keeps a safe file revision stable until filesystem identity or freshness changes', async () => {
+      const original = makeStat(4096, 1706000000000, 111, 7);
+      const refreshed = makeStat(4096, 1706000000001, 111, 7);
+      const replacement = makeStat(4096, 1706000000001, 222, 7);
+      mockedFsStat
+        .mockResolvedValueOnce(original)
+        .mockResolvedValueOnce(original)
+        .mockResolvedValueOnce(refreshed)
+        .mockResolvedValueOnce(replacement);
+
+      const first = await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
+      const unchanged = await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
+      const freshnessChanged = await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
+      const replaced = await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
+
+      expect(Number.isSafeInteger(first.sourceVersion)).toBe(true);
+      expect(unchanged).toMatchObject({ cacheHit: true, sourceVersion: first.sourceVersion });
+      expect(freshnessChanged.sourceVersion).not.toBe(first.sourceVersion);
+      expect(replaced.cacheHit).toBe(false);
+      expect(replaced.sourceVersion).not.toBe(freshnessChanged.sourceVersion);
+      expect(service.getEntry(SESSION_ID)!.sourceVersion).toBe(replaced.sourceVersion);
+      expect(adapter.parseFullSession).toHaveBeenCalledTimes(3);
     });
 
     // ⭐ KEYSTONE (deferred from P1-3): for a DB source (agy/opencode), `sourceVersion`
@@ -1323,6 +1567,7 @@ describe('SessionCacheService', () => {
       dateSpy.mockReturnValue(1706000010000); // 10s later — within TTL; only the token changed
       const second = await service.getOrParseWithMeta(SESSION_ID, sourceRef, adapter);
       expect(second.sourceVersion).toBe(1_700_000_060); // advances with maxUpdated, not size
+      expect(second.sourceChangeKind).toBe('db-update');
       expect(service.getEntry(SESSION_ID)!.sourceVersion).toBe(1_700_000_060);
     });
 

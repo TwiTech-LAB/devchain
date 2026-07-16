@@ -1,0 +1,53 @@
+{
+  "session": {
+    "id": "ses_memory_soak",
+    "title": "Memory soak provider parity",
+    "model": "gpt-4o",
+    "agent": "build",
+    "timeCreated": 1783929840000,
+    "timeUpdated": 1783929841000
+  },
+  "messages": [
+    {
+      "id": "msg_memory_user",
+      "timeCreated": 1783929840000,
+      "data": { "role": "user" },
+      "parts": [
+        {
+          "id": "part_001",
+          "data": { "type": "text", "text": "Return the deterministic fixture token." }
+        }
+      ]
+    },
+    {
+      "id": "msg_memory_assistant",
+      "timeCreated": 1783929841000,
+      "data": {
+        "role": "assistant",
+        "modelID": "gpt-4o",
+        "finish": "stop",
+        "tokens": {
+          "input": 120,
+          "output": 12,
+          "reasoning": 0,
+          "cache": { "read": 8, "write": 4 }
+        }
+      },
+      "parts": [
+        { "id": "part_002", "data": { "type": "text", "text": "fixture-ok" } },
+        {
+          "id": "part_003",
+          "data": {
+            "type": "step-finish",
+            "tokens": {
+              "input": 120,
+              "output": 12,
+              "reasoning": 0,
+              "cache": { "read": 8, "write": 4 }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

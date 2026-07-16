@@ -62,6 +62,8 @@ import {
 } from './__test-utils__/pipeline-harness';
 import { ConflictError, ValidationError } from '../../../../common/errors/error-types';
 import { resolve as resolveLaunchConfig } from '../provider-launch-config';
+import { TerminalStreamService } from '../../../terminal/services/terminal-stream.service';
+import type { MetricsService } from '../../../metrics/services/metrics.service';
 
 // ── Tests ──────────────────────────────────────────────────────────────
 
@@ -547,6 +549,86 @@ describe('SessionRestorePipeline', () => {
 
       expect(mocks.terminalSessionRegistry.dispose).not.toHaveBeenCalled();
       expect(mocks.ptyService.stopStreaming).not.toHaveBeenCalled();
+    });
+  });
+
+  // Scenario 9: stopped-session replay retention is cancelled SYNCHRONOUSLY at restore start.
+  describe('Scenario 9: replay retention cancelled synchronously at restore start', () => {
+    function realStreamService() {
+      const metricsService = { registerStatsProvider: jest.fn() } as unknown as MetricsService;
+      return new TerminalStreamService(metricsService);
+    }
+
+    it('cancels the replay clear before the first buffer-producing await', async () => {
+      const streamService = {
+        scheduleClear: jest.fn(),
+        cancelScheduledClear: jest.fn().mockReturnValue(60000),
+        setClearExpiryHandler: jest.fn(),
+      };
+      const { pipeline, mocks } = createRestorePipelineHarness({ streamService });
+
+      await pipeline.restore(sessionId, projectId);
+
+      expect(streamService.cancelScheduledClear).toHaveBeenCalledWith(sessionId);
+      // The cancel must precede createEmptySession (the first buffer-producing await): the whole
+      // point is that no awaited/buffer work runs while the retention timer is still armed.
+      const cancelOrder = streamService.cancelScheduledClear.mock.invocationCallOrder[0];
+      const createOrder = mocks.terminalIO.createEmptySession.mock.invocationCallOrder[0];
+      expect(cancelOrder).toBeLessThan(createOrder);
+    });
+
+    it('holds the restore across the retention deadline with early output and keeps the active buffer/epoch', async () => {
+      jest.useFakeTimers();
+      try {
+        const streamService = realStreamService();
+        // A stopped session in the retention window: early PTY output was buffered under epoch A and
+        // the stop armed a 60s clear.
+        streamService.initializeBuffer(sessionId);
+        streamService.addFrame(sessionId, 'early-pty-output');
+        const epochBefore = streamService.getSequenceEpoch(sessionId);
+        streamService.scheduleClear(sessionId, 60000);
+
+        const { pipeline, mocks } = createRestorePipelineHarness({ streamService });
+        // Hold the pipeline across the deadline: the first buffer-producing await elapses past 60s.
+        mocks.terminalIO.createEmptySession.mockImplementation(async () => {
+          jest.advanceTimersByTime(60001);
+        });
+
+        await pipeline.restore(sessionId, projectId);
+
+        // The delayed cleanup must NOT have cleared the domain we restored into: same epoch retained,
+        // buffer intact, and no clear still pending.
+        expect(streamService.getSequenceEpoch(sessionId)).toBe(epochBefore);
+        expect(streamService.getBufferStats(sessionId)).not.toBeNull();
+        expect(streamService.hasScheduledClear(sessionId)).toBe(false);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('re-arms the replay retention when the restore fails after cancelling it', async () => {
+      jest.useFakeTimers();
+      try {
+        const streamService = realStreamService();
+        streamService.initializeBuffer(sessionId);
+        streamService.addFrame(sessionId, 'early-pty-output');
+        streamService.scheduleClear(sessionId, 60000);
+
+        const { pipeline, mocks } = createRestorePipelineHarness({ streamService });
+        mocks.terminalIO.createEmptySession.mockRejectedValue(new Error('tmux server unavailable'));
+
+        await expect(pipeline.restore(sessionId, projectId)).rejects.toThrow(
+          'tmux server unavailable',
+        );
+
+        // Cancellation was undone on rollback (via the cleanup stack): retention is armed again and
+        // still clears the buffer, so a failed restore does not retain the domain indefinitely.
+        expect(streamService.hasScheduledClear(sessionId)).toBe(true);
+        jest.advanceTimersByTime(60000);
+        expect(streamService.getBufferStats(sessionId)).toBeNull();
+      } finally {
+        jest.useRealTimers();
+      }
     });
   });
 });

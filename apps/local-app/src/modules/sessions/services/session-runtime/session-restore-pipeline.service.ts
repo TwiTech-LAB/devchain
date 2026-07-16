@@ -22,6 +22,7 @@ import { isHookCapable } from '../../../providers/adapters/capabilities';
 import { TerminalIOService } from '../../../terminal/services/terminal-io/terminal-io.service';
 import { PtyService } from '../../../terminal/services/pty.service';
 import { TerminalSessionRegistry } from '../../../terminal/services/terminal-session/terminal-session-registry';
+import { TerminalStreamService } from '../../../terminal/services/terminal-stream.service';
 import { EventsService } from '../../../events/services/events.service';
 import { resolve as resolveLaunchConfig } from '../provider-launch-config';
 import { parseProfileOptions, extractModelFromArgs } from '../../utils/profile-options';
@@ -59,6 +60,7 @@ export class SessionRestorePipeline {
     private readonly ptyService: PtyService,
     private readonly terminalSessionRegistry: TerminalSessionRegistry,
     private readonly eventsService: EventsService,
+    private readonly streamService: TerminalStreamService,
   ) {
     this.sqlite = getRawSqliteClient(db);
   }
@@ -93,6 +95,19 @@ export class SessionRestorePipeline {
         this.validateRestorable(locked);
         this.checkProviderMismatch(locked, target.provider.name);
         this.checkNoRunningSession(locked.agent_id);
+
+        // Cancel any pending stopped-session replay-retention clear SYNCHRONOUSLY here — the true
+        // start of restore execution for the locked session, before the first buffer-producing await
+        // (createTmuxSession / startStreaming below). Waiting for the Phase 9 `session.restored`
+        // event is too late: a retention deadline crossing mid-pipeline would clear the very domain
+        // we are restoring into, losing the epoch. On rollback we re-arm the same retention (via the
+        // cleanup stack, like every other phase effect) so a failed restore does not retain forever.
+        const cancelledRetentionMs = this.streamService.cancelScheduledClear(locked.id);
+        if (cancelledRetentionMs !== null) {
+          cleanup.push('rearmReplayRetention', async () => {
+            this.streamService.scheduleClear(locked.id, cancelledRetentionMs);
+          });
+        }
 
         const { agent, project, epic, provider, options, configEnv } = target;
 

@@ -231,6 +231,7 @@ export class TypeCommandFailedError extends Error {
 
 export interface SendGap {
   ensureGap(agentId: string, minMs?: number): Promise<void>;
+  clear(): void;
 }
 
 export async function deliver(

@@ -1,0 +1,543 @@
+
+> local-app@0.0.0-internal memory-soak:test /home/ngsupb/repos/twitech/devchain-rem15-checkpoint/apps/local-app
+> node --test scripts/memory-soak/*.test.js
+
+TAP version 13
+# Subtest: pure unit: parses procfs memory and pressure counters into numeric units
+ok 1 - pure unit: parses procfs memory and pressure counters into numeric units
+  ---
+  duration_ms: 1.246924
+  type: 'test'
+  ...
+# Subtest: pure unit: process-tree accounting includes descendants once
+ok 2 - pure unit: process-tree accounting includes descendants once
+  ---
+  duration_ms: 0.174269
+  type: 'test'
+  ...
+# Subtest: pure unit: plateau uses cycle-tail medians and accepts either quantitative bound
+ok 3 - pure unit: plateau uses cycle-tail medians and accepts either quantitative bound
+  ---
+  duration_ms: 0.381738
+  type: 'test'
+  ...
+# Subtest: pure unit: evaluation fails specific observable limits
+ok 4 - pure unit: evaluation fails specific observable limits
+  ---
+  duration_ms: 0.613917
+  type: 'test'
+  ...
+# Subtest: pure unit: missing PSI is unavailable rather than a false zero-pressure pass
+ok 5 - pure unit: missing PSI is unavailable rather than a false zero-pressure pass
+  ---
+  duration_ms: 0.283748
+  type: 'test'
+  ...
+# Subtest: pure unit: catalog covers every validated scenario with pending activation notes
+ok 6 - pure unit: catalog covers every validated scenario with pending activation notes
+  ---
+  duration_ms: 0.264358
+  type: 'test'
+  ...
+# Subtest: pure unit: selected socket scenarios freeze output before retained-state plateau sampling
+ok 7 - pure unit: selected socket scenarios freeze output before retained-state plateau sampling
+  ---
+  duration_ms: 0.141539
+  type: 'test'
+  ...
+# Subtest: pure unit: lifecycle correctness requires identical zero-resource terminal states
+ok 8 - pure unit: lifecycle correctness requires identical zero-resource terminal states
+  ---
+  duration_ms: 0.261169
+  type: 'test'
+  ...
+# Subtest: pure unit: provider fixture planning is registry-driven and fails closed on new providers
+ok 9 - pure unit: provider fixture planning is registry-driven and fails closed on new providers
+  ---
+  duration_ms: 0.347088
+  type: 'test'
+  ...
+# Subtest: pure unit: provider parity compares exact fields and documents adapter tolerances
+ok 10 - pure unit: provider parity compares exact fields and documents adapter tolerances
+  ---
+  duration_ms: 0.376778
+  type: 'test'
+  ...
+# Subtest: contract unit: provider registry preload captures runtime membership and summary contracts
+ok 11 - contract unit: provider registry preload captures runtime membership and summary contracts
+  ---
+  duration_ms: 0.991045
+  type: 'test'
+  ...
+# Subtest: contract unit: headless terminal applies chunked seeds, live data, and recovery resets
+ok 12 - contract unit: headless terminal applies chunked seeds, live data, and recovery resets
+  ---
+  duration_ms: 13.638804
+  type: 'test'
+  ...
+# Subtest: pure unit: application metrics retain numbers and discard strings
+ok 13 - pure unit: application metrics retain numbers and discard strings
+  ---
+  duration_ms: 0.211739
+  type: 'test'
+  ...
+# Subtest: pure unit: fixture clients acknowledge only application heartbeat envelopes
+ok 14 - pure unit: fixture clients acknowledge only application heartbeat envelopes
+  ---
+  duration_ms: 0.0901
+  type: 'test'
+  ...
+# Subtest: pure unit: retained-state churn resumes the generator without resuming output
+ok 15 - pure unit: retained-state churn resumes the generator without resuming output
+  ---
+  duration_ms: 0.159809
+  type: 'test'
+  ...
+# Subtest: pure unit: retained-state history fill advances one row to the configured cap
+ok 16 - pure unit: retained-state history fill advances one row to the configured cap
+  ---
+  duration_ms: 0.202539
+  type: 'test'
+  ...
+# Subtest: pure unit: many-subscriber stable-state gate reports component plateau attribution
+ok 17 - pure unit: many-subscriber stable-state gate reports component plateau attribution
+  ---
+  duration_ms: 1.8102
+  type: 'test'
+  ...
+# Subtest: pure unit: many-subscriber stable-state gate refuses a drifting retained workload
+ok 18 - pure unit: many-subscriber stable-state gate refuses a drifting retained workload
+  ---
+  duration_ms: 0.406608
+  type: 'test'
+  ...
+# Subtest: pure unit: CLI defaults and duration profiles remain deterministic
+ok 19 - pure unit: CLI defaults and duration profiles remain deterministic
+  ---
+  duration_ms: 0.239928
+  type: 'test'
+  ...
+# Subtest: contract unit: runner dispatches by execution and preserves pending stubs
+ok 20 - contract unit: runner dispatches by execution and preserves pending stubs
+  ---
+  duration_ms: 0.168239
+  type: 'test'
+  ...
+# Subtest: contract integration: disposable app fixture authenticates, samples, and leaves no residue
+ok 21 - contract integration: disposable app fixture authenticates, samples, and leaves no residue
+  ---
+  duration_ms: 425.447494
+  type: 'test'
+  ...
+# Subtest: pure unit: fixture teardown records sockets and continues after disconnect failure
+ok 22 - pure unit: fixture teardown records sockets and continues after disconnect failure
+  ---
+  duration_ms: 51.176955
+  type: 'test'
+  ...
+# Subtest: contract integration: transport stall is activated only by the disposable child preload
+ok 23 - contract integration: transport stall is activated only by the disposable child preload
+  ---
+  duration_ms: 253.741751
+  type: 'test'
+  ...
+# Subtest: pure unit: generator liveness — all expected PIDs alive in every sample → pass
+ok 24 - pure unit: generator liveness — all expected PIDs alive in every sample → pass
+  ---
+  duration_ms: 0.258568
+  type: 'test'
+  ...
+# Subtest: pure unit: generator liveness — one generator dead in a later sample → fail with named PID
+ok 25 - pure unit: generator liveness — one generator dead in a later sample → fail with named PID
+  ---
+  duration_ms: 0.13384
+  type: 'test'
+  ...
+# Subtest: pure unit: generator liveness — all generators dead → fail with all PIDs
+ok 26 - pure unit: generator liveness — all generators dead → fail with all PIDs
+  ---
+  duration_ms: 0.089199
+  type: 'test'
+  ...
+# Subtest: pure unit: generator liveness — missing generators field → fail with actionable reason
+ok 27 - pure unit: generator liveness — missing generators field → fail with actionable reason
+  ---
+  duration_ms: 0.079
+  type: 'test'
+  ...
+# Subtest: pure unit: generator liveness — changed expected PID set fails at the changed sample
+ok 28 - pure unit: generator liveness — changed expected PID set fails at the changed sample
+  ---
+  duration_ms: 0.13501
+  type: 'test'
+  ...
+# Subtest: pure unit: generator liveness — PID set rejects non-positive and duplicate members
+ok 29 - pure unit: generator liveness — PID set rejects non-positive and duplicate members
+  ---
+  duration_ms: 0.126159
+  type: 'test'
+  ...
+# Subtest: pure unit: generator liveness — reordered identical PID set remains stable
+ok 30 - pure unit: generator liveness — reordered identical PID set remains stable
+  ---
+  duration_ms: 0.099419
+  type: 'test'
+  ...
+# Subtest: pure unit: pane discovery — blank output rejects before any process signal
+ok 31 - pure unit: pane discovery — blank output rejects before any process signal
+  ---
+  duration_ms: 0.161189
+  type: 'test'
+  ...
+# Subtest: pure unit: pane discovery — PID 0 is rejected
+ok 32 - pure unit: pane discovery — PID 0 is rejected
+  ---
+  duration_ms: 0.179459
+  type: 'test'
+  ...
+# Subtest: pure unit: pane discovery — duplicate PIDs are rejected
+ok 33 - pure unit: pane discovery — duplicate PIDs are rejected
+  ---
+  duration_ms: 0.0858
+  type: 'test'
+  ...
+# Subtest: pure unit: pane discovery — session-count mismatch is rejected
+ok 34 - pure unit: pane discovery — session-count mismatch is rejected
+  ---
+  duration_ms: 0.089519
+  type: 'test'
+  ...
+# Subtest: pure unit: pane discovery — exact unique positive set is safe to signal
+ok 35 - pure unit: pane discovery — exact unique positive set is safe to signal
+  ---
+  duration_ms: 0.113889
+  type: 'test'
+  ...
+# Subtest: pure unit: signal guard — invalid PIDs never reach process.kill
+ok 36 - pure unit: signal guard — invalid PIDs never reach process.kill
+  ---
+  duration_ms: 0.11586
+  type: 'test'
+  ...
+# Subtest: pure unit: metrics freshness — recent capturedAt → pass
+ok 37 - pure unit: metrics freshness — recent capturedAt → pass
+  ---
+  duration_ms: 0.176599
+  type: 'test'
+  ...
+# Subtest: pure unit: metrics freshness — stale capturedAt → fail with session named
+ok 38 - pure unit: metrics freshness — stale capturedAt → fail with session named
+  ---
+  duration_ms: 0.14037
+  type: 'test'
+  ...
+# Subtest: pure unit: metrics freshness — missing capturedAt in metrics → fail with actionable reason
+ok 39 - pure unit: metrics freshness — missing capturedAt in metrics → fail with actionable reason
+  ---
+  duration_ms: 0.096499
+  type: 'test'
+  ...
+# Subtest: pure unit: dead generator after satisfying minimum counters → evaluateRun pass: false
+ok 40 - pure unit: dead generator after satisfying minimum counters → evaluateRun pass: false
+  ---
+  duration_ms: 0.284488
+  type: 'test'
+  ...
+# Subtest: pure unit: reviewer repro — tmux root PID alive but all generators dead + stale metrics → pass: false
+ok 41 - pure unit: reviewer repro — tmux root PID alive but all generators dead + stale metrics → pass: false
+  ---
+  duration_ms: 0.169429
+  type: 'test'
+  ...
+# Subtest: pure unit: isolation — sampler PID absent from target tree + trees disjoint → pass
+ok 42 - pure unit: isolation — sampler PID absent from target tree + trees disjoint → pass
+  ---
+  duration_ms: 0.10807
+  type: 'test'
+  ...
+# Subtest: pure unit: isolation — sampler PID in target tree → fail-closed
+ok 43 - pure unit: isolation — sampler PID in target tree → fail-closed
+  ---
+  duration_ms: 0.076189
+  type: 'test'
+  ...
+# Subtest: pure unit: isolation — target/workload tree overlap → fail-closed
+ok 44 - pure unit: isolation — target/workload tree overlap → fail-closed
+  ---
+  duration_ms: 0.07006
+  type: 'test'
+  ...
+# Subtest: pure unit: isolation — missing process-tree data → fail with actionable reason
+ok 45 - pure unit: isolation — missing process-tree data → fail with actionable reason
+  ---
+  duration_ms: 0.090579
+  type: 'test'
+  ...
+# Subtest: pure unit: isolation — sampler in target tree → evaluateRun pass: false
+ok 46 - pure unit: isolation — sampler in target tree → evaluateRun pass: false
+  ---
+  duration_ms: 0.133699
+  type: 'test'
+  ...
+# Subtest: pure unit: baseline files — no sampler PID in any target sample process list
+ok 47 - pure unit: baseline files — no sampler PID in any target sample process list
+  ---
+  duration_ms: 26.198735
+  type: 'test'
+  ...
+# Subtest: contract artifact: authoritative Phase-1 baseline binds target identity and stable evidence
+ok 48 - contract artifact: authoritative Phase-1 baseline binds target identity and stable evidence
+  ---
+  duration_ms: 1.442302
+  type: 'test'
+  ...
+# Subtest: contract artifact: Phase-2 memory-relief evidence establishes a two-cycle plateau
+ok 49 - contract artifact: Phase-2 memory-relief evidence establishes a two-cycle plateau
+  ---
+  duration_ms: 1.307413
+  type: 'test'
+  ...
+# Subtest: contract artifact: Phase-6 final evidence is strict, plateaued, and records coverage gaps
+ok 50 - contract artifact: Phase-6 final evidence is strict, plateaued, and records coverage gaps
+  ---
+  duration_ms: 6.187345
+  type: 'test'
+  ...
+# Subtest: pure unit: strict schema — evidence-less sample after a valid sample → liveness FAIL
+ok 51 - pure unit: strict schema — evidence-less sample after a valid sample → liveness FAIL
+  ---
+  duration_ms: 0.121639
+  type: 'test'
+  ...
+# Subtest: pure unit: strict schema — evidence-less sample → isolation FAIL
+ok 52 - pure unit: strict schema — evidence-less sample → isolation FAIL
+  ---
+  duration_ms: 0.096219
+  type: 'test'
+  ...
+# Subtest: pure unit: strict schema — invalid capturedAt "not-a-date" → freshness FAIL
+ok 53 - pure unit: strict schema — invalid capturedAt "not-a-date" → freshness FAIL
+  ---
+  duration_ms: 0.07476
+  type: 'test'
+  ...
+# Subtest: pure unit: strict schema — schemaVersion 1 artifact → rejected
+ok 54 - pure unit: strict schema — schemaVersion 1 artifact → rejected
+  ---
+  duration_ms: 0.04548
+  type: 'test'
+  ...
+# Subtest: pure unit: strict schema — schemaVersion 2 artifact → accepted
+ok 55 - pure unit: strict schema — schemaVersion 2 artifact → accepted
+  ---
+  duration_ms: 0.035839
+  type: 'test'
+  ...
+# Subtest: pure unit: strict schema — unknown schemaVersion 3 artifact → rejected
+ok 56 - pure unit: strict schema — unknown schemaVersion 3 artifact → rejected
+  ---
+  duration_ms: 0.04551
+  type: 'test'
+  ...
+# Subtest: contract unit: strict report evaluator refuses hollow reports with named paths
+ok 57 - contract unit: strict report evaluator refuses hollow reports with named paths
+  ---
+  duration_ms: 0.09301
+  type: 'test'
+  ...
+# Subtest: contract unit: strict report evaluator refuses every malformed evidence family
+    # Subtest: sample
+    ok 1 - sample
+      ---
+      duration_ms: 0.167129
+      type: 'test'
+      ...
+    # Subtest: system
+    ok 2 - system
+      ---
+      duration_ms: 0.07938
+      type: 'test'
+      ...
+    # Subtest: target
+    ok 3 - target
+      ---
+      duration_ms: 0.080329
+      type: 'test'
+      ...
+    # Subtest: workload
+    ok 4 - workload
+      ---
+      duration_ms: 0.07169
+      type: 'test'
+      ...
+    # Subtest: cgroup
+    ok 5 - cgroup
+      ---
+      duration_ms: 0.075439
+      type: 'test'
+      ...
+    # Subtest: host
+    ok 6 - host
+      ---
+      duration_ms: 0.07604
+      type: 'test'
+      ...
+    # Subtest: generator
+    ok 7 - generator
+      ---
+      duration_ms: 0.069859
+      type: 'test'
+      ...
+    # Subtest: workload-session metric
+    ok 8 - workload-session metric
+      ---
+      duration_ms: 0.07669
+      type: 'test'
+      ...
+    # Subtest: threshold
+    ok 9 - threshold
+      ---
+      duration_ms: 0.114589
+      type: 'test'
+      ...
+    1..9
+ok 58 - contract unit: strict report evaluator refuses every malformed evidence family
+  ---
+  duration_ms: 1.177574
+  type: 'test'
+  ...
+# Subtest: contract unit: strict report evaluator converts unexpected internal throws to refusal
+ok 59 - contract unit: strict report evaluator converts unexpected internal throws to refusal
+  ---
+  duration_ms: 0.111349
+  type: 'test'
+  ...
+# Subtest: pure unit: strict schema validator converts getter failures to invalid results
+ok 60 - pure unit: strict schema validator converts getter failures to invalid results
+  ---
+  duration_ms: 0.085179
+  type: 'test'
+  ...
+# Subtest: pure unit: strict schema — validateReportSchema rejects missing provenance
+ok 61 - pure unit: strict schema — validateReportSchema rejects missing provenance
+  ---
+  duration_ms: 0.07378
+  type: 'test'
+  ...
+# Subtest: contract unit: strict report evaluator refuses invalid provenance before quantitative reads
+ok 62 - contract unit: strict report evaluator refuses invalid provenance before quantitative reads
+  ---
+  duration_ms: 0.077629
+  type: 'test'
+  ...
+# Subtest: contract unit: strict report evaluator preserves quantitative results for valid reports
+ok 63 - contract unit: strict report evaluator preserves quantitative results for valid reports
+  ---
+  duration_ms: 0.15644
+  type: 'test'
+  ...
+# Subtest: contract unit: CLI runner imports the strict evaluator and never calls raw evaluateRun
+ok 64 - contract unit: CLI runner imports the strict evaluator and never calls raw evaluateRun
+  ---
+  duration_ms: 0.285259
+  type: 'test'
+  ...
+# Subtest: pure unit: strict schema — evaluate.js source has no pass:null→true conversion
+ok 65 - pure unit: strict schema — evaluate.js source has no pass:null→true conversion
+  ---
+  duration_ms: 0.203189
+  type: 'test'
+  ...
+# Subtest: pure unit: directory fingerprint is content-addressed and path-order deterministic
+ok 66 - pure unit: directory fingerprint is content-addressed and path-order deterministic
+  ---
+  duration_ms: 6.503346
+  type: 'test'
+  ...
+# Subtest: pure unit: build subject expands a dist entrypoint to the complete build tree
+ok 67 - pure unit: build subject expands a dist entrypoint to the complete build tree
+  ---
+  duration_ms: 0.15218
+  type: 'test'
+  ...
+# Subtest: pure unit: target provenance binds the running executable to a SHA-256 fingerprint
+ok 68 - pure unit: target provenance binds the running executable to a SHA-256 fingerprint
+  ---
+  duration_ms: 110.131434
+  type: 'test'
+  ...
+# Subtest: local integration: Node target provenance fingerprints its complete dist tree
+ok 69 - local integration: Node target provenance fingerprints its complete dist tree
+  ---
+  duration_ms: 103.587651
+  type: 'test'
+  ...
+# Subtest: pure unit: absent target is explicit rather than missing provenance
+ok 70 - pure unit: absent target is explicit rather than missing provenance
+  ---
+  duration_ms: 0.620136
+  type: 'test'
+  ...
+# Subtest: pure unit: harness provenance remains distinct checkout metadata
+ok 71 - pure unit: harness provenance remains distinct checkout metadata
+  ---
+  duration_ms: 0.121439
+  type: 'test'
+  ...
+# Subtest: pure unit: schema-v2 report without target provenance is rejected
+ok 72 - pure unit: schema-v2 report without target provenance is rejected
+  ---
+  duration_ms: 1.506112
+  type: 'test'
+  ...
+# Subtest: reader fixture catalog entry is active and dispatchable
+ok 73 - reader fixture catalog entry is active and dispatchable
+  ---
+  duration_ms: 0.466117
+  type: 'test'
+  ...
+# Subtest: reader profiles always cross the metrics snapshot TTL
+ok 74 - reader profiles always cross the metrics snapshot TTL
+  ---
+  duration_ms: 0.11049
+  type: 'test'
+  ...
+# Subtest: seeded transcript generations are stable, distinct, and fully marked
+ok 75 - seeded transcript generations are stable, distinct, and fully marked
+  ---
+  duration_ms: 3.375782
+  type: 'test'
+  ...
+# Subtest: reader correctness accepts generation parity, bounded retention, and live counters
+ok 76 - reader correctness accepts generation parity, bounded retention, and live counters
+  ---
+  duration_ms: 0.242638
+  type: 'test'
+  ...
+# Subtest: reader correctness rejects a mixed generation
+ok 77 - reader correctness rejects a mixed generation
+  ---
+  duration_ms: 0.107899
+  type: 'test'
+  ...
+# Subtest: reader correctness rejects retained bytes or budget usage above the configured cap
+ok 78 - reader correctness rejects retained bytes or budget usage above the configured cap
+  ---
+  duration_ms: 0.131759
+  type: 'test'
+  ...
+# Subtest: reader correctness rejects zero counters and a sub-TTL sample window
+ok 79 - reader correctness rejects zero counters and a sub-TTL sample window
+  ---
+  duration_ms: 0.11115
+  type: 'test'
+  ...
+1..79
+# tests 88
+# suites 0
+# pass 88
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 881.179166

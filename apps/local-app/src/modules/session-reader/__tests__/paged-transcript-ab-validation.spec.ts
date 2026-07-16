@@ -17,6 +17,7 @@ import type { UnifiedMessage, UnifiedMetrics, UnifiedSession } from '../dtos/uni
 import type { SessionsService } from '../../sessions/services/sessions.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import { SessionCacheService } from '../services/session-cache.service';
+import type { UnifiedChunk } from '../dtos/unified-chunk.types';
 
 const LARGE_SESSION_MESSAGE_COUNT = 500;
 
@@ -110,7 +111,10 @@ const mockSessionCacheService = {
   invalidate: jest.fn(),
   clear: jest.fn(),
   getEntry: jest.fn(),
+  getChunks: jest.fn(),
+  setChunks: jest.fn(),
 };
+const cachedChunks = new Map<string, { sourceVersion: number; chunks: UnifiedChunk[] }>();
 
 function setupResolveChain(_session: UnifiedSession) {
   mockSessionsService.getSession.mockReturnValue({
@@ -173,6 +177,16 @@ describe('A/B Validation: Full-transcript vs Paged-transcript', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    cachedChunks.clear();
+    mockSessionCacheService.getChunks.mockImplementation((sessionId: string, version: number) => {
+      const cached = cachedChunks.get(sessionId);
+      return cached && cached.sourceVersion === version ? cached.chunks : undefined;
+    });
+    mockSessionCacheService.setChunks.mockImplementation(
+      (sessionId: string, sourceVersion: number, chunks: UnifiedChunk[]) => {
+        cachedChunks.set(sessionId, { sourceVersion, chunks });
+      },
+    );
     service = new SessionReaderService(
       mockAdapterFactory as unknown as SessionReaderAdapterFactory,
       mockPathValidator as unknown as TranscriptPathValidator,

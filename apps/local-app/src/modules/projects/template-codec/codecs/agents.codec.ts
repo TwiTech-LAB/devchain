@@ -1,12 +1,17 @@
 /**
- * Agents codec — owns the `agents` section. Apply = the legacy `createImportedAgents`,
- * moved verbatim: resolve each agent's profile (via `agentProfileMap` + `profileIdMap`)
- * and its provider config (via `configLookupMap`, by profileId+providerConfigName with a
- * same-profile fallback), carry `modelOverride` + `effortOverride` verbatim, and THROW
- * with byte-identical messages on a missing profile/config (these surface to users).
+ * Agents codec — owns the `agents` section. Apply = the legacy `createImportedAgents`:
+ * resolve each agent's profile (via `agentProfileMap` + `profileIdMap`) and its provider config
+ * (by profileId+providerConfigName with a same-profile fallback), carry `modelOverride` +
+ * `effortOverride` verbatim, and THROW with byte-identical messages on a missing profile/config
+ * (these surface to users).
  *
- * Declares reads `selectedProfilesByFamily` + `profileIdMap` + `configLookupMap` (the
- * profiles codec writes the latter two) and writes `agentIdMap` + `agentNameToId`.
+ * Config resolution reads `selectionEligibleConfigLookupMap` (NOT the full `configLookupMap`):
+ * both the explicit lookup and the same-profile fallback consider only selection-eligible
+ * configs, so an unpinned agent never binds to a stored-but-deselected config. With no Step-1
+ * allowlist the eligible map equals the full map, so binding is unchanged.
+ *
+ * Declares reads `selectedProfilesByFamily` + `profileIdMap` + `selectionEligibleConfigLookupMap`
+ * (the profiles codec writes the latter two) and writes `agentIdMap` + `agentNameToId`.
  */
 import { ValidationError } from '../../../../common/errors/error-types';
 import { buildProviderConfigLookupKey } from '../../helpers/profile-mapping.helpers';
@@ -57,7 +62,7 @@ export function buildExportAgents(
 class AgentsCodec implements TemplateSectionCodec<AgentsSection> {
   readonly declaration = {
     section: 'agents',
-    reads: ['selectedProfilesByFamily', 'profileIdMap', 'configLookupMap'],
+    reads: ['selectedProfilesByFamily', 'profileIdMap', 'selectionEligibleConfigLookupMap'],
     writes: ['agentIdMap', 'agentNameToId'],
     producesState: ['agentsPersisted'],
     modes: ['replace', 'create'],
@@ -81,7 +86,10 @@ class AgentsCodec implements TemplateSectionCodec<AgentsSection> {
     const { projectId, storage } = rt;
     const agentProfileMap = ctx.get('selectedProfilesByFamily').agentProfileMap;
     const profileIdMap = ctx.get('profileIdMap');
-    const configLookupMap = ctx.get('configLookupMap');
+    // Bind against the selection-eligible lookup ONLY: an installed-but-deselected config is
+    // persisted (in the full map) but must never be an agent's target — not via an explicit
+    // providerConfigName, and not via the same-profile fallback below.
+    const eligibleConfigLookupMap = ctx.get('selectionEligibleConfigLookupMap');
 
     const agentIdMap: Record<string, string> = {};
     const agentNameToId: Record<string, string> = {};
@@ -105,12 +113,12 @@ class AgentsCodec implements TemplateSectionCodec<AgentsSection> {
           newProfileId,
           agentWithConfig.providerConfigName,
         );
-        providerConfigId = configLookupMap.get(lookupKey);
+        providerConfigId = eligibleConfigLookupMap.get(lookupKey);
       }
 
       if (!providerConfigId) {
         const profilePrefix = `${newProfileId}:`;
-        for (const [lookupKey, configId] of configLookupMap.entries()) {
+        for (const [lookupKey, configId] of eligibleConfigLookupMap.entries()) {
           if (lookupKey.startsWith(profilePrefix)) {
             providerConfigId = configId;
             break;

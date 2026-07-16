@@ -11,6 +11,7 @@ export interface RecordedCall {
   readonly mode: 'pipe' | 'pty';
   readonly cwd?: string;
   readonly env?: Readonly<Record<string, string>>;
+  readonly outputLimits?: ProcessExecutorOptions['outputLimits'];
 }
 
 export interface RecordedDaemonCall {
@@ -71,6 +72,7 @@ export class FakeProcessExecutor extends ProcessExecutor {
       mode: options.mode,
       cwd: options.cwd,
       env: options.env,
+      outputLimits: options.outputLimits,
     });
 
     const response = this.responses.shift() ?? this.defaultResponse;

@@ -2117,6 +2117,7 @@ describe('ChatPage context bar integration', () => {
 
 describe('ChatPage context bar toggle', () => {
   const originalFetch = global.fetch;
+  const originalIntersectionObserver = global.IntersectionObserver;
   const LS_KEY = 'devchain:chatSidebar:contextBarHidden';
 
   beforeEach(() => {
@@ -2127,6 +2128,7 @@ describe('ChatPage context bar toggle', () => {
     closeWindowMock.mockReset();
     terminalWindowsMock.splice(0, terminalWindowsMock.length);
     window.localStorage.removeItem(LS_KEY);
+    window.localStorage.removeItem('devchain:chatSidebar:mainExpanded');
   });
 
   afterEach(() => {
@@ -2134,6 +2136,8 @@ describe('ChatPage context bar toggle', () => {
       global.fetch = originalFetch;
     }
     window.localStorage.removeItem(LS_KEY);
+    window.localStorage.removeItem('devchain:chatSidebar:mainExpanded');
+    global.IntersectionObserver = originalIntersectionObserver;
   });
 
   /** Fetch mock for an online agent with non-zero context metrics */
@@ -2220,6 +2224,65 @@ describe('ChatPage context bar toggle', () => {
     expect(progressbar).toHaveAttribute('aria-valuenow', '50');
   });
 
+  it('collapsed main section creates no summary request for its off-screen bars', async () => {
+    window.localStorage.setItem('devchain:chatSidebar:mainExpanded', 'false');
+    setupContextBarFetch();
+    renderWithClient(<ChatPage />);
+
+    await screen.findByRole('button', { name: /MAIN/i });
+    await waitFor(() => {
+      const urls = (global.fetch as jest.Mock).mock.calls.map((call) => String(call[0]));
+      expect(urls.some((url: string) => url.startsWith('/api/sessions/agents/presence'))).toBe(
+        true,
+      );
+    });
+
+    const urls = (global.fetch as jest.Mock).mock.calls.map((call) => String(call[0]));
+    expect(urls.some((url: string) => url.includes('/transcript/summary'))).toBe(false);
+  });
+
+  it('does not request metrics until a rendered context row intersects the viewport', async () => {
+    let callback: IntersectionObserverCallback | undefined;
+    class IntersectionObserverMock implements IntersectionObserver {
+      readonly root = null;
+      readonly rootMargin = '0px';
+      readonly thresholds = [0];
+      constructor(nextCallback: IntersectionObserverCallback) {
+        callback = nextCallback;
+      }
+      disconnect = jest.fn();
+      observe = jest.fn();
+      takeRecords = jest.fn(() => []);
+      unobserve = jest.fn();
+    }
+    global.IntersectionObserver = IntersectionObserverMock;
+    setupContextBarFetch();
+    renderWithClient(<ChatPage />);
+
+    const agentButton = await screen.findByLabelText(/Chat with Alpha \(online\)/i);
+    expect(
+      (global.fetch as jest.Mock).mock.calls.some(([url]) =>
+        String(url).includes('/transcript/summary'),
+      ),
+    ).toBe(false);
+    if (!callback) throw new Error('Context row observer was not registered');
+
+    act(() => {
+      callback!(
+        [{ target: agentButton, isIntersecting: true } as IntersectionObserverEntry],
+        {} as IntersectionObserver,
+      );
+    });
+
+    await waitFor(() => {
+      expect(
+        (global.fetch as jest.Mock).mock.calls.some(([url]) =>
+          String(url).includes('/transcript/summary'),
+        ),
+      ).toBe(true);
+    });
+  });
+
   it('toggle hides bar: uncheck Context tracking removes context bar', async () => {
     setupContextBarFetch();
     renderWithClient(<ChatPage />);
@@ -2253,13 +2316,8 @@ describe('ChatPage context bar toggle', () => {
 
     const agentButton = await screen.findByLabelText(/Chat with Alpha \(online\)/i);
 
-    // Wait for summary query to settle (metrics fetched but bar hidden)
-    await waitFor(() => {
-      const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
-      expect(urls.some((u: string) => u.includes('/transcript/summary'))).toBe(true);
-    });
-
-    // No progressbar because bar is hidden
+    const urlsBeforeToggle = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
+    expect(urlsBeforeToggle.some((url: string) => url.includes('/transcript/summary'))).toBe(false);
     expect(screen.queryAllByRole('progressbar')).toHaveLength(0);
 
     // Right-click and check "Context tracking"
@@ -2268,7 +2326,7 @@ describe('ChatPage context bar toggle', () => {
     expect(checkbox).toHaveAttribute('data-state', 'unchecked');
     fireEvent.click(checkbox);
 
-    // Context bar should reappear
+    // Enabling tracking creates the summary query and renders the bar.
     await waitFor(() => {
       expect(screen.getAllByRole('progressbar').length).toBeGreaterThanOrEqual(1);
     });
@@ -2298,13 +2356,12 @@ describe('ChatPage context bar toggle', () => {
 
     // Unmount and remount — bar should stay hidden
     unmount();
+    (global.fetch as jest.Mock).mockClear();
     renderWithClient(<ChatPage />);
 
     await screen.findByLabelText(/Chat with Alpha \(online\)/i);
-    await waitFor(() => {
-      const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
-      expect(urls.some((u: string) => u.includes('/transcript/summary'))).toBe(true);
-    });
+    const remountUrls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
+    expect(remountUrls.some((url: string) => url.includes('/transcript/summary'))).toBe(false);
 
     // Bar still hidden after remount
     expect(screen.queryAllByRole('progressbar')).toHaveLength(0);
@@ -2461,13 +2518,8 @@ describe('ChatPage context bar toggle', () => {
 
     await screen.findByLabelText(/Chat with Alpha \(online\)/i);
 
-    // Wait for summary query to settle
-    await waitFor(() => {
-      const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
-      expect(urls.some((u: string) => u.includes('/transcript/summary'))).toBe(true);
-    });
-
-    // Bar hidden → no progressbar
+    const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
+    expect(urls.some((url: string) => url.includes('/transcript/summary'))).toBe(false);
     expect(screen.queryAllByRole('progressbar')).toHaveLength(0);
 
     // No empty wrapper div with context bar padding classes (Remediation 13 regression guard)

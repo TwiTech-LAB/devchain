@@ -1,0 +1,382 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-13T01:47:19Z",
+  "trialCount": 3,
+  "workload": {
+    "cycles": 30,
+    "linesPerCycle": 500,
+    "columns": 100,
+    "rows": 30,
+    "scrollback": 200,
+    "lifecycle": "open, primary-buffer write, alternate-screen/mouse toggle, dispose"
+  },
+  "trials": [
+    {
+      "schemaVersion": 1,
+      "generatedAt": "2026-07-13T01:46:56.817Z",
+      "workload": {
+        "cycles": 30,
+        "linesPerCycle": 500,
+        "columns": 100,
+        "rows": 30,
+        "scrollback": 200,
+        "lifecycle": "open, primary-buffer write, alternate-screen/mouse toggle, dispose"
+      },
+      "runs": [
+        {
+          "label": "xterm-5.5.0",
+          "samples": [
+            {
+              "completedCycles": 0,
+              "jsHeapUsedBytes": 3030436,
+              "nativeProcessRssBytes": 443179008,
+              "domDocuments": 1,
+              "domNodes": 10,
+              "jsEventListeners": 2
+            },
+            {
+              "completedCycles": 10,
+              "jsHeapUsedBytes": 3422224,
+              "nativeProcessRssBytes": 446332928,
+              "domDocuments": 1,
+              "domNodes": 10,
+              "jsEventListeners": 22
+            },
+            {
+              "completedCycles": 20,
+              "jsHeapUsedBytes": 3445000,
+              "nativeProcessRssBytes": 446672896,
+              "domDocuments": 1,
+              "domNodes": 10,
+              "jsEventListeners": 42
+            },
+            {
+              "completedCycles": 30,
+              "jsHeapUsedBytes": 3456856,
+              "nativeProcessRssBytes": 447275008,
+              "domDocuments": 1,
+              "domNodes": 10,
+              "jsEventListeners": 62
+            }
+          ],
+          "retainedDelta": {
+            "jsHeapUsedBytes": 426420,
+            "nativeProcessRssBytes": 4096000,
+            "domDocuments": 0,
+            "domNodes": 0,
+            "jsEventListeners": 60
+          },
+          "plateau": {
+            "jsHeapGrowthLastTenCycles": 11856,
+            "nativeRssGrowthLastTenCycles": 602112
+          }
+        },
+        {
+          "label": "xterm-6.0.0",
+          "samples": [
+            {
+              "completedCycles": 0,
+              "jsHeapUsedBytes": 4105236,
+              "nativeProcessRssBytes": 446160896,
+              "domDocuments": 1,
+              "domNodes": 123,
+              "jsEventListeners": 2
+            },
+            {
+              "completedCycles": 10,
+              "jsHeapUsedBytes": 4655752,
+              "nativeProcessRssBytes": 448925696,
+              "domDocuments": 1,
+              "domNodes": 123,
+              "jsEventListeners": 2
+            },
+            {
+              "completedCycles": 20,
+              "jsHeapUsedBytes": 4439240,
+              "nativeProcessRssBytes": 448446464,
+              "domDocuments": 1,
+              "domNodes": 10,
+              "jsEventListeners": 2
+            },
+            {
+              "completedCycles": 30,
+              "jsHeapUsedBytes": 4453896,
+              "nativeProcessRssBytes": 449028096,
+              "domDocuments": 1,
+              "domNodes": 10,
+              "jsEventListeners": 2
+            }
+          ],
+          "retainedDelta": {
+            "jsHeapUsedBytes": 348660,
+            "nativeProcessRssBytes": 2867200,
+            "domDocuments": 0,
+            "domNodes": -113,
+            "jsEventListeners": 0
+          },
+          "plateau": {
+            "jsHeapGrowthLastTenCycles": 14656,
+            "nativeRssGrowthLastTenCycles": 581632
+          }
+        }
+      ],
+      "delta6Minus5": {
+        "retainedJsHeapBytes": -77760,
+        "retainedNativeRssBytes": -1228800
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "generatedAt": "2026-07-13T01:47:04.584Z",
+      "workload": {
+        "cycles": 30,
+        "linesPerCycle": 500,
+        "columns": 100,
+        "rows": 30,
+        "scrollback": 200,
+        "lifecycle": "open, primary-buffer write, alternate-screen/mouse toggle, dispose"
+      },
+      "runs": [
+        {
+          "label": "xterm-5.5.0",
+          "samples": [
+            {
+              "completedCycles": 0,
+              "jsHeapUsedBytes": 3045088,
+              "nativeProcessRssBytes": 445100032,
+              "domDocuments": 1,
+              "domNodes": 10,
+              "jsEventListeners": 2
+            },
+            {
+              "completedCycles": 10,
+              "jsHeapUsedBytes": 3601340,
+              "nativeProcessRssBytes": 448548864,
+              "domDocuments": 1,
+              "domNodes": 35,
+              "jsEventListeners": 26
+            },
+            {
+              "completedCycles": 20,
+              "jsHeapUsedBytes": 3455656,
+              "nativeProcessRssBytes": 447922176,
+              "domDocuments": 1,
+              "domNodes": 10,
+              "jsEventListeners": 42
+            },
+            {
+              "completedCycles": 30,
+              "jsHeapUsedBytes": 3461008,
+              "nativeProcessRssBytes": 447995904,
+              "domDocuments": 1,
+              "domNodes": 10,
+              "jsEventListeners": 62
+            }
+          ],
+          "retainedDelta": {
+            "jsHeapUsedBytes": 415920,
+            "nativeProcessRssBytes": 2895872,
+            "domDocuments": 0,
+            "domNodes": 0,
+            "jsEventListeners": 60
+          },
+          "plateau": {
+            "jsHeapGrowthLastTenCycles": 5352,
+            "nativeRssGrowthLastTenCycles": 73728
+          }
+        },
+        {
+          "label": "xterm-6.0.0",
+          "samples": [
+            {
+              "completedCycles": 0,
+              "jsHeapUsedBytes": 4105236,
+              "nativeProcessRssBytes": 447025152,
+              "domDocuments": 1,
+              "domNodes": 123,
+              "jsEventListeners": 2
+            },
+            {
+              "completedCycles": 10,
+              "jsHeapUsedBytes": 4423076,
+              "nativeProcessRssBytes": 448483328,
+              "domDocuments": 1,
+              "domNodes": 10,
+              "jsEventListeners": 2
+            },
+            {
+              "completedCycles": 20,
+              "jsHeapUsedBytes": 4625352,
+              "nativeProcessRssBytes": 449687552,
+              "domDocuments": 1,
+              "domNodes": 47,
+              "jsEventListeners": 2
+            },
+            {
+              "completedCycles": 30,
+              "jsHeapUsedBytes": 4452300,
+              "nativeProcessRssBytes": 449015808,
+              "domDocuments": 1,
+              "domNodes": 10,
+              "jsEventListeners": 2
+            }
+          ],
+          "retainedDelta": {
+            "jsHeapUsedBytes": 347064,
+            "nativeProcessRssBytes": 1990656,
+            "domDocuments": 0,
+            "domNodes": -113,
+            "jsEventListeners": 0
+          },
+          "plateau": {
+            "jsHeapGrowthLastTenCycles": -173052,
+            "nativeRssGrowthLastTenCycles": -671744
+          }
+        }
+      ],
+      "delta6Minus5": {
+        "retainedJsHeapBytes": -68856,
+        "retainedNativeRssBytes": -905216
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "generatedAt": "2026-07-13T01:47:05.610Z",
+      "workload": {
+        "cycles": 30,
+        "linesPerCycle": 500,
+        "columns": 100,
+        "rows": 30,
+        "scrollback": 200,
+        "lifecycle": "open, primary-buffer write, alternate-screen/mouse toggle, dispose"
+      },
+      "runs": [
+        {
+          "label": "xterm-5.5.0",
+          "samples": [
+            {
+              "completedCycles": 0,
+              "jsHeapUsedBytes": 3147704,
+              "nativeProcessRssBytes": 445542400,
+              "domDocuments": 1,
+              "domNodes": 117,
+              "jsEventListeners": 4
+            },
+            {
+              "completedCycles": 10,
+              "jsHeapUsedBytes": 3686316,
+              "nativeProcessRssBytes": 449191936,
+              "domDocuments": 1,
+              "domNodes": 44,
+              "jsEventListeners": 28
+            },
+            {
+              "completedCycles": 20,
+              "jsHeapUsedBytes": 3615912,
+              "nativeProcessRssBytes": 450158592,
+              "domDocuments": 1,
+              "domNodes": 117,
+              "jsEventListeners": 44
+            },
+            {
+              "completedCycles": 30,
+              "jsHeapUsedBytes": 3791024,
+              "nativeProcessRssBytes": 450560000,
+              "domDocuments": 1,
+              "domNodes": 53,
+              "jsEventListeners": 70
+            }
+          ],
+          "retainedDelta": {
+            "jsHeapUsedBytes": 643320,
+            "nativeProcessRssBytes": 5017600,
+            "domDocuments": 0,
+            "domNodes": -64,
+            "jsEventListeners": 66
+          },
+          "plateau": {
+            "jsHeapGrowthLastTenCycles": 175112,
+            "nativeRssGrowthLastTenCycles": 401408
+          }
+        },
+        {
+          "label": "xterm-6.0.0",
+          "samples": [
+            {
+              "completedCycles": 0,
+              "jsHeapUsedBytes": 3975892,
+              "nativeProcessRssBytes": 446717952,
+              "domDocuments": 1,
+              "domNodes": 10,
+              "jsEventListeners": 2
+            },
+            {
+              "completedCycles": 10,
+              "jsHeapUsedBytes": 4424268,
+              "nativeProcessRssBytes": 449134592,
+              "domDocuments": 1,
+              "domNodes": 10,
+              "jsEventListeners": 2
+            },
+            {
+              "completedCycles": 20,
+              "jsHeapUsedBytes": 4624016,
+              "nativeProcessRssBytes": 451379200,
+              "domDocuments": 1,
+              "domNodes": 47,
+              "jsEventListeners": 2
+            },
+            {
+              "completedCycles": 30,
+              "jsHeapUsedBytes": 4659608,
+              "nativeProcessRssBytes": 451760128,
+              "domDocuments": 1,
+              "domNodes": 47,
+              "jsEventListeners": 2
+            }
+          ],
+          "retainedDelta": {
+            "jsHeapUsedBytes": 683716,
+            "nativeProcessRssBytes": 5042176,
+            "domDocuments": 0,
+            "domNodes": 37,
+            "jsEventListeners": 0
+          },
+          "plateau": {
+            "jsHeapGrowthLastTenCycles": 35592,
+            "nativeRssGrowthLastTenCycles": 380928
+          }
+        }
+      ],
+      "delta6Minus5": {
+        "retainedJsHeapBytes": 40396,
+        "retainedNativeRssBytes": 24576
+      }
+    }
+  ],
+  "summary": {
+    "xterm5": {
+      "retainedJsHeapBytesMedian": 426420,
+      "retainedNativeRssBytesMedian": 4096000,
+      "retainedEventListeners": [
+        60,
+        60,
+        66
+      ],
+      "lastTenCycleHeapGrowthMedian": 11856,
+      "lastTenCycleNativeRssGrowthMedian": 401408
+    },
+    "xterm6": {
+      "retainedJsHeapBytesMedian": 348660,
+      "retainedNativeRssBytesMedian": 2867200,
+      "retainedEventListeners": [
+        0,
+        0,
+        0
+      ],
+      "lastTenCycleHeapGrowthMedian": 14656,
+      "lastTenCycleNativeRssGrowthMedian": 380928
+    }
+  },
+  "verdict": "xterm 6 removes the deterministic listener retention seen in 5.5; heap/RSS deltas overlap run noise and both versions plateau over the final ten cycles"
+}

@@ -240,6 +240,7 @@ describe('CatalogBroadcasterService', () => {
     const deltaMessages = [{ role: 'assistant', content: 'truncated...' }];
 
     emitter.emit('session.transcript.updated', {
+      kind: 'delta',
       sessionId: 's1',
       transcriptPath: '/path/to/transcript',
       newMessageCount: 2,
@@ -263,6 +264,7 @@ describe('CatalogBroadcasterService', () => {
       'session/s1/transcript',
       'updated',
       expect.objectContaining({
+        kind: 'delta',
         sessionId: 's1',
         deltaChunks,
         deltaMessages,
@@ -271,6 +273,30 @@ describe('CatalogBroadcasterService', () => {
     );
 
     const projected = mockBroadcaster.broadcastEvent.mock.calls[0][2];
+    expect(projected).not.toHaveProperty('transcriptPath');
+  });
+
+  it('broadcasts unsafe transcript generations as a cursor-free refetch action', () => {
+    emitter.emit('session.transcript.updated', {
+      kind: 'full-refetch-required',
+      sessionId: 's1',
+      transcriptPath: '/path/to/replacement',
+      sourceChangeKind: 'file-replacement',
+    });
+
+    expect(mockBroadcaster.broadcastEvent).toHaveBeenCalledWith(
+      'session/s1/transcript',
+      'updated',
+      {
+        kind: 'full-refetch-required',
+        sessionId: 's1',
+        sourceChangeKind: 'file-replacement',
+      },
+    );
+    const projected = mockBroadcaster.broadcastEvent.mock.calls[0][2];
+    expect(projected).not.toHaveProperty('cursor');
+    expect(projected).not.toHaveProperty('deltaChunks');
+    expect(projected).not.toHaveProperty('deltaMessages');
     expect(projected).not.toHaveProperty('transcriptPath');
   });
 

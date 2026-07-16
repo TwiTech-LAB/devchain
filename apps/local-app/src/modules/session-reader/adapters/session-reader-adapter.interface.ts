@@ -40,7 +40,7 @@ export interface SessionSourceRef {
 }
 
 /**
- * Default freshness token for file-backed sources: `{ mtimeMs, size }`.
+ * Default freshness token for file-backed sources: `{ mtimeMs, size, dev, ino }`.
  *
  * Used by `SessionCacheService` when an adapter does not implement
  * `getFreshnessToken()`. The token is treated as opaque by the cache (compared
@@ -48,9 +48,14 @@ export interface SessionSourceRef {
  */
 export async function defaultFileFreshnessToken(
   sourceRef: SessionSourceRef,
-): Promise<{ mtimeMs: number; size: number }> {
+): Promise<{ mtimeMs: number; size: number; dev: number; ino: number }> {
   const stat = await fs.stat(sourceRef.filePath);
-  return { mtimeMs: stat.mtime.getTime(), size: stat.size };
+  return {
+    mtimeMs: stat.mtime.getTime(),
+    size: stat.size,
+    dev: stat.dev,
+    ino: stat.ino,
+  };
 }
 
 /**
@@ -136,6 +141,39 @@ export interface TranscriptCandidateMetadata {
   /** Session start timestamp as encoded in the file (ISO 8601 or provider-native). */
   timestamp?: string;
 }
+
+export interface AdapterSummaryResult {
+  /** Complete wire-compatible metrics; fields named in approximateFields are best-effort. */
+  metrics: UnifiedMetrics;
+  /** Parser degradation warnings, when the lightweight read could not be fully exact. */
+  warnings?: string[];
+  /** Fields guaranteed to match parseFullSession for the same source revision. */
+  exactFields: readonly (keyof UnifiedMetrics)[];
+  /** Fields that may lag or use a documented proxy until the next full parse. */
+  approximateFields?: readonly (keyof UnifiedMetrics)[];
+}
+
+export const EXACT_SUMMARY_FIELDS = [
+  'inputTokens',
+  'outputTokens',
+  'cacheReadTokens',
+  'cacheCreationTokens',
+  'totalTokens',
+  'totalContextConsumption',
+  'compactionCount',
+  'phaseBreakdowns',
+  'visibleContextTokens',
+  'totalContextTokens',
+  'contextWindowTokens',
+  'contextBreakdown',
+  'costUsd',
+  'nativeCost',
+  'primaryModel',
+  'modelsUsed',
+  'durationMs',
+  'messageCount',
+  'isOngoing',
+] as const satisfies readonly (keyof UnifiedMetrics)[];
 
 /**
  * Provider-agnostic adapter interface for reading session files.
@@ -227,9 +265,19 @@ export interface SessionReaderAdapter {
   parseFullSession(filePath: string, sourceRef?: SessionSourceRef): Promise<UnifiedSession>;
 
   /**
+   * Read complete summary metrics without constructing a UnifiedSession message graph.
+   *
+   * Optional capability: absence, a `null` result, or an exception means the source is
+   * unavailable for a lightweight read and callers must fall back to parseFullSession.
+   * Implementations must declare any non-parity fields in `approximateFields`; every other
+   * metric is required to match a full parse at the same source revision.
+   */
+  getSummary?(sourceRef: SessionSourceRef): Promise<AdapterSummaryResult | null>;
+
+  /**
    * Compute an opaque freshness token for the source. The cache compares tokens
    * by deep equality to decide whether cached data is stale — the token is never
-   * introspected, so its shape is adapter-defined (file: `{ mtimeMs, size }`,
+   * introspected, so its shape is adapter-defined (file: `{ mtimeMs, size, dev, ino }`,
    * DB: e.g. `{ count, maxUpdated }`).
    *
    * Optional: when omitted, the cache falls back to {@link defaultFileFreshnessToken}.

@@ -58,7 +58,7 @@ describe('teamPlan — initialTeamStates', () => {
   });
 });
 
-describe('teamPlan — buildTeamOverrides (byte-identical to legacy handleConfirm)', () => {
+describe('teamPlan — buildTeamOverrides', () => {
   const visibleTeams = [team({ name: 'Squad', memberAgentNames: ['m1'] })];
 
   it('emits allow-all as an empty configNames selection + allowTeamLeadCreateAgents true', () => {
@@ -173,13 +173,16 @@ describe('teamPlan — buildTeamOverrides provider filter (Step-1 selection)', (
     ]);
   });
 
-  it('falls back to allow-all when every pinned config is filtered out', () => {
+  it('removes the profile permission when every pinned config is filtered out', () => {
     const overrides = buildTeamOverrides(visibleTeams, subsetState(['gpt-high']), {
       profiles,
       selectedProviderNames: ['claude'],
     });
-    // [] = allow-all: the team keeps the remaining selected-provider configs.
-    expect(overrides[0].profileSelections).toEqual([{ profileName: 'Coder', configNames: [] }]);
+    expect(overrides[0]).toEqual({
+      teamName: 'Squad',
+      allowTeamLeadCreateAgents: true,
+      profileNames: [],
+    });
   });
 
   it('keeps config names it cannot resolve against the profiles', () => {
@@ -190,6 +193,38 @@ describe('teamPlan — buildTeamOverrides provider filter (Step-1 selection)', (
     expect(overrides[0].profileSelections).toEqual([
       { profileName: 'Coder', configNames: ['mystery-cfg'] },
     ]);
+  });
+
+  it('retains unknown names when every known name is filtered out', () => {
+    const overrides = buildTeamOverrides(visibleTeams, subsetState(['gpt-high', 'mystery-cfg']), {
+      profiles,
+      selectedProviderNames: ['claude'],
+    });
+    expect(overrides[0]).toEqual({
+      teamName: 'Squad',
+      allowTeamLeadCreateAgents: true,
+      profileNames: ['Coder'],
+      profileSelections: [{ profileName: 'Coder', configNames: ['mystery-cfg'] }],
+    });
+  });
+
+  it('preserves genuine allow-all when a provider filter is supplied', () => {
+    const states = new Map<string, TeamPanelState>([
+      [
+        'Squad',
+        { selections: [{ profileKey: 'Coder', mode: 'allow-all' }], templateSelections: [] },
+      ],
+    ]);
+    const overrides = buildTeamOverrides(visibleTeams, states, {
+      profiles,
+      selectedProviderNames: ['claude'],
+    });
+    expect(overrides[0]).toEqual({
+      teamName: 'Squad',
+      allowTeamLeadCreateAgents: true,
+      profileNames: ['Coder'],
+      profileSelections: [{ profileName: 'Coder', configNames: [] }],
+    });
   });
 
   it('matches providers and config names case-insensitively', () => {

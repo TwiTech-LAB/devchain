@@ -1,4 +1,4 @@
-import { TerminalFrameStream, type FrameEvent } from './terminal-frame-stream';
+import { TerminalFrameStream } from './terminal-frame-stream';
 import { normalizeLineEndings, stripFinalLineEnding } from '../../utils/normalize-line-endings';
 
 export interface AuthorityResult {
@@ -32,7 +32,6 @@ export interface TerminalIORef {
     lines?: number,
     includeEscapes?: boolean,
   ): Promise<{ ok: boolean; output: string }>;
-  getCursorPosition?(target: { name: string }): Promise<{ x: number; y: number } | null>;
 }
 
 export interface TerminalSessionOptions {
@@ -45,6 +44,7 @@ export interface TerminalSessionOptions {
 const ACTIVITY_SUPPRESSION_MS = 750;
 const RESIZE_DEBOUNCE_MS = 100;
 const DEFAULT_IDLE_AFTER_MS = 30_000;
+export const MAX_HISTORY_IN_FLIGHT_BYTES = 1024 * 1024;
 
 export class TerminalSession {
   readonly sessionId: string;
@@ -61,6 +61,8 @@ export class TerminalSession {
   private suppressActivityUntil = 0;
   private historyInFlight = false;
   private bufferedFrames: string[] = [];
+  private bufferedFrameBytes = 0;
+  private historyRequestGeneration = 0;
   private resizeTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingResize: { clientId: string; dims: Dimensions } | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -68,13 +70,6 @@ export class TerminalSession {
   private readonly idleAfterMs: number;
   private readonly normalizeCapturedLineEndings: boolean;
   private io?: TerminalIORef;
-  /**
-   * Whether this session's provider runs as a full-screen TUI on the alternate
-   * screen. Set by the gateway (which can resolve it) before each subscribe.
-   * Alt-screen seeds advertise NO history affordance — `capture-pane` only holds
-   * the single visible screen, so there is no primary-buffer scrollback to load.
-   */
-  private usesAlternateScreen = false;
 
   constructor(options: TerminalSessionOptions) {
     this.sessionId = options.sessionId;
@@ -103,55 +98,6 @@ export class TerminalSession {
       type: 'subscribed',
       sessionId: this.sessionId,
       payload: { clientId },
-    });
-
-    this.initiateSeedAsync();
-  }
-
-  private static readonly SEED_CHUNK_SIZE = 64 * 1024;
-
-  private initiateSeedAsync(): void {
-    if (!this.io) return;
-
-    const io = this.io;
-    const sessionId = this.sessionId;
-    const tmuxSessionName = this.tmuxSessionName;
-
-    io.captureHistory({ name: tmuxSessionName }).then(async (result) => {
-      if (!result.ok || this.disposed) return;
-
-      const ansi = this.normalizeCapturedOutput(result.output);
-      const cursorPos = await io.getCursorPosition?.({ name: tmuxSessionName }).catch(() => null);
-      if (this.disposed) return;
-
-      const chunkSize = TerminalSession.SEED_CHUNK_SIZE;
-      const chunks: string[] = [];
-      for (let i = 0; i < ansi.length; i += chunkSize) {
-        chunks.push(ansi.slice(i, i + chunkSize));
-      }
-      if (chunks.length === 0) chunks.push('');
-
-      const totalChunks = chunks.length;
-      for (let i = 0; i < totalChunks; i++) {
-        this.stream.emit('frame', {
-          type: 'seed_ansi' as FrameEvent['type'],
-          sessionId,
-          payload: {
-            data: chunks[i],
-            chunk: i,
-            totalChunks,
-            ...(i === totalChunks - 1
-              ? {
-                  // Alt-screen TUIs have no loadable primary-buffer scrollback, so
-                  // advertise no-history; line-streaming providers keep the affordance.
-                  hasHistory: !this.usesAlternateScreen,
-                  cursorX: cursorPos?.x,
-                  cursorY: cursorPos?.y,
-                }
-              : {}),
-          },
-        });
-      }
     });
   }
 
@@ -259,16 +205,13 @@ export class TerminalSession {
     this.io = io;
   }
 
-  /** Set whether this session's provider uses the alternate screen (drives seed hasHistory). */
-  setUsesAlternateScreen(value: boolean): void {
-    this.usesAlternateScreen = value;
-  }
-
   async requestFullHistory(): Promise<void> {
+    const generation = ++this.historyRequestGeneration;
     this.historyInFlight = true;
 
     if (this.io) {
       const result = await this.io.captureHistory({ name: this.tmuxSessionName });
+      if (generation !== this.historyRequestGeneration) return;
       if (result.ok) {
         this.deliverFullHistory(this.normalizeCapturedOutput(result.output));
       } else {
@@ -299,6 +242,7 @@ export class TerminalSession {
       });
     }
     this.bufferedFrames = [];
+    this.bufferedFrameBytes = 0;
     this.historyInFlight = false;
   }
 
@@ -317,7 +261,15 @@ export class TerminalSession {
     }
 
     if (this.historyInFlight) {
+      const dataBytes = Buffer.byteLength(data, 'utf8');
+      if (this.bufferedFrameBytes + dataBytes > MAX_HISTORY_IN_FLIGHT_BYTES) {
+        this.bufferedFrames = [];
+        this.bufferedFrameBytes = 0;
+        void this.requestFullHistory();
+        return;
+      }
       this.bufferedFrames.push(data);
+      this.bufferedFrameBytes += dataBytes;
       return;
     }
 
@@ -376,6 +328,10 @@ export class TerminalSession {
     return this.subscribers.has(clientId);
   }
 
+  getSubscriberCount(): number {
+    return this.subscribers.size;
+  }
+
   dispose(): void {
     this.disposed = true;
     if (this.resizeTimer) {
@@ -389,6 +345,7 @@ export class TerminalSession {
     this.subscribers.clear();
     this.authority = null;
     this.bufferedFrames = [];
+    this.bufferedFrameBytes = 0;
     this.stream.removeAllListeners();
   }
 }

@@ -129,7 +129,10 @@ describe('Watcher → Parser → Broadcast pipeline integration', () => {
     await fsp.writeFile(filePath, initialContent, 'utf8');
 
     // Wire real services together
-    cacheService = new SessionCacheService();
+    cacheService = new SessionCacheService({
+      registerCacheStatsProvider: jest.fn(),
+      registerStatsProvider: jest.fn(),
+    } as never);
 
     const adapterFactory = new SessionReaderAdapterFactory();
     const adapter = new ClaudeSessionReaderAdapter(mockPricing);

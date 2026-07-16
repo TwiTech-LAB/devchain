@@ -14,16 +14,21 @@ import { CopilotSessionReaderAdapter } from './adapters/copilot-session-reader.a
 import { PRICING_SERVICE } from './services/pricing.interface';
 import { PricingService } from './services/pricing.service';
 import { SessionReaderService } from './services/session-reader.service';
-import { SessionCacheService } from './services/session-cache.service';
+import {
+  getTranscriptCacheConfig,
+  SessionCacheService,
+  TRANSCRIPT_CACHE_CONFIG,
+} from './services/session-cache.service';
 import { TranscriptWatcherService } from './services/transcript-watcher.service';
 import { TranscriptWatcherRehydrator } from './services/transcript-watcher-rehydrator.service';
 import { SubagentLocator } from './services/subagent-locator.service';
 import { SubagentResolver } from './services/subagent-resolver.service';
 import { SessionReaderController } from './controllers/session-reader.controller';
 import { CodexProviderSessionIdBackfillService } from './services/codex-provider-session-id-backfill.service';
+import { MetricsModule } from '../metrics/metrics.module';
 
 @Module({
-  imports: [StorageModule, EventsCoreModule, SessionsModule, ProviderAdaptersModule],
+  imports: [StorageModule, EventsCoreModule, SessionsModule, ProviderAdaptersModule, MetricsModule],
   providers: [
     SessionReaderAdapterFactory,
     TranscriptPathValidator,
@@ -36,6 +41,7 @@ import { CodexProviderSessionIdBackfillService } from './services/codex-provider
     CopilotSessionReaderAdapter,
     { provide: PRICING_SERVICE, useClass: PricingService },
     SessionReaderService,
+    { provide: TRANSCRIPT_CACHE_CONFIG, useFactory: getTranscriptCacheConfig },
     SessionCacheService,
     TranscriptWatcherService,
     TranscriptWatcherRehydrator,

@@ -3,6 +3,7 @@ import type { Terminal } from '@xterm/xterm';
 import type { Socket } from 'socket.io-client';
 import { termLog } from '@/ui/lib/debug';
 import { resolveTerminalSocket } from '../socket';
+import type { TerminalHistorySync } from '../terminal-history-sync';
 
 /**
  * Custom hook for managing terminal session subscription.
@@ -27,6 +28,7 @@ export function useTerminalSubscription(
       | 'ERROR';
     message?: string;
   }>,
+  historySync: TerminalHistorySync,
   socket?: Socket | null,
 ) {
   const lastSequenceRef = useRef<number>(0);
@@ -85,8 +87,15 @@ export function useTerminalSubscription(
     // even if lastSequenceRef was non-zero from a prior view.
     const isFirstAttach = !hasEverSubscribedRef.current;
 
-    const lastSequenceToSend =
-      !isFirstAttach && lastSequenceRef.current > 0 ? lastSequenceRef.current : undefined;
+    // Reconnect cursor: send BOTH {sequenceEpoch, sequence} or NEITHER. The server reads a
+    // sequence without an epoch as a legacy gap and an epoch without a sequence as invalid, so the
+    // two travel together. A known domain epoch (adopted from a prior `subscribed`) means there is
+    // a domain to reconcile against; sequence 0 is a valid cursor inside it, so the epoch — not
+    // `sequence > 0` — decides whether a cursor is sent.
+    const sequenceEpoch = historySync.getSequenceEpoch();
+    const sendCursor = !isFirstAttach && sequenceEpoch !== null;
+    const lastSequenceToSend = sendCursor ? lastSequenceRef.current : undefined;
+    const sequenceEpochToSend = sendCursor ? sequenceEpoch : undefined;
 
     termLog('subscribe_attempt', {
       sessionId,
@@ -94,6 +103,7 @@ export function useTerminalSubscription(
       rows: terminal.rows,
       socketId: activeSocket.id,
       lastSequence: lastSequenceToSend ?? 0,
+      sequenceEpoch: sequenceEpochToSend ?? null,
       isFirstAttach,
     });
 
@@ -105,6 +115,7 @@ export function useTerminalSubscription(
     activeSocket.emit('terminal:subscribe', {
       sessionId,
       lastSequence: lastSequenceToSend,
+      sequenceEpoch: sequenceEpochToSend,
       cols: terminal.cols,
       rows: terminal.rows,
     });
@@ -117,7 +128,7 @@ export function useTerminalSubscription(
     termLog('subscribe_success', { sessionId, expectingSeed: expectingSeedRef.current });
     hasEverSubscribedRef.current = true;
     return true;
-  }, [sessionId, xtermRef, dispatchConn, socket]);
+  }, [sessionId, xtermRef, dispatchConn, historySync, socket]);
 
   return {
     lastSequenceRef,

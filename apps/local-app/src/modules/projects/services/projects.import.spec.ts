@@ -719,6 +719,87 @@ describe('ProjectsService', () => {
         expect(familyResult.alternatives[0].availableProviders).toContain('claude');
       });
 
+      it('dry-run reports NO missing provider when the deselected family default is installed', async () => {
+        const payload = {
+          prompts: [],
+          profiles: [
+            {
+              id: profileId1,
+              name: 'Coder Codex',
+              provider: { name: 'codex' },
+              familySlug: 'coder',
+            },
+            {
+              id: profileId2,
+              name: 'Coder Claude',
+              provider: { name: 'claude' },
+              familySlug: 'coder',
+            },
+          ],
+          agents: [{ id: agentId, name: 'Coder', profileId: profileId1 }],
+          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+        };
+
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
+          ...payload,
+          version: 1,
+          exportedAt: undefined,
+          initialPrompt: undefined,
+          projectSettings: undefined,
+          watchers: [],
+          subscribers: [],
+          _manifest: undefined,
+        } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+
+        // BOTH providers installed; the wizard deselects codex — the family default.
+        storage.listProviders.mockResolvedValue({
+          items: [
+            { id: providerId, name: 'claude' },
+            { id: '55555555-5555-5555-5555-555555555555', name: 'codex' },
+          ],
+          total: 2,
+          limit: 100,
+          offset: 0,
+        });
+        storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        storage.listAgentProfiles.mockResolvedValue({
+          items: [],
+          total: 0,
+          limit: 10000,
+          offset: 0,
+        });
+        storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+        storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
+
+        const result = await service.importProject({
+          projectId,
+          payload,
+          dryRun: true,
+          selectedProviderNames: ['claude'],
+        });
+
+        // Deselecting the installed default still requires mapping (codex is not an eligible
+        // wizard choice), but neither missing list may report it — it IS installed.
+        expect(result).toMatchObject({
+          dryRun: true,
+          missingProviders: [],
+          providerMappingRequired: {
+            missingProviders: [],
+            canImport: true,
+            familyAlternatives: [
+              {
+                familySlug: 'coder',
+                defaultProvider: 'codex',
+                defaultProviderAvailable: false,
+                availableProviders: ['claude'],
+              },
+            ],
+          },
+        });
+
+        jest.restoreAllMocks();
+      });
+
       it('should import with remapped profiles when mappings are provided', async () => {
         const payload = {
           prompts: [],

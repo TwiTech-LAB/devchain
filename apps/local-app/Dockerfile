@@ -46,7 +46,10 @@ COPY apps/local-app/drizzle ./apps/local-app/drizzle
 
 RUN pnpm --filter @devchain/shared build
 RUN pnpm --filter @devchain/codebase-overview build
-RUN pnpm --filter local-app build
+# nest-cli watchAssets makes nest build register chokidar watchers even for one-shot
+# builds; poll instead of inotify so the build cannot fail when the host's shared
+# per-uid fs.inotify.max_user_instances quota is exhausted by other root containers
+RUN CHOKIDAR_USEPOLLING=1 pnpm --filter local-app build
 
 # Prepare production bundle with resolved workspace dependencies
 RUN pnpm --filter local-app deploy --prod /app/deploy

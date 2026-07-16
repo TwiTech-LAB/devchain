@@ -115,7 +115,7 @@ function normalizeFamilyProviderMappings(
 }
 
 /**
- * Transient provider allowlist (Step-1 wizard). Non-empty when present; each entry a non-empty
+ * Transient provider choice metadata (Step-1 wizard). Non-empty when present; each entry a non-empty
  * string. Unknown-provider rejection is enforced in the service (needs installed-provider storage).
  */
 const SelectedProviderNamesSchema = z.array(z.string().min(1)).min(1).optional();
@@ -563,7 +563,7 @@ export class ProjectsController {
         // Per-agent config overrides (wizard/API). Exactly TemplatePresetAgentConfigSchema;
         // mutually exclusive with presetName (refine below). Stripped from the template payload.
         agentOverrides: z.array(TemplatePresetAgentConfigSchema).optional(),
-        // Transient, server-enforced provider allowlist (Step-1 wizard). Non-empty when present.
+        // Transient provider choice metadata (Step-1 wizard). Non-empty when present.
         selectedProviderNames: SelectedProviderNamesSchema,
         teamOverrides: z
           .array(

@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "fixtures": {
+    "agy": {
+      "kind": "antigravity",
+      "sessionId": "10000000-0000-4000-8000-000000000001",
+      "providerSessionId": "memory-soak-agy",
+      "transcript": "agy.jsonl",
+      "metrics": "agy-metrics.json"
+    },
+    "claude": {
+      "kind": "file",
+      "sessionId": "10000000-0000-4000-8000-000000000002",
+      "relativePath": ".claude/projects/memory-soak/10000000-0000-4000-8000-000000000002.jsonl",
+      "transcript": "claude.jsonl"
+    },
+    "codex": {
+      "kind": "file",
+      "sessionId": "10000000-0000-4000-8000-000000000003",
+      "relativePath": ".codex/sessions/2026/07/13/rollout-memory-soak-10000000-0000-4000-8000-000000000003.jsonl",
+      "transcript": "codex.jsonl"
+    },
+    "copilot": {
+      "kind": "file",
+      "sessionId": "10000000-0000-4000-8000-000000000004",
+      "relativePath": ".copilot/session-state/10000000-0000-4000-8000-000000000004/events.jsonl",
+      "transcript": "copilot.jsonl"
+    },
+    "opencode": {
+      "kind": "opencode",
+      "sessionId": "10000000-0000-4000-8000-000000000005",
+      "providerSessionId": "ses_memory_soak",
+      "transcript": "opencode.json"
+    }
+  }
+}

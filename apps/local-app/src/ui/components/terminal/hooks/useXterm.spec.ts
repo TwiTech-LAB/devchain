@@ -10,6 +10,7 @@ import {
   MAX_TERMINAL_SCROLLBACK,
 } from '@/common/constants/terminal';
 import { DARK_XTERM_THEME, OCEAN_XTERM_THEME } from '../terminal-themes';
+import { createTerminalHistorySync } from '../terminal-history-sync';
 
 // Mock @xterm/xterm (same pattern as ChatTerminal.spec.tsx)
 jest.mock('@xterm/xterm', () => {
@@ -245,7 +246,8 @@ describe('useXterm', () => {
         fitAddonRef,
         undefined, // onReady
         'form', // inputMode
-        undefined, // hasHistoryRef
+        undefined, // historySync
+        undefined, // isSubscribedRef
         undefined, // isLoadingHistoryRef
         undefined, // isHistoryInFlightRef
         undefined, // pendingHistoryFramesRef
@@ -277,8 +279,9 @@ describe('useXterm', () => {
           fitAddonRef,
           undefined,
           'form',
-          undefined,
-          undefined,
+          undefined, // historySync
+          undefined, // isSubscribedRef
+          undefined, // isLoadingHistoryRef
           undefined, // isHistoryInFlightRef
           undefined, // pendingHistoryFramesRef
           belowMin,
@@ -308,8 +311,9 @@ describe('useXterm', () => {
           fitAddonRef,
           undefined,
           'form',
-          undefined,
-          undefined,
+          undefined, // historySync
+          undefined, // isSubscribedRef
+          undefined, // isLoadingHistoryRef
           undefined, // isHistoryInFlightRef
           undefined, // pendingHistoryFramesRef
           aboveMax,
@@ -365,8 +369,9 @@ describe('useXterm', () => {
           fitAddonRef,
           undefined,
           'form',
-          undefined,
-          undefined,
+          undefined, // historySync
+          undefined, // isSubscribedRef
+          undefined, // isLoadingHistoryRef
           undefined, // isHistoryInFlightRef
           undefined, // pendingHistoryFramesRef
           validValue,
@@ -382,109 +387,67 @@ describe('useXterm', () => {
     });
   });
 
-  describe('wheel handler mouse tracking conditional', () => {
+  describe('wheel movement ownership (xterm 6 is the sole owner)', () => {
     /**
-     * Helper: render useXterm with given inputMode, capture the callback
-     * passed to attachCustomWheelEventHandler, then set mouseTrackingMode.
+     * Regression guard for the xterm 6 seam: useXterm no longer installs a movement-owning
+     * custom wheel handler and never calls `scrollLines` itself, so xterm 6's
+     * SmoothScrollableElement is the sole owner of viewport movement and cannot be double-scrolled.
+     * The full wheel/scrollbar routing matrix lives in `scroll-intent-binding.spec.ts`.
      */
-    function setupWheelTest(inputMode: 'form' | 'tty', mouseTrackingMode: string) {
+    it('does not attach a custom wheel handler or manually scroll on a container wheel', () => {
       const terminalRef = { current: mockContainerElement };
       const { result } = renderHook(() => {
         const xtermRef = useRef<Terminal | null>(null);
         const fitAddonRef = useRef<FitAddon | null>(null);
-        useXterm(terminalRef, 'test-session', xtermRef, fitAddonRef, undefined, inputMode);
+        useXterm(terminalRef, 'test-session', xtermRef, fitAddonRef, undefined, 'form');
+        return { xtermRef, fitAddonRef };
+      });
+      const terminal = result.current.xtermRef.current as Record<string, unknown>;
+
+      mockContainerElement.dispatchEvent(
+        new WheelEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true }),
+      );
+
+      expect(terminal.attachCustomWheelEventHandler).not.toHaveBeenCalled();
+      expect(terminal.scrollLines).not.toHaveBeenCalled();
+    });
+
+    it('surfaces a scroll-intent controller and clears it on unmount', () => {
+      const terminalRef = { current: mockContainerElement };
+      const onController = jest.fn();
+      const { unmount } = renderHook(() => {
+        const xtermRef = useRef<Terminal | null>(null);
+        const fitAddonRef = useRef<FitAddon | null>(null);
+        useXterm(
+          terminalRef,
+          'test-session',
+          xtermRef,
+          fitAddonRef,
+          undefined,
+          'form',
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          DEFAULT_TERMINAL_SCROLLBACK,
+          undefined, // socket
+          undefined, // appTheme
+          undefined, // onTerminalChange
+          onController,
+        );
         return { xtermRef, fitAddonRef };
       });
 
-      const terminal = result.current.xtermRef.current as Record<string, unknown>;
-      // Mutate modes to desired tracking mode (read dynamically by the callback)
-      (terminal.modes as { mouseTrackingMode: string }).mouseTrackingMode = mouseTrackingMode;
+      expect(onController).toHaveBeenCalledTimes(1);
+      const controller = onController.mock.calls[0][0];
+      expect(typeof controller.isDragActive).toBe('function');
+      expect(typeof controller.onDragEnd).toBe('function');
+      expect(typeof controller.dispose).toBe('function');
+      expect(controller.isDragActive()).toBe(false);
 
-      // Extract the callback registered with attachCustomWheelEventHandler
-      const wheelCallback = (terminal.attachCustomWheelEventHandler as jest.Mock).mock
-        .calls[0][0] as (event: WheelEvent) => boolean;
-
-      return { terminal, wheelCallback };
-    }
-
-    function makeWheelEvent(deltaY: number): WheelEvent {
-      return { deltaY, preventDefault: jest.fn() } as unknown as WheelEvent;
-    }
-
-    // --- TTY mode + wheel-capable tracking modes → bypass to xterm (return true) ---
-
-    it('tty + any: bypasses to xterm (returns true, no scrollLines)', () => {
-      const { terminal, wheelCallback } = setupWheelTest('tty', 'any');
-      const event = makeWheelEvent(120);
-
-      expect(wheelCallback(event)).toBe(true);
-      expect(terminal.scrollLines).not.toHaveBeenCalled();
-    });
-
-    it('tty + drag: bypasses to xterm (returns true, no scrollLines)', () => {
-      const { terminal, wheelCallback } = setupWheelTest('tty', 'drag');
-      const event = makeWheelEvent(120);
-
-      expect(wheelCallback(event)).toBe(true);
-      expect(terminal.scrollLines).not.toHaveBeenCalled();
-    });
-
-    it('tty + vt200: bypasses to xterm (returns true, no scrollLines)', () => {
-      const { terminal, wheelCallback } = setupWheelTest('tty', 'vt200');
-      const event = makeWheelEvent(120);
-
-      expect(wheelCallback(event)).toBe(true);
-      expect(terminal.scrollLines).not.toHaveBeenCalled();
-    });
-
-    // --- TTY mode + non-wheel tracking modes → custom dampened scroll ---
-
-    it('tty + none: custom scroll (scrollLines called, returns false)', () => {
-      const { terminal, wheelCallback } = setupWheelTest('tty', 'none');
-      const event = makeWheelEvent(120);
-
-      expect(wheelCallback(event)).toBe(false);
-      expect(terminal.scrollLines).toHaveBeenCalledWith(2); // Math.sign(120) * max(1, round(1*1.5)) = 2
-      expect((event as unknown as { preventDefault: jest.Mock }).preventDefault).toHaveBeenCalled();
-    });
-
-    it('tty + x10: custom scroll (scrollLines called, returns false)', () => {
-      const { terminal, wheelCallback } = setupWheelTest('tty', 'x10');
-      const event = makeWheelEvent(-240);
-
-      expect(wheelCallback(event)).toBe(false);
-      expect(terminal.scrollLines).toHaveBeenCalledWith(-3); // Math.sign(-240) * max(1, round(2*1.5)) = -3
-      expect((event as unknown as { preventDefault: jest.Mock }).preventDefault).toHaveBeenCalled();
-    });
-
-    // --- Form mode → always custom scroll (dead wheel guard) ---
-
-    it('form + any: custom scroll despite active tracking (dead wheel guard)', () => {
-      const { terminal, wheelCallback } = setupWheelTest('form', 'any');
-      const event = makeWheelEvent(120);
-
-      expect(wheelCallback(event)).toBe(false);
-      expect(terminal.scrollLines).toHaveBeenCalledWith(2);
-      expect((event as unknown as { preventDefault: jest.Mock }).preventDefault).toHaveBeenCalled();
-    });
-
-    it('form + none: custom scroll (returns false)', () => {
-      const { terminal, wheelCallback } = setupWheelTest('form', 'none');
-      const event = makeWheelEvent(120);
-
-      expect(wheelCallback(event)).toBe(false);
-      expect(terminal.scrollLines).toHaveBeenCalledWith(2);
-      expect((event as unknown as { preventDefault: jest.Mock }).preventDefault).toHaveBeenCalled();
-    });
-
-    // --- Edge case: deltaY === 0 ---
-
-    it('returns false and does not scroll when deltaY is 0', () => {
-      const { terminal, wheelCallback } = setupWheelTest('form', 'none');
-      const event = makeWheelEvent(0);
-
-      expect(wheelCallback(event)).toBe(false);
-      expect(terminal.scrollLines).not.toHaveBeenCalled();
+      unmount();
+      expect(onController).toHaveBeenLastCalledWith(null);
     });
   });
 
@@ -523,6 +486,7 @@ describe('useXterm', () => {
           undefined,
           undefined,
           undefined,
+          undefined,
           DEFAULT_TERMINAL_SCROLLBACK,
           undefined,
           'ocean',
@@ -551,6 +515,7 @@ describe('useXterm', () => {
           fitAddonRef,
           undefined,
           'form',
+          undefined,
           undefined,
           undefined,
           undefined,
@@ -596,6 +561,7 @@ describe('useXterm', () => {
           undefined,
           undefined,
           undefined,
+          undefined,
           DEFAULT_TERMINAL_SCROLLBACK,
           undefined,
           appTheme,
@@ -632,8 +598,13 @@ describe('useXterm', () => {
       });
     }
 
-    function renderScrollHook(hasHistory: boolean, inputMode: 'form' | 'tty' = 'form') {
-      const hasHistoryRef = { current: hasHistory };
+    function renderScrollHook(refreshable: boolean, inputMode: 'form' | 'tty' = 'form') {
+      // A refreshable, settled owner with no baseline is dirty → request-eligible; a
+      // non-refreshable one is not. The detector adds gesture/visibility/cooldown on top.
+      const historySync = createTerminalHistorySync();
+      historySync.adoptRefreshable(refreshable);
+      historySync.settle();
+      const isSubscribedRef = { current: true };
       const isLoadingHistoryRef = { current: false };
       const isHistoryInFlightRef = { current: false };
       const pendingHistoryFramesRef = { current: [] as { sequence: number; data: string }[] };
@@ -649,7 +620,8 @@ describe('useXterm', () => {
           fitAddonRef,
           undefined,
           inputMode,
-          hasHistoryRef,
+          historySync,
+          isSubscribedRef,
           isLoadingHistoryRef,
           isHistoryInFlightRef,
           pendingHistoryFramesRef,
@@ -846,13 +818,33 @@ describe('useXterm', () => {
       expect(terminal.scrollToLine).toHaveBeenCalledWith(70);
     });
 
-    function getWheelCallback(terminal: unknown): (e: WheelEvent) => boolean {
-      const t = terminal as { attachCustomWheelEventHandler: jest.Mock };
-      return t.attachCustomWheelEventHandler.mock.calls[0][0] as (e: WheelEvent) => boolean;
+    // Routing proof: dispatch a real capture-phase wheel on the STABLE container (where the seam
+    // observes it) rather than invoking a custom callback directly.
+    function dispatchWheel(deltaY: number) {
+      act(() => {
+        mockContainerElement.dispatchEvent(
+          new WheelEvent('wheel', { deltaY, bubbles: true, cancelable: true }),
+        );
+      });
     }
 
-    function wheelEvent(deltaY: number): WheelEvent {
-      return { deltaY, preventDefault: jest.fn() } as unknown as WheelEvent;
+    // Build the xterm 6 scrollbar subtree under the container: a pointerdown on the real vertical
+    // scrollbar (track/slider) routes through the seam; a pointerdown on the screen is content
+    // selection and must not.
+    function buildScrollbar() {
+      const scrollable = document.createElement('div');
+      scrollable.className = 'xterm-scrollable-element';
+      const scrollbar = document.createElement('div');
+      scrollbar.className = 'scrollbar vertical';
+      const slider = document.createElement('div');
+      slider.className = 'slider';
+      const screen = document.createElement('div');
+      screen.className = 'xterm-screen';
+      scrollbar.appendChild(slider);
+      scrollable.appendChild(scrollbar);
+      scrollable.appendChild(screen);
+      mockContainerElement.appendChild(scrollable);
+      return { slider, screen };
     }
 
     function establishAtBottom(terminal: {
@@ -871,11 +863,8 @@ describe('useXterm', () => {
       const { terminal } = renderScrollHook(true);
       establishAtBottom(terminal);
 
-      // Host-scroll wheel-up (form mode, no mouse tracking) stamps intent before scrollLines.
-      const wheel = getWheelCallback(terminal);
-      act(() => {
-        wheel(wheelEvent(-120));
-      });
+      // Host-scroll wheel-up (form mode, no mouse tracking) stamps intent via the container seam.
+      dispatchWheel(-120);
 
       // The scroll lands above the bottom; the poll sees fresh intent → emits.
       terminal.buffer.active.viewportY = 40;
@@ -888,16 +877,12 @@ describe('useXterm', () => {
     it('wheel forwarded to a TUI with mouse tracking does NOT stamp intent', () => {
       setVisible(mockContainerElement, true);
       const { terminal } = renderScrollHook(true, 'tty');
-      // TUI has wheel-capable mouse tracking → the wheel handler bypasses to xterm.
+      // TUI has wheel-capable mouse tracking → xterm forwards the wheel; the seam must not stamp.
       (terminal as unknown as { modes: { mouseTrackingMode: string } }).modes.mouseTrackingMode =
         'any';
       establishAtBottom(terminal);
 
-      const wheel = getWheelCallback(terminal);
-      act(() => {
-        // Returns true (forwarded to TUI); must NOT stamp intent.
-        expect(wheel(wheelEvent(-120))).toBe(true);
-      });
+      dispatchWheel(-120);
 
       terminal.buffer.active.viewportY = 40;
       act(() => {
@@ -947,17 +932,14 @@ describe('useXterm', () => {
       expect(emittedFullHistory()).toBe(false);
     });
 
-    it('pointerdown on the viewport stamps intent', () => {
+    it('pointerdown on the vertical scrollbar stamps intent', () => {
       setVisible(mockContainerElement, true);
-      // The scrollbar lives on .xterm-viewport; provide one for the listener to attach to.
-      const viewport = document.createElement('div');
-      viewport.className = 'xterm-viewport';
-      mockContainerElement.appendChild(viewport);
+      const { slider } = buildScrollbar();
       const { terminal } = renderScrollHook(true);
       establishAtBottom(terminal);
 
       act(() => {
-        viewport.dispatchEvent(new Event('pointerdown'));
+        slider.dispatchEvent(new Event('pointerdown', { bubbles: true }));
       });
 
       terminal.buffer.active.viewportY = 40;
@@ -967,17 +949,32 @@ describe('useXterm', () => {
       expect(emittedFullHistory()).toBe(true);
     });
 
-    it('slow scrollbar drag past the decay window still loads history via pointermove refresh', () => {
+    it('pointerdown on terminal content (selection) does NOT stamp intent', () => {
       setVisible(mockContainerElement, true);
-      const viewport = document.createElement('div');
-      viewport.className = 'xterm-viewport';
-      mockContainerElement.appendChild(viewport);
+      const { screen } = buildScrollbar();
       const { terminal } = renderScrollHook(true);
       establishAtBottom(terminal);
 
-      // Drag starts (pointerdown stamps intent).
       act(() => {
-        viewport.dispatchEvent(new Event('pointerdown'));
+        screen.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      });
+
+      terminal.buffer.active.viewportY = 40;
+      act(() => {
+        jest.advanceTimersByTime(100);
+      });
+      expect(emittedFullHistory()).toBe(false);
+    });
+
+    it('slow scrollbar drag past the decay window still loads history via pointermove refresh', () => {
+      setVisible(mockContainerElement, true);
+      const { slider } = buildScrollbar();
+      const { terminal } = renderScrollHook(true);
+      establishAtBottom(terminal);
+
+      // Drag starts (scrollbar pointerdown stamps intent and begins the drag).
+      act(() => {
+        slider.dispatchEvent(new Event('pointerdown', { bubbles: true }));
       });
 
       // Hold the drag longer than SCROLL_GESTURE_STALE_MS without moving the viewport.
@@ -985,9 +982,9 @@ describe('useXterm', () => {
         jest.advanceTimersByTime(2500);
       });
 
-      // A pointermove mid-drag refreshes intent so it does not expire.
+      // A pointermove mid-drag (observed on window while the drag is active) refreshes intent.
       act(() => {
-        viewport.dispatchEvent(new Event('pointermove'));
+        window.dispatchEvent(new Event('pointermove', { bubbles: true }));
       });
 
       terminal.buffer.active.viewportY = 40;

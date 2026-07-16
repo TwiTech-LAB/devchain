@@ -187,6 +187,7 @@ describe('TerminalIOService', () => {
         '-t',
         '=sess:',
       ]);
+      expect(fake.calls[0].outputLimits).toEqual({ maxBytes: 256 * 1024 });
     });
 
     it('returns error result on failure', async () => {
@@ -196,6 +197,29 @@ describe('TerminalIOService', () => {
 
       expect(result.ok).toBe(false);
       expect(result.error).toContain('no pane');
+    });
+  });
+
+  describe('send-gap lifecycle', () => {
+    it('drops settled queue tails and clears retained timestamps on module teardown', async () => {
+      const gap = (
+        svc as unknown as {
+          gap: {
+            ensureGap(agentId: string, minMs?: number): Promise<void>;
+            lastByAgent: Map<string, number>;
+            tailByAgent: Map<string, Promise<void>>;
+          };
+        }
+      ).gap;
+
+      await gap.ensureGap('agent-cleanup', 0);
+      await Promise.resolve();
+      expect(gap.tailByAgent.size).toBe(0);
+      expect(gap.lastByAgent.size).toBe(1);
+
+      svc.onModuleDestroy();
+      expect(gap.tailByAgent.size).toBe(0);
+      expect(gap.lastByAgent.size).toBe(0);
     });
   });
 

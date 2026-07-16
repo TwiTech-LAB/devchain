@@ -271,7 +271,7 @@ export function createLaunchPipelineHarness() {
 
 // ── Full harness for SessionRestorePipeline ─────────────────────────────
 
-export function createRestorePipelineHarness() {
+export function createRestorePipelineHarness(opts?: { streamService?: unknown }) {
   const sqliteMock = createSqliteMock();
   const adapter = createMockAdapter();
 
@@ -324,8 +324,16 @@ export function createRestorePipelineHarness() {
     publish: jest.fn().mockResolvedValue(undefined),
   };
 
-  const terminalGateway = {
-    broadcastEvent: jest.fn(),
+  // Replay-lifecycle owner. Default is a jest.fn() mock (cancelScheduledClear returns null → no
+  // rollback re-arm pushed); a test can inject a real TerminalStreamService to exercise the timer.
+  const streamService = opts?.streamService ?? {
+    scheduleClear: jest.fn(),
+    cancelScheduledClear: jest.fn().mockReturnValue(null),
+    setClearExpiryHandler: jest.fn(),
+    clearBuffer: jest.fn(),
+    getSequenceEpoch: jest.fn(),
+    getBufferStats: jest.fn(),
+    initializeBuffer: jest.fn(),
   };
 
   // Default: prepare returns a stopped session row when called with SELECT,
@@ -385,7 +393,7 @@ export function createRestorePipelineHarness() {
     ptyService, // PtyService
     terminalSessionRegistry, // TerminalSessionRegistry
     eventsService, // EventsService
-    terminalGateway, // TerminalGateway
+    streamService, // TerminalStreamService
   );
 
   /**
@@ -436,7 +444,7 @@ export function createRestorePipelineHarness() {
       ptyService,
       terminalSessionRegistry,
       eventsService,
-      terminalGateway,
+      streamService,
     },
   };
 }

@@ -1,0 +1,1611 @@
+
+> local-app@0.0.0-internal test /home/ngsupb/repos/twitech/devchain-rem15-checkpoint/apps/local-app
+> cross-env NODE_ENV=test node --expose-gc ../../node_modules/jest/bin/jest.js --selectProjects backend-unit backend-integration ui cli-helpers --maxWorkers=50% --workerIdleMemoryLimit=512MB -- --runInBand --runTestsByPath src/modules/session-reader/services/session-cache.service.spec.ts src/modules/session-reader/services/session-cache.replacement.spec.ts src/modules/session-reader/services/session-reader.service.spec.ts src/modules/session-reader/services/session-reader.replacement.integration.spec.ts src/modules/session-reader/controllers/session-reader.controller.spec.ts src/modules/session-reader/services/transcript-cursor.spec.ts src/ui/hooks/useSessionTranscript.spec.tsx src/ui/components/session-reader/PagedSessionMessageList.spec.tsx
+
+Running 4 projects:
+- backend-integration
+- backend-unit
+- cli-helpers
+- ui
+PASS backend-unit src/modules/session-reader/services/transcript-cursor.spec.ts
+[Nest] 3780251  - 01/23/2024, 9:54:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1"
+}
+
+[Nest] 3780251  - 01/23/2024, 9:54:20 AM   DEBUG [SessionCacheService] Session cache hit
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1"
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Session cache hit
+[Nest] 3780251  - 01/23/2024, 10:04:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1"
+}
+
+[Nest] 3780251  - 01/23/2024, 10:04:20 AM   DEBUG [SessionCacheService] Session cache hit
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1500
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1200
+}
+
+PASS backend-unit src/modules/session-reader/services/session-cache.replacement.spec.ts
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1200,
+  "currentSize": 1400
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1500
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1500
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1500
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1500
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1500
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1500
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1500
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1500
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1500,
+  "currentSize": 1700
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1"
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Full reparse (source truncated)
+[Nest] 3780258  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "replacement-session"
+}
+
+[Nest] 3780258  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Full reparse (source replaced)
+[Nest] 3780258  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "replacement-session"
+}
+
+[Nest] 3780258  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Full reparse (source replaced)
+[Nest] 3780258  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "replacement-session"
+}
+
+[Nest] 3780258  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Full reparse (source replaced)
+[Nest] 3780258  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "replacement-session",
+  "lastOffset": 5320,
+  "currentSize": 5776
+}
+
+[Nest] 3780258  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780258  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "replacement-session"
+}
+
+[Nest] 3780258  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Session cache hit
+[Nest] 3780258  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "replacement-session"
+}
+
+[Nest] 3780258  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Full reparse (source truncated)
+PASS backend-unit src/modules/session-reader/services/session-cache.service.spec.ts
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-a"
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Session cache hit
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1500
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1500
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1500
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1500
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1500
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1500
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1500
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1500
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1500
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1500
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1500
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1500
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1"
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Full reparse (source replaced)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1"
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Session cache hit
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1500
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1500
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1"
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Discarding incremental parse because its proven file revision drifted
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1500
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1"
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Discarding incremental parse because its proven file revision drifted
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1"
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Session cache hit
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1"
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Full reparse (source replaced)
+[Nest] 3780251  - 01/23/2024, 9:54:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1"
+}
+
+[Nest] 3780251  - 01/23/2024, 9:54:20 AM   DEBUG [SessionCacheService] Session cache hit
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1500
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1500
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "session-1",
+  "lastOffset": 1000,
+  "currentSize": 1500
+}
+
+[Nest] 3780251  - 01/23/2024, 9:53:20 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+PASS backend-unit src/modules/session-reader/controllers/session-reader.controller.spec.ts
+PASS backend-integration src/modules/session-reader/services/session-reader.replacement.integration.spec.ts
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "equal-size-replacement"
+}
+
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Full reparse (source replaced)
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "equal-size-replacement"
+}
+
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Session cache hit
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "equal-size-replacement"
+}
+
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Session cache hit
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "equal-size-replacement"
+}
+
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Session cache hit
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "equal-size-replacement"
+}
+
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Full reparse (source replaced)
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "equal-size-replacement"
+}
+
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Full reparse (source truncated)
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "equal-size-replacement"
+}
+
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Session cache hit
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "equal-size-replacement"
+}
+
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Session cache hit
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "equal-size-replacement"
+}
+
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Session cache hit
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "equal-size-replacement",
+  "lastOffset": 531,
+  "currentSize": 699
+}
+
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "equal-size-replacement",
+  "lastOffset": 535,
+  "currentSize": 719
+}
+
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Incremental parse (source grew)
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Object:
+{
+  "error": {},
+  "filePath": "/tmp/devchain-tail-replacement-Spipr8/session.jsonl"
+}
+
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] File prefix proof unavailable — append is unsafe
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "equal-size-replacement"
+}
+
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Discarding incremental parse because its proven file revision drifted
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "equal-size-replacement"
+}
+
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Session cache hit
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "equal-size-replacement"
+}
+
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Session cache hit
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "equal-size-replacement"
+}
+
+[Nest] 3780243  - 07/15/2026, 2:37:47 AM   DEBUG [SessionCacheService] Session cache hit
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM    WARN [SessionReaderService] Object:
+{
+  "error": {},
+  "sessionId": "sess-1",
+  "providerName": "claude"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM    WARN [SessionReaderService] Lightweight transcript summary unavailable — falling back to full parse
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/tmp/session-summary-context-F67va2/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/tmp/session-summary-context-F67va2/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/tmp/session-summary-context-F67va2/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/tmp/session-summary-context-F67va2/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "codex",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "sess-1",
+  "providerName": "claude",
+  "transcriptPath": "/home/user/.claude/projects/-test/session.jsonl",
+  "sourceKind": "file"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:47 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+PASS backend-unit src/modules/session-reader/services/session-reader.service.spec.ts
+[Nest] 3780244  - 07/15/2026, 2:37:48 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "ses_e2e",
+  "providerName": "opencode",
+  "transcriptPath": "/tmp/opencode-e2e-C92ydJ/opencode.db",
+  "sourceKind": "db"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:48 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:48 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "ses_e2e",
+  "providerName": "opencode",
+  "transcriptPath": "/tmp/opencode-e2e-C92ydJ/opencode.db",
+  "sourceKind": "db"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:48 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:48 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "ses_e2e"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:48 AM   DEBUG [SessionCacheService] Session cache hit
+[Nest] 3780244  - 07/15/2026, 2:37:48 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "ses_e2e",
+  "providerName": "opencode",
+  "transcriptPath": "/tmp/opencode-e2e-C92ydJ/opencode.db",
+  "sourceKind": "db"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:48 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+[Nest] 3780244  - 07/15/2026, 2:37:48 AM   DEBUG [SessionCacheService] Object:
+{
+  "sessionId": "ses_e2e"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:48 AM   DEBUG [SessionCacheService] Session cache hit
+[Nest] 3780244  - 07/15/2026, 2:37:48 AM   DEBUG [SessionReaderService] Object:
+{
+  "sessionId": "ses_e2e",
+  "providerName": "opencode",
+  "transcriptPath": "/tmp/opencode-e2e-G9UyVD/opencode.db",
+  "sourceKind": "db"
+}
+
+[Nest] 3780244  - 07/15/2026, 2:37:48 AM   DEBUG [SessionReaderService] Resolved adapter for session transcript
+PASS ui src/ui/components/session-reader/PagedSessionMessageList.spec.tsx
+PASS ui src/ui/hooks/useSessionTranscript.spec.tsx
+  ● Console
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":905,"fetchAndReadMs":1.19,"jsonParseMs":0.01,"totalMs":1.2}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":905,"fetchAndReadMs":0.51,"jsonParseMs":0.01,"totalMs":0.52}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":905,"fetchAndReadMs":0.32,"jsonParseMs":0.01,"totalMs":0.33}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":905,"fetchAndReadMs":0.37,"jsonParseMs":0.01,"totalMs":0.38}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":1195,"fetchAndReadMs":0.45,"jsonParseMs":0.01,"totalMs":0.46}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":905,"fetchAndReadMs":0.43,"jsonParseMs":0.01,"totalMs":0.45}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":905,"fetchAndReadMs":0.23,"jsonParseMs":0.01,"totalMs":0.25}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":905,"fetchAndReadMs":0.47,"jsonParseMs":0.01,"totalMs":0.48}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":905,"fetchAndReadMs":0.23,"jsonParseMs":0.01,"totalMs":0.24}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":905,"fetchAndReadMs":0.1,"jsonParseMs":0.01,"totalMs":0.12}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":905,"fetchAndReadMs":0.25,"jsonParseMs":0.01,"totalMs":0.26}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":905,"fetchAndReadMs":0.12,"jsonParseMs":0.02,"totalMs":0.14}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":905,"fetchAndReadMs":0.29,"jsonParseMs":0.01,"totalMs":0.3}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":905,"fetchAndReadMs":0.22,"jsonParseMs":0.01,"totalMs":0.24}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":905,"fetchAndReadMs":0.24,"jsonParseMs":0.01,"totalMs":0.25}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":905,"fetchAndReadMs":0.21,"jsonParseMs":0.01,"totalMs":0.23}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":905,"fetchAndReadMs":0.28,"jsonParseMs":0.01,"totalMs":0.29}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":905,"fetchAndReadMs":0.28,"jsonParseMs":0.01,"totalMs":0.29}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":906,"fetchAndReadMs":0.26,"jsonParseMs":0.01,"totalMs":0.27}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":905,"fetchAndReadMs":0.24,"jsonParseMs":0.01,"totalMs":0.26}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":905,"fetchAndReadMs":0.28,"jsonParseMs":0.01,"totalMs":0.29}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":1946,"fetchAndReadMs":0.23,"jsonParseMs":0.02,"totalMs":0.25}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":1946,"fetchAndReadMs":0.27,"jsonParseMs":0.02,"totalMs":0.28}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":1946,"fetchAndReadMs":0.26,"jsonParseMs":0.02,"totalMs":0.28}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":1946,"fetchAndReadMs":0.25,"jsonParseMs":0.02,"totalMs":0.27}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":1946,"fetchAndReadMs":0.26,"jsonParseMs":0.02,"totalMs":0.28}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":1946,"fetchAndReadMs":0.03,"jsonParseMs":0.02,"totalMs":0.05}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":1946,"fetchAndReadMs":0.26,"jsonParseMs":0.02,"totalMs":0.28}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":2001,"fetchAndReadMs":51.72,"jsonParseMs":0.02,"totalMs":51.74}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":2054,"fetchAndReadMs":0.04,"jsonParseMs":0.01,"totalMs":0.05}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":1946,"fetchAndReadMs":0.21,"jsonParseMs":0.01,"totalMs":0.22}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":2200,"fetchAndReadMs":2.72,"jsonParseMs":0.02,"totalMs":2.75}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":1946,"fetchAndReadMs":0.21,"jsonParseMs":0.02,"totalMs":0.22}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+    console.log
+      {"msg":"transcript.client.timing","sessionId":"session-1","bytes":1942,"fetchAndReadMs":0.03,"jsonParseMs":0.02,"totalMs":0.05}
+
+      at fetchTranscript (ui/hooks/useSessionTranscript.ts:150:11)
+
+
+Test Suites: 8 passed, 8 total
+Tests:       235 passed, 235 total
+Snapshots:   0 total
+Time:        3.184 s
+Ran all test suites matching /--runInBand|--runTestsByPath|src\/modules\/session-reader\/services\/session-cache.service.spec.ts|src\/modules\/session-reader\/services\/session-cache.replacement.spec.ts|src\/modules\/session-reader\/services\/session-reader.service.spec.ts|src\/modules\/session-reader\/services\/session-reader.replacement.integration.spec.ts|src\/modules\/session-reader\/controllers\/session-reader.controller.spec.ts|src\/modules\/session-reader\/services\/transcript-cursor.spec.ts|src\/ui\/hooks\/useSessionTranscript.spec.tsx|src\/ui\/components\/session-reader\/PagedSessionMessageList.spec.tsx/i in 3 projects.

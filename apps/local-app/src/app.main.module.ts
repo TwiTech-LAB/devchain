@@ -46,6 +46,7 @@ import { CodebaseOverviewAnalyzerModule } from './modules/codebase-overview-anal
 import { CloudModule } from './modules/cloud/cloud.module';
 import { CloudTunnelModule } from './modules/cloud-tunnel/cloud-tunnel.module';
 import { E2eeModule } from './modules/e2ee/e2ee.module';
+import { MetricsModule } from './modules/metrics/metrics.module';
 
 @Module({
   imports: [
@@ -53,6 +54,7 @@ import { E2eeModule } from './modules/e2ee/e2ee.module';
     CoreMainHealthModule,
     CoreCommonModule,
     CoreNormalModule,
+    MetricsModule,
     StorageModule,
     TerminalModule,
     SessionsModule,

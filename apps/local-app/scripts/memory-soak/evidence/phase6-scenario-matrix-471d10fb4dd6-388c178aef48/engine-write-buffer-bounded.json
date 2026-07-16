@@ -1,0 +1,5421 @@
+{
+  "schemaVersion": 2,
+  "reportKind": "fixture-scenario",
+  "runId": "1783963179765-1481792-1337",
+  "scenario": {
+    "id": "engine-write-buffer-bounded",
+    "title": "Engine.IO writeBuffer does not grow while transport is unwritable",
+    "state": "active",
+    "execution": "socket-fixture",
+    "expected": [
+      "Engine.IO writeBuffer stays bounded",
+      "application queue policy is observable"
+    ]
+  },
+  "status": "completed",
+  "pass": true,
+  "startedAt": "2026-07-13T17:18:32.961Z",
+  "finishedAt": "2026-07-13T17:19:39.765Z",
+  "reproducibility": {
+    "seed": 1337,
+    "profile": "soak",
+    "foregroundBurstsPerSecond": 64,
+    "backgroundBurstsPerSecond": 1,
+    "chunkBytes": 16384,
+    "plateauOutput": "paused-after-correctness",
+    "transportControl": "fixture-child-preload",
+    "requestedForegroundBurstsPerSecond": 10,
+    "requestedChunkBytes": 1024
+  },
+  "harness": {
+    "provenance": {
+      "method": "git-checkout",
+      "capturedAt": "2026-07-13T17:19:39.765Z",
+      "repositoryRoot": "/home/ngsupb/repos/twitech/devchain",
+      "commit": "471d10fb4dd6599bb0137960c2bf7f0a3f5ba12f",
+      "branch": "master",
+      "dirty": false
+    }
+  },
+  "target": {
+    "pid": 1482281,
+    "provenance": {
+      "method": "linux-procfs-sha256-v1",
+      "capturedAt": "2026-07-13T17:18:35.143Z",
+      "repositoryRoot": "/home/ngsupb/repos/twitech/devchain",
+      "commit": "471d10fb4dd6599bb0137960c2bf7f0a3f5ba12f",
+      "branch": "master",
+      "dirty": false,
+      "cwd": "/home/ngsupb/repos/twitech/devchain/apps/local-app",
+      "executable": {
+        "path": "/home/ngsupb/.nvm/versions/node/v22.17.0/bin/node",
+        "sha256": "8071ae0fca095a272ad698a90c7061801a86fb6392ddb81e922b68a91a4374b9",
+        "sizeBytes": 121609656,
+        "mtimeMs": 1750791151000
+      },
+      "entrypoint": {
+        "path": "/home/ngsupb/repos/twitech/devchain/apps/local-app/dist/main.js",
+        "sha256": "6d1882290ade153582cde2fece933a5e8e2ca598fd9218aba5e8e7a78c1b22c6",
+        "sizeBytes": 6824,
+        "mtimeMs": 1783961496270.1033
+      },
+      "buildFingerprint": {
+        "algorithm": "sha256",
+        "digest": "388c178aef48e6ce54346d663f47e79abb210e4d8ea6ee032585524b629e2fd1",
+        "subjectKind": "directory-tree",
+        "subjectPath": "/home/ngsupb/repos/twitech/devchain/apps/local-app/dist",
+        "fileCount": 2007,
+        "totalBytes": 11433762
+      }
+    }
+  },
+  "fixture": {
+    "app": {
+      "ready": true,
+      "pid": 1482281,
+      "port": 42309
+    },
+    "socket": {
+      "connected": true,
+      "runtimeTokenVerified": true,
+      "handshakeTokenPresented": true,
+      "subscribed": true,
+      "seedObserved": true,
+      "receivedTypes": [
+        "ping",
+        "subscribed",
+        "focus_changed",
+        "data",
+        "seed_ansi",
+        "activity"
+      ],
+      "clientCount": 2
+    },
+    "scratchSession": {
+      "sessionName": "fixture-1481792-1337",
+      "tmuxServerPid": 1482250,
+      "panePid": 1482252,
+      "generatorPid": 1482252,
+      "deterministicSeed": 1337,
+      "outputBytes": 157843479
+    },
+    "cleanup": {
+      "attempted": true,
+      "socketDisconnected": true,
+      "socketObservation": {
+        "observedCount": 2,
+        "disconnectedCount": 2,
+        "disconnectErrorCount": 0,
+        "timedOut": false,
+        "waitTimeoutMs": 60000,
+        "outcomes": [
+          {
+            "index": 0,
+            "socketId": null,
+            "connectedBeforeDisconnect": false,
+            "disconnectAttempted": true,
+            "disconnectError": null,
+            "connectedAfterWait": false,
+            "disconnected": true
+          },
+          {
+            "index": 1,
+            "socketId": null,
+            "connectedBeforeDisconnect": false,
+            "disconnectAttempted": true,
+            "disconnectError": null,
+            "connectedAfterWait": false,
+            "disconnected": true
+          }
+        ]
+      },
+      "processAliveAfterCleanup": false,
+      "tmuxServerAliveAfterCleanup": false,
+      "storageCreated": true,
+      "storageExistsAfterCleanup": false,
+      "tempRootExistsAfterCleanup": false,
+      "alivePidsAfterCleanup": [],
+      "residuePaths": [],
+      "removalError": null,
+      "processesGone": true,
+      "mobileIngressStopped": true
+    }
+  },
+  "backpressure": {
+    "stallActivation": {
+      "socketId": "eqsmoSOCQyFzgD9aAAAB",
+      "activatedAt": "2026-07-13T17:18:35.699Z"
+    },
+    "observations": [
+      {
+        "elapsedMs": 53,
+        "stalled": {
+          "socketId": "eqsmoSOCQyFzgD9aAAAB",
+          "connected": true,
+          "registered": true,
+          "queuedBytes": 634078,
+          "inFlightBytes": 0,
+          "engineBufferedPackets": 0,
+          "desynchronized": false,
+          "droppedFrames": 0,
+          "droppedBytes": 0
+        },
+        "current": {
+          "socketId": "e2uEMJxbAsBjmf3DAAAD",
+          "connected": true,
+          "registered": true,
+          "queuedBytes": 0,
+          "inFlightBytes": 0,
+          "engineBufferedPackets": 0,
+          "desynchronized": false,
+          "droppedFrames": 0,
+          "droppedBytes": 0
+        },
+        "currentFramesReceived": 101
+      },
+      {
+        "elapsedMs": 306,
+        "stalled": {
+          "socketId": "eqsmoSOCQyFzgD9aAAAB",
+          "connected": true,
+          "registered": true,
+          "queuedBytes": 634078,
+          "inFlightBytes": 0,
+          "engineBufferedPackets": 0,
+          "desynchronized": false,
+          "droppedFrames": 0,
+          "droppedBytes": 0
+        },
+        "current": {
+          "socketId": "e2uEMJxbAsBjmf3DAAAD",
+          "connected": true,
+          "registered": true,
+          "queuedBytes": 0,
+          "inFlightBytes": 0,
+          "engineBufferedPackets": 0,
+          "desynchronized": false,
+          "droppedFrames": 0,
+          "droppedBytes": 0
+        },
+        "currentFramesReceived": 101
+      },
+      {
+        "elapsedMs": 559,
+        "stalled": {
+          "socketId": "eqsmoSOCQyFzgD9aAAAB",
+          "connected": true,
+          "registered": true,
+          "queuedBytes": 1561896,
+          "inFlightBytes": 0,
+          "engineBufferedPackets": 0,
+          "desynchronized": false,
+          "droppedFrames": 0,
+          "droppedBytes": 0
+        },
+        "current": {
+          "socketId": "e2uEMJxbAsBjmf3DAAAD",
+          "connected": true,
+          "registered": true,
+          "queuedBytes": 0,
+          "inFlightBytes": 0,
+          "engineBufferedPackets": 0,
+          "desynchronized": false,
+          "droppedFrames": 0,
+          "droppedBytes": 0
+        },
+        "currentFramesReceived": 330
+      },
+      {
+        "elapsedMs": 810,
+        "stalled": {
+          "socketId": "eqsmoSOCQyFzgD9aAAAB",
+          "connected": true,
+          "registered": true,
+          "queuedBytes": 0,
+          "inFlightBytes": 0,
+          "engineBufferedPackets": 1,
+          "desynchronized": true,
+          "droppedFrames": 1267,
+          "droppedBytes": 5246448
+        },
+        "current": {
+          "socketId": "e2uEMJxbAsBjmf3DAAAD",
+          "connected": true,
+          "registered": true,
+          "queuedBytes": 0,
+          "inFlightBytes": 0,
+          "engineBufferedPackets": 0,
+          "desynchronized": false,
+          "droppedFrames": 0,
+          "droppedBytes": 0
+        },
+        "currentFramesReceived": 1217
+      },
+      {
+        "elapsedMs": 1071,
+        "stalled": {
+          "socketId": "eqsmoSOCQyFzgD9aAAAB",
+          "connected": true,
+          "registered": true,
+          "queuedBytes": 1041769,
+          "inFlightBytes": 0,
+          "engineBufferedPackets": 1,
+          "desynchronized": true,
+          "droppedFrames": 1267,
+          "droppedBytes": 5246448
+        },
+        "current": {
+          "socketId": "e2uEMJxbAsBjmf3DAAAD",
+          "connected": true,
+          "registered": true,
+          "queuedBytes": 0,
+          "inFlightBytes": 0,
+          "engineBufferedPackets": 0,
+          "desynchronized": false,
+          "droppedFrames": 0,
+          "droppedBytes": 0
+        },
+        "currentFramesReceived": 1959
+      },
+      {
+        "elapsedMs": 1322,
+        "stalled": {
+          "socketId": "eqsmoSOCQyFzgD9aAAAB",
+          "connected": true,
+          "registered": true,
+          "queuedBytes": 1041769,
+          "inFlightBytes": 0,
+          "engineBufferedPackets": 1,
+          "desynchronized": true,
+          "droppedFrames": 1267,
+          "droppedBytes": 5246448
+        },
+        "current": {
+          "socketId": "e2uEMJxbAsBjmf3DAAAD",
+          "connected": true,
+          "registered": true,
+          "queuedBytes": 0,
+          "inFlightBytes": 0,
+          "engineBufferedPackets": 0,
+          "desynchronized": false,
+          "droppedFrames": 0,
+          "droppedBytes": 0
+        },
+        "currentFramesReceived": 2995
+      },
+      {
+        "elapsedMs": 1579,
+        "stalled": {
+          "socketId": "eqsmoSOCQyFzgD9aAAAB",
+          "connected": true,
+          "registered": true,
+          "queuedBytes": 1041769,
+          "inFlightBytes": 0,
+          "engineBufferedPackets": 1,
+          "desynchronized": true,
+          "droppedFrames": 1267,
+          "droppedBytes": 5246448
+        },
+        "current": {
+          "socketId": "e2uEMJxbAsBjmf3DAAAD",
+          "connected": true,
+          "registered": true,
+          "queuedBytes": 0,
+          "inFlightBytes": 0,
+          "engineBufferedPackets": 0,
+          "desynchronized": false,
+          "droppedFrames": 0,
+          "droppedBytes": 0
+        },
+        "currentFramesReceived": 4022
+      },
+      {
+        "elapsedMs": 1831,
+        "stalled": {
+          "socketId": "eqsmoSOCQyFzgD9aAAAB",
+          "connected": true,
+          "registered": true,
+          "queuedBytes": 1041769,
+          "inFlightBytes": 0,
+          "engineBufferedPackets": 1,
+          "desynchronized": true,
+          "droppedFrames": 1267,
+          "droppedBytes": 5246448
+        },
+        "current": {
+          "socketId": "e2uEMJxbAsBjmf3DAAAD",
+          "connected": true,
+          "registered": true,
+          "queuedBytes": 0,
+          "inFlightBytes": 0,
+          "engineBufferedPackets": 0,
+          "desynchronized": false,
+          "droppedFrames": 0,
+          "droppedBytes": 0
+        },
+        "currentFramesReceived": 5061
+      },
+      {
+        "elapsedMs": 2086,
+        "stalled": {
+          "socketId": "eqsmoSOCQyFzgD9aAAAB",
+          "connected": true,
+          "registered": true,
+          "queuedBytes": 1041769,
+          "inFlightBytes": 0,
+          "engineBufferedPackets": 1,
+          "desynchronized": true,
+          "droppedFrames": 1267,
+          "droppedBytes": 5246448
+        },
+        "current": {
+          "socketId": "e2uEMJxbAsBjmf3DAAAD",
+          "connected": true,
+          "registered": true,
+          "queuedBytes": 0,
+          "inFlightBytes": 0,
+          "engineBufferedPackets": 0,
+          "desynchronized": false,
+          "droppedFrames": 0,
+          "droppedBytes": 0
+        },
+        "currentFramesReceived": 6174
+      },
+      {
+        "elapsedMs": 2339,
+        "stalled": {
+          "socketId": "eqsmoSOCQyFzgD9aAAAB",
+          "connected": true,
+          "registered": true,
+          "queuedBytes": 1041769,
+          "inFlightBytes": 0,
+          "engineBufferedPackets": 1,
+          "desynchronized": true,
+          "droppedFrames": 1267,
+          "droppedBytes": 5246448
+        },
+        "current": {
+          "socketId": "e2uEMJxbAsBjmf3DAAAD",
+          "connected": true,
+          "registered": true,
+          "queuedBytes": 0,
+          "inFlightBytes": 0,
+          "engineBufferedPackets": 0,
+          "desynchronized": false,
+          "droppedFrames": 0,
+          "droppedBytes": 0
+        },
+        "currentFramesReceived": 7160
+      }
+    ],
+    "stalled": {
+      "socketId": "eqsmoSOCQyFzgD9aAAAB",
+      "maximumQueuedBytes": 1561896,
+      "maximumInFlightBytes": 0,
+      "maximumEngineBufferedPackets": 1,
+      "queueGrowthObserved": true,
+      "desynchronized": true,
+      "droppedFrames": 1267,
+      "disconnectedByPolicy": false
+    },
+    "current": {
+      "socketId": "e2uEMJxbAsBjmf3DAAAD",
+      "maximumQueuedBytes": 0,
+      "maximumInFlightBytes": 0,
+      "maximumEngineBufferedPackets": 0,
+      "deliveryLatencyMs": 13,
+      "framesReceived": 7353
+    }
+  },
+  "thresholds": {
+    "minimumSamples": 60,
+    "maximumPlateauGrowthBytes": 33554432,
+    "maximumPlateauGrowthRatio": 0.1,
+    "minimumBackpressureSamples": 10,
+    "maximumStalledSocketQueueBytes": 5242880,
+    "maximumStalledEngineBufferedPackets": 4,
+    "maximumCurrentSocketQueueBytes": 1048576,
+    "maximumCurrentEngineBufferedPackets": 4,
+    "maximumCurrentDeliveryLatencyMs": 2000
+  },
+  "evaluation": {
+    "pass": true,
+    "checks": [
+      {
+        "id": "fixture-target-provenance-bound",
+        "actual": "linux-procfs-sha256-v1",
+        "threshold": "linux-procfs-sha256-v1",
+        "comparator": "===",
+        "pass": true
+      },
+      {
+        "id": "fixture-app-runtime-ready",
+        "actual": {
+          "ready": true,
+          "pid": 1482281,
+          "port": 42309
+        },
+        "threshold": {
+          "ready": true,
+          "pidMatchesTarget": true
+        },
+        "comparator": "===",
+        "pass": true
+      },
+      {
+        "id": "fixture-socket-authenticated",
+        "actual": {
+          "connected": true,
+          "runtimeTokenVerified": true,
+          "handshakeTokenPresented": true,
+          "subscribed": true,
+          "seedObserved": true,
+          "receivedTypes": [
+            "ping",
+            "subscribed",
+            "focus_changed",
+            "data",
+            "seed_ansi",
+            "activity"
+          ],
+          "clientCount": 2
+        },
+        "threshold": {
+          "connected": true,
+          "runtimeTokenVerified": true,
+          "handshakeTokenPresented": true
+        },
+        "comparator": "===",
+        "pass": true
+      },
+      {
+        "id": "fixture-scratch-session-observed",
+        "actual": {
+          "outputBytes": 157843479,
+          "subscribed": true,
+          "seedObserved": true
+        },
+        "threshold": {
+          "outputBytes": "> 0",
+          "subscribed": true,
+          "seedObserved": true
+        },
+        "comparator": "===",
+        "pass": true
+      },
+      {
+        "id": "fixture-memory-sampled",
+        "actual": {
+          "sampleCount": 60,
+          "targetPeakRssBytes": 367079424,
+          "workloadPeakRssBytes": 637046784
+        },
+        "threshold": {
+          "minimumSamples": 60,
+          "positiveTrees": true
+        },
+        "comparator": ">=",
+        "pass": true
+      },
+      {
+        "id": "fixture-process-tree-isolation",
+        "actual": {
+          "pass": true,
+          "samplerPidFailures": [],
+          "overlapFailures": [],
+          "missingDataFailures": []
+        },
+        "threshold": {
+          "samplerAbsentFromTarget": true,
+          "treesDisjoint": true
+        },
+        "comparator": "===",
+        "pass": true
+      },
+      {
+        "id": "fixture-two-cycle-rss-plateau",
+        "actual": {
+          "growthBytes": 634880,
+          "growthRatio": 0.0006326711375427053
+        },
+        "threshold": {
+          "maximumGrowthBytes": 33554432,
+          "maximumGrowthRatio": 0.1,
+          "rule": "either bound may establish a plateau"
+        },
+        "comparator": "<=",
+        "pass": true
+      },
+      {
+        "id": "fixture-backpressure-observation-count",
+        "actual": 10,
+        "threshold": 10,
+        "comparator": ">=",
+        "pass": true
+      },
+      {
+        "id": "fixture-stalled-application-queue-bounded",
+        "actual": {
+          "socketId": "eqsmoSOCQyFzgD9aAAAB",
+          "maximumQueuedBytes": 1561896,
+          "maximumInFlightBytes": 0,
+          "maximumEngineBufferedPackets": 1,
+          "queueGrowthObserved": true,
+          "desynchronized": true,
+          "droppedFrames": 1267,
+          "disconnectedByPolicy": false
+        },
+        "threshold": {
+          "maximumQueuedBytes": 5242880,
+          "policyOutcome": "desynchronized or disconnected",
+          "queueGrowthObserved": true
+        },
+        "comparator": "<=",
+        "pass": true
+      },
+      {
+        "id": "fixture-engine-write-buffers-bounded",
+        "actual": {
+          "stalled": 1,
+          "current": 0
+        },
+        "threshold": {
+          "stalled": 4,
+          "current": 4
+        },
+        "comparator": "<=",
+        "pass": true
+      },
+      {
+        "id": "fixture-current-socket-isolated-from-stalled-peer",
+        "actual": {
+          "socketId": "e2uEMJxbAsBjmf3DAAAD",
+          "maximumQueuedBytes": 0,
+          "maximumInFlightBytes": 0,
+          "maximumEngineBufferedPackets": 0,
+          "deliveryLatencyMs": 13,
+          "framesReceived": 7353
+        },
+        "threshold": {
+          "maximumQueuedBytes": 1048576,
+          "maximumDeliveryLatencyMs": 2000,
+          "framesReceived": "> 0"
+        },
+        "comparator": "<=",
+        "pass": true
+      },
+      {
+        "id": "fixture-cleanup",
+        "actual": {
+          "attempted": true,
+          "socketDisconnected": true,
+          "socketObservation": {
+            "observedCount": 2,
+            "disconnectedCount": 2,
+            "disconnectErrorCount": 0,
+            "timedOut": false,
+            "waitTimeoutMs": 60000,
+            "outcomes": [
+              {
+                "index": 0,
+                "socketId": null,
+                "connectedBeforeDisconnect": false,
+                "disconnectAttempted": true,
+                "disconnectError": null,
+                "connectedAfterWait": false,
+                "disconnected": true
+              },
+              {
+                "index": 1,
+                "socketId": null,
+                "connectedBeforeDisconnect": false,
+                "disconnectAttempted": true,
+                "disconnectError": null,
+                "connectedAfterWait": false,
+                "disconnected": true
+              }
+            ]
+          },
+          "processAliveAfterCleanup": false,
+          "tmuxServerAliveAfterCleanup": false,
+          "storageCreated": true,
+          "storageExistsAfterCleanup": false,
+          "tempRootExistsAfterCleanup": false,
+          "alivePidsAfterCleanup": [],
+          "residuePaths": [],
+          "removalError": null,
+          "processesGone": true,
+          "mobileIngressStopped": true
+        },
+        "threshold": {
+          "noSocketProcessTmuxStorageOrPathResidue": true
+        },
+        "comparator": "===",
+        "pass": true
+      }
+    ],
+    "summary": {
+      "targetPeakRssBytes": 367079424,
+      "workloadPeakRssBytes": 637046784,
+      "isolation": {
+        "pass": true,
+        "samplerPidFailures": [],
+        "overlapFailures": [],
+        "missingDataFailures": []
+      },
+      "cleanupPassed": true,
+      "plateau": {
+        "firstCycleTailMedianBytes": 1003491328,
+        "secondCycleTailMedianBytes": 1004126208,
+        "growthBytes": 634880,
+        "growthRatio": 0.0006326711375427053,
+        "pass": true
+      },
+      "correctnessPassed": true,
+      "terminalEquivalencePassed": true,
+      "backpressurePassed": true
+    }
+  },
+  "samples": [
+    {
+      "index": 0,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:18:38.310Z",
+        "monotonicMs": 574717137,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12348932096,
+          "usedBytes": 20351459328,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13288714240,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 353792000,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 342364160,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 290340864,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 187953152,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 102387712,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1362808832,
+          "swapBytes": 153055232,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 1,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:18:39.332Z",
+        "monotonicMs": 574718159,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12329783296,
+          "usedBytes": 20370608128,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13288701952,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 358264832,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 346836992,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 310947840,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 208556032,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 102391808,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1393790976,
+          "swapBytes": 153055232,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 2,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:18:40.353Z",
+        "monotonicMs": 574719180,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12246835200,
+          "usedBytes": 20453556224,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13288697856,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366260224,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 354832384,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 406134784,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 303689728,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 102445056,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1495990272,
+          "swapBytes": 153055232,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 3,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:18:41.373Z",
+        "monotonicMs": 574720200,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12166963200,
+          "usedBytes": 20533428224,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13288697856,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366444544,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355016704,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 503234560,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 400773120,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 102461440,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1580044288,
+          "swapBytes": 153055232,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 4,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:18:42.394Z",
+        "monotonicMs": 574721221,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12101083136,
+          "usedBytes": 20599308288,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13288697856,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366444544,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355016704,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 598224896,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 495763456,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 102461440,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1674964992,
+          "swapBytes": 153055232,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 5,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:18:43.414Z",
+        "monotonicMs": 574722241,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12021686272,
+          "usedBytes": 20678705152,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13288587264,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366444544,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355016704,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 633880576,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 102514688,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1707950080,
+          "swapBytes": 152948736,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 6,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:18:44.434Z",
+        "monotonicMs": 574723261,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12033028096,
+          "usedBytes": 20667363328,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13288525824,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366444544,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355016704,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 634028032,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 102662144,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1708904448,
+          "swapBytes": 152932352,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 7,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:18:45.456Z",
+        "monotonicMs": 574724283,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12041519104,
+          "usedBytes": 20658872320,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13288521728,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366649344,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355221504,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 634028032,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 102662144,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1708912640,
+          "swapBytes": 152932352,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 8,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:18:46.480Z",
+        "monotonicMs": 574725307,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12122345472,
+          "usedBytes": 20578045952,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13288513536,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366649344,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355221504,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 634036224,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 102670336,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1677668352,
+          "swapBytes": 152932352,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 9,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:18:47.500Z",
+        "monotonicMs": 574726327,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12184895488,
+          "usedBytes": 20515495936,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13288513536,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366657536,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355229696,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 634036224,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 102670336,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1677082624,
+          "swapBytes": 152932352,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 10,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:18:48.520Z",
+        "monotonicMs": 574727347,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12235444224,
+          "usedBytes": 20464947200,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13288513536,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366661632,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355233792,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 634036224,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 102670336,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1677189120,
+          "swapBytes": 152932352,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 11,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:18:49.541Z",
+        "monotonicMs": 574728368,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12276015104,
+          "usedBytes": 20424376320,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13288509440,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366661632,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355233792,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 634040320,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 102674432,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1677824000,
+          "swapBytes": 152932352,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 12,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:18:50.562Z",
+        "monotonicMs": 574729389,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12271337472,
+          "usedBytes": 20429053952,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13288509440,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366661632,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355233792,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 634040320,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 102674432,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1677422592,
+          "swapBytes": 152932352,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 13,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:18:51.583Z",
+        "monotonicMs": 574730410,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12300750848,
+          "usedBytes": 20399640576,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13288505344,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366661632,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355233792,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 634048512,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 102682624,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1677778944,
+          "swapBytes": 152932352,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 14,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:18:52.604Z",
+        "monotonicMs": 574731431,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12310962176,
+          "usedBytes": 20389429248,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13288505344,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366661632,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355233792,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 634048512,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 102682624,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1677385728,
+          "swapBytes": 152932352,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 15,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:18:53.642Z",
+        "monotonicMs": 574732469,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12392787968,
+          "usedBytes": 20307603456,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13288038400,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366661632,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355233792,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636366848,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105000960,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1682542592,
+          "swapBytes": 152932352,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 16,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:18:54.663Z",
+        "monotonicMs": 574733490,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12276830208,
+          "usedBytes": 20423561216,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294968832,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366661632,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355233792,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636366848,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105000960,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1683066880,
+          "swapBytes": 152932352,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 17,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:18:55.684Z",
+        "monotonicMs": 574734511,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12209119232,
+          "usedBytes": 20491272192,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294968832,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366661632,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355233792,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636366848,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105000960,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1682927616,
+          "swapBytes": 152932352,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 18,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:18:56.703Z",
+        "monotonicMs": 574735530,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12219965440,
+          "usedBytes": 20480425984,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294927872,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366661632,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355233792,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636370944,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105005056,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1682452480,
+          "swapBytes": 152891392,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 19,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:18:57.724Z",
+        "monotonicMs": 574736551,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12221030400,
+          "usedBytes": 20479361024,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294899200,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366661632,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355233792,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636387328,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105021440,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1682771968,
+          "swapBytes": 152891392,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 20,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:18:58.745Z",
+        "monotonicMs": 574737572,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12224532480,
+          "usedBytes": 20475858944,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294866432,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366661632,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355233792,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636387328,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105021440,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1682345984,
+          "swapBytes": 152891392,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 21,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:18:59.769Z",
+        "monotonicMs": 574738596,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12229505024,
+          "usedBytes": 20470886400,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294866432,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366661632,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355233792,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636387328,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105021440,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1682702336,
+          "swapBytes": 152891392,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 22,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:00.790Z",
+        "monotonicMs": 574739617,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12282843136,
+          "usedBytes": 20417548288,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294866432,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366661632,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355233792,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636387328,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105021440,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1683599360,
+          "swapBytes": 152891392,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 23,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:01.811Z",
+        "monotonicMs": 574740638,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12276772864,
+          "usedBytes": 20423618560,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294862336,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366661632,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355233792,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636387328,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105021440,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1682976768,
+          "swapBytes": 152891392,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 24,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:02.834Z",
+        "monotonicMs": 574741661,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12238729216,
+          "usedBytes": 20461662208,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294862336,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366661632,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355233792,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636387328,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105021440,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1681760256,
+          "swapBytes": 152891392,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 25,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:03.855Z",
+        "monotonicMs": 574742682,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12248670208,
+          "usedBytes": 20451721216,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294821376,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366661632,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355233792,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636387328,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105021440,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1681391616,
+          "swapBytes": 152891392,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 26,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:04.878Z",
+        "monotonicMs": 574743705,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12240490496,
+          "usedBytes": 20459900928,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294817280,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366661632,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355233792,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636387328,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105021440,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1681879040,
+          "swapBytes": 152891392,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 27,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:05.902Z",
+        "monotonicMs": 574744729,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12220870656,
+          "usedBytes": 20479520768,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294817280,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366788608,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355360768,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636387328,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105021440,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1684144128,
+          "swapBytes": 152891392,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 28,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:06.923Z",
+        "monotonicMs": 574745750,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12181434368,
+          "usedBytes": 20518957056,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294813184,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366792704,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355364864,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636698624,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105332736,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1684090880,
+          "swapBytes": 152891392,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 29,
+      "phase": "cache-churn-1",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:07.944Z",
+        "monotonicMs": 574746771,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12211671040,
+          "usedBytes": 20488720384,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294800896,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366792704,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355364864,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636698624,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105332736,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1684508672,
+          "swapBytes": 152891392,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 30,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:09.017Z",
+        "monotonicMs": 574747844,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12242845696,
+          "usedBytes": 20457545728,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294800896,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366792704,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355364864,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636248064,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 104882176,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1684029440,
+          "swapBytes": 152891392,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 31,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:10.037Z",
+        "monotonicMs": 574748864,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12224983040,
+          "usedBytes": 20475408384,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294800896,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366792704,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355364864,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636248064,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 104882176,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1685381120,
+          "swapBytes": 152891392,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 32,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:11.060Z",
+        "monotonicMs": 574749887,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12239667200,
+          "usedBytes": 20460724224,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294780416,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366792704,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355364864,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636248064,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 104882176,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1687134208,
+          "swapBytes": 152891392,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 33,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:12.083Z",
+        "monotonicMs": 574750910,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12225228800,
+          "usedBytes": 20475162624,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294772224,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366862336,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355434496,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636284928,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 104919040,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1692848128,
+          "swapBytes": 152891392,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 34,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:13.105Z",
+        "monotonicMs": 574751932,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12242911232,
+          "usedBytes": 20457480192,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294772224,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366862336,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355434496,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636284928,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 104919040,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1693163520,
+          "swapBytes": 152891392,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 35,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:14.126Z",
+        "monotonicMs": 574752953,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12252180480,
+          "usedBytes": 20448210944,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294772224,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366862336,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355434496,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636293120,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 104927232,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1692905472,
+          "swapBytes": 152891392,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 36,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:15.147Z",
+        "monotonicMs": 574753974,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12274376704,
+          "usedBytes": 20426014720,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294723072,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 366862336,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355434496,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636985344,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105619456,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1692782592,
+          "swapBytes": 152891392,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 37,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:16.169Z",
+        "monotonicMs": 574754996,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12318781440,
+          "usedBytes": 20381609984,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294665728,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 367058944,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355631104,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636985344,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105619456,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1693913088,
+          "swapBytes": 152834048,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 38,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:17.190Z",
+        "monotonicMs": 574756017,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12315086848,
+          "usedBytes": 20385304576,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294665728,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 367058944,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355631104,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636985344,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105619456,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1693777920,
+          "swapBytes": 152834048,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 39,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:18.211Z",
+        "monotonicMs": 574757038,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12271124480,
+          "usedBytes": 20429266944,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294665728,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 367058944,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355631104,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636985344,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105619456,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1694035968,
+          "swapBytes": 152834048,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 40,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:19.233Z",
+        "monotonicMs": 574758060,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12321525760,
+          "usedBytes": 20378865664,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294665728,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 367058944,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355631104,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636985344,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105619456,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1693773824,
+          "swapBytes": 152834048,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 41,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:20.254Z",
+        "monotonicMs": 574759081,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12309684224,
+          "usedBytes": 20390707200,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294645248,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 367058944,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355631104,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636985344,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105619456,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1693761536,
+          "swapBytes": 152834048,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 42,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:21.273Z",
+        "monotonicMs": 574760100,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12316839936,
+          "usedBytes": 20383551488,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294645248,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 367063040,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355635200,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636985344,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105619456,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1693233152,
+          "swapBytes": 152834048,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 43,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:22.294Z",
+        "monotonicMs": 574761121,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12334157824,
+          "usedBytes": 20366233600,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294645248,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 367063040,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355635200,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636985344,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105619456,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1693220864,
+          "swapBytes": 152834048,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 44,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:23.315Z",
+        "monotonicMs": 574762142,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12350443520,
+          "usedBytes": 20349947904,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294645248,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 367063040,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355635200,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636985344,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105619456,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1693757440,
+          "swapBytes": 152834048,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 45,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:24.337Z",
+        "monotonicMs": 574763164,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12289298432,
+          "usedBytes": 20411092992,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294637056,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 367063040,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355635200,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636985344,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105619456,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1693519872,
+          "swapBytes": 152834048,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 46,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:25.359Z",
+        "monotonicMs": 574764186,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12235898880,
+          "usedBytes": 20464492544,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294632960,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 367063040,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355635200,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636997632,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105631744,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1693085696,
+          "swapBytes": 152834048,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 47,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:26.380Z",
+        "monotonicMs": 574765207,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12252729344,
+          "usedBytes": 20447662080,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294624768,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 367067136,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355639296,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636997632,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105631744,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1693155328,
+          "swapBytes": 152834048,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 48,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:27.401Z",
+        "monotonicMs": 574766228,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12289462272,
+          "usedBytes": 20410929152,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294616576,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 367067136,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355639296,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 636997632,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105631744,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1693143040,
+          "swapBytes": 152834048,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 49,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:28.421Z",
+        "monotonicMs": 574767248,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12310351872,
+          "usedBytes": 20390039552,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294612480,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 367067136,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355639296,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 637046784,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105680896,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1693401088,
+          "swapBytes": 152834048,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 50,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:29.442Z",
+        "monotonicMs": 574768269,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12283158528,
+          "usedBytes": 20417232896,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294612480,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 367067136,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355639296,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 637046784,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105680896,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1693605888,
+          "swapBytes": 152834048,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 51,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:30.464Z",
+        "monotonicMs": 574769291,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12324560896,
+          "usedBytes": 20375830528,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294604288,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 367067136,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355639296,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 637046784,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105680896,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1693618176,
+          "swapBytes": 152834048,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 52,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:31.484Z",
+        "monotonicMs": 574770311,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12345749504,
+          "usedBytes": 20354641920,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294604288,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 367071232,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355643392,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 637046784,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105680896,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1692827648,
+          "swapBytes": 152834048,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 53,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:32.504Z",
+        "monotonicMs": 574771331,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12382240768,
+          "usedBytes": 20318150656,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294604288,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 367071232,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355643392,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 637046784,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105680896,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1693093888,
+          "swapBytes": 152834048,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 54,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:33.525Z",
+        "monotonicMs": 574772352,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12364230656,
+          "usedBytes": 20336160768,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294604288,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 367071232,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355643392,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 637046784,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105680896,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1692839936,
+          "swapBytes": 152834048,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 55,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:34.546Z",
+        "monotonicMs": 574773373,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12388106240,
+          "usedBytes": 20312285184,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294596096,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 367071232,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355643392,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 637046784,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105680896,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1693614080,
+          "swapBytes": 152834048,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 56,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:35.567Z",
+        "monotonicMs": 574774394,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12356378624,
+          "usedBytes": 20344012800,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294305280,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 367071232,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355643392,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 637046784,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105680896,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1692209152,
+          "swapBytes": 152543232,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 57,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:36.588Z",
+        "monotonicMs": 574775415,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12350271488,
+          "usedBytes": 20350119936,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294305280,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 367079424,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355651584,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 637046784,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105680896,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1691828224,
+          "swapBytes": 152543232,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 58,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:37.610Z",
+        "monotonicMs": 574776437,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12345028608,
+          "usedBytes": 20355362816,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294301184,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 367079424,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355651584,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 637046784,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105680896,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1692913664,
+          "swapBytes": 152543232,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    },
+    {
+      "index": 59,
+      "phase": "cache-churn-2",
+      "elapsedMs": 0,
+      "system": {
+        "capturedAt": "2026-07-13T17:19:38.631Z",
+        "monotonicMs": 574777458,
+        "host": {
+          "totalBytes": 32700391424,
+          "availableBytes": 12338487296,
+          "usedBytes": 20361904128,
+          "swapTotalBytes": 34359734272,
+          "swapUsedBytes": 13294215168,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "target": {
+          "rootPid": 1482281,
+          "processCount": 2,
+          "rssBytes": 367079424,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482281,
+              "ppid": 1481792,
+              "rssBytes": 355651584,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482795,
+              "ppid": 1482281,
+              "rssBytes": 11427840,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "workload": {
+          "rootPid": 1482250,
+          "processCount": 2,
+          "rssBytes": 637046784,
+          "swapBytes": 0,
+          "processes": [
+            {
+              "pid": 1482250,
+              "ppid": 3723,
+              "rssBytes": 531365888,
+              "swapBytes": 0
+            },
+            {
+              "pid": 1482252,
+              "ppid": 1482250,
+              "rssBytes": 105680896,
+              "swapBytes": 0
+            }
+          ]
+        },
+        "cgroup": {
+          "rootPid": 1482281,
+          "available": true,
+          "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-ee5f0dbd-cf42-4d43-9d6f-1faa25691b21.scope",
+          "currentBytes": 1693540352,
+          "swapBytes": 152457216,
+          "pressureAvailable": false,
+          "pressure": null
+        },
+        "sampler": {
+          "pid": 1481792,
+          "platform": "linux"
+        }
+      },
+      "generators": {
+        "expectedPids": [
+          1482252
+        ],
+        "alivePids": [
+          1482252
+        ]
+      }
+    }
+  ]
+}

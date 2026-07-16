@@ -1,9 +1,17 @@
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { parseCodexJsonl } from '../parsers/codex-jsonl.parser';
 import { parseCopilotJsonl } from '../parsers/copilot-jsonl.parser';
+import { parseClaudeJsonl } from '../parsers/claude-jsonl.parser';
 import { SessionReaderAdapterFactory } from '../adapters/session-reader-adapter.factory';
 import type { SessionReaderAdapter } from '../adapters/session-reader-adapter.interface';
 import type { PricingServiceInterface } from '../services/pricing.interface';
+import { ClaudeSessionReaderAdapter } from '../adapters/claude-session-reader.adapter';
+import { CodexSessionReaderAdapter } from '../adapters/codex-session-reader.adapter';
+import { CopilotSessionReaderAdapter } from '../adapters/copilot-session-reader.adapter';
+import { AntigravitySessionReaderAdapter } from '../adapters/antigravity-session-reader.adapter';
+import { createAntigravityFixtureDb } from '../__fixtures__/antigravity-fixture-db';
 
 /**
  * End-to-end integration tests for the multi-provider session reader pipeline.
@@ -17,6 +25,122 @@ const mockPricing: PricingServiceInterface = {
   calculateMessageCost: jest.fn().mockReturnValue(0.005),
   getContextWindowSize: jest.fn().mockReturnValue(200_000),
 };
+
+describe('Adapter getSummary parity: file providers', () => {
+  it.each([
+    ['claude', ClaudeSessionReaderAdapter, 'simple-session.jsonl'],
+    ['codex', CodexSessionReaderAdapter, 'codex-rollout.jsonl'],
+    ['copilot', CopilotSessionReaderAdapter, 'copilot-events-multiturn.jsonl'],
+  ] as const)(
+    '%s summary metrics match a full fixture parse',
+    async (providerName, Adapter, file) => {
+      const adapter = new Adapter(mockPricing);
+      const filePath = path.join(FIXTURES_DIR, file);
+      const full = await adapter.parseFullSession(filePath);
+      const summary = await adapter.getSummary({
+        filePath,
+        providerName,
+        kind: 'file',
+      });
+
+      expect(summary?.metrics).toEqual(full.metrics);
+      expect(summary?.approximateFields).toBeUndefined();
+    },
+  );
+
+  it('streams a large real input without retaining its message graph', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-summary-large-'));
+    const filePath = path.join(tmpDir, 'large-session.jsonl');
+    const messageCount = 1_200;
+
+    try {
+      const entries = Array.from({ length: messageCount }, (_, index) => {
+        const isUser = index % 2 === 0;
+        const id = `${isUser ? 'user' : 'assistant'}-${index}`;
+        const parentId =
+          index === 0 ? null : `${index % 2 === 0 ? 'assistant' : 'user'}-${index - 1}`;
+        return JSON.stringify({
+          type: isUser ? 'user' : 'assistant',
+          uuid: id,
+          parentUuid: parentId,
+          isSidechain: false,
+          timestamp: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+          message: isUser
+            ? { role: 'user', content: `Synthetic prompt ${index}` }
+            : {
+                role: 'assistant',
+                model: 'claude-sonnet-4-6',
+                content: [{ type: 'text', text: `Synthetic response ${index}` }],
+                stop_reason: 'end_turn',
+                usage: {
+                  input_tokens: 10,
+                  output_tokens: 5,
+                  cache_read_input_tokens: 0,
+                  cache_creation_input_tokens: 0,
+                },
+              },
+        });
+      });
+      await fs.writeFile(filePath, `${entries.join('\n')}\n`);
+
+      const result = await parseClaudeJsonl(filePath, {
+        pricingService: mockPricing,
+        retainMessages: false,
+      });
+
+      expect(result.messages).toHaveLength(0);
+      expect(result.metrics.messageCount).toBe(messageCount);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Adapter getSummary parity: Antigravity DB fixture', () => {
+  it('matches every field declared exact without reading transcript messages for the summary', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-summary-parity-'));
+    const convId = 'conv_summary_fixture';
+    const dbPath = path.join(tmpDir, 'conversations', `${convId}.db`);
+    const transcriptPath = path.join(
+      tmpDir,
+      'brain',
+      convId,
+      '.system_generated',
+      'logs',
+      'transcript_full.jsonl',
+    );
+
+    try {
+      await fs.mkdir(path.dirname(dbPath), { recursive: true });
+      await fs.mkdir(path.dirname(transcriptPath), { recursive: true });
+      createAntigravityFixtureDb(dbPath, convId, [
+        { input: 120, output: 30 },
+        { input: 80, output: 20 },
+      ]);
+      await fs.copyFile(
+        path.join(FIXTURES_DIR, 'antigravity-transcript_full.jsonl'),
+        transcriptPath,
+      );
+
+      const adapter = new AntigravitySessionReaderAdapter(mockPricing);
+      const sourceRef = {
+        filePath: dbPath,
+        providerName: 'agy',
+        providerSessionId: convId,
+        kind: 'db' as const,
+      };
+      const full = await adapter.parseFullSession(dbPath, sourceRef);
+      const summary = await adapter.getSummary(sourceRef);
+
+      for (const field of summary.exactFields) {
+        expect(summary.metrics[field]).toEqual(full.metrics[field]);
+      }
+      expect(summary.approximateFields).toContain('messageCount');
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Codex pipeline integration
@@ -115,6 +239,22 @@ describe('Codex pipeline: fixture → parser → unified model', () => {
   it('should invoke pricing service for cost calculation', async () => {
     await parseCodexJsonl(filePath, { pricingService: mockPricing });
     expect(mockPricing.calculateMessageCost).toHaveBeenCalledWith('o3', 650, 165, 200, 0);
+  });
+
+  it.each([
+    ['claude', parseClaudeJsonl, 'simple-session.jsonl'],
+    ['codex', parseCodexJsonl, 'codex-rollout.jsonl'],
+    ['copilot', parseCopilotJsonl, 'copilot-events-multiturn.jsonl'],
+  ] as const)('%s metrics-only scan retains no messages', async (_provider, parse, file) => {
+    const filePath = path.join(FIXTURES_DIR, file);
+    const full = await parse(filePath, { pricingService: mockPricing });
+    const summaryOnly = await parse(filePath, {
+      pricingService: mockPricing,
+      retainMessages: false,
+    });
+
+    expect(summaryOnly.messages).toEqual([]);
+    expect(summaryOnly.metrics).toEqual(full.metrics);
   });
 });
 

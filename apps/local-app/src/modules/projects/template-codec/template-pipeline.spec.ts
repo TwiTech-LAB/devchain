@@ -1,6 +1,8 @@
 import { ImportContext, ImportContextError } from './import-context';
 import type { ImportContextKey, StorageStateFlag } from './import-context';
 import { TemplatePipeline, TemplateTopologyError } from './template-pipeline';
+import { profilesCodec } from './codecs/profiles.codec';
+import { agentsCodec } from './codecs/agents.codec';
 import type {
   CodecApplyResult,
   CodecApplyRuntime,
@@ -44,6 +46,15 @@ const RT: CodecApplyRuntime = { projectId: 'p1', storage: {} as never };
 
 describe('TemplatePipeline topology validation', () => {
   it('accepts the real registered codec set (constructor validates at init)', () => {
+    expect(() => new TemplatePipeline()).not.toThrow();
+  });
+
+  it('profiles writes and agents reads selectionEligibleConfigLookupMap (read-before-write holds)', () => {
+    // The eligible config lookup is a declared data product: the profiles codec produces it and the
+    // agents codec consumes it. Because profiles runs before agents in the registry, constructing
+    // the real pipeline (which runs assertValidTopology) must not throw.
+    expect(profilesCodec.declaration.writes).toContain('selectionEligibleConfigLookupMap');
+    expect(agentsCodec.declaration.reads).toContain('selectionEligibleConfigLookupMap');
     expect(() => new TemplatePipeline()).not.toThrow();
   });
 

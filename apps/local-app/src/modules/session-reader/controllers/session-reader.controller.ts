@@ -6,6 +6,7 @@ import {
   BadRequestException,
   NotFoundException,
   UnprocessableEntityException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { z } from 'zod';
 import { SessionReaderService } from '../services/session-reader.service';
@@ -17,7 +18,9 @@ import {
 } from '../services/transcript-serialization';
 import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
+import { MetricsService } from '../../metrics/services/metrics.service';
 import type { UnifiedSession } from '../dtos/unified-session.types';
+import { SessionCacheService } from '../services/session-cache.service';
 
 const logger = createLogger('SessionReaderController');
 
@@ -69,26 +72,25 @@ const TranscriptQuerySchema = z.object({
 // Controller
 // ---------------------------------------------------------------------------
 
-const DTO_CACHE_MAX_ENTRIES = 20;
-
-interface DtoCacheEntry {
-  result: Record<string, unknown>;
-  responseBytes: number;
-  lastSize: number;
-  lastMtime: number;
-  maxToolResultLength: number;
-  enrichmentFingerprint: string;
-}
-
 function enrichmentFingerprint(session: UnifiedSession): string {
   return `${session.providerName}:${session.metrics.contextWindowTokens ?? 0}`;
 }
 
 @Controller('api/sessions')
-export class SessionReaderController {
-  private readonly dtoCache = new Map<string, DtoCacheEntry>();
+export class SessionReaderController implements OnModuleInit {
+  constructor(
+    private readonly sessionReaderService: SessionReaderService,
+    private readonly metricsService: MetricsService,
+    private readonly sessionCacheService: SessionCacheService,
+  ) {}
 
-  constructor(private readonly sessionReaderService: SessionReaderService) {}
+  onModuleInit(): void {
+    this.metricsService.registerCacheStatsProvider(
+      'dto',
+      () => this.sessionCacheService.getDtoCacheStats(),
+      () => this.sessionCacheService.getDtoRetainedRoots(),
+    );
+  }
 
   /**
    * GET /api/sessions/:id/transcript
@@ -111,14 +113,12 @@ export class SessionReaderController {
       );
 
       const fingerprint = enrichmentFingerprint(session);
-      const dtoCached = this.dtoCache.get(sessionId);
-      if (
-        dtoCached &&
-        dtoCached.lastSize === timing.fileSizeBytes &&
-        dtoCached.lastMtime === timing.fileMtimeMs &&
-        dtoCached.maxToolResultLength === maxToolResultLength &&
-        dtoCached.enrichmentFingerprint === fingerprint
-      ) {
+      const dtoCached = this.sessionCacheService.getDto(
+        sessionId,
+        maxToolResultLength,
+        fingerprint,
+      );
+      if (dtoCached) {
         const totalMs = performance.now() - tTotal;
         logger.info(
           {
@@ -148,7 +148,7 @@ export class SessionReaderController {
 
       const tSerialize = performance.now();
       const chunks = session.chunks ?? [];
-      const cursor = encodeCursor(timing.fileSizeBytes, session.messages.length, chunks.length);
+      const cursor = encodeCursor(timing.sourceVersion, session.messages.length, chunks.length);
       const result = { ...this.serializeTranscript(session), cursor };
       const serializeTranscriptMs = performance.now() - tSerialize;
 
@@ -156,18 +156,12 @@ export class SessionReaderController {
       const responseBytes = Buffer.byteLength(serializedJson, 'utf8');
       const totalMs = performance.now() - tTotal;
 
-      this.dtoCache.set(sessionId, {
+      this.sessionCacheService.setDto(sessionId, {
         result: result as Record<string, unknown>,
         responseBytes,
-        lastSize: timing.fileSizeBytes,
-        lastMtime: timing.fileMtimeMs,
         maxToolResultLength,
         enrichmentFingerprint: fingerprint,
       });
-      if (this.dtoCache.size > DTO_CACHE_MAX_ENTRIES) {
-        const oldest = this.dtoCache.keys().next().value;
-        if (oldest !== undefined) this.dtoCache.delete(oldest);
-      }
 
       const semanticStepCount = chunks.reduce((sum, chunk) => {
         if (chunk.type === 'ai' && 'semanticSteps' in chunk) {
@@ -328,6 +322,10 @@ export class SessionReaderController {
 
       if (result === null) {
         throw new NotFoundException('Cursor expired — full transcript fetch required');
+      }
+
+      if (result.kind === 'full-refetch-required') {
+        return result;
       }
 
       return {

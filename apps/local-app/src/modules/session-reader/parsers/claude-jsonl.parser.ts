@@ -102,6 +102,8 @@ export interface ClaudeParseOptions {
   byteOffset?: number;
   includeToolCalls?: boolean;
   pricingService?: PricingServiceInterface;
+  /** Metrics-only scan: preserve coalescing state without retaining the full message array. */
+  retainMessages?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -116,8 +118,10 @@ export async function parseClaudeJsonl(
   const maxMessages = options?.maxMessages;
   const includeToolCalls = options?.includeToolCalls ?? true;
   const pricing = options?.pricingService;
+  const retainMessages = options?.retainMessages ?? true;
 
   const messages: UnifiedMessage[] = [];
+  let messageCount = 0;
 
   // Token accumulators
   let totalInput = 0;
@@ -351,7 +355,8 @@ export async function parseClaudeJsonl(
         continue;
       }
 
-      messages.push(unified);
+      messageCount++;
+      if (retainMessages) messages.push(unified);
 
       // Track the fold target + its stop_reason. A real user / compact-summary message (or a
       // tool_result with no preceding assistant, pushed as a fallback above) ends the
@@ -370,7 +375,7 @@ export async function parseClaudeJsonl(
       }
 
       // Check max messages limit
-      if (maxMessages && messages.length >= maxMessages) break;
+      if (maxMessages && messageCount >= maxMessages) break;
     }
   } finally {
     rl.close();
@@ -438,7 +443,7 @@ export async function parseClaudeJsonl(
     primaryModel,
     modelsUsed,
     durationMs,
-    messageCount: messages.length,
+    messageCount,
     isOngoing,
   };
 

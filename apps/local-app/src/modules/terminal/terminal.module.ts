@@ -12,6 +12,9 @@ import { TerminalRegistryRehydrator } from './services/terminal-registry-rehydra
 import { TerminalActivityService } from './services/terminal-activity.service';
 import { RealtimeBroadcastModule } from '../realtime/realtime-broadcast.module';
 import { TerminalDeliveryModule } from './terminal-delivery.module';
+import { MetricsModule } from '../metrics/metrics.module';
+import { TerminalSocketDrainAdapter } from './services/terminal-socket-drain.adapter';
+import { TerminalSendSchedulerService } from './services/terminal-send-scheduler.service';
 
 @Module({
   imports: [
@@ -20,12 +23,15 @@ import { TerminalDeliveryModule } from './terminal-delivery.module';
     SettingsModule,
     forwardRef(() => SessionsModule),
     RealtimeBroadcastModule,
+    MetricsModule,
   ],
   providers: [
     TerminalStreamService,
     PtyService,
     TerminalGateway,
     TerminalSeedService,
+    TerminalSocketDrainAdapter,
+    TerminalSendSchedulerService,
     {
       provide: TerminalSessionRegistry,
       useFactory: (settingsService: SettingsService) =>
@@ -44,6 +50,7 @@ import { TerminalDeliveryModule } from './terminal-delivery.module';
     PtyService,
     TerminalGateway,
     TerminalSeedService,
+    TerminalSendSchedulerService,
     TerminalDeliveryModule,
     TerminalSessionRegistry,
     TerminalActivityService,

@@ -1,5 +1,5 @@
 /**
- * Template Round-Trip Contract Safety Net (Phase 1, Task 1 — `template-roundtrip`).
+ * Template Round-Trip Contract Safety Net (`template-roundtrip`).
  *
  * Layer: backend-integration (real `:memory:` SQLite, real LocalStorageService /
  * SettingsService / TeamsStore). This is the CHEAPEST layer that can prove the
@@ -133,6 +133,8 @@ function importDeps(h: Harness) {
     ) =>
       applyProjectSettingsWithHelper(projectId, projectSettings, maps, archiveStatusId, h.settings),
     getImportErrorMessage,
+    applyAgentConfigs: (projectId: string, agentConfigs: never, nameMaps?: never) =>
+      applyAgentConfigs(projectId, agentConfigs, { storage: h.storage }, nameMaps),
     teamsService: teamsAdapter(h.teamsStore) as never,
     scheduledEpicsRefresh: { refreshScheduleWindow: () => {} },
     computeNextRunAt: getNextRunAt,
@@ -908,9 +910,9 @@ describe('template round-trip contract safety net (real storage)', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Transient selectedProviderNames allowlist (Task 3) — import + dry-run.
+  // Transient Step-1 provider selection metadata — import + dry-run.
   // -------------------------------------------------------------------------
-  describe('selectedProviderNames (transient allowlist)', () => {
+  describe('selectedProviderNames (wizard selection metadata)', () => {
     const SP_PROFILE_ID = 'a3a3a3a3-1111-4111-8111-111111111111';
     const SP_CLAUDE_PROFILE_ID = 'a3a3a3a3-2222-4222-8222-222222222222';
     const SP_CODEX_PROFILE_ID = 'a3a3a3a3-3333-4333-8333-333333333333';
@@ -965,15 +967,15 @@ describe('template round-trip contract safety net (real storage)', () => {
       await harness.storage.createProvider({ name: 'codex', binPath: null });
     }
 
-    it('dry-run reflects the constraint: an excluded installed provider surfaces as missing', async () => {
+    it('dry-run: a deselected installed provider does NOT surface as missing (only genuinely uninstalled ones do)', async () => {
       await seedClaudeAndCodex(h);
-      const projectA = await freshProject(h, 'DryRun Allowlist');
+      const projectA = await freshProject(h, 'DryRun Provider Selection');
 
       const baseline = (await importProjectWithHelper(
         { projectId: projectA, payload: familyTemplate(), dryRun: true },
         importDeps(h) as never,
       )) as AnyRec;
-      // Both providers installed → nothing missing without the allowlist.
+      // Both providers installed → nothing missing without a selection filter.
       expect(baseline.missingProviders).toEqual([]);
 
       const constrained = (await importProjectWithHelper(
@@ -985,8 +987,9 @@ describe('template round-trip contract safety net (real storage)', () => {
         },
         importDeps(h) as never,
       )) as AnyRec;
-      // codex is installed but excluded → dry-run treats it as missing (as if uninstalled).
-      expect(constrained.missingProviders).toEqual(['codex']);
+      // codex is installed, just deselected → NOT missing (deselection is wizard-scope, not
+      // availability). Only genuinely uninstalled providers appear in true missing reporting.
+      expect(constrained.missingProviders).toEqual([]);
       // Family default (claude) is still available → import remains possible, no mapping wall.
       expect(constrained).not.toHaveProperty('providerMappingRequired');
       // A dry-run writes nothing.
@@ -994,15 +997,15 @@ describe('template round-trip contract safety net (real storage)', () => {
       expect(exportA.profiles).toEqual([]);
     });
 
-    it('replace-import does not create providerConfigs for an excluded provider', async () => {
+    it('replace-import DOES create providerConfigs for a deselected but installed provider', async () => {
       await seedClaudeAndCodex(h);
-      const projectA = await freshProject(h, 'Import Allowlist');
+      const projectA = await freshProject(h, 'Import Provider Selection');
 
       await importProjectWithHelper(
         {
           projectId: projectA,
           payload: twoConfigTemplate(),
-          selectedProviderNames: ['claude'], // codex excluded
+          selectedProviderNames: ['claude'], // codex deselected, but installed
         },
         importDeps(h) as never,
       );
@@ -1013,8 +1016,110 @@ describe('template round-trip contract safety net (real storage)', () => {
 
       const configs = await h.storage.listProfileProviderConfigsByProfile(coder!.id);
       const configNames = configs.map((c) => c.name).sort();
-      // Only the claude config was created; the codex config was excluded by the allowlist.
-      expect(configNames).toEqual(['claude-cfg']);
+      // Both configs are created: persistence uses the full installed map, so a deselected-but-
+      // installed provider's config is preserved (only genuinely uninstalled providers are skipped).
+      expect(configNames).toEqual(['claude-cfg', 'codex-cfg']);
+    });
+
+    it('dry-run: a config-only provider that is genuinely uninstalled surfaces in missingProviders', async () => {
+      // Only claude is installed. In twoConfigTemplate the profile default provider is claude;
+      // codex is reachable ONLY through the codex-cfg providerConfig (config-only reference,
+      // never a profile default). The precheck must still collect it and, because it is not
+      // installed, report it as genuinely missing.
+      await h.storage.createProvider({ name: 'claude', binPath: null });
+      const projectA = await freshProject(h, 'DryRun ConfigOnly Missing');
+
+      const result = (await importProjectWithHelper(
+        { projectId: projectA, payload: twoConfigTemplate(), dryRun: true },
+        importDeps(h) as never,
+      )) as AnyRec;
+
+      // codex is surfaced despite never appearing as a profile default — proving referenced-provider
+      // collection unions embedded providerConfigs[].providerName, not just defaults.
+      expect(result.missingProviders).toEqual(['codex']);
+      // A dry-run writes nothing.
+      const exportA = (await exportProjectWithHelper(projectA, undefined, exportDeps(h))) as AnyRec;
+      expect(exportA.profiles).toEqual([]);
+    });
+
+    /** One profile whose configs list the DESELECTED provider (codex) first, then claude. */
+    function deselectedFirstTemplate(
+      agentExtra: Record<string, unknown> = {},
+    ): Record<string, unknown> {
+      return {
+        version: 1,
+        prompts: [],
+        profiles: [
+          {
+            id: SP_PROFILE_ID,
+            name: 'Coder',
+            provider: { name: 'claude' },
+            providerConfigs: [
+              { name: 'codex-cfg', providerName: 'codex', options: null, env: null },
+              { name: 'claude-cfg', providerName: 'claude', options: null, env: null },
+            ],
+          },
+        ],
+        agents: [{ name: 'Coder', profileId: SP_PROFILE_ID, ...agentExtra }],
+        statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+      };
+    }
+
+    async function coderConfigs(projectId: string) {
+      const { items: profiles } = await h.storage.listAgentProfiles({ projectId });
+      const coderProfile = profiles.find((p) => p.name === 'Coder');
+      const configs = await h.storage.listProfileProviderConfigsByProfile(coderProfile!.id);
+      const { items: agents } = await h.storage.listAgents(projectId, { limit: 10000 });
+      return {
+        agent: agents.find((a) => a.name === 'Coder'),
+        claudeCfg: configs.find((c) => c.name === 'claude-cfg'),
+        codexCfg: configs.find((c) => c.name === 'codex-cfg'),
+      };
+    }
+
+    it('replace-import: an UNPINNED agent binds to the selection-eligible config, not the deselected first config', async () => {
+      await seedClaudeAndCodex(h);
+      const projectA = await freshProject(h, 'Replace Elig Unpinned');
+
+      await importProjectWithHelper(
+        {
+          projectId: projectA,
+          payload: deselectedFirstTemplate(),
+          selectedProviderNames: ['claude'], // codex deselected
+        },
+        importDeps(h) as never,
+      );
+
+      const { agent, claudeCfg, codexCfg } = await coderConfigs(projectA);
+      // Both configs persist (both installed); the unpinned agent binds to the eligible claude-cfg,
+      // never the deselected codex-cfg listed first.
+      expect(codexCfg).toBeDefined();
+      expect(agent!.providerConfigId).toBe(claudeCfg!.id);
+    });
+
+    it('replace-import: remaps a template-pinned deselected config through an eligible wizard override', async () => {
+      await seedClaudeAndCodex(h);
+      const projectA = await freshProject(h, 'Replace Elig Override');
+
+      await importProjectWithHelper(
+        {
+          projectId: projectA,
+          payload: deselectedFirstTemplate({ providerConfigName: 'codex-cfg' }),
+          selectedProviderNames: ['claude'],
+          agentOverrides: [
+            {
+              agentName: 'Coder',
+              providerConfigName: 'claude-cfg',
+              modelOverride: 'claude-selected-model',
+            },
+          ],
+        },
+        importDeps(h) as never,
+      );
+
+      const { agent, claudeCfg } = await coderConfigs(projectA);
+      expect(agent!.providerConfigId).toBe(claudeCfg!.id);
+      expect(agent!.modelOverride).toBe('claude-selected-model');
     });
   });
 });

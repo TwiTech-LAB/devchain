@@ -460,6 +460,8 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
       return new Set();
     }
   });
+  const sidebarRef = useRef<HTMLDivElement>(null);
+  const [visibleContextKeys, setVisibleContextKeys] = useState<Set<string>>(() => new Set());
   useEffect(() => {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(
@@ -554,30 +556,6 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     return renderActivityBadgeForPresence(agentPresence[agentId]);
   };
 
-  const agentSessionEntries = useMemo(() => {
-    const entries: AgentSessionEntry[] = [];
-    for (const agent of agents) {
-      const presence = agentPresence[agent.id];
-      if (presence?.online && presence.sessionId) {
-        entries.push({ agentId: agent.id, sessionId: presence.sessionId });
-      }
-    }
-    for (const group of worktreeAgentGroups) {
-      for (const agent of group.agents) {
-        const presence = group.agentPresence[agent.id];
-        if (presence?.online && presence.sessionId) {
-          entries.push({
-            agentId: agent.id,
-            sessionId: presence.sessionId,
-            apiBase: group.apiBase,
-          });
-        }
-      }
-    }
-    return entries;
-  }, [agents, agentPresence, worktreeAgentGroups]);
-
-  const contextMetrics = useAgentSessionMetrics(agentSessionEntries);
   const teamViewLoading =
     shouldFetchTeams && (teamsListLoading || teamDetailQueries.some((query) => query.isLoading));
   const teamDetailError = teamDetailQueries.find((query) => query.isError)?.error;
@@ -673,6 +651,139 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     };
   }, [agents, agentsById, teamDetailsById, teams]);
 
+  useEffect(() => {
+    const root = sidebarRef.current;
+    if (!root) return;
+    const elements = Array.from(root.querySelectorAll<HTMLElement>('[data-context-metrics-key]'));
+    const candidateKeys = new Set(
+      elements
+        .map((element) => element.dataset.contextMetricsKey)
+        .filter((key): key is string => Boolean(key)),
+    );
+
+    if (typeof IntersectionObserver === 'undefined') {
+      setVisibleContextKeys((previous) => {
+        if (
+          candidateKeys.size === previous.size &&
+          [...candidateKeys].every((key) => previous.has(key))
+        ) {
+          return previous;
+        }
+        return candidateKeys;
+      });
+      return;
+    }
+
+    setVisibleContextKeys((previous) => {
+      const next = new Set([...previous].filter((key) => candidateKeys.has(key)));
+      if (next.size === previous.size && [...next].every((key) => previous.has(key))) {
+        return previous;
+      }
+      return next;
+    });
+
+    const intersectingElements = new Set<Element>();
+    const observer = new IntersectionObserver((observations) => {
+      for (const observation of observations) {
+        if (observation.isIntersecting) intersectingElements.add(observation.target);
+        else intersectingElements.delete(observation.target);
+      }
+      setVisibleContextKeys((previous) => {
+        const next = new Set<string>();
+        for (const element of intersectingElements) {
+          const key = (element as HTMLElement).dataset.contextMetricsKey;
+          if (key) next.add(key);
+        }
+        if (next.size === previous.size && [...next].every((key) => previous.has(key))) {
+          return previous;
+        }
+        return next;
+      });
+    });
+    elements.forEach((element) => observer.observe(element));
+    return () => observer.disconnect();
+  }, [
+    agentGroupMode,
+    agents,
+    collapsedTeamGroups,
+    collapsedWorktreeGroups,
+    contextBarHidden,
+    mainExpanded,
+    teamSections,
+    teamViewLoading,
+    worktreeAgentGroups,
+  ]);
+
+  const agentSessionEntries = useMemo(() => {
+    const visibleMainAgentIds = new Set<string>();
+    if (mainExpanded) {
+      if (agentGroupMode === 'all') {
+        agents.forEach((agent) => visibleMainAgentIds.add(agent.id));
+      } else if (!teamViewLoading) {
+        for (const { team, detail, agents: teamAgents } of teamSections.items) {
+          const leadAgent = detail.teamLeadAgentId
+            ? teamAgents.find((agent) => agent.id === detail.teamLeadAgentId)
+            : null;
+          if (leadAgent) visibleMainAgentIds.add(leadAgent.id);
+          if (!collapsedTeamGroups[team.id]) {
+            teamAgents.forEach((agent) => visibleMainAgentIds.add(agent.id));
+          }
+        }
+        teamSections.noTeamAgents.forEach((agent) => visibleMainAgentIds.add(agent.id));
+      }
+    }
+
+    const entries: AgentSessionEntry[] = [];
+    for (const agent of agents) {
+      const metricsKey = getMetricsKey(agent.id);
+      const presence = agentPresence[agent.id];
+      if (
+        visibleMainAgentIds.has(agent.id) &&
+        visibleContextKeys.has(metricsKey) &&
+        !contextBarHidden.has(metricsKey) &&
+        presence?.online &&
+        presence.sessionId
+      ) {
+        entries.push({ agentId: agent.id, sessionId: presence.sessionId });
+      }
+    }
+    for (const group of worktreeAgentGroups) {
+      const groupKey = `worktree:${group.id}`;
+      if (collapsedWorktreeGroups[groupKey] || group.error) continue;
+      for (const agent of group.agents) {
+        const metricsKey = getMetricsKey(agent.id, group.apiBase);
+        const presence = group.agentPresence[agent.id];
+        if (
+          visibleContextKeys.has(metricsKey) &&
+          !contextBarHidden.has(metricsKey) &&
+          presence?.online &&
+          presence.sessionId
+        ) {
+          entries.push({
+            agentId: agent.id,
+            sessionId: presence.sessionId,
+            apiBase: group.apiBase,
+          });
+        }
+      }
+    }
+    return entries;
+  }, [
+    agentGroupMode,
+    agentPresence,
+    agents,
+    collapsedTeamGroups,
+    collapsedWorktreeGroups,
+    contextBarHidden,
+    mainExpanded,
+    teamSections,
+    teamViewLoading,
+    visibleContextKeys,
+    worktreeAgentGroups,
+  ]);
+
+  const contextMetrics = useAgentSessionMetrics(agentSessionEntries);
+
   const profilesById = useMemo(() => {
     const map = new Map<string, { id: string; name: string }>();
     for (const p of projectProfiles ?? []) {
@@ -717,6 +828,7 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
         activityState={activityState}
         currentActivityTitle={agentPresence[agent.id]?.currentActivityTitle ?? null}
         sessionMetrics={contextMetrics.get(metricsKey)}
+        contextMetricsKey={metricsKey}
         pendingRestart={pendingRestartAgentIds.has(restartKeyForMain(agent.id))}
         providerIconUri={agentProviderIcon}
         providerName={agentProviderName}
@@ -800,7 +912,10 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
   }
 
   return (
-    <div className="flex h-full min-h-0 w-80 flex-col border-r border-border bg-card text-foreground">
+    <div
+      ref={sidebarRef}
+      className="flex h-full min-h-0 w-80 flex-col border-r border-border bg-card text-foreground"
+    >
       <div className="border-b border-border/70 bg-muted/20 px-4 py-3">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-1">
@@ -1258,6 +1373,11 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
                                     role="listitem"
                                     aria-label={`Open terminal for ${agent.name} in ${group.name}${isOnline ? ' (online)' : ' (offline)'}`}
                                     aria-current={isSelected ? 'true' : undefined}
+                                    data-context-metrics-key={
+                                      !contextBarHidden.has(getMetricsKey(agent.id, group.apiBase))
+                                        ? getMetricsKey(agent.id, group.apiBase)
+                                        : undefined
+                                    }
                                   >
                                     <Circle
                                       className={cn(

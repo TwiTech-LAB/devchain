@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { OnEvent } from '@nestjs/event-emitter';
 import { AppError } from '../../../../common/errors/error-types';
 import { TerminalSessionRegistry } from '../terminal-session/terminal-session-registry';
 import { TerminalIOService } from '../terminal-io/terminal-io.service';
@@ -28,6 +29,7 @@ const DIGIT_PATTERN = /^[0-9]$/;
  * blocking normal use. Keyed by sessionId (never per-facade instance) below.
  */
 const MIN_KEY_GAP_MS = 150;
+const KEY_GAP_ENTRY_TTL_MS = 5 * 60 * 1000;
 
 /**
  * Per-session "last accepted key" timestamps. Module-level (not per-facade-instance) so
@@ -65,6 +67,16 @@ export class TerminalKeyInputFacade {
     private readonly registry: TerminalSessionRegistry,
     private readonly terminalIO: TerminalIOService,
   ) {}
+
+  @OnEvent('session.stopped')
+  handleSessionStopped(payload: { sessionId: string }): void {
+    lastAcceptedAtBySession.delete(payload.sessionId);
+  }
+
+  @OnEvent('session.crashed')
+  handleSessionCrashed(payload: { sessionId: string }): void {
+    lastAcceptedAtBySession.delete(payload.sessionId);
+  }
 
   /**
    * Send a single discrete key to the EXACT requested session.
@@ -125,5 +137,10 @@ export class TerminalKeyInputFacade {
 function isWithinGap(sessionId: string): boolean {
   const last = lastAcceptedAtBySession.get(sessionId);
   if (last === undefined) return false;
-  return Date.now() - last < MIN_KEY_GAP_MS;
+  const age = Date.now() - last;
+  if (age >= KEY_GAP_ENTRY_TTL_MS) {
+    lastAcceptedAtBySession.delete(sessionId);
+    return false;
+  }
+  return age < MIN_KEY_GAP_MS;
 }

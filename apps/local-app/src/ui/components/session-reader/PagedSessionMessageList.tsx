@@ -1,10 +1,14 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueries, useQueryClient } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { transcriptQueryKeys } from '@/ui/hooks/useSessionTranscript';
-import type { SerializedChunk, WsTranscriptDeltaPayload } from '@/ui/hooks/useSessionTranscript';
+import type {
+  SerializedChunk,
+  WsTranscriptDeltaPayload,
+  WsTranscriptUpdatedPayload,
+} from '@/ui/hooks/useSessionTranscript';
 import { fetchTranscriptIndex, fetchTranscriptChunks } from '@/ui/lib/sessions';
-import type { TranscriptIndex } from '@/ui/lib/sessions';
+import type { SerializedChunkedResponse, TranscriptIndex } from '@/ui/lib/sessions';
 import { useAppSocket } from '@/ui/hooks/useAppSocket';
 import type { WsEnvelope } from '@/ui/lib/socket';
 import { useAutoScrollBottom } from '@/ui/hooks/useAutoScrollBottom';
@@ -14,6 +18,54 @@ import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 const CHUNK_PAGE_SIZE = 10;
 const CHUNK_GC_TIME = 5 * 60 * 1000;
+const CHUNK_RETENTION_HYSTERESIS = CHUNK_PAGE_SIZE;
+const LIVE_TAIL_RETENTION = CHUNK_PAGE_SIZE;
+const ESTIMATED_CHUNK_HEIGHT = 120;
+const MAX_CANONICAL_RECOVERY_ATTEMPTS = 2;
+const INITIAL_CANONICAL_RETRY_MS = 1_000;
+const MAX_CANONICAL_RETRY_MS = 5_000;
+
+interface CanonicalRecoverySnapshot {
+  index: TranscriptIndex;
+  chunks: Map<string, SerializedChunk>;
+}
+
+export function buildRetainedChunkIds(
+  chunkIds: string[],
+  firstVirtualIndex: number | undefined,
+  lastVirtualIndex: number | undefined,
+  isLive: boolean,
+): Set<string> | null {
+  if (firstVirtualIndex === undefined || lastVirtualIndex === undefined) return null;
+
+  const retained = new Set<string>();
+  const windowStart = Math.max(0, firstVirtualIndex - CHUNK_RETENTION_HYSTERESIS);
+  const windowEnd = Math.min(chunkIds.length, lastVirtualIndex + CHUNK_RETENTION_HYSTERESIS + 1);
+  for (let index = windowStart; index < windowEnd; index += 1) {
+    retained.add(chunkIds[index]);
+  }
+
+  if (isLive) {
+    const tailStart = Math.max(0, chunkIds.length - LIVE_TAIL_RETENTION);
+    for (let index = tailStart; index < chunkIds.length; index += 1) {
+      retained.add(chunkIds[index]);
+    }
+  }
+  return retained;
+}
+
+export function pruneChunkMap(
+  chunks: Map<string, SerializedChunk>,
+  retainedChunkIds: ReadonlySet<string>,
+): boolean {
+  let changed = false;
+  for (const chunkId of chunks.keys()) {
+    if (retainedChunkIds.has(chunkId)) continue;
+    chunks.delete(chunkId);
+    changed = true;
+  }
+  return changed;
+}
 
 interface PagedSessionMessageListProps {
   sessionId: string;
@@ -38,8 +90,28 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
   const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
   const [expandedAiGroups, setExpandedAiGroups] = useState<Map<string, boolean>>(() => new Map());
   const invalidateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const canonicalRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retentionFrameRef = useRef<number | null>(null);
   const chunksMapRef = useRef<Map<string, SerializedChunk>>(new Map());
   const [deltaSeq, setDeltaSeq] = useState(0);
+  const canonicalRecoveryRef = useRef({
+    epoch: 0,
+    inFlight: false,
+    dirty: false,
+    retryDelayMs: INITIAL_CANONICAL_RETRY_MS,
+  });
+  const canonicalRecoveryRequestRef = useRef<() => void>(() => undefined);
+  const recoverySnapshotRef = useRef<CanonicalRecoverySnapshot | null>(null);
+  const [recoverySnapshot, setRecoverySnapshot] = useState<CanonicalRecoverySnapshot | null>(null);
+  const [canonicalGeneration, setCanonicalGeneration] = useState<{
+    index: TranscriptIndex;
+    chunks: Map<string, SerializedChunk>;
+    pages: Array<{
+      cursor: string;
+      size: number;
+      response: SerializedChunkedResponse;
+    }>;
+  } | null>(null);
   const apiFetch = useFetchFactory();
 
   const {
@@ -53,13 +125,13 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
 
   // 1. Fetch index
   const {
-    data: index,
+    data: queriedIndex,
     isLoading: indexLoading,
     error: indexError,
   } = useQuery({
     queryKey: transcriptQueryKeys.index(sessionId),
     queryFn: () => fetchTranscriptIndex(sessionId, '', apiFetch),
-    enabled: !!sessionId,
+    enabled: !!sessionId && recoverySnapshot === null,
     staleTime: 5_000,
     refetchInterval: (query) => {
       const data = query.state.data;
@@ -68,7 +140,14 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
     },
   });
 
+  const exposedCanonicalGeneration = canonicalRecoveryRef.current.dirty
+    ? null
+    : canonicalGeneration;
+  const index = exposedCanonicalGeneration?.index ?? recoverySnapshot?.index ?? queriedIndex;
+
   const chunkCount = index?.totals.chunkCount ?? 0;
+  // The index intentionally contains every chunk ID: these small routing entries let the
+  // virtualizer seek anywhere without another index protocol. Only chunk bodies are windowed.
   const chunkIds = index?.chunkIds ?? [];
 
   // 2. Virtualizer
@@ -77,18 +156,24 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
   const rowVirtualizer = useVirtualizer({
     count: chunkCount,
     getScrollElement: () => scrollElement,
-    estimateSize: () => 120,
+    estimateSize: () => ESTIMATED_CHUNK_HEIGHT,
     getItemKey,
     overscan: 5,
     initialRect: { width: 0, height: 600 },
     measureElement: (element) => {
       const height = element.getBoundingClientRect().height;
-      return height > 0 ? height : 120;
+      return height > 0 ? height : ESTIMATED_CHUNK_HEIGHT;
     },
   });
 
   // 3. Determine visible batch boundaries
   const virtualItems = rowVirtualizer.getVirtualItems();
+  const firstVirtualIndex = virtualItems.at(0)?.index;
+  const lastVirtualIndex = virtualItems.at(-1)?.index;
+  const retainedChunkIds = useMemo(
+    () => buildRetainedChunkIds(chunkIds, firstVirtualIndex, lastVirtualIndex, isLive),
+    [chunkIds, firstVirtualIndex, lastVirtualIndex, isLive],
+  );
 
   const batchKeys = useMemo(() => {
     if (virtualItems.length === 0 || chunkCount === 0) return [];
@@ -117,7 +202,7 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
       queryKey: transcriptQueryKeys.chunkPage(sessionId, batch.cursor ?? null, batch.size),
       queryFn: () =>
         fetchTranscriptChunks(sessionId, batch.cursor, batch.size, undefined, '', apiFetch),
-      enabled: !!batch.cursor,
+      enabled: !!batch.cursor && recoverySnapshot === null,
       staleTime: 30_000,
       gcTime: CHUNK_GC_TIME,
     })),
@@ -125,6 +210,8 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
 
   // 5. Build chunks map from fetched data + WS delta-injected chunks
   const chunksMap = useMemo(() => {
+    if (exposedCanonicalGeneration) return exposedCanonicalGeneration.chunks;
+    if (recoverySnapshot) return recoverySnapshot.chunks;
     const map = new Map<string, SerializedChunk>(chunksMapRef.current);
     for (const query of batchQueries) {
       if (query.data) {
@@ -135,7 +222,35 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
     }
     chunksMapRef.current = map;
     return map;
-  }, [batchQueries, deltaSeq]);
+  }, [batchQueries, deltaSeq, exposedCanonicalGeneration, recoverySnapshot]);
+
+  useEffect(() => {
+    if (!retainedChunkIds) return;
+    let cancelled = false;
+
+    const pruneAfterScrollSettles = () => {
+      retentionFrameRef.current = requestAnimationFrame(() => {
+        retentionFrameRef.current = null;
+        if (cancelled) return;
+        if (rowVirtualizer.isScrolling) {
+          pruneAfterScrollSettles();
+          return;
+        }
+        if (pruneChunkMap(chunksMapRef.current, retainedChunkIds)) {
+          setDeltaSeq((sequence) => sequence + 1);
+        }
+      });
+    };
+
+    pruneAfterScrollSettles();
+    return () => {
+      cancelled = true;
+      if (retentionFrameRef.current !== null) {
+        cancelAnimationFrame(retentionFrameRef.current);
+        retentionFrameRef.current = null;
+      }
+    };
+  }, [retainedChunkIds, rowVirtualizer]);
 
   // 6. WS subscription for real-time updates
   const invalidateAll = useCallback(() => {
@@ -163,6 +278,10 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
   const applyDeltaToIndex = useCallback(
     (payload: WsTranscriptDeltaPayload) => {
       if (!sessionId) return;
+      if (canonicalRecoveryRef.current.inFlight) {
+        canonicalRecoveryRef.current.dirty = true;
+        return;
+      }
 
       const currentIndex = queryClient.getQueryData<TranscriptIndex>(
         transcriptQueryKeys.index(sessionId),
@@ -195,6 +314,7 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
 
       queryClient.setQueryData<TranscriptIndex>(transcriptQueryKeys.index(sessionId), {
         ...currentIndex,
+        cursor: payload.cursor,
         totals: {
           messageCount: metrics.messageCount,
           chunkCount: totalChunkCount,
@@ -229,6 +349,185 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
     [queryClient, sessionId, invalidateAll],
   );
 
+  const scheduleCanonicalRetry = useCallback(() => {
+    if (canonicalRetryTimerRef.current) clearTimeout(canonicalRetryTimerRef.current);
+    const retryDelayMs = canonicalRecoveryRef.current.retryDelayMs;
+    canonicalRecoveryRef.current.retryDelayMs = Math.min(retryDelayMs * 2, MAX_CANONICAL_RETRY_MS);
+    canonicalRetryTimerRef.current = setTimeout(() => {
+      canonicalRetryTimerRef.current = null;
+      canonicalRecoveryRequestRef.current();
+    }, retryDelayMs);
+  }, []);
+
+  const requestCanonicalGeneration = useCallback(() => {
+    if (!sessionId) return;
+    if (canonicalRecoveryRef.current.inFlight) {
+      canonicalRecoveryRef.current.dirty = true;
+      return;
+    }
+    if (canonicalRetryTimerRef.current) {
+      clearTimeout(canonicalRetryTimerRef.current);
+      canonicalRetryTimerRef.current = null;
+    }
+
+    let snapshot = recoverySnapshotRef.current;
+    if (!snapshot && !index) {
+      invalidateAll();
+      return;
+    }
+    if (!snapshot) {
+      snapshot = { index: index!, chunks: new Map(chunksMapRef.current) };
+      recoverySnapshotRef.current = snapshot;
+      setRecoverySnapshot(snapshot);
+    }
+
+    const epoch = canonicalRecoveryRef.current.epoch + 1;
+    canonicalRecoveryRef.current.epoch = epoch;
+    canonicalRecoveryRef.current.inFlight = true;
+    canonicalRecoveryRef.current.dirty = false;
+
+    const indexKey = transcriptQueryKeys.index(sessionId);
+    const isStale = () =>
+      canonicalRecoveryRef.current.epoch !== epoch || !canonicalRecoveryRef.current.inFlight;
+
+    void (async () => {
+      await queryClient.cancelQueries({ queryKey: indexKey, exact: true });
+      await queryClient.cancelQueries({
+        predicate: (query) =>
+          Array.isArray(query.queryKey) &&
+          query.queryKey[0] === 'transcript-chunk-page' &&
+          query.queryKey[1] === sessionId,
+      });
+      if (isStale()) return;
+
+      for (let attempt = 0; attempt < MAX_CANONICAL_RECOVERY_ATTEMPTS; attempt += 1) {
+        canonicalRecoveryRef.current.dirty = false;
+        const nextIndex = await fetchTranscriptIndex(sessionId, '', apiFetch);
+        if (isStale()) return;
+
+        const starts = new Set<number>();
+        const nextCount = nextIndex.chunkIds.length;
+        if (nextCount > 0) {
+          const visibleStart = Math.min(firstVirtualIndex ?? 0, nextCount - 1);
+          const visibleEnd = Math.min(
+            lastVirtualIndex ?? Math.min(nextCount - 1, CHUNK_PAGE_SIZE * 2 - 1),
+            nextCount - 1,
+          );
+          const retainedStart = Math.max(0, visibleStart - CHUNK_RETENTION_HYSTERESIS);
+          const retainedEnd = Math.min(nextCount - 1, visibleEnd + CHUNK_RETENTION_HYSTERESIS);
+          for (let cursor = retainedStart; cursor <= retainedEnd; cursor += CHUNK_PAGE_SIZE) {
+            starts.add(Math.floor(cursor / CHUNK_PAGE_SIZE) * CHUNK_PAGE_SIZE);
+          }
+          if (isLive) {
+            const tailStart =
+              Math.floor(Math.max(0, nextCount - LIVE_TAIL_RETENTION) / CHUNK_PAGE_SIZE) *
+              CHUNK_PAGE_SIZE;
+            for (let cursor = tailStart; cursor < nextCount; cursor += CHUNK_PAGE_SIZE) {
+              starts.add(cursor);
+            }
+          }
+        }
+
+        const pages = await Promise.all(
+          [...starts]
+            .sort((a, b) => a - b)
+            .map(async (start) => {
+              const cursor = nextIndex.chunkIds[start];
+              const size = Math.min(CHUNK_PAGE_SIZE, nextCount - start);
+              const response = await fetchTranscriptChunks(
+                sessionId,
+                cursor,
+                size,
+                undefined,
+                '',
+                apiFetch,
+              );
+              return { cursor, size, response };
+            }),
+        );
+        if (isStale()) return;
+        if (canonicalRecoveryRef.current.dirty) continue;
+
+        const verifiedIndex = await fetchTranscriptIndex(sessionId, '', apiFetch);
+        if (isStale()) return;
+        if (
+          canonicalRecoveryRef.current.dirty ||
+          verifiedIndex.cursor !== nextIndex.cursor ||
+          JSON.stringify(verifiedIndex) !== JSON.stringify(nextIndex)
+        ) {
+          continue;
+        }
+
+        const stagedChunks = new Map<string, SerializedChunk>();
+        for (const page of pages) {
+          for (const chunk of page.response.chunks) stagedChunks.set(chunk.id, chunk);
+        }
+
+        setCanonicalGeneration({ index: nextIndex, chunks: stagedChunks, pages });
+        return;
+      }
+
+      throw new Error('Canonical transcript pages did not stabilize');
+    })().catch(() => {
+      if (canonicalRecoveryRef.current.epoch !== epoch) return;
+      const retainedSnapshot = recoverySnapshotRef.current;
+      if (!retainedSnapshot) return;
+      queryClient.setQueryData(indexKey, retainedSnapshot.index);
+      chunksMapRef.current = retainedSnapshot.chunks;
+      canonicalRecoveryRef.current.inFlight = false;
+      canonicalRecoveryRef.current.dirty = false;
+      scheduleCanonicalRetry();
+    });
+  }, [
+    apiFetch,
+    firstVirtualIndex,
+    index,
+    invalidateAll,
+    isLive,
+    lastVirtualIndex,
+    queryClient,
+    scheduleCanonicalRetry,
+    sessionId,
+  ]);
+  canonicalRecoveryRequestRef.current = requestCanonicalGeneration;
+
+  useLayoutEffect(() => {
+    if (!canonicalGeneration) return;
+    if (canonicalRecoveryRef.current.dirty) {
+      canonicalRecoveryRef.current.inFlight = false;
+      canonicalRecoveryRef.current.dirty = false;
+      setCanonicalGeneration(null);
+      scheduleCanonicalRetry();
+      return;
+    }
+
+    chunksMapRef.current = canonicalGeneration.chunks;
+    queryClient.setQueryData(transcriptQueryKeys.index(sessionId), canonicalGeneration.index);
+    queryClient.removeQueries({
+      predicate: (query) =>
+        Array.isArray(query.queryKey) &&
+        query.queryKey[0] === 'transcript-chunk-page' &&
+        query.queryKey[1] === sessionId,
+    });
+    for (const page of canonicalGeneration.pages) {
+      queryClient.setQueryData(
+        transcriptQueryKeys.chunkPage(sessionId, page.cursor, page.size),
+        page.response,
+      );
+    }
+    if (canonicalRetryTimerRef.current) {
+      clearTimeout(canonicalRetryTimerRef.current);
+      canonicalRetryTimerRef.current = null;
+    }
+    recoverySnapshotRef.current = null;
+    canonicalRecoveryRef.current.inFlight = false;
+    canonicalRecoveryRef.current.dirty = false;
+    canonicalRecoveryRef.current.retryDelayMs = INITIAL_CANONICAL_RETRY_MS;
+    setRecoverySnapshot(null);
+    setDeltaSeq((sequence) => sequence + 1);
+    setCanonicalGeneration(null);
+  }, [canonicalGeneration, queryClient, scheduleCanonicalRetry, sessionId]);
+
   const handleMessage = useCallback(
     (envelope: WsEnvelope) => {
       if (!sessionId) return;
@@ -237,6 +536,10 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
       switch (envelope.type) {
         case 'discovered':
         case 'ended':
+          if (recoverySnapshotRef.current || canonicalRecoveryRef.current.inFlight) {
+            requestCanonicalGeneration();
+            break;
+          }
           if (invalidateTimerRef.current) {
             clearTimeout(invalidateTimerRef.current);
             invalidateTimerRef.current = null;
@@ -244,8 +547,16 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
           invalidateAll();
           break;
         case 'updated': {
-          const payload = envelope.payload as WsTranscriptDeltaPayload | undefined;
-          if (payload?.newChunkIds && payload.newChunkIds.length > 0) {
+          const payload = envelope.payload as WsTranscriptUpdatedPayload | undefined;
+          if (recoverySnapshotRef.current || canonicalRecoveryRef.current.inFlight) {
+            requestCanonicalGeneration();
+          } else if (payload?.kind === 'full-refetch-required') {
+            requestCanonicalGeneration();
+          } else if (
+            payload?.kind === 'delta' &&
+            payload.newChunkIds &&
+            payload.newChunkIds.length > 0
+          ) {
             applyDeltaToIndex(payload);
           } else {
             // Legacy fallback: no newChunkIds → full refetch
@@ -255,7 +566,7 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
         }
       }
     },
-    [invalidateAll, applyDeltaToIndex, sessionId],
+    [invalidateAll, applyDeltaToIndex, requestCanonicalGeneration, sessionId],
   );
 
   const handlers = useMemo(() => ({ message: handleMessage }), [handleMessage]);
@@ -271,9 +582,35 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
   }, []);
 
   useEffect(() => {
+    if (canonicalRetryTimerRef.current) {
+      clearTimeout(canonicalRetryTimerRef.current);
+      canonicalRetryTimerRef.current = null;
+    }
+    recoverySnapshotRef.current = null;
+    canonicalRecoveryRef.current = {
+      epoch: canonicalRecoveryRef.current.epoch + 1,
+      inFlight: false,
+      dirty: false,
+      retryDelayMs: INITIAL_CANONICAL_RETRY_MS,
+    };
+    setRecoverySnapshot(null);
+    setCanonicalGeneration(null);
     setExpandedAiGroups(new Map());
     chunksMapRef.current = new Map();
     setDeltaSeq(0);
+    return () => {
+      if (canonicalRetryTimerRef.current) {
+        clearTimeout(canonicalRetryTimerRef.current);
+        canonicalRetryTimerRef.current = null;
+      }
+      recoverySnapshotRef.current = null;
+      canonicalRecoveryRef.current = {
+        epoch: canonicalRecoveryRef.current.epoch + 1,
+        inFlight: false,
+        dirty: false,
+        retryDelayMs: INITIAL_CANONICAL_RETRY_MS,
+      };
+    };
   }, [sessionId]);
 
   // Auto-expand latest AI chunk for live sessions
@@ -340,12 +677,17 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
       ? virtualItems
       : Array.from({ length: Math.min(chunkCount, 20) }, (_, i) => ({
           index: i,
-          start: i * 120,
-          size: 120,
+          start: i * ESTIMATED_CHUNK_HEIGHT,
+          size: ESTIMATED_CHUNK_HEIGHT,
         }));
 
   return (
-    <div className="relative flex-1 min-h-0" role="region" aria-label="Session viewer (paged)">
+    <div
+      className="relative flex-1 min-h-0"
+      role="region"
+      aria-label="Session viewer (paged)"
+      data-retained-chunks={chunksMap.size}
+    >
       <div
         ref={handleScrollContainerRef}
         onScroll={handleScroll}
@@ -364,7 +706,10 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
                 ref={rowVirtualizer.measureElement}
                 data-index={idx}
                 className="absolute left-0 top-0 w-full pb-3"
-                style={{ transform: `translateY(${virtualItem.start}px)` }}
+                style={{
+                  transform: `translateY(${virtualItem.start}px)`,
+                  minHeight: `${virtualItem.size}px`,
+                }}
               >
                 {chunk ? (
                   <ChunkRenderer
@@ -376,7 +721,7 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
                   />
                 ) : (
                   <div
-                    className="h-16 animate-pulse rounded-lg bg-muted/40"
+                    className="h-full min-h-16 animate-pulse rounded-lg bg-muted/40"
                     data-testid="chunk-skeleton"
                   />
                 )}

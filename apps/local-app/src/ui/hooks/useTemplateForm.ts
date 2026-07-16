@@ -60,7 +60,7 @@ export interface CreateFromTemplatePayload {
   presetName?: string;
   /** Per-agent config overrides (wizard Step 2). Mutually exclusive with presetName. */
   agentOverrides?: AgentOverridePayload[];
-  /** Transient server-enforced provider allowlist (wizard Step 1). */
+  /** Transient provider choice metadata (wizard Step 1). */
   selectedProviderNames?: string[];
   teamOverrides?: TeamOverridePayload[];
 }

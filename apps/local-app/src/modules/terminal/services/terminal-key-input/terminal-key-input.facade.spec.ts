@@ -194,6 +194,22 @@ describe('TerminalKeyInputFacade', () => {
       await expect(facade.sendKey(sessionId, 'Up')).resolves.toEqual({ ok: true });
       expect(io.sendControl).toHaveBeenCalledTimes(1);
     });
+
+    it.each(['stopped', 'crashed'] as const)(
+      'prunes the rate entry on session.%s across reconnect churn',
+      async (event) => {
+        const { facade, io } = makeFacade();
+        const sessionId = `lifecycle-${event}`;
+
+        for (let cycle = 0; cycle < 20; cycle += 1) {
+          await facade.sendKey(sessionId, 'Up');
+          if (event === 'stopped') facade.handleSessionStopped({ sessionId });
+          else facade.handleSessionCrashed({ sessionId });
+        }
+
+        expect(io.sendControl).toHaveBeenCalledTimes(20);
+      },
+    );
   });
 
   it('resolves with { ok: true } on a successful named key', async () => {

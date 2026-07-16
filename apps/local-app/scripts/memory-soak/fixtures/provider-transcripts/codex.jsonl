@@ -1,0 +1,7 @@
+{"timestamp":"2026-07-13T08:01:00.000Z","type":"session_meta","payload":{"id":"codex-memory-soak"}}
+{"timestamp":"2026-07-13T08:01:00.100Z","type":"turn_context","payload":{"model":"o3","context_window":200000}}
+{"timestamp":"2026-07-13T08:01:00.200Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-memory-soak"}}
+{"timestamp":"2026-07-13T08:01:00.300Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Return the deterministic fixture token."}]}}
+{"timestamp":"2026-07-13T08:01:00.400Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"fixture-ok"}]}}
+{"timestamp":"2026-07-13T08:01:00.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":120,"output_tokens":12,"cached_input_tokens":8,"reasoning_output_tokens":2,"total_tokens":140},"model_context_window":200000}}}
+{"timestamp":"2026-07-13T08:01:00.600Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-memory-soak"}}

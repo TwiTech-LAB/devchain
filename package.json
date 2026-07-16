@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.17.1",
+  "version": "0.17.2",
   "description": "AI driven development platform",
   "homepage": "https://devchain.cc/",
   "repository": {
@@ -8,6 +8,14 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.17.2": [
+      "Performance: much lower memory usage when reading session transcripts — long-running sessions no longer bloat the app over time",
+      "Sign-in stability: fixed unexpected logouts on desktop and mobile — temporary network hiccups now retry silently instead of signing you out",
+      "Security: hardened webhook verification in the cloud bridge",
+      "Terminal: live history updates restored, smoother scrolling, and more reliable session restore",
+      "Projects: importing a template no longer overwrites your already-configured providers",
+      "Template updates"
+    ],
     "0.17.1": [
       "Setup wizard: show the config's effort in the Effort field's Default label",
       "Mobile: chat empty-state and preferences fixes",
@@ -371,10 +379,8 @@
     "@tanstack/react-query": "5.90.2",
     "@tanstack/react-table": "8.21.3",
     "@tanstack/react-virtual": "3.13.18",
-    "@xterm/addon-fit": "0.10.0",
-    "@xterm/addon-serialize": "0.13.0",
-    "@xterm/headless": "5.5.0",
-    "@xterm/xterm": "5.5.0",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
     "ansi-to-html": "0.7.2",
     "better-sqlite3": "11.5.0",
     "class-transformer": "^0.5.1",

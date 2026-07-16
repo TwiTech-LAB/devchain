@@ -1,0 +1,34 @@
+
+> local-app@0.0.0-internal prebuild /home/ngsupb/repos/twitech/devchain-rem15-checkpoint/apps/local-app
+> pnpm check:journal && rimraf dist && ts-node --compiler-options '{"module":"commonjs"}' scripts/fetch-pricing-data.ts
+
+
+> local-app@0.0.0-internal check:journal /home/ngsupb/repos/twitech/devchain-rem15-checkpoint/apps/local-app
+> ts-node --compiler-options '{"module":"commonjs"}' scripts/validate-journal.ts
+
+✓ _journal.json valid: 67 entries, idx 0-66 (grandfather floor: idx<60, strict-monotonic enforced for idx>=60)
+[fetch-pricing] Fetching LiteLLM pricing data...
+[fetch-pricing] Done: 800 models (Claude/OpenAI/Gemini) from 2965 total entries → /home/ngsupb/repos/twitech/devchain-rem15-checkpoint/apps/local-app/src/modules/session-reader/data/pricing.json
+
+> local-app@0.0.0-internal build /home/ngsupb/repos/twitech/devchain-rem15-checkpoint/apps/local-app
+> nest build && vite build && cp -r templates dist/templates
+
+[33mThe CJS build of Vite's Node API is deprecated. See https://vite.dev/guide/troubleshooting.html#vite-cjs-node-api-deprecated for more details.[39m
+vite v5.4.20 building for production...
+transforming...
+✓ 2388 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/ui/index.html                                     0.89 kB │ gzip:   0.48 kB
+dist/ui/assets/useReviewSubscription-T3uj2-aP.css      3.97 kB │ gzip:   0.78 kB
+dist/ui/assets/index-BSx7QxmM.css                    114.34 kB │ gzip:  19.94 kB
+dist/ui/assets/ReviewDetailPage-BOsiFDls.js            7.88 kB │ gzip:   2.38 kB
+dist/ui/assets/ReviewsPage-CD0gZuA4.js                18.27 kB │ gzip:   5.67 kB
+dist/ui/assets/useReviewSubscription-HZw5PFNM.js     289.54 kB │ gzip:  93.14 kB
+dist/ui/assets/index-CNsKKmF1.js                   2,162.11 kB │ gzip: 595.23 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 5.93s

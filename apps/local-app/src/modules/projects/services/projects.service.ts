@@ -74,7 +74,7 @@ export interface CreateFromTemplateInput {
   familyProviderMappings?: Record<string, string>;
   presetName?: string;
   agentOverrides?: PresetAgentConfig[];
-  /** Transient, server-enforced provider allowlist (Step-1 wizard). Not persisted. */
+  /** Transient Step-1 provider choice metadata. Narrows selection eligibility; not persisted. */
   selectedProviderNames?: string[];
   teamOverrides?: Array<{
     teamName: string;
@@ -101,7 +101,7 @@ export interface ImportProjectInput {
   statusMappings?: Record<string, string>;
   familyProviderMappings?: Record<string, string>;
   agentOverrides?: PresetAgentConfig[];
-  /** Transient, server-enforced provider allowlist (Step-1 wizard). Not persisted. */
+  /** Transient Step-1 provider choice metadata. Narrows selection eligibility; not persisted. */
   selectedProviderNames?: string[];
   teamOverrides?: Array<{
     teamName: string;
@@ -327,10 +327,10 @@ export class ProjectsService {
   }
 
   /**
-   * Enforce the transient `selectedProviderNames` allowlist contract: every selected name must
+   * Enforce the transient `selectedProviderNames` choice contract: every selected name must
    * correspond to a locally installed provider (case-insensitive). Unknown names → 400. This is
    * the storage-dependent half of the contract; the request-shape half (non-empty, lowercased) is
-   * validated at the controller. No-op when the field is absent (byte-identical to today).
+   * validated at the controller. No-op when the field is absent.
    */
   private async assertSelectedProvidersInstalled(
     selectedProviderNames: string[] | undefined,

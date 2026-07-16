@@ -201,7 +201,7 @@ describe('ProjectsService.setupPreview', () => {
   }
 });
 
-describe('ProjectsService — selectedProviderNames allowlist validation', () => {
+describe('ProjectsService — selectedProviderNames validation', () => {
   let service: ProjectsService;
 
   beforeEach(async () => {

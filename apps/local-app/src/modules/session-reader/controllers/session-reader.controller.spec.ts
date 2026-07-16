@@ -5,6 +5,8 @@ import {
 } from '@nestjs/common';
 import { SessionReaderController } from './session-reader.controller';
 import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
+import { estimateObjectBytes } from '../../metrics/helpers/byte-accounting.helper';
+import { MetricsService } from '../../metrics/services/metrics.service';
 import type { UnifiedMessage, UnifiedMetrics, UnifiedSession } from '../dtos/unified-session.types';
 import type { UnifiedChunk } from '../dtos/unified-chunk.types';
 import type {
@@ -14,10 +16,53 @@ import type {
   TranscriptIndex,
   TranscriptTimingData,
 } from '../services/session-reader.service';
+import type { CachedTranscriptDto, SessionCacheService } from '../services/session-cache.service';
+import { decodeCursor } from '../services/transcript-cursor';
 
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
+
+const mockMetricsService = {
+  registerCacheStatsProvider: jest.fn(),
+  registerStatsProvider: jest.fn(),
+} as never;
+
+const dtoEntries = new Map<string, CachedTranscriptDto>();
+let dtoHits = 0;
+let dtoMisses = 0;
+const mockSessionCacheService = {
+  getDto: jest.fn((sessionId: string, maxToolResultLength: number, fingerprint: string) => {
+    const entry = dtoEntries.get(sessionId);
+    if (
+      entry?.maxToolResultLength === maxToolResultLength &&
+      entry.enrichmentFingerprint === fingerprint
+    ) {
+      dtoHits += 1;
+      return entry;
+    }
+    dtoMisses += 1;
+    return undefined;
+  }),
+  setDto: jest.fn((sessionId: string, entry: CachedTranscriptDto) => {
+    dtoEntries.set(sessionId, entry);
+  }),
+  getDtoCacheStats: jest.fn(() => {
+    const bytesEstimated = Array.from(dtoEntries.values()).reduce(
+      (total, entry) => total + entry.responseBytes,
+      0,
+    );
+    return {
+      entries: dtoEntries.size,
+      bytesEstimated,
+      hits: dtoHits,
+      misses: dtoMisses,
+      hitRate: dtoHits + dtoMisses > 0 ? dtoHits / (dtoHits + dtoMisses) : 0,
+      bytesMethod: 'json-stringify-length' as const,
+    };
+  }),
+  getDtoRetainedRoots: jest.fn(() => Array.from(dtoEntries.values(), (entry) => entry.result)),
+};
 
 const VALID_UUID = '123e4567-e89b-12d3-a456-426614174000';
 
@@ -94,8 +139,10 @@ const DEFAULT_TIMING: TranscriptTimingData = {
   buildChunksMs: 2,
   applyToolResultTruncationMs: 0.5,
   cacheHit: false,
+  sourceChangeKind: 'unknown-full-parse',
   fileSizeBytes: 1024,
   fileMtimeMs: 1700000000000,
+  sourceVersion: 654_321,
   providerName: 'claude',
 };
 
@@ -108,6 +155,7 @@ const mockService: jest.Mocked<
     | 'getUnifiedTranscriptChunks'
     | 'getUnifiedTranscriptChunk'
     | 'getTranscriptIndex'
+    | 'getTranscriptTail'
     | 'getToolResult'
   >
 > = {
@@ -117,6 +165,7 @@ const mockService: jest.Mocked<
   getUnifiedTranscriptChunks: jest.fn(),
   getUnifiedTranscriptChunk: jest.fn(),
   getTranscriptIndex: jest.fn(),
+  getTranscriptTail: jest.fn(),
   getToolResult: jest.fn(),
 };
 
@@ -129,10 +178,150 @@ describe('SessionReaderController', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    controller = new SessionReaderController(mockService as unknown as SessionReaderService);
+    dtoEntries.clear();
+    dtoHits = 0;
+    dtoMisses = 0;
+    controller = new SessionReaderController(
+      mockService as unknown as SessionReaderService,
+      mockMetricsService,
+      mockSessionCacheService as unknown as SessionCacheService,
+    );
   });
 
   describe('GET /api/sessions/:id/transcript', () => {
+    it('counts the real cached DTO serialization graph once with parsed and chunks roots', async () => {
+      const metricsService = new MetricsService();
+      const controllerWithMetrics = new SessionReaderController(
+        mockService as unknown as SessionReaderService,
+        metricsService,
+        mockSessionCacheService as unknown as SessionCacheService,
+      );
+      const message = makeMessage('m1', 'assistant', '2026-01-01T10:00:00.000Z');
+      const chunks = [makeAiChunk('chunk-0', [message])];
+      const session: UnifiedSession = {
+        id: 'test',
+        providerName: 'claude',
+        filePath: '/some/path.jsonl',
+        messages: [message],
+        chunks,
+        metrics: makeMetrics(),
+        isOngoing: false,
+        warnings: ['shared warning'],
+      };
+      mockService.getTranscriptWithTimings.mockResolvedValue({
+        session,
+        timing: DEFAULT_TIMING,
+      });
+      metricsService.registerCacheStatsProvider(
+        'parsed',
+        () => ({
+          entries: 1,
+          bytesEstimated: estimateObjectBytes(session),
+          hits: 0,
+          misses: 1,
+          hitRate: 0,
+        }),
+        () => [session],
+      );
+      metricsService.registerCacheStatsProvider(
+        'chunks',
+        () => ({
+          entries: 1,
+          bytesEstimated: estimateObjectBytes(chunks),
+          hits: 0,
+          misses: 1,
+          hitRate: 0,
+        }),
+        () => [chunks],
+      );
+      controllerWithMetrics.onModuleInit();
+
+      const dtoResult = await controllerWithMetrics.getTranscript(VALID_UUID);
+      const independentWalks =
+        estimateObjectBytes(session) + estimateObjectBytes(chunks) + estimateObjectBytes(dtoResult);
+      const seen = new WeakSet<object>();
+      const expectedUniqueBytes =
+        estimateObjectBytes(session, seen) +
+        estimateObjectBytes(chunks, seen) +
+        estimateObjectBytes(dtoResult, seen);
+
+      const snapshot = metricsService.getMetrics();
+
+      expect(expectedUniqueBytes).toBeGreaterThan(0);
+      expect(snapshot.caches.aggregate.bytesEstimated).toBe(expectedUniqueBytes);
+      expect(snapshot.caches.aggregate.bytesEstimated).toBeLessThan(independentWalks);
+      // DTO per-cache view retains its independent wire-size stat
+      expect(snapshot.caches.dto.bytesEstimated).toBe(
+        Buffer.byteLength(JSON.stringify(dtoResult), 'utf8'),
+      );
+      expect(snapshot.caches.dto.bytesMethod).toBe('json-stringify-length');
+    });
+
+    it('failure isolation: healed provider is re-included after the metrics cache expires', async () => {
+      const metricsService = new MetricsService();
+      let now = 1_000;
+      const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => now);
+      const controllerWithMetrics = new SessionReaderController(
+        mockService as unknown as SessionReaderService,
+        metricsService,
+        mockSessionCacheService as unknown as SessionCacheService,
+      );
+      const message = makeMessage('m1', 'assistant', '2026-01-01T10:00:00.000Z');
+      const session1: UnifiedSession = {
+        id: 'fail-test',
+        providerName: 'claude',
+        filePath: '/some/path.jsonl',
+        messages: [message],
+        metrics: makeMetrics(),
+        isOngoing: false,
+      };
+      mockService.getTranscriptWithTimings.mockResolvedValue({
+        session: session1,
+        timing: DEFAULT_TIMING,
+      });
+
+      let parsedShouldFail = true;
+      metricsService.registerCacheStatsProvider(
+        'parsed',
+        () => {
+          if (parsedShouldFail) throw new Error('provider unavailable');
+          return {
+            entries: 1,
+            bytesEstimated: 0,
+            hits: 0,
+            misses: 1,
+            hitRate: 0,
+            bytesMethod: 'deferred-to-aggregate' as const,
+          };
+        },
+        () => [session1],
+      );
+      controllerWithMetrics.onModuleInit();
+
+      // Call 1: provider throws → excluded entirely
+      const snap1 = metricsService.getMetrics();
+      expect(snap1.caches.parsed.entries).toBe(0);
+      expect(snap1.caches.parsed.bytesEstimated).toBe(0);
+      expect(snap1.caches.aggregate.providersFailed).toBe(1);
+      expect(snap1.caches.aggregate.bytesEstimated).toBe(0);
+
+      // Heal the provider
+      parsedShouldFail = false;
+
+      // A warm snapshot preserves the original failed-provider attribution.
+      const snap2 = metricsService.getMetrics();
+      expect(snap2.caches.parsed.entries).toBe(0);
+      expect(snap2.caches.aggregate.providersFailed).toBe(1);
+
+      now += 10_000;
+      const snap3 = metricsService.getMetrics();
+      expect(snap3.caches.parsed.entries).toBe(1);
+      expect(snap3.caches.parsed.bytesEstimated).toBeGreaterThan(0);
+      expect(snap3.caches.aggregate.providersFailed).toBe(0);
+      expect(snap3.caches.aggregate.bytesEstimated).toBe(snap3.caches.parsed.bytesEstimated);
+      nowSpy.mockRestore();
+    });
+
     it('should return full session with serialized transcript/chunk/step timestamps', async () => {
       const aiChunk: UnifiedChunk = {
         id: 'chunk-1',
@@ -215,6 +404,7 @@ describe('SessionReaderController', () => {
       expect(result!.chunks?.[0].semanticSteps[0].startTime).toBe('2026-01-01T10:00:05.000Z');
       expect(typeof result!.chunks?.[0].startTime).toBe('string');
       expect(typeof result!.chunks?.[0].semanticSteps[0].startTime).toBe('string');
+      expect(decodeCursor(result!.cursor)?.fileSize).toBe(654_321);
       expect(mockService.getTranscriptWithTimings).toHaveBeenCalledWith(VALID_UUID, {
         maxToolResultLength: 2000,
       });
@@ -420,6 +610,7 @@ describe('SessionReaderController', () => {
   describe('GET /api/sessions/:id/transcript/index', () => {
     it('should return transcript index', async () => {
       const index: TranscriptIndex = {
+        cursor: 'opaque-cursor',
         totals: { messageCount: 10, chunkCount: 3 },
         chunkIds: ['chunk-0', 'chunk-1', 'chunk-2'],
         latestOutputPreview: 'test output',
@@ -543,6 +734,48 @@ describe('SessionReaderController', () => {
       await expect(controller.getTranscriptChunk(VALID_UUID, 'chunk-99')).rejects.toThrow(
         NotFoundException,
       );
+    });
+  });
+
+  describe('GET /api/sessions/:id/transcript/tail', () => {
+    it('serializes a safe delta response', async () => {
+      const message = makeMessage('m1', 'assistant', '2026-01-01T10:00:05.000Z');
+      mockService.getTranscriptTail.mockResolvedValue({
+        kind: 'delta',
+        cursor: 'next-cursor',
+        replaceFromChunkId: 'chunk-0',
+        replaceFromChunkIndex: 0,
+        deltaChunks: [makeAiChunk('chunk-0', [message])],
+        deltaMessages: [message],
+        metrics: makeMetrics({ messageCount: 1 }),
+        totalChunkCount: 1,
+        totalMessageCount: 1,
+      });
+
+      const result = await controller.getTranscriptTail(VALID_UUID, 'prior-cursor');
+
+      expect(result).toMatchObject({
+        kind: 'delta',
+        cursor: 'next-cursor',
+        deltaMessages: [{ timestamp: '2026-01-01T10:00:05.000Z' }],
+        deltaChunks: [{ startTime: '2026-01-01T10:00:05.000Z' }],
+      });
+    });
+
+    it('returns the cursor-free full-refetch discriminator without serializing a delta', async () => {
+      mockService.getTranscriptTail.mockResolvedValue({
+        kind: 'full-refetch-required',
+        sourceChangeKind: 'file-replacement',
+      });
+
+      const result = await controller.getTranscriptTail(VALID_UUID, 'prior-cursor');
+
+      expect(result).toEqual({
+        kind: 'full-refetch-required',
+        sourceChangeKind: 'file-replacement',
+      });
+      expect(result).not.toHaveProperty('cursor');
+      expect(result).not.toHaveProperty('deltaChunks');
     });
   });
 

@@ -17,7 +17,6 @@ import type { ProbeOutcome } from '../../providers/utils/probe-1m';
 import type { SettingsService } from '../../settings/services/settings.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import type { WatchersService } from '../../watchers/services/watchers.service';
-import type { selectProfilesForFamilies } from '../helpers/profile-mapping.helpers';
 import type { TeamOverrideEntry } from '../helpers/team-overrides.helpers';
 import type { ImportContext, ImportContextKey, StorageStateFlag } from './import-context';
 
@@ -35,15 +34,6 @@ export type CodecFatality = 'fatal' | 'swallow';
 
 /** Parsed, validated template payload (post-`ExportSchema.parse`). */
 export type ParsedTemplatePayload = ReturnType<typeof ExportSchema.parse>;
-
-/**
- * Family-selection product computed pre-pipeline (family/provider substitution is input
- * resolution, not a codec) and seeded into the ImportContext. The profiles codec reads
- * `.profilesToCreate`; the agents codec reads `.agentProfileMap`.
- */
-export type SelectedProfilesByFamily = ReturnType<
-  typeof selectProfilesForFamilies<ParsedTemplatePayload['profiles'][number]>
->;
 
 /**
  * A codec's declared ordering contract. `reads`/`writes` reference in-memory data
@@ -72,8 +62,19 @@ export interface CodecApplyRuntime {
   readonly storage: StorageService;
   /** Replace-mode status remap input (`statusMappings` from the import request). */
   readonly statusMappings?: Record<string, string>;
-  /** Available providers as a name(lowercased) -> id map, for config/agent resolution. */
-  readonly available?: Map<string, string>;
+  /**
+   * Full installed-provider map (name(lowercased) → id), for config/agent/watcher resolution.
+   * Installed-but-deselected providers ARE present here — deselection narrows only wizard family
+   * choices, not persistence.
+   */
+  readonly installedProviders?: Map<string, string>;
+  /**
+   * The installed map narrowed to the Step-1 selection allowlist (name(lowercased) → id);
+   * identical to `installedProviders` when no allowlist is active. Drives BINDING eligibility:
+   * the profiles codec derives the selection-eligible config lookup from it. Absent → eligibility
+   * falls back to `installedProviders` (no narrowing), so the no-allowlist path is unchanged.
+   */
+  readonly selectedProviders?: Map<string, string>;
   /**
    * Existing statuses snapshot taken BEFORE clear (replace mode). Statuses are merged by
    * label, not deleted, to preserve epic references — the codec needs the pre-clear set

@@ -1,0 +1,304 @@
+{
+  "schemaVersion": 1,
+  "reportKind": "phase6-artifact-manifest",
+  "generatedAt": "2026-07-14T23:20:23.943Z",
+  "target": {
+    "sourceCommit": "34e222d57850706e83323894b075cc0c6edd6eed",
+    "sourceTree": "376367c2a509458618a2ec5c7b18714e33a91ee3",
+    "sourceDirty": false,
+    "distDigest": "ea0452dd2b6660e2f044b82dc6ec0f68fa89e8e67c78991c93c654f4266dfa34"
+  },
+  "matrixArtifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66.json",
+  "matrixSha256": "bd61753280571eec363e2cd3166f10439d31d59f00fadbe8a3d8cc4d6040e82b",
+  "selfHashExcluded": true,
+  "artifactCount": 47,
+  "artifacts": [
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/baselines/phase6-final-34e222d57850-ea0452dd2b66.json",
+      "sha256": "750c30bf3adf1e5e1deda9f54e59bdc679636015c4f480c090d7fb6a820a8f92",
+      "bytes": 1277096,
+      "classification": "authoritative-host"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66.json",
+      "sha256": "bd61753280571eec363e2cd3166f10439d31d59f00fadbe8a3d8cc4d6040e82b",
+      "bytes": 47961,
+      "classification": "authoritative-matrix"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/engine-write-buffer-bounded.json",
+      "sha256": "fa38a634b7d23fee444c37dcacd5558d9c26aa8d46c5b20adf282d56c0f87c5a",
+      "bytes": 145565,
+      "classification": "authoritative-scenario"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/eviction-concurrent-transcript-reads-confirmation.json",
+      "sha256": "48d52974da15f5c71f4a5d98c0a30ab32170b4950cccc2f3369fd74a7e4cd3f3",
+      "bytes": 198849,
+      "classification": "authoritative-confirmation"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/eviction-concurrent-transcript-reads.json",
+      "sha256": "21dd9c3ae6c8bac2c4d0628eb99147bc50515b9530be68bd1ea3fdc67e1d82dd",
+      "bytes": 198931,
+      "classification": "authoritative-scenario"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/focused-gates/focused-gates.json",
+      "sha256": "78d64f1837f0a3695bd2ff1318f63f3527e32217acae86360fc5b73258539f4f",
+      "bytes": 4704,
+      "classification": "authoritative-focused-gate"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/focused-gates/memory-soak-contract.log",
+      "sha256": "c5e8d489480c9385df2493c24dd712ea24cccfed22da9510ccd28e5005d5b162",
+      "bytes": 19076,
+      "classification": "authoritative-focused-gate"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/focused-gates/mobile-jest.log",
+      "sha256": "205fb2c9b7da8dfe92b2c39c4b3e2783dcc58611f56c5faaf1b95c39c2aed9ec",
+      "bytes": 2615,
+      "classification": "authoritative-focused-gate"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/focused-gates/mobile-tsc.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "classification": "authoritative-focused-gate"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/focused-gates/reader-web-jest.log",
+      "sha256": "b4be75ac10f37064ccab01fbe42f1bfcba00315a6894418c639dcc9bb82f9291",
+      "bytes": 59661,
+      "classification": "authoritative-focused-gate"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/focused-gates/terminal-jest.log",
+      "sha256": "53d579c5a56f3ad3f982bce21ba3e7cf3f883ab54fcd8eda8021e650924ffa29",
+      "bytes": 1665,
+      "classification": "authoritative-focused-gate"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/lifecycle-cleanup-parity.json",
+      "sha256": "2be0b80935b9217de291175a91792894f3876ac27f0b661b58284813ae49ac9b",
+      "bytes": 73687,
+      "classification": "authoritative-scenario"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/many-subscribers-one-session-confirmation.json",
+      "sha256": "f52370c0ad6d4dad2d903f1f320abf19b60b94eac6ef15539ba8fced49ef5273",
+      "bytes": 182190,
+      "classification": "authoritative-confirmation"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/many-subscribers-one-session.json",
+      "sha256": "3a91a6ed0322a55fad164e79ac99a028dd847ff1a9da3edaea6c8b7625403610",
+      "bytes": 182241,
+      "classification": "authoritative-scenario"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/oversized-unicode-ansi-chunking-confirmation.json",
+      "sha256": "4ac70b783ba5c541833ad5562adc385e47acb13c8f051ae19411216797b2097f",
+      "bytes": 148711,
+      "classification": "authoritative-confirmation"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/oversized-unicode-ansi-chunking.json",
+      "sha256": "a02f4b3ed1d6b78e9b3657e8f30f9fbf93c8a1a45773c38fbdcd7b99aaca92e1",
+      "bytes": 148771,
+      "classification": "authoritative-scenario"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/reconnect-older-than-ring-confirmation.json",
+      "sha256": "8ce284e305353252224a9f09fa1db7652054160bb85ce961e3b86c2ebf7205a5",
+      "bytes": 139453,
+      "classification": "authoritative-confirmation"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/reconnect-older-than-ring.json",
+      "sha256": "a64aae4f3a8f35d536e52302964e009466011f74575d86d4bf01514709569cc4",
+      "bytes": 139511,
+      "classification": "authoritative-scenario"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/reconnect-replay-available-confirmation.json",
+      "sha256": "001e7e2364f577c91db803d0ab3633a18fcb82003db80474bf81d5150e7f89a7",
+      "bytes": 181883,
+      "classification": "authoritative-confirmation"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/reconnect-replay-available.json",
+      "sha256": "126615595fb1adac146dcfd31d7fb6225ac37aa7e62c81fda5597570f1c81118",
+      "bytes": 181946,
+      "classification": "authoritative-scenario"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/runtime-inputs/opencode.json",
+      "sha256": "540d4344c5f80dfa8e109b0fade4b6e84618eb6da1353d8ec7e2034457d63c90",
+      "bytes": 1239,
+      "classification": "authoritative-runtime-input"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/runtime-inputs/runtime-input.json",
+      "sha256": "9000ed6a6c6b5ec498fce30920db4a377c64a59183cdb2933464083e6503327b",
+      "bytes": 1059,
+      "classification": "authoritative-runtime-input"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/seed-during-burst.json",
+      "sha256": "5341adbc6680f4531a75ff19e42732159fd572297fde628e9d598e81e108d0cd",
+      "bytes": 148070,
+      "classification": "authoritative-scenario"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/stalled-and-current-socket.json",
+      "sha256": "b5b72c6ec3951912ba89dc7b0b07622d566cc460f88e0f593381c914a7f9895a",
+      "bytes": 145573,
+      "classification": "authoritative-scenario"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/summary-full-provider-parity.json",
+      "sha256": "bf691ff0f11cddbdd975171d899a9121689b1cf7d3b56ee5e23763ea96a6a578",
+      "bytes": 321938,
+      "classification": "authoritative-scenario"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/superseded/dirty-fixture-logs/lifecycle-cleanup-parity.log",
+      "sha256": "a9beccd36f6719afb8a1f2a9d3a0079945bf81937a8e6b577e26cff327375754",
+      "bytes": 74182,
+      "classification": "superseded-diagnostic"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/superseded/dirty-fixture-logs/many-subscribers-one-session.log",
+      "sha256": "e7983e59d76db5a754894a928a5ef4055ee89319dced3f52d9720783636daf6f",
+      "bytes": 182745,
+      "classification": "superseded-diagnostic"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/superseded/dirty-fixture-logs/oversized-unicode-ansi-chunking.log",
+      "sha256": "372870a0f4aa7d57a73de58663984d50d92b18efd375a6ee03f5fe62696ebf61",
+      "bytes": 149281,
+      "classification": "superseded-diagnostic"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/superseded/dirty-fixture-logs/reconnect-older-than-ring.log",
+      "sha256": "d9cb7e5f00d2b7ecfa387af0d1555872a5d21642819fd4ef9e804a8d32c437c6",
+      "bytes": 140010,
+      "classification": "superseded-diagnostic"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/superseded/dirty-fixture-logs/reconnect-replay-available.log",
+      "sha256": "63b36ffd3f9235278dffa9f5a3532437b2844f99090aea2e5adc86bbe03ac1b5",
+      "bytes": 182448,
+      "classification": "superseded-diagnostic"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/superseded/dirty-fixture-logs/seed-during-burst.log",
+      "sha256": "4a5d2aefb545892d702d08216d84dbed79d742a157d68321e90993885010b18b",
+      "bytes": 148553,
+      "classification": "superseded-diagnostic"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/superseded/dirty-fixture-logs/stalled-and-current-socket.log",
+      "sha256": "81afa7b6733ee38591ee86556bdeea7e4d8681c160f203eacf5938a3be98591e",
+      "bytes": 146070,
+      "classification": "superseded-diagnostic"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/superseded/dirty-fixture-logs/zero-web-mobile-activity.log",
+      "sha256": "0d31159d9570dd0bc3416cc8b7f812734f9c3047a1076d6ecb3479f2a10397a9",
+      "bytes": 234862,
+      "classification": "superseded-diagnostic"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/superseded/dirty-fixture-originals/lifecycle-cleanup-parity.json",
+      "sha256": "895cadaf57f677878dd9624cc26e91bcfdae75431fb72f394a2bdaf99f958a2a",
+      "bytes": 73684,
+      "classification": "superseded-diagnostic"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/superseded/dirty-fixture-originals/many-subscribers-one-session.json",
+      "sha256": "99c0caf9a62ef7d7f53cb0f4fd416ecd3166237289174fadefa924c979f90eb9",
+      "bytes": 182239,
+      "classification": "superseded-diagnostic"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/superseded/dirty-fixture-originals/oversized-unicode-ansi-chunking.json",
+      "sha256": "54e4a3322940230588c2e1a063e981b4c237dd8109d4ec08f7c67b209a767e96",
+      "bytes": 148769,
+      "classification": "superseded-diagnostic"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/superseded/dirty-fixture-originals/reconnect-older-than-ring.json",
+      "sha256": "6a81d32c8a85a357c75245bab5c72efa4757acde44db7cb5c93757be7ab7c181",
+      "bytes": 139510,
+      "classification": "superseded-diagnostic"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/superseded/dirty-fixture-originals/reconnect-replay-available.json",
+      "sha256": "a3cd7ad897cd921eb5fd052da33f8f0aa2eaaffd0ae92bffab9fb8c2e175275f",
+      "bytes": 181946,
+      "classification": "superseded-diagnostic"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/superseded/dirty-fixture-originals/seed-during-burst.json",
+      "sha256": "1de445594d0119b20e9d2be4bd3abd62862904f811c7adc26e22587f0999978e",
+      "bytes": 148069,
+      "classification": "superseded-diagnostic"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/superseded/dirty-fixture-originals/stalled-and-current-socket.json",
+      "sha256": "15a9c797a6e49d2e7ad2ad512574db7d6d19f8d576d3c41963c43abd4a5d1455",
+      "bytes": 145568,
+      "classification": "superseded-diagnostic"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/superseded/dirty-fixture-originals/summary-full-provider-parity.json",
+      "sha256": "9683a7131e42e7134b9776c15217378eda84d435f5cd3bc284953a84f9b97ced",
+      "bytes": 259661,
+      "classification": "superseded-diagnostic"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/superseded/dirty-fixture-originals/zero-web-mobile-activity.json",
+      "sha256": "fbcf37916f68df1a13fdd89591e5b850c8af6f880015463df9ff6f29c3468862",
+      "bytes": 234364,
+      "classification": "superseded-diagnostic"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/superseded/host-clean.json",
+      "sha256": "021ed295f757b26d8022ed11947dadafa5c736d453648cdb4f059cb1ebe4d941",
+      "bytes": 1277672,
+      "classification": "superseded-diagnostic"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/superseded/pre-provision-many-subscribers-one-session.json",
+      "sha256": "ff5df32c6980ff9125afe2bea54b373d1d62ba3c27b9858f2b4670619ec66bfb",
+      "bytes": 182241,
+      "classification": "superseded-diagnostic"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/superseded/pre-provision-many-subscribers-one-session.log",
+      "sha256": "f1b17bf9651301fc94c361cd367724f72886650e92d3d33f8cf64dc59d79075a",
+      "bytes": 182710,
+      "classification": "superseded-diagnostic"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/superseded/summary-full-provider-parity.log",
+      "sha256": "8a6eef4c7d6eaeb1b9bd752c47914ceb385b38dab31e94e5ce190a68ad5da8eb",
+      "bytes": 260725,
+      "classification": "superseded-diagnostic"
+    },
+    {
+      "artifact": "apps/local-app/scripts/memory-soak/evidence/phase6-scenario-matrix-34e222d57850-ea0452dd2b66/zero-web-mobile-activity.json",
+      "sha256": "6333aac7c31e0eb0be437c8f20d9642f6a7137ddf572ddc0d58d051d4fa17983",
+      "bytes": 234366,
+      "classification": "authoritative-scenario"
+    }
+  ],
+  "verification": {
+    "algorithm": "sha256",
+    "allArtifactsPresent": true,
+    "allRecordedHashesVerified": true
+  }
+}

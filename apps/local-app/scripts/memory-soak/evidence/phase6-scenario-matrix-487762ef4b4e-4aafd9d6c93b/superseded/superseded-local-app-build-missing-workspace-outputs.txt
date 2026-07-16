@@ -1,0 +1,772 @@
+
+> local-app@0.0.0-internal prebuild /home/ngsupb/repos/twitech/devchain-rem15-checkpoint/apps/local-app
+> pnpm check:journal && rimraf dist && ts-node --compiler-options '{"module":"commonjs"}' scripts/fetch-pricing-data.ts
+
+
+> local-app@0.0.0-internal check:journal /home/ngsupb/repos/twitech/devchain-rem15-checkpoint/apps/local-app
+> ts-node --compiler-options '{"module":"commonjs"}' scripts/validate-journal.ts
+
+✓ _journal.json valid: 67 entries, idx 0-66 (grandfather floor: idx<60, strict-monotonic enforced for idx>=60)
+[fetch-pricing] Fetching LiteLLM pricing data...
+[fetch-pricing] Done: 800 models (Claude/OpenAI/Gemini) from 2965 total entries → /home/ngsupb/repos/twitech/devchain-rem15-checkpoint/apps/local-app/src/modules/session-reader/data/pricing.json
+
+> local-app@0.0.0-internal build /home/ngsupb/repos/twitech/devchain-rem15-checkpoint/apps/local-app
+> nest build && vite build && cp -r templates dist/templates
+
+[96msrc/common/config/host-helpers.ts[0m:[93m1[0m:[93m30[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m1[0m import { HostResolver } from '@devchain/shared';
+[7m [0m [91m                             ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/main.ts[0m:[93m6[0m:[93m30[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m6[0m import { HostResolver } from '@devchain/shared';
+[7m [0m [91m                             ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/cloud-tunnel/services/tunnel-client.service.ts[0m:[93m22[0m:[93m8[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m22[0m } from '@devchain/shared';
+[7m  [0m [91m       ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/cloud-tunnel/services/tunnel-client.service.ts[0m:[93m185[0m:[93m32[0m - [91merror[0m[90m TS2345: [0mArgument of type 'unknown' is not assignable to parameter of type 'string'.
+
+[7m185[0m       this.resolveControlQuery(msg.id, { live: msg.live, lastSeenAt: msg.lastSeenAt });
+[7m   [0m [91m                               ~~~~~~[0m
+[96msrc/modules/cloud-tunnel/services/tunnel-event-forwarder.service.ts[0m:[93m7[0m:[93m8[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m7[0m } from '@devchain/shared';
+[7m [0m [91m       ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/cloud-tunnel/services/tunnel-push-crypto.service.ts[0m:[93m15[0m:[93m8[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m15[0m } from '@devchain/shared';
+[7m  [0m [91m       ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/cloud-tunnel/services/tunnel-push-crypto.service.ts[0m:[93m144[0m:[93m20[0m - [91merror[0m[90m TS7006: [0mParameter 'kid' implicitly has an 'any' type.
+
+[7m144[0m       getKeyById: (kid) => (kid === pcKid || kid === device.kid ? sharedKey : undefined),
+[7m   [0m [91m                   ~~~[0m
+[96msrc/modules/cloud-tunnel/services/tunnel-rpc-crypto.service.ts[0m:[93m11[0m:[93m8[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m11[0m } from '@devchain/shared';
+[7m  [0m [91m       ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/cloud-tunnel/services/tunnel-rpc-crypto.service.ts[0m:[93m176[0m:[93m53[0m - [91merror[0m[90m TS18046: [0m'params' is of type 'unknown'.
+
+[7m176[0m     const service = await this.buildEnvelopeService(params.kid);
+[7m   [0m [91m                                                    ~~~~~~[0m
+[96msrc/modules/cloud-tunnel/services/tunnel-rpc-crypto.service.ts[0m:[93m181[0m:[93m48[0m - [91merror[0m[90m TS18046: [0m'params' is of type 'unknown'.
+
+[7m181[0m         { id: req.id, method: req.method, kid: params.kid },
+[7m   [0m [91m                                               ~~~~~~[0m
+[96msrc/modules/cloud-tunnel/services/tunnel-rpc-crypto.service.ts[0m:[93m219[0m:[93m54[0m - [91merror[0m[90m TS18046: [0m'params' is of type 'unknown'.
+
+[7m219[0m     const cryptoCtx: RpcCryptoContext = { senderKid: params.kid };
+[7m   [0m [91m                                                     ~~~~~~[0m
+[96msrc/modules/cloud-tunnel/services/tunnel-rpc-crypto.service.ts[0m:[93m261[0m:[93m20[0m - [91merror[0m[90m TS7006: [0mParameter 'kid' implicitly has an 'any' type.
+
+[7m261[0m       getKeyById: (kid) => (kid === device.kid || kid === pc.kid ? sharedKey : undefined),
+[7m   [0m [91m                   ~~~[0m
+[96msrc/modules/cloud-tunnel/services/tunnel-viewport-crypto.service.ts[0m:[93m16[0m:[93m8[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m16[0m } from '@devchain/shared';
+[7m  [0m [91m       ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/cloud-tunnel/services/tunnel-viewport-crypto.service.ts[0m:[93m124[0m:[93m20[0m - [91merror[0m[90m TS7006: [0mParameter 'kid' implicitly has an 'any' type.
+
+[7m124[0m       getKeyById: (kid) => (kid === pcKid || kid === device.kid ? sharedKey : undefined),
+[7m   [0m [91m                   ~~~[0m
+[96msrc/modules/cloud-tunnel/services/viewport-frame-sink.ts[0m:[93m1[0m:[93m42[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m1[0m import type { TunnelViewportFrame } from '@devchain/shared';
+[7m [0m [91m                                         ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/cloud-tunnel/services/viewport-streamer.service.ts[0m:[93m8[0m:[93m8[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m8[0m } from '@devchain/shared';
+[7m [0m [91m       ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/codebase-overview-analyzer/controllers/codebase-overview.controller.ts[0m:[93m25[0m:[93m8[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m25[0m } from '@devchain/codebase-overview';
+[7m  [0m [91m       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/codebase-overview-analyzer/services/codebase-overview-analyzer.service.ts[0m:[93m20[0m:[93m8[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m20[0m } from '@devchain/codebase-overview';
+[7m  [0m [91m       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/codebase-overview-analyzer/services/codebase-overview-analyzer.service.ts[0m:[93m394[0m:[93m67[0m - [91merror[0m[90m TS7006: [0mParameter 'c' implicitly has an 'any' type.
+
+[7m394[0m       const recentNames = new Set(act?.recentContributors30d.map((c) => c.authorName) ?? []);
+[7m   [0m [91m                                                                  ~[0m
+[96msrc/modules/codebase-overview-analyzer/services/codebase-overview-analyzer.service.ts[0m:[93m480[0m:[93m53[0m - [91merror[0m[90m TS7006: [0mParameter 'd' implicitly has an 'any' type.
+
+[7m480[0m     const district = state.snapshot.districts.find((d) => d.id === targetId);
+[7m   [0m [91m                                                    ~[0m
+[96msrc/modules/codebase-overview-analyzer/services/codebase-overview-analyzer.service.ts[0m:[93m510[0m:[93m57[0m - [91merror[0m[90m TS7006: [0mParameter 'd' implicitly has an 'any' type.
+
+[7m510[0m     const fromDistrict = state.snapshot.districts.find((d) => d.id === fromDistrictId);
+[7m   [0m [91m                                                        ~[0m
+[96msrc/modules/codebase-overview-analyzer/services/codebase-overview-analyzer.service.ts[0m:[93m511[0m:[93m55[0m - [91merror[0m[90m TS7006: [0mParameter 'd' implicitly has an 'any' type.
+
+[7m511[0m     const toDistrict = state.snapshot.districts.find((d) => d.id === toDistrictId);
+[7m   [0m [91m                                                      ~[0m
+[96msrc/modules/codebase-overview-analyzer/services/dependency-aggregation.service.ts[0m:[93m2[0m:[93m51[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m2[0m import type { DependencyEdge, DistrictNode } from '@devchain/codebase-overview';
+[7m [0m [91m                                                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/codebase-overview-analyzer/services/district-splitting.service.ts[0m:[93m2[0m:[93m45[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m2[0m import type { DistrictNode, FileRole } from '@devchain/codebase-overview';
+[7m [0m [91m                                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/codebase-overview-analyzer/services/evidence-query.service.ts[0m:[93m15[0m:[93m8[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m15[0m } from '@devchain/codebase-overview';
+[7m  [0m [91m       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/codebase-overview-analyzer/services/go-adapter.ts[0m:[93m2[0m:[93m48[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m2[0m import type { FileRole, LanguageAdapter } from '@devchain/codebase-overview';
+[7m [0m [91m                                               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/codebase-overview-analyzer/services/hotspot-scoring.service.ts[0m:[93m8[0m:[93m8[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m8[0m } from '@devchain/codebase-overview';
+[7m [0m [91m       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/codebase-overview-analyzer/services/java-adapter.ts[0m:[93m2[0m:[93m48[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m2[0m import type { FileRole, LanguageAdapter } from '@devchain/codebase-overview';
+[7m [0m [91m                                               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/codebase-overview-analyzer/services/language-adapter-registry.service.ts[0m:[93m3[0m:[93m48[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m3[0m import type { FileRole, LanguageAdapter } from '@devchain/codebase-overview';
+[7m [0m [91m                                               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/codebase-overview-analyzer/services/php-adapter.ts[0m:[93m2[0m:[93m48[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m2[0m import type { FileRole, LanguageAdapter } from '@devchain/codebase-overview';
+[7m [0m [91m                                               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/codebase-overview-analyzer/services/python-adapter.ts[0m:[93m2[0m:[93m48[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m2[0m import type { FileRole, LanguageAdapter } from '@devchain/codebase-overview';
+[7m [0m [91m                                               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/codebase-overview-analyzer/services/ruby-adapter.ts[0m:[93m2[0m:[93m48[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m2[0m import type { FileRole, LanguageAdapter } from '@devchain/codebase-overview';
+[7m [0m [91m                                               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/codebase-overview-analyzer/services/rust-adapter.ts[0m:[93m2[0m:[93m48[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m2[0m import type { FileRole, LanguageAdapter } from '@devchain/codebase-overview';
+[7m [0m [91m                                               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/codebase-overview-analyzer/services/typescript-adapter.ts[0m:[93m2[0m:[93m48[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m2[0m import type { FileRole, LanguageAdapter } from '@devchain/codebase-overview';
+[7m [0m [91m                                               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/core/services/preflight.service.ts[0m:[93m473[0m:[93m43[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m473[0m     const { HostResolver } = await import('@devchain/shared');
+[7m   [0m [91m                                          ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/e2ee/services/e2ee-device-store.service.ts[0m:[93m13[0m:[93m8[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m13[0m } from '@devchain/shared';
+[7m  [0m [91m       ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/e2ee/services/e2ee-keypair.service.ts[0m:[93m13[0m:[93m8[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m13[0m } from '@devchain/shared';
+[7m  [0m [91m       ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/e2ee/services/e2ee-keypair.service.ts[0m:[93m82[0m:[93m46[0m - [91merror[0m[90m TS7006: [0mParameter 'n' implicitly has an 'any' type.
+
+[7m82[0m     const generated = generateX25519KeyPair((n) => randomBytes(n));
+[7m  [0m [91m                                             ~[0m
+[96msrc/modules/e2ee/services/e2ee-pairing.service.ts[0m:[93m13[0m:[93m8[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m13[0m } from '@devchain/shared';
+[7m  [0m [91m       ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/e2ee/services/e2ee-trust.service.ts[0m:[93m11[0m:[93m8[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m11[0m } from '@devchain/shared';
+[7m  [0m [91m       ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/profiles/controllers/profiles.controller.ts[0m:[93m231[0m:[93m7[0m - [91merror[0m[90m TS2322: [0mType 'unknown' is not assignable to type 'string'.
+
+[7m231[0m       providerId: data.providerId,
+[7m   [0m [91m      ~~~~~~~~~~[0m
+
+  [96msrc/modules/storage/models/domain.models.ts[0m:[93m313[0m:[93m3[0m
+    [7m313[0m   providerId: string;
+    [7m   [0m [96m  ~~~~~~~~~~[0m
+    The expected type comes from property 'providerId' which is declared here on type 'CreateProfileProviderConfig'
+[96msrc/modules/profiles/controllers/profiles.controller.ts[0m:[93m232[0m:[93m7[0m - [91merror[0m[90m TS2322: [0mType 'unknown' is not assignable to type 'string'.
+
+[7m232[0m       name: data.name,
+[7m   [0m [91m      ~~~~[0m
+
+  [96msrc/modules/storage/models/domain.models.ts[0m:[93m314[0m:[93m3[0m
+    [7m314[0m   name: string;
+    [7m   [0m [96m  ~~~~[0m
+    The expected type comes from property 'name' which is declared here on type 'CreateProfileProviderConfig'
+[96msrc/modules/profiles/controllers/profiles.controller.ts[0m:[93m233[0m:[93m7[0m - [91merror[0m[90m TS2322: [0mType '{} | null' is not assignable to type 'string | null | undefined'.
+  Type '{}' is not assignable to type 'string'.
+
+[7m233[0m       description: data.description ?? null,
+[7m   [0m [91m      ~~~~~~~~~~~[0m
+
+  [96msrc/modules/storage/models/domain.models.ts[0m:[93m315[0m:[93m3[0m
+    [7m315[0m   description?: string | null;
+    [7m   [0m [96m  ~~~~~~~~~~~[0m
+    The expected type comes from property 'description' which is declared here on type 'CreateProfileProviderConfig'
+[96msrc/modules/profiles/controllers/profiles.controller.ts[0m:[93m234[0m:[93m7[0m - [91merror[0m[90m TS2322: [0mType '{} | null' is not assignable to type 'string | null'.
+  Type '{}' is not assignable to type 'string'.
+
+[7m234[0m       options: data.options ?? null,
+[7m   [0m [91m      ~~~~~~~[0m
+
+  [96msrc/modules/storage/models/domain.models.ts[0m:[93m316[0m:[93m3[0m
+    [7m316[0m   options: string | null;
+    [7m   [0m [96m  ~~~~~~~[0m
+    The expected type comes from property 'options' which is declared here on type 'CreateProfileProviderConfig'
+[96msrc/modules/profiles/controllers/profiles.controller.ts[0m:[93m235[0m:[93m7[0m - [91merror[0m[90m TS2322: [0mType '{} | null' is not assignable to type 'Record<string, string> | null'.
+  Type '{}' is not assignable to type 'Record<string, string>'.
+    Index signature for type 'string' is missing in type '{}'.
+
+[7m235[0m       env: data.env ?? null,
+[7m   [0m [91m      ~~~[0m
+
+  [96msrc/modules/storage/models/domain.models.ts[0m:[93m317[0m:[93m3[0m
+    [7m317[0m   env: Record<string, string> | null;
+    [7m   [0m [96m  ~~~[0m
+    The expected type comes from property 'env' which is declared here on type 'CreateProfileProviderConfig'
+[96msrc/modules/profiles/controllers/profiles.controller.ts[0m:[93m236[0m:[93m7[0m - [91merror[0m[90m TS2322: [0mType '{} | null' is not assignable to type 'string | null | undefined'.
+  Type '{}' is not assignable to type 'string'.
+
+[7m236[0m       model: data.model ?? null,
+[7m   [0m [91m      ~~~~~[0m
+
+  [96msrc/modules/storage/models/domain.models.ts[0m:[93m318[0m:[93m3[0m
+    [7m318[0m   model?: string | null;
+    [7m   [0m [96m  ~~~~~[0m
+    The expected type comes from property 'model' which is declared here on type 'CreateProfileProviderConfig'
+[96msrc/modules/profiles/controllers/profiles.controller.ts[0m:[93m237[0m:[93m7[0m - [91merror[0m[90m TS2322: [0mType '{} | null' is not assignable to type 'string | null | undefined'.
+  Type '{}' is not assignable to type 'string'.
+
+[7m237[0m       effort: data.effort ?? null,
+[7m   [0m [91m      ~~~~~~[0m
+
+  [96msrc/modules/storage/models/domain.models.ts[0m:[93m319[0m:[93m3[0m
+    [7m319[0m   effort?: string | null;
+    [7m   [0m [96m  ~~~~~~[0m
+    The expected type comes from property 'effort' which is declared here on type 'CreateProfileProviderConfig'
+[96msrc/modules/profiles/controllers/provider-configs.controller.ts[0m:[93m58[0m:[93m7[0m - [91merror[0m[90m TS2322: [0mType '{} | null' is not assignable to type 'string | undefined'.
+  Type 'null' is not assignable to type 'string | undefined'.
+
+[7m58[0m       updateData.providerId = data.providerId;
+[7m  [0m [91m      ~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/profiles/controllers/provider-configs.controller.ts[0m:[93m61[0m:[93m7[0m - [91merror[0m[90m TS2322: [0mType '{} | null' is not assignable to type 'string | undefined'.
+  Type 'null' is not assignable to type 'string | undefined'.
+
+[7m61[0m       updateData.name = data.name;
+[7m  [0m [91m      ~~~~~~~~~~~~~~~[0m
+[96msrc/modules/profiles/controllers/provider-configs.controller.ts[0m:[93m64[0m:[93m7[0m - [91merror[0m[90m TS2322: [0mType '{} | null' is not assignable to type 'string | null | undefined'.
+  Type '{}' is not assignable to type 'string'.
+
+[7m64[0m       updateData.description = data.description;
+[7m  [0m [91m      ~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/profiles/controllers/provider-configs.controller.ts[0m:[93m67[0m:[93m7[0m - [91merror[0m[90m TS2322: [0mType '{} | null' is not assignable to type 'string | null | undefined'.
+  Type '{}' is not assignable to type 'string'.
+
+[7m67[0m       updateData.options = data.options;
+[7m  [0m [91m      ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/profiles/controllers/provider-configs.controller.ts[0m:[93m70[0m:[93m7[0m - [91merror[0m[90m TS2322: [0mType '{} | null' is not assignable to type 'Record<string, string> | null | undefined'.
+  Type '{}' is not assignable to type 'Record<string, string>'.
+    Index signature for type 'string' is missing in type '{}'.
+
+[7m70[0m       updateData.env = data.env;
+[7m  [0m [91m      ~~~~~~~~~~~~~~[0m
+[96msrc/modules/profiles/controllers/provider-configs.controller.ts[0m:[93m73[0m:[93m7[0m - [91merror[0m[90m TS2322: [0mType '{} | null' is not assignable to type 'string | null | undefined'.
+  Type '{}' is not assignable to type 'string'.
+
+[7m73[0m       updateData.model = data.model;
+[7m  [0m [91m      ~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/profiles/controllers/provider-configs.controller.ts[0m:[93m76[0m:[93m7[0m - [91merror[0m[90m TS2322: [0mType '{} | null' is not assignable to type 'string | null | undefined'.
+  Type '{}' is not assignable to type 'string'.
+
+[7m76[0m       updateData.effort = data.effort;
+[7m  [0m [91m      ~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/profiles/dto.ts[0m:[93m2[0m:[93m31[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m2[0m import { EnvVarsSchema } from '@devchain/shared';
+[7m [0m [91m                              ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/profiles/dto.ts[0m:[93m63[0m:[93m33[0m - [91merror[0m[90m TS7006: [0mParameter 'v' implicitly has an 'any' type.
+
+[7m63[0m   env: EnvVarsSchema.transform((v) => (v === undefined ? null : v)),
+[7m  [0m [91m                                ~[0m
+[96msrc/modules/projects/dtos/setup-preview.dto.ts[0m:[93m1[0m:[93m33[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m1[0m import type { ExportData } from '@devchain/shared';
+[7m [0m [91m                                ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/projects/helpers/project-export.ts[0m:[93m1[0m:[93m35[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m1[0m import type { ManifestData } from '@devchain/shared';
+[7m [0m [91m                                  ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/projects/helpers/project-import.ts[0m:[93m1[0m:[93m30[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m1[0m import { ExportSchema } from '@devchain/shared';
+[7m [0m [91m                             ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/projects/helpers/project-import.ts[0m:[93m415[0m:[93m27[0m - [91merror[0m[90m TS7006: [0mParameter 'profile' implicitly has an 'any' type.
+
+[7m415[0m     payload.profiles.map((profile) => profile.provider.name.trim().toLowerCase()),
+[7m   [0m [91m                          ~~~~~~~[0m
+[96msrc/modules/projects/helpers/project-import.ts[0m:[93m419[0m:[93m5[0m - [91merror[0m[90m TS2345: [0mArgument of type 'Set<unknown>' is not assignable to parameter of type 'Set<string>'.
+  Type 'unknown' is not assignable to type 'string'.
+
+[7m419[0m     providerNames,
+[7m   [0m [91m    ~~~~~~~~~~~~~[0m
+[96msrc/modules/projects/helpers/project-import.ts[0m:[93m471[0m:[93m27[0m - [91merror[0m[90m TS7006: [0mParameter 'status' implicitly has an 'any' type.
+
+[7m471[0m     templateStatuses.map((status) => status.label.trim().toLowerCase()),
+[7m   [0m [91m                          ~~~~~~[0m
+[96msrc/modules/projects/helpers/project-import.ts[0m:[93m530[0m:[93m53[0m - [91merror[0m[90m TS7006: [0mParameter 'status' implicitly has an 'any' type.
+
+[7m530[0m     templateStatuses: context.payload.statuses.map((status) => ({
+[7m   [0m [91m                                                    ~~~~~~[0m
+[96msrc/modules/projects/helpers/project-template-manifest.helpers.ts[0m:[93m1[0m:[93m62[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m1[0m import { isLessThan, isValidSemVer, type ManifestData } from '@devchain/shared';
+[7m [0m [91m                                                             ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/projects/helpers/template-loader.ts[0m:[93m1[0m:[93m30[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m1[0m import { ExportSchema } from '@devchain/shared';
+[7m [0m [91m                             ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/projects/helpers/template-loader.ts[0m:[93m497[0m:[93m27[0m - [91merror[0m[90m TS7006: [0mParameter 'profile' implicitly has an 'any' type.
+
+[7m497[0m     payload.profiles.map((profile) => profile.provider.name.trim().toLowerCase()),
+[7m   [0m [91m                          ~~~~~~~[0m
+[96msrc/modules/projects/helpers/template-loader.ts[0m:[93m501[0m:[93m5[0m - [91merror[0m[90m TS2345: [0mArgument of type 'Set<unknown>' is not assignable to parameter of type 'Set<string>'.
+  Type 'unknown' is not assignable to type 'string'.
+
+[7m501[0m     providerNames,
+[7m   [0m [91m    ~~~~~~~~~~~~~[0m
+[96msrc/modules/projects/services/projects.service.ts[0m:[93m2[0m:[93m66[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m2[0m import { ExportSchema, type ExportData, type ManifestData } from '@devchain/shared';
+[7m [0m [91m                                                                 ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/projects/template-codec/codecs/teams.codec.ts[0m:[93m324[0m:[93m14[0m - [91merror[0m[90m TS7006: [0mParameter 'team' implicitly has an 'any' type.
+
+[7m324[0m             (team) => team.name.trim().toLowerCase() === override.teamName.trim().toLowerCase(),
+[7m   [0m [91m             ~~~~[0m
+[96msrc/modules/projects/template-codec/import-context.ts[0m:[93m18[0m:[93m35[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m18[0m import type { ExportSchema } from '@devchain/shared';
+[7m  [0m [91m                                  ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/projects/template-codec/template-section-codec.ts[0m:[93m15[0m:[93m30[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m15[0m import { ExportSchema } from '@devchain/shared';
+[7m  [0m [91m                             ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/providers/controllers/providers.controller.ts[0m:[93m17[0m:[93m31[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m17[0m import { EnvVarsSchema } from '@devchain/shared';
+[7m  [0m [91m                              ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/providers/controllers/providers.controller.ts[0m:[93m44[0m:[93m33[0m - [91merror[0m[90m TS7006: [0mParameter 'v' implicitly has an 'any' type.
+
+[7m44[0m   env: EnvVarsSchema.transform((v) => (v === undefined ? null : v)),
+[7m  [0m [91m                                ~[0m
+[96msrc/modules/providers/controllers/providers.controller.ts[0m:[93m173[0m:[93m11[0m - [91merror[0m[90m TS2322: [0mType '{ binPath: string | null | undefined; name?: unknown; mcpConfigured?: unknown; mcpEndpoint?: unknown; mcpRegisteredAt?: unknown; autoCompactThreshold?: unknown; autoCompactThreshold1m?: unknown; oneMillionContextEnabled?: unknown; env?: unknown; envScopes?: unknown; }' is not assignable to type 'UpdateProviderRequest'.
+  Types of property 'name' are incompatible.
+    Type 'unknown' is not assignable to type 'string | undefined'.
+
+[7m173[0m     const request: UpdateProviderRequest = {
+[7m   [0m [91m          ~~~~~~~[0m
+[96msrc/modules/providers/controllers/providers.controller.ts[0m:[93m177[0m:[93m62[0m - [91merror[0m[90m TS2345: [0mArgument of type '{} | null' is not assignable to parameter of type 'string | null | undefined'.
+  Type '{}' is not assignable to type 'string'.
+
+[7m177[0m           ? await this.providerStateManager.normalizeBinPath(parsed.binPath)
+[7m   [0m [91m                                                             ~~~~~~~~~~~~~~[0m
+[96msrc/modules/providers/services/provider-mcp-ensure.service.ts[0m:[93m5[0m:[93m30[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m5[0m import { HostResolver } from '@devchain/shared';
+[7m [0m [91m                             ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/registry/controllers/templates.controller.ts[0m:[93m16[0m:[93m30[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m16[0m import { ExportSchema } from '@devchain/shared';
+[7m  [0m [91m                             ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/registry/services/template-cache.service.ts[0m:[93m5[0m:[93m34[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m5[0m import { getLatestVersion } from '@devchain/shared';
+[7m [0m [91m                                 ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/registry/services/unified-template.service.ts[0m:[93m7[0m:[93m30[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m7[0m import { ExportSchema } from '@devchain/shared';
+[7m [0m [91m                             ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/registry/services/unified-template.service.ts[0m:[93m8[0m:[93m35[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m8[0m import type { ManifestData } from '@devchain/shared';
+[7m [0m [91m                                  ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/sessions/services/session-runtime/session-launch-pipeline.service.ts[0m:[93m22[0m:[93m30[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m22[0m import { HostResolver } from '@devchain/shared';
+[7m  [0m [91m                             ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/modules/sessions/services/session-runtime/session-restore-pipeline.service.ts[0m:[93m18[0m:[93m30[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m18[0m import { HostResolver } from '@devchain/shared';
+[7m  [0m [91m                             ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/WarningsBar.tsx[0m:[93m1[0m:[93m59[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m1[0m import type { AnalysisWarning, AnalysisWarningCode } from '@devchain/codebase-overview';
+[7m [0m [91m                                                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/lib/cycles.ts[0m:[93m2[0m:[93m54[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m2[0m import type { DistrictSignals, DependencyEdge } from '@devchain/codebase-overview';
+[7m [0m [91m                                                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/ArchitectureSection/ArchitectureSection.tsx[0m:[93m3[0m:[93m47[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m3[0m import type { CodebaseOverviewSnapshot } from '@devchain/codebase-overview';
+[7m [0m [91m                                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/ArchitectureSection/ArchitectureSection.tsx[0m:[93m42[0m:[93m46[0m - [91merror[0m[90m TS7006: [0mParameter 's' implicitly has an 'any' type.
+
+[7m42[0m     dependencies.length > 0 || signals.some((s) => s.blastRadius > 0 || s.couplingScore > 0);
+[7m  [0m [91m                                             ~[0m
+[96msrc/ui/components/codebase-overview/sections/ArchitectureSection/BlastRadiusLeadersCard.tsx[0m:[93m3[0m:[93m38[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m3[0m import type { DistrictSignals } from '@devchain/codebase-overview';
+[7m [0m [91m                                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/ArchitectureSection/CouplingOutliersCard.tsx[0m:[93m3[0m:[93m38[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m3[0m import type { DistrictSignals } from '@devchain/codebase-overview';
+[7m [0m [91m                                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/ArchitectureSection/CyclesCard.tsx[0m:[93m2[0m:[93m47[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m2[0m import type { CodebaseOverviewSnapshot } from '@devchain/codebase-overview';
+[7m [0m [91m                                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/ArchitectureSection/DependencyMatrix.tsx[0m:[93m3[0m:[93m69[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m3[0m import type { CodebaseOverviewSnapshot, DependencyPairDetail } from '@devchain/codebase-overview';
+[7m [0m [91m                                                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/ArchitectureSection/DependencyMatrix.tsx[0m:[93m58[0m:[93m18[0m - [91merror[0m[90m TS7006: [0mParameter 'a' implicitly has an 'any' type.
+
+[7m58[0m       list.sort((a, b) => b.couplingScore - a.couplingScore);
+[7m  [0m [91m                 ~[0m
+[96msrc/ui/components/codebase-overview/sections/ArchitectureSection/DependencyMatrix.tsx[0m:[93m58[0m:[93m21[0m - [91merror[0m[90m TS7006: [0mParameter 'b' implicitly has an 'any' type.
+
+[7m58[0m       list.sort((a, b) => b.couplingScore - a.couplingScore);
+[7m  [0m [91m                    ~[0m
+[96msrc/ui/components/codebase-overview/sections/ArchitectureSection/DependencyMatrix.tsx[0m:[93m90[0m:[93m39[0m - [91merror[0m[90m TS7006: [0mParameter 'd' implicitly has an 'any' type.
+
+[7m90[0m       return orderedDistricts.filter((d) => neighborIds.has(d.id));
+[7m  [0m [91m                                      ~[0m
+[96msrc/ui/components/codebase-overview/sections/ArchitectureSection/DependencyMatrix.tsx[0m:[93m199[0m:[93m42[0m - [91merror[0m[90m TS7006: [0mParameter 'r' implicitly has an 'any' type.
+
+[7m199[0m                   {snapshot.regions.map((r) => (
+[7m   [0m [91m                                         ~[0m
+[96msrc/ui/components/codebase-overview/sections/ArchitectureSection/DependencyMatrix.tsx[0m:[93m212[0m:[93m40[0m - [91merror[0m[90m TS7006: [0mParameter 'rowRegion' implicitly has an 'any' type.
+
+[7m212[0m                 {snapshot.regions.map((rowRegion) => (
+[7m   [0m [91m                                       ~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/ArchitectureSection/DependencyMatrix.tsx[0m:[93m217[0m:[93m44[0m - [91merror[0m[90m TS7006: [0mParameter 'colRegion' implicitly has an 'any' type.
+
+[7m217[0m                     {snapshot.regions.map((colRegion) => {
+[7m   [0m [91m                                           ~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/ArchitectureSection/DependencyMatrix.tsx[0m:[93m275[0m:[93m42[0m - [91merror[0m[90m TS7006: [0mParameter 'r' implicitly has an 'any' type.
+
+[7m275[0m                   {snapshot.regions.map((r) => (
+[7m   [0m [91m                                         ~[0m
+[96msrc/ui/components/codebase-overview/sections/ArchitectureSection/DependencyMatrix.tsx[0m:[93m296[0m:[93m42[0m - [91merror[0m[90m TS7006: [0mParameter 'd' implicitly has an 'any' type.
+
+[7m296[0m                   {visibleDistricts.map((d) => (
+[7m   [0m [91m                                         ~[0m
+[96msrc/ui/components/codebase-overview/sections/ArchitectureSection/DependencyMatrix.tsx[0m:[93m324[0m:[93m40[0m - [91merror[0m[90m TS7006: [0mParameter 'rowDist' implicitly has an 'any' type.
+
+[7m324[0m                 {visibleDistricts.map((rowDist) => (
+[7m   [0m [91m                                       ~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/ArchitectureSection/DependencyMatrix.tsx[0m:[93m343[0m:[93m44[0m - [91merror[0m[90m TS7006: [0mParameter 'colDist' implicitly has an 'any' type.
+
+[7m343[0m                     {visibleDistricts.map((colDist) => {
+[7m   [0m [91m                                           ~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/ArchitectureSection/DependencyMatrix.tsx[0m:[93m416[0m:[93m42[0m - [91merror[0m[90m TS7006: [0mParameter 'd' implicitly has an 'any' type.
+
+[7m416[0m                   {visibleDistricts.map((d) => (
+[7m   [0m [91m                                         ~[0m
+[96msrc/ui/components/codebase-overview/sections/ArchitectureSection/DependencyMatrix.tsx[0m:[93m456[0m:[93m49[0m - [91merror[0m[90m TS7006: [0mParameter 'd' implicitly has an 'any' type.
+
+[7m456[0m   const fromDistrict = snapshot.districts.find((d) => d.id === fromId);
+[7m   [0m [91m                                                ~[0m
+[96msrc/ui/components/codebase-overview/sections/ArchitectureSection/DependencyMatrix.tsx[0m:[93m457[0m:[93m47[0m - [91merror[0m[90m TS7006: [0mParameter 'd' implicitly has an 'any' type.
+
+[7m457[0m   const toDistrict = snapshot.districts.find((d) => d.id === toId);
+[7m   [0m [91m                                              ~[0m
+[96msrc/ui/components/codebase-overview/sections/ArchitectureSection/DependencyMatrix.tsx[0m:[93m537[0m:[93m52[0m - [91merror[0m[90m TS7006: [0mParameter 'edge' implicitly has an 'any' type.
+
+[7m537[0m                 {pairDetail.exemplarFileEdges.map((edge, i) => (
+[7m   [0m [91m                                                   ~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/ArchitectureSection/DependencyMatrix.tsx[0m:[93m537[0m:[93m58[0m - [91merror[0m[90m TS7006: [0mParameter 'i' implicitly has an 'any' type.
+
+[7m537[0m                 {pairDetail.exemplarFileEdges.map((edge, i) => (
+[7m   [0m [91m                                                         ~[0m
+[96msrc/ui/components/codebase-overview/sections/ArchitectureSection/TopDependencyPairsCard.tsx[0m:[93m3[0m:[93m47[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m3[0m import type { CodebaseOverviewSnapshot } from '@devchain/codebase-overview';
+[7m [0m [91m                                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/ArchitectureSection/TopDependencyPairsCard.tsx[0m:[93m25[0m:[93m61[0m - [91merror[0m[90m TS7006: [0mParameter 'd' implicitly has an 'any' type.
+
+[7m25[0m     const districtNameMap = new Map(snapshot.districts.map((d) => [d.id, d.name]));
+[7m  [0m [91m                                                            ~[0m
+[96msrc/ui/components/codebase-overview/sections/ChangeSection/AcceleratingCallout.tsx[0m:[93m3[0m:[93m47[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m3[0m import type { CodebaseOverviewSnapshot } from '@devchain/codebase-overview';
+[7m [0m [91m                                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/ChangeSection/AcceleratingCallout.tsx[0m:[93m31[0m:[93m56[0m - [91merror[0m[90m TS7006: [0mParameter 'a' implicitly has an 'any' type.
+
+[7m31[0m     const activityMap = new Map(snapshot.activity.map((a) => [a.targetId, a.dailyChurn]));
+[7m  [0m [91m                                                       ~[0m
+[96msrc/ui/components/codebase-overview/sections/ChangeSection/AcceleratingCallout.tsx[0m:[93m33[0m:[93m16[0m - [91merror[0m[90m TS7006: [0mParameter 's' implicitly has an 'any' type.
+
+[7m33[0m       .filter((s) => s.churn7d > 0 && s.churn7d > s.churn30d / 4)
+[7m  [0m [91m               ~[0m
+[96msrc/ui/components/codebase-overview/sections/ChangeSection/AcceleratingCallout.tsx[0m:[93m34[0m:[93m14[0m - [91merror[0m[90m TS7006: [0mParameter 'a' implicitly has an 'any' type.
+
+[7m34[0m       .sort((a, b) => b.churn7d - a.churn7d || b.churn30d - a.churn30d)
+[7m  [0m [91m             ~[0m
+[96msrc/ui/components/codebase-overview/sections/ChangeSection/AcceleratingCallout.tsx[0m:[93m34[0m:[93m17[0m - [91merror[0m[90m TS7006: [0mParameter 'b' implicitly has an 'any' type.
+
+[7m34[0m       .sort((a, b) => b.churn7d - a.churn7d || b.churn30d - a.churn30d)
+[7m  [0m [91m                ~[0m
+[96msrc/ui/components/codebase-overview/sections/ChangeSection/AcceleratingCallout.tsx[0m:[93m36[0m:[93m13[0m - [91merror[0m[90m TS7006: [0mParameter 's' implicitly has an 'any' type.
+
+[7m36[0m       .map((s) => ({
+[7m  [0m [91m            ~[0m
+[96msrc/ui/components/codebase-overview/sections/ChangeSection/AcceleratingCallout.tsx[0m:[93m41[0m:[93m41[0m - [91merror[0m[90m TS2345: [0mArgument of type 'unknown' is not assignable to parameter of type 'Record<string, number> | undefined'.
+
+[7m41[0m         sparkline: buildSparklineValues(activityMap.get(s.districtId)),
+[7m  [0m [91m                                        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/ChangeSection/AcceleratingCallout.tsx[0m:[93m59[0m:[93m20[0m - [91merror[0m[90m TS7006: [0mParameter 'row' implicitly has an 'any' type.
+
+[7m59[0m         {rows.map((row) => (
+[7m  [0m [91m                   ~~~[0m
+[96msrc/ui/components/codebase-overview/sections/ChangeSection/AcceleratingCallout.tsx[0m:[93m71[0m:[93m51[0m - [91merror[0m[90m TS7006: [0mParameter 'v' implicitly has an 'any' type.
+
+[7m71[0m             {row.sparkline && row.sparkline.some((v) => v > 0) && (
+[7m  [0m [91m                                                  ~[0m
+[96msrc/ui/components/codebase-overview/sections/ChangeSection/ChangeSection.tsx[0m:[93m3[0m:[93m47[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m3[0m import type { CodebaseOverviewSnapshot } from '@devchain/codebase-overview';
+[7m [0m [91m                                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/ChangeSection/ChangeSection.tsx[0m:[93m16[0m:[93m57[0m - [91merror[0m[90m TS7006: [0mParameter 'w' implicitly has an 'any' type.
+
+[7m16[0m   const heatmapHidden = snapshot.metrics.warnings.some((w) => w.code === 'daily_churn_unavailable');
+[7m  [0m [91m                                                        ~[0m
+[96msrc/ui/components/codebase-overview/sections/ChangeSection/ChangeSection.tsx[0m:[93m19[0m:[93m36[0m - [91merror[0m[90m TS7006: [0mParameter 's' implicitly has an 'any' type.
+
+[7m19[0m     () => snapshot.signals.filter((s) => s.churn7d > 0 && s.churn7d > s.churn30d / 4).length,
+[7m  [0m [91m                                   ~[0m
+[96msrc/ui/components/codebase-overview/sections/ChangeSection/ChangeSection.tsx[0m:[93m24[0m:[93m36[0m - [91merror[0m[90m TS7006: [0mParameter 's' implicitly has an 'any' type.
+
+[7m24[0m     () => snapshot.signals.filter((s) => s.churn30d > 5 && s.churn7d === 0).length,
+[7m  [0m [91m                                   ~[0m
+[96msrc/ui/components/codebase-overview/sections/ChangeSection/GoneQuietCallout.tsx[0m:[93m3[0m:[93m38[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m3[0m import type { DistrictSignals } from '@devchain/codebase-overview';
+[7m [0m [91m                                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/ChangeSection/Heatmap.tsx[0m:[93m3[0m:[93m47[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m3[0m import type { CodebaseOverviewSnapshot } from '@devchain/codebase-overview';
+[7m [0m [91m                                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/ChangeSection/Heatmap.tsx[0m:[93m62[0m:[93m56[0m - [91merror[0m[90m TS7006: [0mParameter 'a' implicitly has an 'any' type.
+
+[7m62[0m     const activityMap = new Map(snapshot.activity.map((a) => [a.targetId, a.dailyChurn ?? {}]));
+[7m  [0m [91m                                                       ~[0m
+[96msrc/ui/components/codebase-overview/sections/ChangeSection/Heatmap.tsx[0m:[93m65[0m:[93m16[0m - [91merror[0m[90m TS7006: [0mParameter 's' implicitly has an 'any' type.
+
+[7m65[0m       .filter((s) => s.churn30d >= MIN_CHURN30D)
+[7m  [0m [91m               ~[0m
+[96msrc/ui/components/codebase-overview/sections/ChangeSection/Heatmap.tsx[0m:[93m66[0m:[93m14[0m - [91merror[0m[90m TS7006: [0mParameter 'a' implicitly has an 'any' type.
+
+[7m66[0m       .sort((a, b) => b.churn30d - a.churn30d)
+[7m  [0m [91m             ~[0m
+[96msrc/ui/components/codebase-overview/sections/ChangeSection/Heatmap.tsx[0m:[93m66[0m:[93m17[0m - [91merror[0m[90m TS7006: [0mParameter 'b' implicitly has an 'any' type.
+
+[7m66[0m       .sort((a, b) => b.churn30d - a.churn30d)
+[7m  [0m [91m                ~[0m
+[96msrc/ui/components/codebase-overview/sections/ChangeSection/Heatmap.tsx[0m:[93m68[0m:[93m13[0m - [91merror[0m[90m TS7006: [0mParameter 's' implicitly has an 'any' type.
+
+[7m68[0m       .map((s) => ({
+[7m  [0m [91m            ~[0m
+[96msrc/ui/components/codebase-overview/sections/ChangeSection/Heatmap.tsx[0m:[93m180[0m:[93m6[0m - [91merror[0m[90m TS7006: [0mParameter 'w' implicitly has an 'any' type.
+
+[7m180[0m     (w) => w.code === 'daily_churn_unavailable',
+[7m   [0m [91m     ~[0m
+[96msrc/ui/components/codebase-overview/sections/ChangeSection/TopContributorsCard.tsx[0m:[93m3[0m:[93m47[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m3[0m import type { CodebaseOverviewSnapshot } from '@devchain/codebase-overview';
+[7m [0m [91m                                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/OwnershipSection/BusFactorCard.tsx[0m:[93m3[0m:[93m54[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m3[0m import type { DistrictSignals, DependencyEdge } from '@devchain/codebase-overview';
+[7m [0m [91m                                                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/OwnershipSection/LoneAuthorCard.tsx[0m:[93m3[0m:[93m38[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m3[0m import type { DistrictSignals } from '@devchain/codebase-overview';
+[7m [0m [91m                                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/OwnershipSection/OwnerQuietCard.tsx[0m:[93m3[0m:[93m38[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m3[0m import type { DistrictSignals } from '@devchain/codebase-overview';
+[7m [0m [91m                                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/OwnershipSection/OwnershipSection.tsx[0m:[93m2[0m:[93m47[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m2[0m import type { CodebaseOverviewSnapshot } from '@devchain/codebase-overview';
+[7m [0m [91m                                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/OwnershipSection/OwnershipSection.tsx[0m:[93m31[0m:[93m19[0m - [91merror[0m[90m TS7006: [0mParameter 's' implicitly has an 'any' type.
+
+[7m31[0m     signals.some((s) => s.ownershipMeasured) || snapshot.globalContributors.length > 0;
+[7m  [0m [91m                  ~[0m
+[96msrc/ui/components/codebase-overview/sections/OwnershipSection/TopContributorsByDistrictCard.tsx[0m:[93m3[0m:[93m47[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m3[0m import type { CodebaseOverviewSnapshot } from '@devchain/codebase-overview';
+[7m [0m [91m                                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/OwnershipSection/TopContributorsByDistrictCard.tsx[0m:[93m48[0m:[93m61[0m - [91merror[0m[90m TS7006: [0mParameter 'd' implicitly has an 'any' type.
+
+[7m48[0m     const districtNameMap = new Map(snapshot.districts.map((d) => [d.id, d.name]));
+[7m  [0m [91m                                                            ~[0m
+[96msrc/ui/components/codebase-overview/sections/OwnershipSection/TopContributorsByDistrictCard.tsx[0m:[93m58[0m:[93m57[0m - [91merror[0m[90m TS7006: [0mParameter 'c' implicitly has an 'any' type.
+
+[7m58[0m         const contrib = act.recentContributors30d.find((c) => c.authorName === gc.authorName);
+[7m  [0m [91m                                                        ~[0m
+[96msrc/ui/components/codebase-overview/sections/OwnershipSection/TopContributorsByDistrictCard.tsx[0m:[93m64[0m:[93m11[0m - [91merror[0m[90m TS2322: [0mType '{}' is not assignable to type 'string'.
+
+[7m64[0m           districtName: name,
+[7m  [0m [91m          ~~~~~~~~~~~~[0m
+
+  [96msrc/ui/components/codebase-overview/sections/OwnershipSection/TopContributorsByDistrictCard.tsx[0m:[93m29[0m:[93m3[0m
+    [7m29[0m   districtName: string;
+    [7m  [0m [96m  ~~~~~~~~~~~~[0m
+    The expected type comes from property 'districtName' which is declared here on type 'AuthorDistrict'
+[96msrc/ui/components/codebase-overview/sections/StructureSection/DistrictTreeRow.tsx[0m:[93m1[0m:[93m38[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m1[0m import type { DistrictSignals } from '@devchain/codebase-overview';
+[7m [0m [91m                                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/StructureSection/RegionTreeNode.tsx[0m:[93m3[0m:[93m50[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m3[0m import type { RegionNode, DistrictSignals } from '@devchain/codebase-overview';
+[7m [0m [91m                                                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/StructureSection/StructureSection.tsx[0m:[93m3[0m:[93m64[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m3[0m import type { CodebaseOverviewSnapshot, DistrictSignals } from '@devchain/codebase-overview';
+[7m [0m [91m                                                               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/StructureSection/StructureSection.tsx[0m:[93m31[0m:[93m52[0m - [91merror[0m[90m TS7006: [0mParameter 'sum' implicitly has an 'any' type.
+
+[7m31[0m   const totalFiles = useMemo(() => signals.reduce((sum, s) => sum + s.files, 0), [signals]);
+[7m  [0m [91m                                                   ~~~[0m
+[96msrc/ui/components/codebase-overview/sections/StructureSection/StructureSection.tsx[0m:[93m31[0m:[93m57[0m - [91merror[0m[90m TS7006: [0mParameter 's' implicitly has an 'any' type.
+
+[7m31[0m   const totalFiles = useMemo(() => signals.reduce((sum, s) => sum + s.files, 0), [signals]);
+[7m  [0m [91m                                                        ~[0m
+[96msrc/ui/components/codebase-overview/sections/StructureSection/StructureSection.tsx[0m:[93m32[0m:[93m50[0m - [91merror[0m[90m TS7006: [0mParameter 'sum' implicitly has an 'any' type.
+
+[7m32[0m   const totalLoc = useMemo(() => signals.reduce((sum, s) => sum + s.loc, 0), [signals]);
+[7m  [0m [91m                                                 ~~~[0m
+[96msrc/ui/components/codebase-overview/sections/StructureSection/StructureSection.tsx[0m:[93m32[0m:[93m55[0m - [91merror[0m[90m TS7006: [0mParameter 's' implicitly has an 'any' type.
+
+[7m32[0m   const totalLoc = useMemo(() => signals.reduce((sum, s) => sum + s.loc, 0), [signals]);
+[7m  [0m [91m                                                      ~[0m
+[96msrc/ui/components/codebase-overview/sections/StructureSection/StructureSection.tsx[0m:[93m68[0m:[93m23[0m - [91merror[0m[90m TS7006: [0mParameter 'region' implicitly has an 'any' type.
+
+[7m68[0m         {regions.map((region) => (
+[7m  [0m [91m                      ~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/SummarySection/Callouts.tsx[0m:[93m3[0m:[93m64[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m3[0m import type { CodebaseOverviewSnapshot, DistrictSignals } from '@devchain/codebase-overview';
+[7m [0m [91m                                                               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/SummarySection/PressureTable.tsx[0m:[93m4[0m:[93m38[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m4[0m import type { DistrictSignals } from '@devchain/codebase-overview';
+[7m [0m [91m                                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/SummarySection/index.tsx[0m:[93m2[0m:[93m47[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m2[0m import type { CodebaseOverviewSnapshot } from '@devchain/codebase-overview';
+[7m [0m [91m                                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/TestabilitySection/TestabilitySection.tsx[0m:[93m8[0m:[93m8[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m8[0m } from '@devchain/codebase-overview';
+[7m [0m [91m       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/codebase-overview/sections/TestabilitySection/TestabilitySection.tsx[0m:[93m103[0m:[93m10[0m - [91merror[0m[90m TS7006: [0mParameter 's' implicitly has an 'any' type.
+
+[7m103[0m         (s) =>
+[7m   [0m [91m         ~[0m
+[96msrc/ui/components/project/ExportDialog.tsx[0m:[93m2[0m:[93m31[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m2[0m import { isValidSemVer } from '@devchain/shared';
+[7m [0m [91m                              ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/components/project/wizard/useWizardConfig.tsx[0m:[93m189[0m:[93m54[0m - [91merror[0m[90m TS7006: [0mParameter 'p' implicitly has an 'any' type.
+
+[7m189[0m       const preset = preview?.payload.presets?.find((p) => p.name === name);
+[7m   [0m [91m                                                     ~[0m
+[96msrc/ui/hooks/useProjectsPageController.ts[0m:[93m20[0m:[93m28[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m20[0m import { isLessThan } from '@devchain/shared';
+[7m  [0m [91m                           ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/lib/registry-updates.ts[0m:[93m1[0m:[93m28[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m1[0m import { isLessThan } from '@devchain/shared';
+[7m [0m [91m                           ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/pages/CodebaseOverviewPage.tsx[0m:[93m20[0m:[93m61[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/codebase-overview' or its corresponding type declarations.
+
+[7m20[0m import type { CodebaseOverviewSnapshot, TargetDetail } from '@devchain/codebase-overview';
+[7m  [0m [91m                                                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/pages/CodebaseOverviewPage.tsx[0m:[93m422[0m:[93m45[0m - [91merror[0m[90m TS7006: [0mParameter 'd' implicitly has an 'any' type.
+
+[7m422[0m   const district = snapshot.districts.find((d) => d.id === targetId);
+[7m   [0m [91m                                            ~[0m
+[96msrc/ui/pages/CodebaseOverviewPage.tsx[0m:[93m507[0m:[93m38[0m - [91merror[0m[90m TS7006: [0mParameter 'reason' implicitly has an 'any' type.
+
+[7m507[0m               {detail.whyRanked.map((reason, i) => (
+[7m   [0m [91m                                     ~~~~~~[0m
+[96msrc/ui/pages/CodebaseOverviewPage.tsx[0m:[93m507[0m:[93m46[0m - [91merror[0m[90m TS7006: [0mParameter 'i' implicitly has an 'any' type.
+
+[7m507[0m               {detail.whyRanked.map((reason, i) => (
+[7m   [0m [91m                                             ~[0m
+[96msrc/ui/pages/CodebaseOverviewPage.tsx[0m:[93m526[0m:[93m44[0m - [91merror[0m[90m TS7006: [0mParameter 'c' implicitly has an 'any' type.
+
+[7m526[0m                 {detail.recentCommits.map((c) => (
+[7m   [0m [91m                                           ~[0m
+[96msrc/ui/pages/CodebaseOverviewPage.tsx[0m:[93m542[0m:[93m41[0m - [91merror[0m[90m TS7006: [0mParameter 'a' implicitly has an 'any' type.
+
+[7m542[0m                 {detail.topAuthors.map((a) => (
+[7m   [0m [91m                                        ~[0m
+[96msrc/ui/pages/CodebaseOverviewPage.tsx[0m:[93m562[0m:[93m45[0m - [91merror[0m[90m TS7006: [0mParameter 'a' implicitly has an 'any' type.
+
+[7m562[0m                 {detail.recentActivity.map((a) => (
+[7m   [0m [91m                                            ~[0m
+[96msrc/ui/pages/CodebaseOverviewPage.tsx[0m:[93m637[0m:[93m43[0m - [91merror[0m[90m TS7006: [0mParameter 'd' implicitly has an 'any' type.
+
+[7m637[0m     .map((id) => snapshot.districts.find((d) => d.id === id))
+[7m   [0m [91m                                          ~[0m
+[96msrc/ui/pages/CodebaseOverviewPage.tsx[0m:[93m664[0m:[93m33[0m - [91merror[0m[90m TS7006: [0mParameter 'd' implicitly has an 'any' type.
+
+[7m664[0m                 {districts.map((d) => (
+[7m   [0m [91m                                ~[0m
+[96msrc/ui/pages/CodebaseOverviewPage.tsx[0m:[93m683[0m:[93m47[0m - [91merror[0m[90m TS7006: [0mParameter 'd' implicitly has an 'any' type.
+
+[7m683[0m                 const values = districts.map((d) => metric.getValue(d));
+[7m   [0m [91m                                              ~[0m
+[96msrc/ui/pages/CodebaseOverviewPage.tsx[0m:[93m684[0m:[93m51[0m - [91merror[0m[90m TS7006: [0mParameter 'v' implicitly has an 'any' type.
+
+[7m684[0m                 const numericValues = values.map((v) => (typeof v === 'number' ? v : null));
+[7m   [0m [91m                                                  ~[0m
+[96msrc/ui/pages/CodebaseOverviewPage.tsx[0m:[93m686[0m:[93m41[0m - [91merror[0m[90m TS7006: [0mParameter 'v' implicitly has an 'any' type.
+
+[7m686[0m                   numericValues.filter((v) => v !== null).length > 0
+[7m   [0m [91m                                        ~[0m
+[96msrc/ui/pages/CodebaseOverviewPage.tsx[0m:[93m687[0m:[93m58[0m - [91merror[0m[90m TS7006: [0mParameter 'v' implicitly has an 'any' type.
+
+[7m687[0m                     ? Math.max(...(numericValues.filter((v) => v !== null) as number[]))
+[7m   [0m [91m                                                         ~[0m
+[96msrc/ui/pages/CodebaseOverviewPage.tsx[0m:[93m692[0m:[93m34[0m - [91merror[0m[90m TS7006: [0mParameter 'val' implicitly has an 'any' type.
+
+[7m692[0m                     {values.map((val, i) => (
+[7m   [0m [91m                                 ~~~[0m
+[96msrc/ui/pages/CodebaseOverviewPage.tsx[0m:[93m692[0m:[93m39[0m - [91merror[0m[90m TS7006: [0mParameter 'i' implicitly has an 'any' type.
+
+[7m692[0m                     {values.map((val, i) => (
+[7m   [0m [91m                                      ~[0m
+[96msrc/ui/pages/RegistryPage/TemplateDetailDrawer.tsx[0m:[93m33[0m:[93m28[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m33[0m import { isLessThan } from '@devchain/shared';
+[7m  [0m [91m                           ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/pages/RegistryPage/VersionList.tsx[0m:[93m12[0m:[93m28[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m12[0m import { isLessThan } from '@devchain/shared';
+[7m  [0m [91m                           ~~~~~~~~~~~~~~~~~~[0m
+[96msrc/ui/pages/projects/lib/project-api.ts[0m:[93m1[0m:[93m47[0m - [91merror[0m[90m TS2307: [0mCannot find module '@devchain/shared' or its corresponding type declarations.
+
+[7m1[0m import type { ExportData, ManifestData } from '@devchain/shared';
+[7m [0m [91m                                              ~~~~~~~~~~~~~~~~~~[0m
+
+Found 173 error(s).
+
+/home/ngsupb/repos/twitech/devchain-rem15-checkpoint/apps/local-app:
+ ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  local-app@0.0.0-internal build: `nest build && vite build && cp -r templates dist/templates`
+Exit status 1

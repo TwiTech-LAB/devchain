@@ -14,6 +14,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { fetchPreflightChecks } from '@/ui/lib/preflight';
+import { MemoryMetricsCard } from './MemoryMetricsCard';
 
 function getStatusIcon(status: 'pass' | 'fail' | 'warn') {
   switch (status) {
@@ -47,6 +48,8 @@ export function SystemSection() {
 
   return (
     <div className="space-y-6">
+      <MemoryMetricsCard />
+
       {/* Preflight Checks */}
       <Card>
         <CardHeader>

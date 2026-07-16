@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "reportKind": "runtime-input-provenance",
+  "generatedAt": "2026-07-15T01:19:46.173Z",
+  "input": {
+    "logicalPath": "apps/local-app/scripts/memory-soak/fixtures/provider-transcripts/opencode.json",
+    "bundlePath": "runtime-inputs/opencode-fixture.json",
+    "bytes": 1239,
+    "sha256": "540d4344c5f80dfa8e109b0fade4b6e84618eb6da1353d8ec7e2034457d63c90",
+    "provisioningMethod": "byte-identical copy from the prior validated shared-checkout fixture into the ignored runtime path before capture",
+    "sourcePath": "/home/ngsupb/repos/twitech/devchain/apps/local-app/scripts/memory-soak/fixtures/provider-transcripts/opencode.json",
+    "provisionedPath": "/home/ngsupb/repos/twitech/devchain-rem15-checkpoint/apps/local-app/scripts/memory-soak/fixtures/provider-transcripts/opencode.json",
+    "gitTracked": false,
+    "gitIgnoredBy": ".gitignore:5:opencode.json"
+  },
+  "verification": {
+    "sourceCommit": "487762ef4b4e2673030199851f3c92b5edee82ac",
+    "sourceTree": "4058dd8137802ded1f2569b2cb4b1d41649b21ca",
+    "sourceDirty": false,
+    "distDigest": "4aafd9d6c93b0340a0d0933b29a90c96bc6416de39e7948571b102d06e016b5e",
+    "verifiedBeforeAuthoritativeCapture": true
+  }
+}

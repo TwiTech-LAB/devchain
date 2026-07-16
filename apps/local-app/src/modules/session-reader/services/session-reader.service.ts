@@ -1,7 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { SessionReaderAdapterFactory } from '../adapters/session-reader-adapter.factory';
 import { TranscriptPathValidator } from './transcript-path-validator.service';
-import { SessionCacheService } from './session-cache.service';
+import { SessionCacheService, type SourceChangeKind } from './session-cache.service';
 import { SessionsService } from '../../sessions/services/sessions.service';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
 import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
@@ -12,6 +12,8 @@ import { ProviderAdapterFactory, isContextWindowCapable } from '../../providers/
 import type { SessionSourceRef } from '../adapters/session-reader-adapter.interface';
 import type { UnifiedSession, UnifiedMetrics, UnifiedMessage } from '../dtos/unified-session.types';
 import type { UnifiedChunk } from '../dtos/unified-chunk.types';
+import type { CacheStats } from '../../metrics/types/metrics.types';
+import { TranscriptWatcherService } from './transcript-watcher.service';
 
 /** Transcript summary (metrics + session-level metadata) */
 export interface TranscriptSummary {
@@ -40,6 +42,7 @@ export interface UnifiedChunkedResponse {
 
 /** Lightweight transcript index for initial load */
 export interface TranscriptIndex {
+  cursor: string;
   totals: {
     messageCount: number;
     chunkCount: number;
@@ -78,8 +81,11 @@ export interface TranscriptTimingData {
   buildChunksMs: number;
   applyToolResultTruncationMs: number;
   cacheHit: boolean;
+  sourceChangeKind: SourceChangeKind;
   fileSizeBytes: number;
   fileMtimeMs: number;
+  /** Numeric source revision used by transcript cursors and derived-cache keys. */
+  sourceVersion: number;
   providerName: string;
 }
 
@@ -91,7 +97,8 @@ export interface TranscriptToolResult {
   fullLength: number;
 }
 
-export interface TranscriptTailResponse {
+export interface TranscriptTailDeltaResponse {
+  kind: 'delta';
   cursor: string;
   /**
    * Window-stable splice anchor: the stable id of the first chunk in
@@ -110,30 +117,64 @@ export interface TranscriptTailResponse {
   totalMessageCount: number;
 }
 
+export interface TranscriptTailFullRefetchRequiredResponse {
+  kind: 'full-refetch-required';
+  sourceChangeKind: SourceChangeKind;
+}
+
+export type TranscriptTailResponse =
+  | TranscriptTailDeltaResponse
+  | TranscriptTailFullRefetchRequiredResponse;
+
 const DEFAULT_CHUNK_SIZE = 20;
 const MAX_CHUNK_SIZE = 100;
 
-const CHUNKS_CACHE_MAX_ENTRIES = 20;
+function requiresFullRefetch(
+  sourceChangeKind: SourceChangeKind,
+  revisionChanged: boolean,
+): boolean {
+  switch (sourceChangeKind) {
+    case 'same-file-append':
+    case 'db-update':
+      return false;
+    case 'file-replacement':
+    case 'file-truncation':
+    case 'same-file-rewrite':
+      return true;
+    case 'cache-hit':
+    case 'unknown-full-parse':
+      return revisionChanged;
+    default:
+      return assertNever(sourceChangeKind);
+  }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled source change kind: ${String(value)}`);
+}
 
 interface ParseTimingData {
   resolveMs: number;
   parseOrCacheHitMs: number;
   buildChunksMs: number;
   cacheHit: boolean;
+  sourceChangeKind: SourceChangeKind;
   fileSizeBytes: number;
   fileMtimeMs: number;
-  /** Numeric monotonic source version (file: byte size) — cursor first component. */
+  /** Numeric source revision compared by equality — cursor first component. */
   sourceVersion: number;
   providerName: string;
+}
+
+interface ParsedSessionResult {
+  session: UnifiedSession;
+  parseTiming: ParseTimingData;
 }
 
 @Injectable()
 export class SessionReaderService {
   private readonly logger = new Logger(SessionReaderService.name);
-  private readonly chunksCache = new Map<
-    string,
-    { chunks: UnifiedChunk[]; sourceVersion: number }
-  >();
+  private readonly parsedSessionFlights = new Map<string, Promise<ParsedSessionResult>>();
 
   constructor(
     private readonly adapterFactory: SessionReaderAdapterFactory,
@@ -142,7 +183,12 @@ export class SessionReaderService {
     private readonly sessionsService: SessionsService,
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
     private readonly providerAdapterFactory: ProviderAdapterFactory,
+    private readonly transcriptWatcherService?: TranscriptWatcherService,
   ) {}
+
+  getChunksCacheStats(): CacheStats {
+    return this.sessionCacheService.getChunksCacheStats();
+  }
 
   /**
    * Get full parsed transcript for a session.
@@ -185,16 +231,65 @@ export class SessionReaderService {
    * Get summary metrics for a session transcript.
    */
   async getTranscriptSummary(sessionId: string): Promise<TranscriptSummary> {
-    const { session } = await this.getParsedSession(sessionId);
-    const metrics: UnifiedMetrics = session.metrics;
+    const { adapter, sourceRef, providerName, oneMillionContextEnabled } =
+      await this.resolveAdapter(sessionId);
+    if (this.sessionCacheService.getEntry(sessionId)) {
+      const cachedSession = await this.sessionCacheService.getFreshSession(
+        sessionId,
+        sourceRef,
+        adapter,
+      );
+      if (cachedSession) {
+        return this.toTranscriptSummary(
+          sessionId,
+          this.applyContextWindowEnrichment(cachedSession, providerName, oneMillionContextEnabled),
+        );
+      }
+    }
 
-    return {
-      sessionId,
-      providerName: session.providerName,
-      metrics,
-      messageCount: metrics.messageCount,
-      isOngoing: metrics.isOngoing,
-    };
+    const watcherMetrics = this.transcriptWatcherService?.getLastKnownSummaryMetrics(sessionId);
+    if (watcherMetrics) {
+      const metrics = this.applyContextWindowToMetrics(
+        watcherMetrics,
+        providerName,
+        oneMillionContextEnabled,
+      );
+      return {
+        sessionId,
+        providerName,
+        metrics,
+        messageCount: metrics.messageCount,
+        isOngoing: metrics.isOngoing,
+      };
+    }
+
+    if (adapter.getSummary) {
+      try {
+        const summary = await adapter.getSummary(sourceRef);
+        if (summary) {
+          const metrics = this.applyContextWindowToMetrics(
+            summary.metrics,
+            providerName,
+            oneMillionContextEnabled,
+          );
+          return {
+            sessionId,
+            providerName,
+            metrics,
+            messageCount: metrics.messageCount,
+            isOngoing: metrics.isOngoing,
+          };
+        }
+      } catch (error) {
+        this.logger.warn(
+          { error, sessionId, providerName },
+          'Lightweight transcript summary unavailable — falling back to full parse',
+        );
+      }
+    }
+
+    const { session } = await this.getParsedSession(sessionId);
+    return this.toTranscriptSummary(sessionId, session);
   }
 
   /**
@@ -384,7 +479,7 @@ export class SessionReaderService {
    * Returns chunk IDs and metadata without semantic-step content.
    */
   async getTranscriptIndex(sessionId: string): Promise<TranscriptIndex> {
-    const { session } = await this.getParsedSession(sessionId);
+    const { session, parseTiming } = await this.getParsedSession(sessionId);
     const chunks = session.chunks ?? buildChunks(session.messages);
 
     let latestOutputPreview: string | null = null;
@@ -400,6 +495,7 @@ export class SessionReaderService {
     }
 
     return {
+      cursor: encodeCursor(parseTiming.sourceVersion, session.messages.length, chunks.length),
       totals: {
         messageCount: session.messages.length,
         chunkCount: chunks.length,
@@ -413,7 +509,7 @@ export class SessionReaderService {
 
   /**
    * Get transcript tail since a cursor position.
-   * Returns delta chunks and messages after the cursor's message count.
+   * Returns a delta only when overlap is safe, otherwise requires a canonical refetch.
    * Returns null if the cursor is expired (message count exceeds current total).
    */
   async getTranscriptTail(
@@ -428,24 +524,30 @@ export class SessionReaderService {
     const { session, parseTiming } = await this.getParsedSession(sessionId);
     const chunks = session.chunks ?? buildChunks(session.messages);
 
+    const replaceFromChunkIndex = Math.max(0, cursorData.chunkCount - 1);
+
+    // DB-backed sources can mutate parts without growing the message count, so
+    // their classified updates retain the in-place last-chunk replacement path.
+    const revisionChanged = cursorData.fileSize !== parseTiming.sourceVersion;
+    const messageCountUnchanged = cursorData.messageCount === session.messages.length;
+
+    if (requiresFullRefetch(parseTiming.sourceChangeKind, revisionChanged)) {
+      return {
+        kind: 'full-refetch-required',
+        sourceChangeKind: parseTiming.sourceChangeKind,
+      };
+    }
+
     if (cursorData.messageCount > session.messages.length) {
       return null;
     }
-
-    const replaceFromChunkIndex = Math.max(0, cursorData.chunkCount - 1);
-
-    // The cursor's first component is the numeric monotonic source version.
-    // DB-backed sources (OpenCode) mutate/add *parts* in place without growing
-    // the message count, so a revision bump with an unchanged count is a real
-    // update — surface it as an in-place last-chunk replacement.
-    const revisionChanged = cursorData.fileSize !== parseTiming.sourceVersion;
-    const messageCountUnchanged = cursorData.messageCount === session.messages.length;
 
     // True no-op only when BOTH the count AND the source revision are unchanged →
     // return a TRUE-empty delta with the cursor untouched (preserves the client's
     // adaptive backoff). Otherwise fall through to emit a delta.
     if (messageCountUnchanged && !revisionChanged) {
       return {
+        kind: 'delta',
         cursor: sinceCursor,
         replaceFromChunkId: null,
         replaceFromChunkIndex,
@@ -464,12 +566,12 @@ export class SessionReaderService {
     // absolute position and handles the last chunk growing in place.
     const replaceFromChunkId = deltaChunks[0]?.id ?? null;
 
-    // First cursor component is the numeric monotonic source version (file: byte
-    // size), taken from the same parse — no extra resolve/stat round-trip, and
-    // source-type agnostic (works for DB-backed sources).
+    // First cursor component is the numeric source revision taken from the same
+    // parse — no extra resolve/stat round-trip, and source-type agnostic.
     const cursor = encodeCursor(parseTiming.sourceVersion, session.messages.length, chunks.length);
 
     return {
+      kind: 'delta',
       cursor,
       replaceFromChunkId,
       replaceFromChunkIndex,
@@ -507,61 +609,108 @@ export class SessionReaderService {
   // Private: Caching & Resolution
   // ---------------------------------------------------------------------------
 
-  private async getParsedSession(
-    sessionId: string,
-  ): Promise<{ session: UnifiedSession; parseTiming: ParseTimingData }> {
+  private getParsedSession(sessionId: string): Promise<ParsedSessionResult> {
+    const existing = this.parsedSessionFlights.get(sessionId);
+    if (existing) return existing;
+
+    // One flight owns the complete cache freshness check. Removing it at settlement
+    // ensures the next request rechecks the source instead of pinning a stale result.
+    const flight = this.loadParsedSession(sessionId).finally(() => {
+      if (this.parsedSessionFlights.get(sessionId) === flight) {
+        this.parsedSessionFlights.delete(sessionId);
+      }
+    });
+    this.parsedSessionFlights.set(sessionId, flight);
+    return flight;
+  }
+
+  private async loadParsedSession(sessionId: string): Promise<ParsedSessionResult> {
     const tResolve = performance.now();
     const { adapter, sourceRef, providerName, oneMillionContextEnabled } =
       await this.resolveAdapter(sessionId);
     const resolveMs = performance.now() - tResolve;
 
     const tParse = performance.now();
-    const { session, cacheHit, lastSize, lastMtime, sourceVersion } =
+    const { session, cacheHit, sourceChangeKind, lastSize, lastMtime, sourceVersion } =
       await this.sessionCacheService.getOrParseWithMeta(sessionId, sourceRef, adapter);
     const parseOrCacheHitMs = performance.now() - tParse;
 
-    const cachedChunks = this.chunksCache.get(sessionId);
+    const cachedChunks = this.sessionCacheService.getChunks(sessionId, sourceVersion);
     let buildChunksMs = 0;
-    if (cachedChunks && cachedChunks.sourceVersion === sourceVersion) {
-      session.chunks = cachedChunks.chunks;
+    let chunks: UnifiedChunk[];
+    if (cachedChunks) {
+      chunks = cachedChunks;
     } else {
       const tBuild = performance.now();
-      session.chunks = buildChunks(session.messages);
+      chunks = buildChunks(session.messages);
       buildChunksMs = performance.now() - tBuild;
-      this.chunksCache.set(sessionId, { chunks: session.chunks, sourceVersion });
-      if (this.chunksCache.size > CHUNKS_CACHE_MAX_ENTRIES) {
-        const oldest = this.chunksCache.keys().next().value;
-        if (oldest !== undefined) this.chunksCache.delete(oldest);
-      }
+      this.sessionCacheService.setChunks(sessionId, sourceVersion, chunks);
     }
 
-    let enrichedSession = session;
-    const providerAdapter = this.providerAdapterFactory.getAdapter(providerName);
-    if (isContextWindowCapable(providerAdapter)) {
-      const overrideWindow = providerAdapter.getReadTimeContextWindow(
-        session.metrics.primaryModel,
-        oneMillionContextEnabled,
-      );
-      if (overrideWindow != null) {
-        enrichedSession = {
-          ...session,
-          metrics: { ...session.metrics, contextWindowTokens: overrideWindow },
-        };
-      }
-    }
+    const enrichedSession = this.applyContextWindowEnrichment(
+      session,
+      providerName,
+      oneMillionContextEnabled,
+    );
+    // The parsed cache owns the unadorned UnifiedSession. Consumers receive a sibling
+    // wrapper so derived chunks never create a back-reference from the parsed entry.
+    const sessionWithChunks: UnifiedSession = { ...enrichedSession, chunks };
 
     return {
-      session: enrichedSession,
+      session: sessionWithChunks,
       parseTiming: {
         resolveMs,
         parseOrCacheHitMs,
         buildChunksMs,
         cacheHit,
+        sourceChangeKind,
         fileSizeBytes: lastSize,
         fileMtimeMs: lastMtime,
         sourceVersion,
         providerName,
       },
+    };
+  }
+
+  private applyContextWindowEnrichment(
+    session: UnifiedSession,
+    providerName: string,
+    oneMillionContextEnabled: boolean,
+  ): UnifiedSession {
+    const metrics = this.applyContextWindowToMetrics(
+      session.metrics,
+      providerName,
+      oneMillionContextEnabled,
+    );
+    return metrics === session.metrics ? session : { ...session, metrics };
+  }
+
+  private applyContextWindowToMetrics(
+    metrics: UnifiedMetrics,
+    providerName: string,
+    oneMillionContextEnabled: boolean,
+  ): UnifiedMetrics {
+    const providerAdapter = this.providerAdapterFactory.getAdapter(providerName);
+    if (isContextWindowCapable(providerAdapter)) {
+      const overrideWindow = providerAdapter.getReadTimeContextWindow(
+        metrics.primaryModel,
+        oneMillionContextEnabled,
+      );
+      if (overrideWindow != null) {
+        return { ...metrics, contextWindowTokens: overrideWindow };
+      }
+    }
+    return metrics;
+  }
+
+  private toTranscriptSummary(sessionId: string, session: UnifiedSession): TranscriptSummary {
+    const metrics: UnifiedMetrics = session.metrics;
+    return {
+      sessionId,
+      providerName: session.providerName,
+      metrics,
+      messageCount: metrics.messageCount,
+      isOngoing: metrics.isOngoing,
     };
   }
 

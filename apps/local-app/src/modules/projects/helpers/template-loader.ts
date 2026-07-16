@@ -5,6 +5,7 @@ import type { StorageService } from '../../storage/interfaces/storage.interface'
 import type { SettingsService } from '../../settings/services/settings.service';
 import type { UnifiedTemplateService } from '../../registry/services/unified-template.service';
 import {
+  collectReferencedProviderNames,
   derivePresetProviderCoverage,
   extractTemplatePresets,
   hasPresetName,
@@ -45,10 +46,9 @@ export interface CreateFromTemplateInputLike {
    */
   agentOverrides?: PresetAgentConfig[];
   /**
-   * Transient, server-enforced provider allowlist (Step-1 wizard selection). When present
-   * (validated non-empty + lowercased at the controller), providers outside it are treated as
-   * uninstalled: excluded from family resolution AND from providerConfig creation. NOT persisted.
-   * Absent → resolution is byte-identical to today.
+   * Transient Step-1 wizard choice metadata. When present (validated non-empty + lowercased at
+   * the controller), it narrows family and agent selection eligibility without restricting
+   * persistence or missing-provider reporting. Not persisted.
    */
   selectedProviderNames?: string[];
   teamOverrides?: Array<{
@@ -135,7 +135,10 @@ type FamilyMappingResolution =
       payload: ParsedTemplatePayload;
       templateSlug: string;
       templateResult: Awaited<ReturnType<UnifiedTemplateService['getTemplate']>>;
-      available: Map<string, string>;
+      /** Full installed-provider map (name(lowercased) → id) — for persistence + validation. */
+      installedProviders: Map<string, string>;
+      /** Installed map narrowed to the Step-1 allowlist (≡ installed when none) — binding eligibility. */
+      selectedProviders: Map<string, string>;
       selectedProfilesByFamily: ReturnType<
         typeof selectProfilesForFamilies<ParsedTemplatePayload['profiles'][number]>
       >;
@@ -171,8 +174,8 @@ export async function createFromTemplateWithHelper(
     );
     if (selectedPreset) {
       const localProviders = await deps.storage.listProviders();
-      // Honor the transient allowlist here too: an agent whose preset resolves to an excluded
-      // provider must not count as covered (consistent with "treated as uninstalled").
+      // Preset coverage follows the Step-1 choice set: a preset targeting a deselected provider
+      // must not count as covering that agent.
       const allow = input.selectedProviderNames
         ? new Set(input.selectedProviderNames.map((n) => n.trim().toLowerCase()))
         : undefined;
@@ -225,7 +228,8 @@ export async function createFromTemplateWithHelper(
   }
 
   const {
-    available,
+    installedProviders,
+    selectedProviders,
     selectedProfilesByFamily,
     payload: resolvedPayload,
     templateResult: resolvedTemplateResult,
@@ -274,7 +278,8 @@ export async function createFromTemplateWithHelper(
     storage: deps.storage,
     settings: deps.settings,
     watchersService: watcherServiceForCodec,
-    available,
+    installedProviders,
+    selectedProviders,
     existingStatuses: [] as const,
     teamsService: deps.teamsService,
     teamOverrides: input.teamOverrides,
@@ -357,7 +362,7 @@ export async function createFromTemplateWithHelper(
     } else {
       await deps.applyPreset(project.id, presetName, {
         agentNameToId: new Map(Object.entries(pipelineCtx.get('agentNameToId'))),
-        configLookupMap: pipelineCtx.get('configLookupMap'),
+        configLookupMap: pipelineCtx.get('selectionEligibleConfigLookupMap'),
       });
       logger.info({ projectId: project.id, presetName }, 'Applied preset to project');
     }
@@ -370,7 +375,7 @@ export async function createFromTemplateWithHelper(
   if (agentOverrides && agentOverrides.length > 0) {
     const { applied, warnings } = await deps.applyAgentConfigs(project.id, agentOverrides, {
       agentNameToId: new Map(Object.entries(pipelineCtx.get('agentNameToId'))),
-      configLookupMap: pipelineCtx.get('configLookupMap'),
+      configLookupMap: pipelineCtx.get('selectionEligibleConfigLookupMap'),
     });
     logger.info(
       { projectId: project.id, applied, warnings: warnings.length },
@@ -493,27 +498,27 @@ async function resolveFamilyMappings(
     }
   }
 
-  const providerNames = new Set(
-    payload.profiles.map((profile) => profile.provider.name.trim().toLowerCase()),
-  );
-  const { available } = await resolveProvidersFromStorage(
+  const referencedProviderNames = collectReferencedProviderNames(payload.profiles);
+  const { installed, selected } = await resolveProvidersFromStorage(
     deps.storage,
-    providerNames,
+    referencedProviderNames,
     input.selectedProviderNames,
   );
 
   // Fail-fast if no providers are installed but template requires profiles
-  if (available.size === 0 && payload.profiles.length > 0) {
+  if (installed.size === 0 && payload.profiles.length > 0) {
     throw new ValidationError(
       'No providers are installed. At least one provider is required to create a project from a template.',
     );
   }
 
+  // Validate against the FULL installed map: an installed-but-deselected provider is available for
+  // creation/binding — deselection only narrows the wizard's family alternatives.
   const selectedProfilesByFamily = selectProfilesForFamilies(
     payload.profiles,
     payload.agents,
     effectiveFamilyProviderMappings,
-    available,
+    installed,
     presetOptions
       ? {
           presetCoveredAgentNames: presetOptions.presetCoveredAgentNames,
@@ -527,7 +532,8 @@ async function resolveFamilyMappings(
     payload,
     templateSlug,
     templateResult,
-    available,
+    installedProviders: installed,
+    selectedProviders: selected,
     selectedProfilesByFamily,
   };
 }

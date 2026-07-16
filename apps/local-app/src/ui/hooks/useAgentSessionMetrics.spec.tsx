@@ -1,16 +1,27 @@
 import React from 'react';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { useAgentSessionMetrics, getMetricsKey } from './useAgentSessionMetrics';
+import {
+  useAgentSessionMetrics,
+  getMetricsKey,
+  getMetricsWatchdogInterval,
+  METRICS_WATCHDOG_MIN_MS,
+} from './useAgentSessionMetrics';
 import type { AgentSessionEntry } from './useAgentSessionMetrics';
 import { fetchTranscriptSummary } from '@/ui/lib/sessions';
+import { useRealtimeDispatch } from '@/ui/hooks/useRealtimeDispatch';
+import { dispatchRealtimeEnvelope } from '@/ui/lib/realtime-invalidation-registry';
 
 jest.mock('@/ui/lib/sessions', () => ({
   ...jest.requireActual('@/ui/lib/sessions'),
   fetchTranscriptSummary: jest.fn(),
 }));
+jest.mock('@/ui/hooks/useRealtimeDispatch', () => ({
+  useRealtimeDispatch: jest.fn(),
+}));
 
 const fetchMock = fetchTranscriptSummary as jest.MockedFunction<typeof fetchTranscriptSummary>;
+const realtimeDispatchMock = useRealtimeDispatch as jest.MockedFunction<typeof useRealtimeDispatch>;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -60,13 +71,78 @@ function makeSummary(overrides?: {
 describe('useAgentSessionMetrics', () => {
   beforeEach(() => {
     fetchMock.mockReset();
+    realtimeDispatchMock.mockReset();
   });
 
-  it('returns empty map when no entries', () => {
+  it('module-unit: creates no summary request when no context bar is visible', () => {
     const { result } = renderHook(() => useAgentSessionMetrics([]), {
       wrapper: createWrapper(),
     });
     expect(result.current.size).toBe(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('module-unit: refreshes a visible local summary from a transcript update event', async () => {
+    fetchMock.mockResolvedValue(makeSummary());
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const entries: AgentSessionEntry[] = [{ agentId: 'agent-1', sessionId: 'session-1' }];
+
+    renderHook(() => useAgentSessionMetrics(entries), { wrapper });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    fetchMock.mockClear();
+
+    const registry = realtimeDispatchMock.mock.calls.at(-1)?.[0];
+    if (!registry) throw new Error('Realtime invalidation registry was not registered');
+    act(() => {
+      dispatchRealtimeEnvelope(
+        {
+          topic: 'session/session-1/transcript',
+          type: 'updated',
+          payload: { sessionId: 'session-1' },
+        },
+        registry,
+        queryClient,
+      );
+    });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+  });
+
+  it('module-unit: uses only staggered watchdog refreshes during transcript inactivity', async () => {
+    jest.useFakeTimers();
+    try {
+      fetchMock.mockResolvedValue(makeSummary({ isOngoing: true }));
+      const entries: AgentSessionEntry[] = [
+        { agentId: 'agent-1', sessionId: 'session-1' },
+        { agentId: 'agent-2', sessionId: 'session-2' },
+        { agentId: 'agent-3', sessionId: 'session-3' },
+      ];
+      const intervals = entries.map(getMetricsWatchdogInterval);
+      expect(intervals.every((interval) => interval >= METRICS_WATCHDOG_MIN_MS)).toBe(true);
+      expect(new Set(intervals).size).toBe(entries.length);
+
+      renderHook(() => useAgentSessionMetrics(entries), { wrapper: createWrapper() });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(0);
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      fetchMock.mockClear();
+
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(59_999);
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(30_001);
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('returns correct metrics for local agents with sessions', async () => {

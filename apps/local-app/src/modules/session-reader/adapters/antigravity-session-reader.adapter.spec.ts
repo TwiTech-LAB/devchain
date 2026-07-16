@@ -246,6 +246,31 @@ describe('AntigravitySessionReaderAdapter', () => {
     it('throws when sourceRef lacks providerSessionId', async () => {
       await expect(adapter.parseFullSession('/db/x.db')).rejects.toThrow(ValidationError);
     });
+
+    it('module-unit: summary metrics match the DB-backed full read', async () => {
+      reader.readSession.mockImplementation(async () => ({
+        session: makeSession(),
+        sizeBytes: 10,
+        freshness: {},
+      }));
+      metricsReader.decode.mockReturnValue({
+        ...emptyTokenMetrics(),
+        inputTokens: 20,
+        outputTokens: 5,
+        lastContextTokens: 25,
+        modelId: 'gemini-3-flash-a',
+      });
+      const sourceRef = ref({ filePath: '/db/x.db', providerSessionId: 'conv-1' });
+
+      const full = await adapter.parseFullSession('/db/x.db', sourceRef);
+      const summary = await adapter.getSummary(sourceRef);
+
+      for (const field of summary.exactFields) {
+        expect(summary.metrics[field]).toEqual(full.metrics[field]);
+      }
+      expect(reader.readSession).toHaveBeenCalledTimes(1);
+      expect(summary.approximateFields).toContain('messageCount');
+    });
   });
 
   describe('parseIncremental', () => {

@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import type { TerminalHandle } from '@/ui/components/Terminal';
+import { useToastHelpers } from '@/ui/lib/toast-helpers';
 
 const STORAGE_KEY = 'devchain:terminalWindows';
 
@@ -21,6 +22,7 @@ interface WindowBounds {
 
 interface PersistedLayout extends WindowBounds {
   maximized: boolean;
+  lastUsedAt?: number;
 }
 
 interface PersistedState {
@@ -71,6 +73,7 @@ export interface TerminalWindowState {
   restoredBounds?: WindowBounds;
   content: ReactNode;
   handle?: TerminalHandle;
+  autoMinimizedAt?: number;
 }
 
 export interface TerminalWindowMenuItem {
@@ -113,6 +116,51 @@ const DEFAULT_BOUNDS: WindowBounds = {
 
 const MIN_WIDTH = 480;
 const MIN_HEIGHT = 280;
+export const MAX_PERSISTED_TERMINAL_LAYOUTS = 50;
+// Five supports a primary session plus several worktree sessions while bounding costly xterm trees.
+export const MAX_MOUNTED_TERMINAL_WINDOWS = 5;
+const MAX_PERSISTED_LAYOUT_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+function enforceMountedWindowCap(
+  windows: TerminalWindowState[],
+  activatedWindowId: string,
+  activationSequence: number,
+): TerminalWindowState[] {
+  const mountedWindows = windows.filter((window) => !window.minimized);
+  if (mountedWindows.length <= MAX_MOUNTED_TERMINAL_WINDOWS) {
+    return windows;
+  }
+
+  const leastRecentlyFocused = mountedWindows
+    .filter((window) => window.id !== activatedWindowId)
+    .reduce<TerminalWindowState | null>(
+      (oldest, window) => (!oldest || window.zIndex < oldest.zIndex ? window : oldest),
+      null,
+    );
+
+  if (!leastRecentlyFocused) {
+    return windows;
+  }
+
+  return windows.map((window) =>
+    window.id === leastRecentlyFocused.id
+      ? { ...window, minimized: true, autoMinimizedAt: activationSequence }
+      : window,
+  );
+}
+
+function pruneLayoutCache(
+  layouts: Record<string, PersistedLayout>,
+  now = Date.now(),
+): Record<string, PersistedLayout> {
+  return Object.fromEntries(
+    Object.entries(layouts)
+      .map(([id, layout]) => [id, { ...layout, lastUsedAt: layout.lastUsedAt ?? now }] as const)
+      .filter(([, layout]) => now - layout.lastUsedAt! <= MAX_PERSISTED_LAYOUT_AGE_MS)
+      .sort(([, left], [, right]) => right.lastUsedAt! - left.lastUsedAt!)
+      .slice(0, MAX_PERSISTED_TERMINAL_LAYOUTS),
+  );
+}
 
 function readPersistedState(): PersistedState | null {
   if (typeof window === 'undefined') {
@@ -133,7 +181,7 @@ function readPersistedState(): PersistedState | null {
       parsed.layouts &&
       typeof parsed.layouts === 'object'
     ) {
-      return parsed;
+      return { ...parsed, layouts: pruneLayoutCache(parsed.layouts) };
     }
   } catch {
     return null;
@@ -174,6 +222,7 @@ function computeInitialBounds(existing?: Partial<WindowBounds>): WindowBounds {
 }
 
 export function TerminalWindowsProvider({ children }: { children: ReactNode }) {
+  const { toast } = useToastHelpers();
   const persisted = useMemo(() => readPersistedState(), []);
   const [zCounter, setZCounter] = useState<number>(persisted?.zCounter ?? 1000);
   const zCounterRef = useRef(zCounter);
@@ -183,6 +232,26 @@ export function TerminalWindowsProvider({ children }: { children: ReactNode }) {
   const layoutCacheRef = useRef(layoutCache);
   const [windows, setWindows] = useState<TerminalWindowState[]>([]);
   const [focusedWindowId, setFocusedWindowId] = useState<string | null>(null);
+  const lastAutoMinimizeNoticeRef = useRef(0);
+
+  useEffect(() => {
+    const autoMinimizedWindow = windows.reduce<TerminalWindowState | null>((latest, window) => {
+      if (!window.autoMinimizedAt) return latest;
+      return !latest || window.autoMinimizedAt > (latest.autoMinimizedAt ?? 0) ? window : latest;
+    }, null);
+    if (
+      !autoMinimizedWindow?.autoMinimizedAt ||
+      autoMinimizedWindow.autoMinimizedAt <= lastAutoMinimizeNoticeRef.current
+    ) {
+      return;
+    }
+
+    lastAutoMinimizeNoticeRef.current = autoMinimizedWindow.autoMinimizedAt;
+    toast({
+      title: 'Terminal window minimized',
+      description: `${autoMinimizedWindow.title} was minimized to keep at most ${MAX_MOUNTED_TERMINAL_WINDOWS} terminal windows active.`,
+    });
+  }, [toast, windows]);
 
   useEffect(() => {
     zCounterRef.current = zCounter;
@@ -204,11 +273,9 @@ export function TerminalWindowsProvider({ children }: { children: ReactNode }) {
   }, [layoutCache, zCounter]);
 
   const bumpZCounter = useCallback(() => {
-    let nextValue = zCounterRef.current + 1;
-    setZCounter((prev) => {
-      nextValue = prev + 1;
-      return nextValue;
-    });
+    const nextValue = zCounterRef.current + 1;
+    zCounterRef.current = nextValue;
+    setZCounter(nextValue);
     return nextValue;
   }, []);
 
@@ -232,18 +299,23 @@ export function TerminalWindowsProvider({ children }: { children: ReactNode }) {
 
   const updateLayoutCache = useCallback((id: string, layout: Partial<PersistedLayout>) => {
     setLayoutCache((prev) => {
+      const newestTimestamp = Math.max(
+        0,
+        ...Object.values(prev).map((entry) => entry.lastUsedAt ?? 0),
+      );
       const nextLayout: PersistedLayout = {
         maximized: layout.maximized ?? prev[id]?.maximized ?? false,
         x: layout.x ?? prev[id]?.x ?? DEFAULT_BOUNDS.x,
         y: layout.y ?? prev[id]?.y ?? DEFAULT_BOUNDS.y,
         width: layout.width ?? prev[id]?.width ?? DEFAULT_BOUNDS.width,
         height: layout.height ?? prev[id]?.height ?? DEFAULT_BOUNDS.height,
+        lastUsedAt: Math.max(Date.now(), newestTimestamp + 1),
       };
 
-      return {
+      return pruneLayoutCache({
         ...prev,
         [id]: nextLayout,
-      };
+      });
     });
   }, []);
 
@@ -251,69 +323,77 @@ export function TerminalWindowsProvider({ children }: { children: ReactNode }) {
     (config: TerminalWindowConfig) => {
       const layout = layoutCacheRef.current[config.id];
       const initialBounds = computeInitialBounds(layout ?? config.initialBounds);
+      const nextZ = bumpZCounter();
       setWindows((prev) => {
         const existing = prev.find((window) => window.id === config.id);
-        const nextZ = bumpZCounter();
 
         if (existing) {
-          return prev.map((window) =>
-            window.id === config.id
-              ? {
-                  ...window,
-                  title: config.title,
-                  subtitle: config.subtitle ?? window.subtitle,
-                  menuItems: config.menuItems ?? window.menuItems,
-                  details: config.details ?? window.details,
-                  content: config.content,
-                  minimized: false,
-                  maximized: layout?.maximized ?? window.maximized,
-                  bounds: window.maximized
-                    ? window.bounds
-                    : layout
-                      ? {
-                          width: layout.width,
-                          height: layout.height,
-                          x: layout.x,
-                          y: layout.y,
-                        }
-                      : window.bounds,
-                  zIndex: nextZ,
-                }
-              : window,
+          return enforceMountedWindowCap(
+            prev.map((window) =>
+              window.id === config.id
+                ? {
+                    ...window,
+                    title: config.title,
+                    subtitle: config.subtitle ?? window.subtitle,
+                    menuItems: config.menuItems ?? window.menuItems,
+                    details: config.details ?? window.details,
+                    content: config.content,
+                    minimized: false,
+                    maximized: layout?.maximized ?? window.maximized,
+                    bounds: window.maximized
+                      ? window.bounds
+                      : layout
+                        ? {
+                            width: layout.width,
+                            height: layout.height,
+                            x: layout.x,
+                            y: layout.y,
+                          }
+                        : window.bounds,
+                    zIndex: nextZ,
+                  }
+                : window,
+            ),
+            config.id,
+            nextZ,
           );
         }
 
-        return [
-          ...prev,
-          {
-            id: config.id,
-            sessionId: config.sessionId,
-            title: config.title,
-            subtitle: config.subtitle,
-            menuItems: config.menuItems,
-            details: config.details,
-            minimized: false,
-            maximized: layout?.maximized ?? false,
-            zIndex: nextZ,
-            bounds: layout
-              ? {
-                  width: layout.width,
-                  height: layout.height,
-                  x: layout.x,
-                  y: layout.y,
-                }
-              : initialBounds,
-            restoredBounds: layout
-              ? {
-                  width: layout.width,
-                  height: layout.height,
-                  x: layout.x,
-                  y: layout.y,
-                }
-              : initialBounds,
-            content: config.content,
-          },
-        ];
+        return enforceMountedWindowCap(
+          [
+            ...prev,
+            {
+              id: config.id,
+              sessionId: config.sessionId,
+              title: config.title,
+              subtitle: config.subtitle,
+              menuItems: config.menuItems,
+              details: config.details,
+              minimized: false,
+              maximized: layout?.maximized ?? false,
+              zIndex: nextZ,
+              bounds: layout
+                ? {
+                    width: layout.width,
+                    height: layout.height,
+                    x: layout.x,
+                    y: layout.y,
+                  }
+                : initialBounds,
+              restoredBounds: layout
+                ? {
+                    width: layout.width,
+                    height: layout.height,
+                    x: layout.x,
+                    y: layout.y,
+                  }
+                : initialBounds,
+              content: config.content,
+            },
+          ],
+          config.id,
+          nextZ,
+        );
       });
 
       const layoutToPersist = layout ?? {
@@ -364,19 +444,25 @@ export function TerminalWindowsProvider({ children }: { children: ReactNode }) {
 
   const restoreWindow = useCallback(
     (id: string) => {
+      const nextZ = bumpZCounter();
       setWindows((prev) =>
-        prev.map((window) =>
-          window.id === id
-            ? {
-                ...window,
-                minimized: false,
-              }
-            : window,
+        enforceMountedWindowCap(
+          prev.map((window) =>
+            window.id === id
+              ? {
+                  ...window,
+                  minimized: false,
+                  zIndex: nextZ,
+                }
+              : window,
+          ),
+          id,
+          nextZ,
         ),
       );
-      focusWindow(id);
+      setFocusedWindowId(id);
     },
-    [focusWindow],
+    [bumpZCounter],
   );
 
   const toggleMaximizeWindow = useCallback(
@@ -426,8 +512,13 @@ export function TerminalWindowsProvider({ children }: { children: ReactNode }) {
 
   const updateWindowBounds = useCallback(
     (id: string, bounds: WindowBounds) => {
-      let nextLayout: PersistedLayout | null = null;
       let resizeCallback: (() => void) | undefined;
+      const nextBounds: WindowBounds = {
+        x: bounds.x,
+        y: bounds.y,
+        width: Math.max(bounds.width, MIN_WIDTH),
+        height: Math.max(bounds.height, MIN_HEIGHT),
+      };
 
       setWindows((prev) =>
         prev.map((window) => {
@@ -435,19 +526,7 @@ export function TerminalWindowsProvider({ children }: { children: ReactNode }) {
             return window;
           }
 
-          const nextBounds: WindowBounds = {
-            x: bounds.x,
-            y: bounds.y,
-            width: Math.max(bounds.width, MIN_WIDTH),
-            height: Math.max(bounds.height, MIN_HEIGHT),
-          };
-
           resizeCallback = window.handle?.fit;
-
-          nextLayout = {
-            ...nextBounds,
-            maximized: window.maximized,
-          };
 
           return {
             ...window,
@@ -457,9 +536,10 @@ export function TerminalWindowsProvider({ children }: { children: ReactNode }) {
         }),
       );
 
-      if (nextLayout) {
-        updateLayoutCache(id, nextLayout);
-      }
+      updateLayoutCache(id, {
+        ...nextBounds,
+        maximized: layoutCacheRef.current[id]?.maximized ?? false,
+      });
 
       resizeCallback?.();
     },
