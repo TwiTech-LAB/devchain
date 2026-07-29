@@ -529,7 +529,7 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
       const ms = Math.max(0, Date.now() - since);
       const mins = Math.floor(ms / 60000);
       const secs = Math.floor((ms % 60000) / 1000);
-      const label = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+      const label = mins > 0 ? `${mins}m` : `${secs}s`;
       const aria = `Busy for ${label}`;
       return (
         <span
@@ -1388,7 +1388,13 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
                                     />
                                     {providerIcon && (
                                       <span
-                                        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border bg-muted/40"
+                                        className={cn(
+                                          'flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border bg-muted/40 transition-[border-color,background-color,box-shadow] duration-300',
+                                          isOnline &&
+                                            group.agentPresence[agent.id]?.activityState ===
+                                              'busy' &&
+                                            'border-primary/60 bg-primary/10 shadow-[0_0_8px_hsl(var(--primary)/0.35)] animate-busy-halo',
+                                        )}
                                         title={`Provider: ${providerName}`}
                                       >
                                         <img

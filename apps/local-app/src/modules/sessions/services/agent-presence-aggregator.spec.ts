@@ -17,6 +17,7 @@ describe('aggregatePresence', () => {
     expect(entry.activityState).toBe('busy');
     expect(entry.lastActivityAt).toBeDefined();
     expect(entry.busySince).toBeDefined();
+    expect(entry.idleSince).toBeNull();
 
     registry.dispose('s1');
   });
@@ -26,8 +27,8 @@ describe('aggregatePresence', () => {
 
     const result = aggregatePresence(registry, [], new Set(['agent-1', 'agent-2']));
 
-    expect(result.get('agent-1')!.online).toBe(false);
-    expect(result.get('agent-2')!.online).toBe(false);
+    expect(result.get('agent-1')).toEqual({ online: false });
+    expect(result.get('agent-2')).toEqual({ online: false });
   });
 
   it('aggregates across multiple sessions', () => {
@@ -50,6 +51,7 @@ describe('aggregatePresence', () => {
   });
 
   it('returns idle state when session has been marked idle', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-18T12:34:56.000Z'));
     const registry = new TerminalSessionRegistry();
     const session = registry.create('s1', 'tmux-s1');
     session.pushFrame('output');
@@ -59,6 +61,10 @@ describe('aggregatePresence', () => {
 
     expect(result.get('agent-1')!.activityState).toBe('idle');
     expect(result.get('agent-1')!.busySince).toBeNull();
+    expect(result.get('agent-1')!.idleSince).toBe('2026-07-18T12:34:56.000Z');
+
+    registry.dispose('s1');
+    jest.useRealTimers();
   });
 
   it('returns null activity state when session has no activity', () => {

@@ -2,6 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   fetchSetupPreview,
+  formatProjectPromptReferenceFailure,
+  isProjectPromptReferenceFailure,
+  type ImportDryRunResponse,
+  type ImportDryRunSuccess,
+  type ImportProjectResponse,
+  type ImportProjectSuccess,
+  type ProjectPromptReferenceFailure,
   type SetupPreviewRequest,
   type SetupPreviewResponse,
 } from '@/ui/pages/projects/lib/project-api';
@@ -22,6 +29,8 @@ import {
   useWizardConfigHandlers,
   type WizardConfigState,
 } from '@/ui/components/project/wizard/useWizardConfig';
+import { formatPromptTransferCounts } from '@/common/prompt-transfer';
+import { Alert, AlertDescription, AlertTitle } from '@/ui/components/ui/alert';
 
 type ToastFn = (args: { title: string; description: string; variant?: 'destructive' }) => void;
 
@@ -30,21 +39,8 @@ export interface ImportWizardTarget {
   name: string;
 }
 
-export interface ImportDryRunResult {
-  dryRun: true;
-  missingProviders: string[];
-  unmatchedStatuses?: Array<{ id: string; label: string; color: string; epicCount: number }>;
-  templateStatuses?: Array<{ label: string; color: string }>;
-  counts: { toImport: Record<string, number>; toDelete: Record<string, number> };
-}
-
-export interface ImportResult {
-  success: boolean;
-  counts: { imported: Record<string, number>; deleted: Record<string, number> };
-  mappings: Record<string, Record<string, string>>;
-  initialPromptSet?: boolean;
-  message?: string;
-}
+export type ImportDryRunResult = ImportDryRunSuccess;
+export type ImportResult = ImportProjectSuccess;
 
 /** Import wizard state = the shared Steps 1-3 config plus the import-only status mappings. */
 interface ImportWizardState extends WizardConfigState {
@@ -68,6 +64,7 @@ export interface ImportProjectWizardResult {
   isSubmitting: boolean;
   preview: SetupPreviewResponse | null;
   importTarget: ImportWizardTarget | null;
+  preflightFailure: ProjectPromptReferenceFailure | null;
 }
 
 /** Adapt the dry-run response to the Review component's shape (superset-compatible). */
@@ -78,6 +75,7 @@ function toReview(dry: ImportDryRunResult | null): ImportDryRunReview | null {
     unmatchedStatuses: dry.unmatchedStatuses,
     templateStatuses: dry.templateStatuses,
     missingProviders: dry.missingProviders,
+    promptTransfer: dry.promptTransfer,
   };
 }
 
@@ -101,6 +99,9 @@ export function useImportProjectWizard({
   const [previewRequest, setPreviewRequest] = useState<SetupPreviewRequest | null>(null);
   const [state, setState] = useState<ImportWizardState | null>(null);
   const [dryRun, setDryRun] = useState<ImportDryRunResult | null>(null);
+  const [preflightFailure, setPreflightFailure] = useState<ProjectPromptReferenceFailure | null>(
+    null,
+  );
   const [isDryRunPending, setIsDryRunPending] = useState(false);
   const [isCommitting, setIsCommitting] = useState(false);
   const submittedRef = useRef(false);
@@ -136,6 +137,7 @@ export function useImportProjectWizard({
   const reviewReady =
     !isDryRunPending &&
     dryRun !== null &&
+    preflightFailure === null &&
     !hasUnmappedStatuses(review, state?.statusMappings ?? {});
 
   const steps = useMemo<WizardStep[]>(() => {
@@ -149,7 +151,14 @@ export function useImportProjectWizard({
         // mapping must be filled before the final "Import" enables.
         canProceed: reviewReady,
         render: () =>
-          state ? (
+          state && preflightFailure ? (
+            <Alert variant="destructive" role="alert">
+              <AlertTitle>Import blocked by prompt references</AlertTitle>
+              <AlertDescription>
+                {formatProjectPromptReferenceFailure(preflightFailure)}
+              </AlertDescription>
+            </Alert>
+          ) : state ? (
             <Step4Review
               review={review}
               isLoading={isDryRunPending || (dryRun === null && isOpen)}
@@ -167,6 +176,7 @@ export function useImportProjectWizard({
     reviewReady,
     isDryRunPending,
     dryRun,
+    preflightFailure,
     isOpen,
     onStatusMappingChange,
   ]);
@@ -193,6 +203,7 @@ export function useImportProjectWizard({
     const body = importBody();
     if (!importTarget || !body) return;
     setIsDryRunPending(true);
+    setPreflightFailure(null);
     try {
       const res = await fetch(`/api/projects/${importTarget.id}/import?dryRun=true`, {
         method: 'POST',
@@ -203,7 +214,21 @@ export function useImportProjectWizard({
         const error = await res.json().catch(() => ({}));
         throw new Error(error.message || 'Precheck failed');
       }
-      setDryRun((await res.json()) as ImportDryRunResult);
+      const result = (await res.json()) as ImportDryRunResponse;
+      if (isProjectPromptReferenceFailure(result)) {
+        setDryRun(null);
+        setPreflightFailure(result);
+        toast({
+          title: 'Import precheck failed',
+          description: formatProjectPromptReferenceFailure(result),
+          variant: 'destructive',
+        });
+        return;
+      }
+      if (result.dryRun !== true || !result.counts) {
+        throw new Error('Precheck returned an invalid result');
+      }
+      setDryRun(result);
     } catch (error) {
       toast({
         title: 'Import precheck failed',
@@ -239,11 +264,30 @@ export function useImportProjectWizard({
         }
         throw new Error(message);
       }
-      const result = (await res.json()) as ImportResult;
+      const result = (await res.json()) as ImportProjectResponse;
+      if (result.success !== true) {
+        if (isProjectPromptReferenceFailure(result)) {
+          setPreflightFailure(result);
+          toast({
+            title: 'Import failed',
+            description: formatProjectPromptReferenceFailure(result),
+            variant: 'destructive',
+          });
+          return;
+        }
+        throw new Error('Import returned an invalid failure result');
+      }
+      const successResult = result;
       setIsOpen(false);
-      toast({ title: 'Import complete', description: result.message || 'Project replaced.' });
+      const promptSummary = successResult.promptTransfer
+        ? ` Prompts: ${formatPromptTransferCounts(successResult.promptTransfer)}.`
+        : '';
+      toast({
+        title: 'Import complete',
+        description: `${successResult.message || 'Project replaced.'}${promptSummary}`,
+      });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
-      onImported(result);
+      onImported(successResult);
     } catch (error) {
       toast({
         title: 'Import failed',
@@ -265,11 +309,12 @@ export function useImportProjectWizard({
   useEffect(() => {
     if (!isOpen) return;
     if (currentStepId === 'review') {
-      if (dryRun === null && !isDryRunPending) void runDryRun();
-    } else if (dryRun !== null) {
+      if (dryRun === null && preflightFailure === null && !isDryRunPending) void runDryRun();
+    } else if (dryRun !== null || preflightFailure !== null) {
       setDryRun(null);
+      setPreflightFailure(null);
     }
-  }, [isOpen, currentStepId, dryRun, isDryRunPending, runDryRun]);
+  }, [isOpen, currentStepId, dryRun, preflightFailure, isDryRunPending, runDryRun]);
 
   const openImportWizard = useCallback(
     (target: ImportWizardTarget, request: SetupPreviewRequest) => {
@@ -278,6 +323,7 @@ export function useImportProjectWizard({
       setPreviewRequest(request);
       setState(null);
       setDryRun(null);
+      setPreflightFailure(null);
       setIsDryRunPending(false);
       reset();
       setIsOpen(true);
@@ -305,5 +351,6 @@ export function useImportProjectWizard({
     isSubmitting: isCommitting,
     preview,
     importTarget,
+    preflightFailure,
   };
 }

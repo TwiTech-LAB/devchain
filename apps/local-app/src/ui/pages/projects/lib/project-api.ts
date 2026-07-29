@@ -1,5 +1,7 @@
 import type { ExportData, ManifestData } from '@devchain/shared';
 import type { FamilyAlternative } from '@/ui/components/project/ProviderMappingModal';
+import type { PromptTransferCounts } from '@/common/prompt-transfer';
+import type { PromptReferenceValidationFailure } from '@/common/prompt-references';
 
 /** Per-agent config override sent to the create/import endpoints. */
 export interface AgentOverridePayload {
@@ -114,29 +116,103 @@ export interface ProvisioningWarning {
   code?: string;
 }
 
-export interface CreateFromTemplateResponse {
-  success: boolean;
-  project?: { id: string; name: string };
+export type ProjectPromptReferenceFailure = PromptReferenceValidationFailure;
+
+export function isProjectPromptReferenceFailure(
+  value: unknown,
+): value is ProjectPromptReferenceFailure {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<ProjectPromptReferenceFailure>;
+  return (
+    candidate.success === false &&
+    candidate.mutationStarted === false &&
+    candidate.promptReferenceValidation?.code === 'skipped_prompt_references' &&
+    Array.isArray(candidate.promptReferenceValidation.promptTitles) &&
+    Array.isArray(candidate.promptReferenceValidation.issues)
+  );
+}
+
+export function formatProjectPromptReferenceFailure(
+  failure: ProjectPromptReferenceFailure,
+): string {
+  const details = failure.promptReferenceValidation.issues
+    .map(
+      ({ promptTitle, profileNames }) =>
+        `"${promptTitle}" (${profileNames.length > 0 ? `profiles: ${profileNames.join(', ')}` : 'referenced by a profile'})`,
+    )
+    .join('; ');
+  return details ? `${failure.error}. ${details}` : failure.error;
+}
+
+export interface ProviderMismatchWarning {
+  type: 'provider_mismatch';
+  originalProvider: string;
+  substituteProvider: string;
+  agentNames: string[];
+}
+
+export interface CreateFromTemplateSuccess {
+  success: true;
+  project: { id: string; name: string };
   message?: string;
-  warnings?: Array<{
-    type: 'provider_mismatch';
-    originalProvider: string;
-    substituteProvider: string;
-    agentNames: string[];
-  }>;
-  providerMappingRequired?: {
+  warnings?: ProviderMismatchWarning[];
+  provisioningWarnings?: ProvisioningWarning[];
+  promptTransfer?: PromptTransferCounts;
+}
+
+export interface CreateProviderMappingRequired {
+  success: false;
+  providerMappingRequired: {
     missingProviders: string[];
     familyAlternatives: FamilyAlternative[];
     canImport: boolean;
   };
-  provisioningWarnings?: ProvisioningWarning[];
 }
 
-export interface ImportProjectResponse {
-  success: boolean;
+export type CreateFromTemplateResponse =
+  | CreateFromTemplateSuccess
+  | CreateProviderMappingRequired
+  | ProjectPromptReferenceFailure;
+
+export interface ImportDryRunSuccess {
+  dryRun: true;
+  missingProviders: string[];
+  unmatchedStatuses?: Array<{ id: string; label: string; color: string; epicCount: number }>;
+  templateStatuses?: Array<{ label: string; color: string }>;
+  counts: { toImport: Record<string, number>; toDelete: Record<string, number> };
+  promptTransfer?: PromptTransferCounts;
+}
+
+export type ImportDryRunResponse = ImportDryRunSuccess | ProjectPromptReferenceFailure;
+
+export interface ImportProjectSuccess {
+  success: true;
+  counts: { imported: Record<string, number>; deleted: Record<string, number> };
+  mappings: Record<string, Record<string, string>>;
+  initialPromptSet?: boolean;
   message?: string;
   provisioningWarnings?: ProvisioningWarning[];
+  promptTransfer?: PromptTransferCounts;
 }
+
+export type ImportProjectResponse = ImportProjectSuccess | ProjectPromptReferenceFailure;
+
+export interface UpgradeProjectSuccess {
+  success: true;
+  newVersion: string;
+  promptTransfer?: PromptTransferCounts;
+}
+
+export interface UpgradeProjectFailure {
+  success: false;
+  error?: string;
+  mutationStarted?: boolean;
+  promptReferenceValidation?: ProjectPromptReferenceFailure['promptReferenceValidation'];
+  restored?: boolean;
+  backupId?: string;
+}
+
+export type UpgradeProjectResponse = UpgradeProjectSuccess | UpgradeProjectFailure;
 
 export interface UpdateProjectResponse {
   project: Project;

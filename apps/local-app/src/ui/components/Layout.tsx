@@ -82,6 +82,8 @@ interface NavItem {
   label: string;
   path: string;
   icon: typeof FolderOpen;
+  /** Temporarily hide this item from the sidebar without removing its route or shortcuts. */
+  hidden?: boolean;
   /** Only show this item when the app is running in main (orchestrator) mode */
   mainModeOnly?: boolean;
   /** Only show this item when gated Cloud UI features are enabled. */
@@ -120,7 +122,13 @@ const navSections: NavSection[] = [
     collapsible: false,
     items: [
       { label: 'Projects', path: '/projects', icon: FolderOpen },
-      { label: 'Worktrees', path: '/worktrees', icon: GitBranch, mainModeOnly: true },
+      {
+        label: 'Worktrees',
+        path: '/worktrees',
+        icon: GitBranch,
+        mainModeOnly: true,
+        hidden: true,
+      },
       { label: 'Chat', path: '/chat', icon: MessageSquare },
       { label: 'Board', path: '/board', icon: LayoutGrid },
       { label: 'Reviews', path: '/reviews', icon: GitCompareArrows },
@@ -183,6 +191,7 @@ const SHORTCUTS: KeyboardShortcut[] = [
   { keys: 'Alt+Shift+X', description: 'Toggle all terminal windows', hideInMainMode: true },
   { keys: 'Alt + `', description: 'Cycle terminal windows', hideInMainMode: true },
   { keys: 'Enter', description: 'Focus active terminal input', hideInMainMode: true },
+  { keys: 'Alt+Shift+P', description: 'Open inline terminal custom prompts' },
   { keys: '/', description: 'Focus page search' },
   { keys: 'Cmd/Ctrl + ?', description: 'Open shortcuts help' },
 ];
@@ -512,6 +521,7 @@ function LayoutShell({
     }
     return navSections.map((section) => {
       const filtered = section.items.filter((item) => {
+        if (item.hidden) return false;
         if (hiddenPaths.has(item.path)) return false;
         if (item.mainModeOnly && !isMainMode) return false;
         if (item.cloudUiOnly && !cloudUiEnabled) return false;

@@ -31,7 +31,7 @@ jest.mock('@devchain/shared', () => ({
 }));
 
 jest.mock('../../../providers/adapters/capabilities', () => ({
-  isContextWindowCapable: () => false,
+  isAutoCompactCapable: () => false,
   isHookCapable: () => false,
   isProjectProvisioningCapable: () => false,
 }));
@@ -55,6 +55,7 @@ jest.mock('../provider-launch-config', () => ({
 import {
   createLaunchPipelineHarness,
   fakeAgent,
+  fakeProvider,
   fakeProfileProviderConfig,
 } from './__test-utils__/pipeline-harness';
 import { resolve as resolveLaunchConfig } from '../provider-launch-config';
@@ -181,6 +182,93 @@ describe('SessionLaunchPipeline', () => {
         expect.any(String),
         { normalizeCapturedLineEndings: true },
       );
+    });
+
+    it('rotates live context state before launching a fresh process', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+
+      const result = await runWithTimers(() => pipeline.launch(launchDto));
+
+      expect(mocks.runtimeContextCapture.rotateEpoch).toHaveBeenCalledWith(result.id, null);
+      expect(mocks.runtimeContextCapture.rotateEpoch.mock.invocationCallOrder[0]).toBeLessThan(
+        mocks.terminalIO.typeCommand.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('binds the resolved model-specific configured window to the new session', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      const resolveMock = resolveLaunchConfig as jest.Mock;
+      resolveMock.mockReturnValueOnce({
+        argv: ['test-provider', '--session', 'new'],
+        commandArgs: ['test-provider', '--session', 'new'],
+        env: null,
+        contextWindowOverride: {
+          modelId: 'custom/model',
+          contextWindowTokens: 640_000,
+        },
+      });
+
+      const result = await runWithTimers(() => pipeline.launch(launchDto));
+
+      expect(mocks.runtimeContextCapture.rotateEpoch).toHaveBeenCalledWith(result.id, {
+        modelId: 'custom/model',
+        contextWindowTokens: 640_000,
+      });
+    });
+
+    it('prepares Claude settings after epoch rotation and re-resolves the fresh launch overlay', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      const resolveMock = resolveLaunchConfig as jest.Mock;
+      resolveMock.mockClear();
+      mocks.storage.getProvider.mockResolvedValue(
+        fakeProvider({ name: 'claude', claudeLaunchSettingsJson: '{"tui":"default"}' }),
+      );
+      mocks.storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        fakeProfileProviderConfig({ options: '--model sonnet' }),
+      ]);
+      mocks.claudeLaunchSettings.prepare.mockResolvedValue({
+        optionArgs: ['--settings', '/private/revision.json'],
+        runtimeEnv: { DEVCHAIN_STATUSLINE_LOCATOR: '/private/locator.json' },
+        captureEnabled: true,
+      });
+
+      const result = await runWithTimers(() => pipeline.launch(launchDto));
+
+      expect(mocks.claudeLaunchSettings.prepare).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerName: 'claude',
+          settingsJson: '{"tui":"default"}',
+          profileOptionArgs: ['--model', 'sonnet'],
+          sessionId: result.id,
+          epoch: 'capture-epoch',
+          projectRootPath: '/tmp/project',
+        }),
+      );
+      expect(resolveMock).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          mode: 'new',
+          providerOptionArgs: ['--settings', '/private/revision.json'],
+          runtimeEnv: { DEVCHAIN_STATUSLINE_LOCATOR: '/private/locator.json' },
+        }),
+      );
+      expect(mocks.runtimeContextCapture.rotateEpoch.mock.invocationCallOrder[0]).toBeLessThan(
+        mocks.claudeLaunchSettings.prepare.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('uses the original fresh-launch command unchanged when preparation is inactive', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      const resolveMock = resolveLaunchConfig as jest.Mock;
+      resolveMock.mockClear();
+
+      await runWithTimers(() => pipeline.launch(launchDto));
+
+      expect(resolveMock).toHaveBeenCalledTimes(1);
+      expect(mocks.terminalIO.typeCommand).toHaveBeenCalledWith(expect.any(Object), [
+        'test-provider',
+        '--session',
+        'new',
+      ]);
     });
 
     it('keeps captured normalization enabled for live raw-line-ending adapters', async () => {
@@ -371,6 +459,20 @@ describe('SessionLaunchPipeline', () => {
         'session.started',
         expect.anything(),
       );
+    });
+
+    it('clears a rotated Claude capture epoch during rollback', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      mocks.storage.getProvider.mockResolvedValue(fakeProvider({ name: 'claude' }));
+      mocks.terminalIO.createEmptySession.mockRejectedValue(new Error('tmux failed'));
+
+      await expect(runWithTimers(() => pipeline.launch(launchDto))).rejects.toThrow('tmux failed');
+
+      expect(mocks.runtimeContextCapture.rotateEpoch).toHaveBeenCalledWith(
+        expect.any(String),
+        null,
+      );
+      expect(mocks.runtimeContextCapture.clear).toHaveBeenCalledWith(expect.any(String));
     });
   });
 

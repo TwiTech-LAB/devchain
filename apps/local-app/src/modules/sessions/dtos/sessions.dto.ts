@@ -29,6 +29,8 @@ export interface SessionDto {
   tmuxSessionId: string | null;
   /** Provider-native session id (e.g. OpenCode `ses_…`); locates DB-backed sources. */
   providerSessionId?: string | null;
+  /** Historical provider identity used to parse transcripts independently of live config. */
+  providerNameAtLaunch?: string | null;
   status: 'running' | 'stopped' | 'failed';
   startedAt: string;
   endedAt: string | null;

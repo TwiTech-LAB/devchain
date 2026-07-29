@@ -123,6 +123,7 @@ function seedDb(
 function makePricing(): jest.Mocked<PricingServiceInterface> {
   return {
     calculateMessageCost: jest.fn().mockReturnValue(0.4242),
+    getCatalogContextWindowSize: jest.fn().mockReturnValue(256_000),
     getContextWindowSize: jest.fn().mockReturnValue(256_000),
   };
 }

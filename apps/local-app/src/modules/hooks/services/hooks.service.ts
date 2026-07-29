@@ -7,11 +7,13 @@ import type {
   PostToolUseHookEvent,
   PreToolUseHookEvent,
   SessionStartHookEvent,
+  StatusLineHookEvent,
   StopHookEvent,
 } from '../dtos/hook-event.dto';
 import { ASK_USER_QUESTION_TOOL, normalizeAskUserQuestions } from '../dtos/ask-user-question.dto';
 import { PendingAskUserQuestionService } from './pending-ask-user-question.service';
 import { createLogger } from '../../../common/logging/logger';
+import { RuntimeContextCaptureService } from '../../runtime-context-capture/runtime-context-capture.service';
 
 const logger = createLogger('HooksService');
 
@@ -24,6 +26,7 @@ export class HooksService {
     @Inject(STORAGE_SERVICE) private readonly storage: AgentStorage,
     private readonly events: EventsService,
     private readonly pendingAskQuestions: PendingAskUserQuestionService,
+    private readonly runtimeContextCapture: RuntimeContextCaptureService,
   ) {}
 
   /**
@@ -36,10 +39,7 @@ export class HooksService {
    */
   async handleHookEvent(data: HookEventData): Promise<HookEventResponse> {
     const { hookEventName } = data;
-    logger.info(
-      { hookEventName, projectId: data.projectId, tmuxSessionName: data.tmuxSessionName },
-      'Processing hook event',
-    );
+    logger.info({ hookEventName, sessionId: data.sessionId }, 'Processing hook event');
 
     this.warnOversizedFields(data);
 
@@ -52,10 +52,23 @@ export class HooksService {
         return this.handlePreToolUse(data);
       case 'PostToolUse':
         return this.handlePostToolUse(data);
+      case 'StatusLine':
+        return this.handleStatusLine(data);
       default:
         logger.info({ hookEventName }, 'Unhandled hook event type — returning ok');
         return { ok: true, handled: false, data: {} };
     }
+  }
+
+  private handleStatusLine(data: StatusLineHookEvent): HookEventResponse {
+    const result = this.runtimeContextCapture.capture(data);
+    if (!result.accepted) {
+      logger.debug(
+        { sessionId: data.sessionId, reason: result.reason },
+        'Runtime context capture report ignored',
+      );
+    }
+    return { ok: true, handled: true, data: {} };
   }
 
   /**

@@ -15,7 +15,6 @@ import { SessionReaderAdapterFactory } from '../adapters/session-reader-adapter.
 import { TranscriptPathValidator } from '../services/transcript-path-validator.service';
 import type { UnifiedMessage, UnifiedMetrics, UnifiedSession } from '../dtos/unified-session.types';
 import type { SessionsService } from '../../sessions/services/sessions.service';
-import type { StorageService } from '../../storage/interfaces/storage.interface';
 import { SessionCacheService } from '../services/session-cache.service';
 import type { UnifiedChunk } from '../dtos/unified-chunk.types';
 
@@ -23,6 +22,7 @@ const LARGE_SESSION_MESSAGE_COUNT = 500;
 
 const mockAdapterFactory = {
   getAdapter: jest.fn(),
+  getAdapterForPath: jest.fn(),
   getSupportedProviders: jest.fn().mockReturnValue(['claude']),
 } as unknown as jest.Mocked<SessionReaderAdapterFactory>;
 
@@ -32,16 +32,6 @@ const mockPathValidator = {
 
 const mockSessionsService = {
   getSession: jest.fn(),
-};
-
-const mockStorage = {
-  getAgent: jest.fn(),
-  getProfileProviderConfig: jest.fn(),
-  getProvider: jest.fn(),
-};
-
-const mockProviderAdapterFactory = {
-  getAdapter: jest.fn().mockReturnValue({}),
 };
 
 function makeMessage(id: string, role: 'user' | 'assistant', tsIso: string): UnifiedMessage {
@@ -120,20 +110,9 @@ function setupResolveChain(_session: UnifiedSession) {
   mockSessionsService.getSession.mockReturnValue({
     id: 'ab-validation-session',
     agentId: 'agent-1',
+    providerNameAtLaunch: 'claude',
     transcriptPath: '/home/user/.claude/projects/-test/large-session.jsonl',
     status: 'stopped',
-  });
-  mockStorage.getAgent.mockResolvedValue({
-    id: 'agent-1',
-    providerConfigId: 'config-1',
-  });
-  mockStorage.getProfileProviderConfig.mockResolvedValue({
-    id: 'config-1',
-    providerId: 'provider-1',
-  });
-  mockStorage.getProvider.mockResolvedValue({
-    id: 'provider-1',
-    name: 'claude',
   });
   (mockAdapterFactory.getAdapter as jest.Mock).mockReturnValue(mockAdapter);
   (mockPathValidator.validateForRead as jest.Mock).mockResolvedValue(
@@ -192,8 +171,6 @@ describe('A/B Validation: Full-transcript vs Paged-transcript', () => {
       mockPathValidator as unknown as TranscriptPathValidator,
       mockSessionCacheService as unknown as SessionCacheService,
       mockSessionsService as unknown as SessionsService,
-      mockStorage as unknown as StorageService,
-      mockProviderAdapterFactory as unknown as typeof import('../../providers/adapters').ProviderAdapterFactory,
     );
     setupResolveChain(largeSession);
     mockAdapter.parseFullSession.mockResolvedValue(largeSession);

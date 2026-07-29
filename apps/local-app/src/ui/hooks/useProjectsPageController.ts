@@ -8,7 +8,9 @@ import { useProjectImport } from '@/ui/hooks/useProjectImport';
 import { useTemplateForm } from '@/ui/hooks/useTemplateForm';
 import type { FamilyAlternative } from '@/ui/components/project/ProviderMappingModal';
 import {
-  type CreateFromTemplateResponse,
+  formatProjectPromptReferenceFailure,
+  isProjectPromptReferenceFailure,
+  type ProviderMismatchWarning,
   fetchProjects,
   validatePath,
   fetchTemplates,
@@ -18,6 +20,7 @@ import {
   deleteProject,
 } from '@/ui/pages/projects/lib/project-api';
 import { isLessThan } from '@devchain/shared';
+import { formatPromptTransferCounts } from '@/common/prompt-transfer';
 
 export interface TemplateMetadata {
   slug: string;
@@ -121,9 +124,7 @@ export function useProjectsPageController() {
     Parameters<typeof createProjectFromTemplate>[0] | null
   >(null);
   const [showProviderWarningModal, setShowProviderWarningModal] = useState(false);
-  const [providerWarnings, setProviderWarnings] = useState<CreateFromTemplateResponse['warnings']>(
-    [],
-  );
+  const [providerWarnings, setProviderWarnings] = useState<ProviderMismatchWarning[]>([]);
 
   // Templates query for upgrade checking (always enabled)
   const { data: allTemplates } = useQuery({
@@ -346,8 +347,17 @@ export function useProjectsPageController() {
   const createFromTemplateMutation = useMutation({
     mutationFn: createProjectFromTemplate,
     onSuccess: async (data, variables) => {
+      if (isProjectPromptReferenceFailure(data)) {
+        toast({
+          title: 'Project creation blocked',
+          description: formatProjectPromptReferenceFailure(data),
+          variant: 'destructive',
+        });
+        return;
+      }
+
       // Check if provider mapping is required
-      if (data.providerMappingRequired) {
+      if ('providerMappingRequired' in data) {
         // Preserve the ACTUAL submitted wizard payload (variables) for the retry — selectedProviderNames,
         // presetName/agentOverrides, teamOverrides — so the retry only merges the user-confirmed
         // familyProviderMappings on top. Storing the pre-wizard templateFormData here would silently
@@ -356,6 +366,14 @@ export function useProjectsPageController() {
         setProviderMappingData(data.providerMappingRequired);
         setShowTemplateDialog(false);
         setShowProviderMappingModal(true);
+        return;
+      }
+      if (data.success !== true) {
+        toast({
+          title: 'Project creation failed',
+          description: 'The server returned an invalid failure result',
+          variant: 'destructive',
+        });
         return;
       }
 
@@ -367,16 +385,20 @@ export function useProjectsPageController() {
         setSelectedProjectId(data.project.id);
       }
 
+      const promptSummary = data.promptTransfer
+        ? ` Prompts: ${formatPromptTransferCounts(data.promptTransfer)}.`
+        : '';
+      toast({
+        title: 'Success',
+        description: `${data.message || 'Project created from template successfully'}${promptSummary}`,
+      });
+
       if (data.warnings?.length) {
         setProviderWarnings(data.warnings);
         setShowProviderWarningModal(true);
         return;
       }
 
-      toast({
-        title: 'Success',
-        description: data.message || 'Project created from template successfully',
-      });
       // Navigate to the new project
       if (data.project?.id) {
         navigate('/board');

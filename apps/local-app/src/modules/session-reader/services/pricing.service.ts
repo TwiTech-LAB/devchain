@@ -119,12 +119,18 @@ export class PricingService implements PricingServiceInterface {
   }
 
   /**
+   * Get a known model's catalog context window without applying the unknown fallback.
+   */
+  getCatalogContextWindowSize(modelName: string): number | null {
+    return this.getPricing(modelName)?.max_input_tokens ?? null;
+  }
+
+  /**
    * Get model's context window size.
    * Returns max_input_tokens from pricing data, or 200_000 as fallback.
    */
   getContextWindowSize(modelName: string): number {
-    const pricing = this.getPricing(modelName);
-    return pricing?.max_input_tokens ?? DEFAULT_CONTEXT_WINDOW;
+    return this.getCatalogContextWindowSize(modelName) ?? DEFAULT_CONTEXT_WINDOW;
   }
 
   private isValidPricing(entry: unknown): boolean {

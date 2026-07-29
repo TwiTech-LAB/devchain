@@ -14,6 +14,7 @@ export interface PricingServiceInterface {
     cacheReadTokens: number,
     cacheCreationTokens: number,
   ): number;
+  getCatalogContextWindowSize(model: string): number | null;
   getContextWindowSize(model: string): number;
 }
 
@@ -28,5 +29,8 @@ export class StubPricingService implements PricingServiceInterface {
   }
   getContextWindowSize(): number {
     return 200_000;
+  }
+  getCatalogContextWindowSize(): number | null {
+    return null;
   }
 }

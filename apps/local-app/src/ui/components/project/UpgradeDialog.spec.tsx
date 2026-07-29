@@ -162,7 +162,11 @@ describe('UpgradeDialog', () => {
       if (url.includes('/api/projects/proj-123/upgrade-template') && init?.method === 'POST') {
         return {
           ok: true,
-          json: async () => ({ success: true, newVersion: '2.0.0' }),
+          json: async () => ({
+            success: true,
+            newVersion: '2.0.0',
+            promptTransfer: { imported: 2, deleted: 1, preserved: 3, skipped: 4 },
+          }),
         };
       }
       return { ok: true, json: async () => ({}) };
@@ -176,8 +180,14 @@ describe('UpgradeDialog', () => {
     await waitFor(() => {
       expect(screen.getByText('Upgrade Complete')).toBeInTheDocument();
       expect(mockToast).toHaveBeenCalledWith(
-        expect.objectContaining({ title: 'Upgrade Complete' }),
+        expect.objectContaining({
+          title: 'Upgrade Complete',
+          description: expect.stringContaining('3 preserved, 4 skipped'),
+        }),
       );
+      expect(
+        screen.getByText(/Prompts: 2 imported, 1 deleted, 3 preserved, 4 skipped/),
+      ).toBeInTheDocument();
     });
   });
 
@@ -241,6 +251,44 @@ describe('UpgradeDialog', () => {
       expect(screen.getByText('Manual Restore Available')).toBeInTheDocument();
       expect(screen.getByRole('button', { name: /restore backup/i })).toBeInTheDocument();
     });
+  });
+
+  it('shows structured preflight details without offering or invoking restore', async () => {
+    const fetchMock = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/projects/proj-123/upgrade-template') && init?.method === 'POST') {
+        return {
+          ok: true,
+          json: async () => ({
+            success: false,
+            mutationStarted: false,
+            error: 'Template profiles reference excluded prompts',
+            backupId: 'backup-kept-server-side',
+            promptReferenceValidation: {
+              code: 'skipped_prompt_references',
+              promptTitles: ['Private SOP'],
+              issues: [{ promptTitle: 'Private SOP', profileNames: ['Coder'] }],
+            },
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    renderWithProviders(<UpgradeDialog {...defaultProps} />);
+    fireEvent.click(screen.getByRole('button', { name: /upgrade/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Upgrade Failed')).toBeInTheDocument();
+      expect(screen.getByText(/"Private SOP" \(profiles: Coder\)/)).toBeInTheDocument();
+    });
+    expect(screen.queryByRole('button', { name: /restore backup/i })).not.toBeInTheDocument();
+    expect(screen.queryByText('Manual Restore Available')).not.toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/restore-backup'))).toBe(
+      false,
+    );
   });
 
   it('calls restore API when Restore Backup is clicked', async () => {

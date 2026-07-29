@@ -7,6 +7,7 @@ import { HostResolver } from '@devchain/shared';
 import { logger, createLogger } from './common/logging/logger';
 import { join } from 'path';
 import { existsSync } from 'fs';
+import { writeRuntimeContextEndpointDiscovery } from './modules/runtime-context-capture/runtime-context-capture-files';
 
 async function bootstrap() {
   const mode = process.env.DEVCHAIN_MODE === 'main' ? 'main' : 'normal';
@@ -128,6 +129,13 @@ async function bootstrap() {
   const serverAddress = app.getHttpServer().address();
   const actualPort =
     serverAddress && typeof serverAddress === 'object' ? serverAddress.port : config.PORT;
+  const internalUrl = HostResolver.buildInternalBaseUrl({ host: config.HOST, port: actualPort });
+
+  try {
+    await writeRuntimeContextEndpointDiscovery(internalUrl);
+  } catch (error) {
+    appLogger.error({ error }, 'Failed to write runtime-context endpoint discovery file');
+  }
 
   // Write runtime port file for parent process discovery (worktree process runtime)
   if (config.RUNTIME_PORT_FILE) {
@@ -151,7 +159,7 @@ async function bootstrap() {
     }
   }
 
-  const displayUrl = HostResolver.buildInternalBaseUrl({ host: config.HOST, port: actualPort });
+  const displayUrl = internalUrl;
   appLogger.info(
     {
       mode,

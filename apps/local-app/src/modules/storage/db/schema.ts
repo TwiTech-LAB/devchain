@@ -55,22 +55,10 @@ export const providers = sqliteTable('providers', {
   mcpEndpoint: text('mcp_endpoint'),
   mcpRegisteredAt: text('mcp_registered_at'),
   autoCompactThreshold: integer('auto_compact_threshold'), // CLAUDE_AUTOCOMPACT_PCT_OVERRIDE value (1-100), null = don't inject
-  autoCompactThreshold1m: integer('auto_compact_threshold_1m'), // Threshold for 1M context sessions (opus), null = use standard
-  oneMillionContextEnabled: integer('one_million_context_enabled', { mode: 'boolean' })
-    .notNull()
-    .default(false),
+  claudeLaunchSettingsJson: text('claude_launch_settings_json'),
   env: text('env'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
-});
-
-// Provider Probe Proofs (persisted 1M context capability proof per provider)
-export const providerProbeProofs = sqliteTable('provider_probe_proofs', {
-  providerId: text('provider_id')
-    .primaryKey()
-    .references(() => providers.id, { onDelete: 'cascade' }),
-  binPath: text('bin_path').notNull(),
-  recordedAt: integer('recorded_at').notNull(), // epoch ms
 });
 
 // Provider Models (supported model variants per provider)

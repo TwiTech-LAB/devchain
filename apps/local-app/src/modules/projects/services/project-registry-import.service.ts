@@ -1,5 +1,6 @@
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { createLogger } from '../../../common/logging/logger';
+import type { PromptTransferCounts } from '../../../common/prompt-transfer';
 import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { SettingsService } from '../../settings/services/settings.service';
 import { RegistryClientService } from '../../registry/services/registry-client.service';
@@ -31,6 +32,7 @@ export interface CreateFromRegistryResult {
     agents: number;
     statuses: number;
   };
+  promptTransfer: PromptTransferCounts;
 }
 
 /**
@@ -87,6 +89,12 @@ export class ProjectRegistryImportService {
       agents: number;
       statuses: number;
     } = { prompts: 0, profiles: 0, agents: 0, statuses: 0 };
+    let promptTransfer: PromptTransferCounts = {
+      imported: 0,
+      deleted: 0,
+      preserved: 0,
+      skipped: 0,
+    };
 
     try {
       const importResponse = await this.projectsService.importProject({
@@ -95,7 +103,26 @@ export class ProjectRegistryImportService {
         dryRun: false,
       });
 
-      if (importResponse && typeof importResponse === 'object' && 'imported' in importResponse) {
+      if (
+        importResponse &&
+        typeof importResponse === 'object' &&
+        'counts' in importResponse &&
+        importResponse.counts &&
+        typeof importResponse.counts === 'object' &&
+        'imported' in importResponse.counts
+      ) {
+        const imported = importResponse.counts.imported as Record<string, number>;
+        importResult = {
+          prompts: imported.prompts ?? 0,
+          profiles: imported.profiles ?? 0,
+          agents: imported.agents ?? 0,
+          statuses: imported.statuses ?? 0,
+        };
+      } else if (
+        importResponse &&
+        typeof importResponse === 'object' &&
+        'imported' in importResponse
+      ) {
         const imported = importResponse.imported as Record<string, number>;
         importResult = {
           prompts: imported.prompts ?? 0,
@@ -103,6 +130,14 @@ export class ProjectRegistryImportService {
           agents: imported.agents ?? 0,
           statuses: imported.statuses ?? 0,
         };
+      }
+
+      if (
+        importResponse &&
+        typeof importResponse === 'object' &&
+        'promptTransfer' in importResponse
+      ) {
+        promptTransfer = importResponse.promptTransfer as PromptTransferCounts;
       }
 
       logger.info({ projectId: project.id, importResult }, 'Template content imported');
@@ -158,6 +193,7 @@ export class ProjectRegistryImportService {
       templateSlug: slug,
       templateVersion: version,
       imported: importResult,
+      promptTransfer,
     };
   }
 

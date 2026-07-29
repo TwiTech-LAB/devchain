@@ -30,7 +30,8 @@ export const agentMetadata: ToolMetadataEntry[] = [
   },
   {
     name: 'devchain_get_agent_by_name',
-    description: 'Fetch a single agent by name for the project resolved from the session',
+    description:
+      'Returns a directory card for any agent in the project: description, profile name, provider config, team memberships with isLead, live presence with busy/idle since-when, and open assigned epics with status. Profile instructions are self-only; they are returned only when looking up yourself. Teams are an empty array when team data is unavailable.',
     inputSchema: {
       type: 'object',
       required: ['sessionId', 'name'],

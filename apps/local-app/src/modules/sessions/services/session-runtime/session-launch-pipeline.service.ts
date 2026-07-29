@@ -24,7 +24,7 @@ import { SessionCoordinatorService } from '../session-coordinator.service';
 import { ProviderAdapterFactory } from '../../../providers/adapters/provider-adapter.factory';
 import type { ProviderAdapter } from '../../../providers/adapters/provider-adapter.interface';
 import {
-  isContextWindowCapable,
+  isAutoCompactCapable,
   isHookCapable,
   isProjectProvisioningCapable,
 } from '../../../providers/adapters/capabilities';
@@ -48,6 +48,8 @@ import { renderTemplate } from '../../../../common/template/handlebars-renderer'
 import { buildPromptRenderContext } from '../../../../common/template/prompt-render-context';
 import { CleanupStack } from './cleanup-stack';
 import type { LaunchSessionDto, SessionDetailDto } from '../../dtos/sessions.dto';
+import { RuntimeContextCaptureService } from '../../../runtime-context-capture/runtime-context-capture.service';
+import { ClaudeLaunchSettingsMaterializerService } from '../../../runtime-context-capture/claude-launch-settings-materializer.service';
 
 const logger = createLogger('SessionLaunchPipeline');
 
@@ -69,6 +71,8 @@ export class SessionLaunchPipeline {
     private readonly mcpEnsureService: ProviderMcpEnsureService,
     private readonly eventsService: EventsService,
     private readonly teamsStore: TeamsStore,
+    private readonly runtimeContextCapture: RuntimeContextCaptureService,
+    private readonly claudeLaunchSettings: ClaudeLaunchSettingsMaterializerService,
   ) {
     this.sqlite = getRawSqliteClient(db);
   }
@@ -143,8 +147,8 @@ export class SessionLaunchPipeline {
             })
           : null;
 
-        // Re-resolve with real sessionId + tmuxSessionName for hook env
-        const finalConfig = resolveLaunchConfig({
+        const providerEnv = this.storage.getProviderEnvForProject(provider.id, projectId);
+        const launchConfigInput = {
           mode: 'new',
           // Thread devchain's freshly-minted sessions.id (line ~103) so a
           // deterministic-binding adapter (Copilot) can pass it as the provider
@@ -156,7 +160,7 @@ export class SessionLaunchPipeline {
           modelOverride: effectiveModel,
           effortOverride: effectiveEffort,
           providerBinPath: provider.binPath!,
-          providerEnv: this.storage.getProviderEnvForProject(provider.id, projectId),
+          providerEnv,
           configEnv,
           provider,
           initialPrompt: seededPrompt ?? undefined,
@@ -169,11 +173,8 @@ export class SessionLaunchPipeline {
                 tmuxSessionName,
               }
             : undefined,
-        });
-
-        // ── Phase 5: Runtime plan finalized checkpoint ─────────────────
-        // From here: argv, env, sessionId, hook paths are immutable.
-        // No tmux side effects have happened yet.
+        } as const;
+        let finalConfig = resolveLaunchConfig(launchConfigInput);
 
         // Phase 6: setupHooksConfig (filesystem write, non-fatal)
         await this.setupHooksConfig(provider, project.rootPath);
@@ -192,6 +193,36 @@ export class SessionLaunchPipeline {
             .prepare('UPDATE sessions SET status = ?, ended_at = ?, updated_at = ? WHERE id = ?')
             .run('failed', new Date().toISOString(), new Date().toISOString(), sessionId);
         });
+        const epoch = this.runtimeContextCapture.rotateEpoch(
+          sessionId,
+          finalConfig.contextWindowOverride ?? null,
+        );
+        cleanup.push('runtimeContextCapture', async () => {
+          this.runtimeContextCapture.clear(sessionId!);
+        });
+        const preparedSettings = await this.claudeLaunchSettings.prepare({
+          providerName: provider.name,
+          settingsJson: provider.claudeLaunchSettingsJson,
+          profileOptionArgs: parseProfileOptions(options),
+          providerEnv,
+          configEnv,
+          sessionId,
+          epoch,
+          projectRootPath: project.rootPath,
+        });
+        if (preparedSettings.optionArgs.length > 0) {
+          finalConfig = resolveLaunchConfig({
+            ...launchConfigInput,
+            providerOptionArgs: preparedSettings.optionArgs,
+            runtimeEnv: preparedSettings.runtimeEnv,
+          });
+        }
+        cleanup.push('claudeLaunchSettings', async () => {
+          await this.claudeLaunchSettings.cleanupSession(sessionId!);
+        });
+
+        // ── Runtime plan finalized checkpoint ──────────────────────────
+        // From here: argv, env, sessionId, and generated artifact paths are immutable.
 
         // Phase 8: createTmuxSession
         await this.terminalIO.createEmptySession(tmuxSessionName, { cwd: project.rootPath });
@@ -323,6 +354,7 @@ export class SessionLaunchPipeline {
     this.sqlite
       .prepare(`UPDATE sessions SET status = 'stopped', ended_at = ?, updated_at = ? WHERE id = ?`)
       .run(new Date().toISOString(), new Date().toISOString(), row.id);
+    this.runtimeContextCapture.clear(row.id as string);
 
     return null;
   }
@@ -425,7 +457,7 @@ export class SessionLaunchPipeline {
   ): void {
     try {
       const adapter = this.providerAdapterFactory.getAdapter(provider.name);
-      if (isContextWindowCapable(adapter)) {
+      if (isAutoCompactCapable(adapter)) {
         adapter.evaluateAutoCompactConfig().then(({ enabled, reason }) => {
           if (!enabled && reason) {
             this.eventsService.publish('session.recommendation', {

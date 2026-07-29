@@ -246,13 +246,24 @@ export const ExportSchema = z
     // Provider-level settings (carries threshold and future settings across templates)
     providerSettings: z
       .array(
-        z.object({
-          name: z.string().min(1),
-          autoCompactThreshold: z.number().int().min(1).max(100).nullable().optional(),
-          autoCompactThreshold1m: z.number().int().min(1).max(100).nullable().optional(),
-          oneMillionContextEnabled: z.boolean().optional(),
-          env: EnvVarsSchema,
-        }),
+        z
+          .object({
+            name: z.string().min(1),
+            autoCompactThreshold: z.number().int().min(1).max(100).nullable().optional(),
+            autoCompactThreshold1m: z.number().int().min(1).max(100).nullable().optional(),
+            oneMillionContextEnabled: z.boolean().optional(),
+            env: EnvVarsSchema,
+          })
+          .transform(
+            ({ autoCompactThreshold1m, oneMillionContextEnabled, ...providerSetting }) => ({
+              ...providerSetting,
+              ...(providerSetting.name.trim().toLowerCase() === 'claude' &&
+              oneMillionContextEnabled === true &&
+              autoCompactThreshold1m === undefined
+                ? { autoCompactThreshold: 95 }
+                : {}),
+            }),
+          ),
       )
       .optional(),
     providerModels: z

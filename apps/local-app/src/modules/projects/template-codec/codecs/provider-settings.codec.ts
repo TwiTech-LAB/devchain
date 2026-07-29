@@ -1,16 +1,11 @@
 /**
  * ProviderSettings codec — owns the global `providerSettings` section. These are
- * PROVIDER-LEVEL rows (auto-compact thresholds, 1M-context probe, env merge), NOT a
+ * PROVIDER-LEVEL rows (auto-compact threshold and env merge), NOT a
  * project entity — they mutate the shared provider catalog keyed by provider name.
  *
- * Apply = the legacy `importProviderSettings`, moved VERBATIM. The acceptance matrix is
- * frozen (docs/template-roundtrip-compatibility-matrix.md row 19 + Architect round-2 note):
+ * Apply preserves the established provider-settings import contract:
  *  - `autoCompactThreshold` imports ONLY when the local provider's threshold is null;
- *  - `autoCompactThreshold1m` MAY overwrite the local value when the template carries one;
- *  - `oneMillionContextEnabled` is probed ONLY with a local `binPath` AND an injected probe
- *    callback — success → enabled + threshold 50 (legacy-promoted when no 1m field);
- *    failure / no-binPath / no-probe → disabled + standard threshold 95;
- *  - `env` merges NON-destructively (local wins), with redacted `***` values stripped first.
+ *  - `env` merges NON-destructively (local wins), preserving redacted `***` placeholders.
  *
  * Env semantics here are DISTINCT from config-level env (config env is preserved verbatim
  * via `preserveImportedEnv`; provider env is a local-wins merge) — the two rules must never
@@ -38,10 +33,7 @@ type ProviderSettingsSection = ParsedTemplatePayload['providerSettings'];
 export interface ProviderExportRow {
   id: string;
   name: string;
-  binPath: string | null;
   autoCompactThreshold: number | null;
-  autoCompactThreshold1m?: number | null;
-  oneMillionContextEnabled?: boolean;
   env?: Record<string, string> | null;
 }
 
@@ -69,8 +61,6 @@ export function buildProviderSettings(
   const providerSettings: Array<{
     name: string;
     autoCompactThreshold: number | null;
-    autoCompactThreshold1m?: number | null;
-    oneMillionContextEnabled?: boolean;
     env?: Record<string, string> | null;
   }> = [];
 
@@ -80,19 +70,10 @@ export function buildProviderSettings(
         ? envFns.filterEnvByScope(provider.env, scopeMap.get(providerId), sourceProjectId)
         : null;
     const hasEnv = filteredEnv !== null;
-    if (
-      provider.autoCompactThreshold != null ||
-      provider.autoCompactThreshold1m != null ||
-      provider.oneMillionContextEnabled ||
-      hasEnv
-    ) {
+    if (provider.autoCompactThreshold != null || hasEnv) {
       providerSettings.push({
         name: provider.name,
         autoCompactThreshold: provider.autoCompactThreshold ?? null,
-        ...(provider.autoCompactThreshold1m != null && {
-          autoCompactThreshold1m: provider.autoCompactThreshold1m,
-        }),
-        ...(provider.oneMillionContextEnabled && { oneMillionContextEnabled: true }),
         ...(hasEnv && { env: envFns.sanitizeEnvMap(filteredEnv) }),
       });
     }
@@ -159,60 +140,9 @@ class ProviderSettingsCodec implements TemplateSectionCodec<ProviderSettingsSect
         );
       }
 
-      // Import autoCompactThreshold1m if present in template
-      if (setting.autoCompactThreshold1m != null) {
-        updates.autoCompactThreshold1m = setting.autoCompactThreshold1m;
-      }
-
-      // Import oneMillionContextEnabled: auto-probe when callback is available,
-      // otherwise disable and set a safe threshold (95) to avoid degraded sessions.
-      if (setting.oneMillionContextEnabled) {
-        // Legacy compat: if template has 1M enabled but no autoCompactThreshold1m,
-        // treat the old autoCompactThreshold as the 1M value
-        const isLegacyTemplate = setting.autoCompactThreshold1m == null;
-
-        if (localProvider.binPath && rt.probe1m) {
-          const outcome = await rt.probe1m(localProvider.binPath);
-          if (outcome.supported) {
-            updates.oneMillionContextEnabled = true;
-            updates.autoCompactThreshold1m = isLegacyTemplate
-              ? (setting.autoCompactThreshold ?? 50)
-              : (setting.autoCompactThreshold1m ?? 50);
-            // Only set standard threshold when local provider doesn't have one
-            if (localProvider.autoCompactThreshold == null) {
-              updates.autoCompactThreshold = isLegacyTemplate
-                ? 95
-                : (setting.autoCompactThreshold ?? 95);
-            }
-            logger.info(
-              { providerName: setting.name },
-              'Template had 1M context enabled — auto-probe confirmed support',
-            );
-          } else {
-            updates.oneMillionContextEnabled = false;
-            if (localProvider.autoCompactThreshold == null) {
-              updates.autoCompactThreshold = 95;
-            }
-            updates.autoCompactThreshold1m = null;
-            logger.info(
-              { providerName: setting.name, status: outcome.status },
-              'Template had 1M context enabled — auto-probe did not confirm support',
-            );
-          }
-        } else {
-          updates.oneMillionContextEnabled = false;
-          if (localProvider.autoCompactThreshold == null) {
-            updates.autoCompactThreshold = 95;
-          }
-          updates.autoCompactThreshold1m = null;
-          logger.info(
-            { providerName: setting.name },
-            'Template had 1M context enabled — disabled during import (no binPath or probe unavailable)',
-          );
-        }
-      }
-
-      const importedEnv = preserveImportedEnv(setting.env);
+      const importedEnv = preserveImportedEnv(
+        sanitizeLegacyClaudeProviderEnv(setting.name, setting.env),
+      );
       if (importedEnv) {
         if (localProvider.env == null) {
           updates.env = importedEnv;
@@ -255,3 +185,18 @@ class ProviderSettingsCodec implements TemplateSectionCodec<ProviderSettingsSect
 }
 
 export const providerSettingsCodec = new ProviderSettingsCodec();
+
+function sanitizeLegacyClaudeProviderEnv(
+  providerName: string,
+  env: Record<string, string> | null | undefined,
+): Record<string, string> | null | undefined {
+  if (
+    providerName.trim().toLowerCase() !== 'claude' ||
+    env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW !== '1000000'
+  ) {
+    return env;
+  }
+
+  const { CLAUDE_CODE_AUTO_COMPACT_WINDOW: _retiredWindow, ...sanitized } = env;
+  return sanitized;
+}

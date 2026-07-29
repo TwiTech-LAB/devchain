@@ -85,6 +85,25 @@ describe('InlineTerminalHeader', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('renders the prompt button immediately before Window with shortcut metadata', () => {
+    render(
+      <InlineTerminalHeader {...defaultProps} onOpenPrompts={jest.fn()} onOpenWindow={jest.fn()} />,
+    );
+
+    const promptButton = screen.getByRole('button', { name: /Open custom prompts/i });
+    const windowButton = screen.getByRole('button', { name: /Open terminal in window/i });
+    expect(promptButton).toHaveAttribute('aria-keyshortcuts', 'Alt+Shift+P');
+    expect(promptButton.compareDocumentPosition(windowButton)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
+  it('hides the prompt button when no eligible callback is provided', () => {
+    render(<InlineTerminalHeader {...defaultProps} />);
+
+    expect(screen.queryByRole('button', { name: /Open custom prompts/i })).not.toBeInTheDocument();
+  });
+
   // ---------------------------------------------------------------------------
   // Tab toggle (requires hasTranscript + onTabChange)
   // ---------------------------------------------------------------------------

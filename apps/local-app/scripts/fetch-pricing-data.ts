@@ -60,44 +60,10 @@ function isSupportedModel(name: string): boolean {
   return isClaudeModel(name) || isOpenAIModel(name) || isGeminiModel(name);
 }
 
-/**
- * Pattern-based context window overrides for models where LiteLLM reports the
- * API-level maximum (e.g. 1M) instead of the default context window (200k).
- *
- * Each pattern matches the base model name (e.g. "claude-opus-4-6") and also
- * matches dated variants (e.g. "claude-opus-4-6-20260205") automatically.
- */
-const CONTEXT_WINDOW_OVERRIDE_PATTERNS: { pattern: RegExp; defaultWindow: number }[] = [
-  { pattern: /^claude-opus-4-6(-\d{8})?$/, defaultWindow: 200_000 },
-  { pattern: /^claude-sonnet-4-6(-\d{8})?$/, defaultWindow: 200_000 },
-];
-
-/**
- * Apply context window overrides for base models.
- * E.g. "claude-opus-4-6" gets patched from 1M to 200k default.
- */
-function applyContextWindowOverrides(models: Record<string, LiteLLMEntry>): void {
-  for (const key of Object.keys(models)) {
-    const rule = CONTEXT_WINDOW_OVERRIDE_PATTERNS.find((r) => r.pattern.test(key));
-    if (!rule) continue;
-
-    const entry = models[key];
-    if (!entry || entry.max_input_tokens == null) continue;
-
-    // Patch base model to default context window if above threshold
-    if (entry.max_input_tokens > rule.defaultWindow) {
-      entry.max_input_tokens = rule.defaultWindow;
-    }
-  }
-}
-
 function isValidPricing(entry: unknown): entry is LiteLLMEntry {
   if (!entry || typeof entry !== 'object') return false;
   const e = entry as Record<string, unknown>;
-  return (
-    typeof e.input_cost_per_token === 'number' &&
-    typeof e.output_cost_per_token === 'number'
-  );
+  return typeof e.input_cost_per_token === 'number' && typeof e.output_cost_per_token === 'number';
 }
 
 async function main(): Promise<void> {
@@ -156,9 +122,6 @@ async function main(): Promise<void> {
       };
       accepted++;
     }
-
-    // Apply context window overrides (e.g. claude-opus-4-6: 1M → 200k default)
-    applyContextWindowOverrides(filtered);
 
     // Ensure output directory exists
     const outputDir = path.dirname(OUTPUT_PATH);

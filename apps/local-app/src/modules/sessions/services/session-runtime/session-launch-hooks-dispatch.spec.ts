@@ -27,7 +27,7 @@ jest.mock('@devchain/shared', () => ({
 // isHookCapable is controllable via the adapter's `hooksEnabled` marker so this
 // suite can exercise the real dispatch (the broader pipeline spec stubs it false).
 jest.mock('../../../providers/adapters/capabilities', () => ({
-  isContextWindowCapable: () => false,
+  isAutoCompactCapable: () => false,
   isHookCapable: (adapter: { hooksEnabled?: boolean }) => adapter?.hooksEnabled === true,
   isProjectProvisioningCapable: () => false,
 }));

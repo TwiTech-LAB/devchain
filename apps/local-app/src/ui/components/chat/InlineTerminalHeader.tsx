@@ -8,7 +8,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/ui/components/ui/tooltip';
-import { ArrowLeft, Check, Copy, ExternalLink } from 'lucide-react';
+import { ArrowLeft, Check, Copy, ExternalLink, FileText } from 'lucide-react';
 import {
   InlineSessionSummaryChip,
   type InlineSessionSummaryChipProps,
@@ -25,6 +25,7 @@ interface InlineTerminalHeaderProps {
   onBackToChat: () => void;
   showChatToggle?: boolean;
   onOpenWindow?: () => void;
+  onOpenPrompts?: () => void;
   /** Session summary chip props — chip hidden when omitted */
   sessionChip?: Pick<InlineSessionSummaryChipProps, 'metrics' | 'activeTab' | 'onSwitchToSession'>;
   /** Currently active tab */
@@ -56,6 +57,7 @@ export function InlineTerminalHeader({
   onBackToChat,
   showChatToggle = true,
   onOpenWindow,
+  onOpenPrompts,
   sessionChip,
   activeTab = 'terminal',
   onTabChange,
@@ -138,19 +140,35 @@ export function InlineTerminalHeader({
           {sessionChip && <InlineSessionSummaryChip {...sessionChip} />}
         </div>
       </div>
-      {onOpenWindow && (
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={onOpenWindow}
-          aria-label="Open terminal in window"
-          className="h-7 px-2"
-        >
-          <ExternalLink className="mr-1 h-3.5 w-3.5" />
-          <span className="text-xs">Window</span>
-        </Button>
-      )}
+      <div className="flex items-center gap-1">
+        {onOpenPrompts && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={onOpenPrompts}
+            aria-label="Open custom prompts"
+            aria-keyshortcuts="Alt+Shift+P"
+            className="h-7 px-2"
+          >
+            <FileText className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
+            <span className="text-xs">Prompts</span>
+          </Button>
+        )}
+        {onOpenWindow && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={onOpenWindow}
+            aria-label="Open terminal in window"
+            className="h-7 px-2"
+          >
+            <ExternalLink className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
+            <span className="text-xs">Window</span>
+          </Button>
+        )}
+      </div>
     </div>
   );
 }

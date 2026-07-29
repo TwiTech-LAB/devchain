@@ -61,8 +61,10 @@ function createWrapper() {
 describe('PromptsPage variable helper', () => {
   const originalFetch = global.fetch;
   const fetchMock = jest.fn();
+  let promptTags: string[];
 
   beforeEach(() => {
+    promptTags = ['ops', 'type:custom'];
     useSelectedProjectMock.mockReturnValue({
       selectedProjectId: 'project-1',
       selectedProject: { id: 'project-1', name: 'Demo' },
@@ -81,7 +83,7 @@ describe('PromptsPage variable helper', () => {
                 title: 'Prompt A',
                 contentPreview: 'Preview A',
                 version: 1,
-                tags: ['ops'],
+                tags: promptTags,
                 createdAt: '2026-01-01T00:00:00.000Z',
                 updatedAt: '2026-01-02T00:00:00.000Z',
               },
@@ -103,7 +105,7 @@ describe('PromptsPage variable helper', () => {
             content: 'Prompt content',
             contentPreview: 'Preview A',
             version: 1,
-            tags: ['ops'],
+            tags: promptTags,
             createdAt: '2026-01-01T00:00:00.000Z',
             updatedAt: '2026-01-02T00:00:00.000Z',
           }),
@@ -149,6 +151,143 @@ describe('PromptsPage variable helper', () => {
     expect(screen.getByText('{profile_name}')).toBeInTheDocument();
     expect(screen.getByText('{session_id}')).toBeInTheDocument();
     expect(screen.getByText('{session_id_short}')).toBeInTheDocument();
+  });
+
+  it('defaults create to accessible Custom type and submits one canonical type tag', async () => {
+    const { Wrapper } = createWrapper();
+    render(
+      <Wrapper>
+        <PromptsPage />
+      </Wrapper>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /create prompt/i }));
+
+    const typeSelect = screen.getByLabelText('Type');
+    expect(typeSelect).toHaveAttribute('role', 'combobox');
+    expect(typeSelect).toHaveTextContent('Custom');
+
+    fireEvent.change(screen.getByLabelText('Title *'), { target: { value: 'New Prompt' } });
+    fireEvent.change(screen.getByLabelText('Content *'), { target: { value: 'New content' } });
+    fireEvent.change(screen.getByLabelText('Tags'), { target: { value: 'type:system' } });
+    fireEvent.keyDown(screen.getByLabelText('Tags'), { key: 'Enter' });
+    fireEvent.click(screen.getByRole('button', { name: /^create$/i }));
+
+    await waitFor(() => {
+      const postCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST');
+      expect(postCall).toBeDefined();
+      expect(JSON.parse(postCall?.[1]?.body as string)).toEqual({
+        projectId: 'project-1',
+        title: 'New Prompt',
+        content: 'New content',
+        tags: ['type:custom'],
+      });
+    });
+  });
+
+  it('supports keyboard selection of System and submits the selected canonical type', async () => {
+    const { Wrapper } = createWrapper();
+    render(
+      <Wrapper>
+        <PromptsPage />
+      </Wrapper>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /create prompt/i }));
+    const typeSelect = screen.getByLabelText('Type');
+    fireEvent.keyDown(typeSelect, { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('option', { name: 'System' }));
+
+    fireEvent.change(screen.getByLabelText('Title *'), { target: { value: 'System Prompt' } });
+    fireEvent.change(screen.getByLabelText('Content *'), { target: { value: 'Instructions' } });
+    fireEvent.click(screen.getByRole('button', { name: /^create$/i }));
+
+    await waitFor(() => {
+      const postCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST');
+      expect(JSON.parse(postCall?.[1]?.body as string).tags).toEqual(['type:system']);
+    });
+  });
+
+  it.each([
+    {
+      name: 'System with ambiguous tags',
+      tags: ['ops', 'type:custom', 'type:future', ' TYPE : SYSTEM '],
+      expectedType: 'System',
+      expectedTag: 'type:system',
+    },
+    {
+      name: 'Custom',
+      tags: ['ops', 'type:custom'],
+      expectedType: 'Custom',
+      expectedTag: 'type:custom',
+    },
+    {
+      name: 'unknown explicit type',
+      tags: ['ops', 'type:future'],
+      expectedType: 'Custom',
+      expectedTag: 'type:custom',
+    },
+    {
+      name: 'untyped legacy prompt',
+      tags: ['ops'],
+      expectedType: 'System',
+      expectedTag: 'type:system',
+    },
+  ])(
+    'hydrates and canonicalizes $name while preserving unrelated tags',
+    async ({ tags, expectedType, expectedTag }) => {
+      promptTags = tags;
+      const { Wrapper } = createWrapper();
+      render(
+        <Wrapper>
+          <PromptsPage />
+        </Wrapper>,
+      );
+
+      expect(await screen.findByText(`Type: ${expectedType}`)).toBeInTheDocument();
+      fireEvent.click(await screen.findByRole('button', { name: /^edit$/i }));
+
+      await waitFor(() => {
+        expect(screen.getByLabelText('Type')).toHaveTextContent(expectedType);
+      });
+      expect(screen.getAllByText('ops')).not.toHaveLength(0);
+      expect(screen.queryByText('type:future')).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: /^update$/i }));
+
+      await waitFor(() => {
+        const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT');
+        expect(JSON.parse(putCall?.[1]?.body as string)).toEqual({
+          title: 'Prompt A',
+          content: 'Prompt content',
+          tags: ['ops', expectedTag],
+          version: 1,
+        });
+      });
+    },
+  );
+
+  it('keeps reserved type tags out of cards, suggestions, and tag filtering', async () => {
+    promptTags = ['ops', 'type:system', 'TYPE:future'];
+    const { Wrapper } = createWrapper();
+    render(
+      <Wrapper>
+        <PromptsPage />
+      </Wrapper>,
+    );
+
+    expect(await screen.findByText('Type: System')).toBeInTheDocument();
+    expect(screen.queryByText('type:system')).not.toBeInTheDocument();
+    expect(screen.queryByText('TYPE:future')).not.toBeInTheDocument();
+
+    const filter = screen.getByLabelText('Filter by tag:');
+    expect(Array.from((filter as HTMLSelectElement).options).map((option) => option.value)).toEqual(
+      ['', 'ops'],
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /create prompt/i }));
+    fireEvent.change(screen.getByLabelText('Tags'), { target: { value: 'type' } });
+    expect(screen.queryByRole('button', { name: /type:(system|future)/i })).not.toBeInTheDocument();
   });
 
   it('opens delete confirm and cancels without deleting', async () => {

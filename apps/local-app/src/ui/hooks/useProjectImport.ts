@@ -7,6 +7,7 @@ import type {
   TeamOverrideOutput,
 } from '@/ui/components/project/ProjectTeamPreconfigDialog';
 import { filterConfigurableTeams } from '@/ui/lib/teams';
+import { formatPromptTransferCounts, type PromptTransferCounts } from '@/common/prompt-transfer';
 
 type ToastFn = (args: { title: string; description: string; variant?: 'destructive' }) => void;
 
@@ -34,6 +35,7 @@ export interface ImportDryRunResult {
   unmatchedStatuses?: Array<{ id: string; label: string; color: string; epicCount: number }>;
   templateStatuses?: Array<{ label: string; color: string }>;
   counts: { toImport: Record<string, number>; toDelete: Record<string, number> };
+  promptTransfer?: PromptTransferCounts;
   providerMappingRequired?: ProviderMappingRequired;
 }
 
@@ -43,6 +45,7 @@ export interface ImportResult {
   mappings: Record<string, Record<string, string>>;
   initialPromptSet?: boolean;
   message?: string;
+  promptTransfer?: PromptTransferCounts;
 }
 
 interface UseProjectImportArgs {
@@ -362,7 +365,13 @@ export function useProjectImport({
       setStatusMappings({});
       setImportFamilyProviderMappings(null);
       setImportTeamOverrides(null);
-      toast({ title: 'Import complete', description: body.message || 'Project replaced.' });
+      const promptSummary = body.promptTransfer
+        ? ` Prompts: ${formatPromptTransferCounts(body.promptTransfer)}.`
+        : '';
+      toast({
+        title: 'Import complete',
+        description: `${body.message || 'Project replaced.'}${promptSummary}`,
+      });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
     } catch (error) {
       setShowImportConfirm(false);

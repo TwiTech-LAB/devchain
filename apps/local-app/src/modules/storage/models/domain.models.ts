@@ -125,8 +125,7 @@ export interface Provider {
   mcpEndpoint: string | null;
   mcpRegisteredAt: string | null;
   autoCompactThreshold: number | null; // CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (1-100), null = don't inject
-  autoCompactThreshold1m: number | null; // Threshold for 1M context sessions (opus), null = use standard
-  oneMillionContextEnabled: boolean; // Claude 1M context; when true, rewrite opus --model to [1m] alias at launch time (opus only)
+  claudeLaunchSettingsJson: string | null;
   env: Record<string, string> | null;
   createdAt: string;
   updatedAt: string;
@@ -280,8 +279,7 @@ export interface CreateProvider extends Partial<ProviderMcpMetadata> {
   name: string;
   binPath?: string | null;
   autoCompactThreshold?: number | null;
-  autoCompactThreshold1m?: number | null;
-  oneMillionContextEnabled?: boolean;
+  claudeLaunchSettingsJson?: string | null;
   env?: Record<string, string> | null;
 }
 export type CreateProviderModel = Omit<

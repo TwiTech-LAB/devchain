@@ -39,7 +39,12 @@ jest.mock('@/ui/lib/socket', () => ({
 }));
 
 let lastTerminalProps: Record<string, unknown> | null = null;
-let lastTerminalHandle: { focus: jest.Mock; clear: jest.Mock; fit: jest.Mock } | null = null;
+let lastTerminalHandle: {
+  focus: jest.Mock;
+  clear: jest.Mock;
+  fit: jest.Mock;
+  insertPromptText: jest.Mock;
+} | null = null;
 
 jest.mock('@/ui/components/Terminal', () => {
   const React = jest.requireActual('react') as typeof import('react');
@@ -47,13 +52,19 @@ jest.mock('@/ui/components/Terminal', () => {
   return {
     Terminal: React.forwardRef(function MockTerminal(
       props: Record<string, unknown>,
-      ref: React.Ref<{ focus: () => void; clear: () => void; fit: () => void }>,
+      ref: React.Ref<{
+        focus: () => void;
+        clear: () => void;
+        fit: () => void;
+        insertPromptText: (text: string) => Promise<void>;
+      }>,
     ) {
       lastTerminalProps = props;
       const handle = {
         focus: jest.fn(),
         clear: jest.fn(),
         fit: jest.fn(),
+        insertPromptText: jest.fn().mockResolvedValue(undefined),
       };
       lastTerminalHandle = handle;
       if (typeof ref === 'function') {
@@ -140,6 +151,19 @@ describe('InlineTerminalPanel', () => {
     expect(getAppSocketMock).not.toHaveBeenCalled();
     expect(getWorktreeSocketMock).not.toHaveBeenCalled();
     expect(lastTerminalProps?.socket).toBe(propSocket);
+  });
+
+  it('exposes the mounted handle and marks the terminal shortcut scope', () => {
+    const terminalRef = React.createRef<NonNullable<typeof lastTerminalHandle>>();
+
+    render(
+      <InlineTerminalPanel sessionId="session-1" isWindowOpen={false} terminalRef={terminalRef} />,
+    );
+
+    expect(terminalRef.current).toBe(lastTerminalHandle);
+    expect(screen.getByTestId('inline-terminal').parentElement).toHaveAttribute(
+      'data-inline-terminal-input',
+    );
   });
 
   // -------------------------------------------------------------------------

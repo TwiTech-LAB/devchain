@@ -53,6 +53,19 @@ export function ImportResultDialog({ open, onOpenChange, importResult }: ImportR
           {importResult?.initialPromptSet !== undefined && (
             <p>Initial prompt mapping: {importResult.initialPromptSet ? 'Set' : 'Not set'}</p>
           )}
+          {importResult?.promptTransfer && (
+            <div>
+              <strong>Prompt transfer</strong>
+              <div className="grid grid-cols-2 gap-2 mt-1">
+                {Object.entries(importResult.promptTransfer).map(([key, value]) => (
+                  <div key={key} className="flex justify-between">
+                    <span className="capitalize">{key}</span>
+                    <span>{value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
         <DialogFooter>
           <Button onClick={() => onOpenChange(false)}>Close</Button>

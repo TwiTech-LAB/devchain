@@ -1,19 +1,26 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
+import { OnEvent } from '@nestjs/event-emitter';
 import { SessionReaderAdapterFactory } from '../adapters/session-reader-adapter.factory';
 import { TranscriptPathValidator } from './transcript-path-validator.service';
 import { SessionCacheService, type SourceChangeKind } from './session-cache.service';
 import { SessionsService } from '../../sessions/services/sessions.service';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
 import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
 import { buildChunks } from '../builders/chunk-builder';
 import { decodeCursor, encodeCursor } from './transcript-cursor';
 import { truncateMessages, truncateChunks } from './transcript-truncation';
-import { ProviderAdapterFactory, isContextWindowCapable } from '../../providers/adapters';
 import type { SessionSourceRef } from '../adapters/session-reader-adapter.interface';
 import type { UnifiedSession, UnifiedMetrics, UnifiedMessage } from '../dtos/unified-session.types';
 import type { UnifiedChunk } from '../dtos/unified-chunk.types';
 import type { CacheStats } from '../../metrics/types/metrics.types';
 import { TranscriptWatcherService } from './transcript-watcher.service';
+import { PRICING_SERVICE, type PricingServiceInterface } from './pricing.interface';
+import { RuntimeContextCaptureService } from '../../runtime-context-capture/runtime-context-capture.service';
+import {
+  RUNTIME_CONTEXT_CAPTURE_TUPLE_CHANGED_EVENT,
+  type RuntimeContextCaptureTupleChangedPayload,
+} from '../../runtime-context-capture/runtime-context-capture.service';
+import { resolveContextWindow } from '../../runtime-context-capture/context-window-policy';
+import { EventsService } from '../../events/services/events.service';
 
 /** Transcript summary (metrics + session-level metadata) */
 export interface TranscriptSummary {
@@ -172,19 +179,49 @@ interface ParsedSessionResult {
 }
 
 @Injectable()
-export class SessionReaderService {
+export class SessionReaderService implements OnModuleDestroy {
   private readonly logger = new Logger(SessionReaderService.name);
   private readonly parsedSessionFlights = new Map<string, Promise<ParsedSessionResult>>();
+  private readonly runtimeContextPublications = new Set<Promise<unknown>>();
 
   constructor(
     private readonly adapterFactory: SessionReaderAdapterFactory,
     private readonly pathValidator: TranscriptPathValidator,
     private readonly sessionCacheService: SessionCacheService,
     private readonly sessionsService: SessionsService,
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
-    private readonly providerAdapterFactory: ProviderAdapterFactory,
     private readonly transcriptWatcherService?: TranscriptWatcherService,
+    @Optional()
+    @Inject(PRICING_SERVICE)
+    private readonly pricingService?: PricingServiceInterface,
+    @Optional()
+    private readonly runtimeContextCapture?: RuntimeContextCaptureService,
+    @Optional()
+    private readonly events?: EventsService,
   ) {}
+
+  async onModuleDestroy(): Promise<void> {
+    await Promise.allSettled(this.runtimeContextPublications);
+  }
+
+  @OnEvent(RUNTIME_CONTEXT_CAPTURE_TUPLE_CHANGED_EVENT)
+  handleRuntimeContextTupleChanged(payload: RuntimeContextCaptureTupleChangedPayload): void {
+    this.sessionCacheService.invalidateDto(payload.sessionId);
+    this.transcriptWatcherService?.invalidateLastKnownSummaryMetrics(payload.sessionId);
+
+    if (!this.events) return;
+    const publication = this.events
+      .publish('session.runtime-context.updated', { sessionId: payload.sessionId })
+      .catch((error: unknown) => {
+        this.logger.error(
+          { error, sessionId: payload.sessionId },
+          'Failed to publish runtime context update',
+        );
+      })
+      .finally(() => {
+        this.runtimeContextPublications.delete(publication);
+      });
+    this.runtimeContextPublications.add(publication);
+  }
 
   getChunksCacheStats(): CacheStats {
     return this.sessionCacheService.getChunksCacheStats();
@@ -193,10 +230,11 @@ export class SessionReaderService {
   /**
    * Get full parsed transcript for a session.
    *
-   * Resolution chain: session → agent → providerConfig → provider → adapter → parse
+   * Resolution chain: session's historical provider → adapter → parse
    */
   async getTranscript(sessionId: string, options?: GetTranscriptOptions): Promise<UnifiedSession> {
-    const { session } = await this.getParsedSession(sessionId);
+    const { session: parsedSession } = await this.getParsedSession(sessionId);
+    const session = this.withResolvedContextWindow(sessionId, parsedSession);
     const maxToolResultLength = options?.maxToolResultLength;
     if (maxToolResultLength === undefined) {
       return session;
@@ -208,7 +246,8 @@ export class SessionReaderService {
     sessionId: string,
     options?: GetTranscriptOptions,
   ): Promise<{ session: UnifiedSession; timing: TranscriptTimingData }> {
-    const { session: parsedSession, parseTiming } = await this.getParsedSession(sessionId);
+    const { session: unadornedSession, parseTiming } = await this.getParsedSession(sessionId);
+    const parsedSession = this.withResolvedContextWindow(sessionId, unadornedSession);
 
     const maxToolResultLength = options?.maxToolResultLength;
     const tTrunc = performance.now();
@@ -231,8 +270,7 @@ export class SessionReaderService {
    * Get summary metrics for a session transcript.
    */
   async getTranscriptSummary(sessionId: string): Promise<TranscriptSummary> {
-    const { adapter, sourceRef, providerName, oneMillionContextEnabled } =
-      await this.resolveAdapter(sessionId);
+    const { adapter, sourceRef, providerName } = await this.resolveAdapter(sessionId);
     if (this.sessionCacheService.getEntry(sessionId)) {
       const cachedSession = await this.sessionCacheService.getFreshSession(
         sessionId,
@@ -240,20 +278,13 @@ export class SessionReaderService {
         adapter,
       );
       if (cachedSession) {
-        return this.toTranscriptSummary(
-          sessionId,
-          this.applyContextWindowEnrichment(cachedSession, providerName, oneMillionContextEnabled),
-        );
+        return this.toTranscriptSummary(sessionId, cachedSession);
       }
     }
 
     const watcherMetrics = this.transcriptWatcherService?.getLastKnownSummaryMetrics(sessionId);
     if (watcherMetrics) {
-      const metrics = this.applyContextWindowToMetrics(
-        watcherMetrics,
-        providerName,
-        oneMillionContextEnabled,
-      );
+      const metrics = this.resolveMetricsContextWindow(sessionId, watcherMetrics);
       return {
         sessionId,
         providerName,
@@ -267,11 +298,7 @@ export class SessionReaderService {
       try {
         const summary = await adapter.getSummary(sourceRef);
         if (summary) {
-          const metrics = this.applyContextWindowToMetrics(
-            summary.metrics,
-            providerName,
-            oneMillionContextEnabled,
-          );
+          const metrics = this.resolveMetricsContextWindow(sessionId, summary.metrics);
           return {
             sessionId,
             providerName,
@@ -300,7 +327,7 @@ export class SessionReaderService {
    */
   async getTranscriptSummaryWithCursor(sessionId: string): Promise<TranscriptSummaryWithCursor> {
     const { session, parseTiming } = await this.getParsedSession(sessionId);
-    const metrics: UnifiedMetrics = session.metrics;
+    const metrics = this.resolveMetricsContextWindow(sessionId, session.metrics);
     const chunks = session.chunks ?? buildChunks(session.messages);
     const cursor = encodeCursor(parseTiming.sourceVersion, session.messages.length, chunks.length);
 
@@ -546,6 +573,7 @@ export class SessionReaderService {
     // return a TRUE-empty delta with the cursor untouched (preserves the client's
     // adaptive backoff). Otherwise fall through to emit a delta.
     if (messageCountUnchanged && !revisionChanged) {
+      const metrics = this.resolveMetricsContextWindow(sessionId, session.metrics);
       return {
         kind: 'delta',
         cursor: sinceCursor,
@@ -553,7 +581,7 @@ export class SessionReaderService {
         replaceFromChunkIndex,
         deltaChunks: [],
         deltaMessages: [],
-        metrics: session.metrics,
+        metrics,
         totalChunkCount: chunks.length,
         totalMessageCount: session.messages.length,
       };
@@ -569,6 +597,7 @@ export class SessionReaderService {
     // First cursor component is the numeric source revision taken from the same
     // parse — no extra resolve/stat round-trip, and source-type agnostic.
     const cursor = encodeCursor(parseTiming.sourceVersion, session.messages.length, chunks.length);
+    const metrics = this.resolveMetricsContextWindow(sessionId, session.metrics);
 
     return {
       kind: 'delta',
@@ -577,7 +606,7 @@ export class SessionReaderService {
       replaceFromChunkIndex,
       deltaChunks,
       deltaMessages,
-      metrics: session.metrics,
+      metrics,
       totalChunkCount: chunks.length,
       totalMessageCount: session.messages.length,
     };
@@ -626,8 +655,7 @@ export class SessionReaderService {
 
   private async loadParsedSession(sessionId: string): Promise<ParsedSessionResult> {
     const tResolve = performance.now();
-    const { adapter, sourceRef, providerName, oneMillionContextEnabled } =
-      await this.resolveAdapter(sessionId);
+    const { adapter, sourceRef, providerName } = await this.resolveAdapter(sessionId);
     const resolveMs = performance.now() - tResolve;
 
     const tParse = performance.now();
@@ -647,14 +675,9 @@ export class SessionReaderService {
       this.sessionCacheService.setChunks(sessionId, sourceVersion, chunks);
     }
 
-    const enrichedSession = this.applyContextWindowEnrichment(
-      session,
-      providerName,
-      oneMillionContextEnabled,
-    );
     // The parsed cache owns the unadorned UnifiedSession. Consumers receive a sibling
     // wrapper so derived chunks never create a back-reference from the parsed entry.
-    const sessionWithChunks: UnifiedSession = { ...enrichedSession, chunks };
+    const sessionWithChunks: UnifiedSession = { ...session, chunks };
 
     return {
       session: sessionWithChunks,
@@ -672,45 +695,56 @@ export class SessionReaderService {
     };
   }
 
-  private applyContextWindowEnrichment(
-    session: UnifiedSession,
-    providerName: string,
-    oneMillionContextEnabled: boolean,
-  ): UnifiedSession {
-    const metrics = this.applyContextWindowToMetrics(
-      session.metrics,
-      providerName,
-      oneMillionContextEnabled,
-    );
-    return metrics === session.metrics ? session : { ...session, metrics };
-  }
-
-  private applyContextWindowToMetrics(
-    metrics: UnifiedMetrics,
-    providerName: string,
-    oneMillionContextEnabled: boolean,
-  ): UnifiedMetrics {
-    const providerAdapter = this.providerAdapterFactory.getAdapter(providerName);
-    if (isContextWindowCapable(providerAdapter)) {
-      const overrideWindow = providerAdapter.getReadTimeContextWindow(
-        metrics.primaryModel,
-        oneMillionContextEnabled,
-      );
-      if (overrideWindow != null) {
-        return { ...metrics, contextWindowTokens: overrideWindow };
-      }
-    }
-    return metrics;
-  }
-
   private toTranscriptSummary(sessionId: string, session: UnifiedSession): TranscriptSummary {
-    const metrics: UnifiedMetrics = session.metrics;
+    const metrics = this.resolveMetricsContextWindow(sessionId, session.metrics);
     return {
       sessionId,
       providerName: session.providerName,
       metrics,
       messageCount: metrics.messageCount,
       isOngoing: metrics.isOngoing,
+    };
+  }
+
+  private withResolvedContextWindow(sessionId: string, session: UnifiedSession): UnifiedSession {
+    const metrics = this.resolveMetricsContextWindow(sessionId, session.metrics);
+    return metrics === session.metrics ? session : { ...session, metrics };
+  }
+
+  private resolveMetricsContextWindow(sessionId: string, metrics: UnifiedMetrics): UnifiedMetrics {
+    if (!this.pricingService) return metrics;
+
+    const liveContext = this.runtimeContextCapture?.getLiveContext(sessionId);
+    const catalogContextWindowTokens = this.pricingService.getCatalogContextWindowSize(
+      metrics.primaryModel,
+    );
+    const session = this.sessionsService.getSession(sessionId);
+    const providerNameAtLaunch = session?.providerNameAtLaunch?.toLowerCase() ?? null;
+    const capture = liveContext?.claudeCapture;
+    const eligibleCapture =
+      capture &&
+      providerNameAtLaunch === 'claude' &&
+      session?.providerSessionId === capture.claudeSessionId &&
+      capture.modelId === metrics.primaryModel &&
+      metrics.primaryModel.startsWith('claude-') &&
+      catalogContextWindowTokens !== null
+        ? capture
+        : null;
+    const resolution = resolveContextWindow({
+      primaryModel: metrics.primaryModel,
+      configuredOverride: liveContext?.configuredOverride ?? null,
+      claudeCapture: eligibleCapture,
+      // Codex records the effective runtime window in token_count events. That
+      // provider-native value is more precise than the catalog's API maximum.
+      providerReportedContextWindowTokens:
+        providerNameAtLaunch === 'codex' ? metrics.contextWindowTokens : null,
+      catalogContextWindowTokens,
+    });
+
+    if (metrics.contextWindowTokens === resolution.contextWindowTokens) return metrics;
+    return {
+      ...metrics,
+      contextWindowTokens: resolution.contextWindowTokens,
     };
   }
 
@@ -739,14 +773,13 @@ export class SessionReaderService {
   }
 
   /**
-   * Resolve session → agent → providerConfig → provider → adapter, validate transcript path.
+   * Resolve the adapter from the provider recorded at launch, then validate the transcript path.
    */
   private async resolveAdapter(sessionId: string): Promise<{
     adapter: ReturnType<SessionReaderAdapterFactory['getAdapter']> & object;
     transcriptPath: string;
     sourceRef: SessionSourceRef;
     providerName: string;
-    oneMillionContextEnabled: boolean;
   }> {
     // 1. Look up session
     const session = this.sessionsService.getSession(sessionId);
@@ -759,42 +792,20 @@ export class SessionReaderService {
       throw new ValidationError('Session does not have a transcript path', { sessionId });
     }
 
-    // 3. Resolve agent → providerConfig → provider
-    if (!session.agentId) {
-      throw new ValidationError('Session does not have an associated agent', { sessionId });
-    }
-
-    let providerName: string;
-    let oneMillionContextEnabled = false;
-    try {
-      const agent = await this.storage.getAgent(session.agentId);
-      if (!agent.providerConfigId) {
-        throw new ValidationError('Agent does not have a provider configuration', {
-          agentId: agent.id,
-        });
-      }
-      const config = await this.storage.getProfileProviderConfig(agent.providerConfigId);
-      const provider = await this.storage.getProvider(config.providerId);
-      providerName = provider.name.toLowerCase();
-      oneMillionContextEnabled = !!provider.oneMillionContextEnabled;
-    } catch (error) {
-      if (error instanceof ValidationError) throw error;
-      throw new ValidationError('Failed to resolve provider for session', {
-        sessionId,
-        error: String(error),
-      });
-    }
-
-    // 4. Get adapter for the provider
-    const adapter = this.adapterFactory.getAdapter(providerName);
+    // Historical sessions remain readable after their live provider/config/agent rows are removed.
+    const adapter = session.providerNameAtLaunch
+      ? this.adapterFactory.getAdapter(session.providerNameAtLaunch)
+      : this.adapterFactory.getAdapterForPath(session.transcriptPath);
     if (!adapter) {
+      const providerLabel = session.providerNameAtLaunch ?? 'unknown';
       throw new ValidationError(
-        `Provider "${providerName}" does not support session reading. Supported: ${this.adapterFactory.getSupportedProviders().join(', ')}`,
-        { providerName },
+        `Provider "${providerLabel}" does not support session reading. Supported: ${this.adapterFactory.getSupportedProviders().join(', ')}`,
+        { providerName: session.providerNameAtLaunch },
       );
     }
+    const providerName = adapter.providerName.toLowerCase();
 
-    // 5. Validate transcript path
+    // 3. Validate transcript path
     const validatedPath = await this.pathValidator.validateForRead(
       session.transcriptPath,
       providerName,
@@ -825,7 +836,6 @@ export class SessionReaderService {
       transcriptPath: validatedPath,
       sourceRef,
       providerName,
-      oneMillionContextEnabled,
     };
   }
 }

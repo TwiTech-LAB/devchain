@@ -1,6 +1,7 @@
 import { ProviderStorageDelegate } from './provider.delegate';
 import type { StorageDelegateContext } from './base-storage.delegate';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
+import { DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON } from '@devchain/shared';
 
 function createDelegate() {
   const mockDb = {
@@ -23,6 +24,27 @@ function createDelegate() {
 }
 
 describe('ProviderStorageDelegate.createProvider — provider env defaults', () => {
+  it('defaults omitted Claude launch settings and preserves explicit null', async () => {
+    const { delegate } = createDelegate();
+
+    await expect(delegate.createProvider({ name: 'claude' })).resolves.toMatchObject({
+      claudeLaunchSettingsJson: DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON,
+    });
+    await expect(
+      delegate.createProvider({ name: 'claude', claudeLaunchSettingsJson: null }),
+    ).resolves.toMatchObject({ claudeLaunchSettingsJson: null });
+  });
+
+  it('rejects non-null Claude launch settings for non-Claude providers', async () => {
+    const { delegate } = createDelegate();
+
+    await expect(
+      delegate.createProvider({ name: 'codex', claudeLaunchSettingsJson: '{}' }),
+    ).rejects.toMatchObject({
+      details: { field: 'claudeLaunchSettingsJson' },
+    });
+  });
+
   it('does not add CLAUDE_CODE_NO_FLICKER when Claude provider has no env', async () => {
     const { delegate } = createDelegate();
     const result = await delegate.createProvider({ name: 'claude' });

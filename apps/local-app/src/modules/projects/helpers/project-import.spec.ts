@@ -1,6 +1,5 @@
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import {
-  importProviderSettings,
   importProjectWithHelper,
   createImportedTeams,
   pruneUnavailableTeamProfileSelections,
@@ -45,359 +44,6 @@ describe('preserveImportedEnv', () => {
     expect(preserveImportedEnv({})).toBeNull();
   });
 });
-
-describe('importProviderSettings — env merge', () => {
-  let storage: {
-    listProviders: jest.Mock;
-    updateProvider: jest.Mock;
-  };
-
-  const baseProvider = {
-    id: 'provider-1',
-    name: 'claude',
-    binPath: '/usr/local/bin/claude',
-    autoCompactThreshold: null,
-    env: null as Record<string, string> | null,
-  };
-
-  const makePayload = (
-    providerSettings: Array<{
-      name: string;
-      autoCompactThreshold?: number | null;
-      env?: Record<string, string> | null;
-    }>,
-  ) =>
-    ({
-      providerSettings,
-      profiles: [],
-      agents: [],
-      statuses: [],
-      prompts: [],
-    }) as unknown as Parameters<typeof importProviderSettings>[0];
-
-  beforeEach(() => {
-    storage = {
-      listProviders: jest.fn().mockResolvedValue({ items: [baseProvider] }),
-      updateProvider: jest.fn().mockResolvedValue(undefined),
-    };
-  });
-
-  it('applies template env when local provider has no env', async () => {
-    const payload = makePayload([
-      { name: 'claude', env: { API_BASE: 'https://custom.api', LOG_LEVEL: 'debug' } },
-    ]);
-
-    await importProviderSettings(payload, storage as unknown as StorageService);
-
-    expect(storage.updateProvider).toHaveBeenCalledWith(
-      'provider-1',
-      expect.objectContaining({
-        env: { API_BASE: 'https://custom.api', LOG_LEVEL: 'debug' },
-      }),
-    );
-  });
-
-  it('merges with local-wins semantics (local keys not overwritten)', async () => {
-    storage.listProviders.mockResolvedValue({
-      items: [{ ...baseProvider, env: { API_BASE: 'local-value', EXISTING: 'keep' } }],
-    });
-
-    const payload = makePayload([
-      { name: 'claude', env: { API_BASE: 'template-value', NEW_KEY: 'added' } },
-    ]);
-
-    await importProviderSettings(payload, storage as unknown as StorageService);
-
-    expect(storage.updateProvider).toHaveBeenCalledWith(
-      'provider-1',
-      expect.objectContaining({
-        env: { API_BASE: 'local-value', EXISTING: 'keep', NEW_KEY: 'added' },
-      }),
-    );
-  });
-
-  it('skips env update when all template keys already exist locally', async () => {
-    storage.listProviders.mockResolvedValue({
-      items: [{ ...baseProvider, env: { KEY_A: 'local' } }],
-    });
-
-    const payload = makePayload([{ name: 'claude', env: { KEY_A: 'template' } }]);
-
-    await importProviderSettings(payload, storage as unknown as StorageService);
-
-    // updateProvider should not be called (no changes)
-    expect(storage.updateProvider).not.toHaveBeenCalled();
-  });
-
-  it('preserves *** entries so the user can see which secrets to fill in', async () => {
-    const payload = makePayload([{ name: 'claude', env: { API_KEY: '***', VISIBLE: 'value' } }]);
-
-    await importProviderSettings(payload, storage as unknown as StorageService);
-
-    expect(storage.updateProvider).toHaveBeenCalledWith(
-      'provider-1',
-      expect.objectContaining({
-        env: { API_KEY: '***', VISIBLE: 'value' },
-      }),
-    );
-  });
-
-  it('merges *** entries into local when the keys are missing locally', async () => {
-    storage.listProviders.mockResolvedValue({
-      items: [{ ...baseProvider, env: { EXISTING: 'val' } }],
-    });
-
-    const payload = makePayload([{ name: 'claude', env: { SECRET: '***', TOKEN: '***' } }]);
-
-    await importProviderSettings(payload, storage as unknown as StorageService);
-
-    expect(storage.updateProvider).toHaveBeenCalledWith(
-      'provider-1',
-      expect.objectContaining({
-        env: { EXISTING: 'val', SECRET: '***', TOKEN: '***' },
-      }),
-    );
-  });
-
-  it('does not update when template has no env field', async () => {
-    const payload = makePayload([{ name: 'claude' }]);
-
-    await importProviderSettings(payload, storage as unknown as StorageService);
-
-    expect(storage.updateProvider).not.toHaveBeenCalled();
-  });
-
-  it('does not update when template env is null', async () => {
-    const payload = makePayload([{ name: 'claude', env: null }]);
-
-    await importProviderSettings(payload, storage as unknown as StorageService);
-
-    expect(storage.updateProvider).not.toHaveBeenCalled();
-  });
-});
-
-describe('importProviderSettings — autoCompactThreshold1m compat', () => {
-  let storage: {
-    listProviders: jest.Mock;
-    updateProvider: jest.Mock;
-  };
-
-  const baseProvider = {
-    id: 'provider-1',
-    name: 'claude',
-    binPath: '/usr/local/bin/claude',
-    autoCompactThreshold: null,
-  };
-
-  const makePayload = (
-    providerSettings: Array<{
-      name: string;
-      autoCompactThreshold?: number | null;
-      autoCompactThreshold1m?: number | null;
-      oneMillionContextEnabled?: boolean;
-    }>,
-  ) =>
-    ({
-      providerSettings,
-      _manifest: { slug: 'test' },
-      profiles: [],
-      agents: [],
-      statuses: [],
-      prompts: [],
-      documents: [],
-      skills: [],
-      hooks: [],
-    }) as unknown as Parameters<typeof importProviderSettings>[0];
-
-  beforeEach(() => {
-    storage = {
-      listProviders: jest.fn().mockResolvedValue({ items: [baseProvider] }),
-      updateProvider: jest.fn().mockResolvedValue(undefined),
-    };
-  });
-
-  it('legacy template: promotes old threshold to 1M value and sets standard to 95 on probe success', async () => {
-    // Legacy template: 1M enabled but no autoCompactThreshold1m field
-    const payload = makePayload([
-      { name: 'claude', autoCompactThreshold: 50, oneMillionContextEnabled: true },
-    ]);
-    const probe1m = jest.fn().mockResolvedValue({ supported: true, status: 'supported' });
-
-    await importProviderSettings(payload, storage as unknown as StorageService, { probe1m });
-
-    expect(storage.updateProvider).toHaveBeenCalledWith(
-      'provider-1',
-      expect.objectContaining({
-        autoCompactThreshold1m: 50,
-        autoCompactThreshold: 95,
-        oneMillionContextEnabled: true,
-      }),
-    );
-  });
-
-  it('new template: uses both threshold fields as-is on probe success', async () => {
-    // New template: both autoCompactThreshold and autoCompactThreshold1m present
-    const payload = makePayload([
-      {
-        name: 'claude',
-        autoCompactThreshold: 95,
-        autoCompactThreshold1m: 40,
-        oneMillionContextEnabled: true,
-      },
-    ]);
-    const probe1m = jest.fn().mockResolvedValue({ supported: true, status: 'supported' });
-
-    await importProviderSettings(payload, storage as unknown as StorageService, { probe1m });
-
-    expect(storage.updateProvider).toHaveBeenCalledWith(
-      'provider-1',
-      expect.objectContaining({
-        autoCompactThreshold1m: 40,
-        autoCompactThreshold: 95,
-        oneMillionContextEnabled: true,
-      }),
-    );
-  });
-
-  it('probe failure: clears 1M fields and forces standard threshold to 95', async () => {
-    const payload = makePayload([
-      {
-        name: 'claude',
-        autoCompactThreshold: 50,
-        autoCompactThreshold1m: 50,
-        oneMillionContextEnabled: true,
-      },
-    ]);
-    const probe1m = jest.fn().mockResolvedValue({ supported: false, status: 'unsupported' });
-
-    await importProviderSettings(payload, storage as unknown as StorageService, { probe1m });
-
-    expect(storage.updateProvider).toHaveBeenCalledWith(
-      'provider-1',
-      expect.objectContaining({
-        autoCompactThreshold1m: null,
-        autoCompactThreshold: 95,
-        oneMillionContextEnabled: false,
-      }),
-    );
-  });
-
-  it('no binPath: disables 1M and forces standard threshold to 95', async () => {
-    storage.listProviders.mockResolvedValue({
-      items: [{ ...baseProvider, binPath: null }],
-    });
-
-    const payload = makePayload([
-      { name: 'claude', autoCompactThreshold1m: 50, oneMillionContextEnabled: true },
-    ]);
-    const probe1m = jest.fn();
-
-    await importProviderSettings(payload, storage as unknown as StorageService, { probe1m });
-
-    expect(storage.updateProvider).toHaveBeenCalledWith(
-      'provider-1',
-      expect.objectContaining({
-        autoCompactThreshold1m: null,
-        autoCompactThreshold: 95,
-        oneMillionContextEnabled: false,
-      }),
-    );
-    expect(probe1m).not.toHaveBeenCalled();
-  });
-
-  it('probe success: preserves existing local standard threshold', async () => {
-    storage.listProviders.mockResolvedValue({
-      items: [{ ...baseProvider, autoCompactThreshold: 80 }],
-    });
-
-    const payload = makePayload([
-      {
-        name: 'claude',
-        autoCompactThreshold: 95,
-        autoCompactThreshold1m: 50,
-        oneMillionContextEnabled: true,
-      },
-    ]);
-    const probe1m = jest.fn().mockResolvedValue({ supported: true });
-
-    await importProviderSettings(payload, storage as unknown as StorageService, { probe1m });
-
-    const updateCall = storage.updateProvider.mock.calls[0][1];
-    expect(updateCall.autoCompactThreshold1m).toBe(50);
-    expect(updateCall.autoCompactThreshold).toBeUndefined(); // preserved, not overwritten
-  });
-
-  it('probe failure: preserves existing local standard threshold', async () => {
-    storage.listProviders.mockResolvedValue({
-      items: [{ ...baseProvider, autoCompactThreshold: 80 }],
-    });
-
-    const payload = makePayload([
-      { name: 'claude', autoCompactThreshold1m: 50, oneMillionContextEnabled: true },
-    ]);
-    const probe1m = jest.fn().mockResolvedValue({ supported: false });
-
-    await importProviderSettings(payload, storage as unknown as StorageService, { probe1m });
-
-    const updateCall = storage.updateProvider.mock.calls[0][1];
-    expect(updateCall.autoCompactThreshold1m).toBeNull();
-    expect(updateCall.autoCompactThreshold).toBeUndefined(); // preserved, not overwritten
-  });
-
-  it('legacy template + probe success: preserves existing local standard threshold', async () => {
-    storage.listProviders.mockResolvedValue({
-      items: [{ ...baseProvider, autoCompactThreshold: 80 }],
-    });
-
-    // Legacy template: 1M enabled but no autoCompactThreshold1m
-    const payload = makePayload([
-      { name: 'claude', autoCompactThreshold: 50, oneMillionContextEnabled: true },
-    ]);
-    const probe1m = jest.fn().mockResolvedValue({ supported: true });
-
-    await importProviderSettings(payload, storage as unknown as StorageService, { probe1m });
-
-    const updateCall = storage.updateProvider.mock.calls[0][1];
-    expect(updateCall.autoCompactThreshold1m).toBe(50); // legacy value promoted
-    expect(updateCall.autoCompactThreshold).toBeUndefined(); // preserved, not overwritten
-    expect(updateCall.oneMillionContextEnabled).toBe(true);
-  });
-
-  it('legacy template + probe failure: preserves existing local standard threshold', async () => {
-    storage.listProviders.mockResolvedValue({
-      items: [{ ...baseProvider, autoCompactThreshold: 80 }],
-    });
-
-    const payload = makePayload([
-      { name: 'claude', autoCompactThreshold: 50, oneMillionContextEnabled: true },
-    ]);
-    const probe1m = jest.fn().mockResolvedValue({ supported: false });
-
-    await importProviderSettings(payload, storage as unknown as StorageService, { probe1m });
-
-    const updateCall = storage.updateProvider.mock.calls[0][1];
-    expect(updateCall.autoCompactThreshold1m).toBeNull();
-    expect(updateCall.autoCompactThreshold).toBeUndefined(); // preserved, not overwritten
-    expect(updateCall.oneMillionContextEnabled).toBe(false);
-  });
-
-  it('no-probe: preserves existing local standard threshold', async () => {
-    storage.listProviders.mockResolvedValue({
-      items: [{ ...baseProvider, binPath: null, autoCompactThreshold: 80 }],
-    });
-
-    const payload = makePayload([
-      { name: 'claude', autoCompactThreshold1m: 50, oneMillionContextEnabled: true },
-    ]);
-
-    await importProviderSettings(payload, storage as unknown as StorageService);
-
-    const updateCall = storage.updateProvider.mock.calls[0][1];
-    expect(updateCall.autoCompactThreshold1m).toBeNull();
-    expect(updateCall.autoCompactThreshold).toBeUndefined(); // preserved, not overwritten
-  });
-});
-
 describe('createImportedTeams', () => {
   const projectId = 'project-1';
 
@@ -1429,6 +1075,379 @@ describe('importProjectWithHelper — session preservation', () => {
       sessionPreservation: { preservedCount: 0, removedCount: 2 },
     });
     expect(storage.applySessionPlan).toHaveBeenCalledWith([], ['s1', 's2']);
+  });
+
+  it('uses the same prompt partitions for template dry-run counts', async () => {
+    const storage = makeStorage({
+      listPrompts: jest.fn().mockResolvedValue({
+        items: [
+          { id: 'existing-system', title: 'System', tags: ['type:system'] },
+          { id: 'existing-untyped', title: 'Untyped', tags: ['legacy'] },
+          { id: 'existing-custom', title: 'Custom', tags: ['type:custom'] },
+        ],
+        total: 3,
+        limit: 10000,
+        offset: 0,
+      }),
+    });
+    const deps = makeDeps(storage);
+    const payload = {
+      ...makePayload([], []),
+      prompts: [
+        {
+          id: '11111111-1111-4111-8111-111111111111',
+          title: 'System',
+          content: 'system',
+          version: 1,
+          tags: ['type:system'],
+        },
+        {
+          id: '22222222-2222-4222-8222-222222222222',
+          title: 'Untyped',
+          content: 'untyped',
+          version: 1,
+          tags: [],
+        },
+        {
+          id: '33333333-3333-4333-8333-333333333333',
+          title: 'Custom',
+          content: 'custom',
+          version: 1,
+          tags: ['type:custom'],
+        },
+      ],
+    };
+
+    const result = await importProjectWithHelper(
+      { projectId: PROJECT_ID, payload, dryRun: true },
+      deps,
+    );
+
+    expect(result).toMatchObject({
+      dryRun: true,
+      promptTransfer: { imported: 3, deleted: 3, preserved: 0, skipped: 0 },
+      counts: {
+        toImport: { prompts: 3 },
+        toDelete: { prompts: 3 },
+      },
+    });
+    expect(storage.deletePrompt).not.toHaveBeenCalled();
+    expect(storage.createPrompt).not.toHaveBeenCalled();
+  });
+
+  it('replaces matching Custom rows while preserving unrelated and whitespace-different rows', async () => {
+    const storage = makeStorage({
+      listPrompts: jest.fn().mockResolvedValue({
+        items: [
+          { id: 'existing-system', title: 'System', tags: ['type:system'] },
+          { id: 'existing-untyped', title: 'Untyped', tags: ['legacy'] },
+          { id: 'existing-custom', title: 'cUsToM', tags: ['type:custom'] },
+          { id: 'existing-custom-spaced', title: ' Custom ', tags: ['type:custom'] },
+          { id: 'existing-custom-system-title', title: 'System', tags: ['type:custom'] },
+        ],
+        total: 5,
+        limit: 10000,
+        offset: 0,
+      }),
+    });
+    const deps = makeDeps(storage);
+    const payload = {
+      ...makePayload([], []),
+      prompts: [
+        {
+          id: '11111111-1111-4111-8111-111111111111',
+          title: 'System',
+          content: 'system',
+          version: 1,
+          tags: ['type:system'],
+        },
+        {
+          id: '22222222-2222-4222-8222-222222222222',
+          title: 'Untyped',
+          content: 'untyped',
+          version: 1,
+          tags: ['legacy'],
+        },
+        {
+          id: '33333333-3333-4333-8333-333333333333',
+          title: 'Custom',
+          content: 'custom',
+          version: 1,
+          tags: ['type:custom'],
+        },
+      ],
+    };
+
+    const result = await importProjectWithHelper({ projectId: PROJECT_ID, payload }, deps);
+
+    expect(storage.deletePrompt).toHaveBeenCalledTimes(3);
+    expect(storage.deletePrompt).toHaveBeenCalledWith('existing-system');
+    expect(storage.deletePrompt).toHaveBeenCalledWith('existing-untyped');
+    expect(storage.deletePrompt).toHaveBeenCalledWith('existing-custom');
+    expect(storage.deletePrompt).not.toHaveBeenCalledWith('existing-custom-spaced');
+    expect(storage.deletePrompt).not.toHaveBeenCalledWith('existing-custom-system-title');
+    expect(storage.createPrompt).toHaveBeenCalledTimes(3);
+    expect(storage.createPrompt).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Untyped', tags: ['legacy', 'type:system'] }),
+    );
+    expect(result).toMatchObject({
+      success: true,
+      promptTransfer: { imported: 3, deleted: 3, preserved: 2, skipped: 0 },
+      counts: {
+        imported: { prompts: 3 },
+        deleted: { prompts: 3 },
+      },
+      mappings: {
+        promptIdMap: {
+          '11111111-1111-4111-8111-111111111111': 'new-prompt-System',
+          '22222222-2222-4222-8222-222222222222': 'new-prompt-Untyped',
+          '33333333-3333-4333-8333-333333333333': 'new-prompt-Custom',
+        },
+      },
+    });
+  });
+
+  it('reuses truthful plans and converges repeated imports with duplicate Custom titles', async () => {
+    type StatefulPrompt = {
+      id: string;
+      projectId: string;
+      title: string;
+      content: string;
+      version: number;
+      tags: string[];
+      createdAt: string;
+      updatedAt: string;
+    };
+    let nextPromptId = 1;
+    let prompts: StatefulPrompt[] = [
+      {
+        id: 'existing-system',
+        projectId: PROJECT_ID,
+        title: 'Old System',
+        content: 'old',
+        version: 1,
+        tags: ['type:system'],
+        createdAt: '',
+        updatedAt: '',
+      },
+      {
+        id: 'existing-custom',
+        projectId: PROJECT_ID,
+        title: 'Local Only',
+        content: 'local',
+        version: 1,
+        tags: ['type:custom'],
+        createdAt: '',
+        updatedAt: '',
+      },
+    ];
+    const storage = makeStorage({
+      listPrompts: jest.fn().mockImplementation(async () => ({
+        items: [...prompts],
+        total: prompts.length,
+        limit: 10000,
+        offset: 0,
+      })),
+      deletePrompt: jest.fn().mockImplementation(async (id: string) => {
+        prompts = prompts.filter((prompt) => prompt.id !== id);
+      }),
+      createPrompt: jest.fn().mockImplementation(async (data: Omit<StatefulPrompt, 'id'>) => {
+        const created = {
+          ...data,
+          id: `created-${nextPromptId++}`,
+          version: 1,
+          createdAt: '',
+          updatedAt: '',
+        };
+        prompts.push(created);
+        return created;
+      }),
+    });
+    const deps = makeDeps(storage);
+    const payload = {
+      ...makePayload([], []),
+      prompts: [
+        {
+          id: '11111111-1111-4111-8111-111111111111',
+          title: 'New System',
+          content: 'system',
+          version: 1,
+          tags: ['type:system'],
+        },
+        {
+          id: '22222222-2222-4222-8222-222222222222',
+          title: 'Portable',
+          content: 'first',
+          version: 1,
+          tags: ['type:custom'],
+        },
+        {
+          id: '33333333-3333-4333-8333-333333333333',
+          title: 'PORTABLE',
+          content: 'second',
+          version: 1,
+          tags: ['type:custom'],
+        },
+      ],
+    };
+
+    const dryRun = await importProjectWithHelper(
+      { projectId: PROJECT_ID, payload, dryRun: true },
+      deps,
+    );
+    const first = await importProjectWithHelper({ projectId: PROJECT_ID, payload }, deps);
+    const cardinalityAfterFirst = prompts.length;
+    const second = await importProjectWithHelper({ projectId: PROJECT_ID, payload }, deps);
+    const cardinalityAfterSecond = prompts.length;
+    const third = await importProjectWithHelper({ projectId: PROJECT_ID, payload }, deps);
+
+    expect(dryRun.promptTransfer).toEqual({
+      imported: 3,
+      deleted: 1,
+      preserved: 1,
+      skipped: 0,
+    });
+    expect(first.promptTransfer).toEqual(dryRun.promptTransfer);
+    expect(second.promptTransfer).toEqual({
+      imported: 3,
+      deleted: 3,
+      preserved: 1,
+      skipped: 0,
+    });
+    expect(third.promptTransfer).toEqual(second.promptTransfer);
+    expect([cardinalityAfterFirst, cardinalityAfterSecond, prompts.length]).toEqual([4, 4, 4]);
+    expect(prompts.filter((prompt) => prompt.title.toLowerCase() === 'portable')).toEqual([
+      expect.objectContaining({ title: 'Portable', content: 'first', tags: ['type:custom'] }),
+      expect.objectContaining({ title: 'PORTABLE', content: 'second', tags: ['type:custom'] }),
+    ]);
+    expect(prompts).toContainEqual(expect.objectContaining({ id: 'existing-custom' }));
+  });
+
+  it.each([true, false])(
+    'imports Custom prompts referenced by profile instructions (dryRun=%s)',
+    async (dryRun) => {
+      const storage = makeStorage();
+      const deps = makeDeps(storage);
+      const payload = {
+        ...makePayload(
+          [],
+          [
+            {
+              ...defaultProfile,
+              instructions: 'Follow [[prompt:Private SOP]].',
+            },
+          ],
+        ),
+        prompts: [
+          {
+            id: '44444444-4444-4444-8444-444444444444',
+            title: 'Private SOP',
+            content: 'private',
+            version: 1,
+            tags: ['type:custom'],
+          },
+        ],
+      };
+
+      const result = await importProjectWithHelper(
+        { projectId: PROJECT_ID, payload, dryRun },
+        deps,
+      );
+
+      expect(result).toMatchObject(
+        dryRun
+          ? {
+              dryRun: true,
+              promptTransfer: { imported: 1, skipped: 0 },
+            }
+          : {
+              success: true,
+              promptTransfer: { imported: 1, skipped: 0 },
+            },
+      );
+      expect(result).not.toHaveProperty('promptReferenceValidation');
+    },
+  );
+
+  it('does not let an unselected family alternative block import preflight', async () => {
+    const selectedProfile = {
+      id: PROFILE_TPL_ID,
+      name: 'Claude Profile',
+      familySlug: 'coder',
+      provider: { name: 'claude' },
+      instructions: null,
+    };
+    const unselectedProfile = {
+      id: '55555555-5555-4555-8555-555555555555',
+      name: 'Codex Profile',
+      familySlug: 'coder',
+      provider: { name: 'codex' },
+      instructions: 'Follow [[prompt:Private SOP]].',
+    };
+    const payload = {
+      ...makePayload([makeTemplateAgent('Coder')], [selectedProfile, unselectedProfile]),
+      prompts: [
+        {
+          id: '66666666-6666-4666-8666-666666666666',
+          title: 'Private SOP',
+          content: 'private',
+          version: 1,
+          tags: ['type:custom'],
+        },
+      ],
+    };
+
+    const result = await importProjectWithHelper(
+      { projectId: PROJECT_ID, payload, dryRun: true },
+      makeDeps(makeStorage()),
+    );
+
+    expect(result).toMatchObject({
+      dryRun: true,
+      counts: { toImport: { profiles: 1 } },
+    });
+    expect(result).not.toHaveProperty('promptReferenceValidation');
+  });
+
+  it('accepts a matching incoming System prompt despite a Custom duplicate', async () => {
+    const payload = {
+      ...makePayload(
+        [],
+        [
+          {
+            ...defaultProfile,
+            instructions: 'Follow [[prompt:shared sop]].',
+          },
+        ],
+      ),
+      prompts: [
+        {
+          id: '77777777-7777-4777-8777-777777777777',
+          title: 'Shared SOP',
+          content: 'private',
+          version: 1,
+          tags: ['type:custom'],
+        },
+        {
+          id: '88888888-8888-4888-8888-888888888888',
+          title: 'Shared SOP',
+          content: 'shared',
+          version: 1,
+          tags: ['type:system'],
+        },
+      ],
+    };
+
+    const result = await importProjectWithHelper(
+      { projectId: PROJECT_ID, payload, dryRun: true },
+      makeDeps(makeStorage()),
+    );
+
+    expect(result).toMatchObject({
+      dryRun: true,
+      promptTransfer: { imported: 2, skipped: 0 },
+    });
+    expect(result).not.toHaveProperty('promptReferenceValidation');
   });
 
   it('(h) active running session still blocks import — regression lock on ConflictError path', async () => {

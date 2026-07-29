@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, type MutableRefObject, type Ref } from 'react';
 import { Terminal as InlineTerminal, type TerminalHandle } from '@/ui/components/Terminal';
 import { Button } from '@/ui/components/ui/button';
 import { useTerminalWindows } from '@/ui/terminal-windows';
@@ -23,6 +23,8 @@ interface InlineTerminalPanelProps {
   activeTab?: InlineTerminalTab;
   /** Content to render when Session tab is active */
   sessionContent?: React.ReactNode;
+  /** Mounted inline terminal handle */
+  terminalRef?: Ref<TerminalHandle>;
 }
 
 export function InlineTerminalPanel({
@@ -34,6 +36,7 @@ export function InlineTerminalPanel({
   windowId,
   activeTab = 'terminal',
   sessionContent,
+  terminalRef,
 }: InlineTerminalPanelProps) {
   const { activeWorktree } = useOptionalWorktreeTab();
   const worktreeName = useMemo(() => {
@@ -59,6 +62,17 @@ export function InlineTerminalPanel({
   }, [socket, worktreeName]);
 
   const handleRef = useRef<TerminalHandle | null>(null);
+  const setTerminalHandle = useCallback(
+    (handle: TerminalHandle | null) => {
+      handleRef.current = handle;
+      if (typeof terminalRef === 'function') {
+        terminalRef(handle);
+      } else if (terminalRef) {
+        (terminalRef as MutableRefObject<TerminalHandle | null>).current = handle;
+      }
+    },
+    [terminalRef],
+  );
   const { closeWindow } = useTerminalWindows();
   const targetWindowId = windowId ?? sessionId;
 
@@ -114,9 +128,10 @@ export function InlineTerminalPanel({
       <div
         className="flex-1 min-h-0"
         style={{ display: activeTab === 'terminal' ? 'flex' : 'none' }}
+        data-inline-terminal-input
       >
         <InlineTerminal
-          ref={handleRef}
+          ref={setTerminalHandle}
           key={sessionId}
           sessionId={sessionId}
           socket={resolvedSocket}

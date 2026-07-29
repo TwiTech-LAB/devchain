@@ -5,6 +5,10 @@ export { HostResolver } from './host-resolver.js';
 
 // Schemas
 export {
+  CLAUDE_LAUNCH_SETTINGS_MAX_BYTES,
+  DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON,
+  validateClaudeLaunchSettingsJson,
+  type ClaudeLaunchSettingsValidationResult,
   EnvVarsSchema,
   ExportSchema,
   type ExportData,

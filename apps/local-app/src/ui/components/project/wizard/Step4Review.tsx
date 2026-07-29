@@ -7,6 +7,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/ui/components/ui/select';
+import type { PromptTransferCounts } from '@/common/prompt-transfer';
 
 export interface ImportDryRunCounts {
   toImport: Record<string, number>;
@@ -25,6 +26,7 @@ export interface ImportDryRunReview {
   unmatchedStatuses?: ImportUnmatchedStatus[];
   templateStatuses?: Array<{ label: string; color: string }>;
   missingProviders?: string[];
+  promptTransfer?: PromptTransferCounts;
 }
 
 export interface Step4ReviewProps {
@@ -108,6 +110,20 @@ export function Step4Review({
           ))}
         </div>
       </div>
+
+      {review.promptTransfer && (
+        <div data-testid="wizard-review-prompt-transfer">
+          <strong>Prompt transfer</strong>
+          <div className="mt-1 grid grid-cols-2 gap-2">
+            {Object.entries(review.promptTransfer).map(([key, value]) => (
+              <div key={key} className="flex justify-between">
+                <span className="capitalize">{key}</span>
+                <span>{value}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {unmatched.length > 0 && (
         <div className="mt-3 border-t pt-3" data-testid="wizard-review-status-mappings">

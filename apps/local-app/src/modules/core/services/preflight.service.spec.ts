@@ -873,6 +873,39 @@ describe('PreflightService', () => {
       );
     });
 
+    async function runEnvPreflight(
+      configEnv: Record<string, string>,
+      providerEnv: Record<string, string> | null = null,
+    ) {
+      mockStorage.findProjectByPath.mockResolvedValue({
+        id: 'project-1',
+        name: 'Test',
+        rootPath: '/test',
+        isTemplate: false,
+        description: null,
+        createdAt: '',
+        updatedAt: '',
+      });
+      mockStorage.listAgents.mockResolvedValue({
+        items: [mockAgent],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      mockStorage.listProfileProviderConfigsByIds.mockResolvedValue([
+        { ...mockConfig, env: configEnv },
+      ]);
+      mockStorage.listProvidersByIds.mockResolvedValue([{ ...mockProvider, env: providerEnv }]);
+      mockAccess.mockResolvedValue(undefined);
+      mockMcpRegistration.listRegistrations.mockResolvedValue({
+        success: true,
+        message: 'OK',
+        entries: [{ alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp' }],
+      });
+
+      return service.runChecks('/test/project');
+    }
+
     it('validates providers from agent configs when project path is provided', async () => {
       mockStorage.findProjectByPath.mockResolvedValue({
         id: 'project-1',
@@ -974,6 +1007,34 @@ describe('PreflightService', () => {
 
       expect(result.providers[0].configEnvStatus).toBe('fail');
       expect(result.providers[0].configEnvMessage).toContain('INVALID-KEY');
+    });
+
+    it('reports an invalid configured context window as a non-blocking warning', async () => {
+      const result = await runEnvPreflight({
+        DEVCHAIN_CONTEXT_WINDOW_TOKENS: '9007199254740992',
+      });
+
+      expect(result.overall).toBe('warn');
+      expect(result.providers[0].status).toBe('warn');
+      expect(result.providers[0].configEnvStatus).toBe('warn');
+      expect(result.providers[0].configEnvMessage).toContain(
+        'DEVCHAIN_CONTEXT_WINDOW_TOKENS must be a positive integer',
+      );
+      expect(result.providers[0].configEnvMessage).not.toContain('9007199254740992');
+    });
+
+    it('warns that provider-level context-window configuration is ignored', async () => {
+      const result = await runEnvPreflight(
+        { KEEP: 'config' },
+        { DEVCHAIN_CONTEXT_WINDOW_TOKENS: '1000000' },
+      );
+
+      expect(result.overall).toBe('warn');
+      expect(result.providers[0].providerEnvStatus).toBe('warn');
+      expect(result.providers[0].providerEnvMessage).toContain(
+        'only read from provider configuration env',
+      );
+      expect(result.providers[0].providerEnvMessage).not.toContain('1000000');
     });
 
     it('validates provider-level env and reports errors for invalid key', async () => {

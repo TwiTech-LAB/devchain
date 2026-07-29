@@ -83,6 +83,16 @@ function wrapper({ children }: { children: ReactNode }) {
 }
 
 const TARGET = { id: 'proj-1', name: 'My Project' };
+const PROMPT_PREFLIGHT_FAILURE = {
+  success: false,
+  mutationStarted: false,
+  error: 'Template profiles reference excluded prompts',
+  promptReferenceValidation: {
+    code: 'skipped_prompt_references',
+    promptTitles: ['Private SOP'],
+    issues: [{ promptTitle: 'Private SOP', profileNames: ['Coder'] }],
+  },
+} as const;
 
 describe('useImportProjectWizard', () => {
   it('loads the setup-preview, runs the dry-run on Review, and commits on submit', async () => {
@@ -138,6 +148,62 @@ describe('useImportProjectWizard', () => {
 
     // Dry-run reports an unmatched status → Import is gated closed until it is mapped.
     await waitFor(() => expect(result.current.controller.canProceed).toBe(false));
+  });
+
+  it('keeps dry-run failures out of the counts review and displays their details', async () => {
+    const log = mockFetch({ dryRunResponse: PROMPT_PREFLIGHT_FAILURE });
+    const toast = jest.fn();
+    let wizard: ReturnType<typeof useImportProjectWizard> | null = null;
+
+    function Harness() {
+      const hook = useImportProjectWizard({ onImported: jest.fn(), toast });
+      wizard = hook;
+      useEffect(() => hook.openImportWizard(TARGET, { slug: 'demo' }), []);
+      return <>{hook.controller.currentStep?.render()}</>;
+    }
+
+    render(<Harness />, { wrapper });
+    await waitFor(() => expect(wizard?.isLoading).toBe(false));
+    act(() => wizard!.controller.goNext());
+    act(() => wizard!.controller.goNext());
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Import blocked by prompt references',
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent('"Private SOP" (profiles: Coder)');
+    expect(log.dryRun).toBe(1);
+    expect(wizard!.controller.canProceed).toBe(false);
+    expect(wizard!.isOpen).toBe(true);
+  });
+
+  it('keeps the wizard open and skips completion when commit returns a structured failure', async () => {
+    const log = mockFetch({ commitResponse: PROMPT_PREFLIGHT_FAILURE });
+    const onImported = jest.fn();
+    const toast = jest.fn();
+    const { result } = renderHook(() => useImportProjectWizard({ onImported, toast }), {
+      wrapper,
+    });
+
+    act(() => result.current.openImportWizard(TARGET, { slug: 'demo' }));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    act(() => result.current.controller.goNext());
+    act(() => result.current.controller.goNext());
+    await waitFor(() => expect(result.current.controller.canProceed).toBe(true));
+
+    await act(async () => result.current.controller.submit());
+    await waitFor(() => expect(log.commit).toBe(1));
+
+    expect(result.current.isOpen).toBe(true);
+    expect(result.current.preflightFailure).toEqual(PROMPT_PREFLIGHT_FAILURE);
+    expect(onImported).not.toHaveBeenCalled();
+    expect(toast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Import failed',
+        description: expect.stringContaining('"Private SOP" (profiles: Coder)'),
+        variant: 'destructive',
+      }),
+    );
+    expect(toast).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'Import complete' }));
   });
 
   it('includes selectedProviderNames + status mappings in the request bodies', async () => {

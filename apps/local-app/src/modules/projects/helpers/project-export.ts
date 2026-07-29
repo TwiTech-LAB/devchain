@@ -83,8 +83,9 @@ export async function exportProjectWithHelper(
   const profiles = buildExportProfiles(state.profilesRes, profileContext, sanitizeEnvMap);
   const agents = buildExportAgents(state.agentsRes, profileContext.configIdToInfo);
   const statuses = buildExportStatuses(state.statusesRes);
+  const transferableInitialPrompt = state.initialPrompt ?? undefined;
   const projectSettings = buildProjectSettings({
-    initialPromptTitle: state.initialPrompt?.title,
+    initialPromptTitle: transferableInitialPrompt?.title,
     autoCleanStatusIds: state.settings.autoClean?.statusIds?.[projectId] ?? [],
     statuses: state.statusesRes.items,
     epicAssignedTemplate: state.settings.events?.epicAssigned?.template,
@@ -128,8 +129,11 @@ export async function exportProjectWithHelper(
     profiles,
     agents,
     statuses,
-    initialPrompt: state.initialPrompt
-      ? { promptId: state.initialPrompt.id, title: state.initialPrompt.title }
+    initialPrompt: transferableInitialPrompt
+      ? {
+          promptId: transferableInitialPrompt.id,
+          title: transferableInitialPrompt.title,
+        }
       : null,
     ...(Object.keys(projectSettings).length > 0 && { projectSettings }),
     ...(providerSettings.length > 0 && { providerSettings }),

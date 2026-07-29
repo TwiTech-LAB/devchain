@@ -13,6 +13,7 @@ import { buildPromptRenderContext } from '../../../../common/template/prompt-ren
 import type { PromptToolContext } from './prompt-context';
 import { resolveSessionContext } from '../utils/session-context-helpers';
 import { requireProject } from '../utils/require-project';
+import { rankPromptCandidatesSystemFirst } from '../../../../common/prompt-references';
 
 export async function handleListPrompts(
   ctx: PromptToolContext,
@@ -86,16 +87,18 @@ export async function handleGetPrompt(
 
     const projectId = project.id;
 
-    const list = await ctx.storage.listPrompts({ projectId: projectId ?? null });
-    const found = list.items.find((item) => {
-      if (item.title !== validated.name) {
-        return false;
-      }
-      if (validated.version !== undefined) {
-        return item.version === validated.version;
-      }
-      return true;
+    const list = await ctx.storage.listPrompts({
+      projectId: projectId ?? null,
+      q: validated.name,
+      limit: 10000,
+      offset: 0,
     });
+    const versionMatches =
+      validated.version === undefined
+        ? list.items
+        : list.items.filter((item) => item.version === validated.version);
+    const exactMatches = versionMatches.filter((item) => item.title === validated.name);
+    const found = rankPromptCandidatesSystemFirst(exactMatches)[0];
 
     if (found) {
       prompt = await ctx.storage.getPrompt(found.id);

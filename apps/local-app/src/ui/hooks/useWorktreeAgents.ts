@@ -335,6 +335,24 @@ export function useWorktreeAgents(ownerProjectId?: string | null) {
             },
           ],
         }));
+        transcriptRegistry.push({
+          match: (topic: string) =>
+            topic.startsWith('session/') && topic.endsWith('/runtime-context'),
+          type: 'updated',
+          entries: [
+            {
+              kind: 'custom-handler',
+              handler: (payload: Record<string, unknown>) => {
+                const sessionId = payload.sessionId;
+                if (typeof sessionId !== 'string') return;
+                queryClient.invalidateQueries({
+                  queryKey: ['transcript-summary', apiBase, sessionId],
+                  exact: true,
+                });
+              },
+            },
+          ],
+        });
         const handler = (envelope: WsEnvelope) => {
           dispatchRealtimeEnvelope(
             envelope,

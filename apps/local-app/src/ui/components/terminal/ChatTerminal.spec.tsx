@@ -1,11 +1,13 @@
 import {
   act,
   cleanup as rtlCleanup,
+  createEvent,
   fireEvent,
   render,
   renderHook,
   waitFor,
 } from '@testing-library/react';
+import { createRef } from 'react';
 
 jest.mock('@xterm/xterm/css/xterm.css', () => ({}), { virtual: true });
 const xtermScrollCallbacks: Array<() => void> = [];
@@ -81,7 +83,7 @@ jest.mock('@/ui/lib/debug', () => ({
   termLog: jest.fn(),
 }));
 
-import { ChatTerminal } from './ChatTerminal';
+import { ChatTerminal, TerminalPromptInsertError, type ChatTerminalHandle } from './ChatTerminal';
 import { _resetThemeCacheForTesting, useTerminalThemeSync } from './hooks/useTerminalThemeSync';
 import { DEFAULT_TERMINAL_SCROLLBACK } from '@/common/constants/terminal';
 import { HISTORY_REQUEST_COOLDOWN_MS } from './scroll-history-detector';
@@ -97,6 +99,7 @@ interface MockSocket {
   off: jest.Mock;
   disconnect: jest.Mock;
   connect: jest.Mock;
+  timeout: jest.Mock;
   trigger: (event: string, ...args: unknown[]) => void;
   clearHandlers: () => void;
 }
@@ -112,6 +115,7 @@ function createMockSocket(): MockSocket {
     off: jest.fn(),
     disconnect: jest.fn(),
     connect: jest.fn(),
+    timeout: jest.fn(),
     trigger(event: string, ...args: unknown[]) {
       handlers[event]?.forEach((handler) => handler(...args));
     },
@@ -119,6 +123,7 @@ function createMockSocket(): MockSocket {
       Object.keys(handlers).forEach((key) => delete handlers[key]);
     },
   };
+  socket.timeout.mockReturnValue(socket);
 
   socket.on.mockImplementation((event: string, handler: (...args: unknown[]) => void) => {
     handlers[event] = handlers[event] ?? new Set();
@@ -176,11 +181,16 @@ describe('ChatTerminal', () => {
     jest.useRealTimers();
   });
 
-  const renderTerminal = async (useFakeTimers = false) => {
+  const renderTerminal = async (
+    useFakeTimers = false,
+    terminalHandleRef?: React.RefObject<ChatTerminalHandle>,
+  ) => {
     const socket = createMockSocket();
     currentAppSocket = socket as unknown as Socket;
 
-    const utils = render(<ChatTerminal sessionId="chat-session" socket={currentAppSocket} />);
+    const utils = render(
+      <ChatTerminal ref={terminalHandleRef} sessionId="chat-session" socket={currentAppSocket} />,
+    );
 
     // jsdom reports offsetParent === null for every element (no layout engine), which the
     // visibility-aware scroll guard would read as "hidden" and suppress all history requests.
@@ -220,7 +230,8 @@ describe('ChatTerminal', () => {
     }
 
     const region = utils.getByRole('region');
-    const viewport = region.querySelector('[data-radix-scroll-area-viewport]') as HTMLElement;
+    const viewport = (region.querySelector('[data-radix-scroll-area-viewport]') ??
+      region.querySelector('div.overflow-auto')) as HTMLElement;
     const history = viewport;
 
     Object.defineProperty(viewport, 'scrollHeight', {
@@ -785,6 +796,186 @@ describe('ChatTerminal', () => {
     expect(socket.emit).toHaveBeenCalledWith('terminal:input', {
       sessionId: 'chat-session',
       data: 'echo hello',
+    });
+  });
+
+  it('inserts multiline form prompt text at the selection without a socket write', async () => {
+    const terminalHandleRef = createRef<ChatTerminalHandle>();
+    const { socket, utils } = await renderTerminal(false, terminalHandleRef);
+    const textarea = utils.getByPlaceholderText('Type command...') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: 'hello world' } });
+    textarea.focus();
+    textarea.setSelectionRange(6, 11);
+    socket.emit.mockClear();
+
+    await act(async () => {
+      await terminalHandleRef.current?.insertPromptText('alpha\nbeta');
+    });
+
+    expect(textarea).toHaveValue('hello alpha\nbeta');
+    expect(textarea.selectionStart).toBe(16);
+    expect(textarea.selectionEnd).toBe(16);
+    expect(document.activeElement).toBe(textarea);
+    expect(socket.emit).not.toHaveBeenCalled();
+  });
+
+  it('submits Enter exactly once while Shift+Enter remains a multiline edit', async () => {
+    const { socket, utils } = await renderTerminal();
+    const textarea = utils.getByPlaceholderText('Type command...') as HTMLTextAreaElement;
+    socket.emit.mockClear();
+
+    fireEvent.change(textarea, { target: { value: 'echo hello' } });
+    fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter' });
+
+    expect(
+      socket.emit.mock.calls.filter(([event]: [string]) => event === 'terminal:input'),
+    ).toEqual([
+      [
+        'terminal:input',
+        {
+          sessionId: 'chat-session',
+          data: 'echo hello',
+        },
+      ],
+    ]);
+
+    socket.emit.mockClear();
+    fireEvent.change(textarea, { target: { value: 'line one' } });
+    const shiftEnter = createEvent.keyDown(textarea, {
+      key: 'Enter',
+      code: 'Enter',
+      shiftKey: true,
+    });
+    fireEvent(textarea, shiftEnter);
+    fireEvent.change(textarea, { target: { value: 'line one\nline two' } });
+
+    expect(shiftEnter.defaultPrevented).toBe(false);
+    expect(textarea).toHaveValue('line one\nline two');
+    expect(socket.emit).not.toHaveBeenCalled();
+  });
+
+  it('retries a timed-out TTY prompt paste with the same request ID and typed ack', async () => {
+    (global.fetch as jest.Mock).mockResolvedValueOnce({
+      json: () => Promise.resolve({ terminal: { inputMode: 'tty' } }),
+    });
+    const terminalHandleRef = createRef<ChatTerminalHandle>();
+    const { socket } = await renderTerminal(false, terminalHandleRef);
+    socket.emit.mockClear();
+    let inputAttempt = 0;
+    socket.emit.mockImplementation(
+      (
+        event: string,
+        payload: { requestId?: string },
+        acknowledge?: (...args: unknown[]) => void,
+      ) => {
+        if (event !== 'terminal:input' || typeof acknowledge !== 'function') return socket;
+        inputAttempt += 1;
+        if (inputAttempt === 1) {
+          acknowledge(new Error('operation has timed out'));
+        } else {
+          acknowledge(null, {
+            ok: true,
+            code: 'OK',
+            requestId: payload.requestId,
+          });
+        }
+        return socket;
+      },
+    );
+
+    await act(async () => {
+      await terminalHandleRef.current?.insertPromptText('first line\nsecond line');
+    });
+
+    const promptInputCalls = socket.emit.mock.calls.filter(
+      ([event, payload]: [string, { kind?: string }]) =>
+        event === 'terminal:input' && payload.kind === 'prompt-paste',
+    );
+    expect(promptInputCalls).toHaveLength(2);
+    expect(promptInputCalls[0][1].requestId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    expect(promptInputCalls[1][1].requestId).toBe(promptInputCalls[0][1].requestId);
+    expect(socket.emit.mock.calls.map(([event]: [string]) => event)).toEqual([
+      'terminal:focus',
+      'terminal:input',
+      'terminal:focus',
+      'terminal:input',
+    ]);
+    expect(socket.timeout).toHaveBeenCalledTimes(2);
+  });
+
+  it('surfaces typed TTY prompt-paste failures', async () => {
+    (global.fetch as jest.Mock).mockResolvedValueOnce({
+      json: () => Promise.resolve({ terminal: { inputMode: 'tty' } }),
+    });
+    const terminalHandleRef = createRef<ChatTerminalHandle>();
+    const { socket } = await renderTerminal(false, terminalHandleRef);
+    socket.emit.mockImplementation(
+      (
+        event: string,
+        payload: { requestId?: string },
+        acknowledge?: (...args: unknown[]) => void,
+      ) => {
+        if (event === 'terminal:input' && typeof acknowledge === 'function') {
+          acknowledge(null, {
+            ok: false,
+            code: 'BUSY',
+            requestId: payload.requestId,
+          });
+        }
+        return socket;
+      },
+    );
+
+    let failure: unknown;
+    await act(async () => {
+      try {
+        await terminalHandleRef.current?.insertPromptText('prompt');
+      } catch (error) {
+        failure = error;
+      }
+    });
+
+    expect(failure).toBeInstanceOf(TerminalPromptInsertError);
+    expect(failure).toMatchObject({ code: 'BUSY' });
+  });
+
+  it('surfaces a typed timeout after both TTY attempts use the same request ID', async () => {
+    (global.fetch as jest.Mock).mockResolvedValueOnce({
+      json: () => Promise.resolve({ terminal: { inputMode: 'tty' } }),
+    });
+    const terminalHandleRef = createRef<ChatTerminalHandle>();
+    const { socket } = await renderTerminal(false, terminalHandleRef);
+    socket.emit.mockClear();
+    socket.emit.mockImplementation(
+      (event: string, _payload: unknown, acknowledge?: (...args: unknown[]) => void) => {
+        if (event === 'terminal:input' && typeof acknowledge === 'function') {
+          acknowledge(new Error('operation has timed out'));
+        }
+        return socket;
+      },
+    );
+
+    let failure: unknown;
+    await act(async () => {
+      try {
+        await terminalHandleRef.current?.insertPromptText('prompt');
+      } catch (error) {
+        failure = error;
+      }
+    });
+
+    const promptInputCalls = socket.emit.mock.calls.filter(
+      ([event, payload]: [string, { kind?: string }]) =>
+        event === 'terminal:input' && payload.kind === 'prompt-paste',
+    );
+    expect(promptInputCalls).toHaveLength(2);
+    expect(promptInputCalls[1][1].requestId).toBe(promptInputCalls[0][1].requestId);
+    expect(failure).toBeInstanceOf(TerminalPromptInsertError);
+    expect(failure).toMatchObject({
+      code: 'ACK_TIMEOUT',
+      requestId: promptInputCalls[0][1].requestId,
     });
   });
 

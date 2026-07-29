@@ -55,6 +55,7 @@ jest.mock('node:os', () => {
 function makePricing(): jest.Mocked<PricingServiceInterface> {
   return {
     calculateMessageCost: jest.fn().mockReturnValue(0.01),
+    getCatalogContextWindowSize: jest.fn().mockReturnValue(1_000_000),
     getContextWindowSize: jest.fn().mockReturnValue(1_000_000),
   };
 }

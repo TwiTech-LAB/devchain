@@ -514,6 +514,34 @@ describe('useSessionTranscript', () => {
     expect(typeof handlers.message).toBe('function');
   });
 
+  it('refreshes only the summary for an addressed runtime-context update', async () => {
+    fetchTranscriptSummaryMock.mockResolvedValue(makeSummary());
+    mockTranscriptResponse(makeSession());
+    const { result } = renderHook(() => useSessionTranscript('session-1'), {
+      wrapper: createWrapper(queryClient),
+    });
+    await waitFor(() => expect(result.current.session).toBeDefined());
+    const invalidateSpy = jest.spyOn(queryClient, 'invalidateQueries');
+    invalidateSpy.mockClear();
+
+    act(() => {
+      captureWsHandler()({
+        topic: 'session/session-1/runtime-context',
+        type: 'updated',
+        payload: { sessionId: 'session-1' },
+        ts: new Date().toISOString(),
+      });
+    });
+
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: transcriptQueryKeys.summary('session-1'),
+      exact: true,
+    });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({
+      queryKey: transcriptQueryKeys.transcript('session-1'),
+    });
+  });
+
   it('should invalidate queries on WS "updated" event after debounce', async () => {
     const session = makeSession();
     const summary = makeSummary();
@@ -737,6 +765,76 @@ describe('useSessionTranscript', () => {
     });
 
     expect(result.current.isLive).toBe(false);
+  });
+
+  it('keeps a running DevChain session live after a completed transcript turn', async () => {
+    const session = makeSession({ isOngoing: false });
+    const summary = makeSummary({ isOngoing: false });
+
+    fetchTranscriptSummaryMock.mockResolvedValue(summary);
+    mockTranscriptResponse(session);
+
+    const { result } = renderHook(
+      () => useSessionTranscript('session-1', { isSessionRunning: true }),
+      {
+        wrapper: createWrapper(queryClient),
+      },
+    );
+
+    await waitFor(() => {
+      expect(result.current.session).toBeDefined();
+    });
+
+    expect(result.current.isLive).toBe(true);
+
+    const summaryQuery = queryClient.getQueryCache().find({
+      queryKey: transcriptQueryKeys.summary('session-1'),
+      exact: true,
+    });
+    const refetchInterval = summaryQuery?.options.refetchInterval;
+    expect(typeof refetchInterval).toBe('function');
+    expect(
+      (
+        refetchInterval as (query: {
+          state: { data: ReturnType<typeof makeSummary> };
+        }) => number | false
+      )({ state: { data: summary } }),
+    ).toBe(5_000);
+  });
+
+  it('stops transcript polling when DevChain lifecycle reports the session stopped', async () => {
+    const session = makeSession({ isOngoing: true });
+    const summary = makeSummary({ isOngoing: true });
+
+    fetchTranscriptSummaryMock.mockResolvedValue(summary);
+    mockTranscriptResponse(session);
+
+    const { result } = renderHook(
+      () => useSessionTranscript('session-1', { isSessionRunning: false }),
+      {
+        wrapper: createWrapper(queryClient),
+      },
+    );
+
+    await waitFor(() => {
+      expect(result.current.session).toBeDefined();
+    });
+
+    expect(result.current.isLive).toBe(false);
+
+    const summaryQuery = queryClient.getQueryCache().find({
+      queryKey: transcriptQueryKeys.summary('session-1'),
+      exact: true,
+    });
+    const refetchInterval = summaryQuery?.options.refetchInterval;
+    expect(typeof refetchInterval).toBe('function');
+    expect(
+      (
+        refetchInterval as (query: {
+          state: { data: ReturnType<typeof makeSummary> };
+        }) => number | false
+      )({ state: { data: summary } }),
+    ).toBe(false);
   });
 
   // -------------------------------------------------------------------------

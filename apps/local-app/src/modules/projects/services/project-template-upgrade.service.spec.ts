@@ -27,6 +27,7 @@ const createMockImportResult = (): any => ({
   templateStatuses: [],
   counts: { toImport: {}, toDelete: {} },
   imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
+  promptTransfer: { imported: 2, deleted: 1, preserved: 3, skipped: 4 },
 });
 
 describe('ProjectTemplateUpgradeService', () => {
@@ -53,7 +54,7 @@ describe('ProjectTemplateUpgradeService', () => {
 
     mockProjectsService = {
       exportProject: jest.fn(),
-      importProject: jest.fn(),
+      importProject: jest.fn().mockResolvedValue(createMockImportResult()),
     } as unknown as jest.Mocked<ProjectsService>;
 
     service = new ProjectTemplateUpgradeService(
@@ -164,6 +165,12 @@ describe('ProjectTemplateUpgradeService', () => {
 
       expect(result.success).toBe(true);
       expect(result.newVersion).toBe('2.0.0');
+      expect(result.promptTransfer).toEqual({
+        imported: 2,
+        deleted: 1,
+        preserved: 3,
+        skipped: 4,
+      });
       expect(mockProjectsService.importProject).toHaveBeenCalled();
       expect(mockSettingsService.setProjectTemplateMetadata).toHaveBeenCalledWith(
         'project-123',
@@ -440,6 +447,47 @@ describe('ProjectTemplateUpgradeService', () => {
       expect(backups).toHaveLength(1);
     });
 
+    it('does not restore or write metadata for a non-mutating prompt preflight rejection', async () => {
+      mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
+        templateSlug: 'test-template',
+        installedVersion: '1.0.0',
+        registryUrl: 'https://test.com',
+        installedAt: new Date().toISOString(),
+      });
+      mockProjectsService.exportProject.mockResolvedValue(createMockExportData());
+      mockCacheService.getTemplate.mockResolvedValue({
+        content: { prompts: [] },
+        metadata: { slug: 'test', version: '2.0.0', checksum: 'abc', cachedAt: '', size: 0 },
+      });
+      mockProjectsService.importProject.mockResolvedValue({
+        success: false,
+        mutationStarted: false,
+        error: 'Template profiles reference prompts excluded from template transfer: "Private SOP"',
+        promptReferenceValidation: {
+          code: 'skipped_prompt_references',
+          promptTitles: ['Private SOP'],
+          issues: [{ promptTitle: 'Private SOP', profileNames: ['Coder'] }],
+        },
+      });
+
+      const result = await service.upgradeProject({
+        projectId: 'project-123',
+        targetVersion: '2.0.0',
+      });
+
+      expect(result).toMatchObject({
+        success: false,
+        mutationStarted: false,
+        error: expect.stringContaining('Private SOP'),
+        backupId: expect.any(String),
+        promptReferenceValidation: {
+          promptTitles: ['Private SOP'],
+        },
+      });
+      expect(mockProjectsService.importProject).toHaveBeenCalledTimes(1);
+      expect(mockSettingsService.setProjectTemplateMetadata).not.toHaveBeenCalled();
+    });
+
     describe('bundled templates', () => {
       it('should upgrade bundled template successfully', async () => {
         mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
@@ -564,6 +612,7 @@ describe('ProjectTemplateUpgradeService', () => {
           prompts: [{ id: '1', title: 'Test', content: '', version: 1, tags: [] }],
         }),
         dryRun: false,
+        promptTransferPolicy: 'snapshot',
       });
     });
 
@@ -732,6 +781,47 @@ describe('ProjectTemplateUpgradeService', () => {
       mockProjectsService.importProject.mockRejectedValue(new Error('Restore import failed'));
 
       await expect(service.restoreBackup(backupId)).rejects.toThrow('Restore import failed');
+      expect(service.getBackupInfo(backupId)).not.toBeNull();
+      expect(mockSettingsService.setProjectTemplateMetadata).not.toHaveBeenCalled();
+    });
+
+    it('retains the backup and metadata when restore resolves without success=true', async () => {
+      mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
+        templateSlug: 'test-template',
+        installedVersion: '1.0.0',
+        registryUrl: 'https://test.com',
+        installedAt: new Date().toISOString(),
+      });
+      mockProjectsService.exportProject.mockResolvedValue(createMockExportData());
+      const backupId = await service.createBackup('project-123');
+      mockProjectsService.importProject.mockResolvedValue({
+        success: false,
+        error: 'snapshot rejected',
+      });
+
+      await expect(service.restoreBackup(backupId)).rejects.toThrow(
+        'Backup restore import failed: snapshot rejected',
+      );
+
+      expect(service.getBackupInfo(backupId)).not.toBeNull();
+      expect(mockSettingsService.setProjectTemplateMetadata).not.toHaveBeenCalled();
+    });
+
+    it('rejects a truthy non-boolean restore result without cleanup', async () => {
+      mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
+        templateSlug: 'test-template',
+        installedVersion: '1.0.0',
+        registryUrl: 'https://test.com',
+        installedAt: new Date().toISOString(),
+      });
+      mockProjectsService.exportProject.mockResolvedValue(createMockExportData());
+      const backupId = await service.createBackup('project-123');
+      mockProjectsService.importProject.mockResolvedValue({ success: 'yes' } as never);
+
+      await expect(service.restoreBackup(backupId)).rejects.toThrow('Backup restore import failed');
+
+      expect(service.getBackupInfo(backupId)).not.toBeNull();
+      expect(mockSettingsService.setProjectTemplateMetadata).not.toHaveBeenCalled();
     });
 
     it('should remove backup after successful restore', async () => {

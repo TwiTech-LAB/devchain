@@ -79,6 +79,7 @@ function numOr(v: unknown): number | undefined {
  */
 const stubPricing: PricingServiceInterface = {
   calculateMessageCost: () => 0,
+  getCatalogContextWindowSize: () => null,
   getContextWindowSize: () => 200_000,
 };
 

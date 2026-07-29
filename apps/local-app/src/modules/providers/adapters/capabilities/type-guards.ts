@@ -3,17 +3,13 @@ import type {
   McpServerEntry,
   AddMcpServerOptions,
 } from '../provider-adapter.interface';
-import type { ContextWindowCapability } from './context-window.capability';
+import type { AutoCompactCapability } from './auto-compact.capability';
 import type { EffortCapability } from './effort.capability';
 import type { HookCapability } from './hook.capability';
 import type { ProjectProvisioningCapability } from './project-provisioning.capability';
 import type { ProjectMcpSettingsCapability } from './project-mcp-settings.capability';
 import type { TranscriptDiscoveryCapability } from './transcript-discovery.capability';
-export type {
-  ContextWindowCapability,
-  ContextWindowProviderState,
-  ModelFamily,
-} from './context-window.capability';
+export type { AutoCompactCapability, AutoCompactProviderState } from './auto-compact.capability';
 export type { EffortCapability } from './effort.capability';
 export type { HookCapability, HookEnvContext } from './hook.capability';
 export type {
@@ -112,10 +108,10 @@ export function isGlobalMcpConfigCapable(
   return 'parseGlobalMcpConfig' in adapter && 'buildGlobalMcpServerEntry' in adapter;
 }
 
-export function isContextWindowCapable(
+export function isAutoCompactCapable(
   adapter: ProviderAdapter,
-): adapter is ProviderAdapter & ContextWindowCapability {
-  return 'applyContextWindowConfig' in adapter;
+): adapter is ProviderAdapter & AutoCompactCapability {
+  return 'applyAutoCompactConfig' in adapter;
 }
 
 export function isEffortCapable(

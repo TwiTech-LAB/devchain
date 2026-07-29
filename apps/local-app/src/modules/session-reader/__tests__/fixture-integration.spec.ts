@@ -11,6 +11,7 @@ const FIXTURES_DIR = path.join(__dirname, '..', '__fixtures__');
 
 const mockPricing: PricingServiceInterface = {
   calculateMessageCost: jest.fn().mockReturnValue(0.001),
+  getCatalogContextWindowSize: jest.fn().mockReturnValue(200_000),
   getContextWindowSize: jest.fn().mockReturnValue(200_000),
 };
 

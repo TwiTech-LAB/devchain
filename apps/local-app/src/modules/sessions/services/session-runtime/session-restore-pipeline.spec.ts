@@ -31,7 +31,7 @@ jest.mock('@devchain/shared', () => ({
 }));
 
 jest.mock('../../../providers/adapters/capabilities', () => ({
-  isContextWindowCapable: () => false,
+  isAutoCompactCapable: () => false,
   isHookCapable: () => false,
   isProjectProvisioningCapable: () => false,
 }));
@@ -70,6 +70,124 @@ import type { MetricsService } from '../../../metrics/services/metrics.service';
 describe('SessionRestorePipeline', () => {
   const sessionId = 'session-1';
   const projectId = 'project-1';
+
+  describe('runtime context capture lifecycle', () => {
+    it('snapshots and rotates live context state before issuing the restore command', async () => {
+      const { pipeline, stoppedSessionRow, mocks } = createRestorePipelineHarness();
+      stoppedSessionRow.provider_name_at_launch = 'claude';
+      mocks.storage.getProvider.mockResolvedValue(fakeProvider({ name: 'claude' }));
+
+      await pipeline.restore(sessionId, projectId);
+
+      expect(mocks.runtimeContextCapture.snapshot).toHaveBeenCalledWith(sessionId);
+      expect(mocks.runtimeContextCapture.rotateEpoch).toHaveBeenCalledWith(sessionId, null);
+      expect(mocks.runtimeContextCapture.rotateEpoch.mock.invocationCallOrder[0]).toBeLessThan(
+        mocks.terminalIO.typeCommand.mock.invocationCallOrder[0],
+      );
+      expect(mocks.runtimeContextCapture.restoreSnapshot).not.toHaveBeenCalled();
+    });
+
+    it('restores the prior in-memory capture snapshot when restore fails', async () => {
+      const { pipeline, stoppedSessionRow, mocks } = createRestorePipelineHarness();
+      stoppedSessionRow.provider_name_at_launch = 'claude';
+      mocks.storage.getProvider.mockResolvedValue(fakeProvider({ name: 'claude' }));
+      const priorSnapshot = {
+        epoch: 'prior-epoch',
+        configuredOverride: null,
+        state: {
+          sessionId,
+          epoch: 'prior-epoch',
+          sequence: 7,
+          claudeSessionId: 'runtime-before-restore',
+          modelId: 'claude-sonnet-4-6',
+          contextWindowTokens: 1_000_000,
+        },
+      };
+      mocks.runtimeContextCapture.snapshot.mockReturnValue(priorSnapshot);
+      mocks.terminalIO.createEmptySession.mockRejectedValue(new Error('tmux failed'));
+
+      await expect(pipeline.restore(sessionId, projectId)).rejects.toThrow('tmux failed');
+
+      expect(mocks.runtimeContextCapture.restoreSnapshot).toHaveBeenCalledWith(
+        sessionId,
+        priorSnapshot,
+      );
+    });
+
+    it('binds a newly resolved configured window on restore', async () => {
+      const { pipeline, mocks } = createRestorePipelineHarness();
+      const resolveMock = resolveLaunchConfig as jest.Mock;
+      resolveMock.mockReturnValueOnce({
+        argv: ['test-provider', '--resume', 'provider-session-1'],
+        commandArgs: ['test-provider', '--resume', 'provider-session-1'],
+        env: null,
+        contextWindowOverride: {
+          modelId: 'custom/model',
+          contextWindowTokens: 640_000,
+        },
+      });
+
+      await pipeline.restore(sessionId, projectId);
+
+      expect(mocks.runtimeContextCapture.rotateEpoch).toHaveBeenCalledWith(sessionId, {
+        modelId: 'custom/model',
+        contextWindowTokens: 640_000,
+      });
+    });
+
+    it('prepares Claude settings after epoch rotation and re-resolves the restore overlay', async () => {
+      const { pipeline, stoppedSessionRow, mocks } = createRestorePipelineHarness();
+      const resolveMock = resolveLaunchConfig as jest.Mock;
+      resolveMock.mockClear();
+      stoppedSessionRow.provider_name_at_launch = 'claude';
+      mocks.storage.getProvider.mockResolvedValue(
+        fakeProvider({ name: 'claude', claudeLaunchSettingsJson: '{"tui":"default"}' }),
+      );
+      mocks.storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        fakeProfileProviderConfig({ options: '--model sonnet' }),
+      ]);
+      mocks.claudeLaunchSettings.prepare.mockResolvedValue({
+        optionArgs: ['--settings', '/private/revision.json'],
+        runtimeEnv: { DEVCHAIN_STATUSLINE_LOCATOR: '/private/locator.json' },
+        captureEnabled: true,
+      });
+
+      await pipeline.restore(sessionId, projectId);
+
+      expect(mocks.claudeLaunchSettings.prepare).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerName: 'claude',
+          settingsJson: '{"tui":"default"}',
+          profileOptionArgs: ['--model', 'sonnet'],
+          sessionId,
+          epoch: 'capture-epoch',
+          projectRootPath: '/tmp/project',
+        }),
+      );
+      expect(resolveMock).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          mode: 'restore',
+          providerOptionArgs: ['--settings', '/private/revision.json'],
+          runtimeEnv: { DEVCHAIN_STATUSLINE_LOCATOR: '/private/locator.json' },
+        }),
+      );
+    });
+
+    it('uses the original restore command unchanged when preparation is inactive', async () => {
+      const { pipeline, mocks } = createRestorePipelineHarness();
+      const resolveMock = resolveLaunchConfig as jest.Mock;
+      resolveMock.mockClear();
+
+      await pipeline.restore(sessionId, projectId);
+
+      expect(resolveMock).toHaveBeenCalledTimes(1);
+      expect(mocks.terminalIO.typeCommand).toHaveBeenCalledWith(expect.any(Object), [
+        'test-provider',
+        '--resume',
+        'provider-session-1',
+      ]);
+    });
+  });
 
   // ── Effective model/effort resolution (restore parity with launch) ───────
   // Restore must apply the same effective model/effort as a fresh launch. Layer:

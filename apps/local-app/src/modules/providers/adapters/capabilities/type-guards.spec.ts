@@ -7,7 +7,7 @@ import type { ProviderAdapter } from '../provider-adapter.interface';
 import {
   isMcpCli,
   isGlobalMcpConfigCapable,
-  isContextWindowCapable,
+  isAutoCompactCapable,
   isEffortCapable,
   isHookCapable,
   isProjectProvisioningCapable,
@@ -74,23 +74,20 @@ describe('type-guards', () => {
     });
   });
 
-  describe('isContextWindowCapable', () => {
-    it('returns true for Claude (implements ContextWindowCapability)', () => {
-      expect(isContextWindowCapable(claude)).toBe(true);
+  describe('isAutoCompactCapable', () => {
+    it('returns true for Claude', () => {
+      expect(isAutoCompactCapable(claude)).toBe(true);
     });
 
     it('returns false for non-Claude adapters', () => {
-      expect(isContextWindowCapable(codex)).toBe(false);
-      expect(isContextWindowCapable(opencode)).toBe(false);
+      expect(isAutoCompactCapable(codex)).toBe(false);
+      expect(isAutoCompactCapable(opencode)).toBe(false);
     });
 
-    it('narrows type to ContextWindowCapability for Claude', () => {
-      if (isContextWindowCapable(claude)) {
-        expect(typeof claude.detectModelFamily).toBe('function');
-        expect(typeof claude.is1mActiveForModel).toBe('function');
-        expect(typeof claude.applyContextWindowConfig).toBe('function');
-        expect(typeof claude.getCompactThreshold).toBe('function');
-        expect(typeof claude.getReadTimeContextWindow).toBe('function');
+    it('narrows type to AutoCompactCapability for Claude', () => {
+      if (isAutoCompactCapable(claude)) {
+        expect(typeof claude.applyAutoCompactConfig).toBe('function');
+        expect(typeof claude.evaluateAutoCompactConfig).toBe('function');
       }
     });
   });

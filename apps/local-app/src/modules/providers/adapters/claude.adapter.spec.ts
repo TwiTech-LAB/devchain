@@ -56,6 +56,58 @@ describe('ClaudeAdapter', () => {
     });
   });
 
+  describe('AutoCompactCapability', () => {
+    it('injects the standard threshold without rewriting opus', () => {
+      const result = adapter.applyAutoCompactConfig(
+        ['--model', 'opus'],
+        {},
+        { autoCompactThreshold: 95 },
+      );
+
+      expect(result.argv).toEqual(['--model', 'opus']);
+      expect(result.env).toEqual({ CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '95' });
+    });
+
+    it('does not inject a model flag when no model was provided', () => {
+      expect(
+        adapter.applyAutoCompactConfig(['--verbose'], {}, { autoCompactThreshold: 95 }).argv,
+      ).toEqual(['--verbose']);
+    });
+
+    it('passes an explicit [1m] model and disable env through unchanged', () => {
+      const result = adapter.applyAutoCompactConfig(
+        ['--model', 'claude-opus-4-6[1m]'],
+        { CLAUDE_CODE_DISABLE_1M_CONTEXT: '1' },
+        { autoCompactThreshold: null },
+      );
+
+      expect(result).toEqual({
+        argv: ['--model', 'claude-opus-4-6[1m]'],
+        env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: '1' },
+      });
+    });
+
+    it('keeps an explicit auto-compact env value instead of the provider threshold', () => {
+      const result = adapter.applyAutoCompactConfig(
+        [],
+        { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '72' },
+        { autoCompactThreshold: 95 },
+      );
+
+      expect(result.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE).toBe('72');
+    });
+
+    it('keeps an explicitly empty auto-compact env value', () => {
+      const result = adapter.applyAutoCompactConfig(
+        [],
+        { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '' },
+        { autoCompactThreshold: 95 },
+      );
+
+      expect(result.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE).toBe('');
+    });
+  });
+
   describe('addMcpServer', () => {
     it('builds command with default alias', () => {
       const args = adapter.addMcpServer({

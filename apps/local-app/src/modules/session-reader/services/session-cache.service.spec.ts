@@ -772,6 +772,28 @@ describe('SessionCacheService', () => {
   // Composite byte-budget eviction
   // -------------------------------------------------------------------------
 
+  it('invalidates only the derived transcript DTO for runtime metrics changes', async () => {
+    const session = makeSession({ id: 'session-a' });
+    (adapter.parseFullSession as jest.Mock).mockResolvedValue(session);
+    mockedFsStat.mockResolvedValue(makeStat(1_000, 1706000000000));
+    await service.getOrParse('session-a', '/tmp/a.jsonl', adapter);
+    const sourceVersion = service.getEntry('session-a')!.sourceVersion;
+    const chunks: UnifiedChunk[] = [];
+    service.setChunks('session-a', sourceVersion, chunks);
+    service.setDto('session-a', {
+      result: { messages: session.messages },
+      responseBytes: 1_500,
+      maxToolResultLength: 2_000,
+      enrichmentFingerprint: 'claude:200000',
+    });
+
+    service.invalidateDto('session-a');
+
+    expect(service.getEntry('session-a')?.session).toBe(session);
+    expect(service.getChunks('session-a', sourceVersion)).toBe(chunks);
+    expect(service.getDto('session-a', 2_000, 'claude:200000')).toBeUndefined();
+  });
+
   it('module-unit: evicts every representation of the oldest session when over budget', async () => {
     service = new SessionCacheService(mockMetricsService, {
       budgetBytes: 5_000,

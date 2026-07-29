@@ -140,59 +140,12 @@ export function stripFlag(args: string[], flag: string): string[] {
 }
 
 /**
- * Rewrite the --model/-m value to the [1m] alias variant for 1M context.
- * Only opus family models are rewritten: "opus" → opus[1m]. Sonnet and unknown → unchanged.
- * When no model flag is present, defaults to --model opus[1m].
- * Handles: --model X, -m X, --model=X, -m=X.
+ * Detect any occurrence of a long-form flag without interpreting its value.
+ * A bare trailing flag and an empty `--flag=` value both count: callers using
+ * this as an ownership guard must defer to ambiguous user input.
  */
-export function rewriteModelTo1m(args: string[]): string[] {
-  const result: string[] = [];
-  let foundModel = false;
-
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-
-    if (arg === '--model' || arg === '-m') {
-      foundModel = true;
-      if (i + 1 < args.length) {
-        result.push('--model', rewriteValue(args[i + 1]));
-        i += 1;
-      } else {
-        result.push('--model', 'opus[1m]');
-      }
-      continue;
-    }
-
-    if (arg.startsWith('--model=') || arg.startsWith('-m=')) {
-      foundModel = true;
-      const value = arg.slice(arg.indexOf('=') + 1);
-      result.push('--model', rewriteValue(value));
-      continue;
-    }
-
-    result.push(arg);
-  }
-
-  if (!foundModel) {
-    return ['--model', 'opus[1m]', ...result];
-  }
-
-  return result;
-}
-
-/**
- * Detect Claude model family from a model name string.
- * Returns 'opus' | 'sonnet' | null based on case-insensitive substring match.
- */
-export function detectClaudeModelFamily(model: string): 'opus' | 'sonnet' | null {
-  const lower = model.toLowerCase();
-  if (lower.includes('opus')) {
-    return 'opus';
-  }
-  if (lower.includes('sonnet')) {
-    return 'sonnet';
-  }
-  return null;
+export function hasFlagOccurrence(args: string[], flag: string): boolean {
+  return args.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
 }
 
 /**
@@ -214,15 +167,4 @@ export function extractModelFromArgs(args: string[]): string | null {
   }
 
   return null;
-}
-
-function rewriteValue(value: string): string {
-  if (value.endsWith('[1m]')) {
-    return value;
-  }
-  const family = detectClaudeModelFamily(value);
-  if (family === 'opus') {
-    return 'opus[1m]';
-  }
-  return value;
 }

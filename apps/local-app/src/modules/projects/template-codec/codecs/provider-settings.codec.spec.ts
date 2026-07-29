@@ -1,287 +1,212 @@
-/**
- * ProviderSettings codec unit tests — locks the EXACT threshold/probe/env matrix
- * (docs/template-roundtrip-compatibility-matrix.md row 19 + Architect round-2 note) through
- * the codec `apply` path (replace-into-existing). The probe callback is mocked so both the
- * success and failure branches are exercised deterministically.
- */
 import type { StorageService } from '../../../storage/interfaces/storage.interface';
 import { ImportContext } from '../import-context';
 import type { CodecApplyRuntime } from '../template-section-codec';
-import { providerSettingsCodec } from './provider-settings.codec';
-
-type ProbeOutcome = { supported: boolean; status?: string };
+import {
+  buildProviderSettings,
+  providerSettingsCodec,
+  type ProviderExportRow,
+} from './provider-settings.codec';
 
 interface MockProvider {
   id: string;
   name: string;
-  binPath: string | null;
   autoCompactThreshold: number | null;
-  autoCompactThreshold1m?: number | null;
-  oneMillionContextEnabled?: boolean;
   env?: Record<string, string> | null;
 }
 
-function makeRuntime(
-  providers: MockProvider[],
-  probe1m?: (binPath: string) => Promise<ProbeOutcome>,
-): { storage: { listProviders: jest.Mock; updateProvider: jest.Mock }; rt: CodecApplyRuntime } {
+function makeRuntime(providers: MockProvider[]): {
+  storage: { listProviders: jest.Mock; updateProvider: jest.Mock };
+  rt: CodecApplyRuntime;
+} {
   const storage = {
     listProviders: jest.fn().mockResolvedValue({ items: providers }),
     updateProvider: jest.fn().mockResolvedValue(undefined),
   };
-  const rt = {
-    projectId: 'project-1',
-    storage: storage as unknown as StorageService,
-    ...(probe1m ? { probe1m } : {}),
-  } as CodecApplyRuntime;
-  return { storage, rt };
+  return {
+    storage,
+    rt: {
+      projectId: 'project-1',
+      storage: storage as unknown as StorageService,
+    },
+  };
 }
 
-// Cast helper: build a providerSettings section without running full ExportSchema.parse.
 const section = (
   settings: Array<Record<string, unknown>>,
 ): Parameters<typeof providerSettingsCodec.apply>[0] =>
-  settings as unknown as Parameters<typeof providerSettingsCodec.apply>[0];
+  settings as Parameters<typeof providerSettingsCodec.apply>[0];
 
 const ctx = () => new ImportContext();
+
+describe('providerSettings codec — threshold import', () => {
+  const baseProvider: MockProvider = {
+    id: 'provider-1',
+    name: 'claude',
+    autoCompactThreshold: null,
+    env: null,
+  };
+
+  it('imports the ordinary threshold when the local default is absent', async () => {
+    const { storage, rt } = makeRuntime([baseProvider]);
+
+    await providerSettingsCodec.apply(
+      section([{ name: 'claude', autoCompactThreshold: 95 }]),
+      ctx(),
+      'replace',
+      rt,
+    );
+
+    expect(storage.updateProvider).toHaveBeenCalledWith('provider-1', {
+      autoCompactThreshold: 95,
+    });
+  });
+
+  it('preserves an existing local ordinary threshold', async () => {
+    const { storage, rt } = makeRuntime([{ ...baseProvider, autoCompactThreshold: 80 }]);
+
+    await providerSettingsCodec.apply(
+      section([{ name: 'claude', autoCompactThreshold: 95 }]),
+      ctx(),
+      'replace',
+      rt,
+    );
+
+    expect(storage.updateProvider).not.toHaveBeenCalled();
+  });
+
+  it('returns a zero update count for an unknown provider', async () => {
+    const { storage, rt } = makeRuntime([baseProvider]);
+
+    const result = await providerSettingsCodec.apply(
+      section([{ name: 'missing', autoCompactThreshold: 95 }]),
+      ctx(),
+      'replace',
+      rt,
+    );
+
+    expect(storage.updateProvider).not.toHaveBeenCalled();
+    expect(result).toEqual({ section: 'providerSettings', log: { providersUpdated: 0 } });
+  });
+});
 
 describe('providerSettings codec — env merge', () => {
   const baseProvider: MockProvider = {
     id: 'provider-1',
     name: 'claude',
-    binPath: '/usr/local/bin/claude',
     autoCompactThreshold: null,
     env: null,
   };
 
-  it('applies template env when local provider has no env', async () => {
-    const { storage, rt } = makeRuntime([baseProvider]);
-    await providerSettingsCodec.apply(
-      section([{ name: 'claude', env: { API_BASE: 'https://custom.api', LOG_LEVEL: 'debug' } }]),
-      ctx(),
-      'replace',
-      rt,
-    );
-    expect(storage.updateProvider).toHaveBeenCalledWith(
-      'provider-1',
-      expect.objectContaining({ env: { API_BASE: 'https://custom.api', LOG_LEVEL: 'debug' } }),
-    );
-  });
-
-  it('merges with local-wins semantics (local keys not overwritten)', async () => {
+  it('merges with local-wins semantics', async () => {
     const { storage, rt } = makeRuntime([
       { ...baseProvider, env: { API_BASE: 'local-value', EXISTING: 'keep' } },
     ]);
+
     await providerSettingsCodec.apply(
       section([{ name: 'claude', env: { API_BASE: 'template-value', NEW_KEY: 'added' } }]),
       ctx(),
       'replace',
       rt,
     );
-    expect(storage.updateProvider).toHaveBeenCalledWith(
-      'provider-1',
-      expect.objectContaining({
-        env: { API_BASE: 'local-value', EXISTING: 'keep', NEW_KEY: 'added' },
-      }),
-    );
+
+    expect(storage.updateProvider).toHaveBeenCalledWith('provider-1', {
+      env: { API_BASE: 'local-value', EXISTING: 'keep', NEW_KEY: 'added' },
+    });
   });
 
-  it('skips update when all template keys already exist locally', async () => {
-    const { storage, rt } = makeRuntime([{ ...baseProvider, env: { KEY_A: 'local' } }]);
+  it('drops only the exact retired Claude provider-level window before merge', async () => {
+    const { storage, rt } = makeRuntime([baseProvider]);
+
     await providerSettingsCodec.apply(
-      section([{ name: 'claude', env: { KEY_A: 'template' } }]),
+      section([
+        {
+          name: 'claude',
+          env: {
+            CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000',
+            CLAUDE_CODE_DISABLE_1M_CONTEXT: '1',
+            KEEP: 'value',
+          },
+        },
+      ]),
       ctx(),
       'replace',
       rt,
     );
-    expect(storage.updateProvider).not.toHaveBeenCalled();
+
+    expect(storage.updateProvider).toHaveBeenCalledWith('provider-1', {
+      env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: '1', KEEP: 'value' },
+    });
   });
 
-  it('preserves *** entries (redacted secrets kept so the user sees what to fill)', async () => {
-    const { storage, rt } = makeRuntime([baseProvider]);
+  it.each(['999999', '1000001', '450000'])(
+    'preserves a non-retired Claude window value %s',
+    async (window) => {
+      const { storage, rt } = makeRuntime([baseProvider]);
+
+      await providerSettingsCodec.apply(
+        section([{ name: 'claude', env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: window } }]),
+        ctx(),
+        'replace',
+        rt,
+      );
+
+      expect(storage.updateProvider).toHaveBeenCalledWith('provider-1', {
+        env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: window },
+      });
+    },
+  );
+
+  it('preserves the same window for non-Claude providers', async () => {
+    const provider = { ...baseProvider, id: 'glm-provider', name: 'glm' };
+    const { storage, rt } = makeRuntime([provider]);
+
     await providerSettingsCodec.apply(
-      section([{ name: 'claude', env: { API_KEY: '***', VISIBLE: 'value' } }]),
+      section([{ name: 'glm', env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000' } }]),
       ctx(),
       'replace',
       rt,
     );
-    expect(storage.updateProvider).toHaveBeenCalledWith(
-      'provider-1',
-      expect.objectContaining({ env: { API_KEY: '***', VISIBLE: 'value' } }),
-    );
+
+    expect(storage.updateProvider).toHaveBeenCalledWith('glm-provider', {
+      env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000' },
+    });
   });
 
-  it('does not update when template has no env field', async () => {
+  it('is a no-op when the retired window is the only imported value', async () => {
     const { storage, rt } = makeRuntime([baseProvider]);
-    await providerSettingsCodec.apply(section([{ name: 'claude' }]), ctx(), 'replace', rt);
+
+    await providerSettingsCodec.apply(
+      section([{ name: 'claude', env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000' } }]),
+      ctx(),
+      'replace',
+      rt,
+    );
+
     expect(storage.updateProvider).not.toHaveBeenCalled();
   });
 });
 
-describe('providerSettings codec — autoCompactThreshold1m matrix', () => {
-  const baseProvider: MockProvider = {
-    id: 'provider-1',
-    name: 'claude',
-    binPath: '/usr/local/bin/claude',
-    autoCompactThreshold: null,
-  };
+describe('buildProviderSettings', () => {
+  it('emits only current provider-setting fields', () => {
+    const provider: ProviderExportRow & { claudeLaunchSettingsJson: string } = {
+      id: 'provider-1',
+      name: 'claude',
+      autoCompactThreshold: 95,
+      claudeLaunchSettingsJson: '{"statusLine":{"type":"command"}}',
+      env: { KEEP: 'value' },
+    };
 
-  it('legacy template: promotes old threshold to 1M value + standard 95 on probe success', async () => {
-    const probe1m = jest.fn().mockResolvedValue({ supported: true, status: 'supported' });
-    const { storage, rt } = makeRuntime([baseProvider], probe1m);
-    await providerSettingsCodec.apply(
-      section([{ name: 'claude', autoCompactThreshold: 50, oneMillionContextEnabled: true }]),
-      ctx(),
-      'replace',
-      rt,
+    const result = buildProviderSettings(
+      new Map([[provider.id, provider]]),
+      'project-1',
+      new Map(),
+      {
+        filterEnvByScope: (env) => env,
+        sanitizeEnvMap: (env) => env ?? null,
+      },
     );
-    expect(storage.updateProvider).toHaveBeenCalledWith(
-      'provider-1',
-      expect.objectContaining({
-        autoCompactThreshold1m: 50,
-        autoCompactThreshold: 95,
-        oneMillionContextEnabled: true,
-      }),
-    );
-  });
 
-  it('new template: uses both threshold fields as-is on probe success', async () => {
-    const probe1m = jest.fn().mockResolvedValue({ supported: true, status: 'supported' });
-    const { storage, rt } = makeRuntime([baseProvider], probe1m);
-    await providerSettingsCodec.apply(
-      section([
-        {
-          name: 'claude',
-          autoCompactThreshold: 95,
-          autoCompactThreshold1m: 40,
-          oneMillionContextEnabled: true,
-        },
-      ]),
-      ctx(),
-      'replace',
-      rt,
-    );
-    expect(storage.updateProvider).toHaveBeenCalledWith(
-      'provider-1',
-      expect.objectContaining({
-        autoCompactThreshold1m: 40,
-        autoCompactThreshold: 95,
-        oneMillionContextEnabled: true,
-      }),
-    );
-  });
-
-  it('probe failure: clears 1M fields and forces standard threshold to 95', async () => {
-    const probe1m = jest.fn().mockResolvedValue({ supported: false, status: 'unsupported' });
-    const { storage, rt } = makeRuntime([baseProvider], probe1m);
-    await providerSettingsCodec.apply(
-      section([
-        {
-          name: 'claude',
-          autoCompactThreshold: 50,
-          autoCompactThreshold1m: 50,
-          oneMillionContextEnabled: true,
-        },
-      ]),
-      ctx(),
-      'replace',
-      rt,
-    );
-    expect(storage.updateProvider).toHaveBeenCalledWith(
-      'provider-1',
-      expect.objectContaining({
-        autoCompactThreshold1m: null,
-        autoCompactThreshold: 95,
-        oneMillionContextEnabled: false,
-      }),
-    );
-  });
-
-  it('no binPath: disables 1M, forces standard threshold 95, does NOT probe', async () => {
-    const probe1m = jest.fn();
-    const { storage, rt } = makeRuntime([{ ...baseProvider, binPath: null }], probe1m);
-    await providerSettingsCodec.apply(
-      section([{ name: 'claude', autoCompactThreshold1m: 50, oneMillionContextEnabled: true }]),
-      ctx(),
-      'replace',
-      rt,
-    );
-    expect(storage.updateProvider).toHaveBeenCalledWith(
-      'provider-1',
-      expect.objectContaining({
-        autoCompactThreshold1m: null,
-        autoCompactThreshold: 95,
-        oneMillionContextEnabled: false,
-      }),
-    );
-    expect(probe1m).not.toHaveBeenCalled();
-  });
-
-  it('probe success: preserves existing local standard threshold (not overwritten)', async () => {
-    const probe1m = jest.fn().mockResolvedValue({ supported: true });
-    const { storage, rt } = makeRuntime([{ ...baseProvider, autoCompactThreshold: 80 }], probe1m);
-    await providerSettingsCodec.apply(
-      section([
-        {
-          name: 'claude',
-          autoCompactThreshold: 95,
-          autoCompactThreshold1m: 50,
-          oneMillionContextEnabled: true,
-        },
-      ]),
-      ctx(),
-      'replace',
-      rt,
-    );
-    const updateCall = storage.updateProvider.mock.calls[0][1];
-    expect(updateCall.autoCompactThreshold1m).toBe(50);
-    expect(updateCall.autoCompactThreshold).toBeUndefined();
-  });
-
-  it('autoCompactThreshold imports only when local is null (local threshold preserved)', async () => {
-    const { storage, rt } = makeRuntime([{ ...baseProvider, autoCompactThreshold: 80 }]);
-    await providerSettingsCodec.apply(
-      section([{ name: 'claude', autoCompactThreshold: 50, autoCompactThreshold1m: 60 }]),
-      ctx(),
-      'replace',
-      rt,
-    );
-    const updateCall = storage.updateProvider.mock.calls[0][1];
-    // 1m is imported; the standard threshold is NOT overwritten (local 80 wins).
-    expect(updateCall.autoCompactThreshold1m).toBe(60);
-    expect(updateCall.autoCompactThreshold).toBeUndefined();
-  });
-
-  it('autoCompactThreshold1m may overwrite when template carries it', async () => {
-    const { storage, rt } = makeRuntime([{ ...baseProvider, autoCompactThreshold1m: 30 }]);
-    await providerSettingsCodec.apply(
-      section([{ name: 'claude', autoCompactThreshold1m: 60 }]),
-      ctx(),
-      'replace',
-      rt,
-    );
-    expect(storage.updateProvider).toHaveBeenCalledWith(
-      'provider-1',
-      expect.objectContaining({ autoCompactThreshold1m: 60 }),
-    );
-  });
-
-  it('returns a providersUpdated count and is a no-op for unknown providers', async () => {
-    const { storage, rt } = makeRuntime([baseProvider]);
-    const result = await providerSettingsCodec.apply(
-      section([{ name: 'nonexistent', autoCompactThreshold: 50 }]),
-      ctx(),
-      'replace',
-      rt,
-    );
-    expect(storage.updateProvider).not.toHaveBeenCalled();
-    expect(result).toMatchObject({ section: 'providerSettings', log: { providersUpdated: 0 } });
-  });
-
-  it('empty/absent section short-circuits with no storage calls', async () => {
-    const { storage, rt } = makeRuntime([baseProvider]);
-    const result = await providerSettingsCodec.apply(section([]), ctx(), 'replace', rt);
-    expect(storage.listProviders).not.toHaveBeenCalled();
-    expect(result.section).toBe('providerSettings');
+    expect(result).toEqual([{ name: 'claude', autoCompactThreshold: 95, env: { KEEP: 'value' } }]);
+    expect(result[0]).not.toHaveProperty('claudeLaunchSettingsJson');
   });
 });

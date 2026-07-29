@@ -4,12 +4,8 @@
  *
  * IMPORT apply replicates the legacy `applyImportedProjectSettings` exactly by delegating to
  * `mergeProjectSettingsWithInitialPrompt` + `applyProjectSettingsWithHelper` (behavior-preserving).
- * The initial-prompt resolution order is therefore the legacy one, which the DoD encodes as
- * "title-match first, promptId fallback":
- *   - `mergeProjectSettingsWithInitialPrompt` resolves `initialPrompt.promptId` -> a title via the
- *     template prompts (fallback when no explicit title), then
- *   - `applyProjectSettingsWithHelper` matches that title against the freshly-created prompts
- *     (`promptTitleToId`, built from `createdPrompts` + `promptIdMap` in the ImportContext).
+ * Current imports first resolve the exported prompt id through `promptIdMap`, then fall back to
+ * title-based resolution for older payloads without a usable id mapping.
  * A missing prompt (no title match) leaves `initialSessionPromptId` unset (initialPromptSet=false).
  *
  * EXPORT build is `buildProjectSettings` (moved from project-export.ts); it takes already-resolved
@@ -140,12 +136,19 @@ class ProjectSettingsCodec implements TemplateSectionCodec<ProjectSettingsSectio
       section.projectSettings as ProjectSettingsTemplateInput | undefined,
     );
     const promptTitleToId = buildPromptTitleToIdMap(createdPrompts, promptIdMap);
+    const initialPromptId = section.initialPrompt?.promptId
+      ? promptIdMap[section.initialPrompt.promptId]
+      : undefined;
     const archiveStatusId = resolveArchiveStatusId(templateLabelToStatusId);
 
     const settingsResult = await applyProjectSettingsWithHelper(
       rt.projectId,
       mergedSettings,
-      { promptTitleToId, statusLabelToId: templateLabelToStatusId },
+      {
+        promptTitleToId,
+        statusLabelToId: templateLabelToStatusId,
+        ...(initialPromptId ? { initialPromptId } : {}),
+      },
       archiveStatusId,
       rt.settings,
     );

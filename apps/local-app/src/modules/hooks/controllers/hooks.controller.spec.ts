@@ -152,6 +152,22 @@ describe('HooksController', () => {
       expect(mockHooksService.handleHookEvent).toHaveBeenCalled();
     });
 
+    it('accepts a strict StatusLine runtime-context payload', async () => {
+      const payload = {
+        hookEventName: 'StatusLine',
+        sessionId: '33333333-3333-3333-3333-333333333333',
+        epoch: 'process-epoch-1',
+        sequence: 1,
+        claudeSessionId: 'claude-runtime-1',
+        modelId: 'claude-sonnet-4-6',
+        contextWindowTokens: 1_000_000,
+      };
+
+      await controller.receiveHookEvent(payload);
+
+      expect(mockHooksService.handleHookEvent).toHaveBeenCalledWith(payload);
+    });
+
     it('should return 400 for projectId that is not a UUID', async () => {
       const badPayload = { ...validPayload, projectId: 'not-a-uuid' };
 

@@ -181,6 +181,8 @@ export async function applyProjectSettingsWithHelper(
   maps: {
     promptTitleToId: Map<string, string>;
     statusLabelToId: Map<string, string>;
+    /** Snapshot-only exact identity resolved from the exported prompt id. */
+    initialPromptId?: string;
   },
   archiveStatusId: string | null,
   settings: SettingsService,
@@ -189,7 +191,9 @@ export async function applyProjectSettingsWithHelper(
 
   if (projectSettings) {
     if (projectSettings.initialPromptTitle) {
-      const promptId = maps.promptTitleToId.get(projectSettings.initialPromptTitle.toLowerCase());
+      const promptId =
+        maps.initialPromptId ??
+        maps.promptTitleToId.get(projectSettings.initialPromptTitle.toLowerCase());
       if (promptId) {
         await settings.updateSettings({
           projectId,

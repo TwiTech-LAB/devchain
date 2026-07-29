@@ -80,8 +80,7 @@ export function fakeProvider(overrides: Record<string, unknown> = {}) {
     mcpEndpoint: null,
     mcpRegisteredAt: null,
     autoCompactThreshold: null,
-    autoCompactThreshold1m: null,
-    oneMillionContextEnabled: false,
+    claudeLaunchSettingsJson: null,
     env: null,
     createdAt: '2025-01-01T00:00:00Z',
     updatedAt: '2025-01-01T00:00:00Z',
@@ -228,6 +227,24 @@ export function createLaunchPipelineHarness() {
     listTeamsByAgent: jest.fn().mockResolvedValue([]),
   };
 
+  const runtimeContextCapture = {
+    rotateEpoch: jest.fn().mockReturnValue('capture-epoch'),
+    clear: jest.fn(),
+    snapshot: jest.fn().mockReturnValue(null),
+    restoreSnapshot: jest.fn(),
+    get: jest.fn(),
+    getEpoch: jest.fn(),
+  };
+  const claudeLaunchSettings = {
+    prepare: jest.fn().mockResolvedValue({
+      optionArgs: [],
+      runtimeEnv: {},
+      captureEnabled: false,
+    }),
+    cleanupSession: jest.fn().mockResolvedValue(undefined),
+    cleanupSessionSync: jest.fn(),
+  };
+
   // Build the pipeline via direct instantiation (bypass DI decorators)
   // Constructor order matches the @Injectable constructor parameter order.
   // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -246,6 +263,8 @@ export function createLaunchPipelineHarness() {
     mcpEnsureService, // ProviderMcpEnsureService
     eventsService, // EventsService
     teamsService, // TeamsService
+    runtimeContextCapture, // RuntimeContextCaptureService
+    claudeLaunchSettings, // ClaudeLaunchSettingsMaterializerService
   );
 
   return {
@@ -265,6 +284,8 @@ export function createLaunchPipelineHarness() {
       mcpEnsureService,
       eventsService,
       teamsService,
+      runtimeContextCapture,
+      claudeLaunchSettings,
     },
   };
 }
@@ -336,6 +357,24 @@ export function createRestorePipelineHarness(opts?: { streamService?: unknown })
     initializeBuffer: jest.fn(),
   };
 
+  const runtimeContextCapture = {
+    rotateEpoch: jest.fn().mockReturnValue('capture-epoch'),
+    clear: jest.fn(),
+    snapshot: jest.fn().mockReturnValue(null),
+    restoreSnapshot: jest.fn(),
+    get: jest.fn(),
+    getEpoch: jest.fn(),
+  };
+  const claudeLaunchSettings = {
+    prepare: jest.fn().mockResolvedValue({
+      optionArgs: [],
+      runtimeEnv: {},
+      captureEnabled: false,
+    }),
+    cleanupSession: jest.fn().mockResolvedValue(undefined),
+    cleanupSessionSync: jest.fn(),
+  };
+
   // Default: prepare returns a stopped session row when called with SELECT,
   // and a normal statement for INSERT/UPDATE.
   const stoppedSessionRow = {
@@ -394,6 +433,8 @@ export function createRestorePipelineHarness(opts?: { streamService?: unknown })
     terminalSessionRegistry, // TerminalSessionRegistry
     eventsService, // EventsService
     streamService, // TerminalStreamService
+    runtimeContextCapture, // RuntimeContextCaptureService
+    claudeLaunchSettings, // ClaudeLaunchSettingsMaterializerService
   );
 
   /**
@@ -445,6 +486,8 @@ export function createRestorePipelineHarness(opts?: { streamService?: unknown })
       terminalSessionRegistry,
       eventsService,
       streamService,
+      runtimeContextCapture,
+      claudeLaunchSettings,
     },
   };
 }

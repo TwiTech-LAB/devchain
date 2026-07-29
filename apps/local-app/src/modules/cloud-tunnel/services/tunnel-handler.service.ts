@@ -151,6 +151,19 @@ const METHOD_SCHEMAS: Record<string, z.ZodTypeAny> = {
       since: z.string().min(1),
     })
     .passthrough(),
+  'chat.listCustomPrompts': z
+    .object({
+      sessionId: z.string().uuid(),
+      projectId: z.string().uuid(),
+    })
+    .strict(),
+  'chat.getCustomPrompt': z
+    .object({
+      sessionId: z.string().uuid(),
+      projectId: z.string().uuid(),
+      promptId: z.string().uuid(),
+    })
+    .strict(),
   'chat.sendMessage': z
     .object({
       agentId: z.string().uuid(),
@@ -325,6 +338,8 @@ export class TunnelHandlerService {
       'chat.getTranscriptSummary': (p) => this.mobileChat.getTranscriptSummary(p),
       'chat.getTranscriptChunks': (p) => this.mobileChat.getTranscriptChunks(p),
       'chat.getTranscriptTail': (p) => this.mobileChat.getTranscriptTail(p),
+      'chat.listCustomPrompts': (p) => this.mobileChat.listCustomPrompts(p),
+      'chat.getCustomPrompt': (p) => this.mobileChat.getCustomPrompt(p),
       'chat.sendMessage': (p) => this.mobileChat.sendMessage(p),
       'chat.getPendingMessages': (p) => this.mobileChat.getPendingMessages(p),
       'chat.launchAgent': (p) => this.mobileChat.launchAgent(p),

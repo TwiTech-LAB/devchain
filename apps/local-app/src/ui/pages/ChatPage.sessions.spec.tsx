@@ -69,6 +69,13 @@ const openTerminalWindowMock = jest.fn();
 const openWorktreeTerminalWindowMock = jest.fn();
 const closeWindowMock = jest.fn();
 const terminalWindowsMock: Array<{ id: string; minimized?: boolean }> = [];
+const appSocketEmitMock = jest.fn();
+const mockInlineTerminalHandle = {
+  clear: jest.fn(),
+  fit: jest.fn(),
+  focus: jest.fn(),
+  insertPromptText: jest.fn().mockResolvedValue(undefined),
+};
 let selectedProjectIdMock = 'project-1';
 let selectedProjectRootPathMock = '/tmp/project-1';
 
@@ -102,14 +109,32 @@ jest.mock('@/ui/components/chat/InlineTerminalPanel', () => ({
     isWindowOpen,
     emptyState,
     windowId,
+    terminalRef,
   }: {
     sessionId: string | null;
     agentName?: string | null;
     isWindowOpen: boolean;
     emptyState?: React.ReactNode;
     windowId?: string | null;
-  }) =>
-    sessionId ? (
+    terminalRef?: React.Ref<typeof mockInlineTerminalHandle>;
+  }) => {
+    React.useEffect(() => {
+      if (!sessionId || isWindowOpen || !terminalRef) {
+        return;
+      }
+      if (typeof terminalRef === 'function') {
+        terminalRef(mockInlineTerminalHandle);
+        return () => terminalRef(null);
+      }
+      (terminalRef as React.MutableRefObject<typeof mockInlineTerminalHandle | null>).current =
+        mockInlineTerminalHandle;
+      return () => {
+        (terminalRef as React.MutableRefObject<typeof mockInlineTerminalHandle | null>).current =
+          null;
+      };
+    }, [isWindowOpen, sessionId, terminalRef]);
+
+    return sessionId ? (
       <div
         role="region"
         aria-label={agentName ? `Inline terminal for ${agentName}` : 'Inline terminal'}
@@ -118,7 +143,8 @@ jest.mock('@/ui/components/chat/InlineTerminalPanel', () => ({
       />
     ) : (
       <div>{emptyState}</div>
-    ),
+    );
+  },
 }));
 
 // Terminal windows hooks rely on provider; mock to avoid provider wiring
@@ -168,7 +194,7 @@ jest.mock('@/ui/hooks/useAppSocket', () => ({
     connected: true,
     on: jest.fn(),
     off: jest.fn(),
-    emit: jest.fn(),
+    emit: appSocketEmitMock,
   })),
 }));
 jest.mock('@/ui/lib/socket', () => ({
@@ -176,7 +202,7 @@ jest.mock('@/ui/lib/socket', () => ({
     connected: true,
     on: jest.fn(),
     off: jest.fn(),
-    emit: jest.fn(),
+    emit: appSocketEmitMock,
   })),
   getWorktreeSocket: jest.fn(() => ({
     connected: true,
@@ -703,6 +729,14 @@ describe('ChatPage worktree agent groups', () => {
   });
 
   it('handles worktree -> main -> worktree round-trip with pooled socket lifecycle', async () => {
+    let resolveStalePromptDetail: ((response: Response) => void) | null = null;
+    const stalePromptDetail = new Promise<Response>((resolve) => {
+      resolveStalePromptDetail = resolve;
+    });
+    let promptDetailRequestCount = 0;
+    mockInlineTerminalHandle.insertPromptText.mockClear();
+    mockInlineTerminalHandle.focus.mockClear();
+
     global.fetch = jest.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
 
@@ -785,6 +819,38 @@ describe('ChatPage worktree agent groups', () => {
           json: async () => ({ 'agent-wt-1': { online: true, sessionId: 'session-wt-1' } }),
         } as Response;
       }
+      if (url === '/wt/feature-auth/api/prompts?projectId=project-wt-1&limit=10000&offset=0') {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [
+              {
+                id: 'prompt-wt-1',
+                projectId: 'project-wt-1',
+                title: 'Worktree custom prompt',
+                tags: ['type:custom'],
+              },
+            ],
+            total: 1,
+          }),
+        } as Response;
+      }
+      if (url === '/wt/feature-auth/api/prompts/prompt-wt-1') {
+        promptDetailRequestCount += 1;
+        if (promptDetailRequestCount === 1) {
+          return stalePromptDetail;
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            id: 'prompt-wt-1',
+            projectId: 'project-wt-1',
+            title: 'Worktree custom prompt',
+            content: 'current target text',
+            tags: ['type:custom'],
+          }),
+        } as Response;
+      }
       if (url.includes('/api/profiles/') && url.endsWith('/provider-configs')) {
         return { ok: true, json: async () => [] } as Response;
       }
@@ -826,12 +892,59 @@ describe('ChatPage worktree agent groups', () => {
         screen.getByRole('region', { name: /Inline terminal for Worktree Agent/i }),
       ).toBeInTheDocument();
     });
+    fireEvent.click(await screen.findByRole('button', { name: /Open custom prompts/i }));
+    expect(
+      await screen.findByRole('dialog', { name: /Insert custom prompt/i }),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        '/wt/feature-auth/api/prompts?projectId=project-wt-1&limit=10000&offset=0',
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
+    });
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: /Worktree custom prompt Prompt ID prompt-wt-1/i,
+      }),
+    );
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        '/wt/feature-auth/api/prompts/prompt-wt-1',
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
+    });
 
     fireEvent.click(mainAgentButton);
     await waitFor(() => {
       expect(mainAgentButton).toHaveAttribute('aria-current', 'true');
       expect(worktreeAgentButton).not.toHaveAttribute('aria-current');
+      expect(
+        screen.queryByRole('dialog', { name: /Insert custom prompt/i }),
+      ).not.toBeInTheDocument();
     });
+    const staleDetailCall = (global.fetch as jest.Mock).mock.calls.find(
+      ([url]) => String(url) === '/wt/feature-auth/api/prompts/prompt-wt-1',
+    );
+    expect((staleDetailCall?.[1] as RequestInit | undefined)?.signal).toHaveProperty(
+      'aborted',
+      true,
+    );
+    await act(async () => {
+      resolveStalePromptDetail?.({
+        ok: true,
+        json: async () => ({
+          id: 'prompt-wt-1',
+          projectId: 'project-wt-1',
+          title: 'Worktree custom prompt',
+          content: 'stale target text',
+          tags: ['type:custom'],
+        }),
+      } as Response);
+      await stalePromptDetail;
+      await Promise.resolve();
+    });
+    expect(mockInlineTerminalHandle.insertPromptText).not.toHaveBeenCalled();
+    expect(mockInlineTerminalHandle.focus).not.toHaveBeenCalled();
 
     const socketLib = jest.requireMock('@/ui/lib/socket') as {
       getWorktreeSocket: jest.Mock;
@@ -843,6 +956,20 @@ describe('ChatPage worktree agent groups', () => {
     await waitFor(() => {
       expect(mainAgentButton).not.toHaveAttribute('aria-current');
       expect(worktreeAgentButton).toHaveAttribute('aria-current', 'true');
+    });
+    fireEvent.click(await screen.findByRole('button', { name: /Open custom prompts/i }));
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: /Worktree custom prompt Prompt ID prompt-wt-1/i,
+      }),
+    );
+    await waitFor(() => {
+      expect(mockInlineTerminalHandle.insertPromptText).toHaveBeenCalledTimes(1);
+      expect(mockInlineTerminalHandle.insertPromptText).toHaveBeenCalledWith('current target text');
+      expect(mockInlineTerminalHandle.focus).toHaveBeenCalledTimes(1);
+      expect(
+        screen.queryByRole('dialog', { name: /Insert custom prompt/i }),
+      ).not.toBeInTheDocument();
     });
     expect(socketLib.getWorktreeSocket).toHaveBeenCalledWith('feature-auth');
     expect(socketLib.getWorktreeSocket.mock.calls.length).toBeGreaterThanOrEqual(2);
@@ -1166,6 +1293,141 @@ describe('ChatPage worktree agent groups', () => {
     });
     expect(screen.queryByRole('button', { name: /Launch session/i })).not.toBeInTheDocument();
     expect(openWorktreeTerminalWindowMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('ChatPage custom prompt Escape handling', () => {
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    appSocketEmitMock.mockReset();
+    terminalWindowsMock.splice(0, terminalWindowsMock.length);
+    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+
+      if (url === '/api/runtime') {
+        return {
+          ok: true,
+          json: async () => ({ mode: 'main', version: '1.0.0' }),
+        } as Response;
+      }
+      if (url === '/api/worktrees' || url.startsWith('/api/worktrees?')) {
+        return { ok: true, json: async () => [] } as Response;
+      }
+      if (url.startsWith('/api/agents?projectId=')) {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [
+              { id: 'agent-main-1', name: 'Main Agent', projectId: 'project-1', profileId: 'p1' },
+            ],
+          }),
+        } as Response;
+      }
+      if (url.startsWith('/api/sessions/agents/presence')) {
+        return {
+          ok: true,
+          json: async () => ({
+            'agent-main-1': { online: true, sessionId: 'session-main-1' },
+          }),
+        } as Response;
+      }
+      if (url.includes('/transcript/summary')) {
+        return {
+          ok: true,
+          json: async () => ({
+            sessionId: 'session-main-1',
+            providerName: 'claude',
+            metrics: {
+              inputTokens: 0,
+              outputTokens: 0,
+              cacheReadTokens: 0,
+              cacheCreationTokens: 0,
+              totalTokens: 0,
+              totalContextConsumption: 0,
+              compactionCount: 0,
+              phaseBreakdowns: [],
+              visibleContextTokens: 0,
+              totalContextTokens: 0,
+              contextWindowTokens: 200000,
+              costUsd: 0,
+              messageCount: 0,
+            },
+            isOngoing: true,
+          }),
+        } as Response;
+      }
+      if (url.startsWith('/api/sessions')) {
+        return { ok: true, json: async () => [] } as Response;
+      }
+      if (url.startsWith('/api/chat/threads?projectId=')) {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [
+              {
+                id: 'thread-main',
+                projectId: 'project-1',
+                title: null,
+                isGroup: false,
+                createdByType: 'user',
+                createdByUserId: 'user-1',
+                createdByAgentId: null,
+                members: ['agent-main-1'],
+                createdAt: '2024-01-01T00:00:00.000Z',
+                updatedAt: '2024-01-01T00:00:00.000Z',
+              },
+            ],
+            total: 1,
+            limit: 50,
+            offset: 0,
+          }),
+        } as Response;
+      }
+      if (url.startsWith('/api/threads?projectId=')) {
+        return { ok: true, json: async () => ({ items: [] }) } as Response;
+      }
+      if (url.startsWith('/api/prompts?projectId=project-1')) {
+        return { ok: true, json: async () => ({ items: [], total: 0 }) } as Response;
+      }
+      if (url.includes('/api/profiles/') && url.endsWith('/provider-configs')) {
+        return { ok: true, json: async () => [] } as Response;
+      }
+      return { ok: true, json: async () => ({ items: [] }) } as Response;
+    }) as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it('closes the prompt picker on Escape without forwarding Escape to the terminal', async () => {
+    renderWithClient(<ChatPage />);
+
+    fireEvent.click(await screen.findByLabelText(/Chat with Main Agent \(online\)/i));
+    await screen.findByRole('region', { name: /Inline terminal for Main Agent/i });
+
+    fireEvent.click(await screen.findByRole('button', { name: /Open custom prompts/i }));
+    expect(
+      await screen.findByRole('dialog', { name: /Insert custom prompt/i }),
+    ).toBeInTheDocument();
+
+    const searchInput = screen.getByRole('textbox', { name: /Search prompts/i });
+    await waitFor(() => expect(searchInput).toHaveFocus());
+    appSocketEmitMock.mockClear();
+
+    fireEvent.keyDown(searchInput, { key: 'Escape', code: 'Escape' });
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole('dialog', { name: /Insert custom prompt/i }),
+      ).not.toBeInTheDocument();
+    });
+    expect(appSocketEmitMock).not.toHaveBeenCalledWith('terminal:focus', expect.anything());
+    expect(appSocketEmitMock).not.toHaveBeenCalledWith(
+      'terminal:input',
+      expect.objectContaining({ data: '\x1b' }),
+    );
   });
 });
 

@@ -11,6 +11,7 @@ import {
 import { Injectable, Inject, forwardRef } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { Server, Socket } from 'socket.io';
+import { createHash } from 'node:crypto';
 import { createLogger } from '../../../common/logging/logger';
 import {
   TerminalStreamService,
@@ -33,7 +34,9 @@ import {
   TerminalResyncAbortPayloadSchema,
   TerminalResyncCompletePayloadSchema,
   TerminalResyncRequestPayloadSchema,
+  TerminalPromptPasteInputSchema,
 } from '../dtos/ws-envelope.dto';
+import type { TerminalPromptPasteAck, TerminalPromptPasteInput } from '../dtos/ws-envelope.dto';
 import type { FrameEvent } from '../services/terminal-session/terminal-frame-stream';
 import type { TerminalSession } from '../services/terminal-session/terminal-session';
 import { SessionsService } from '../../sessions/services/sessions.service';
@@ -79,6 +82,8 @@ interface LifecycleCleanupPolicy {
 const INPUT_RATE_WINDOW_MS = 5000;
 const INPUT_RATE_MSG_THRESHOLD = 500; // >100 msg/sec sustained over 5s = 500 msgs in window
 const INPUT_RATE_BYTES_THRESHOLD = 512000; // >100KB/sec sustained over 5s = 500KB in window
+export const PROMPT_PASTE_RETRY_WINDOW_MS = 60000;
+export const PROMPT_PASTE_MAX_REQUESTS_PER_SESSION = 64;
 
 interface InputRateEntry {
   messages: number;
@@ -86,6 +91,25 @@ interface InputRateEntry {
   windowStart: number;
   warned: boolean;
 }
+
+interface PromptPastePending {
+  kind: 'pending';
+  sessionId: string;
+  requestId: string;
+  fingerprint: string;
+  promise: Promise<TerminalPromptPasteAck>;
+}
+
+interface PromptPasteTombstone {
+  kind: 'tombstone';
+  sessionId: string;
+  requestId: string;
+  fingerprint: string;
+  outcome: TerminalPromptPasteAck;
+  expiresAt: number;
+}
+
+type PromptPasteLedgerEntry = PromptPastePending | PromptPasteTombstone;
 
 interface TerminalRecoveryState {
   socketId: string;
@@ -140,6 +164,13 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
   private readonly viewportRestoreAt = new Map<string, number>();
   private readonly recoveries = new Map<string, TerminalRecoveryState>();
   private readonly targetedSeedAttempts = new Map<string, symbol>();
+  /**
+   * In-process at-most-once proof for acknowledged prompt pastes. Normal session retirement must
+   * retain these entries because restore may reuse the session ID; module/process teardown is the
+   * durability boundary.
+   */
+  private readonly promptPasteLedger = new Map<string, Map<string, PromptPasteLedgerEntry>>();
+  private readonly promptPasteExpiryTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(
     private readonly streamService: TerminalStreamService,
@@ -946,8 +977,15 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
   @SubscribeMessage('terminal:input')
   async handleInput(
     @ConnectedSocket() client: Socket,
-    @MessageBody() payload: { sessionId: string; data: string; ttyMode?: boolean },
-  ) {
+    @MessageBody()
+    payload:
+      | { sessionId: string; data: string; ttyMode?: boolean; kind?: never }
+      | TerminalPromptPasteInput,
+  ): Promise<void | TerminalPromptPasteAck> {
+    if (payload.kind === 'prompt-paste') {
+      return this.handlePromptPasteInput(client, payload);
+    }
+
     const { sessionId, data, ttyMode = false } = payload;
     const session = this.registry.get(sessionId);
     if (!session) {
@@ -987,6 +1025,169 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
         logger.warn({ sessionId, error: String(error) }, 'deliverImmediate failed');
       }
     }
+  }
+
+  private handlePromptPasteInput(
+    client: Socket,
+    rawPayload: TerminalPromptPasteInput,
+  ): Promise<TerminalPromptPasteAck> {
+    const parsed = TerminalPromptPasteInputSchema.safeParse(rawPayload);
+    if (!parsed.success) {
+      return Promise.resolve({
+        ok: false,
+        code: 'INVALID_REQUEST',
+        requestId:
+          typeof (rawPayload as { requestId?: unknown }).requestId === 'string'
+            ? rawPayload.requestId
+            : '',
+      });
+    }
+
+    const payload = parsed.data;
+    const session = this.registry.get(payload.sessionId);
+    if (!session) {
+      return Promise.resolve(this.promptPasteFailure(payload.requestId, 'UNKNOWN_SESSION'));
+    }
+    if (!session.hasSubscriber(client.id)) {
+      return Promise.resolve(this.promptPasteFailure(payload.requestId, 'NOT_SUBSCRIBER'));
+    }
+    if (session.getAuthority() !== client.id) {
+      return Promise.resolve(this.promptPasteFailure(payload.requestId, 'NOT_AUTHORITY'));
+    }
+
+    this.trackInputRate(client.id, payload.sessionId, payload.data.length);
+
+    const fingerprint = createHash('sha256').update(payload.data, 'utf8').digest('hex');
+    const requests = this.getPromptPasteRequests(payload.sessionId);
+    this.pruneExpiredPromptPastes(payload.sessionId, requests);
+
+    const existing = requests.get(payload.requestId);
+    if (existing) {
+      if (existing.fingerprint !== fingerprint) {
+        return Promise.resolve(this.promptPasteFailure(payload.requestId, 'REQUEST_CONFLICT'));
+      }
+      return existing.kind === 'pending' ? existing.promise : Promise.resolve(existing.outcome);
+    }
+
+    if (requests.size >= PROMPT_PASTE_MAX_REQUESTS_PER_SESSION) {
+      return Promise.resolve(this.promptPasteFailure(payload.requestId, 'BUSY'));
+    }
+
+    let settle!: (outcome: TerminalPromptPasteAck) => void;
+    const promise = new Promise<TerminalPromptPasteAck>((resolve) => {
+      settle = resolve;
+    });
+    const pending: PromptPastePending = {
+      kind: 'pending',
+      sessionId: payload.sessionId,
+      requestId: payload.requestId,
+      fingerprint,
+      promise,
+    };
+
+    // Publish the single-flight promise before sessionExists/delivery reaches its first await.
+    requests.set(payload.requestId, pending);
+    void this.executePromptPaste(session, client, payload).then((outcome) => {
+      const current = requests.get(payload.requestId);
+      if (current === pending) {
+        const expiresAt = Date.now() + PROMPT_PASTE_RETRY_WINDOW_MS;
+        requests.set(payload.requestId, {
+          kind: 'tombstone',
+          sessionId: payload.sessionId,
+          requestId: payload.requestId,
+          fingerprint,
+          outcome,
+          expiresAt,
+        });
+        this.schedulePromptPasteExpiry(payload.sessionId, payload.requestId, expiresAt);
+      }
+      settle(outcome);
+    });
+
+    return promise;
+  }
+
+  private async executePromptPaste(
+    session: TerminalSession,
+    client: Socket,
+    payload: TerminalPromptPasteInput,
+  ): Promise<TerminalPromptPasteAck> {
+    try {
+      const target = { name: session.tmuxSessionName };
+      const tmuxAlive = await this.terminalIO.sessionExists(target);
+      if (!tmuxAlive) {
+        await this.handleDeadTmuxSession(payload.sessionId, client);
+        return this.promptPasteFailure(payload.requestId, 'TMUX_UNAVAILABLE');
+      }
+
+      session.signalInput();
+      await this.terminalIO.deliverImmediate(target, payload.data, {
+        bracketed: true,
+        submitKeys: [],
+      });
+      return { ok: true, code: 'OK', requestId: payload.requestId };
+    } catch (error) {
+      logger.warn(
+        { sessionId: payload.sessionId, requestId: payload.requestId, error: String(error) },
+        'Prompt paste delivery failed',
+      );
+      return this.promptPasteFailure(payload.requestId, 'DELIVERY_ERROR');
+    }
+  }
+
+  private promptPasteFailure(
+    requestId: string,
+    code: Exclude<TerminalPromptPasteAck, { ok: true }>['code'],
+  ): TerminalPromptPasteAck {
+    return { ok: false, code, requestId };
+  }
+
+  private getPromptPasteRequests(sessionId: string): Map<string, PromptPasteLedgerEntry> {
+    const existing = this.promptPasteLedger.get(sessionId);
+    if (existing) return existing;
+    const requests = new Map<string, PromptPasteLedgerEntry>();
+    this.promptPasteLedger.set(sessionId, requests);
+    return requests;
+  }
+
+  private pruneExpiredPromptPastes(
+    sessionId: string,
+    requests: Map<string, PromptPasteLedgerEntry>,
+  ): void {
+    const now = Date.now();
+    for (const [requestId, entry] of requests) {
+      if (entry.kind === 'tombstone' && entry.expiresAt <= now) {
+        requests.delete(requestId);
+        const timerKey = this.promptPasteTimerKey(sessionId, requestId);
+        const timer = this.promptPasteExpiryTimers.get(timerKey);
+        if (timer) clearTimeout(timer);
+        this.promptPasteExpiryTimers.delete(timerKey);
+      }
+    }
+  }
+
+  private schedulePromptPasteExpiry(sessionId: string, requestId: string, expiresAt: number): void {
+    const timerKey = this.promptPasteTimerKey(sessionId, requestId);
+    const existing = this.promptPasteExpiryTimers.get(timerKey);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(
+      () => {
+        this.promptPasteExpiryTimers.delete(timerKey);
+        const requests = this.promptPasteLedger.get(sessionId);
+        const entry = requests?.get(requestId);
+        if (entry?.kind === 'tombstone' && entry.expiresAt <= Date.now()) {
+          requests?.delete(requestId);
+          if (requests?.size === 0) this.promptPasteLedger.delete(sessionId);
+        }
+      },
+      Math.max(0, expiresAt - Date.now()),
+    );
+    timer.unref();
+    this.promptPasteExpiryTimers.set(timerKey, timer);
+  }
+
+  private promptPasteTimerKey(sessionId: string, requestId: string): string {
+    return `${sessionId}:${requestId}`;
   }
 
   @SubscribeMessage('terminal:request_full_history')
@@ -1434,6 +1635,9 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.viewportRestoreAt.clear();
     this.inputRateTracker.clear();
     this.recoveries.clear();
+    for (const timer of this.promptPasteExpiryTimers.values()) clearTimeout(timer);
+    this.promptPasteExpiryTimers.clear();
+    this.promptPasteLedger.clear();
     this.sendScheduler.dispose();
     this.clientSessions.clear();
   }

@@ -13,7 +13,6 @@ import { WatchersModule } from '../watchers/watchers.module';
 import { TeamsModule } from '../teams/teams.module';
 import { RegistryModule } from '../registry/registry.module';
 import { CoreNormalModule } from '../core/core-normal.module';
-import { ProcessExecutorModule } from '../terminal/services/process-executor/process-executor.module';
 import { ProvidersModule } from '../providers/providers.module';
 import { ScheduledEpicsModule } from '../scheduled-epics/scheduled-epics.module';
 
@@ -26,7 +25,6 @@ import { ScheduledEpicsModule } from '../scheduled-epics/scheduled-epics.module'
     TeamsModule,
     RegistryModule,
     CoreNormalModule,
-    ProcessExecutorModule,
     ProvidersModule,
     ScheduledEpicsModule,
   ],

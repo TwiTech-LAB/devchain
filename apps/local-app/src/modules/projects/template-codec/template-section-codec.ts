@@ -13,9 +13,10 @@
  * ['agentIdMap']`, and the pipeline refuses to run if no earlier codec writes it.
  */
 import { ExportSchema } from '@devchain/shared';
-import type { ProbeOutcome } from '../../providers/utils/probe-1m';
+import type { PromptTransferCounts, PromptTransferPolicy } from '../../../common/prompt-transfer';
 import type { SettingsService } from '../../settings/services/settings.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
+import type { SnapshotPromptWriter } from '../../storage/interfaces/snapshot-prompt-writer.interface';
 import type { WatchersService } from '../../watchers/services/watchers.service';
 import type { TeamOverrideEntry } from '../helpers/team-overrides.helpers';
 import type { ImportContext, ImportContextKey, StorageStateFlag } from './import-context';
@@ -60,6 +61,10 @@ export interface CodecDeclaration {
 export interface CodecApplyRuntime {
   readonly projectId: string;
   readonly storage: StorageService;
+  /** Closed internal policy; request DTOs never expose this field. */
+  readonly promptTransferPolicy?: PromptTransferPolicy;
+  /** Recovery-only write capability; absent from public/direct storage. */
+  readonly snapshotPromptWriter?: SnapshotPromptWriter;
   /** Replace-mode status remap input (`statusMappings` from the import request). */
   readonly statusMappings?: Record<string, string>;
   /**
@@ -95,8 +100,6 @@ export interface CodecApplyRuntime {
   readonly teamsService?: CodecTeamsService;
   /** Per-team overrides from the import request (teams codec merges them post-remap). */
   readonly teamOverrides?: readonly TeamOverrideEntry[];
-  /** 1M-context probe callback for the providerSettings codec (null/absent = skip probe). */
-  readonly probe1m?: (binPath: string) => Promise<ProbeOutcome>;
   /** Refresh hook the scheduledEpics codec pings after creating schedules. */
   readonly scheduledEpicsRefresh?: { refreshScheduleWindow: () => void };
   /** next-run computer the scheduledEpics codec uses when seeding created schedules. */
@@ -128,6 +131,8 @@ export interface CodecTeamsService {
 export interface CodecApplyResult {
   readonly section: string;
   readonly log?: Record<string, unknown>;
+  /** Prompt codec outcome; deletion/preservation are owned by the replace orchestrator. */
+  readonly promptTransfer?: Pick<PromptTransferCounts, 'imported' | 'skipped'>;
 }
 
 /**

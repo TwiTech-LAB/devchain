@@ -2,6 +2,7 @@ import { useRef, useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/ui/components/ui/button';
 import { Input } from '@/ui/components/ui/input';
+import { Textarea } from '@/ui/components/ui/textarea';
 import { Label } from '@/ui/components/ui/label';
 import { Badge } from '@/ui/components/ui/badge';
 import {
@@ -31,7 +32,6 @@ import {
   DialogDescription,
 } from '@/ui/components/ui/dialog';
 import { getErrorMessage, useToastHelpers } from '@/ui/lib/toast-helpers';
-import { Checkbox } from '@/ui/components/ui/checkbox';
 import {
   Plus,
   Server,
@@ -40,8 +40,6 @@ import {
   ChevronRight,
   Trash2,
   Loader2,
-  CheckCircle2,
-  XCircle,
   Search,
 } from 'lucide-react';
 import { cn } from '@/ui/lib/utils';
@@ -52,7 +50,6 @@ import { providerModelQueryKeys } from '@/ui/lib/provider-model-query-keys';
 import { providerEffortQueryKeys } from '@/ui/lib/provider-effort-query-keys';
 import { providersQueryKeys } from '@/ui/lib/providers-query-keys';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
-import { useProviderProbe } from '@/ui/hooks/useProviderProbe';
 import {
   useCrudMutation,
   optimisticAdd,
@@ -60,6 +57,10 @@ import {
   optimisticRemoveById,
 } from '@/ui/hooks/useCrudMutations';
 import { getMcpEndpointUrl } from '@/ui/lib/mcp-endpoint';
+import {
+  DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON,
+  validateClaudeLaunchSettingsJson,
+} from '@devchain/shared';
 
 type ProviderType = 'codex' | 'claude' | 'opencode' | 'agy' | 'copilot';
 
@@ -77,13 +78,12 @@ interface Provider {
   name: string;
   binPath: string | null;
   autoCompactThreshold: number | null;
-  autoCompactThreshold1m: number | null;
-  oneMillionContextEnabled: boolean;
   env: Record<string, string> | null;
   envScopes: Record<string, string[]>;
   mcpConfigured: boolean;
   mcpEndpoint: string | null;
   mcpRegisteredAt: string | null;
+  claudeLaunchSettingsJson: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -141,7 +141,7 @@ async function createProvider(data: {
   name: string;
   binPath: string | null;
   autoCompactThreshold?: number;
-  oneMillionContextEnabled?: boolean;
+  claudeLaunchSettingsJson?: string | null;
   env?: Record<string, string> | null;
 }) {
   const res = await fetch('/api/providers', {
@@ -167,8 +167,7 @@ async function updateProvider(
   data: {
     binPath?: string | null;
     autoCompactThreshold?: number | null;
-    autoCompactThreshold1m?: number | null;
-    oneMillionContextEnabled?: boolean;
+    claudeLaunchSettingsJson?: string | null;
     env?: Record<string, string> | null;
     envScopes?: Record<string, string[]>;
   },
@@ -710,20 +709,17 @@ export function ProvidersPage() {
   const [formData, setFormData] = useState({
     binPath: '',
     autoCompactThreshold: '',
-    autoCompactThreshold1m: '',
-    oneMillionContextEnabled: false,
+    claudeLaunchSettingsJson: '',
     env: {} as Record<string, string>,
     envScopes: {} as Record<string, string[]>,
   });
   const [formError, setFormError] = useState<string | null>(null);
-  const [formErrorField, setFormErrorField] = useState<'binPath' | 'autoCompactThreshold' | null>(
-    null,
-  );
+  const [formErrorField, setFormErrorField] = useState<
+    'binPath' | 'autoCompactThreshold' | 'claudeLaunchSettingsJson' | null
+  >(null);
   const [providerType, setProviderType] = useState<ProviderType>('codex');
   const [binPathTouched, setBinPathTouched] = useState(false);
   const envEditorRef = useRef<EnvEditorHandle>(null);
-
-  const probe = useProviderProbe({ setValues: setFormData });
 
   const { data: providersData, isLoading } = useQuery({
     queryKey: providersQueryKeys.list(),
@@ -802,15 +798,12 @@ export function ProvidersPage() {
       setFormData({
         binPath: '',
         autoCompactThreshold: '',
-        autoCompactThreshold1m: '',
-        oneMillionContextEnabled: false,
+        claudeLaunchSettingsJson: '',
         env: {},
         envScopes: {},
       });
       setFormError(null);
       setFormErrorField(null);
-      probe.reset();
-
       if (data.sync) {
         const desc =
           data.sync.insertedCount > 0
@@ -830,7 +823,11 @@ export function ProvidersPage() {
       if (isProviderMutationError(error) && error.field) {
         setFormError(error.message);
         setFormErrorField(
-          error.field === 'autoCompactThreshold' ? 'autoCompactThreshold' : 'binPath',
+          error.field === 'autoCompactThreshold'
+            ? 'autoCompactThreshold'
+            : error.field === 'claudeLaunchSettingsJson'
+              ? 'claudeLaunchSettingsJson'
+              : 'binPath',
         );
       }
     },
@@ -843,8 +840,7 @@ export function ProvidersPage() {
       data: {
         binPath?: string | null;
         autoCompactThreshold?: number | null;
-        autoCompactThreshold1m?: number | null;
-        oneMillionContextEnabled?: boolean;
+        claudeLaunchSettingsJson?: string | null;
         env?: Record<string, string> | null;
         envScopes?: Record<string, string[]>;
       };
@@ -877,14 +873,12 @@ export function ProvidersPage() {
       setFormData({
         binPath: '',
         autoCompactThreshold: '',
-        autoCompactThreshold1m: '',
-        oneMillionContextEnabled: false,
+        claudeLaunchSettingsJson: '',
         env: {},
         envScopes: {},
       });
       setFormError(null);
       setFormErrorField(null);
-      probe.reset();
       showSuccess({
         title: 'Success',
         description: 'Provider updated successfully',
@@ -894,7 +888,11 @@ export function ProvidersPage() {
       if (isProviderMutationError(error) && error.field) {
         setFormError(error.message);
         setFormErrorField(
-          error.field === 'autoCompactThreshold' ? 'autoCompactThreshold' : 'binPath',
+          error.field === 'autoCompactThreshold'
+            ? 'autoCompactThreshold'
+            : error.field === 'claudeLaunchSettingsJson'
+              ? 'claudeLaunchSettingsJson'
+              : 'binPath',
         );
       }
     },
@@ -989,8 +987,6 @@ export function ProvidersPage() {
     setFormErrorField(null);
 
     const thresholdStr = formData.autoCompactThreshold.trim();
-    const threshold1mStr = formData.autoCompactThreshold1m.trim();
-
     // Validate autoCompactThreshold when non-empty
     if (thresholdStr !== '') {
       const parsed = Number(thresholdStr);
@@ -1001,14 +997,14 @@ export function ProvidersPage() {
       }
     }
 
-    const isClaude = (editingProvider?.name ?? providerType).toLowerCase() === 'claude';
-
-    // Validate autoCompactThreshold1m when 1M is enabled and value is non-empty
-    if (isClaude && formData.oneMillionContextEnabled && threshold1mStr !== '') {
-      const parsed1m = Number(threshold1mStr);
-      if (isNaN(parsed1m) || !Number.isInteger(parsed1m) || parsed1m < 1 || parsed1m > 100) {
-        setFormError('1M threshold must be an integer between 1 and 100.');
-        setFormErrorField('autoCompactThreshold');
+    const isClaude = providerName.toLowerCase() === 'claude';
+    const claudeLaunchSettingsJson =
+      formData.claudeLaunchSettingsJson.trim() === '' ? null : formData.claudeLaunchSettingsJson;
+    if (isClaude) {
+      const validation = validateClaudeLaunchSettingsJson(claudeLaunchSettingsJson);
+      if (!validation.valid) {
+        setFormError(validation.message);
+        setFormErrorField('claudeLaunchSettingsJson');
         return;
       }
     }
@@ -1019,23 +1015,14 @@ export function ProvidersPage() {
 
     if (editingProvider) {
       const autoCompactThreshold: number | null = thresholdStr === '' ? null : Number(thresholdStr);
-      const autoCompactThreshold1m: number | null =
-        isClaude && formData.oneMillionContextEnabled && threshold1mStr !== ''
-          ? Number(threshold1mStr)
-          : null;
       updateMutation.mutate({
         id: editingProvider.id,
         data: {
           binPath,
           autoCompactThreshold,
+          ...(isClaude ? { claudeLaunchSettingsJson } : {}),
           env: Object.keys(env).length > 0 ? env : null,
           envScopes: formData.envScopes,
-          ...(isClaude
-            ? {
-                oneMillionContextEnabled: formData.oneMillionContextEnabled,
-                autoCompactThreshold1m,
-              }
-            : {}),
         },
       });
     } else {
@@ -1043,6 +1030,7 @@ export function ProvidersPage() {
         name: string;
         binPath: string | null;
         autoCompactThreshold?: number;
+        claudeLaunchSettingsJson?: string | null;
         env?: Record<string, string> | null;
       } = {
         name: providerName,
@@ -1051,6 +1039,9 @@ export function ProvidersPage() {
       };
       if (thresholdStr !== '' && providerType === 'claude') {
         payload.autoCompactThreshold = Number(thresholdStr);
+      }
+      if (providerType === 'claude') {
+        payload.claudeLaunchSettingsJson = claudeLaunchSettingsJson;
       }
       createMutation.mutate(payload);
     }
@@ -1062,12 +1053,10 @@ export function ProvidersPage() {
       binPath: provider.binPath || '',
       autoCompactThreshold:
         provider.autoCompactThreshold != null ? String(provider.autoCompactThreshold) : '',
-      autoCompactThreshold1m: provider.autoCompactThreshold1m?.toString() ?? '',
-      oneMillionContextEnabled: provider.oneMillionContextEnabled ?? false,
+      claudeLaunchSettingsJson: provider.claudeLaunchSettingsJson ?? '',
       env: provider.env ?? {},
       envScopes: provider.envScopes ?? {},
     });
-    probe.setProbeStatus(provider.oneMillionContextEnabled ? 'supported' : 'idle');
     // derive provider type from existing provider
     const t: ProviderType = (
       provider.name === 'codex'
@@ -1117,8 +1106,7 @@ export function ProvidersPage() {
     setFormData({
       binPath: getDefaultBinPathForType(initialType),
       autoCompactThreshold: '',
-      autoCompactThreshold1m: '',
-      oneMillionContextEnabled: false,
+      claudeLaunchSettingsJson: '',
       env: {},
       envScopes: {},
     });
@@ -1126,7 +1114,6 @@ export function ProvidersPage() {
     setBinPathTouched(false);
     setFormError(null);
     setFormErrorField(null);
-    probe.reset();
     setShowDialog(true);
   };
 
@@ -1293,17 +1280,12 @@ export function ProvidersPage() {
                       </code>
                     </div>
                     {provider.name.toLowerCase() === 'claude' && (
-                      <>
-                        <div className="text-sm text-muted-foreground">
-                          1M context: {provider.oneMillionContextEnabled ? 'enabled' : 'disabled'}
-                        </div>
-                        <div className="text-sm text-muted-foreground">
-                          Auto-compact:{' '}
-                          {provider.autoCompactThreshold != null
-                            ? `${provider.autoCompactThreshold}%`
-                            : 'disabled'}
-                        </div>
-                      </>
+                      <div className="text-sm text-muted-foreground">
+                        Default threshold:{' '}
+                        {provider.autoCompactThreshold != null
+                          ? `${provider.autoCompactThreshold}%`
+                          : 'disabled'}
+                      </div>
                     )}
                     {provider.env && Object.keys(provider.env).length > 0 && (
                       <div className="text-sm">
@@ -1381,14 +1363,12 @@ export function ProvidersPage() {
             setFormData({
               binPath: '',
               autoCompactThreshold: '',
-              autoCompactThreshold1m: '',
-              oneMillionContextEnabled: false,
+              claudeLaunchSettingsJson: '',
               env: {},
               envScopes: {},
             });
             setFormError(null);
             setFormErrorField(null);
-            probe.reset();
           }
         }}
       >
@@ -1421,8 +1401,9 @@ export function ProvidersPage() {
                     // Clear Claude-specific fields when switching away from Claude
                     if (nextType !== 'claude') {
                       updates.autoCompactThreshold = '';
-                      updates.autoCompactThreshold1m = '';
-                      updates.oneMillionContextEnabled = false;
+                      updates.claudeLaunchSettingsJson = '';
+                    } else if (providerType !== 'claude') {
+                      updates.claudeLaunchSettingsJson = DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON;
                     }
                     return Object.keys(updates).length > 0 ? { ...prev, ...updates } : prev;
                   });
@@ -1452,16 +1433,10 @@ export function ProvidersPage() {
                 type="text"
                 value={formData.binPath}
                 onChange={(e) => {
-                  const newBinPath = e.target.value;
-                  const isClaude = (editingProvider?.name ?? providerType) === 'claude';
                   setFormData((prev) => ({
                     ...prev,
-                    binPath: newBinPath,
-                    // Invalidate 1M state when Claude binPath changes — the probe
-                    // is only valid for the exact binary that was probed.
-                    ...probe.binPathChangePatch(prev, isClaude),
+                    binPath: e.target.value,
                   }));
-                  probe.onBinPathChange(isClaude);
                   setBinPathTouched(true);
                   setFormError(null);
                   setFormErrorField(null);
@@ -1481,173 +1456,86 @@ export function ProvidersPage() {
             </div>
 
             {(editingProvider?.name ?? providerType).toLowerCase() === 'claude' && (
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    id="provider-1m-context"
-                    checked={formData.oneMillionContextEnabled}
-                    disabled={
-                      probe.probeStatus === 'probing' ||
-                      !editingProvider ||
-                      (editingProvider &&
-                        formData.binPath.trim() !== (editingProvider.binPath ?? ''))
-                    }
-                    onCheckedChange={(checked) => {
-                      if (checked) {
-                        // Run probe for existing providers only
-                        const providerId = editingProvider?.id;
-                        if (providerId) {
-                          probe.probe(providerId);
-                        }
-                      } else {
-                        setFormData((prev) => ({
-                          ...prev,
-                          oneMillionContextEnabled: false,
-                          autoCompactThreshold1m: '',
-                          autoCompactThreshold: '95',
-                        }));
-                        probe.reset();
+              <>
+                <div>
+                  <Label htmlFor="provider-threshold">Default Threshold (%)</Label>
+                  <Input
+                    id="provider-threshold"
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={formData.autoCompactThreshold}
+                    onChange={(e) => {
+                      setFormData({ ...formData, autoCompactThreshold: e.target.value });
+                      if (formErrorField === 'autoCompactThreshold') {
+                        setFormError(null);
+                        setFormErrorField(null);
                       }
                     }}
+                    className={cn(
+                      formErrorField === 'autoCompactThreshold' &&
+                        'border-destructive focus-visible:ring-destructive',
+                    )}
+                    placeholder="Default: 85"
                   />
-                  <Label htmlFor="provider-1m-context" className="cursor-pointer">
-                    1M context
-                  </Label>
-                  {probe.probeStatus === 'probing' && (
-                    <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                      Checking support...
-                    </span>
-                  )}
-                  {probe.probeStatus === 'supported' && (
-                    <span className="flex items-center gap-1 text-xs text-emerald-600">
-                      <CheckCircle2 className="h-3 w-3" />
-                      Supported
-                    </span>
-                  )}
-                  {probe.probeStatus === 'unsupported' && (
-                    <span className="flex items-center gap-1 text-xs text-destructive">
-                      <XCircle className="h-3 w-3" />
-                      Not supported
-                    </span>
-                  )}
-                  {probe.probeStatus === 'error' && (
-                    <span className="flex items-center gap-1 text-xs text-destructive">
-                      <XCircle className="h-3 w-3" />
-                      Probe failed
-                    </span>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Context usage percentage (1-100) that triggers auto-compact. Leave empty to use
+                    default on create, or to disable on edit.
+                  </p>
+                  {formError && formErrorField === 'autoCompactThreshold' && (
+                    <p className="mt-2 text-sm text-destructive">{formError}</p>
                   )}
                 </div>
-                <p className="text-xs text-muted-foreground ml-6">
-                  Enable 1M token context window for Claude sessions. Requires Claude binary
-                  support.
-                </p>
-                {editingProvider && formData.binPath.trim() !== (editingProvider.binPath ?? '') && (
-                  <p className="text-xs text-amber-600 dark:text-amber-400 ml-6">
-                    Save the new binary path first, then re-probe for 1M context support.
-                  </p>
-                )}
-                {formData.oneMillionContextEnabled &&
-                  formData.autoCompactThreshold1m !== '' &&
-                  Number(formData.autoCompactThreshold1m) > 50 && (
-                    <div className="ml-6 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-2 dark:border-amber-800 dark:bg-amber-950">
-                      <AlertCircle className="h-4 w-4 text-amber-600 dark:text-amber-500 mt-0.5 flex-shrink-0" />
-                      <p className="text-xs text-amber-800 dark:text-amber-200">
-                        1M threshold above 50% may degrade output quality. Consider lowering it to
-                        50%.
-                      </p>
-                    </div>
-                  )}
-              </div>
-            )}
 
-            {(editingProvider?.name ?? providerType).toLowerCase() === 'claude' && (
-              <div className="space-y-3">
-                {formData.oneMillionContextEnabled ? (
-                  <>
-                    <div>
-                      <Label htmlFor="provider-threshold-1m">Opus 1M Threshold (%)</Label>
-                      <Input
-                        id="provider-threshold-1m"
-                        type="number"
-                        min={1}
-                        max={100}
-                        value={formData.autoCompactThreshold1m}
-                        onChange={(e) => {
-                          setFormData({ ...formData, autoCompactThreshold1m: e.target.value });
-                          if (formErrorField === 'autoCompactThreshold') {
-                            setFormError(null);
-                            setFormErrorField(null);
-                          }
-                        }}
-                        className={cn(
-                          formErrorField === 'autoCompactThreshold' &&
-                            'border-destructive focus-visible:ring-destructive',
-                        )}
-                        placeholder="Default: 50"
-                      />
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Context usage percentage (1-100) for Opus with 1M context window.
-                      </p>
-                    </div>
-                    <div>
-                      <Label htmlFor="provider-threshold">Default Threshold (%)</Label>
-                      <Input
-                        id="provider-threshold"
-                        type="number"
-                        min={1}
-                        max={100}
-                        value={formData.autoCompactThreshold}
-                        onChange={(e) => {
-                          setFormData({ ...formData, autoCompactThreshold: e.target.value });
-                          if (formErrorField === 'autoCompactThreshold') {
-                            setFormError(null);
-                            setFormErrorField(null);
-                          }
-                        }}
-                        className={cn(
-                          formErrorField === 'autoCompactThreshold' &&
-                            'border-destructive focus-visible:ring-destructive',
-                        )}
-                        placeholder="Default: 95"
-                      />
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Context usage percentage (1-100) for standard models (sonnet/haiku).
-                      </p>
-                    </div>
-                  </>
-                ) : (
-                  <div>
-                    <Label htmlFor="provider-threshold">Auto-Compact Threshold (%)</Label>
-                    <Input
-                      id="provider-threshold"
-                      type="number"
-                      min={1}
-                      max={100}
-                      value={formData.autoCompactThreshold}
-                      onChange={(e) => {
-                        setFormData({ ...formData, autoCompactThreshold: e.target.value });
-                        if (formErrorField === 'autoCompactThreshold') {
+                <div className="space-y-2 rounded-md border p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <Label htmlFor="provider-claude-launch-settings">
+                      Advanced: Claude Launch Settings JSON
+                    </Label>
+                    {editingProvider && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setFormData((previous) => ({
+                            ...previous,
+                            claudeLaunchSettingsJson: DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON,
+                          }));
                           setFormError(null);
                           setFormErrorField(null);
-                        }
-                      }}
-                      className={cn(
-                        formErrorField === 'autoCompactThreshold' &&
-                          'border-destructive focus-visible:ring-destructive',
-                      )}
-                      placeholder="Default: 85"
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Context usage percentage (1-100) that triggers auto-compact. Leave empty to
-                      use default on create, or to disable on edit.
-                    </p>
+                        }}
+                      >
+                        Restore DevChain default
+                      </Button>
+                    )}
                   </div>
-                )}
-                {formError && formErrorField === 'autoCompactThreshold' && (
-                  <p className="mt-2 text-sm text-destructive">{formError}</p>
-                )}
-              </div>
+                  <Textarea
+                    id="provider-claude-launch-settings"
+                    rows={9}
+                    spellCheck={false}
+                    value={formData.claudeLaunchSettingsJson}
+                    onChange={(event) => {
+                      setFormData((previous) => ({
+                        ...previous,
+                        claudeLaunchSettingsJson: event.target.value,
+                      }));
+                      if (formErrorField === 'claudeLaunchSettingsJson') {
+                        setFormError(null);
+                        setFormErrorField(null);
+                      }
+                    }}
+                    className={cn(
+                      'font-mono text-xs',
+                      formErrorField === 'claudeLaunchSettingsJson' &&
+                        'border-destructive focus-visible:ring-destructive',
+                    )}
+                  />
+                  {formError && formErrorField === 'claudeLaunchSettingsJson' && (
+                    <p className="text-sm text-destructive">{formError}</p>
+                  )}
+                </div>
+              </>
             )}
 
             <div>
@@ -1703,8 +1591,7 @@ export function ProvidersPage() {
                   setFormData({
                     binPath: getDefaultBinPathForType(initialType),
                     autoCompactThreshold: '',
-                    autoCompactThreshold1m: '',
-                    oneMillionContextEnabled: false,
+                    claudeLaunchSettingsJson: '',
                     env: {},
                     envScopes: {},
                   });
@@ -1712,7 +1599,6 @@ export function ProvidersPage() {
                   setBinPathTouched(false);
                   setFormError(null);
                   setFormErrorField(null);
-                  probe.reset();
                 }}
               >
                 Cancel

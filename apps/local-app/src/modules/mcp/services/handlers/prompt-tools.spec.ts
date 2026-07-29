@@ -64,6 +64,82 @@ describe('prompt-tools', () => {
       expect(prompt.content).toBe('Hello Coder, team: ');
     });
 
+    it('prefers a System exact-title candidate after more than ten substring distractors', async () => {
+      const systemPrompt = {
+        ...testPrompt,
+        id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        content: 'system',
+        tags: ['type:system'],
+      };
+      const items = [
+        ...Array.from({ length: 12 }, (_, index) => ({
+          id: `distractor-${index}`,
+          title: `Hello Prompt ${index}`,
+          version: 1,
+          tags: ['type:system'],
+        })),
+        { id: testPrompt.id, title: testPrompt.title, version: 1, tags: ['type:custom'] },
+        { id: systemPrompt.id, title: systemPrompt.title, version: 1, tags: systemPrompt.tags },
+      ];
+      const ctx = makeCtx();
+      (ctx.storage.listPrompts as jest.Mock).mockResolvedValue({
+        items,
+        total: items.length,
+        limit: 10000,
+        offset: 0,
+      });
+      (ctx.storage.getPrompt as jest.Mock).mockResolvedValue(systemPrompt);
+
+      const result = await handleGetPrompt(ctx, {
+        name: 'Hello Prompt',
+        sessionId: 'session-1',
+      });
+
+      expect(result.success).toBe(true);
+      expect(ctx.storage.listPrompts).toHaveBeenCalledWith({
+        projectId: 'proj-1',
+        q: 'Hello Prompt',
+        limit: 10000,
+        offset: 0,
+      });
+      expect(ctx.storage.getPrompt).toHaveBeenCalledWith(systemPrompt.id);
+    });
+
+    it('filters version and case before System-first ranking', async () => {
+      const customV2 = {
+        ...testPrompt,
+        id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        version: 2,
+        tags: ['type:custom'],
+      };
+      const ctx = makeCtx();
+      (ctx.storage.listPrompts as jest.Mock).mockResolvedValue({
+        items: [
+          { id: 'system-v1', title: 'Hello Prompt', version: 1, tags: ['type:system'] },
+          { id: 'wrong-case', title: 'hello prompt', version: 2, tags: ['type:system'] },
+          {
+            id: customV2.id,
+            title: customV2.title,
+            version: customV2.version,
+            tags: customV2.tags,
+          },
+        ],
+        total: 3,
+        limit: 10000,
+        offset: 0,
+      });
+      (ctx.storage.getPrompt as jest.Mock).mockResolvedValue(customV2);
+
+      const result = await handleGetPrompt(ctx, {
+        name: 'Hello Prompt',
+        version: 2,
+        sessionId: 'session-1',
+      });
+
+      expect(result.success).toBe(true);
+      expect(ctx.storage.getPrompt).toHaveBeenCalledWith(customV2.id);
+    });
+
     it('by id with sessionId: content is rendered', async () => {
       const ctx = makeCtx({
         resolveSessionContext: jest.fn().mockResolvedValue({

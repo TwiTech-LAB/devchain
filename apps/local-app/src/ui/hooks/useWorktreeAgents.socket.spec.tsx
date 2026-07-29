@@ -270,6 +270,46 @@ describe('useWorktreeAgents socket behavior', () => {
       });
     });
 
+    it('module-unit: invalidates only the addressed worktree summary on runtime-context update', async () => {
+      setupMainMode();
+      getAppSocketMock.mockReturnValue(createMockSocket());
+      listWorktreesMock.mockResolvedValue([
+        {
+          id: 'wt-1',
+          name: 'feature-one',
+          status: 'running',
+          runtimeType: 'process',
+          devchainProjectId: 'proj-1',
+          containerPort: 4001,
+        },
+      ] as never);
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        json: async () => ({ items: [] }),
+      });
+      const wtSocket = createMockSocket();
+      getWorktreeSocketMock.mockReturnValue(wtSocket);
+      const { Wrapper, invalidateSpy } = createWrapper();
+
+      renderHook(() => useWorktreeAgents(), { wrapper: Wrapper });
+      await flushQueryChain();
+      invalidateSpy.mockClear();
+
+      act(() => {
+        simulateMessage(wtSocket, {
+          topic: 'session/session-1/runtime-context',
+          type: 'updated',
+          payload: { sessionId: 'session-1' },
+        });
+      });
+
+      expect(invalidateSpy).toHaveBeenCalledTimes(1);
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: ['transcript-summary', '/wt/feature-one', 'session-1'],
+        exact: true,
+      });
+    });
+
     it('triggers debounced invalidation on session activity event', async () => {
       setupMainMode();
       const appSocket = createMockSocket();

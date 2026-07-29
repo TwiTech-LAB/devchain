@@ -1,6 +1,8 @@
 import type {
   AgentStorage,
+  EpicStorage,
   GuestStorage,
+  ProfileProviderConfigStorage,
   StatusStorage,
 } from '../../../storage/interfaces/storage.interface';
 import type { SessionsService } from '../../../sessions/services/sessions.service';
@@ -9,7 +11,11 @@ import type { InstructionsResolver } from '../instructions-resolver';
 import type { TeamsService } from '../../../teams/services/teams.service';
 import type { McpResponse } from '../../dtos/mcp.dto';
 
-export type AgentToolStorage = AgentStorage & GuestStorage & StatusStorage;
+export type AgentToolStorage = AgentStorage &
+  EpicStorage &
+  GuestStorage &
+  ProfileProviderConfigStorage &
+  StatusStorage;
 
 export interface AgentToolContext {
   storage: AgentToolStorage;

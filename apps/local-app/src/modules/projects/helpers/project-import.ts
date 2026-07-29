@@ -1,14 +1,26 @@
 import { ExportSchema } from '@devchain/shared';
 import { ConflictError, StorageError, ValidationError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
-import type { ProbeOutcome } from '../../providers/utils/probe-1m';
+import {
+  buildPromptReferenceValidationFailure,
+  findSkippedTemplatePromptReferences,
+  type PromptReferenceIssue,
+} from '../../../common/prompt-references';
+import {
+  PROMPT_TRANSFER_POLICY,
+  partitionPromptsForTransfer,
+  planPromptReplacement,
+  type PromptTransferCounts,
+  type PromptTransferPolicy,
+  type PromptReplacementPlan,
+} from '../../../common/prompt-transfer';
 import type { SettingsService } from '../../settings/services/settings.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
+import type { SnapshotPromptWriter } from '../../storage/interfaces/snapshot-prompt-writer.interface';
 import type { UnifiedTemplateService } from '../../registry/services/unified-template.service';
 import {
   buildProviderConfigLookupKey,
   collectReferencedProviderNames,
-  preserveImportedEnv,
   resolveProvidersFromStorage,
   selectProfilesForFamilies,
   type FamilyAlternative,
@@ -49,6 +61,10 @@ type UnmatchedStatus = {
 
 type ImportPreparation = {
   isDryRun: boolean;
+  promptTransferPolicy: PromptTransferPolicy;
+  promptTransfer: PromptTransferCounts;
+  promptReplacementPlan: PromptReplacementPlan;
+  promptReferenceIssues: PromptReferenceIssue[];
   payload: ParsedTemplatePayload;
   familyResult: FamilyAlternativesResult;
   needsMapping: boolean;
@@ -66,6 +82,8 @@ export interface ImportProjectInputLike {
   projectId: string;
   payload: unknown;
   dryRun?: boolean;
+  /** Internal-only. Public import requests always use the default template policy. */
+  promptTransferPolicy?: PromptTransferPolicy;
   statusMappings?: Record<string, string>;
   familyProviderMappings?: Record<string, string>;
   /**
@@ -95,6 +113,7 @@ export interface ImportProjectInputLike {
 
 interface ImportProjectDeps {
   storage: StorageService;
+  snapshotPromptWriter?: SnapshotPromptWriter;
   settings: SettingsService;
   /** Template section pipeline; falls back to the module singleton when omitted. */
   templatePipeline?: TemplatePipeline;
@@ -155,7 +174,6 @@ interface ImportProjectDeps {
       configLookupMap: Map<string, string>;
     },
   ) => Promise<{ applied: number; warnings: string[] }>;
-  probe1m?: (binPath: string) => Promise<ProbeOutcome>;
   teamsService?: {
     createTeam: (data: {
       projectId: string;
@@ -181,9 +199,23 @@ export async function importProjectWithHelper(
   input: ImportProjectInputLike,
   deps: ImportProjectDeps,
 ) {
-  logger.info({ projectId: input.projectId, dryRun: input.dryRun }, 'importProject');
+  logger.info(
+    {
+      projectId: input.projectId,
+      dryRun: input.dryRun,
+      promptTransferPolicy: input.promptTransferPolicy ?? PROMPT_TRANSFER_POLICY.Template,
+    },
+    'importProject',
+  );
 
   const context = await prepareImportContext(input, deps);
+
+  const promptReferenceFailure = buildPromptReferenceValidationFailure(
+    context.promptReferenceIssues,
+  );
+  if (promptReferenceFailure) {
+    return promptReferenceFailure;
+  }
 
   if (context.isDryRun) {
     return buildDryRunResponse(context);
@@ -207,7 +239,12 @@ export async function importProjectWithHelper(
     const oldAgentIds = context.existing.agents.items.map((a) => a.id);
     const parkedByOldAgentId = await deps.storage.parkSessionsFromAgents(oldAgentIds);
 
-    await clearExistingProjectData(input.projectId, context.existing, deps);
+    const clearedPrompts = await clearExistingProjectData(
+      input.projectId,
+      context.existing,
+      context.promptReplacementPlan,
+      deps,
+    );
 
     // Template pipeline (replace mode). The statuses + prompts codecs own their sections;
     // their ordering invariants are declared reads/writes validated when the pipeline was
@@ -236,6 +273,10 @@ export async function importProjectWithHelper(
     const codecRuntime = {
       projectId: input.projectId,
       storage: deps.storage,
+      ...(context.promptTransferPolicy === PROMPT_TRANSFER_POLICY.Snapshot &&
+      deps.snapshotPromptWriter
+        ? { snapshotPromptWriter: deps.snapshotPromptWriter }
+        : {}),
       settings: deps.settings,
       watchersService: watcherServiceForCodec,
       statusMappings: input.statusMappings,
@@ -244,11 +285,11 @@ export async function importProjectWithHelper(
       selectedProviders: context.selectedProviders,
       teamsService: deps.teamsService,
       teamOverrides: input.teamOverrides,
-      probe1m: deps.probe1m,
       scheduledEpicsRefresh: deps.scheduledEpicsRefresh,
       computeNextRunAt: deps.computeNextRunAt,
+      promptTransferPolicy: context.promptTransferPolicy,
     };
-    await pipeline.applySections(
+    const promptSectionResults = await pipeline.applySections(
       ['statuses', 'prompts'],
       context.payload,
       pipelineCtx,
@@ -257,6 +298,7 @@ export async function importProjectWithHelper(
     );
     const statusIdMap = pipelineCtx.get('statusIdMap');
     const promptIdMap = pipelineCtx.get('promptIdMap');
+    const appliedPrompts = getPromptApplyCounts(promptSectionResults);
 
     // profiles (with embedded provider configs) + agents codecs.
     await pipeline.applySections(
@@ -370,7 +412,7 @@ export async function importProjectWithHelper(
 
     // providerSettings + providerModels + providerEfforts codecs (matrix rows 19–21):
     // additive provider-catalog mutations, no ImportContext products. providerSettings
-    // resolves against live provider storage (threshold/probe/env matrix); the other two
+    // resolves against live provider storage (threshold/env merge); the other two
     // add model/effort catalogs. Applied in registry order.
     await pipeline.applySections(
       ['providerSettings', 'providerModels', 'providerEfforts'],
@@ -396,6 +438,10 @@ export async function importProjectWithHelper(
       teamsImported,
       scheduledEpicsImported,
       sessionPreservation,
+      promptTransfer: {
+        ...appliedPrompts,
+        ...clearedPrompts,
+      },
     });
   } catch (error) {
     logger.error({ error, projectId: input.projectId }, 'Import failed');
@@ -409,6 +455,7 @@ async function prepareImportContext(
   deps: ImportProjectDeps,
 ): Promise<ImportPreparation> {
   const isDryRun = input.dryRun ?? false;
+  const promptTransferPolicy = input.promptTransferPolicy ?? PROMPT_TRANSFER_POLICY.Template;
   const payload = ExportSchema.parse(input.payload ?? {});
 
   const familyResult = await deps.computeFamilyAlternatives(
@@ -439,6 +486,22 @@ async function prepareImportContext(
   );
 
   const existing = await loadExistingProjectData(input.projectId, deps.storage);
+  const incomingPromptPartition = partitionPromptsForTransfer(
+    payload.prompts,
+    promptTransferPolicy,
+  );
+  const promptReferenceIssues =
+    promptTransferPolicy === PROMPT_TRANSFER_POLICY.Template
+      ? findSkippedTemplatePromptReferences(
+          selectedProfilesByFamily.profilesToCreate,
+          payload.prompts,
+        )
+      : [];
+  const promptReplacementPlan = planPromptReplacement(
+    payload.prompts,
+    existing.prompts.items,
+    promptTransferPolicy,
+  );
   const unmatchedStatuses = await collectUnmatchedStatuses(
     payload.statuses,
     existing.statuses.items,
@@ -447,6 +510,15 @@ async function prepareImportContext(
 
   return {
     isDryRun,
+    promptTransferPolicy,
+    promptReferenceIssues,
+    promptReplacementPlan,
+    promptTransfer: {
+      imported: incomingPromptPartition.transfer.length,
+      deleted: promptReplacementPlan.deleteIds.length,
+      preserved: promptReplacementPlan.preserveIds.length,
+      skipped: incomingPromptPartition.retain.length,
+    },
     payload,
     familyResult,
     needsMapping,
@@ -535,6 +607,7 @@ function buildDryRunResponse(context: ImportPreparation) {
         scheduledEpics: number;
       };
     };
+    promptTransfer: PromptTransferCounts;
   } = {
     dryRun: true,
     missingProviders: context.missingProviders,
@@ -545,7 +618,7 @@ function buildDryRunResponse(context: ImportPreparation) {
     })),
     counts: {
       toImport: {
-        prompts: context.payload.prompts.length,
+        prompts: context.promptTransfer.imported,
         profiles: context.selectedProfilesByFamily.profilesToCreate.length,
         agents: context.payload.agents.length,
         statuses: context.payload.statuses.length,
@@ -554,7 +627,7 @@ function buildDryRunResponse(context: ImportPreparation) {
         scheduledEpics: context.payload.scheduledEpics?.length ?? 0,
       },
       toDelete: {
-        prompts: context.existing.prompts.total,
+        prompts: context.promptTransfer.deleted,
         profiles: context.existing.profiles.total,
         agents: context.existing.agents.total,
         statuses: context.existing.statuses.total,
@@ -563,6 +636,7 @@ function buildDryRunResponse(context: ImportPreparation) {
         scheduledEpics: context.existing.scheduledEpics?.total ?? 0,
       },
     },
+    promptTransfer: context.promptTransfer,
   };
 
   if (context.needsMapping) {
@@ -636,8 +710,9 @@ function buildOldAgentIdToNameMap(existingAgents: ExistingProjectData['agents'][
 async function clearExistingProjectData(
   projectId: string,
   existing: ExistingProjectData,
+  promptReplacementPlan: PromptReplacementPlan,
   deps: ImportProjectDeps,
-) {
+): Promise<Pick<PromptTransferCounts, 'deleted' | 'preserved'>> {
   // Clean up teams before deleting agents to avoid FK RESTRICT errors on team leads
   if (deps.cleanupTeamsForProject) {
     await deps.cleanupTeamsForProject(projectId);
@@ -652,8 +727,8 @@ async function clearExistingProjectData(
   for (const profile of existing.profiles.items) {
     await deps.storage.deleteAgentProfile(profile.id);
   }
-  for (const prompt of existing.prompts.items) {
-    await deps.storage.deletePrompt(prompt.id);
+  for (const promptId of promptReplacementPlan.deleteIds) {
+    await deps.storage.deletePrompt(promptId);
   }
   for (const watcher of existing.watchers) {
     await deps.watchersService.deleteWatcher(watcher.id);
@@ -669,6 +744,11 @@ async function clearExistingProjectData(
     projectId,
     initialSessionPromptId: null,
   });
+
+  return {
+    deleted: promptReplacementPlan.deleteIds.length,
+    preserved: promptReplacementPlan.preserveIds.length,
+  };
 }
 
 async function remapEpicAgentAssignments(
@@ -745,134 +825,6 @@ async function updateTemplateMetadata(
     { projectId, slug: payload._manifest.slug, source: templateSource },
     'Updated template metadata after import',
   );
-}
-
-export async function importProviderSettings(
-  payload: ParsedTemplatePayload,
-  storage: StorageService,
-  options?: { probe1m?: (binPath: string) => Promise<ProbeOutcome> },
-) {
-  const importedProviderSettings = payload.providerSettings;
-
-  if (!importedProviderSettings || importedProviderSettings.length === 0) {
-    return;
-  }
-
-  const allProviders = await storage.listProviders();
-  const providersByName = new Map(
-    allProviders.items.map((provider) => [provider.name.trim().toLowerCase(), provider]),
-  );
-
-  for (const setting of importedProviderSettings) {
-    const localProvider = providersByName.get(setting.name.trim().toLowerCase());
-    if (!localProvider) {
-      continue;
-    }
-
-    const updates: Record<string, unknown> = {};
-
-    if (localProvider.autoCompactThreshold == null && setting.autoCompactThreshold != null) {
-      updates.autoCompactThreshold = setting.autoCompactThreshold;
-      logger.info(
-        { providerName: setting.name, threshold: setting.autoCompactThreshold },
-        'Applied autoCompactThreshold from template import',
-      );
-    } else if (localProvider.autoCompactThreshold != null) {
-      logger.debug(
-        { providerName: setting.name, existing: localProvider.autoCompactThreshold },
-        'Skipping providerSettings import: local threshold already set',
-      );
-    }
-
-    // Import autoCompactThreshold1m if present in template
-    if (setting.autoCompactThreshold1m != null) {
-      updates.autoCompactThreshold1m = setting.autoCompactThreshold1m;
-    }
-
-    // Import oneMillionContextEnabled: auto-probe when callback is available,
-    // otherwise disable and set a safe threshold (95) to avoid degraded sessions.
-    if (setting.oneMillionContextEnabled) {
-      // Legacy compat: if template has 1M enabled but no autoCompactThreshold1m,
-      // treat the old autoCompactThreshold as the 1M value
-      const isLegacyTemplate = setting.autoCompactThreshold1m == null;
-
-      if (localProvider.binPath && options?.probe1m) {
-        const outcome = await options.probe1m(localProvider.binPath);
-        if (outcome.supported) {
-          updates.oneMillionContextEnabled = true;
-          updates.autoCompactThreshold1m = isLegacyTemplate
-            ? (setting.autoCompactThreshold ?? 50)
-            : (setting.autoCompactThreshold1m ?? 50);
-          // Only set standard threshold when local provider doesn't have one
-          if (localProvider.autoCompactThreshold == null) {
-            updates.autoCompactThreshold = isLegacyTemplate
-              ? 95
-              : (setting.autoCompactThreshold ?? 95);
-          }
-          logger.info(
-            { providerName: setting.name },
-            'Template had 1M context enabled — auto-probe confirmed support',
-          );
-        } else {
-          updates.oneMillionContextEnabled = false;
-          if (localProvider.autoCompactThreshold == null) {
-            updates.autoCompactThreshold = 95;
-          }
-          updates.autoCompactThreshold1m = null;
-          logger.info(
-            { providerName: setting.name, status: outcome.status },
-            'Template had 1M context enabled — auto-probe did not confirm support',
-          );
-        }
-      } else {
-        updates.oneMillionContextEnabled = false;
-        if (localProvider.autoCompactThreshold == null) {
-          updates.autoCompactThreshold = 95;
-        }
-        updates.autoCompactThreshold1m = null;
-        logger.info(
-          { providerName: setting.name },
-          'Template had 1M context enabled — disabled during import (no binPath or probe unavailable)',
-        );
-      }
-    }
-
-    const importedEnv = preserveImportedEnv(setting.env);
-    if (importedEnv) {
-      if (localProvider.env == null) {
-        updates.env = importedEnv;
-        logger.info(
-          { providerName: setting.name, keyCount: Object.keys(importedEnv).length },
-          'Applied provider env from template import (no local env existed)',
-        );
-      } else {
-        const merged = { ...localProvider.env };
-        let addedCount = 0;
-        for (const [key, value] of Object.entries(importedEnv)) {
-          if (!(key in merged)) {
-            merged[key] = value;
-            addedCount++;
-          }
-        }
-        if (addedCount > 0) {
-          updates.env = merged;
-          logger.info(
-            { providerName: setting.name, addedCount },
-            'Merged provider env from template import (local wins on conflicts)',
-          );
-        } else {
-          logger.debug(
-            { providerName: setting.name },
-            'Skipping provider env import: all template keys already exist locally',
-          );
-        }
-      }
-    }
-
-    if (Object.keys(updates).length > 0) {
-      await storage.updateProvider(localProvider.id, updates);
-    }
-  }
 }
 
 export async function createImportedTeams(
@@ -1216,6 +1168,7 @@ function buildImportSuccessResponse(args: {
   teamsImported?: number;
   scheduledEpicsImported?: number;
   sessionPreservation: { preservedCount: number; removedCount: number };
+  promptTransfer: PromptTransferCounts;
 }) {
   return {
     success: true,
@@ -1224,7 +1177,7 @@ function buildImportSuccessResponse(args: {
     missingProviders: [],
     counts: {
       imported: {
-        prompts: args.payload.prompts.length,
+        prompts: args.promptTransfer.imported,
         profiles: args.payload.profiles.length,
         agents: args.payload.agents.length,
         statuses: args.payload.statuses.length,
@@ -1234,7 +1187,7 @@ function buildImportSuccessResponse(args: {
         scheduledEpics: args.scheduledEpicsImported ?? 0,
       },
       deleted: {
-        prompts: args.existing.prompts.total,
+        prompts: args.promptTransfer.deleted,
         profiles: args.existing.profiles.total,
         agents: args.existing.agents.total,
         statuses: 0,
@@ -1248,6 +1201,7 @@ function buildImportSuccessResponse(args: {
         agentCleared: args.epicsCleared,
       },
     },
+    promptTransfer: args.promptTransfer,
     mappings: {
       promptIdMap: args.promptIdMap,
       profileIdMap: args.profileIdMap,
@@ -1260,4 +1214,15 @@ function buildImportSuccessResponse(args: {
     sessionPreservation: args.sessionPreservation,
     message: 'Project configuration replaced. Epics preserved.',
   };
+}
+
+function getPromptApplyCounts(
+  results: Awaited<ReturnType<TemplatePipeline['applySections']>>,
+): Pick<PromptTransferCounts, 'imported' | 'skipped'> {
+  return (
+    results.find((result) => result.section === 'prompts')?.promptTransfer ?? {
+      imported: 0,
+      skipped: 0,
+    }
+  );
 }

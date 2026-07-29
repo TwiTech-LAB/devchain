@@ -192,6 +192,39 @@ describe('RPC lane E2EE — backend integration (real :memory: SQLite key servic
     expect(opened).toEqual({ ok: true, data: { ok: true } });
   });
 
+  it('round-trips an authorized Custom prompt detail through the sealed dispatch seam', async () => {
+    const method = 'chat.getCustomPrompt';
+    const plainParams = {
+      sessionId: 's1',
+      projectId: 'proj-own',
+      promptId: 'prompt-1',
+    };
+    const sealedParams = (await mobileEnvelope.seal(plainParams, reqCtx(method))) as E2eeEnvelope;
+    const dispatch = jest.fn(async (plain: JsonRpcRequestLike): Promise<JsonRpcResponseLike> => {
+      expect(plain.params).toEqual(plainParams);
+      return {
+        jsonrpc: '2.0',
+        id: plain.id,
+        result: { id: 'prompt-1', title: 'Prompt', content: 'secret body' },
+      };
+    });
+
+    const resp = await svc.handle(
+      { jsonrpc: '2.0', id: 'prompt-detail-1', method, params: sealedParams },
+      INSTANCE_ID,
+      dispatch,
+    );
+
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(sealedParams)).not.toContain('prompt-1');
+    expect(JSON.stringify(resp.result)).not.toContain('secret body');
+    const opened = (await mobileEnvelope.open(resp.result, resCtx(method))) as SealedRpcResult;
+    expect(opened).toEqual({
+      ok: true,
+      data: { id: 'prompt-1', title: 'Prompt', content: 'secret body' },
+    });
+  });
+
   // ── 2. Negative: tampered ciphertext rejected (no dispatch) ───────────────────────
   it('rejects tampered ciphertext (AAD/tag) — dispatch never runs', async () => {
     const method = 'chat.getTranscriptTail';

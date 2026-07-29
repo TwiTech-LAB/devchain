@@ -6,6 +6,12 @@
 
 export { EnvVarsSchema } from '../../../../packages/shared/src/schemas/env-vars';
 export {
+  CLAUDE_LAUNCH_SETTINGS_MAX_BYTES,
+  DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON,
+  validateClaudeLaunchSettingsJson,
+  type ClaudeLaunchSettingsValidationResult,
+} from '../../../../packages/shared/src/schemas/claude-launch-settings';
+export {
   ExportSchema,
   ManifestSchema,
 } from '../../../../packages/shared/src/schemas/export-schema';

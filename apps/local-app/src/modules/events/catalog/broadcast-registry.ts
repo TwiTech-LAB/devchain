@@ -410,6 +410,16 @@ export const broadcastRegistry: Record<string, BroadcastRegistryTopicEntry<P>[]>
       clientReaction: { kind: 'custom-handler', owner: 'useSessionTranscript' },
     },
   ],
+  'session.runtime-context.updated': [
+    {
+      topic: (p) => `session/${p.sessionId}/runtime-context`,
+      type: 'updated',
+      payloadProjection: (p) => ({
+        sessionId: p.sessionId,
+      }),
+      clientReaction: { kind: 'custom-handler', owner: 'session metrics hooks' },
+    },
+  ],
 
   // ── Worktree (Option A: added to catalog) ──
   'orchestrator.worktree.changed': [

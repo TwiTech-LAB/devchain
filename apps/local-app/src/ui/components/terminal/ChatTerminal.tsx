@@ -7,10 +7,11 @@ import {
   useRef,
   useState,
 } from 'react';
+import { flushSync } from 'react-dom';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { cn } from '@/ui/lib/utils';
-import { Input } from '@/ui/components/ui/input';
+import { Textarea } from '@/ui/components/ui/textarea';
 import { Button } from '@/ui/components/ui/button';
 import '@xterm/xterm/css/xterm.css';
 import { termLog } from '@/ui/lib/debug';
@@ -39,14 +40,49 @@ import type {
   TerminalResyncAbortPayload,
   TerminalResyncCompletePayload,
   TerminalResyncRequestPayload,
+  TerminalPromptPasteAck,
+  TerminalPromptPasteFailureCode,
+  TerminalPromptPasteInput,
 } from '@/modules/terminal/dtos/ws-envelope.dto';
+import { TerminalPromptPasteAckSchema } from '@/modules/terminal/dtos/ws-envelope.dto';
 
 const RECOVERY_ABORT_ACK_TIMEOUT_MS = 5000;
+export const PROMPT_PASTE_ACK_TIMEOUT_MS = 5000;
+const PROMPT_PASTE_ACK_ATTEMPTS = 2;
+
+export type TerminalPromptInsertErrorCode =
+  | TerminalPromptPasteFailureCode
+  | 'ACK_TIMEOUT'
+  | 'INVALID_ACK'
+  | 'NOT_READY';
+
+export class TerminalPromptInsertError extends Error {
+  constructor(
+    readonly code: TerminalPromptInsertErrorCode,
+    readonly requestId: string,
+  ) {
+    super(`Terminal prompt insertion failed (${code})`);
+    this.name = 'TerminalPromptInsertError';
+  }
+}
 
 export interface ChatTerminalHandle {
   clear: () => void;
   focus: () => void;
   fit: () => void;
+  insertPromptText: (text: string) => Promise<void>;
+}
+
+function createPromptPasteRequestId(): string {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+  const bytes = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(bytes);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(function ChatTerminal(
@@ -71,7 +107,7 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
   });
 
   const terminalRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const isAuthorityRef = useRef<boolean>(false);
   const isLoadingHistoryRef = useRef<boolean>(false);
@@ -88,6 +124,8 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
     className,
   );
   const socket = useAppSocket({}, [], _providedSocket);
+  const livePromptInsertRef = useRef({ input, inputMode, sessionId, socket });
+  livePromptInsertRef.current = { input, inputMode, sessionId, socket };
 
   // Fetch terminal settings BEFORE mounting terminal
   useEffect(() => {
@@ -408,6 +446,72 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
   }, [sessionId, historySync]);
 
   // Expose imperative handle for terminal operations
+  const insertPromptText = useCallback(async (text: string): Promise<void> => {
+    const live = livePromptInsertRef.current;
+    if (live.inputMode === 'form') {
+      const textarea = inputRef.current;
+      const selectionStart = textarea?.selectionStart ?? live.input.length;
+      const selectionEnd = textarea?.selectionEnd ?? selectionStart;
+      const nextInput = live.input.slice(0, selectionStart) + text + live.input.slice(selectionEnd);
+      const nextCaret = selectionStart + text.length;
+
+      flushSync(() => setInput(nextInput));
+      textarea?.focus();
+      textarea?.setSelectionRange(nextCaret, nextCaret);
+      return;
+    }
+
+    if (live.inputMode !== 'tty') {
+      throw new TerminalPromptInsertError('NOT_READY', '');
+    }
+
+    const requestId = createPromptPasteRequestId();
+    const payload = {
+      kind: 'prompt-paste',
+      sessionId: live.sessionId,
+      requestId,
+      data: text,
+    } satisfies TerminalPromptPasteInput;
+
+    const emitAttempt = (): Promise<TerminalPromptPasteAck> =>
+      new Promise((resolve, reject) => {
+        live.socket.emit('terminal:focus', { sessionId: live.sessionId });
+        live.socket
+          .timeout(PROMPT_PASTE_ACK_TIMEOUT_MS)
+          .emit('terminal:input', payload, (error: Error | null, rawAck: unknown) => {
+            if (error) {
+              reject(new TerminalPromptInsertError('ACK_TIMEOUT', requestId));
+              return;
+            }
+            const parsed = TerminalPromptPasteAckSchema.safeParse(rawAck);
+            if (!parsed.success || parsed.data.requestId !== requestId) {
+              reject(new TerminalPromptInsertError('INVALID_ACK', requestId));
+              return;
+            }
+            if (!parsed.data.ok) {
+              reject(new TerminalPromptInsertError(parsed.data.code, requestId));
+              return;
+            }
+            resolve(parsed.data);
+          });
+      });
+
+    for (let attempt = 0; attempt < PROMPT_PASTE_ACK_ATTEMPTS; attempt += 1) {
+      try {
+        await emitAttempt();
+        return;
+      } catch (error) {
+        if (
+          !(error instanceof TerminalPromptInsertError) ||
+          error.code !== 'ACK_TIMEOUT' ||
+          attempt === PROMPT_PASTE_ACK_ATTEMPTS - 1
+        ) {
+          throw error;
+        }
+      }
+    }
+  }, []);
+
   useImperativeHandle(
     ref,
     () => ({
@@ -421,8 +525,9 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
       fit: () => {
         fitAddonRef.current?.fit();
       },
+      insertPromptText,
     }),
-    [],
+    [insertPromptText],
   );
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -431,6 +536,12 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
     socket.emit('terminal:input', { sessionId, data: input });
     setInput('');
     inputRef.current?.focus();
+  };
+
+  const handleInputKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key !== 'Enter' || event.shiftKey) return;
+    event.preventDefault();
+    event.currentTarget.form?.requestSubmit();
   };
 
   return (
@@ -464,14 +575,15 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
       {inputMode === 'form' && (
         <div className="border-t border-border bg-terminal/80 px-2 py-1.5">
           <form onSubmit={handleSubmit} className="flex items-center gap-1.5">
-            <Input
+            <Textarea
               ref={inputRef}
-              type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleInputKeyDown}
               placeholder="Type command..."
               autoFocus
-              className="font-mono text-xs h-7 px-2"
+              rows={1}
+              className="min-h-7 max-h-32 resize-y py-1.5 font-mono text-xs"
             />
             <Button
               type="submit"

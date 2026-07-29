@@ -111,6 +111,39 @@ describe('useAgentSessionMetrics', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
   });
 
+  it('module-unit: refreshes only the addressed local summary from a runtime-context event', async () => {
+    fetchMock.mockResolvedValue(makeSummary());
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const entries: AgentSessionEntry[] = [
+      { agentId: 'agent-1', sessionId: 'session-1' },
+      { agentId: 'agent-2', sessionId: 'session-2' },
+    ];
+
+    renderHook(() => useAgentSessionMetrics(entries), { wrapper });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    fetchMock.mockClear();
+
+    const registry = realtimeDispatchMock.mock.calls.at(-1)?.[0];
+    if (!registry) throw new Error('Realtime invalidation registry was not registered');
+    act(() => {
+      dispatchRealtimeEnvelope(
+        {
+          topic: 'session/session-1/runtime-context',
+          type: 'updated',
+          payload: { sessionId: 'session-1' },
+        },
+        registry,
+        queryClient,
+      );
+    });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock).toHaveBeenCalledWith('session-1', undefined, expect.any(Function));
+  });
+
   it('module-unit: uses only staggered watchdog refreshes during transcript inactivity', async () => {
     jest.useFakeTimers();
     try {

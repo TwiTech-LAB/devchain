@@ -708,6 +708,84 @@ describe('TunnelHandlerService', () => {
     expect(getTranscriptChunks).not.toHaveBeenCalled();
   });
 
+  it('strictly validates and dispatches the Custom prompt read methods', async () => {
+    const SESSION_ID = '12121212-1212-4212-8212-121212121212';
+    const PROMPT_ID = '13131313-1313-4313-8313-131313131313';
+    const listCustomPrompts = jest.fn().mockResolvedValue([{ id: PROMPT_ID, title: 'Prompt' }]);
+    const getCustomPrompt = jest
+      .fn()
+      .mockResolvedValue({ id: PROMPT_ID, title: 'Prompt', content: 'Body' });
+    const chat = {
+      listCustomPrompts,
+      getCustomPrompt,
+    } as unknown as MobileChatRpcService;
+    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+
+    await expect(
+      service.handle({
+        jsonrpc: '2.0',
+        id: '15a',
+        method: 'chat.listCustomPrompts',
+        params: { sessionId: SESSION_ID, projectId: PROJECT_ID },
+      }),
+    ).resolves.toMatchObject({ result: [{ id: PROMPT_ID, title: 'Prompt' }] });
+    await expect(
+      service.handle({
+        jsonrpc: '2.0',
+        id: '15b',
+        method: 'chat.getCustomPrompt',
+        params: { sessionId: SESSION_ID, projectId: PROJECT_ID, promptId: PROMPT_ID },
+      }),
+    ).resolves.toMatchObject({
+      result: { id: PROMPT_ID, title: 'Prompt', content: 'Body' },
+    });
+
+    expect(listCustomPrompts).toHaveBeenCalledWith({
+      sessionId: SESSION_ID,
+      projectId: PROJECT_ID,
+    });
+    expect(getCustomPrompt).toHaveBeenCalledWith({
+      sessionId: SESSION_ID,
+      projectId: PROJECT_ID,
+      promptId: PROMPT_ID,
+    });
+  });
+
+  it.each([
+    [
+      'chat.listCustomPrompts',
+      { sessionId: '12121212-1212-4212-8212-121212121212', projectId: PROJECT_ID, extra: true },
+    ],
+    [
+      'chat.getCustomPrompt',
+      {
+        sessionId: '12121212-1212-4212-8212-121212121212',
+        projectId: PROJECT_ID,
+        promptId: '13131313-1313-4313-8313-131313131313',
+        extra: true,
+      },
+    ],
+    ['chat.listCustomPrompts', { projectId: PROJECT_ID }],
+    [
+      'chat.getCustomPrompt',
+      { sessionId: '12121212-1212-4212-8212-121212121212', projectId: PROJECT_ID },
+    ],
+  ])('rejects invalid strict params for %s before dispatch', async (method, params) => {
+    const listCustomPrompts = jest.fn();
+    const getCustomPrompt = jest.fn();
+    const chat = {
+      listCustomPrompts,
+      getCustomPrompt,
+    } as unknown as MobileChatRpcService;
+    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+
+    await expect(
+      service.handle({ jsonrpc: '2.0', id: '15c', method, params }),
+    ).resolves.toMatchObject({ error: { code: -32602, message: 'Invalid params' } });
+    expect(listCustomPrompts).not.toHaveBeenCalled();
+    expect(getCustomPrompt).not.toHaveBeenCalled();
+  });
+
   it('delegates chat.sendMessage to MobileChatRpcService', async () => {
     const sendMessage = jest.fn().mockResolvedValue({ status: 'queued' });
     const chat = { sendMessage } as unknown as MobileChatRpcService;

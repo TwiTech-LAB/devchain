@@ -468,6 +468,28 @@ describe('ChatSidebar activity badges', () => {
     expect(badge).not.toHaveTextContent(/Busy/i);
     expect(badge).toHaveClass('h-4', 'text-[10px]', 'font-medium', 'bg-primary/10');
   });
+
+  it('shows only whole minutes after the busy timer reaches one minute', async () => {
+    renderSidebar({
+      agentPresence: {
+        [agent.id]: {
+          online: true,
+          sessionId: 'session-1',
+          activityState: 'busy',
+          busySince: new Date(Date.now() - 90_000).toISOString(),
+        },
+      } as unknown as FlatChatSidebarProps['agentPresence'],
+      agentsWithSessions: [agent],
+      offlineAgents: [],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: 'All' })).toHaveAttribute('aria-selected', 'true');
+    });
+
+    const badge = screen.getByLabelText('Busy for 1m');
+    expect(badge).toHaveTextContent(/^1m$/);
+  });
 });
 
 describe('ChatSidebar team lead-as-header rendering', () => {
@@ -884,7 +906,8 @@ describe('ChatSidebar guest and worktree compatibility', () => {
       [worktreeAgent.id]: {
         online: true,
         sessionId: 'session-wt-1',
-        activityState: 'idle',
+        activityState: 'busy',
+        busySince: new Date(Date.now()).toISOString(),
       },
     } as WorktreeAgentGroup['agentPresence'],
     disabled: false,
@@ -947,7 +970,15 @@ describe('ChatSidebar guest and worktree compatibility', () => {
     expect(worktreeRow).toHaveClass('bg-card/40', 'hover:border-border');
 
     const providerIconFrame = screen.getByTitle('Provider: Claude');
-    expect(providerIconFrame).toHaveClass('h-6', 'w-6', 'bg-muted/40', 'border-border');
+    expect(providerIconFrame).toHaveClass(
+      'h-6',
+      'w-6',
+      'bg-primary/10',
+      'border-primary/60',
+      'shadow-[0_0_8px_hsl(var(--primary)/0.35)]',
+      'animate-busy-halo',
+    );
+    expect(providerIconFrame.querySelector('img')).not.toHaveClass('animate-spin');
 
     fireEvent.click(worktreeRow);
     expect(onLaunchWorktreeAgentChat).toHaveBeenCalledWith(worktreeGroup, worktreeAgent.id);

@@ -357,6 +357,11 @@ export class TranscriptWatcherService implements OnModuleDestroy {
     return this.watchers.get(sessionId)?.lastSummaryMetrics ?? null;
   }
 
+  invalidateLastKnownSummaryMetrics(sessionId: string): void {
+    const watcher = this.watchers.get(sessionId);
+    if (watcher) watcher.lastSummaryMetrics = null;
+  }
+
   // ---------------------------------------------------------------------------
   // Private: Debounce & Change Detection
   // ---------------------------------------------------------------------------

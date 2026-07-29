@@ -4,6 +4,7 @@ import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { EventsService } from '../../events/services/events.service';
 import { PendingAskUserQuestionService } from './pending-ask-user-question.service';
 import type { HookEventData } from '../dtos/hook-event.dto';
+import { RuntimeContextCaptureService } from '../../runtime-context-capture/runtime-context-capture.service';
 
 jest.mock('../../../common/logging/logger', () => ({
   createLogger: () => ({
@@ -24,6 +25,7 @@ describe('HooksService', () => {
     getBySession: jest.Mock;
     clearBySession: jest.Mock;
   };
+  let mockRuntimeContextCapture: { capture: jest.Mock };
 
   const PROJECT_ID = '11111111-1111-1111-1111-111111111111';
   const AGENT_ID = '22222222-2222-2222-2222-222222222222';
@@ -93,6 +95,17 @@ describe('HooksService', () => {
       getBySession: jest.fn().mockReturnValue([]),
       clearBySession: jest.fn().mockReturnValue(0),
     };
+    mockRuntimeContextCapture = {
+      capture: jest.fn().mockReturnValue({
+        accepted: true,
+        change: 'bound',
+        tupleChanged: true,
+        runtimeSessionChanged: true,
+        modelChanged: true,
+        contextWindowChanged: true,
+        current: {},
+      }),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -100,6 +113,7 @@ describe('HooksService', () => {
         { provide: STORAGE_SERVICE, useValue: mockStorage },
         { provide: EventsService, useValue: mockEvents },
         { provide: PendingAskUserQuestionService, useValue: mockPending },
+        { provide: RuntimeContextCaptureService, useValue: mockRuntimeContextCapture },
       ],
     }).compile();
 
@@ -246,6 +260,26 @@ describe('HooksService', () => {
       const result = await service.handleHookEvent(stopPayload);
 
       expect(result).toEqual({ ok: true, handled: false, data: {} });
+      expect(mockEvents.publish).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('handleHookEvent — StatusLine', () => {
+    it('delegates the validated report to runtime context capture without publishing', async () => {
+      const payload: HookEventData = {
+        hookEventName: 'StatusLine',
+        sessionId: SESSION_ID,
+        epoch: 'process-epoch-1',
+        sequence: 1,
+        claudeSessionId: 'claude-runtime-1',
+        modelId: 'claude-sonnet-4-6',
+        contextWindowTokens: 1_000_000,
+      };
+
+      const result = await service.handleHookEvent(payload);
+
+      expect(result).toEqual({ ok: true, handled: true, data: {} });
+      expect(mockRuntimeContextCapture.capture).toHaveBeenCalledWith(payload);
       expect(mockEvents.publish).not.toHaveBeenCalled();
     });
   });

@@ -323,6 +323,27 @@ describe('TerminalIOService delivery', () => {
 
       expect(elapsed).toBeLessThan(300);
     });
+
+    it('brackets multiline prompt text and performs no submit-key write when submitKeys is empty', async () => {
+      const { fake, svc } = makeService();
+      const runSpy = jest.spyOn(fake, 'run');
+      fake.enqueueResponse({ type: 'success' });
+      fake.enqueueResponse({ type: 'success' });
+      fake.enqueueResponse({ type: 'success' });
+
+      await svc.deliverImmediate(target, 'first line\nsecond line', {
+        bracketed: true,
+        submitKeys: [],
+        confirm: false,
+        postPasteDelayMs: 0,
+      });
+
+      const loadBufferCall = runSpy.mock.calls.find(
+        ([options]) => options.argv[1] === 'load-buffer',
+      );
+      expect(loadBufferCall?.[0].input).toBe('\x1b[200~first line\rsecond line\x1b[201~');
+      expect(fake.calls.filter((call) => call.argv[1] === 'send-keys')).toHaveLength(0);
+    });
   });
 
   describe('sendControl', () => {

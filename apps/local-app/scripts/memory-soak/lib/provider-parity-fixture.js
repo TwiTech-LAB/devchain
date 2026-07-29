@@ -276,8 +276,8 @@ function seedProviderSession(fixture, providerName, specification, source) {
       database
         .prepare(
           `INSERT INTO providers
-             (id, name, mcp_configured, one_million_context_enabled, created_at, updated_at)
-           VALUES (?, ?, 0, 0, ?, ?)`,
+             (id, name, mcp_configured, created_at, updated_at)
+           VALUES (?, ?, 0, ?, ?)`,
         )
         .run(provider.id, providerName, now, now);
     }

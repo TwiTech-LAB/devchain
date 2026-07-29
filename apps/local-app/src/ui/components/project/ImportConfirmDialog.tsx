@@ -15,9 +15,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/ui/components/ui/select';
+import type { PromptTransferCounts } from '@/common/prompt-transfer';
 
 interface DryRunResult {
   counts: { toImport: Record<string, number>; toDelete: Record<string, number> };
+  promptTransfer?: PromptTransferCounts;
   unmatchedStatuses?: Array<{ id: string; label: string; color: string; epicCount: number }>;
   templateStatuses?: Array<{ label: string; color: string }>;
 }
@@ -79,6 +81,19 @@ export function ImportConfirmDialog({
                 ))}
             </div>
           </div>
+          {dryRunResult?.promptTransfer && (
+            <div>
+              <strong>Prompt transfer</strong>
+              <div className="grid grid-cols-2 gap-2 mt-1">
+                {Object.entries(dryRunResult.promptTransfer).map(([key, value]) => (
+                  <div key={key} className="flex justify-between">
+                    <span className="capitalize">{key}</span>
+                    <span>{value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {dryRunResult?.unmatchedStatuses && dryRunResult.unmatchedStatuses.length > 0 && (
             <div className="border-t pt-3 mt-3">
               <strong>Status Mapping Required</strong>

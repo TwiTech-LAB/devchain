@@ -11,6 +11,7 @@ Element.prototype.scrollIntoView = jest.fn();
 
 const REVIEW: ImportDryRunReview = {
   counts: { toImport: { agents: 3, epics: 2 }, toDelete: { agents: 1 } },
+  promptTransfer: { imported: 2, deleted: 1, preserved: 3, skipped: 4 },
 };
 
 describe('Step4Review', () => {
@@ -38,6 +39,11 @@ describe('Step4Review', () => {
     expect(within(deleteCounts).getByText('agents')).toBeInTheDocument();
     // No unmatched statuses → no status-mapping section.
     expect(screen.queryByTestId('wizard-review-status-mappings')).not.toBeInTheDocument();
+    const promptTransfer = screen.getByTestId('wizard-review-prompt-transfer');
+    expect(within(promptTransfer).getByText('preserved')).toBeInTheDocument();
+    expect(within(promptTransfer).getByText('skipped')).toBeInTheDocument();
+    expect(within(promptTransfer).getByText('3')).toBeInTheDocument();
+    expect(within(promptTransfer).getByText('4')).toBeInTheDocument();
   });
 
   it('renders the status-mapping section only when there are unmatched statuses', () => {

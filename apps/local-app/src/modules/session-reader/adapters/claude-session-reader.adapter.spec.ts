@@ -8,6 +8,7 @@ import type { PricingServiceInterface } from '../services/pricing.interface';
 const homeDir = os.homedir();
 const mockPricing: PricingServiceInterface = {
   calculateMessageCost: jest.fn().mockReturnValue(0),
+  getCatalogContextWindowSize: jest.fn().mockReturnValue(200_000),
   getContextWindowSize: jest.fn().mockReturnValue(200_000),
 };
 

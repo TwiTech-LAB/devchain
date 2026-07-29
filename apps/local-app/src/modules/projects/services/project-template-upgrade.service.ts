@@ -1,6 +1,8 @@
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { createLogger } from '../../../common/logging/logger';
 import { ValidationError, NotFoundError } from '../../../common/errors/error-types';
+import type { PromptReferenceValidationFailure } from '../../../common/prompt-references';
+import { PROMPT_TRANSFER_POLICY, type PromptTransferCounts } from '../../../common/prompt-transfer';
 import { TemplateCacheService } from '../../registry/services/template-cache.service';
 import { UnifiedTemplateService } from '../../registry/services/unified-template.service';
 import { SettingsService } from '../../settings/services/settings.service';
@@ -44,6 +46,12 @@ export interface UpgradeResult {
   restored?: boolean;
   /** Backup ID for manual restore (only when restored=false) */
   backupId?: string;
+  /** Exact template prompt outcome on successful upgrade. */
+  promptTransfer?: PromptTransferCounts;
+  /** False when template validation rejected the upgrade before project mutation. */
+  mutationStarted?: false;
+  /** Actionable prompt references when a template would skip required prompts. */
+  promptReferenceValidation?: PromptReferenceValidationFailure['promptReferenceValidation'];
 }
 
 /**
@@ -248,10 +256,21 @@ export class ProjectTemplateUpgradeService implements OnModuleInit, OnModuleDest
       if (!('success' in importResult) || !importResult.success) {
         // Generic import failure
         logger.error({ projectId, targetVersion, importResult }, 'Import returned failure status');
+        const mutationStarted =
+          'mutationStarted' in importResult && importResult.mutationStarted === false
+            ? false
+            : undefined;
         return {
           success: false,
-          error: 'Template import failed',
+          error:
+            'error' in importResult && typeof importResult.error === 'string'
+              ? importResult.error
+              : 'Template import failed',
           backupId, // Keep backup for manual recovery
+          ...(mutationStarted === false ? { mutationStarted } : {}),
+          ...('promptReferenceValidation' in importResult
+            ? { promptReferenceValidation: importResult.promptReferenceValidation }
+            : {}),
         };
       }
 
@@ -278,6 +297,9 @@ export class ProjectTemplateUpgradeService implements OnModuleInit, OnModuleDest
       return {
         success: true,
         newVersion: targetVersion,
+        ...('promptTransfer' in importResult
+          ? { promptTransfer: importResult.promptTransfer }
+          : {}),
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Upgrade failed';
@@ -338,11 +360,19 @@ export class ProjectTemplateUpgradeService implements OnModuleInit, OnModuleDest
     }
 
     // Restore project state
-    await this.projectsService.importProject({
+    const importResult = await this.projectsService.importProject({
       projectId: backup.projectId,
       payload: backup.data,
       dryRun: false,
+      promptTransferPolicy: PROMPT_TRANSFER_POLICY.Snapshot,
     });
+    if (!('success' in importResult) || importResult.success !== true) {
+      const detail =
+        'error' in importResult && typeof importResult.error === 'string'
+          ? `: ${importResult.error}`
+          : '';
+      throw new Error(`Backup restore import failed${detail}`);
+    }
 
     // Restore original metadata with correct source
     await this.settingsService.setProjectTemplateMetadata(backup.projectId, {

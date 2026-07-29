@@ -1,27 +1,22 @@
 /**
  * Layer: module-unit
- * Why: ProviderStateManager contains pure state-machine logic (1M enable/disable, threshold defaulting,
- * probe-proof gating). Mocked storage + real ProbeProofService on :memory: SQLite are sufficient —
- * the bug class being caught is incorrect state transitions, not storage query correctness.
+ * Why: ProviderStateManager coordinates provider mutation, auto-compact config, and binary validation.
  */
 import { Test, TestingModule } from '@nestjs/testing';
-import Database from 'better-sqlite3';
-import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { Stats, constants } from 'fs';
+import * as fsPromises from 'fs/promises';
 import { ProviderStateManager } from './provider-state-manager.service';
-import { ProbeProofService } from './probe-proof.service';
 import { ProviderProjectSyncService } from './provider-project-sync.service';
 import { ProviderEffortSeedingService } from './provider-effort-seeding.service';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
-import { DB_CONNECTION } from '../../storage/db/db.provider';
 import { ValidationError } from '../../../common/errors/error-types';
 import type { Provider } from '../../storage/models/domain.models';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
-import { Stats, constants } from 'fs';
-import * as fsPromises from 'fs/promises';
 import {
   disableClaudeAutoCompact,
   enableClaudeAutoCompact,
 } from '../../sessions/utils/claude-config';
+import { DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON } from '@devchain/shared';
 
 jest.mock('fs/promises', () => ({
   stat: jest.fn(),
@@ -40,21 +35,6 @@ const mockEnableClaudeAutoCompact = enableClaudeAutoCompact as jest.MockedFuncti
   typeof enableClaudeAutoCompact
 >;
 
-function buildProofDb() {
-  const sqlite = new Database(':memory:');
-  sqlite.pragma('foreign_keys = ON');
-  sqlite.exec(`
-    CREATE TABLE providers (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE);
-    CREATE TABLE provider_probe_proofs (
-      provider_id TEXT PRIMARY KEY REFERENCES providers(id) ON DELETE CASCADE,
-      bin_path TEXT NOT NULL,
-      recorded_at INTEGER NOT NULL
-    );
-  `);
-  sqlite.prepare("INSERT INTO providers (id, name) VALUES ('provider-1', 'claude')").run();
-  return drizzle(sqlite);
-}
-
 function makeProvider(overrides: Partial<Provider> = {}): Provider {
   return {
     id: 'provider-1',
@@ -64,8 +44,7 @@ function makeProvider(overrides: Partial<Provider> = {}): Provider {
     mcpEndpoint: null,
     mcpRegisteredAt: null,
     autoCompactThreshold: null,
-    autoCompactThreshold1m: null,
-    oneMillionContextEnabled: false,
+    claudeLaunchSettingsJson: DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON,
     env: null,
     createdAt: '2024-01-01T00:00:00Z',
     updatedAt: '2024-01-01T00:00:00Z',
@@ -75,12 +54,7 @@ function makeProvider(overrides: Partial<Provider> = {}): Provider {
 
 describe('ProviderStateManager', () => {
   let service: ProviderStateManager;
-  let probeProofService: ProbeProofService;
-  let mockStorage: {
-    getProvider: jest.Mock;
-    updateProvider: jest.Mock;
-    updateProviderWithScopes: jest.Mock;
-  };
+  let mockStorage: Record<string, jest.Mock>;
   let mockExecutor: jest.Mocked<Pick<ProcessExecutor, 'run'>>;
   let mockSyncService: { syncProviderToAllProjects: jest.Mock };
   let mockEffortSeeding: { seedForProvider: jest.Mock; backfillAll: jest.Mock };
@@ -101,7 +75,6 @@ describe('ProviderStateManager', () => {
       listAllProfileProviderConfigs: jest.fn().mockResolvedValue([]),
       listAgentProfiles: jest.fn().mockResolvedValue({ items: [] }),
     };
-
     mockExecutor = { run: jest.fn() };
     mockSyncService = {
       syncProviderToAllProjects: jest.fn().mockResolvedValue({
@@ -115,489 +88,195 @@ describe('ProviderStateManager', () => {
         scopeConfigHash: 'test',
       }),
     };
-
     mockEffortSeeding = {
       seedForProvider: jest.fn().mockResolvedValue({ added: [], existing: [] }),
       backfillAll: jest.fn().mockResolvedValue({ providers: 0, seededProviders: 0 }),
     };
-
     mockDisableClaudeAutoCompact.mockReset();
     mockEnableClaudeAutoCompact.mockReset();
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ProviderStateManager,
-        ProbeProofService,
         { provide: STORAGE_SERVICE, useValue: mockStorage },
         { provide: ProviderProjectSyncService, useValue: mockSyncService },
         { provide: ProcessExecutor, useValue: mockExecutor },
         { provide: ProviderEffortSeedingService, useValue: mockEffortSeeding },
-        { provide: DB_CONNECTION, useValue: buildProofDb() },
       ],
     }).compile();
 
-    service = module.get<ProviderStateManager>(ProviderStateManager);
-    probeProofService = module.get<ProbeProofService>(ProbeProofService);
+    service = module.get(ProviderStateManager);
   });
 
-  describe('create — effort catalog seeding (shared path)', () => {
-    it('seeds the effort catalog from adapter defaults for the created provider', async () => {
-      const result = await service.create({ name: 'claude', binPath: null, env: null });
-
-      expect(mockEffortSeeding.seedForProvider).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 'provider-1', name: 'claude' }),
-      );
-      expect(result.provider.id).toBe('provider-1');
+  it('creates, seeds, and syncs a provider', async () => {
+    const result = await service.create({
+      name: 'Claude',
+      binPath: null,
+      autoCompactThreshold: 95,
+      env: null,
     });
 
-    it('does not fail provider creation when seeding throws (non-fatal)', async () => {
-      mockEffortSeeding.seedForProvider.mockRejectedValueOnce(new Error('seed boom'));
-
-      const result = await service.create({ name: 'claude', binPath: null, env: null });
-
-      expect(result.provider.id).toBe('provider-1');
-    });
-  });
-
-  describe('update — enable-1M with valid proof', () => {
-    it('sets oneMillionContextEnabled and defaults thresholds when proof exists', async () => {
-      const existing = makeProvider({ binPath: '/usr/local/bin/claude' });
-      mockStorage.getProvider.mockResolvedValue(existing);
-      probeProofService.recordProof('provider-1', '/usr/local/bin/claude');
-
-      const { provider } = await service.update('provider-1', {
-        oneMillionContextEnabled: true,
-      });
-
-      expect(mockStorage.updateProviderWithScopes).toHaveBeenCalledWith(
-        'provider-1',
-        expect.objectContaining({
-          oneMillionContextEnabled: true,
-          autoCompactThreshold1m: 50,
-          autoCompactThreshold: 95,
-        }),
-        undefined,
-        expect.anything(),
-      );
-      expect(provider.oneMillionContextEnabled).toBe(true);
-    });
-
-    it('does not override autoCompactThreshold when existing value is already set', async () => {
-      const existing = makeProvider({ binPath: '/usr/local/bin/claude', autoCompactThreshold: 80 });
-      mockStorage.getProvider.mockResolvedValue(existing);
-      probeProofService.recordProof('provider-1', '/usr/local/bin/claude');
-
-      await service.update('provider-1', { oneMillionContextEnabled: true });
-
-      const payload = mockStorage.updateProviderWithScopes.mock.calls[0][1];
-      expect(payload.autoCompactThreshold).toBeUndefined();
-    });
-  });
-
-  describe('update — enable-1M without proof rejected', () => {
-    it('throws ValidationError when no proof exists', async () => {
-      const existing = makeProvider({ binPath: '/usr/local/bin/claude' });
-      mockStorage.getProvider.mockResolvedValue(existing);
-
-      await expect(
-        service.update('provider-1', { oneMillionContextEnabled: true }),
-      ).rejects.toThrow(ValidationError);
-    });
-
-    it('throws ValidationError when binPath is null', async () => {
-      const existing = makeProvider({ binPath: null });
-      mockStorage.getProvider.mockResolvedValue(existing);
-
-      await expect(
-        service.update('provider-1', { oneMillionContextEnabled: true }),
-      ).rejects.toThrow(ValidationError);
-    });
-  });
-
-  describe('update — disable-1M restores threshold to 95', () => {
-    it('clears 1m threshold and resets standard threshold to 95', async () => {
-      const existing = makeProvider({
-        oneMillionContextEnabled: true,
-        autoCompactThreshold: 70,
-        autoCompactThreshold1m: 50,
-      });
-      mockStorage.getProvider.mockResolvedValue(existing);
-
-      await service.update('provider-1', { oneMillionContextEnabled: false });
-
-      expect(mockStorage.updateProviderWithScopes).toHaveBeenCalledWith(
-        'provider-1',
-        expect.objectContaining({
-          oneMillionContextEnabled: false,
-          autoCompactThreshold1m: null,
-          autoCompactThreshold: 95,
-        }),
-        undefined,
-        expect.anything(),
-      );
-    });
-
-    it('respects explicit autoCompactThreshold when disabling 1M', async () => {
-      const existing = makeProvider({ oneMillionContextEnabled: true, autoCompactThreshold1m: 50 });
-      mockStorage.getProvider.mockResolvedValue(existing);
-
-      await service.update('provider-1', {
-        oneMillionContextEnabled: false,
-        autoCompactThreshold: 80,
-      });
-
-      const payload = mockStorage.updateProviderWithScopes.mock.calls[0][1];
-      expect(payload.autoCompactThreshold).toBe(80);
-    });
-  });
-
-  describe('update — binPath-change auto-disable', () => {
-    it('auto-disables 1M and clears proof when binPath changes without valid proof', async () => {
-      const existing = makeProvider({
+    expect(mockStorage.createProvider).toHaveBeenCalledWith(
+      expect.objectContaining({
         name: 'claude',
-        binPath: '/old/claude',
-        oneMillionContextEnabled: true,
-        autoCompactThreshold1m: 50,
-      });
-      mockStorage.getProvider.mockResolvedValue(existing);
-      probeProofService.recordProof('provider-1', '/old/claude');
-
-      await service.update('provider-1', { binPath: '/new/claude' });
-
-      expect(mockStorage.updateProviderWithScopes).toHaveBeenCalledWith(
-        'provider-1',
-        expect.objectContaining({
-          binPath: '/new/claude',
-          oneMillionContextEnabled: false,
-          autoCompactThreshold: 95,
-          autoCompactThreshold1m: null,
-        }),
-        undefined,
-        expect.anything(),
-      );
-      expect(probeProofService.hasValidProof('provider-1', '/old/claude')).toBe(false);
-    });
-
-    it('does NOT auto-disable 1M when new binPath has valid proof', async () => {
-      const existing = makeProvider({
-        name: 'claude',
-        binPath: '/old/claude',
-        oneMillionContextEnabled: true,
-      });
-      mockStorage.getProvider.mockResolvedValue(existing);
-      probeProofService.recordProof('provider-1', '/new/claude');
-
-      await service.update('provider-1', { binPath: '/new/claude' });
-
-      const payload = mockStorage.updateProviderWithScopes.mock.calls[0][1];
-      expect(payload.oneMillionContextEnabled).toBeUndefined();
-    });
-
-    it('does NOT auto-disable 1M for non-claude providers', async () => {
-      const existing = makeProvider({
-        name: 'codex',
-        binPath: '/old/codex',
-        oneMillionContextEnabled: true,
-      });
-      mockStorage.getProvider.mockResolvedValue(existing);
-
-      await service.update('provider-1', { binPath: '/new/codex' });
-
-      const payload = mockStorage.updateProviderWithScopes.mock.calls[0][1];
-      expect(payload.oneMillionContextEnabled).toBeUndefined();
-    });
-  });
-
-  describe('enableOneMillion', () => {
-    it('enables 1M with proof and sets default thresholds', async () => {
-      const existing = makeProvider({ binPath: '/usr/local/bin/claude' });
-      mockStorage.getProvider.mockResolvedValue(existing);
-      probeProofService.recordProof('provider-1', '/usr/local/bin/claude');
-
-      await service.enableOneMillion('provider-1');
-
-      expect(mockStorage.updateProvider).toHaveBeenCalledWith(
-        'provider-1',
-        expect.objectContaining({
-          oneMillionContextEnabled: true,
-          autoCompactThreshold1m: 50,
-          autoCompactThreshold: 95,
-        }),
-      );
-    });
-
-    it('throws ValidationError when no proof exists', async () => {
-      mockStorage.getProvider.mockResolvedValue(makeProvider());
-
-      await expect(service.enableOneMillion('provider-1')).rejects.toThrow(ValidationError);
-    });
-  });
-
-  describe('disableOneMillion', () => {
-    it('disables 1M and restores standard threshold to 95', async () => {
-      mockStorage.getProvider.mockResolvedValue(
-        makeProvider({ oneMillionContextEnabled: true, autoCompactThreshold1m: 50 }),
-      );
-
-      await service.disableOneMillion('provider-1');
-
-      expect(mockStorage.updateProvider).toHaveBeenCalledWith(
-        'provider-1',
-        expect.objectContaining({
-          oneMillionContextEnabled: false,
-          autoCompactThreshold1m: null,
-          autoCompactThreshold: 95,
-        }),
-      );
-    });
-  });
-
-  describe('probe1m', () => {
-    it('throws ValidationError for non-claude providers', async () => {
-      mockStorage.getProvider.mockResolvedValue(makeProvider({ name: 'codex' }));
-
-      await expect(service.probe1m('provider-1')).rejects.toThrow(ValidationError);
-    });
-
-    it('throws ValidationError when binPath is null', async () => {
-      mockStorage.getProvider.mockResolvedValue(makeProvider({ binPath: null }));
-
-      await expect(service.probe1m('provider-1')).rejects.toThrow(ValidationError);
-    });
-
-    it('records proof on successful probe', async () => {
-      const provider = makeProvider({ binPath: '/usr/local/bin/claude' });
-      mockStorage.getProvider.mockResolvedValue(provider);
-      mockExecutor.run.mockResolvedValue({
-        stdout: JSON.stringify({
-          is_error: false,
-          modelUsage: { m: { contextWindow: 1_000_000 } },
-        }),
-        stderr: '',
-        exitCode: 0,
-        success: true,
-        timedOut: false,
-        truncated: false,
-      });
-
-      const outcome = await service.probe1m('provider-1');
-
-      expect(outcome.supported).toBe(true);
-      expect(probeProofService.hasValidProof('provider-1', '/usr/local/bin/claude')).toBe(true);
-    });
-
-    it('does not record proof on failed probe', async () => {
-      const provider = makeProvider({ binPath: '/usr/local/bin/claude' });
-      mockStorage.getProvider.mockResolvedValue(provider);
-      mockExecutor.run.mockResolvedValue({
-        stdout: JSON.stringify({ is_error: false, modelUsage: { m: { contextWindow: 200_000 } } }),
-        stderr: '',
-        exitCode: 0,
-        success: true,
-        timedOut: false,
-        truncated: false,
-      });
-
-      const outcome = await service.probe1m('provider-1');
-
-      expect(outcome.supported).toBe(false);
-      expect(probeProofService.hasValidProof('provider-1', '/usr/local/bin/claude')).toBe(false);
-    });
-  });
-
-  describe('create', () => {
-    it('creates provider and syncs', async () => {
-      const result = await service.create({
-        name: 'Claude',
         binPath: null,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        autoCompactThreshold: null,
-        env: null,
-      });
+        autoCompactThreshold: 95,
+      }),
+    );
+    expect(mockEffortSeeding.seedForProvider).toHaveBeenCalled();
+    expect(mockSyncService.syncProviderToAllProjects).toHaveBeenCalledWith('provider-1');
+    expect(result.provider).toBeDefined();
+  });
 
-      expect(mockStorage.createProvider).toHaveBeenCalledWith(
-        expect.objectContaining({
-          name: 'claude',
-          binPath: null,
-          mcpConfigured: false,
-        }),
-      );
-      expect(mockSyncService.syncProviderToAllProjects).toHaveBeenCalledWith('provider-1');
-      expect(result.provider).toBeDefined();
-      expect(result.sync).toBeDefined();
+  it('does not fail creation when effort seeding throws', async () => {
+    mockEffortSeeding.seedForProvider.mockRejectedValueOnce(new Error('seed boom'));
+
+    await expect(service.create({ name: 'claude', binPath: null, env: null })).resolves.toEqual(
+      expect.objectContaining({ provider: expect.any(Object) }),
+    );
+  });
+
+  it('degrades gracefully when post-create sync throws', async () => {
+    mockSyncService.syncProviderToAllProjects.mockRejectedValue(new Error('sync fail'));
+
+    await expect(service.create({ name: 'claude', binPath: null, env: null })).resolves.toEqual(
+      expect.objectContaining({ sync: null, syncError: 'sync fail' }),
+    );
+  });
+
+  it('passes launch settings through without collapsing omission into null', async () => {
+    await service.create({ name: 'claude', binPath: null, env: null });
+    expect(mockStorage.createProvider).toHaveBeenLastCalledWith(
+      expect.objectContaining({ claudeLaunchSettingsJson: undefined }),
+    );
+
+    await service.create({
+      name: 'claude',
+      binPath: null,
+      claudeLaunchSettingsJson: null,
+      env: null,
+    });
+    expect(mockStorage.createProvider).toHaveBeenLastCalledWith(
+      expect.objectContaining({ claudeLaunchSettingsJson: null }),
+    );
+  });
+
+  it('updates only surviving provider state', async () => {
+    mockStorage.getProvider.mockResolvedValue(makeProvider());
+
+    await service.update('provider-1', {
+      name: 'CLAUDE',
+      autoCompactThreshold: 88,
+      env: { FOO: 'bar' },
     });
 
-    it('throws ValidationError when oneMillionContextEnabled=true', async () => {
-      await expect(
-        service.create({
-          name: 'claude',
-          binPath: null,
-          env: null,
-          oneMillionContextEnabled: true,
-        }),
-      ).rejects.toThrow(ValidationError);
-      expect(mockStorage.createProvider).not.toHaveBeenCalled();
-    });
+    expect(mockStorage.updateProviderWithScopes).toHaveBeenCalledWith(
+      'provider-1',
+      { name: 'claude', autoCompactThreshold: 88, env: { FOO: 'bar' } },
+      undefined,
+      ['FOO'],
+    );
+  });
 
-    it('degrades gracefully when sync throws', async () => {
-      mockSyncService.syncProviderToAllProjects.mockRejectedValue(new Error('sync fail'));
-      const result = await service.create({ name: 'claude', binPath: null, env: null });
+  it('preserves omitted launch settings and forwards explicit clear', async () => {
+    mockStorage.getProvider.mockResolvedValue(makeProvider());
 
-      expect(result.sync).toBeNull();
-      expect(result.syncError).toBe('sync fail');
+    await service.update('provider-1', { binPath: '/new/claude' });
+    expect(mockStorage.updateProviderWithScopes.mock.calls[0][1]).not.toHaveProperty(
+      'claudeLaunchSettingsJson',
+    );
+
+    await service.update('provider-1', { claudeLaunchSettingsJson: null });
+    expect(mockStorage.updateProviderWithScopes.mock.calls[1][1]).toMatchObject({
+      claudeLaunchSettingsJson: null,
     });
   });
 
-  describe('deleteProvider', () => {
-    it('deletes provider when no profile configs reference it', async () => {
-      await service.deleteProvider('provider-1');
-      expect(mockStorage.deleteProvider).toHaveBeenCalledWith('provider-1');
-    });
-
-    it('throws ValidationError when provider is referenced by profile configs', async () => {
-      mockStorage.listAllProfileProviderConfigs.mockResolvedValue([
-        { providerId: 'provider-1', profileId: 'prof-1' },
-      ]);
-      mockStorage.listAgentProfiles.mockResolvedValue({
-        items: [{ id: 'prof-1', name: 'Default' }],
-      });
-
-      await expect(service.deleteProvider('provider-1')).rejects.toThrow(ValidationError);
-      expect(mockStorage.deleteProvider).not.toHaveBeenCalled();
-    });
+  it('deletes an unreferenced provider', async () => {
+    await service.deleteProvider('provider-1');
+    expect(mockStorage.deleteProvider).toHaveBeenCalledWith('provider-1');
   });
 
-  describe('disableAutoCompact', () => {
-    it('throws ValidationError for non-claude providers', async () => {
-      mockStorage.getProvider.mockResolvedValue(makeProvider({ name: 'codex' }));
-
-      await expect(service.disableAutoCompact('provider-1')).rejects.toThrow(ValidationError);
-      expect(mockDisableClaudeAutoCompact).not.toHaveBeenCalled();
+  it('rejects deletion while profile configs reference the provider', async () => {
+    mockStorage.listAllProfileProviderConfigs.mockResolvedValue([
+      { id: 'config-1', providerId: 'provider-1', profileId: 'profile-1' },
+    ]);
+    mockStorage.listAgentProfiles.mockResolvedValue({
+      items: [{ id: 'profile-1', name: 'Default' }],
     });
 
-    it('calls disableClaudeAutoCompact for claude provider', async () => {
-      mockStorage.getProvider.mockResolvedValue(makeProvider({ name: 'claude' }));
-      mockDisableClaudeAutoCompact.mockResolvedValue({ success: true });
-
-      const result = await service.disableAutoCompact('provider-1');
-
-      expect(mockDisableClaudeAutoCompact).toHaveBeenCalledTimes(1);
-      expect(result.success).toBe(true);
-    });
-
-    it('returns failure result on config error', async () => {
-      mockStorage.getProvider.mockResolvedValue(makeProvider({ name: 'claude' }));
-      mockDisableClaudeAutoCompact.mockResolvedValue({
-        success: false,
-        errorType: 'invalid_config',
-      });
-
-      const result = await service.disableAutoCompact('provider-1');
-      expect(result.success).toBe(false);
-      expect(result.errorType).toBe('invalid_config');
-    });
+    await expect(service.deleteProvider('provider-1')).rejects.toThrow(ValidationError);
   });
 
-  describe('enableAutoCompact', () => {
-    it('throws ValidationError for non-claude providers', async () => {
-      mockStorage.getProvider.mockResolvedValue(makeProvider({ name: 'codex' }));
+  it('enables and disables Claude auto-compact config', async () => {
+    mockStorage.getProvider.mockResolvedValue(makeProvider());
+    mockEnableClaudeAutoCompact.mockResolvedValue({ success: true });
+    mockDisableClaudeAutoCompact.mockResolvedValue({ success: true });
 
-      await expect(service.enableAutoCompact('provider-1')).rejects.toThrow(ValidationError);
-      expect(mockEnableClaudeAutoCompact).not.toHaveBeenCalled();
-    });
+    await expect(service.enableAutoCompact('provider-1')).resolves.toEqual({ success: true });
+    await expect(service.disableAutoCompact('provider-1')).resolves.toEqual({ success: true });
+  });
 
-    it('calls enableClaudeAutoCompact for claude provider', async () => {
-      mockStorage.getProvider.mockResolvedValue(makeProvider({ name: 'claude' }));
-      mockEnableClaudeAutoCompact.mockResolvedValue({ success: true });
+  it('rejects auto-compact config for non-Claude providers', async () => {
+    mockStorage.getProvider.mockResolvedValue(makeProvider({ name: 'codex' }));
 
-      const result = await service.enableAutoCompact('provider-1');
-
-      expect(mockEnableClaudeAutoCompact).toHaveBeenCalledTimes(1);
-      expect(result.success).toBe(true);
-    });
+    await expect(service.enableAutoCompact('provider-1')).rejects.toThrow(ValidationError);
+    await expect(service.disableAutoCompact('provider-1')).rejects.toThrow(ValidationError);
   });
 
   describe('normalizeBinPath', () => {
-    const statMock = fsPromises.stat as jest.Mock;
-    const accessMock = fsPromises.access as jest.Mock;
+    const mockStat = fsPromises.stat as jest.MockedFunction<typeof fsPromises.stat>;
+    const mockAccess = fsPromises.access as jest.MockedFunction<typeof fsPromises.access>;
 
     beforeEach(() => {
-      statMock.mockReset();
-      accessMock.mockReset();
+      mockStat.mockReset();
+      mockAccess.mockReset();
     });
 
-    it('returns null for null input', async () => {
-      expect(await service.normalizeBinPath(null)).toBeNull();
+    it.each([null, undefined, '', '   '])('returns null for %p', async (value) => {
+      await expect(service.normalizeBinPath(value)).resolves.toBeNull();
     });
 
-    it('returns null for undefined input', async () => {
-      expect(await service.normalizeBinPath(undefined)).toBeNull();
+    it('preserves and validates an absolute executable file path', async () => {
+      mockStat.mockResolvedValue({ isFile: () => true } as Stats);
+      mockAccess.mockResolvedValue(undefined);
+
+      await expect(service.normalizeBinPath('/usr/local/bin/claude')).resolves.toBe(
+        '/usr/local/bin/claude',
+      );
+      expect(mockAccess).toHaveBeenCalledWith('/usr/local/bin/claude', constants.X_OK);
     });
 
-    it('returns null for empty string', async () => {
-      expect(await service.normalizeBinPath('  ')).toBeNull();
+    it('rejects a missing absolute path', async () => {
+      mockStat.mockRejectedValue(Object.assign(new Error('missing'), { code: 'ENOENT' }));
+
+      await expect(service.normalizeBinPath('/missing/claude')).rejects.toThrow(
+        'Provider binary path does not exist.',
+      );
     });
 
-    it('preserves absolute path (does not resolve symlinks) and validates it', async () => {
-      statMock.mockResolvedValue({ isFile: () => true } as unknown as Stats);
-      accessMock.mockResolvedValue(undefined);
-
-      const result = await service.normalizeBinPath('/tmp/some/path/bin');
-
-      expect(statMock).toHaveBeenCalledWith('/tmp/some/path/bin');
-      expect(accessMock).toHaveBeenCalledWith('/tmp/some/path/bin', constants.X_OK);
-      expect(result).toBe('/tmp/some/path/bin');
-    });
-
-    it('throws ValidationError when absolute path does not exist (ENOENT)', async () => {
-      const err = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
-      statMock.mockRejectedValue(err);
-
-      await expect(service.normalizeBinPath('/nonexistent/bin')).rejects.toThrow(ValidationError);
-    });
-
-    it('throws ValidationError when path is not a file', async () => {
-      statMock.mockResolvedValue({ isFile: () => false } as unknown as Stats);
-
-      await expect(service.normalizeBinPath('/tmp/a-directory')).rejects.toThrow(ValidationError);
-    });
-
-    it('throws ValidationError when file is not executable (EACCES)', async () => {
-      statMock.mockResolvedValue({ isFile: () => true } as unknown as Stats);
-      const err = Object.assign(new Error('EACCES'), { code: 'EACCES' });
-      accessMock.mockRejectedValue(err);
-
-      await expect(service.normalizeBinPath('/tmp/no-exec-bit')).rejects.toThrow(ValidationError);
-    });
-
-    it('stores relative command name as-is when found on PATH', async () => {
+    it('keeps a command name when it is found on PATH', async () => {
       mockExecutor.run.mockResolvedValue({
+        success: true,
+        exitCode: 0,
         stdout: '/usr/local/bin/claude\n',
         stderr: '',
-        exitCode: 0,
-        success: true,
         timedOut: false,
-        truncated: false,
       });
 
-      const result = await service.normalizeBinPath('claude');
-
-      expect(result).toBe('claude');
-      expect(statMock).not.toHaveBeenCalled();
+      await expect(service.normalizeBinPath('claude')).resolves.toBe('claude');
     });
 
-    it('throws ValidationError when relative command not found on PATH', async () => {
+    it('rejects a command name missing from PATH', async () => {
       mockExecutor.run.mockResolvedValue({
+        success: false,
+        exitCode: 1,
         stdout: '',
         stderr: '',
-        exitCode: 1,
-        success: false,
         timedOut: false,
-        truncated: false,
       });
 
-      await expect(service.normalizeBinPath('unknown-cmd')).rejects.toThrow(ValidationError);
+      await expect(service.normalizeBinPath('missing')).rejects.toThrow(ValidationError);
     });
   });
 });

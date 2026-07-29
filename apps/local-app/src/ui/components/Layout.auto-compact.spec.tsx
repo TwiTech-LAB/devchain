@@ -491,11 +491,11 @@ describe('Layout auto-compact recommendation modal', () => {
     expect(screen.queryByRole('link', { name: 'Worktrees' })).not.toBeInTheDocument();
   });
 
-  it('shows Worktrees nav link when runtime mode is main', async () => {
+  it('temporarily hides Worktrees nav link when runtime mode is main', async () => {
     runtimeMode = 'main';
     await renderLayout();
 
-    expect(await screen.findByRole('link', { name: 'Worktrees' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Worktrees' })).not.toBeInTheDocument();
   });
 
   it('keeps Chat and Reviews nav links visible in main mode', async () => {
@@ -1080,14 +1080,14 @@ describe('Layout auto-compact recommendation modal', () => {
     expect(screen.getByText('Worktree is not running (status: stopped)')).toBeInTheDocument();
   });
 
-  it('hides Worktrees and Registry nav links when a worktree tab is active', async () => {
+  it('keeps Worktrees hidden and hides Registry when a worktree tab is active', async () => {
     const user = userEvent.setup();
     runtimeMode = 'main';
     await renderLayout();
 
-    // Before selecting a worktree: both nav items should be visible
+    // Before selecting a worktree: Worktrees stays temporarily hidden while Registry is visible.
     await waitFor(() => {
-      expect(screen.getByRole('link', { name: 'Worktrees' })).toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'Worktrees' })).not.toBeInTheDocument();
       expect(screen.getByRole('link', { name: 'Registry' })).toBeInTheDocument();
     });
 
@@ -1095,7 +1095,7 @@ describe('Layout auto-compact recommendation modal', () => {
     const worktreeTab = await screen.findByRole('tab', { name: /feature-auth/i });
     await user.click(worktreeTab);
 
-    // After selecting a worktree: both nav items should be hidden
+    // After selecting a worktree: Worktrees remains hidden and Registry is also hidden.
     await waitFor(() => {
       expect(screen.queryByRole('link', { name: 'Worktrees' })).not.toBeInTheDocument();
       expect(screen.queryByRole('link', { name: 'Registry' })).not.toBeInTheDocument();

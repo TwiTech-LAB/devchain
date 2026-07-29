@@ -111,7 +111,12 @@ describe('ProjectTemplateUpgradeService characterization', () => {
     });
     expect(projects.importProject).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ projectId: 'project-1', payload: exportPayload, dryRun: false }),
+      expect.objectContaining({
+        projectId: 'project-1',
+        payload: exportPayload,
+        dryRun: false,
+        promptTransferPolicy: 'snapshot',
+      }),
     );
     expect(service.getProjectBackups('project-1')).toEqual([]);
   });

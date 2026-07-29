@@ -8,18 +8,12 @@ import { WatchersService } from '../../watchers/services/watchers.service';
 import { WatcherRunnerService } from '../../watchers/services/watcher-runner.service';
 import { UnifiedTemplateService } from '../../registry/services/unified-template.service';
 import { TeamsService } from '../../teams/services/teams.service';
-import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
-import { FakeProcessExecutor } from '../../terminal/services/process-executor/fake-process-executor';
 import { ExportSchema } from '@devchain/shared';
 import { ZodError } from 'zod';
 import { ValidationError } from '../../../common/errors/error-types';
 
 jest.mock('../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
-}));
-
-jest.mock('../../providers/utils/probe-1m', () => ({
-  probe1mSupport: jest.fn(),
 }));
 
 /**
@@ -99,7 +93,6 @@ describe('ProjectsService.setupPreview', () => {
           provide: ProjectProviderProvisioningService,
           useValue: { provisionProject: jest.fn().mockResolvedValue({ warnings: [] }) },
         },
-        { provide: ProcessExecutor, useValue: new FakeProcessExecutor() },
       ],
     }).compile();
 
@@ -229,7 +222,6 @@ describe('ProjectsService — selectedProviderNames validation', () => {
           provide: ProjectProviderProvisioningService,
           useValue: { provisionProject: jest.fn().mockResolvedValue({ warnings: [] }) },
         },
-        { provide: ProcessExecutor, useValue: new FakeProcessExecutor() },
       ],
     }).compile();
 

@@ -2,40 +2,14 @@
  * Utilities for working with tags and facets
  */
 
+import { parseTag } from '@/common/tags';
+
+export { parseTag } from '@/common/tags';
+export type { ParsedTag } from '@/common/tags';
+
 export interface TagFacet {
   key: string;
   values: Map<string, number>; // value -> count
-}
-
-export interface ParsedTag {
-  original: string;
-  key: string | null;
-  value: string | null;
-  isKeyValue: boolean;
-}
-
-/**
- * Parse a tag string into key and value components
- */
-export function parseTag(tag: string): ParsedTag {
-  const colonIndex = tag.indexOf(':');
-
-  if (colonIndex === -1 || colonIndex === 0 || colonIndex === tag.length - 1) {
-    // Simple label tag (no colon, or invalid key:value format)
-    return {
-      original: tag,
-      key: null,
-      value: null,
-      isKeyValue: false,
-    };
-  }
-
-  return {
-    original: tag,
-    key: tag.substring(0, colonIndex),
-    value: tag.substring(colonIndex + 1),
-    isKeyValue: true,
-  };
 }
 
 /**

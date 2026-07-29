@@ -79,11 +79,20 @@ export function useAgentSessionMetrics(
     const entriesForEvent: RealtimeInvalidationRegistry[number]['entries'] = [
       { kind: 'custom-handler', handler: invalidateVisibleSummary },
     ];
-    return ['discovered', 'updated', 'ended'].map((type) => ({
+    const transcriptEntries = ['discovered', 'updated', 'ended'].map((type) => ({
       match: (topic: string) => topic.startsWith('session/') && topic.endsWith('/transcript'),
       type,
       entries: entriesForEvent,
     }));
+    return [
+      ...transcriptEntries,
+      {
+        match: (topic: string) =>
+          topic.startsWith('session/') && topic.endsWith('/runtime-context'),
+        type: 'updated',
+        entries: entriesForEvent,
+      },
+    ];
   }, [localSessionIds, queryClient]);
   useRealtimeDispatch(realtimeRegistry);
 

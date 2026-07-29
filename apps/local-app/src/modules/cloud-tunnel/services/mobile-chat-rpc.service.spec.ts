@@ -612,6 +612,191 @@ describe('MobileChatRpcService transcript RPCs', () => {
   });
 });
 
+describe('MobileChatRpcService custom prompt RPCs', () => {
+  const PROMPT_A = '14141414-1414-4414-8414-141414141414';
+  const PROMPT_B = '15151515-1515-4515-8515-151515151515';
+  const OTHER_PROJECT_ID = '16161616-1616-4616-8616-161616161616';
+  const scopeOk = { sessionId: SESSION_A, agentId: AGENT_A, projectId: PROJECT_ID };
+  const promptSummary = (id: string, tags: string[], projectId: string | null = PROJECT_ID) => ({
+    id,
+    projectId,
+    title: 'Duplicate title',
+    contentPreview: 'must not be returned',
+    version: 1,
+    tags,
+    createdAt: '2026-07-28T00:00:00.000Z',
+    updatedAt: '2026-07-28T00:00:00.000Z',
+  });
+
+  it('lists only authorized Custom ids/titles in one bounded storage read', async () => {
+    const { service, storage } = build({
+      activeSessions: { getSessionProjectScope: jest.fn().mockResolvedValue(scopeOk) },
+      storage: {
+        listPrompts: jest.fn().mockResolvedValue({
+          items: [
+            promptSummary(PROMPT_A, ['type:custom']),
+            promptSummary(PROMPT_B, ['TYPE:EXPERIMENTAL']),
+            promptSummary('17171717-1717-4717-8717-171717171717', ['type:system']),
+            promptSummary('18181818-1818-4818-8818-181818181818', []),
+            promptSummary(
+              '19191919-1919-4919-8919-191919191919',
+              ['type:custom'],
+              OTHER_PROJECT_ID,
+            ),
+          ],
+          total: 5,
+          limit: 10000,
+          offset: 0,
+        }),
+      },
+    });
+
+    await expect(
+      service.listCustomPrompts({ sessionId: SESSION_A, projectId: PROJECT_ID }),
+    ).resolves.toEqual([
+      { id: PROMPT_A, title: 'Duplicate title' },
+      { id: PROMPT_B, title: 'Duplicate title' },
+    ]);
+    expect(storage.listPrompts).toHaveBeenCalledTimes(1);
+    expect(storage.listPrompts).toHaveBeenCalledWith({
+      projectId: PROJECT_ID,
+      limit: 10000,
+      offset: 0,
+    });
+  });
+
+  it('fails with a typed domain error instead of returning a truncated list', async () => {
+    const { service } = build({
+      activeSessions: { getSessionProjectScope: jest.fn().mockResolvedValue(scopeOk) },
+      storage: {
+        listPrompts: jest.fn().mockResolvedValue({
+          items: [promptSummary(PROMPT_A, ['type:custom'])],
+          total: 2,
+          limit: 10000,
+          offset: 0,
+        }),
+      },
+    });
+
+    const err = await service
+      .listCustomPrompts({ sessionId: SESSION_A, projectId: PROJECT_ID })
+      .catch((error) => error);
+    expect(err).toBeInstanceOf(AppError);
+    expect((err as AppError).code).toBe('CUSTOM_PROMPT_LIST_TRUNCATED');
+    expect((err as AppError).details).toEqual({
+      total: 2,
+      returned: 1,
+    });
+  });
+
+  it('checks session/project ownership before listing prompts', async () => {
+    const { service, storage } = build({
+      activeSessions: {
+        getSessionProjectScope: jest.fn().mockResolvedValue({
+          ...scopeOk,
+          projectId: OTHER_PROJECT_ID,
+        }),
+      },
+      storage: { listPrompts: jest.fn() },
+    });
+
+    const err = await service
+      .listCustomPrompts({ sessionId: SESSION_A, projectId: PROJECT_ID })
+      .catch((error) => error);
+    expect(err).toBeInstanceOf(ForbiddenError);
+    expect((err as ForbiddenError).details).toMatchObject({
+      code: 'SESSION_PROJECT_MISMATCH',
+    });
+    expect(storage.listPrompts).not.toHaveBeenCalled();
+  });
+
+  it('returns full content only after project and Custom type revalidation', async () => {
+    const { service, storage } = build({
+      activeSessions: { getSessionProjectScope: jest.fn().mockResolvedValue(scopeOk) },
+      storage: {
+        getPrompt: jest.fn().mockResolvedValue({
+          ...promptSummary(PROMPT_A, ['type:custom']),
+          content: 'full prompt body',
+        }),
+      },
+    });
+
+    await expect(
+      service.getCustomPrompt({
+        sessionId: SESSION_A,
+        projectId: PROJECT_ID,
+        promptId: PROMPT_A,
+      }),
+    ).resolves.toEqual({
+      id: PROMPT_A,
+      title: 'Duplicate title',
+      content: 'full prompt body',
+    });
+    expect(storage.getPrompt).toHaveBeenCalledWith(PROMPT_A);
+  });
+
+  it.each([
+    ['cross-project', ['type:custom'], OTHER_PROJECT_ID],
+    ['System', ['type:system'], PROJECT_ID],
+    ['untyped', [], PROJECT_ID],
+  ])('does not expose %s prompt content', async (_case, tags, promptProjectId) => {
+    const { service } = build({
+      activeSessions: { getSessionProjectScope: jest.fn().mockResolvedValue(scopeOk) },
+      storage: {
+        getPrompt: jest.fn().mockResolvedValue({
+          ...promptSummary(PROMPT_A, tags, promptProjectId),
+          content: 'secret prompt body',
+        }),
+      },
+    });
+
+    await expect(
+      service.getCustomPrompt({
+        sessionId: SESSION_A,
+        projectId: PROJECT_ID,
+        promptId: PROMPT_A,
+      }),
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('revalidates the current type at selection time and rejects a Custom-to-System race', async () => {
+    const { service } = build({
+      activeSessions: { getSessionProjectScope: jest.fn().mockResolvedValue(scopeOk) },
+      storage: {
+        getPrompt: jest.fn().mockResolvedValue({
+          ...promptSummary(PROMPT_A, ['type:system']),
+          content: 'changed after list',
+        }),
+      },
+    });
+
+    await expect(
+      service.getCustomPrompt({
+        sessionId: SESSION_A,
+        projectId: PROJECT_ID,
+        promptId: PROMPT_A,
+      }),
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('preserves the storage not-found result for a deleted prompt', async () => {
+    const { service } = build({
+      activeSessions: { getSessionProjectScope: jest.fn().mockResolvedValue(scopeOk) },
+      storage: {
+        getPrompt: jest.fn().mockRejectedValue(new NotFoundError('Prompt', PROMPT_A)),
+      },
+    });
+
+    await expect(
+      service.getCustomPrompt({
+        sessionId: SESSION_A,
+        projectId: PROJECT_ID,
+        promptId: PROMPT_A,
+      }),
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
 describe('MobileChatRpcService.sendMessage', () => {
   const runningSession = {
     sessionId: SESSION_A,

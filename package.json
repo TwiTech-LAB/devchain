@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.17.2",
+  "version": "0.18.0",
   "description": "AI driven development platform",
   "homepage": "https://devchain.cc/",
   "repository": {
@@ -8,6 +8,15 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.18.0": [
+      "Custom prompts: build your own and insert them into any agent chat on web with Alt+Shift+P",
+      "DevChain MCP: extended agent info — provider config, team memberships, live online/busy presence, and open assigned epics",
+      "Providers: supply your own Claude settings JSON, with one-click restore to the DevChain default",
+      "Chat: busy agents get an animated halo and clearer status dots in the sidebar",
+      "Mobile: signing in recovers on its own after a server certificate rotation instead of staying stuck",
+      "Worktrees: temporarily hidden while the feature is reworked",
+      "Template updates"
+    ],
     "0.17.2": [
       "Performance: much lower memory usage when reading session transcripts — long-running sessions no longer bloat the app over time",
       "Sign-in stability: fixed unexpected logouts on desktop and mobile — temporary network hiccups now retry silently instead of signing you out",

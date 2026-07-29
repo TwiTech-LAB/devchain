@@ -6,9 +6,10 @@ import { CopilotHooksConfigService } from './services/copilot-hooks-config.servi
 import { PendingAskUserQuestionService } from './services/pending-ask-user-question.service';
 import { StorageModule } from '../storage/storage.module';
 import { EventsCoreModule } from '../events/events-core.module';
+import { RuntimeContextCaptureModule } from '../runtime-context-capture/runtime-context-capture.module';
 
 @Module({
-  imports: [StorageModule, EventsCoreModule],
+  imports: [StorageModule, EventsCoreModule, RuntimeContextCaptureModule],
   controllers: [HooksController],
   providers: [
     HooksService,

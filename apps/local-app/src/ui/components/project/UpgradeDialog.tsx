@@ -13,17 +13,15 @@ import { Alert, AlertDescription, AlertTitle } from '@/ui/components/ui/alert';
 import { Badge } from '@/ui/components/ui/badge';
 import { useToast } from '@/ui/hooks/use-toast';
 import { ArrowRight, Upload, Loader2, AlertCircle, CheckCircle2, RotateCcw } from 'lucide-react';
+import { formatPromptTransferCounts } from '@/common/prompt-transfer';
+import {
+  formatProjectPromptReferenceFailure,
+  isProjectPromptReferenceFailure,
+  type UpgradeProjectResponse,
+} from '@/ui/pages/projects/lib/project-api';
 
 // Simplified flow: confirm → applying → done | error (no download step - versions are cached)
 type UpgradeStep = 'confirm' | 'applying' | 'done' | 'error';
-
-interface UpgradeResult {
-  success: boolean;
-  newVersion?: string;
-  error?: string;
-  restored?: boolean; // true if auto-restore succeeded after failure
-  backupId?: string; // Only present when restored=false (for manual fallback)
-}
 
 interface UpgradeDialogProps {
   projectId: string;
@@ -37,7 +35,10 @@ interface UpgradeDialogProps {
   onClose: () => void;
 }
 
-async function upgradeProject(projectId: string, targetVersion: string): Promise<UpgradeResult> {
+async function upgradeProject(
+  projectId: string,
+  targetVersion: string,
+): Promise<UpgradeProjectResponse> {
   const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/upgrade-template`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -92,13 +93,21 @@ export function UpgradeDialog({
   const upgradeMutation = useMutation({
     mutationFn: () => upgradeProject(projectId, targetVersion),
     onSuccess: (result) => {
-      if (result.success) {
+      if (result.success === true) {
         setStep('done');
         toast({
           title: `${actionVerb} Complete`,
-          description: `${projectName} ${actionVerbPastParticiple} to v${result.newVersion}`,
+          description:
+            `${projectName} ${actionVerbPastParticiple} to v${result.newVersion}` +
+            (result.promptTransfer
+              ? `. Prompts: ${formatPromptTransferCounts(result.promptTransfer)}.`
+              : ''),
         });
         queryClient.invalidateQueries({ queryKey: ['project-template-metadata', projectId] });
+      } else if (isProjectPromptReferenceFailure(result)) {
+        setError(formatProjectPromptReferenceFailure(result));
+        setBackupId(null);
+        setStep('error');
       } else if (result.restored) {
         // Auto-restore succeeded - show toast and close dialog directly
         // (can't use handleClose here as mutation isPending check would block)
@@ -255,6 +264,11 @@ export function UpgradeDialog({
               <p className="text-sm text-muted-foreground">
                 All changes have been applied successfully
               </p>
+              {upgradeMutation.data?.success && upgradeMutation.data.promptTransfer && (
+                <div className="text-sm text-muted-foreground">
+                  Prompts: {formatPromptTransferCounts(upgradeMutation.data.promptTransfer)}
+                </div>
+              )}
             </div>
 
             <DialogFooter>

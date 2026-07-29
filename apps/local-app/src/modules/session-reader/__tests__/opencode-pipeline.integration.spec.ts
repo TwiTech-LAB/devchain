@@ -9,7 +9,6 @@ import { OpenCodeSessionReaderAdapter } from '../adapters/opencode-session-reade
 import { OpencodeAdapter } from '../../providers/adapters/opencode.adapter';
 import type { TranscriptPathValidator } from '../services/transcript-path-validator.service';
 import type { SessionsService } from '../../sessions/services/sessions.service';
-import type { StorageService } from '../../storage/interfaces/storage.interface';
 import type { PricingServiceInterface } from '../services/pricing.interface';
 import {
   createOpencodeFixtureDb,
@@ -36,6 +35,7 @@ import {
 function makePricing(): PricingServiceInterface {
   return {
     calculateMessageCost: jest.fn().mockReturnValue(0),
+    getCatalogContextWindowSize: jest.fn().mockReturnValue(200_000),
     getContextWindowSize: jest.fn().mockReturnValue(200_000),
   } as unknown as PricingServiceInterface;
 }
@@ -60,29 +60,20 @@ function buildService(
       return {
         id,
         agentId: 'agent-1',
+        providerNameAtLaunch: 'opencode',
         transcriptPath: dbPath,
         providerSessionId,
         status: 'running',
       };
     }),
   };
-  const storage = {
-    getAgent: jest.fn().mockResolvedValue({ id: 'agent-1', providerConfigId: 'cfg-1' }),
-    getProfileProviderConfig: jest.fn().mockResolvedValue({ id: 'cfg-1', providerId: 'prov-1' }),
-    getProvider: jest.fn().mockResolvedValue({ id: 'prov-1', name: 'opencode' }),
-  };
   const pathValidator = { validateForRead: jest.fn(async (p: string) => p) };
-  const providerAdapterFactory = {
-    getAdapter: jest.fn().mockReturnValue({ providerName: 'opencode' }),
-  };
 
   const service = new SessionReaderService(
     factory,
     pathValidator as unknown as TranscriptPathValidator,
     cache,
     sessionsService as unknown as SessionsService,
-    storage as unknown as StorageService,
-    providerAdapterFactory as unknown as never,
   );
   return { service, cache };
 }

@@ -29,6 +29,8 @@ import { parseProfileOptions, extractModelFromArgs } from '../../utils/profile-o
 import { buildTmuxSessionName } from '../../utils/tmux-naming.util';
 import { CleanupStack } from './cleanup-stack';
 import type { SessionDetailDto } from '../../dtos/sessions.dto';
+import { RuntimeContextCaptureService } from '../../../runtime-context-capture/runtime-context-capture.service';
+import { ClaudeLaunchSettingsMaterializerService } from '../../../runtime-context-capture/claude-launch-settings-materializer.service';
 
 const logger = createLogger('SessionRestorePipeline');
 
@@ -61,6 +63,8 @@ export class SessionRestorePipeline {
     private readonly terminalSessionRegistry: TerminalSessionRegistry,
     private readonly eventsService: EventsService,
     private readonly streamService: TerminalStreamService,
+    private readonly runtimeContextCapture: RuntimeContextCaptureService,
+    private readonly claudeLaunchSettings: ClaudeLaunchSettingsMaterializerService,
   ) {
     this.sqlite = getRawSqliteClient(db);
   }
@@ -139,7 +143,8 @@ export class SessionRestorePipeline {
         const epicSegment = locked.epic_id ?? 'independent';
         const tmuxSessionName = buildTmuxSessionName(projectSlug, epicSegment, agent.id, locked.id);
 
-        const config = resolveLaunchConfig({
+        const providerEnv = this.storage.getProviderEnvForProject(provider.id, projectId);
+        const launchConfigInput = {
           mode: 'restore',
           providerSessionId: locked.provider_session_id!,
           adapter,
@@ -147,7 +152,7 @@ export class SessionRestorePipeline {
           modelOverride: effectiveModel,
           effortOverride: effectiveEffort,
           providerBinPath: provider.binPath,
-          providerEnv: this.storage.getProviderEnvForProject(provider.id, projectId),
+          providerEnv,
           configEnv,
           provider,
           hookContext: isHookCapable(adapter)
@@ -159,7 +164,8 @@ export class SessionRestorePipeline {
                 tmuxSessionName,
               }
             : undefined,
-        });
+        } as const;
+        let config = resolveLaunchConfig(launchConfigInput);
 
         if (!config.argv.includes(locked.provider_session_id!)) {
           throw new ValidationError(
@@ -194,6 +200,34 @@ export class SessionRestorePipeline {
               new Date().toISOString(),
               locked.id,
             );
+        });
+        const priorCapture = this.runtimeContextCapture.snapshot(locked.id);
+        const epoch = this.runtimeContextCapture.rotateEpoch(
+          locked.id,
+          config.contextWindowOverride ?? null,
+        );
+        cleanup.push('runtimeContextCapture', async () => {
+          this.runtimeContextCapture.restoreSnapshot(locked.id, priorCapture);
+        });
+        const preparedSettings = await this.claudeLaunchSettings.prepare({
+          providerName: provider.name,
+          settingsJson: provider.claudeLaunchSettingsJson,
+          profileOptionArgs: parseProfileOptions(options),
+          providerEnv,
+          configEnv,
+          sessionId: locked.id,
+          epoch,
+          projectRootPath: project.rootPath,
+        });
+        if (preparedSettings.optionArgs.length > 0) {
+          config = resolveLaunchConfig({
+            ...launchConfigInput,
+            providerOptionArgs: preparedSettings.optionArgs,
+            runtimeEnv: preparedSettings.runtimeEnv,
+          });
+        }
+        cleanup.push('claudeLaunchSettings', async () => {
+          await this.claudeLaunchSettings.cleanupSession(locked.id);
         });
 
         // Phase 7: createTmuxSession

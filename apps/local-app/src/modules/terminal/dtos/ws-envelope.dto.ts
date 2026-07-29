@@ -80,6 +80,49 @@ export const TerminalResizePayloadSchema = z.object({
   cols: z.number(),
 });
 
+export const TerminalPromptPasteInputSchema = z
+  .object({
+    kind: z.literal('prompt-paste'),
+    sessionId: z.string().min(1),
+    requestId: z.string().uuid(),
+    data: z.string(),
+  })
+  .strict();
+
+export type TerminalPromptPasteInput = z.infer<typeof TerminalPromptPasteInputSchema>;
+
+export const TerminalPromptPasteFailureCodeSchema = z.enum([
+  'INVALID_REQUEST',
+  'UNKNOWN_SESSION',
+  'NOT_SUBSCRIBER',
+  'NOT_AUTHORITY',
+  'TMUX_UNAVAILABLE',
+  'DELIVERY_ERROR',
+  'REQUEST_CONFLICT',
+  'BUSY',
+]);
+
+export type TerminalPromptPasteFailureCode = z.infer<typeof TerminalPromptPasteFailureCodeSchema>;
+
+export const TerminalPromptPasteAckSchema = z.discriminatedUnion('ok', [
+  z
+    .object({
+      ok: z.literal(true),
+      code: z.literal('OK'),
+      requestId: z.string().uuid(),
+    })
+    .strict(),
+  z
+    .object({
+      ok: z.literal(false),
+      code: TerminalPromptPasteFailureCodeSchema,
+      requestId: z.string(),
+    })
+    .strict(),
+]);
+
+export type TerminalPromptPasteAck = z.infer<typeof TerminalPromptPasteAckSchema>;
+
 /**
  * Full history request payload (scroll-up history request).
  *

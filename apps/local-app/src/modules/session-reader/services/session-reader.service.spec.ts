@@ -8,7 +8,6 @@ import { TranscriptPathValidator } from './transcript-path-validator.service';
 import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
 import type { UnifiedMessage, UnifiedMetrics, UnifiedSession } from '../dtos/unified-session.types';
 import type { SessionsService } from '../../sessions/services/sessions.service';
-import type { StorageService } from '../../storage/interfaces/storage.interface';
 import { SessionCacheService } from './session-cache.service';
 import { ClaudeSessionReaderAdapter } from '../adapters/claude-session-reader.adapter';
 import { OpenCodeSessionReaderAdapter } from '../adapters/opencode-session-reader.adapter';
@@ -23,6 +22,7 @@ import { decodeCursor } from './transcript-cursor';
 
 const mockAdapterFactory = {
   getAdapter: jest.fn(),
+  getAdapterForPath: jest.fn(),
   getSupportedProviders: jest.fn().mockReturnValue(['claude']),
 } as unknown as jest.Mocked<SessionReaderAdapterFactory>;
 
@@ -44,17 +44,6 @@ const mockMetricsService = {
   registerCacheStatsProvider: jest.fn(),
   registerStatsProvider: jest.fn(),
 } as never;
-
-const mockProviderAdapterFactory = {
-  getAdapter: jest.fn().mockImplementation((name: string) => {
-    if (name === 'claude') {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { ClaudeAdapter } = require('../../providers/adapters/claude.adapter');
-      return new ClaudeAdapter();
-    }
-    return { providerName: name };
-  }),
-};
 
 function makeMessage(id: string, role: 'user' | 'assistant', tsIso: string): UnifiedMessage {
   return {
@@ -125,6 +114,7 @@ const mockSessionCacheService = {
   getChunks: jest.fn(),
   setChunks: jest.fn(),
   getChunksCacheStats: jest.fn(),
+  invalidateDto: jest.fn(),
 };
 
 const mockChunksBySession = new Map<string, { sourceVersion: number; chunks: UnifiedChunk[] }>();
@@ -137,6 +127,7 @@ function setupResolveChain() {
   mockSessionsService.getSession.mockReturnValue({
     id: 'sess-1',
     agentId: 'agent-1',
+    providerNameAtLaunch: 'claude',
     transcriptPath: '/home/user/.claude/projects/-test/session.jsonl',
     status: 'running',
   });
@@ -211,8 +202,6 @@ describe('SessionReaderService', () => {
       mockPathValidator as unknown as TranscriptPathValidator,
       mockSessionCacheService as unknown as SessionCacheService,
       mockSessionsService as unknown as SessionsService,
-      mockStorage as unknown as StorageService,
-      mockProviderAdapterFactory as unknown as never,
     );
   });
 
@@ -228,9 +217,9 @@ describe('SessionReaderService', () => {
       expect(result.messages).toBe(session.messages);
       expect(session.chunks).toBeUndefined();
       expect(mockSessionsService.getSession).toHaveBeenCalledWith('sess-1');
-      expect(mockStorage.getAgent).toHaveBeenCalledWith('agent-1');
-      expect(mockStorage.getProfileProviderConfig).toHaveBeenCalledWith('config-1');
-      expect(mockStorage.getProvider).toHaveBeenCalledWith('provider-1');
+      expect(mockStorage.getAgent).not.toHaveBeenCalled();
+      expect(mockStorage.getProfileProviderConfig).not.toHaveBeenCalled();
+      expect(mockStorage.getProvider).not.toHaveBeenCalled();
       expect(mockPathValidator.validateForRead).toHaveBeenCalledWith(
         '/home/user/.claude/projects/-test/session.jsonl',
         'claude',
@@ -304,47 +293,23 @@ describe('SessionReaderService', () => {
       await expect(service.getTranscript('sess-1')).rejects.toThrow(ValidationError);
     });
 
-    it('should throw ValidationError when no agentId', async () => {
-      mockSessionsService.getSession.mockReturnValue({
-        id: 'sess-1',
-        agentId: null,
-        transcriptPath: '/some/path.jsonl',
-      });
+    it('reads a historical transcript when the current provider row is absent', async () => {
+      setupResolveChain();
+      mockStorage.getProvider.mockRejectedValue(new NotFoundError('Provider', 'provider-1'));
+      mockAdapter.parseFullSession.mockResolvedValue(makeSession());
 
-      await expect(service.getTranscript('sess-1')).rejects.toThrow(ValidationError);
-    });
-
-    it('should throw ValidationError when agent has no providerConfigId', async () => {
-      mockSessionsService.getSession.mockReturnValue({
-        id: 'sess-1',
-        agentId: 'agent-1',
-        transcriptPath: '/some/path.jsonl',
-      });
-      mockStorage.getAgent.mockResolvedValue({
-        id: 'agent-1',
-        providerConfigId: null,
-      });
-
-      await expect(service.getTranscript('sess-1')).rejects.toThrow(ValidationError);
+      await expect(service.getTranscript('sess-1')).resolves.toEqual(
+        expect.objectContaining({ providerName: 'claude' }),
+      );
+      expect(mockStorage.getProvider).not.toHaveBeenCalled();
     });
 
     it('should throw ValidationError when provider not supported', async () => {
       mockSessionsService.getSession.mockReturnValue({
         id: 'sess-1',
         agentId: 'agent-1',
+        providerNameAtLaunch: 'unsupported',
         transcriptPath: '/some/path.jsonl',
-      });
-      mockStorage.getAgent.mockResolvedValue({
-        id: 'agent-1',
-        providerConfigId: 'config-1',
-      });
-      mockStorage.getProfileProviderConfig.mockResolvedValue({
-        id: 'config-1',
-        providerId: 'provider-1',
-      });
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'unsupported',
       });
       (mockAdapterFactory.getAdapter as jest.Mock).mockReturnValue(undefined);
 
@@ -923,13 +888,8 @@ describe('SessionReaderService', () => {
       expect(mockSessionCacheService.getOrParseWithMeta).not.toHaveBeenCalled();
     });
 
-    it('module-unit: applies the 1M context override to lightweight adapter metrics', async () => {
+    it('module-unit: never forces lightweight adapter metrics to a larger context window', async () => {
       setupResolveChain();
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'claude',
-        oneMillionContextEnabled: true,
-      });
       const metrics = makeMetrics({
         primaryModel: 'claude-opus-4-6',
         contextWindowTokens: 200_000,
@@ -938,7 +898,7 @@ describe('SessionReaderService', () => {
 
       const result = await service.getTranscriptSummary('sess-1');
 
-      expect(result.metrics.contextWindowTokens).toBe(1_000_000);
+      expect(result.metrics.contextWindowTokens).toBe(200_000);
       expect(metrics.contextWindowTokens).toBe(200_000);
       expect(mockAdapter.parseFullSession).not.toHaveBeenCalled();
     });
@@ -952,8 +912,6 @@ describe('SessionReaderService', () => {
         mockPathValidator as unknown as TranscriptPathValidator,
         mockSessionCacheService as unknown as SessionCacheService,
         mockSessionsService as unknown as SessionsService,
-        mockStorage as unknown as StorageService,
-        mockProviderAdapterFactory as unknown as never,
         watcher as never,
       );
 
@@ -1006,13 +964,8 @@ describe('SessionReaderService', () => {
       expect(service.getChunksCacheStats()).toMatchObject({ hits: 0, misses: 0 });
     });
 
-    it('module-unit: preserves context-window enrichment on a parsed-cache hit', async () => {
+    it('module-unit: preserves parsed metrics on a cache hit', async () => {
       setupResolveChain();
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'claude',
-        oneMillionContextEnabled: true,
-      });
       const cachedSession = makeSession();
       cachedSession.metrics.primaryModel = 'claude-opus-4-6';
       mockSessionCacheService.getEntry.mockReturnValue({ session: cachedSession });
@@ -1020,7 +973,7 @@ describe('SessionReaderService', () => {
 
       const result = await service.getTranscriptSummary('sess-1');
 
-      expect(result.metrics.contextWindowTokens).toBe(1_000_000);
+      expect(result.metrics.contextWindowTokens).toBe(200_000);
       expect(mockSessionCacheService.getOrParseWithMeta).not.toHaveBeenCalled();
     });
 
@@ -1090,6 +1043,7 @@ describe('SessionReaderService', () => {
 
       const pricing: PricingServiceInterface = {
         calculateMessageCost: jest.fn().mockReturnValue(0.001),
+        getCatalogContextWindowSize: jest.fn().mockReturnValue(200_000),
         getContextWindowSize: jest.fn().mockReturnValue(200_000),
       };
       const realClaudeAdapter = new ClaudeSessionReaderAdapter(pricing);
@@ -1104,6 +1058,7 @@ describe('SessionReaderService', () => {
       mockSessionsService.getSession.mockReturnValue({
         id: 'sess-1',
         agentId: 'agent-1',
+        providerNameAtLaunch: 'claude',
         transcriptPath: filePath,
         status: 'running',
       });
@@ -1439,179 +1394,6 @@ describe('SessionReaderService', () => {
     });
   });
 
-  describe('Claude 1M context override', () => {
-    it('should override contextWindowTokens to 1M when opus model and oneMillionContextEnabled', async () => {
-      setupResolveChain();
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'claude',
-        oneMillionContextEnabled: true,
-      });
-      const session = makeSession();
-      session.metrics.primaryModel = 'claude-opus-4-6';
-      mockAdapter.parseFullSession.mockResolvedValue(session);
-
-      const result = await service.getTranscript('sess-1');
-
-      expect(result.metrics.contextWindowTokens).toBe(1_000_000);
-    });
-
-    it('should not override contextWindowTokens when Claude provider has oneMillionContextEnabled=false', async () => {
-      setupResolveChain();
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'claude',
-        oneMillionContextEnabled: false,
-      });
-      const session = makeSession();
-      mockAdapter.parseFullSession.mockResolvedValue(session);
-
-      const result = await service.getTranscript('sess-1');
-
-      expect(result.metrics.contextWindowTokens).toBe(200_000);
-    });
-
-    it('should not override contextWindowTokens for non-Claude providers', async () => {
-      setupResolveChain();
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'codex',
-        oneMillionContextEnabled: true,
-      });
-      (mockAdapterFactory.getAdapter as jest.Mock).mockReturnValue(mockAdapter);
-      const session = makeSession();
-      mockAdapter.parseFullSession.mockResolvedValue(session);
-
-      const result = await service.getTranscript('sess-1');
-
-      expect(result.metrics.contextWindowTokens).toBe(200_000);
-    });
-
-    it('should apply override on every call including cache hits from SessionCacheService', async () => {
-      setupResolveChain();
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'claude',
-        oneMillionContextEnabled: true,
-      });
-      const session = makeSession();
-      session.metrics.primaryModel = 'claude-opus-4-6';
-
-      // First call: fresh parse via adapter delegation
-      mockSessionCacheService.getOrParseWithMeta.mockResolvedValueOnce({
-        session,
-        cacheHit: false,
-        lastOffset: 1024,
-        lastSize: 1024,
-        lastMtime: Date.now(),
-      });
-      // Second call: cache hit (no adapter.parseFullSession call)
-      mockSessionCacheService.getOrParseWithMeta.mockResolvedValueOnce({
-        session,
-        cacheHit: true,
-        lastOffset: 1024,
-        lastSize: 1024,
-        lastMtime: Date.now(),
-      });
-
-      const result1 = await service.getTranscript('sess-1');
-      const result2 = await service.getTranscript('sess-1');
-
-      expect(result1.metrics.contextWindowTokens).toBe(1_000_000);
-      expect(result2.metrics.contextWindowTokens).toBe(1_000_000);
-      // adapter.parseFullSession was NOT called directly — SessionCacheService manages it
-      expect(mockAdapter.parseFullSession).not.toHaveBeenCalled();
-    });
-
-    it('should return default contextWindowTokens when oneMillionContextEnabled toggles from true to false', async () => {
-      setupResolveChain();
-      const session = makeSession();
-      session.metrics.primaryModel = 'claude-opus-4-6';
-      session.metrics.contextWindowTokens = 200_000;
-
-      mockSessionCacheService.getOrParseWithMeta.mockResolvedValue({
-        session,
-        cacheHit: false,
-        lastOffset: 1024,
-        lastSize: 1024,
-        lastMtime: Date.now(),
-      });
-
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'claude',
-        oneMillionContextEnabled: true,
-      });
-      const result1 = await service.getTranscript('sess-1');
-      expect(result1.metrics.contextWindowTokens).toBe(1_000_000);
-
-      mockSessionCacheService.getOrParseWithMeta.mockResolvedValue({
-        session,
-        cacheHit: true,
-        lastOffset: 1024,
-        lastSize: 1024,
-        lastMtime: Date.now(),
-      });
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'claude',
-        oneMillionContextEnabled: false,
-      });
-      const result2 = await service.getTranscript('sess-1');
-      expect(result2.metrics.contextWindowTokens).toBe(200_000);
-      expect(session.metrics.contextWindowTokens).toBe(200_000);
-    });
-
-    it('should not override primaryModel even when 1M context is enabled', async () => {
-      setupResolveChain();
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'claude',
-        oneMillionContextEnabled: true,
-      });
-      const session = makeSession();
-      session.metrics.primaryModel = 'claude-opus-4-6';
-      mockAdapter.parseFullSession.mockResolvedValue(session);
-
-      const result = await service.getTranscript('sess-1');
-
-      expect(result.metrics.primaryModel).toBe('claude-opus-4-6');
-      expect(result.metrics.contextWindowTokens).toBe(1_000_000);
-    });
-
-    it('should not override contextWindowTokens for sonnet model even with 1M enabled', async () => {
-      setupResolveChain();
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'claude',
-        oneMillionContextEnabled: true,
-      });
-      const session = makeSession();
-      // default fixture is claude-sonnet-4-6
-      mockAdapter.parseFullSession.mockResolvedValue(session);
-
-      const result = await service.getTranscript('sess-1');
-
-      expect(result.metrics.contextWindowTokens).toBe(200_000);
-    });
-
-    it('should not override contextWindowTokens for haiku model even with 1M enabled', async () => {
-      setupResolveChain();
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'claude',
-        oneMillionContextEnabled: true,
-      });
-      const session = makeSession();
-      session.metrics.primaryModel = 'claude-haiku-4-5';
-      mockAdapter.parseFullSession.mockResolvedValue(session);
-
-      const result = await service.getTranscript('sess-1');
-
-      expect(result.metrics.contextWindowTokens).toBe(200_000);
-    });
-  });
-
   describe('session cache delegation', () => {
     it('coalesces concurrent summary, index, and chunk requests into one parse flight', async () => {
       setupResolveChain();
@@ -1856,13 +1638,6 @@ describe('SessionReaderService', () => {
       const session = makeSession();
       session.metrics.primaryModel = 'claude-opus-4-6';
 
-      // Override provider to enable 1M context
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'claude',
-        oneMillionContextEnabled: true,
-      });
-
       // Return cached session (cacheHit: true) without calling adapter
       mockSessionCacheService.getOrParseWithMeta.mockResolvedValue({
         session,
@@ -1879,20 +1654,13 @@ describe('SessionReaderService', () => {
       // Chunks should still be built and attached
       expect(result.chunks).toBeDefined();
       expect(result.chunks!.length).toBeGreaterThan(0);
-      // Context-window override should still be applied
-      expect(result.metrics.contextWindowTokens).toBe(1_000_000);
+      expect(result.metrics.contextWindowTokens).toBe(200_000);
     });
 
-    it('should apply context-window override on every call including cache hits', async () => {
+    it('should preserve parsed context metrics on every call including cache hits', async () => {
       setupResolveChain();
       const session = makeSession();
       session.metrics.primaryModel = 'claude-opus-4-6';
-
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'claude',
-        oneMillionContextEnabled: true,
-      });
 
       // First call: fresh parse
       mockSessionCacheService.getOrParseWithMeta.mockResolvedValueOnce({
@@ -1903,7 +1671,7 @@ describe('SessionReaderService', () => {
         lastMtime: Date.now(),
       });
       const result1 = await service.getTranscript('sess-1');
-      expect(result1.metrics.contextWindowTokens).toBe(1_000_000);
+      expect(result1.metrics.contextWindowTokens).toBe(200_000);
 
       // Second call: cache hit
       mockSessionCacheService.getOrParseWithMeta.mockResolvedValueOnce({
@@ -1914,7 +1682,251 @@ describe('SessionReaderService', () => {
         lastMtime: Date.now(),
       });
       const result2 = await service.getTranscript('sess-1');
-      expect(result2.metrics.contextWindowTokens).toBe(1_000_000);
+      expect(result2.metrics.contextWindowTokens).toBe(200_000);
+    });
+  });
+
+  describe('runtime context-window resolution', () => {
+    function createResolvedService(
+      liveContext: {
+        configuredOverride: { modelId: string; contextWindowTokens: number } | null;
+        claudeCapture: {
+          sessionId: string;
+          epoch: string;
+          sequence: number;
+          claudeSessionId: string;
+          modelId: string;
+          contextWindowTokens: number;
+        } | null;
+      } | null,
+      catalog: Record<string, number> = {},
+      watcher?: {
+        getLastKnownSummaryMetrics: jest.Mock;
+        invalidateLastKnownSummaryMetrics: jest.Mock;
+      },
+      events?: { publish: jest.Mock },
+    ): SessionReaderService {
+      const pricing = {
+        calculateMessageCost: jest.fn(),
+        getCatalogContextWindowSize: jest.fn((model: string) => catalog[model] ?? null),
+        getContextWindowSize: jest.fn((model: string) => catalog[model] ?? 200_000),
+      } satisfies PricingServiceInterface;
+      const runtimeContextCapture = {
+        getLiveContext: jest.fn().mockReturnValue(liveContext),
+      };
+
+      return new SessionReaderService(
+        mockAdapterFactory as unknown as SessionReaderAdapterFactory,
+        mockPathValidator as unknown as TranscriptPathValidator,
+        mockSessionCacheService as unknown as SessionCacheService,
+        mockSessionsService as unknown as SessionsService,
+        watcher as never,
+        pricing,
+        runtimeContextCapture as never,
+        events as never,
+      );
+    }
+
+    function setSummarySession(
+      providerNameAtLaunch: string,
+      providerSessionId: string | null,
+      metrics: UnifiedMetrics,
+    ): void {
+      setupResolveChain();
+      mockSessionsService.getSession.mockReturnValue({
+        id: 'sess-1',
+        agentId: 'agent-1',
+        providerNameAtLaunch,
+        providerSessionId,
+        transcriptPath: '/home/user/.claude/projects/-test/session.jsonl',
+        status: 'running',
+      });
+      mockAdapter.getSummary.mockResolvedValue({ metrics, exactFields: [] });
+    }
+
+    it('applies an exact configured override for a non-Claude provider and custom model', async () => {
+      const metrics = makeMetrics({
+        primaryModel: 'custom/provider-model',
+        contextWindowTokens: 200_000,
+      });
+      setSummarySession('codex', 'codex-runtime', metrics);
+      const resolved = createResolvedService({
+        configuredOverride: {
+          modelId: 'custom/provider-model',
+          contextWindowTokens: 640_000,
+        },
+        claudeCapture: null,
+      });
+
+      const summary = await resolved.getTranscriptSummary('sess-1');
+
+      expect(summary.metrics.contextWindowTokens).toBe(640_000);
+      expect(metrics.contextWindowTokens).toBe(200_000);
+    });
+
+    it('preserves a Codex transcript-reported window before the model catalog', async () => {
+      const metrics = makeMetrics({
+        primaryModel: 'gpt-5.6-sol',
+        contextWindowTokens: 258_400,
+      });
+      setSummarySession('codex', 'codex-runtime', metrics);
+      const resolved = createResolvedService(
+        {
+          configuredOverride: null,
+          claudeCapture: null,
+        },
+        { 'gpt-5.6-sol': 1_050_000 },
+      );
+
+      const summary = await resolved.getTranscriptSummary('sess-1');
+
+      expect(summary.metrics.contextWindowTokens).toBe(258_400);
+      expect(metrics.contextWindowTokens).toBe(258_400);
+    });
+
+    it('applies a configured Claude alias before the canonical hook capture', async () => {
+      const metrics = makeMetrics({
+        primaryModel: 'claude-opus-5',
+        contextWindowTokens: 1_000_000,
+      });
+      setSummarySession('claude', 'claude-runtime-1', metrics);
+      const resolved = createResolvedService(
+        {
+          configuredOverride: {
+            modelId: 'opus',
+            contextWindowTokens: 500_000,
+          },
+          claudeCapture: {
+            sessionId: 'sess-1',
+            epoch: 'epoch-1',
+            sequence: 1,
+            claudeSessionId: 'claude-runtime-1',
+            modelId: 'claude-opus-5',
+            contextWindowTokens: 1_000_000,
+          },
+        },
+        { 'claude-opus-5': 1_000_000 },
+      );
+
+      const summary = await resolved.getTranscriptSummary('sess-1');
+
+      expect(summary.metrics.contextWindowTokens).toBe(500_000);
+      expect(metrics.contextWindowTokens).toBe(1_000_000);
+    });
+
+    it('uses an exact supported Claude model and transcript capture after configured mismatch', async () => {
+      const metrics = makeMetrics({
+        primaryModel: 'claude-sonnet-4-6',
+        contextWindowTokens: 200_000,
+      });
+      setSummarySession('claude', 'claude-runtime-1', metrics);
+      const resolved = createResolvedService(
+        {
+          configuredOverride: {
+            modelId: 'claude-opus-4-6',
+            contextWindowTokens: 750_000,
+          },
+          claudeCapture: {
+            sessionId: 'sess-1',
+            epoch: 'epoch-1',
+            sequence: 1,
+            claudeSessionId: 'claude-runtime-1',
+            modelId: 'claude-sonnet-4-6',
+            contextWindowTokens: 900_000,
+          },
+        },
+        { 'claude-sonnet-4-6': 1_000_000 },
+      );
+
+      const summary = await resolved.getTranscriptSummary('sess-1');
+
+      expect(summary.metrics.contextWindowTokens).toBe(900_000);
+    });
+
+    it.each([
+      {
+        name: 'provider transcript mismatch',
+        provider: 'claude',
+        providerSessionId: 'different-runtime',
+        model: 'claude-sonnet-4-6',
+        captureModel: 'claude-sonnet-4-6',
+        catalog: 1_000_000,
+        expected: 1_000_000,
+      },
+      {
+        name: 'model mismatch',
+        provider: 'claude',
+        providerSessionId: 'claude-runtime-1',
+        model: 'claude-sonnet-4-6',
+        captureModel: 'claude-opus-4-6',
+        catalog: 1_000_000,
+        expected: 1_000_000,
+      },
+      {
+        name: 'unsupported Claude model',
+        provider: 'claude',
+        providerSessionId: 'claude-runtime-1',
+        model: 'claude-experimental-9',
+        captureModel: 'claude-experimental-9',
+        catalog: null,
+        expected: 200_000,
+      },
+      {
+        name: 'non-Claude provider',
+        provider: 'codex',
+        providerSessionId: 'claude-runtime-1',
+        model: 'gpt-5.4',
+        captureModel: 'gpt-5.4',
+        catalog: 400_000,
+        expected: 123_000,
+      },
+    ])('falls through $name capture to catalog or fallback', async (testCase) => {
+      const metrics = makeMetrics({
+        primaryModel: testCase.model,
+        contextWindowTokens: 123_000,
+      });
+      setSummarySession(testCase.provider, testCase.providerSessionId, metrics);
+      const catalog = testCase.catalog === null ? {} : { [testCase.model]: testCase.catalog };
+      const resolved = createResolvedService(
+        {
+          configuredOverride: null,
+          claudeCapture: {
+            sessionId: 'sess-1',
+            epoch: 'epoch-1',
+            sequence: 1,
+            claudeSessionId: 'claude-runtime-1',
+            modelId: testCase.captureModel,
+            contextWindowTokens: 900_000,
+          },
+        },
+        catalog,
+      );
+
+      const summary = await resolved.getTranscriptSummary('sess-1');
+
+      expect(summary.metrics.contextWindowTokens).toBe(testCase.expected);
+    });
+
+    it('invalidates backend metrics caches before publishing the content-free event', async () => {
+      const watcher = {
+        getLastKnownSummaryMetrics: jest.fn().mockReturnValue(null),
+        invalidateLastKnownSummaryMetrics: jest.fn(),
+      };
+      const events = {
+        publish: jest.fn().mockImplementation(async () => {
+          expect(mockSessionCacheService.invalidateDto).toHaveBeenCalledWith('sess-1');
+          expect(watcher.invalidateLastKnownSummaryMetrics).toHaveBeenCalledWith('sess-1');
+          return 'event-1';
+        }),
+      };
+      const resolved = createResolvedService(null, {}, watcher, events);
+
+      resolved.handleRuntimeContextTupleChanged({ sessionId: 'sess-1' });
+      await resolved.onModuleDestroy();
+
+      expect(events.publish).toHaveBeenCalledWith('session.runtime-context.updated', {
+        sessionId: 'sess-1',
+      });
     });
   });
 
@@ -1957,6 +1969,7 @@ describe('SessionReaderService', () => {
     function makePricing(): jest.Mocked<PricingServiceInterface> {
       return {
         calculateMessageCost: jest.fn().mockReturnValue(0),
+        getCatalogContextWindowSize: jest.fn().mockReturnValue(200_000),
         getContextWindowSize: jest.fn().mockReturnValue(200_000),
       } as unknown as jest.Mocked<PricingServiceInterface>;
     }
@@ -2029,8 +2042,6 @@ describe('SessionReaderService', () => {
         mockPathValidator as unknown as TranscriptPathValidator,
         realCache,
         mockSessionsService as unknown as SessionsService,
-        mockStorage as unknown as StorageService,
-        mockProviderAdapterFactory as unknown as never,
       );
 
       const sourceRef: SessionSourceRef = {
@@ -2047,7 +2058,6 @@ describe('SessionReaderService', () => {
           transcriptPath: dbPath,
           sourceRef,
           providerName: 'opencode',
-          oneMillionContextEnabled: false,
         });
     });
 
@@ -2135,6 +2145,7 @@ describe('SessionReaderService', () => {
     function makePricing(): jest.Mocked<PricingServiceInterface> {
       return {
         calculateMessageCost: jest.fn().mockReturnValue(0),
+        getCatalogContextWindowSize: jest.fn().mockReturnValue(200_000),
         getContextWindowSize: jest.fn().mockReturnValue(200_000),
       } as unknown as jest.Mocked<PricingServiceInterface>;
     }
@@ -2191,6 +2202,7 @@ describe('SessionReaderService', () => {
       mockSessionsService.getSession.mockReturnValue({
         id: SES,
         agentId: 'agent-1',
+        providerNameAtLaunch: 'opencode',
         transcriptPath: dbPath,
         providerSessionId: SES,
         status: 'running',
@@ -2209,8 +2221,6 @@ describe('SessionReaderService', () => {
         mockPathValidator as unknown as TranscriptPathValidator,
         realCache,
         mockSessionsService as unknown as SessionsService,
-        mockStorage as unknown as StorageService,
-        mockProviderAdapterFactory as unknown as never,
       );
     });
 
@@ -2239,6 +2249,7 @@ describe('SessionReaderService', () => {
       mockSessionsService.getSession.mockReturnValue({
         id: SES,
         agentId: 'agent-1',
+        providerNameAtLaunch: 'opencode',
         transcriptPath: dbPath,
         providerSessionId: null,
         status: 'running',

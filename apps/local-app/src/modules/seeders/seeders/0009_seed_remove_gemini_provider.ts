@@ -26,14 +26,14 @@ const SEEDER_VERSION = 1;
  * agents.provider_config_id`, all ON DELETE RESTRICT. The ONLY other RESTRICT
  * child in play is `sessions.agent_id`; every remaining relation to the deleted
  * rows is ON DELETE CASCADE (team_members, chat_*, provider_models,
- * provider_env_scopes, provider_probe_proofs, team_profile_configs) or SET NULL
+ * provider_env_scopes, team_profile_configs) or SET NULL
  * (teams.team_lead_agent_id, *.author_agent_id, scheduled_epics.template_agent_id).
  * So we only need to explicitly delete, in order:
  *   1. sessions of the affected agents (RESTRICT — incl. any 'running' rows: the
  *      provider is gone, so the agent cannot legitimately be running),
  *   2. the affected agents (FK cascade/set-null handles their other relations),
  *   3. the gemini configs (cascade handles team_profile_configs),
- *   4. the gemini provider rows (cascade handles models/env_scopes/probe_proofs).
+ *   4. the gemini provider rows (cascade handles models/env_scopes).
  * The whole cascade runs in a single IMMEDIATE transaction. Matching is
  * case-insensitive (`lower(name) = 'gemini'`).
  *
@@ -79,7 +79,7 @@ export async function runSeedRemoveGeminiProvider(ctx: SeederContext): Promise<v
           "(SELECT id FROM providers WHERE lower(name) = 'gemini')",
       )
       .run().changes;
-    // 4. provider rows (cascade handles models/env_scopes/probe_proofs)
+    // 4. provider rows (cascade handles models/env_scopes)
     const providers = sqlite
       .prepare("DELETE FROM providers WHERE lower(name) = 'gemini'")
       .run().changes;

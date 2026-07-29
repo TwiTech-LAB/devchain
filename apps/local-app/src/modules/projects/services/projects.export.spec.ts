@@ -8,18 +8,12 @@ import { WatchersService } from '../../watchers/services/watchers.service';
 import { WatcherRunnerService } from '../../watchers/services/watcher-runner.service';
 import { UnifiedTemplateService } from '../../registry/services/unified-template.service';
 import { TeamsService } from '../../teams/services/teams.service';
-import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
-import { FakeProcessExecutor } from '../../terminal/services/process-executor/fake-process-executor';
 import * as devchainShared from '@devchain/shared';
 
 jest.mock('../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
 }));
 
-// Mock probe-1m utility
-jest.mock('../../providers/utils/probe-1m', () => ({
-  probe1mSupport: jest.fn(),
-}));
 import { createMockProject } from '../../../../test/factories';
 
 describe('ProjectsService', () => {
@@ -235,7 +229,6 @@ describe('ProjectsService', () => {
           provide: ProjectProviderProvisioningService,
           useValue: { provisionProject: jest.fn().mockResolvedValue({ warnings: [] }) },
         },
-        { provide: ProcessExecutor, useValue: new FakeProcessExecutor() },
       ],
     }).compile();
 
@@ -386,6 +379,187 @@ describe('ProjectsService', () => {
         version: 3,
         tags: ['init', 'setup'],
       });
+    });
+
+    it('exports Custom prompts referenced by profile instructions', async () => {
+      const customPrompt = {
+        id: 'prompt-custom',
+        projectId: 'project-123',
+        title: 'Private SOP',
+        content: 'private',
+        version: 1,
+        tags: ['type:custom'],
+        createdAt: '',
+        updatedAt: '',
+      };
+      storage.listPrompts.mockResolvedValue({
+        items: [customPrompt],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+      storage.getPrompt.mockResolvedValue(customPrompt);
+      storage.listAgentProfiles.mockResolvedValue({
+        items: [
+          {
+            id: 'prof-1',
+            name: 'Coder',
+            instructions: 'Follow [[prompt:Private SOP]].',
+          },
+        ],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.getInitialSessionPrompt.mockResolvedValue(null);
+
+      const result = await service.exportProject('project-123');
+
+      expect(result.profiles).toEqual([expect.objectContaining({ name: 'Coder' })]);
+      expect(result.prompts).toEqual([
+        expect.objectContaining({ id: 'prompt-custom', tags: ['type:custom'] }),
+      ]);
+    });
+
+    it('allows a System prompt to satisfy an instruction when a Custom title duplicate exists', async () => {
+      const prompts = [
+        {
+          id: 'prompt-custom',
+          projectId: 'project-123',
+          title: 'Shared SOP',
+          content: 'private',
+          version: 1,
+          tags: ['type:custom'],
+          createdAt: '',
+          updatedAt: '',
+        },
+        {
+          id: 'prompt-system',
+          projectId: 'project-123',
+          title: 'Shared SOP',
+          content: 'shared',
+          version: 1,
+          tags: ['type:system'],
+          createdAt: '',
+          updatedAt: '',
+        },
+      ];
+      storage.listPrompts.mockResolvedValue({
+        items: prompts,
+        total: prompts.length,
+        limit: 1000,
+        offset: 0,
+      });
+      storage.getPrompt.mockImplementation(async (id: string) =>
+        prompts.find((prompt) => prompt.id === id),
+      );
+      storage.listAgentProfiles.mockResolvedValue({
+        items: [
+          {
+            id: 'prof-1',
+            name: 'Coder',
+            instructions: 'Follow [[prompt:shared sop]].',
+          },
+        ],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.getInitialSessionPrompt.mockResolvedValue(null);
+
+      const result = await service.exportProject('project-123');
+
+      expect(result.profiles).toEqual([expect.objectContaining({ name: 'Coder' })]);
+      expect(result.prompts).toEqual([
+        expect.objectContaining({ id: 'prompt-custom', tags: ['type:custom'] }),
+        expect.objectContaining({ id: 'prompt-system', tags: ['type:system'] }),
+      ]);
+    });
+
+    it('exports a Custom initial prompt in both template initial-prompt fields', async () => {
+      const customPrompt = {
+        id: 'prompt-custom',
+        projectId: 'project-123',
+        title: 'My Private Start',
+        content: 'private',
+        version: 1,
+        tags: ['type:custom'],
+        createdAt: '',
+        updatedAt: '',
+      };
+      storage.listPrompts.mockResolvedValue({
+        items: [customPrompt],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+      storage.getPrompt.mockResolvedValue(customPrompt);
+      storage.listAgentProfiles.mockResolvedValue({
+        items: [],
+        total: 0,
+        limit: 1000,
+        offset: 0,
+      });
+      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.getInitialSessionPrompt.mockResolvedValue(customPrompt);
+
+      const result = await service.exportProject('project-123');
+
+      expect(result.prompts).toEqual([expect.objectContaining({ id: 'prompt-custom' })]);
+      expect(result.initialPrompt).toEqual({
+        promptId: 'prompt-custom',
+        title: 'My Private Start',
+      });
+      expect(result.projectSettings?.initialPromptTitle).toBe('My Private Start');
+    });
+
+    it('includes Custom prompts and initial fields in the default export', async () => {
+      const customPrompt = {
+        id: 'prompt-custom',
+        projectId: 'project-123',
+        title: 'Private SOP',
+        content: 'private',
+        version: 1,
+        tags: ['type:custom'],
+        createdAt: '',
+        updatedAt: '',
+      };
+      storage.listPrompts.mockResolvedValue({
+        items: [customPrompt],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+      storage.getPrompt.mockResolvedValue(customPrompt);
+      storage.listAgentProfiles.mockResolvedValue({
+        items: [
+          {
+            id: 'prof-1',
+            name: 'Coder',
+            instructions: 'Follow [[prompt:Private SOP]].',
+          },
+        ],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
+      storage.getInitialSessionPrompt.mockResolvedValue(customPrompt);
+
+      const result = await service.exportProject('project-123');
+
+      expect(result.prompts).toEqual([expect.objectContaining({ id: 'prompt-custom' })]);
+      expect(result.initialPrompt).toEqual({
+        promptId: 'prompt-custom',
+        title: 'Private SOP',
+      });
+      expect(result.projectSettings?.initialPromptTitle).toBe('Private SOP');
     });
 
     it('should export all status fields', async () => {
@@ -1506,8 +1680,6 @@ describe('ProjectsService', () => {
           id: 'prov-1',
           name: 'claude',
           autoCompactThreshold: null,
-          autoCompactThreshold1m: null,
-          oneMillionContextEnabled: false,
           env: { SOURCE_KEY: 'val-source', OTHER_KEY: 'val-other' },
         },
       ]);
@@ -1536,8 +1708,6 @@ describe('ProjectsService', () => {
           id: 'prov-1',
           name: 'claude',
           autoCompactThreshold: 85,
-          autoCompactThreshold1m: null,
-          oneMillionContextEnabled: true,
           env: { SCOPED_KEY: 'secret' },
         },
       ]);
@@ -1551,7 +1721,6 @@ describe('ProjectsService', () => {
       expect(result.providerSettings![0]).toEqual({
         name: 'claude',
         autoCompactThreshold: 85,
-        oneMillionContextEnabled: true,
       });
       expect(result.providerSettings![0].env).toBeUndefined();
     });
@@ -1562,8 +1731,6 @@ describe('ProjectsService', () => {
           id: 'prov-1',
           name: 'claude',
           autoCompactThreshold: 85,
-          autoCompactThreshold1m: null,
-          oneMillionContextEnabled: false,
           env: { ANTHROPIC_API_KEY: 'sk-secret', GLOBAL_VAR: 'open' },
         },
       ]);
@@ -1584,8 +1751,6 @@ describe('ProjectsService', () => {
           id: 'prov-1',
           name: 'claude',
           autoCompactThreshold: null,
-          autoCompactThreshold1m: null,
-          oneMillionContextEnabled: false,
           env: { GLOBAL_A: 'a', GLOBAL_B: 'b' },
         },
       ]);
@@ -1604,8 +1769,6 @@ describe('ProjectsService', () => {
           id: 'prov-1',
           name: 'claude',
           autoCompactThreshold: null,
-          autoCompactThreshold1m: null,
-          oneMillionContextEnabled: false,
           env: { SCOPED_KEY: 'val' },
         },
       ]);

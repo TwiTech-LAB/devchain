@@ -12,7 +12,7 @@ function makeInput(overrides: Partial<LaunchConfigInput> = {}): LaunchConfigInpu
     providerBinPath: '/usr/bin/codex',
     providerEnv: null,
     configEnv: null,
-    provider: { oneMillionContextEnabled: false },
+    provider: {},
     ...overrides,
   };
 }
@@ -38,6 +38,58 @@ describe('ProviderLaunchConfig.resolve', () => {
       expect(() => resolve(makeInput({ profileOptions: '"unterminated' }))).toThrow(
         'unterminated quote',
       );
+    });
+  });
+
+  describe('DevChain-owned launch overlays', () => {
+    it('places provider options before profile options for new and restore Claude launches', () => {
+      const common = {
+        adapter: new ClaudeAdapter(),
+        providerBinPath: '/usr/bin/claude',
+        profileOptions: '--model opus --verbose',
+        providerOptionArgs: ['--settings', '/private/revision.json'],
+      };
+
+      expect(resolve(makeInput(common)).argv).toEqual([
+        '--settings',
+        '/private/revision.json',
+        '--model',
+        'opus',
+        '--verbose',
+      ]);
+      expect(
+        resolve(
+          makeInput({
+            ...common,
+            mode: 'restore',
+            providerSessionId: 'claude-session',
+          }),
+        ).argv,
+      ).toEqual([
+        '--resume',
+        'claude-session',
+        '--settings',
+        '/private/revision.json',
+        '--model',
+        'opus',
+        '--verbose',
+      ]);
+    });
+
+    it('gives runtime env precedence without changing configurable env', () => {
+      const result = resolve(
+        makeInput({
+          adapter: new ClaudeAdapter(),
+          providerEnv: { DEVCHAIN_STATUSLINE_LOCATOR: 'user', KEEP: 'provider' },
+          configEnv: { KEEP: 'config' },
+          runtimeEnv: { DEVCHAIN_STATUSLINE_LOCATOR: '/private/locator.json' },
+        }),
+      );
+
+      expect(result.env).toEqual({
+        DEVCHAIN_STATUSLINE_LOCATOR: '/private/locator.json',
+        KEEP: 'config',
+      });
     });
   });
 
@@ -112,20 +164,18 @@ describe('ProviderLaunchConfig.resolve', () => {
       expect(result.argv).toEqual(['--effort', 'low']);
     });
 
-    it('applies effort BEFORE the 1M model-alias rewrite (ordering invariant); both take effect', () => {
+    it('applies effort without changing the effective model', () => {
       const result = resolve(
         makeInput({
           adapter: new ClaudeAdapter(),
           providerBinPath: '/usr/bin/claude',
           profileOptions: '--model opus',
           effortOverride: 'high',
-          provider: { oneMillionContextEnabled: true },
+          provider: {},
         }),
       );
-      // Effort flag present with the pre-alias value, AND the model was rewritten
-      // to the 1M alias — proving effort ran before applyContextWindowConfig.
       expect(result.argv).toEqual(expect.arrayContaining(['--effort', 'high']));
-      expect(result.argv.join(' ')).toContain('opus[1m]');
+      expect(result.argv).toEqual(expect.arrayContaining(['--model', 'opus']));
     });
   });
 
@@ -319,6 +369,103 @@ describe('ProviderLaunchConfig.resolve', () => {
     });
   });
 
+  describe('DevChain context-window policy', () => {
+    const contextWindowKey = 'DEVCHAIN_CONTEXT_WINDOW_TOKENS';
+
+    function passThroughAdapter(providerName: string): LaunchConfigInput['adapter'] {
+      return {
+        providerName,
+        buildLaunchArgs: ({ profileOptionArgs }) => ({ argv: profileOptionArgs }),
+      } as LaunchConfigInput['adapter'];
+    }
+
+    it.each(['claude', 'opencode', 'codex', 'copilot', 'agy'])(
+      'binds a config-level override to the effective model for %s without forwarding it',
+      (providerName) => {
+        const result = resolve(
+          makeInput({
+            adapter: passThroughAdapter(providerName),
+            profileOptions: `--model ${providerName}/model`,
+            providerEnv: { KEEP_PROVIDER: 'provider' },
+            configEnv: {
+              KEEP_CONFIG: 'config',
+              [contextWindowKey]: '750000',
+            },
+          }),
+        );
+
+        expect(result.contextWindowOverride).toEqual({
+          modelId: `${providerName}/model`,
+          contextWindowTokens: 750_000,
+        });
+        expect(result.env).toEqual({
+          KEEP_PROVIDER: 'provider',
+          KEEP_CONFIG: 'config',
+        });
+        expect(result.commandArgs).toEqual(expect.arrayContaining(['-u', contextWindowKey]));
+        expect(result.commandArgs.some((arg) => arg.startsWith(`${contextWindowKey}=`))).toBe(
+          false,
+        );
+      },
+    );
+
+    it('ignores the key from provider-level env even when it is valid', () => {
+      const result = resolve(
+        makeInput({
+          profileOptions: '--model known-model',
+          providerEnv: { [contextWindowKey]: '1000000', KEEP: 'value' },
+        }),
+      );
+
+      expect(result.contextWindowOverride).toBeNull();
+      expect(result.env).toEqual({ KEEP: 'value' });
+    });
+
+    it('binds to the structured effective model after it replaces raw options', () => {
+      const result = resolve(
+        makeInput({
+          profileOptions: '--model raw-model',
+          modelOverride: 'resolved-model',
+          configEnv: { [contextWindowKey]: '1000000' },
+        }),
+      );
+
+      expect(result.contextWindowOverride).toEqual({
+        modelId: 'resolved-model',
+        contextWindowTokens: 1_000_000,
+      });
+    });
+
+    it.each(['', '0', '-1', '1.5', '10000001', '9007199254740992'])(
+      'ignores invalid config value %j without blocking launch',
+      (value) => {
+        expect(() =>
+          resolve(
+            makeInput({
+              profileOptions: '--model known-model',
+              configEnv: { [contextWindowKey]: value, KEEP: 'value' },
+            }),
+          ),
+        ).not.toThrow();
+
+        const result = resolve(
+          makeInput({
+            profileOptions: '--model known-model',
+            configEnv: { [contextWindowKey]: value, KEEP: 'value' },
+          }),
+        );
+        expect(result.contextWindowOverride).toBeNull();
+        expect(result.env).toEqual({ KEEP: 'value' });
+      },
+    );
+
+    it('does not bind a valid value when no effective model is resolved', () => {
+      const result = resolve(makeInput({ configEnv: { [contextWindowKey]: '1000000' } }));
+
+      expect(result.contextWindowOverride).toBeNull();
+    });
+  });
+
   describe('env composition — HookCapability (Claude)', () => {
     it('merges hook env with provider/config env (hookEnv < providerEnv < configEnv)', () => {
       const adapter = new ClaudeAdapter();
@@ -346,45 +493,63 @@ describe('ProviderLaunchConfig.resolve', () => {
     });
   });
 
-  describe('env composition — ContextWindowCapability (Claude 1M)', () => {
-    it('rewrites model to 1m when oneMillionContextEnabled', () => {
+  describe('env composition — AutoCompactCapability (Claude)', () => {
+    it('injects only the standard auto-compact threshold', () => {
       const adapter = new ClaudeAdapter();
       const result = resolve(
         makeInput({
           adapter,
           providerBinPath: '/usr/bin/claude',
           profileOptions: '--model opus',
-          provider: { oneMillionContextEnabled: true },
-          hookContext: {
-            apiUrl: 'http://127.0.0.1:3000',
-            projectId: 'p1',
-            agentId: 'a1',
-            sessionId: 's1',
-            tmuxSessionName: 'tmux1',
-          },
+          provider: { autoCompactThreshold: 95 },
         }),
       );
-      expect(result.argv.join(' ')).toContain('opus[1m]');
+      expect(result.argv).toEqual(['--model', 'opus']);
+      expect(result.env?.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE).toBe('95');
     });
 
-    it('scrubs CLAUDE_CODE_DISABLE_1M_CONTEXT from env', () => {
+    it('preserves explicit Claude env values', () => {
       const adapter = new ClaudeAdapter();
       const result = resolve(
         makeInput({
           adapter,
           providerBinPath: '/usr/bin/claude',
-          providerEnv: { CLAUDE_CODE_DISABLE_1M_CONTEXT: '1' },
-          provider: { oneMillionContextEnabled: false },
-          hookContext: {
-            apiUrl: 'http://127.0.0.1:3000',
-            projectId: 'p1',
-            agentId: 'a1',
-            sessionId: 's1',
-            tmuxSessionName: 'tmux1',
+          providerEnv: {
+            CLAUDE_CODE_DISABLE_1M_CONTEXT: '1',
+            CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '72',
           },
+          provider: { autoCompactThreshold: 95 },
         }),
       );
-      expect(result.env?.CLAUDE_CODE_DISABLE_1M_CONTEXT).toBeUndefined();
+      expect(result.env).toMatchObject({
+        CLAUDE_CODE_DISABLE_1M_CONTEXT: '1',
+        CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '72',
+      });
+    });
+
+    it('does not inject a model when none is configured', () => {
+      const result = resolve(
+        makeInput({
+          adapter: new ClaudeAdapter(),
+          providerBinPath: '/usr/bin/claude',
+          provider: { autoCompactThreshold: 95 },
+        }),
+      );
+
+      expect(result.argv).toEqual([]);
+    });
+
+    it('passes an explicit [1m] model through unchanged', () => {
+      const result = resolve(
+        makeInput({
+          adapter: new ClaudeAdapter(),
+          providerBinPath: '/usr/bin/claude',
+          profileOptions: '--model claude-opus-4-6[1m]',
+          provider: {},
+        }),
+      );
+
+      expect(result.argv).toEqual(['--model', 'claude-opus-4-6[1m]']);
     });
   });
 
@@ -396,9 +561,15 @@ describe('ProviderLaunchConfig.resolve', () => {
       expect(result.commandArgs).toContain('/usr/bin/codex');
     });
 
-    it('builds command without env prefix when no env vars', () => {
+    it('unsets the reserved DevChain key even when no explicit env vars exist', () => {
       const result = resolve(makeInput());
-      expect(result.commandArgs[0]).toBe('/usr/bin/codex');
+      expect(result.commandArgs).toEqual([
+        'env',
+        '-u',
+        'DEVCHAIN_CONTEXT_WINDOW_TOKENS',
+        '/usr/bin/codex',
+        ...result.argv,
+      ]);
     });
   });
 

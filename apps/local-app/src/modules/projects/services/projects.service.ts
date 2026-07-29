@@ -1,7 +1,12 @@
 import { Injectable, Inject, Optional } from '@nestjs/common';
 import { ExportSchema, type ExportData, type ManifestData } from '@devchain/shared';
 import { ValidationError } from '../../../common/errors/error-types';
+import type { PromptTransferPolicy } from '../../../common/prompt-transfer';
 import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
+import {
+  SNAPSHOT_PROMPT_WRITER,
+  type SnapshotPromptWriter,
+} from '../../storage/interfaces/snapshot-prompt-writer.interface';
 import { SessionsService } from '../../sessions/services/sessions.service';
 import { SettingsService } from '../../settings/services/settings.service';
 import { WatchersService } from '../../watchers/services/watchers.service';
@@ -20,7 +25,7 @@ import {
 import type { Project, UpdateProject } from '../../storage/models/domain.models';
 import { TemplatePipeline } from '../template-codec/template-pipeline';
 import { importProjectWithHelper } from '../helpers/project-import';
-import { exportProjectWithHelper } from '../helpers/project-export';
+import { exportProjectWithHelper, type ExportProjectOptions } from '../helpers/project-export';
 import { createFromTemplateWithHelper } from '../helpers/template-loader';
 import {
   buildProviderSummary,
@@ -43,8 +48,6 @@ import {
   getImportErrorMessage,
   normalizeProfileOptions,
 } from '../helpers/project-runtime.helpers';
-import { probe1mSupport } from '../../providers/utils/probe-1m';
-import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import {
   getTemplateManifestForProjectWithHelper,
   getBundledUpgradeVersionWithHelper,
@@ -98,6 +101,8 @@ export interface ImportProjectInput {
   projectId: string;
   payload: unknown;
   dryRun?: boolean;
+  /** Internal-only. The HTTP controller does not accept or forward this field. */
+  promptTransferPolicy?: PromptTransferPolicy;
   statusMappings?: Record<string, string>;
   familyProviderMappings?: Record<string, string>;
   agentOverrides?: PresetAgentConfig[];
@@ -124,12 +129,14 @@ export class ProjectsService {
     private readonly unifiedTemplateService: UnifiedTemplateService,
     private readonly teamsService: TeamsService,
     private readonly provisioning: ProjectProviderProvisioningService,
-    private readonly executor: ProcessExecutor,
     @Optional()
     private readonly templatePipeline?: TemplatePipeline,
     @Optional()
     @Inject(SCHEDULED_EPIC_RUNNER_REFRESH)
     private readonly scheduledEpicRunnerRefresh?: ScheduledEpicRunnerRefresh,
+    @Optional()
+    @Inject(SNAPSHOT_PROMPT_WRITER)
+    private readonly snapshotPromptWriter?: SnapshotPromptWriter,
   ) {}
 
   async listTemplates(): Promise<TemplateInfo[]> {
@@ -166,7 +173,6 @@ export class ProjectsService {
       // watchers (the create orchestrator's seam falls back to storage.createWatcher only when
       // this is absent, e.g. reduced test deps).
       watchersService: this.watchersService,
-      probe1m: (binPath: string) => probe1mSupport(this.executor, binPath),
       teamsService: this.teamsService,
       scheduledEpicsRefresh: this.scheduledEpicRunnerRefresh,
       computeNextRunAt: getNextRunAt,
@@ -193,22 +199,7 @@ export class ProjectsService {
     return result;
   }
 
-  async exportProject(
-    projectId: string,
-    opts?: {
-      manifestOverrides?: Partial<ManifestData>;
-      presets?: Array<{
-        name: string;
-        description?: string | null;
-        agentConfigs: Array<{
-          agentName: string;
-          providerConfigName: string;
-          modelOverride?: string | null;
-          effortOverride?: string | null;
-        }>;
-      }>;
-    },
-  ) {
+  async exportProject(projectId: string, opts?: ExportProjectOptions) {
     return exportProjectWithHelper(projectId, opts, {
       storage: this.storage,
       settings: this.settings,
@@ -247,6 +238,7 @@ export class ProjectsService {
     await this.assertSelectedProvidersInstalled(input.selectedProviderNames);
     const result = await importProjectWithHelper(input, {
       storage: this.storage,
+      snapshotPromptWriter: this.snapshotPromptWriter,
       settings: this.settings,
       templatePipeline: this.templatePipeline,
       watchersService: this.watchersService,
@@ -270,7 +262,6 @@ export class ProjectsService {
       getImportErrorMessage,
       applyAgentConfigs: (projectId, agentConfigs, nameMaps) =>
         applyAgentConfigs(projectId, agentConfigs, { storage: this.storage }, nameMaps),
-      probe1m: (binPath: string) => probe1mSupport(this.executor, binPath),
       teamsService: this.teamsService,
       scheduledEpicsRefresh: this.scheduledEpicRunnerRefresh,
       computeNextRunAt: getNextRunAt,

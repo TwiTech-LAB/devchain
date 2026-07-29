@@ -12,6 +12,11 @@ import type {
 } from '../../models/domain.models';
 import { NotFoundError, OptimisticLockError } from '../../../../common/errors/error-types';
 import { createLogger } from '../../../../common/logging/logger';
+import {
+  canonicalizePromptTypeTags,
+  getPromptType,
+  PROMPT_TYPE,
+} from '../../../../common/prompt-type';
 import { getRawSqliteClient } from '../../db/sqlite-raw';
 import { extractPromptId, extractPromptIdFromMap } from '../helpers/storage-helpers';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
@@ -32,6 +37,19 @@ export class PromptStorageDelegate extends BaseStorageDelegate {
   }
 
   async createPrompt(data: CreatePrompt): Promise<Prompt> {
+    const promptType = getPromptType(data.tags ?? [], PROMPT_TYPE.Custom);
+    const canonicalTags = canonicalizePromptTypeTags(data.tags ?? [], promptType);
+    return this.insertPrompt(data, canonicalTags);
+  }
+
+  async createPromptFromSnapshot(data: CreatePrompt): Promise<Prompt> {
+    return this.insertPrompt(data, data.tags ?? []);
+  }
+
+  private async insertPrompt(
+    data: CreatePrompt,
+    persistedTags: readonly string[],
+  ): Promise<Prompt> {
     const { randomUUID } = await import('crypto');
     const now = new Date().toISOString();
     const { prompts, promptTags, tags } = await import('../../db/schema');
@@ -39,6 +57,7 @@ export class PromptStorageDelegate extends BaseStorageDelegate {
     const prompt: Prompt = {
       id: randomUUID(),
       ...data,
+      tags: [...persistedTags],
       version: 1,
       createdAt: now,
       updatedAt: now,
@@ -54,35 +73,32 @@ export class PromptStorageDelegate extends BaseStorageDelegate {
       updatedAt: prompt.updatedAt,
     });
 
-    // Add tags
-    if (data.tags?.length) {
-      for (const tagName of data.tags) {
-        const { eq, and, or, isNull } = await import('drizzle-orm');
-        let tag = await this.db
-          .select()
-          .from(tags)
-          .where(
-            and(
-              eq(tags.name, tagName),
-              or(eq(tags.projectId, data.projectId || ''), isNull(tags.projectId)),
-            ),
-          )
-          .limit(1);
+    for (const tagName of persistedTags) {
+      const { eq, and, or, isNull } = await import('drizzle-orm');
+      let tag = await this.db
+        .select()
+        .from(tags)
+        .where(
+          and(
+            eq(tags.name, tagName),
+            or(eq(tags.projectId, data.projectId || ''), isNull(tags.projectId)),
+          ),
+        )
+        .limit(1);
 
-        if (!tag[0]) {
-          const newTag = await this.dependencies.createTag({
-            projectId: data.projectId,
-            name: tagName,
-          });
-          tag = [newTag];
-        }
-
-        await this.db.insert(promptTags).values({
-          promptId: prompt.id,
-          tagId: tag[0].id,
-          createdAt: now,
+      if (!tag[0]) {
+        const newTag = await this.dependencies.createTag({
+          projectId: data.projectId,
+          name: tagName,
         });
+        tag = [newTag];
       }
+
+      await this.db.insert(promptTags).values({
+        promptId: prompt.id,
+        tagId: tag[0].id,
+        createdAt: now,
+      });
     }
 
     return prompt;
@@ -218,7 +234,14 @@ export class PromptStorageDelegate extends BaseStorageDelegate {
     }
 
     // Separate tags from other data
-    const { tags: newTags, ...updateData } = data;
+    const { tags: requestedTags, ...updateData } = data;
+    const newTags =
+      requestedTags === undefined
+        ? undefined
+        : canonicalizePromptTypeTags(
+            requestedTags,
+            getPromptType(requestedTags, getPromptType(current.tags, PROMPT_TYPE.Custom)),
+          );
 
     logger.info({ newTags, updateData }, 'Separated tags from updateData');
 

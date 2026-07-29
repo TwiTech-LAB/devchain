@@ -11,9 +11,8 @@ import type {
 } from './provider-adapter.interface';
 import type {
   McpCliCapability,
-  ContextWindowCapability,
-  ContextWindowProviderState,
-  ModelFamily,
+  AutoCompactCapability,
+  AutoCompactProviderState,
   EffortCapability,
   HookCapability,
   HookEnvContext,
@@ -21,11 +20,7 @@ import type {
   ProjectMcpSettingsCapability,
 } from './capabilities';
 
-import {
-  rewriteModelTo1m,
-  extractModelFromArgs,
-  stripFlag,
-} from '../../sessions/utils/profile-options';
+import { stripFlag } from '../../sessions/utils/profile-options';
 
 interface ClaudeSettingsLocal {
   permissions?: {
@@ -36,14 +31,12 @@ interface ClaudeSettingsLocal {
   [key: string]: unknown;
 }
 
-const CLAUDE_1M_CONTEXT_WINDOW_TOKENS = 1_000_000;
-
 @Injectable()
 export class ClaudeAdapter
   implements
     ProviderAdapter,
     McpCliCapability,
-    ContextWindowCapability,
+    AutoCompactCapability,
     EffortCapability,
     HookCapability,
     TranscriptDiscoveryCapability,
@@ -88,41 +81,21 @@ export class ClaudeAdapter
     };
   }
 
-  detectModelFamily(modelName: string): ModelFamily {
-    const lower = modelName.toLowerCase();
-    if (lower.includes('opus')) return 'opus';
-    if (lower.includes('sonnet')) return 'sonnet';
-    if (lower.includes('haiku')) return 'haiku';
-    return null;
-  }
-
-  is1mActiveForModel(oneMillionEnabled: boolean, modelName: string): boolean {
-    return oneMillionEnabled && this.detectModelFamily(modelName) === 'opus';
-  }
-
-  applyContextWindowConfig(
+  applyAutoCompactConfig(
     args: string[],
     env: Record<string, string>,
-    provider: ContextWindowProviderState,
+    provider: AutoCompactProviderState,
   ): { argv: string[]; env: Record<string, string> } {
-    let argv = [...args];
     const resultEnv = { ...env };
 
-    if (provider.oneMillionContextEnabled) {
-      argv = rewriteModelTo1m(argv);
+    if (
+      resultEnv.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE === undefined &&
+      provider.autoCompactThreshold != null
+    ) {
+      resultEnv.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = String(provider.autoCompactThreshold);
     }
 
-    if (!resultEnv.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE) {
-      const modelStr = extractModelFromArgs(argv);
-      const threshold = this.getCompactThreshold(modelStr, provider);
-      if (threshold != null) {
-        resultEnv.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = String(threshold);
-      }
-    }
-
-    delete resultEnv.CLAUDE_CODE_DISABLE_1M_CONTEXT;
-
-    return { argv, env: resultEnv };
+    return { argv: [...args], env: resultEnv };
   }
 
   applyEffort(
@@ -135,31 +108,6 @@ export class ClaudeAdapter
     // untouched (Claude's effort is an argv flag, not an env overlay).
     const stripped = stripFlag(args, '--effort');
     return { argv: ['--effort', effortValue, ...stripped], env };
-  }
-
-  getCompactThreshold(
-    modelName: string | null,
-    provider: ContextWindowProviderState,
-  ): number | undefined {
-    const family = modelName ? this.detectModelFamily(modelName) : null;
-    if (
-      provider.oneMillionContextEnabled &&
-      family === 'opus' &&
-      provider.autoCompactThreshold1m != null
-    ) {
-      return provider.autoCompactThreshold1m;
-    }
-    if (provider.autoCompactThreshold != null) {
-      return provider.autoCompactThreshold;
-    }
-    return undefined;
-  }
-
-  getReadTimeContextWindow(modelName: string, oneMillionEnabled: boolean): number | undefined {
-    if (this.is1mActiveForModel(oneMillionEnabled, modelName)) {
-      return CLAUDE_1M_CONTEXT_WINDOW_TOKENS;
-    }
-    return undefined;
   }
 
   async evaluateAutoCompactConfig(): Promise<{ enabled: boolean; reason?: string }> {

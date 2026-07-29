@@ -1,8 +1,8 @@
 import { Module, OnModuleInit } from '@nestjs/common';
 import { StorageModule } from '../storage/storage.module';
 import { EventsCoreModule } from '../events/events-core.module';
-import { SessionsModule } from '../sessions/sessions.module';
 import { ProviderAdaptersModule } from '../providers/adapters';
+import { SessionsModule } from '../sessions/sessions.module';
 import { SessionReaderAdapterFactory } from './adapters/session-reader-adapter.factory';
 import { TranscriptPathValidator } from './services/transcript-path-validator.service';
 import { TranscriptPersistenceListener } from './services/transcript-persistence.listener';
@@ -26,9 +26,17 @@ import { SubagentResolver } from './services/subagent-resolver.service';
 import { SessionReaderController } from './controllers/session-reader.controller';
 import { CodexProviderSessionIdBackfillService } from './services/codex-provider-session-id-backfill.service';
 import { MetricsModule } from '../metrics/metrics.module';
+import { RuntimeContextCaptureModule } from '../runtime-context-capture/runtime-context-capture.module';
 
 @Module({
-  imports: [StorageModule, EventsCoreModule, SessionsModule, ProviderAdaptersModule, MetricsModule],
+  imports: [
+    StorageModule,
+    EventsCoreModule,
+    ProviderAdaptersModule,
+    SessionsModule,
+    MetricsModule,
+    RuntimeContextCaptureModule,
+  ],
   providers: [
     SessionReaderAdapterFactory,
     TranscriptPathValidator,

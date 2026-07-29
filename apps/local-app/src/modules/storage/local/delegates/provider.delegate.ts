@@ -8,13 +8,63 @@ import type {
   UpdateProviderMcpMetadata,
 } from '../../models/domain.models';
 import { eq } from 'drizzle-orm';
-import { NotFoundError } from '../../../../common/errors/error-types';
+import {
+  DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON,
+  validateClaudeLaunchSettingsJson,
+} from '@devchain/shared';
+import { NotFoundError, ValidationError } from '../../../../common/errors/error-types';
 import { createLogger } from '../../../../common/logging/logger';
 import { providers as providersTable } from '../../db/schema';
 import { normalizeEnvForStorage, parseProviderEnv } from '../helpers/storage-helpers';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 
 const logger = createLogger('ProviderStorageDelegate');
+
+interface RawProviderRow {
+  id: string;
+  name: string;
+  bin_path: string | null;
+  mcp_configured: number;
+  mcp_endpoint: string | null;
+  mcp_registered_at: string | null;
+  auto_compact_threshold: number | null;
+  claude_launch_settings_json: string | null;
+  env: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+function assertClaudeLaunchSettings(providerName: string, value: string | null): void {
+  if (providerName.toLowerCase() !== 'claude' && value !== null) {
+    throw new ValidationError('Claude launch settings are only supported by the Claude provider.', {
+      field: 'claudeLaunchSettingsJson',
+    });
+  }
+
+  const validation = validateClaudeLaunchSettingsJson(value);
+  if (!validation.valid) {
+    throw new ValidationError(validation.message, {
+      field: 'claudeLaunchSettingsJson',
+      ...(validation.path ? { path: validation.path } : {}),
+    });
+  }
+}
+
+function mapRawProviderRow(row: RawProviderRow): Provider {
+  return {
+    id: row.id,
+    name: row.name,
+    binPath: row.bin_path,
+    mcpConfigured: row.mcp_configured !== 0,
+    mcpEndpoint: row.mcp_endpoint,
+    mcpRegisteredAt: row.mcp_registered_at,
+    autoCompactThreshold: row.auto_compact_threshold,
+    claudeLaunchSettingsJson: row.claude_launch_settings_json,
+    env: parseProviderEnv(row.env, row.id),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
 
 export interface ProviderStorageDelegateDependencies {
   updateProvider: (id: string, data: UpdateProvider) => Promise<Provider>;
@@ -43,6 +93,14 @@ export class ProviderStorageDelegate extends BaseStorageDelegate {
 
     const env: Record<string, string> | null =
       data.env && Object.keys(data.env).length > 0 ? data.env : null;
+    const isClaude = data.name.toLowerCase() === 'claude';
+    const claudeLaunchSettingsJson = isClaude
+      ? data.claudeLaunchSettingsJson === undefined
+        ? DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON
+        : data.claudeLaunchSettingsJson
+      : (data.claudeLaunchSettingsJson ?? null);
+
+    assertClaudeLaunchSettings(data.name, claudeLaunchSettingsJson);
 
     const provider: Provider = {
       id: randomUUID(),
@@ -52,8 +110,7 @@ export class ProviderStorageDelegate extends BaseStorageDelegate {
       mcpEndpoint: data.mcpEndpoint ?? null,
       mcpRegisteredAt: data.mcpRegisteredAt ?? null,
       autoCompactThreshold,
-      autoCompactThreshold1m: data.autoCompactThreshold1m ?? null,
-      oneMillionContextEnabled: data.oneMillionContextEnabled ?? false,
+      claudeLaunchSettingsJson,
       env,
       createdAt: now,
       updatedAt: now,
@@ -67,8 +124,7 @@ export class ProviderStorageDelegate extends BaseStorageDelegate {
       mcpEndpoint: provider.mcpEndpoint,
       mcpRegisteredAt: provider.mcpRegisteredAt,
       autoCompactThreshold: provider.autoCompactThreshold,
-      autoCompactThreshold1m: provider.autoCompactThreshold1m,
-      oneMillionContextEnabled: provider.oneMillionContextEnabled,
+      claudeLaunchSettingsJson: provider.claudeLaunchSettingsJson,
       env: normalizeEnvForStorage(provider.env),
       createdAt: provider.createdAt,
       updatedAt: provider.updatedAt,
@@ -125,6 +181,13 @@ export class ProviderStorageDelegate extends BaseStorageDelegate {
     const { providers } = await import('../../db/schema');
     const { eq } = await import('drizzle-orm');
     const now = new Date().toISOString();
+    const existing = await this.getProvider(id);
+    const resultingName = data.name ?? existing.name;
+    const resultingClaudeLaunchSettingsJson =
+      data.claudeLaunchSettingsJson !== undefined
+        ? data.claudeLaunchSettingsJson
+        : existing.claudeLaunchSettingsJson;
+    assertClaudeLaunchSettings(resultingName, resultingClaudeLaunchSettingsJson);
 
     const updateData: Record<string, unknown> = { updatedAt: now };
     if (data.name !== undefined) updateData.name = data.name;
@@ -134,10 +197,8 @@ export class ProviderStorageDelegate extends BaseStorageDelegate {
     if (data.mcpRegisteredAt !== undefined) updateData.mcpRegisteredAt = data.mcpRegisteredAt;
     if (data.autoCompactThreshold !== undefined)
       updateData.autoCompactThreshold = data.autoCompactThreshold;
-    if (data.autoCompactThreshold1m !== undefined)
-      updateData.autoCompactThreshold1m = data.autoCompactThreshold1m;
-    if (data.oneMillionContextEnabled !== undefined)
-      updateData.oneMillionContextEnabled = data.oneMillionContextEnabled;
+    if (data.claudeLaunchSettingsJson !== undefined)
+      updateData.claudeLaunchSettingsJson = data.claudeLaunchSettingsJson;
     if (data.env !== undefined) updateData.env = normalizeEnvForStorage(data.env);
 
     await this.db.update(providers).set(updateData).where(eq(providers.id, id));
@@ -264,6 +325,20 @@ export class ProviderStorageDelegate extends BaseStorageDelegate {
   ): Provider {
     return this.txRunner.runImmediate(() => {
       const now = new Date().toISOString();
+      const existing = this.rawClient
+        .prepare('SELECT name, claude_launch_settings_json FROM providers WHERE id = ?')
+        .get(id) as { name: string; claude_launch_settings_json: string | null } | undefined;
+
+      if (!existing) {
+        throw new NotFoundError('Provider', id);
+      }
+
+      const resultingName = data.name ?? existing.name;
+      const resultingClaudeLaunchSettingsJson =
+        data.claudeLaunchSettingsJson !== undefined
+          ? data.claudeLaunchSettingsJson
+          : existing.claude_launch_settings_json;
+      assertClaudeLaunchSettings(resultingName, resultingClaudeLaunchSettingsJson);
 
       const updateData: Record<string, unknown> = { updatedAt: now };
       if (data.name !== undefined) updateData.name = data.name;
@@ -273,10 +348,8 @@ export class ProviderStorageDelegate extends BaseStorageDelegate {
       if (data.mcpRegisteredAt !== undefined) updateData.mcpRegisteredAt = data.mcpRegisteredAt;
       if (data.autoCompactThreshold !== undefined)
         updateData.autoCompactThreshold = data.autoCompactThreshold;
-      if (data.autoCompactThreshold1m !== undefined)
-        updateData.autoCompactThreshold1m = data.autoCompactThreshold1m;
-      if (data.oneMillionContextEnabled !== undefined)
-        updateData.oneMillionContextEnabled = data.oneMillionContextEnabled;
+      if (data.claudeLaunchSettingsJson !== undefined)
+        updateData.claudeLaunchSettingsJson = data.claudeLaunchSettingsJson;
       if (data.env !== undefined) updateData.env = normalizeEnvForStorage(data.env);
 
       this.db.update(providersTable).set(updateData).where(eq(providersTable.id, id)).run();
@@ -307,7 +380,7 @@ export class ProviderStorageDelegate extends BaseStorageDelegate {
       }
 
       const row = this.rawClient.prepare('SELECT * FROM providers WHERE id = ?').get(id) as
-        | Record<string, unknown>
+        | RawProviderRow
         | undefined;
 
       if (!row) {
@@ -315,10 +388,7 @@ export class ProviderStorageDelegate extends BaseStorageDelegate {
       }
 
       logger.info({ providerId: id }, 'Updated provider with scopes');
-      return {
-        ...row,
-        env: parseProviderEnv(row.env as string | null, id),
-      } as Provider;
+      return mapRawProviderRow(row);
     });
   }
 }

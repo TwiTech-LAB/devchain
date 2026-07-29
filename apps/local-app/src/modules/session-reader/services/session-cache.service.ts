@@ -553,6 +553,15 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
     this.enforceBudget();
   }
 
+  invalidateDto(sessionId: string): void {
+    const entry = this.cache.get(sessionId);
+    if (!entry?.dto) return;
+
+    this.budgetUsedBytes -= entry.weights.dto;
+    entry.dto = undefined;
+    entry.weights.dto = 0;
+  }
+
   getDtoRetainedRoots(): Iterable<unknown> {
     return Array.from(this.cache.values(), (entry) => entry.dto?.result);
   }

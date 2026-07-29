@@ -34,6 +34,7 @@ import type { HooksConfigService } from '../../hooks/services/hooks-config.servi
 import type { ProviderAdapterFactory } from '../../providers/adapters/provider-adapter.factory';
 import { SessionCoordinatorService } from './session-coordinator.service';
 import { DEFAULT_FEATURE_FLAGS } from '../../../common/config/feature-flags';
+import type { RuntimeContextCaptureService } from '../../runtime-context-capture/runtime-context-capture.service';
 
 const mockStat = stat as jest.MockedFunction<typeof stat>;
 
@@ -126,6 +127,8 @@ describe('SessionsService.terminateSession — size_bytes', () => {
       } as unknown as ProviderAdapterFactory,
       eventsService as unknown as EventsService,
       terminalSessionRegistry,
+      { clear: jest.fn() } as unknown as RuntimeContextCaptureService,
+      { cleanupSessionSync: jest.fn() } as never,
     );
   });
 

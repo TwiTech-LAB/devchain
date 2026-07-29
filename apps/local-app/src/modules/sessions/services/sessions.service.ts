@@ -24,6 +24,8 @@ import { EventsService } from '../../events/services/events.service';
 import { SessionCoordinatorService } from './session-coordinator.service';
 import { HooksConfigService } from '../../hooks/services/hooks-config.service';
 import { ProviderAdapterFactory } from '../../providers/adapters/provider-adapter.factory';
+import { RuntimeContextCaptureService } from '../../runtime-context-capture/runtime-context-capture.service';
+import { ClaudeLaunchSettingsMaterializerService } from '../../runtime-context-capture/claude-launch-settings-materializer.service';
 
 const logger = createLogger('SessionsService');
 
@@ -33,6 +35,7 @@ interface SessionRow {
   agent_id: string | null;
   tmux_session_id: string | null;
   provider_session_id: string | null;
+  provider_name_at_launch: string | null;
   status: 'running' | 'stopped' | 'failed';
   started_at: string;
   ended_at: string | null;
@@ -84,6 +87,8 @@ export class SessionsService {
     private readonly eventsService: EventsService,
     @Inject(forwardRef(() => TerminalSessionRegistry))
     private readonly terminalSessionRegistry: TerminalSessionRegistry,
+    private readonly runtimeContextCapture: RuntimeContextCaptureService,
+    private readonly claudeLaunchSettings: ClaudeLaunchSettingsMaterializerService,
   ) {
     this.sqlite = getRawSqliteClient(this.db);
     this.txRunner = new TransactionRunner(this.sqlite);
@@ -95,6 +100,8 @@ export class SessionsService {
    */
   async terminateSession(sessionId: string): Promise<void> {
     logger.info({ sessionId }, 'Terminating session');
+    this.runtimeContextCapture.clear(sessionId);
+    this.claudeLaunchSettings.cleanupSessionSync(sessionId);
 
     // Get session from database
     const session = this.getSession(sessionId);
@@ -421,7 +428,7 @@ export class SessionsService {
     const row = this.sqlite
       .prepare(
         `
-      SELECT id, epic_id, agent_id, tmux_session_id, provider_session_id, status, started_at, ended_at, last_activity_at, activity_state, busy_since, transcript_path, name, created_at, updated_at
+      SELECT id, epic_id, agent_id, tmux_session_id, provider_session_id, provider_name_at_launch, status, started_at, ended_at, last_activity_at, activity_state, busy_since, transcript_path, name, created_at, updated_at
       FROM sessions
       WHERE id = ?
     `,
@@ -439,6 +446,7 @@ export class SessionsService {
       agentId: row.agent_id,
       tmuxSessionId: row.tmux_session_id,
       providerSessionId: row.provider_session_id ?? null,
+      providerNameAtLaunch: row.provider_name_at_launch ?? null,
       status: row.status,
       startedAt: row.started_at,
       endedAt: row.ended_at,
@@ -497,6 +505,8 @@ export class SessionsService {
           // entry would block restoring this session later.
           this.ptyService.stopStreaming(row.id);
           this.terminalSessionRegistry.dispose(row.id);
+          this.runtimeContextCapture.clear(row.id);
+          this.claudeLaunchSettings.cleanupSessionSync(row.id);
 
           // Update row status for return value
           row.status = 'stopped';
@@ -623,6 +633,8 @@ export class SessionsService {
    */
   markSessionFailed(sessionId: string, reason: string): void {
     logger.warn({ sessionId, reason }, 'Marking session as failed due to dead tmux');
+    this.runtimeContextCapture.clear(sessionId);
+    this.claudeLaunchSettings.cleanupSessionSync(sessionId);
     const now = new Date().toISOString();
     this.sqlite
       .prepare(
@@ -644,6 +656,7 @@ export class SessionsService {
         activityState?: 'idle' | 'busy' | null;
         lastActivityAt?: string | null;
         busySince?: string | null;
+        idleSince?: string | null;
         currentActivityTitle?: string | null;
       }
     >
@@ -674,6 +687,7 @@ export class SessionsService {
         activityState?: 'idle' | 'busy' | null;
         lastActivityAt?: string | null;
         busySince?: string | null;
+        idleSince?: string | null;
         currentActivityTitle?: string | null;
       }
     >();
@@ -687,6 +701,7 @@ export class SessionsService {
           activityState: agg?.activityState ?? session.activityState ?? null,
           lastActivityAt: agg?.lastActivityAt ?? session.lastActivityAt ?? null,
           busySince: agg?.busySince ?? session.busySince ?? null,
+          idleSince: agg?.idleSince ?? null,
           currentActivityTitle: this.getCurrentActivityTitle(session.agentId, projectId),
         });
       }

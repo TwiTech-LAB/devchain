@@ -977,6 +977,7 @@ describe('CodexJsonlParser', () => {
   it('uses baseline model for incremental cost when slice has no turn_context', async () => {
     const mockPricing: PricingServiceInterface = {
       calculateMessageCost: jest.fn().mockReturnValue(0.0123),
+      getCatalogContextWindowSize: jest.fn().mockReturnValue(200_000),
       getContextWindowSize: jest.fn().mockReturnValue(200_000),
     };
 
@@ -1077,6 +1078,7 @@ describe('CodexJsonlParser', () => {
   it('preserves full-parse behavior with byteOffset=0 after baseline-state enhancements', async () => {
     const mockPricing: PricingServiceInterface = {
       calculateMessageCost: jest.fn().mockReturnValue(0.02),
+      getCatalogContextWindowSize: jest.fn().mockReturnValue(200_000),
       getContextWindowSize: jest.fn().mockReturnValue(200_000),
     };
 
@@ -1396,6 +1398,7 @@ describe('CodexJsonlParser', () => {
   it('calculates cost using pricing service', async () => {
     const mockPricing: PricingServiceInterface = {
       calculateMessageCost: jest.fn().mockReturnValue(0.05),
+      getCatalogContextWindowSize: jest.fn().mockReturnValue(128000),
       getContextWindowSize: jest.fn().mockReturnValue(128000),
     };
 

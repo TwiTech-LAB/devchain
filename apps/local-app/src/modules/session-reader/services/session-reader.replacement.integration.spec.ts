@@ -4,9 +4,7 @@ import { join } from 'node:path';
 import { ClaudeSessionReaderAdapter } from '../adapters/claude-session-reader.adapter';
 import type { SessionSourceRef } from '../adapters/session-reader-adapter.interface';
 import type { SessionReaderAdapterFactory } from '../adapters/session-reader-adapter.factory';
-import type { ProviderAdapterFactory } from '../../providers/adapters';
 import type { SessionsService } from '../../sessions/services/sessions.service';
-import type { StorageService } from '../../storage/interfaces/storage.interface';
 import { SessionCacheService } from './session-cache.service';
 import { SessionReaderService } from './session-reader.service';
 import type { TranscriptPathValidator } from './transcript-path-validator.service';
@@ -82,18 +80,16 @@ describe('SessionReaderService file replacement cursor integration', () => {
 
     const pricing = {
       calculateMessageCost: jest.fn().mockReturnValue(0),
+      getCatalogContextWindowSize: jest.fn().mockReturnValue(200_000),
       getContextWindowSize: jest.fn().mockReturnValue(200_000),
     } as unknown as PricingServiceInterface;
     adapter = new ClaudeSessionReaderAdapter(pricing);
-    const providerAdapterFactory = { getAdapter: jest.fn().mockReturnValue({}) };
 
     service = new SessionReaderService(
       {} as SessionReaderAdapterFactory,
       {} as TranscriptPathValidator,
       cache,
       {} as SessionsService,
-      {} as StorageService,
-      providerAdapterFactory as unknown as ProviderAdapterFactory,
     );
 
     const sourceRef: SessionSourceRef = {
@@ -108,7 +104,6 @@ describe('SessionReaderService file replacement cursor integration', () => {
         transcriptPath: filePath,
         sourceRef,
         providerName: 'claude',
-        oneMillionContextEnabled: false,
       });
   });
 

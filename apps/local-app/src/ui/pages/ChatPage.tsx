@@ -27,6 +27,10 @@ import { useWorktreeSocket } from '@/ui/hooks/useWorktreeSocket';
 // Inline terminal components
 import { InlineTerminalPanel } from '@/ui/components/chat/InlineTerminalPanel';
 import {
+  CustomPromptPicker,
+  type CustomPromptPickerTarget,
+} from '@/ui/components/chat/CustomPromptPicker';
+import {
   InlineTerminalHeader,
   type InlineTerminalTab,
 } from '@/ui/components/chat/InlineTerminalHeader';
@@ -54,6 +58,8 @@ import { useChatSocket } from '@/ui/hooks/useChatSocket';
 import { useChatSessionControls } from '@/ui/hooks/useChatSessionControls';
 import { useChatThreadUiState } from '@/ui/hooks/useChatThreadUiState';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
+import type { TerminalHandle } from '@/ui/components/Terminal';
+import { useInlineTerminalPromptShortcut } from '@/ui/hooks/chat/useInlineTerminalPromptShortcut';
 
 // Extracted components
 import {
@@ -102,6 +108,7 @@ interface WorktreeInlineTerminalProps {
   agentName: string | null;
   isWindowOpen: boolean;
   windowId?: string | null;
+  terminalRef?: React.Ref<TerminalHandle>;
 }
 
 function WorktreeInlineTerminal({
@@ -110,6 +117,7 @@ function WorktreeInlineTerminal({
   agentName,
   isWindowOpen,
   windowId,
+  terminalRef,
 }: WorktreeInlineTerminalProps) {
   const { socket } = useWorktreeSocket(worktreeName);
 
@@ -120,6 +128,7 @@ function WorktreeInlineTerminal({
       agentName={agentName}
       isWindowOpen={isWindowOpen}
       windowId={windowId}
+      terminalRef={terminalRef}
     />
   );
 }
@@ -148,6 +157,9 @@ export function ChatPage() {
   const openWorktreeTerminalWindow = useWorktreeTerminalWindowManager();
   const apiFetch = useFetchFactory();
   const { windows: terminalWindows, closeWindow, focusedWindowId } = useTerminalWindows();
+  const [mainTerminalHandle, setMainTerminalHandle] = useState<TerminalHandle | null>(null);
+  const [worktreeTerminalHandle, setWorktreeTerminalHandle] = useState<TerminalHandle | null>(null);
+  const [customPromptPickerOpen, setCustomPromptPickerOpen] = useState(false);
 
   // Derive selectedThreadId from URL params FIRST (before hooks that depend on it)
   const [searchParams] = useSearchParams();
@@ -444,9 +456,11 @@ export function ChatPage() {
     ? (queries.agents.find((a) => a.id === inlineTerminalState.agentId)?.name ?? null)
     : null;
   const inlineTerminalAgentId = inlineTerminalState?.agentId ?? null;
-  const inlineTerminalSessionName = inlineTerminalSessionId
-    ? (queries.activeSessions.find((s) => s.id === inlineTerminalSessionId)?.name ?? null)
-    : null;
+  const inlineTerminalSession = inlineTerminalSessionId
+    ? queries.activeSessions.find((session) => session.id === inlineTerminalSessionId)
+    : undefined;
+  const inlineTerminalSessionName = inlineTerminalSession?.name ?? null;
+  const isInlineTerminalSessionRunning = inlineTerminalSession?.status === 'running';
 
   const isInlineSessionWindowOpen = useMemo(() => {
     if (!inlineTerminalSessionId) return false;
@@ -469,6 +483,7 @@ export function ChatPage() {
   // Session transcript for Session tab
   const sessionTranscript = useSessionTranscript(inlineTerminalSessionId, {
     enableTranscript: !isPagedTranscriptEnabled() && inlineActiveTab === 'session',
+    isSessionRunning: isInlineTerminalSessionRunning,
   });
 
   // ============================================
@@ -570,6 +585,8 @@ export function ChatPage() {
     return {
       agentName: agent.name,
       worktreeName: selectedWorktreeAgent.worktreeName,
+      apiBase: selectedWorktreeAgent.group.apiBase,
+      devchainProjectId: selectedWorktreeAgent.group.devchainProjectId,
       isOnline,
       sessionId,
     };
@@ -617,6 +634,89 @@ export function ChatPage() {
       return window.id === selectedWorktreeWindowId && !window.minimized;
     });
   }, [selectedWorktreeWindowId, terminalWindows]);
+
+  const canOpenMainCustomPrompts = Boolean(
+    !selectedWorktreeAgent &&
+      projectId &&
+      showInlineTerminal &&
+      inlineTerminalSessionId &&
+      inlineActiveTab === 'terminal' &&
+      !isInlineSessionWindowOpen &&
+      mainTerminalHandle,
+  );
+  const canOpenWorktreeCustomPrompts = Boolean(
+    selectedWorktreeAgentDetails?.devchainProjectId &&
+      selectedWorktreeSessionId &&
+      !isSelectedWorktreeSessionWindowOpen &&
+      worktreeTerminalHandle,
+  );
+
+  const customPromptTarget = useMemo<CustomPromptPickerTarget | null>(() => {
+    if (
+      selectedWorktreeAgentDetails?.devchainProjectId &&
+      selectedWorktreeSessionId &&
+      !isSelectedWorktreeSessionWindowOpen &&
+      worktreeTerminalHandle
+    ) {
+      return {
+        sessionId: selectedWorktreeSessionId,
+        projectId: selectedWorktreeAgentDetails.devchainProjectId,
+        apiBase: selectedWorktreeAgentDetails.apiBase,
+        fetchFn: fetch,
+        terminalHandle: worktreeTerminalHandle,
+      };
+    }
+
+    if (
+      !selectedWorktreeAgent &&
+      projectId &&
+      showInlineTerminal &&
+      inlineTerminalSessionId &&
+      inlineActiveTab === 'terminal' &&
+      !isInlineSessionWindowOpen &&
+      mainTerminalHandle
+    ) {
+      return {
+        sessionId: inlineTerminalSessionId,
+        projectId,
+        apiBase: '',
+        fetchFn: apiFetch,
+        terminalHandle: mainTerminalHandle,
+      };
+    }
+
+    return null;
+  }, [
+    apiFetch,
+    inlineActiveTab,
+    inlineTerminalSessionId,
+    isInlineSessionWindowOpen,
+    isSelectedWorktreeSessionWindowOpen,
+    mainTerminalHandle,
+    projectId,
+    selectedWorktreeAgent,
+    selectedWorktreeAgentDetails,
+    selectedWorktreeSessionId,
+    showInlineTerminal,
+    worktreeTerminalHandle,
+  ]);
+
+  useEffect(() => {
+    if (customPromptPickerOpen && !customPromptTarget) {
+      setCustomPromptPickerOpen(false);
+    }
+  }, [customPromptPickerOpen, customPromptTarget]);
+
+  const handleOpenCustomPrompts = useCallback(() => {
+    if (customPromptTarget) {
+      setCustomPromptPickerOpen(true);
+    }
+  }, [customPromptTarget]);
+
+  useInlineTerminalPromptShortcut(
+    canOpenMainCustomPrompts || canOpenWorktreeCustomPrompts,
+    handleOpenCustomPrompts,
+  );
 
   const handleOpenSelectedWorktreeWindow = useCallback(() => {
     if (!selectedWorktreeSessionId || !selectedWorktreeAgentDetails) {
@@ -813,7 +913,8 @@ export function ChatPage() {
         threadUiState.groupDialogOpen ||
         threadUiState.inviteDialogOpen ||
         threadUiState.settingsDialogOpen ||
-        threadUiState.clearHistoryDialogOpen
+        threadUiState.clearHistoryDialogOpen ||
+        customPromptPickerOpen
       ) {
         return;
       }
@@ -847,6 +948,7 @@ export function ChatPage() {
     threadUiState.inviteDialogOpen,
     threadUiState.settingsDialogOpen,
     threadUiState.clearHistoryDialogOpen,
+    customPromptPickerOpen,
     showInlineTerminal,
     inlineTerminalSessionId,
     focusedWindowId,
@@ -1136,6 +1238,7 @@ export function ChatPage() {
                 onOpenWindow={
                   selectedWorktreeSessionId ? handleOpenSelectedWorktreeWindow : undefined
                 }
+                onOpenPrompts={canOpenWorktreeCustomPrompts ? handleOpenCustomPrompts : undefined}
               />
               {selectedWorktreeSessionId ? (
                 <WorktreeInlineTerminal
@@ -1144,6 +1247,7 @@ export function ChatPage() {
                   agentName={selectedWorktreeAgentDetails?.agentName ?? null}
                   isWindowOpen={isSelectedWorktreeSessionWindowOpen}
                   windowId={selectedWorktreeWindowId}
+                  terminalRef={setWorktreeTerminalHandle}
                 />
               ) : (
                 <InlineTerminalPanel
@@ -1194,6 +1298,7 @@ export function ChatPage() {
                         ? () => handleOpenTerminal(inlineTerminalAgentId)
                         : undefined
                     }
+                    onOpenPrompts={canOpenMainCustomPrompts ? handleOpenCustomPrompts : undefined}
                     activeTab={inlineActiveTab}
                     onTabChange={handleInlineTabChange}
                     hasTranscript={Boolean(inlineTerminalSessionId)}
@@ -1232,6 +1337,7 @@ export function ChatPage() {
                         warnings={sessionTranscript.session?.warnings}
                       />
                     }
+                    terminalRef={setMainTerminalHandle}
                   />
                 </div>
               </div>
@@ -1485,6 +1591,13 @@ export function ChatPage() {
         sessionId={readSlideOverSessionId}
         onClose={() => setReadSlideOverSessionId(null)}
       />
+      {customPromptTarget && (
+        <CustomPromptPicker
+          open={customPromptPickerOpen}
+          target={customPromptTarget}
+          onOpenChange={setCustomPromptPickerOpen}
+        />
+      )}
       <ConfirmDialog {...activeSessionDialogProps} />
     </div>
   );

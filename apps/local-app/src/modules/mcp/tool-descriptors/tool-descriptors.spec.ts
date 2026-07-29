@@ -166,6 +166,17 @@ describe('tool-descriptors', () => {
     });
   });
 
+  describe('devchain_get_agent_by_name', () => {
+    it('documents the directory card and self-only instructions contract', () => {
+      const metadata = allMetadata.find((m) => m.name === 'devchain_get_agent_by_name');
+
+      expect(metadata?.description).toContain('directory card');
+      expect(metadata?.description).toContain('instructions are self-only');
+      expect(metadata?.description).toContain('open assigned epics with status');
+      expect(metadata?.description).toContain('empty array when team data is unavailable');
+    });
+  });
+
   describe('devchain_update_epic tag discoverability', () => {
     it('description includes tag-only update examples', () => {
       const metadata = allMetadata.find((m) => m.name === 'devchain_update_epic');

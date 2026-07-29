@@ -31,26 +31,31 @@ describe('ProviderStorageDelegate — env scopes (integration)', () => {
     sqlite.close();
   });
 
-  function seedProvider(env?: Record<string, string>): Provider {
+  function seedProvider(
+    env?: Record<string, string>,
+    options?: { name?: string; claudeLaunchSettingsJson?: string | null },
+  ): Provider {
     const id = randomUUID();
     const now = new Date().toISOString();
     const envJson = env ? JSON.stringify(env) : null;
+    const name = options?.name ?? `provider-${id.slice(0, 6)}`;
+    const claudeLaunchSettingsJson = options?.claudeLaunchSettingsJson ?? null;
     sqlite
       .prepare(
-        `INSERT INTO providers (id, name, mcp_configured, one_million_context_enabled, env, created_at, updated_at)
-         VALUES (?, ?, 0, 0, ?, ?, ?)`,
+        `INSERT INTO providers
+         (id, name, mcp_configured, claude_launch_settings_json, env, created_at, updated_at)
+         VALUES (?, ?, 0, ?, ?, ?, ?)`,
       )
-      .run(id, `provider-${id.slice(0, 6)}`, envJson, now, now);
+      .run(id, name, claudeLaunchSettingsJson, envJson, now, now);
     return {
       id,
-      name: `provider-${id.slice(0, 6)}`,
+      name,
       binPath: null,
       mcpConfigured: false,
       mcpEndpoint: null,
       mcpRegisteredAt: null,
       autoCompactThreshold: null,
-      autoCompactThreshold1m: null,
-      oneMillionContextEnabled: false,
+      claudeLaunchSettingsJson,
       env: env ?? null,
       createdAt: now,
       updatedAt: now,
@@ -204,6 +209,33 @@ describe('ProviderStorageDelegate — env scopes (integration)', () => {
   // ─── updateProviderWithScopes ───
 
   describe('updateProviderWithScopes', () => {
+    it('returns explicitly mapped camelCase provider fields after an update', () => {
+      const original = '{"tui":"default"}';
+      const updated = '{\n  "futureSetting": true\n}';
+      const provider = seedProvider(undefined, {
+        name: 'claude',
+        claudeLaunchSettingsJson: original,
+      });
+
+      const result = delegate.updateProviderWithScopes(
+        provider.id,
+        { claudeLaunchSettingsJson: updated },
+        undefined,
+        [],
+      );
+
+      expect(result.claudeLaunchSettingsJson).toBe(updated);
+      expect(result).not.toHaveProperty('claude_launch_settings_json');
+      expect(result).toMatchObject({
+        id: provider.id,
+        name: 'claude',
+        binPath: null,
+        mcpConfigured: false,
+        autoCompactThreshold: null,
+        env: null,
+      });
+    });
+
     it('updates provider and replaces scopes when envScopes is provided', () => {
       const provider = seedProvider({ KEY_A: 'a', KEY_B: 'b' });
       const p1 = seedProject();

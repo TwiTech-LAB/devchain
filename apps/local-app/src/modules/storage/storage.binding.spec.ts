@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { StorageModule } from './storage.module';
 import { STORAGE_SERVICE } from './interfaces/storage.interface';
+import { SNAPSHOT_PROMPT_WRITER } from './interfaces/snapshot-prompt-writer.interface';
 import { LocalStorageService } from './local/local-storage.service';
 
 describe('StorageModule binding', () => {
@@ -28,5 +29,12 @@ describe('StorageModule binding', () => {
     const instance2 = module.get(STORAGE_SERVICE);
 
     expect(instance1).toBe(instance2);
+  });
+
+  it('binds the trusted Snapshot writer as a separate capability on the same instance', () => {
+    const storageService = module.get(STORAGE_SERVICE);
+    const snapshotPromptWriter = module.get(SNAPSHOT_PROMPT_WRITER);
+
+    expect(snapshotPromptWriter).toBe(storageService);
   });
 });

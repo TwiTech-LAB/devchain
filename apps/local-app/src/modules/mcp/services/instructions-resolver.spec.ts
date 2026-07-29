@@ -310,7 +310,8 @@ describe('InstructionsResolver', () => {
     expect(storage.listPrompts).toHaveBeenCalledWith({
       projectId: 'project-1',
       q: 'Initialize Agent',
-      limit: 10,
+      limit: 10000,
+      offset: 0,
     });
     expect(storage.getPrompt).toHaveBeenCalledWith('prompt-1');
   });
@@ -363,12 +364,14 @@ describe('InstructionsResolver', () => {
     expect(storage.listPrompts).toHaveBeenNthCalledWith(1, {
       projectId: 'project-1',
       q: 'Global Helper',
-      limit: 10,
+      limit: 10000,
+      offset: 0,
     });
     expect(storage.listPrompts).toHaveBeenNthCalledWith(2, {
       projectId: null,
       q: 'Global Helper',
-      limit: 10,
+      limit: 10000,
+      offset: 0,
     });
   });
 
@@ -497,6 +500,113 @@ describe('InstructionsResolver', () => {
     expect(result?.prompts?.[0]).toMatchObject({ id: 'prompt-first', title: 'Duplicate Title' });
     expect(storage.getPrompt).toHaveBeenCalledWith('prompt-first');
     expect(result?.contentMd).toContain('First prompt content.');
+  });
+
+  it('exact-filters distractors and prefers a project System prompt over a Custom duplicate', async () => {
+    const summaries = [
+      ...Array.from({ length: 12 }, (_, index) => ({
+        id: `distractor-${index}`,
+        projectId: 'project-1',
+        title: `Shared SOP ${index}`,
+        tags: ['type:system'],
+        version: 1,
+        createdAt: '',
+        updatedAt: '',
+      })),
+      {
+        id: 'prompt-custom',
+        projectId: 'project-1',
+        title: 'Shared SOP',
+        tags: ['type:custom'],
+        version: 1,
+        createdAt: '',
+        updatedAt: '',
+      },
+      {
+        id: 'prompt-system',
+        projectId: 'project-1',
+        title: 'SHARED SOP',
+        tags: ['type:system'],
+        version: 1,
+        createdAt: '',
+        updatedAt: '',
+      },
+    ];
+    const systemPrompt: Prompt = {
+      id: 'prompt-system',
+      projectId: 'project-1',
+      title: 'SHARED SOP',
+      content: 'shared instructions',
+      version: 1,
+      tags: ['type:system'],
+      createdAt: '',
+      updatedAt: '',
+    };
+    const storage = {
+      getDocument: jest.fn(),
+      listDocuments: jest.fn(),
+      listPrompts: jest.fn().mockResolvedValue({
+        items: summaries,
+        total: summaries.length,
+        limit: 10000,
+        offset: 0,
+      }),
+      getPrompt: jest.fn().mockResolvedValue(systemPrompt),
+      getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
+    } as unknown as jest.Mocked<StorageService>;
+
+    const resolver = new InstructionsResolver(storage, inlineStub);
+    const result = await resolver.resolve('project-1', '[[prompt:shared sop]]');
+
+    expect(result?.prompts).toEqual([{ id: 'prompt-system', title: 'SHARED SOP' }]);
+    expect(storage.listPrompts).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      q: 'shared sop',
+      limit: 10000,
+      offset: 0,
+    });
+    expect(storage.getPrompt).toHaveBeenCalledWith('prompt-system');
+  });
+
+  it('keeps project scope ahead of a global System candidate', async () => {
+    const projectPrompt: Prompt = {
+      id: 'project-custom',
+      projectId: 'project-1',
+      title: 'Scoped',
+      content: 'project content',
+      version: 1,
+      tags: ['type:custom'],
+      createdAt: '',
+      updatedAt: '',
+    };
+    const storage = {
+      getDocument: jest.fn(),
+      listDocuments: jest.fn(),
+      listPrompts: jest.fn().mockResolvedValue({
+        items: [
+          {
+            id: projectPrompt.id,
+            projectId: projectPrompt.projectId,
+            title: projectPrompt.title,
+            tags: projectPrompt.tags,
+            version: 1,
+            createdAt: '',
+            updatedAt: '',
+          },
+        ],
+        total: 1,
+        limit: 10000,
+        offset: 0,
+      }),
+      getPrompt: jest.fn().mockResolvedValue(projectPrompt),
+      getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
+    } as unknown as jest.Mocked<StorageService>;
+
+    const resolver = new InstructionsResolver(storage, inlineStub);
+    const result = await resolver.resolve('project-1', '[[prompt:SCOPED]]');
+
+    expect(result?.prompts).toEqual([{ id: 'project-custom', title: 'Scoped' }]);
+    expect(storage.listPrompts).toHaveBeenCalledTimes(1);
   });
 
   describe('render option', () => {

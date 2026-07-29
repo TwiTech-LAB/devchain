@@ -1,4 +1,8 @@
 import { TerminalGateway } from './terminal.gateway';
+import {
+  PROMPT_PASTE_MAX_REQUESTS_PER_SESSION,
+  PROMPT_PASTE_RETRY_WINDOW_MS,
+} from './terminal.gateway';
 import { WsException } from '@nestjs/websockets';
 
 import { TerminalStreamService, type FrameReplayResult } from '../services/terminal-stream.service';
@@ -26,6 +30,15 @@ import { TerminalSocketDrainAdapter } from '../services/terminal-socket-drain.ad
 
 /** The stable sequence-domain epoch the mock stream service reports for every session. */
 const MOCK_SEQUENCE_EPOCH = 'epoch-1';
+
+function promptPastePayload(sessionId: string, ordinal = 1, data = 'selected prompt') {
+  return {
+    kind: 'prompt-paste' as const,
+    sessionId,
+    requestId: `00000000-0000-4000-8000-${String(ordinal).padStart(12, '0')}`,
+    data,
+  };
+}
 
 class GatewayDrainAdapter {
   readonly sent: ReturnType<typeof createEnvelope>[] = [];
@@ -3267,6 +3280,236 @@ describe('TerminalGateway.handleInput authority guard', () => {
 
     expect(terminalIO.sendControl).not.toHaveBeenCalled();
     expect(terminalIO.deliverImmediate).not.toHaveBeenCalled();
+  });
+});
+
+describe('TerminalGateway prompt-paste acknowledgement and idempotency', () => {
+  const gatewaysToDestroy: TerminalGateway[] = [];
+
+  afterEach(() => {
+    for (const gateway of gatewaysToDestroy) gateway.onModuleDestroy();
+    gatewaysToDestroy.length = 0;
+    jest.useRealTimers();
+  });
+
+  async function createAuthorizedPromptClient(
+    sessionId: string,
+    options?: Parameters<typeof createGateway>[0],
+  ) {
+    const setup = createGateway(options);
+    gatewaysToDestroy.push(setup.gateway);
+    const client = createMockSocket(`prompt-client-${sessionId}`);
+    setup.gateway.handleConnection(client);
+    await setup.gateway.handleSubscribe(client, { sessionId, rows: 24, cols: 80 });
+    setup.gateway.handleFocus(client, { sessionId });
+    return { ...setup, client };
+  }
+
+  it('delivers one bracketed no-submit paste and returns a plain typed ack', async () => {
+    const { gateway, client, terminalIO } = await createAuthorizedPromptClient('prompt-success');
+    const payload = promptPastePayload('prompt-success');
+
+    const result = await gateway.handleInput(client, payload);
+
+    expect(terminalIO.deliverImmediate).toHaveBeenCalledTimes(1);
+    expect(terminalIO.deliverImmediate).toHaveBeenCalledWith(
+      { name: 'tmux_prompt-success' },
+      'selected prompt',
+      { bracketed: true, submitKeys: [] },
+    );
+    expect(result).toEqual({ ok: true, code: 'OK', requestId: payload.requestId });
+    expect(result).not.toHaveProperty('event');
+  });
+
+  it('shares one pending operation for concurrent same-ID attempts', async () => {
+    const { gateway, client, terminalIO } = await createAuthorizedPromptClient('prompt-concurrent');
+    let releaseExists!: (alive: boolean) => void;
+    (terminalIO.sessionExists as jest.Mock).mockReturnValue(
+      new Promise<boolean>((resolve) => {
+        releaseExists = resolve;
+      }),
+    );
+    (terminalIO.sessionExists as jest.Mock).mockClear();
+    const payload = promptPastePayload('prompt-concurrent');
+
+    const first = gateway.handleInput(client, payload);
+    const second = gateway.handleInput(client, payload);
+    expect(terminalIO.sessionExists).toHaveBeenCalledTimes(1);
+    releaseExists(true);
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      { ok: true, code: 'OK', requestId: payload.requestId },
+      { ok: true, code: 'OK', requestId: payload.requestId },
+    ]);
+    expect(terminalIO.deliverImmediate).toHaveBeenCalledTimes(1);
+  });
+
+  it('replays the tombstone after a lost ack and rejects changed content', async () => {
+    const { gateway, client, terminalIO } = await createAuthorizedPromptClient('prompt-replay');
+    const payload = promptPastePayload('prompt-replay');
+
+    const first = await gateway.handleInput(client, payload);
+    const replay = await gateway.handleInput(client, payload);
+    const conflict = await gateway.handleInput(client, { ...payload, data: 'different prompt' });
+
+    expect(first).toEqual({ ok: true, code: 'OK', requestId: payload.requestId });
+    expect(replay).toEqual(first);
+    expect(conflict).toEqual({
+      ok: false,
+      code: 'REQUEST_CONFLICT',
+      requestId: payload.requestId,
+    });
+    expect(terminalIO.deliverImmediate).toHaveBeenCalledTimes(1);
+  });
+
+  it('caches a delivery-stage failure because tmux may already have pasted', async () => {
+    const { gateway, client, terminalIO } =
+      await createAuthorizedPromptClient('prompt-delivery-error');
+    (terminalIO.deliverImmediate as jest.Mock).mockRejectedValueOnce(new Error('paste uncertain'));
+    const payload = promptPastePayload('prompt-delivery-error');
+
+    const first = await gateway.handleInput(client, payload);
+    const replay = await gateway.handleInput(client, payload);
+
+    expect(first).toEqual({
+      ok: false,
+      code: 'DELIVERY_ERROR',
+      requestId: payload.requestId,
+    });
+    expect(replay).toEqual(first);
+    expect(terminalIO.deliverImmediate).toHaveBeenCalledTimes(1);
+  });
+
+  it('revalidates authority before replaying a completed request', async () => {
+    const { gateway, client, terminalIO } =
+      await createAuthorizedPromptClient('prompt-reauthorize');
+    const payload = promptPastePayload('prompt-reauthorize');
+    await gateway.handleInput(client, payload);
+
+    const secondClient = createMockSocket('prompt-new-authority');
+    gateway.handleConnection(secondClient);
+    await gateway.handleSubscribe(secondClient, {
+      sessionId: 'prompt-reauthorize',
+      rows: 24,
+      cols: 80,
+    });
+    gateway.handleFocus(secondClient, { sessionId: 'prompt-reauthorize' });
+
+    await expect(gateway.handleInput(client, payload)).resolves.toEqual({
+      ok: false,
+      code: 'NOT_AUTHORITY',
+      requestId: payload.requestId,
+    });
+    expect(terminalIO.deliverImmediate).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns typed failures for unknown, non-subscriber, and dead tmux sessions', async () => {
+    const unknownSetup = createGateway({ autoCreateRegistrySessions: false });
+    gatewaysToDestroy.push(unknownSetup.gateway);
+    const unknownClient = createMockSocket('prompt-unknown');
+    unknownSetup.gateway.handleConnection(unknownClient);
+    const unknownPayload = promptPastePayload('missing-session');
+    await expect(unknownSetup.gateway.handleInput(unknownClient, unknownPayload)).resolves.toEqual({
+      ok: false,
+      code: 'UNKNOWN_SESSION',
+      requestId: unknownPayload.requestId,
+    });
+
+    unknownSetup.registry.create('prompt-unsubscribed', 'tmux_prompt-unsubscribed');
+    const unsubscribedPayload = promptPastePayload('prompt-unsubscribed', 2);
+    await expect(
+      unknownSetup.gateway.handleInput(unknownClient, unsubscribedPayload),
+    ).resolves.toEqual({
+      ok: false,
+      code: 'NOT_SUBSCRIBER',
+      requestId: unsubscribedPayload.requestId,
+    });
+
+    const deadSetup = await createAuthorizedPromptClient('prompt-dead');
+    (deadSetup.terminalIO.sessionExists as jest.Mock).mockResolvedValue(false);
+    const deadPayload = promptPastePayload('prompt-dead', 3);
+    await expect(deadSetup.gateway.handleInput(deadSetup.client, deadPayload)).resolves.toEqual({
+      ok: false,
+      code: 'TMUX_UNAVAILABLE',
+      requestId: deadPayload.requestId,
+    });
+    expect(deadSetup.terminalIO.deliverImmediate).not.toHaveBeenCalled();
+  });
+
+  it('rejects new IDs at capacity without evicting pending operations', async () => {
+    const { gateway, client, terminalIO } = await createAuthorizedPromptClient('prompt-capacity');
+    let releaseExists!: (alive: boolean) => void;
+    const exists = new Promise<boolean>((resolve) => {
+      releaseExists = resolve;
+    });
+    (terminalIO.sessionExists as jest.Mock).mockReturnValue(exists);
+
+    const pending = Array.from({ length: PROMPT_PASTE_MAX_REQUESTS_PER_SESSION }, (_, index) =>
+      gateway.handleInput(client, promptPastePayload('prompt-capacity', index + 1)),
+    );
+    const overflow = promptPastePayload(
+      'prompt-capacity',
+      PROMPT_PASTE_MAX_REQUESTS_PER_SESSION + 1,
+    );
+
+    await expect(gateway.handleInput(client, overflow)).resolves.toEqual({
+      ok: false,
+      code: 'BUSY',
+      requestId: overflow.requestId,
+    });
+    expect(terminalIO.deliverImmediate).not.toHaveBeenCalled();
+
+    releaseExists(true);
+    await Promise.all(pending);
+    expect(terminalIO.deliverImmediate).toHaveBeenCalledTimes(
+      PROMPT_PASTE_MAX_REQUESTS_PER_SESSION,
+    );
+  });
+
+  it('retains tombstones across stop and restore, then releases capacity after expiry', async () => {
+    const { gateway, client, terminalIO } = await createAuthorizedPromptClient('prompt-lifecycle');
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+    const original = promptPastePayload('prompt-lifecycle');
+
+    await gateway.handleInput(client, original);
+    gateway.handleSessionStopped({ sessionId: 'prompt-lifecycle' });
+    gateway.handleSessionRestored({
+      sessionId: 'prompt-lifecycle',
+      epicId: null,
+      agentId: 'agent',
+      tmuxSessionName: 'tmux_prompt-lifecycle',
+      providerName: 'provider',
+    });
+    gateway.handleFocus(client, { sessionId: 'prompt-lifecycle' });
+    await expect(gateway.handleInput(client, original)).resolves.toEqual({
+      ok: true,
+      code: 'OK',
+      requestId: original.requestId,
+    });
+    expect(terminalIO.deliverImmediate).toHaveBeenCalledTimes(1);
+
+    const fill = Array.from({ length: PROMPT_PASTE_MAX_REQUESTS_PER_SESSION - 1 }, (_, index) =>
+      gateway.handleInput(
+        client,
+        promptPastePayload('prompt-lifecycle', index + 2, `prompt-${index}`),
+      ),
+    );
+    await Promise.all(fill);
+    const overflow = promptPastePayload(
+      'prompt-lifecycle',
+      PROMPT_PASTE_MAX_REQUESTS_PER_SESSION + 1,
+    );
+    await expect(gateway.handleInput(client, overflow)).resolves.toMatchObject({
+      ok: false,
+      code: 'BUSY',
+    });
+
+    jest.advanceTimersByTime(PROMPT_PASTE_RETRY_WINDOW_MS + 1);
+    await expect(gateway.handleInput(client, overflow)).resolves.toMatchObject({
+      ok: true,
+      code: 'OK',
+    });
   });
 });
 

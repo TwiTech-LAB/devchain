@@ -1,5 +1,5 @@
 import { ImportContext } from '../import-context';
-import { profilesCodec } from './profiles.codec';
+import { buildExportProfiles, profilesCodec } from './profiles.codec';
 import type { CodecApplyRuntime } from '../template-section-codec';
 
 jest.mock('../../../../common/logging/logger', () => ({
@@ -107,4 +107,78 @@ describe('profiles codec — providerConfig position pass-through', () => {
     const callArg = createProfileProviderConfig.mock.calls[0][0] as { position?: number };
     expect(callArg.position).toBeUndefined();
   });
+});
+
+describe('profiles codec — context-window env round-trip', () => {
+  const configuredEnv = { DEVCHAIN_CONTEXT_WINDOW_TOKENS: '750000' };
+
+  it('exports the key through the existing providerConfig env field', () => {
+    const result = buildExportProfiles(
+      {
+        items: [
+          {
+            id: 'p1',
+            name: 'P',
+            familySlug: null,
+            instructions: null,
+            temperature: null,
+            maxTokens: null,
+          },
+        ],
+      },
+      {
+        allConfigsByProfile: new Map([
+          [
+            'p1',
+            [
+              {
+                id: 'cfg-1',
+                name: 'default',
+                providerId: 'prov-1',
+                description: null,
+                options: null,
+                env: configuredEnv,
+                model: 'custom/model',
+                effort: null,
+                position: 0,
+              },
+            ],
+          ],
+        ]),
+        providersMap: new Map([['prov-1', { id: 'prov-1', name: 'claude' }]]),
+        configIdToInfo: new Map(),
+      },
+      (env) => env ?? null,
+    );
+
+    expect(result[0].providerConfigs[0].env).toEqual(configuredEnv);
+  });
+
+  it.each(['replace', 'create'] as const)(
+    'imports the key through the existing providerConfig env field in %s mode',
+    async (mode) => {
+      const createProfileProviderConfig = jest.fn().mockResolvedValue({ id: 'cfg-1' });
+      const rt = makeRt(createProfileProviderConfig);
+      const profilesToCreate = [
+        {
+          id: 'p1',
+          name: 'P',
+          provider: { name: 'claude' },
+          providerConfigs: [
+            {
+              name: 'default',
+              providerName: 'claude',
+              env: configuredEnv,
+            },
+          ],
+        },
+      ];
+
+      await profilesCodec.apply([] as AnyRec, seedCtx(profilesToCreate), mode, rt);
+
+      expect(createProfileProviderConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ env: configuredEnv }),
+      );
+    },
+  );
 });

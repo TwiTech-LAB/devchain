@@ -4,6 +4,7 @@ import { presetsCodec } from './presets.codec';
 import { watchersCodec } from './watchers.codec';
 import { subscribersCodec } from './subscribers.codec';
 import type { CodecApplyRuntime } from '../template-section-codec';
+import { PROMPT_TRANSFER_POLICY } from '../../../../common/prompt-transfer';
 
 jest.mock('../../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
@@ -81,6 +82,127 @@ describe('projectSettings codec — initialPrompt resolution', () => {
       initialSessionPromptId: 'new-1',
     });
     expect(result.log).toMatchObject({ initialPromptSet: true });
+  });
+
+  it.each([
+    ['old-system', 'new-system'],
+    ['old-custom', 'new-custom'],
+  ])(
+    'snapshot maps the selected same-title prompt %s to its exact new id',
+    async (selectedOldId, expectedNewId) => {
+      const rt = makeRt({
+        promptTransferPolicy: PROMPT_TRANSFER_POLICY.Snapshot,
+      });
+      const ctx = seedCtxForSettings({
+        createdPrompts: [
+          { id: 'new-system', title: 'Shared' },
+          { id: 'new-custom', title: 'Shared' },
+        ],
+        promptIdMap: {
+          'old-system': 'new-system',
+          'old-custom': 'new-custom',
+        },
+      });
+      const section = {
+        projectSettings: undefined,
+        initialPrompt: { promptId: selectedOldId, title: 'Shared' },
+        prompts: [
+          { id: 'old-system', title: 'Shared' },
+          { id: 'old-custom', title: 'Shared' },
+        ],
+      };
+
+      const result = await projectSettingsCodec.apply(section, ctx, 'replace', rt);
+
+      const settings = rt.settings as AnyRec;
+      expect(settings.updateSettings).toHaveBeenCalledWith({
+        projectId: 'proj-1',
+        initialSessionPromptId: expectedNewId,
+      });
+      expect(result.log).toMatchObject({ initialPromptSet: true });
+    },
+  );
+
+  it('snapshot falls back to legacy title resolution when the old id has no mapping', async () => {
+    const rt = makeRt({
+      promptTransferPolicy: PROMPT_TRANSFER_POLICY.Snapshot,
+    });
+    const ctx = seedCtxForSettings({
+      createdPrompts: [
+        { id: 'new-system', title: 'Shared' },
+        { id: 'new-custom', title: 'Shared' },
+      ],
+    });
+    const section = {
+      projectSettings: undefined,
+      initialPrompt: { promptId: 'missing-old-id', title: 'Shared' },
+      prompts: [],
+    };
+
+    await projectSettingsCodec.apply(section, ctx, 'replace', rt);
+
+    const settings = rt.settings as AnyRec;
+    expect(settings.updateSettings).toHaveBeenCalledWith({
+      projectId: 'proj-1',
+      initialSessionPromptId: 'new-custom',
+    });
+  });
+
+  it('template policy maps the selected same-title prompt to its exact new id', async () => {
+    const rt = makeRt({
+      promptTransferPolicy: PROMPT_TRANSFER_POLICY.Template,
+    });
+    const ctx = seedCtxForSettings({
+      createdPrompts: [
+        { id: 'new-system', title: 'Shared' },
+        { id: 'new-custom', title: 'Shared' },
+      ],
+      promptIdMap: {
+        'old-system': 'new-system',
+        'old-custom': 'new-custom',
+      },
+    });
+    const section = {
+      projectSettings: undefined,
+      initialPrompt: { promptId: 'old-system', title: 'Shared' },
+      prompts: [
+        { id: 'old-system', title: 'Shared' },
+        { id: 'old-custom', title: 'Shared' },
+      ],
+    };
+
+    await projectSettingsCodec.apply(section, ctx, 'replace', rt);
+
+    const settings = rt.settings as AnyRec;
+    expect(settings.updateSettings).toHaveBeenCalledWith({
+      projectId: 'proj-1',
+      initialSessionPromptId: 'new-system',
+    });
+  });
+
+  it('template policy retains last-title-wins fallback when the old id has no mapping', async () => {
+    const rt = makeRt({
+      promptTransferPolicy: PROMPT_TRANSFER_POLICY.Template,
+    });
+    const ctx = seedCtxForSettings({
+      createdPrompts: [
+        { id: 'new-system', title: 'Shared' },
+        { id: 'new-custom', title: 'Shared' },
+      ],
+    });
+    const section = {
+      projectSettings: undefined,
+      initialPrompt: { promptId: 'missing-old-id', title: 'Shared' },
+      prompts: [],
+    };
+
+    await projectSettingsCodec.apply(section, ctx, 'replace', rt);
+
+    const settings = rt.settings as AnyRec;
+    expect(settings.updateSettings).toHaveBeenCalledWith({
+      projectId: 'proj-1',
+      initialSessionPromptId: 'new-custom',
+    });
   });
 
   it('missing prompt: title does not match any created prompt -> initialPromptSet false, no initialSessionPromptId write', async () => {

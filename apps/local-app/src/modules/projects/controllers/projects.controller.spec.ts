@@ -1448,6 +1448,18 @@ describe('ProjectsController', () => {
   });
 
   describe('POST /api/projects/:id/export', () => {
+    it('does not expose the internal Custom-prompt export option', async () => {
+      (projectsService.exportProject as jest.Mock).mockResolvedValue({ version: 1 });
+
+      await controller.exportProjectWithOverrides('p1', {
+        includeCustomPrompts: true,
+      });
+
+      expect(projectsService.exportProject).toHaveBeenCalledWith('p1', {
+        manifestOverrides: undefined,
+      });
+    });
+
     it('accepts valid manifest overrides', async () => {
       const mockExport = { version: 1, _manifest: { name: 'Test' } };
       (projectsService.exportProject as jest.Mock).mockResolvedValue(mockExport);
@@ -1584,6 +1596,16 @@ describe('ProjectsController', () => {
           manifest: { changelog: longChangelog },
         }),
       ).rejects.toThrow('Invalid export overrides');
+    });
+  });
+
+  describe('GET /api/projects/:id/export', () => {
+    it('uses the public System-only default', async () => {
+      (projectsService.exportProject as jest.Mock).mockResolvedValue({ version: 1 });
+
+      await controller.exportProject('p1');
+
+      expect(projectsService.exportProject).toHaveBeenCalledWith('p1');
     });
   });
 

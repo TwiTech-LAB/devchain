@@ -36,6 +36,7 @@ import { join } from 'path';
 
 import { LocalStorageService } from '../../storage/local/local-storage.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
+import type { SnapshotPromptWriter } from '../../storage/interfaces/snapshot-prompt-writer.interface';
 import { SettingsService } from '../../settings/services/settings.service';
 import { TeamsStore } from '../../teams/storage/teams.store';
 
@@ -54,6 +55,9 @@ import {
 import { deriveSlugFromPath, slugify } from '../helpers/template-file.helpers';
 import { getNextRunAt } from '../../scheduled-epics/helpers/cron-helpers';
 import { ConflictError } from '../../../common/errors/error-types';
+import { PROMPT_TRANSFER_POLICY } from '../../../common/prompt-transfer';
+import { ProjectTemplateUpgradeService } from './project-template-upgrade.service';
+import type { ProjectsService } from './projects.service';
 
 // ---------------------------------------------------------------------------
 // Test harness: real :memory: SQLite + real storage-backed services.
@@ -62,6 +66,7 @@ import { ConflictError } from '../../../common/errors/error-types';
 interface Harness {
   sqlite: Database.Database;
   storage: StorageService;
+  snapshotPromptWriter: SnapshotPromptWriter;
   settings: SettingsService;
   teamsStore: TeamsStore;
 }
@@ -74,10 +79,11 @@ function createHarness(): Harness {
   migrate(db, { migrationsFolder: join(__dirname, '../../../..', 'drizzle') });
   sqlite.pragma('foreign_keys = ON');
 
-  const storage = new LocalStorageService(db) as unknown as StorageService;
+  const localStorage = new LocalStorageService(db);
+  const storage: StorageService = localStorage;
   const settings = new SettingsService(db, new EventEmitter2());
   const teamsStore = new TeamsStore(db);
-  return { sqlite, storage, settings, teamsStore };
+  return { sqlite, storage, snapshotPromptWriter: localStorage, settings, teamsStore };
 }
 
 /** Thin, real, storage-backed adapter matching the teamsService deps shape. */
@@ -106,6 +112,7 @@ function exportDeps(h: Harness) {
 function importDeps(h: Harness) {
   return {
     storage: h.storage,
+    snapshotPromptWriter: h.snapshotPromptWriter,
     settings: h.settings,
     watchersService: {
       deleteWatcher: (watcherId: string) => h.storage.deleteWatcher(watcherId),
@@ -205,6 +212,11 @@ function allSectionsTemplate(): Record<string, unknown> {
     prompts: [
       { title: 'Kickoff', content: 'Kickoff prompt', tags: ['starter', 'kickoff'] },
       { title: 'Reviewer SOP', content: 'Review everything', tags: ['agent:profile:reviewer'] },
+      {
+        title: 'Portable Custom',
+        content: 'Custom prompt content',
+        tags: ['portable', 'type:custom'],
+      },
     ],
     profiles: [
       {
@@ -585,7 +597,18 @@ describe('template round-trip contract safety net (real storage)', () => {
       const exportA = (await exportProjectWithHelper(projectA, undefined, exportDeps(h))) as AnyRec;
 
       const kickoff = (exportA.prompts as AnyRec[]).find((p) => p.title === 'Kickoff');
-      expect([...((kickoff?.tags as string[]) ?? [])].sort()).toEqual(['kickoff', 'starter']);
+      expect([...((kickoff?.tags as string[]) ?? [])].sort()).toEqual([
+        'kickoff',
+        'starter',
+        'type:system',
+      ]);
+      const portableCustom = (exportA.prompts as AnyRec[]).find(
+        (p) => p.title === 'Portable Custom',
+      );
+      expect(portableCustom).toMatchObject({
+        content: 'Custom prompt content',
+        tags: expect.arrayContaining(['portable', 'type:custom']),
+      });
 
       const team = (exportA.teams as AnyRec[])[0];
       expect(team).toMatchObject({
@@ -614,6 +637,219 @@ describe('template round-trip contract safety net (real storage)', () => {
       expect(exportA.providerEfforts).toEqual([
         { providerName: 'claude', efforts: expect.arrayContaining(['high', 'medium', 'low']) },
       ]);
+    });
+  });
+
+  describe('template upgrade prompt merge', () => {
+    it('preserves unmatched Custom prompts and replaces every case-insensitive title match', async () => {
+      const projectId = await freshProject(h, 'Upgrade Prompt Merge');
+      await h.settings.setProjectTemplateMetadata(projectId, {
+        templateSlug: 'upgrade-prompts',
+        source: 'registry',
+        installedVersion: '1.0.0',
+        registryUrl: 'https://registry.example',
+        installedAt: new Date().toISOString(),
+      });
+
+      await h.storage.createPrompt({
+        projectId,
+        title: 'Portable',
+        content: 'old first',
+        tags: ['type:custom'],
+      });
+      await h.storage.createPrompt({
+        projectId,
+        title: 'PORTABLE',
+        content: 'old second',
+        tags: ['type:custom'],
+      });
+      const preserved = await h.storage.createPrompt({
+        projectId,
+        title: 'Local Only',
+        content: 'keep local',
+        tags: ['type:custom'],
+      });
+
+      const targetTemplate = {
+        _manifest: { slug: 'upgrade-prompts', name: 'Upgrade Prompts', version: '2.0.0' },
+        version: 1,
+        prompts: [
+          {
+            id: '99999999-9999-4999-8999-999999999981',
+            title: 'portable',
+            content: 'new portable',
+            version: 1,
+            tags: ['type:custom'],
+          },
+          {
+            id: '99999999-9999-4999-8999-999999999982',
+            title: 'Local Only',
+            content: 'system peer',
+            version: 1,
+            tags: ['type:system'],
+          },
+        ],
+        profiles: [],
+        agents: [],
+        statuses: [],
+      };
+      const projectsFacade = {
+        exportProject: (id: string, options?: Parameters<typeof exportProjectWithHelper>[1]) =>
+          exportProjectWithHelper(id, options, exportDeps(h)),
+        importProject: (input: Parameters<typeof importProjectWithHelper>[0]) =>
+          importProjectWithHelper(input, importDeps(h) as never),
+      } as unknown as ProjectsService;
+      const upgradeService = new ProjectTemplateUpgradeService(
+        projectsFacade,
+        {
+          getTemplate: jest.fn().mockResolvedValue({ content: targetTemplate }),
+        } as never,
+        {} as never,
+        h.settings,
+      );
+
+      const result = await upgradeService.upgradeProject({
+        projectId,
+        targetVersion: '2.0.0',
+      });
+      const prompts = await h.storage.listPrompts({ projectId, limit: 100, offset: 0 });
+
+      expect(result).toMatchObject({
+        success: true,
+        newVersion: '2.0.0',
+        promptTransfer: { imported: 2, deleted: 2, preserved: 1, skipped: 0 },
+      });
+      expect(prompts.items).toHaveLength(3);
+      expect(prompts.items).toContainEqual(expect.objectContaining({ id: preserved.id }));
+      expect(prompts.items.filter((prompt) => prompt.title.toLowerCase() === 'portable')).toEqual([
+        expect.objectContaining({ contentPreview: 'new portable', tags: ['type:custom'] }),
+      ]);
+      expect(prompts.items.filter((prompt) => prompt.title === 'Local Only')).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: preserved.id, tags: ['type:custom'] }),
+          expect.objectContaining({ contentPreview: 'system peer', tags: ['type:system'] }),
+        ]),
+      );
+    });
+  });
+
+  describe('snapshot prompt identity', () => {
+    it.each([
+      ['System', '99999999-9999-4999-8999-999999999991', 'type:system'],
+      ['Custom', '99999999-9999-4999-8999-999999999992', 'type:custom'],
+    ])(
+      'restores the exact selected %s prompt when System and Custom share a title',
+      async (_selectedType, selectedOldId, expectedTypeTag) => {
+        const projectId = await freshProject(h, `Snapshot ${_selectedType}`);
+        const snapshot = {
+          version: 1,
+          prompts: [
+            {
+              id: '99999999-9999-4999-8999-999999999991',
+              title: 'Shared',
+              content: 'system',
+              version: 1,
+              tags: ['type:system'],
+            },
+            {
+              id: '99999999-9999-4999-8999-999999999992',
+              title: 'Shared',
+              content: 'custom',
+              version: 1,
+              tags: ['type:custom'],
+            },
+          ],
+          profiles: [],
+          agents: [],
+          statuses: [],
+          initialPrompt: { promptId: selectedOldId, title: 'Shared' },
+        };
+
+        const result = (await importProjectWithHelper(
+          {
+            projectId,
+            payload: snapshot,
+            promptTransferPolicy: PROMPT_TRANSFER_POLICY.Snapshot,
+          },
+          importDeps(h) as never,
+        )) as AnyRec;
+        const promptIdMap = (result.mappings as AnyRec).promptIdMap as Record<string, string>;
+        const restoredInitialPrompt = await h.storage.getInitialSessionPrompt(projectId);
+
+        expect(result).toMatchObject({ success: true, initialPromptSet: true });
+        expect(result.promptTransfer).toEqual({
+          imported: 2,
+          deleted: 0,
+          preserved: 0,
+          skipped: 0,
+        });
+        expect(restoredInitialPrompt).toMatchObject({
+          id: promptIdMap[selectedOldId],
+          title: 'Shared',
+          tags: expect.arrayContaining([expectedTypeTag]),
+        });
+      },
+    );
+
+    it('backup restore preserves unknown, multiple, and differently-cased type tags exactly', async () => {
+      const projectId = await freshProject(h, 'Snapshot Exact Tags');
+      await h.settings.setProjectTemplateMetadata(projectId, {
+        templateSlug: 'snapshot-source',
+        source: 'bundled',
+        installedVersion: '1.0.0',
+        registryUrl: null,
+        installedAt: new Date().toISOString(),
+      });
+
+      const exactTagsByTitle = new Map<string, string[]>([
+        ['Unknown Type', ['scope:first', 'type:future', 'scope:last']],
+        ['Multiple Types', ['type:system', 'feature', 'type:custom', 'type:future']],
+        ['Differently Cased', ['TYPE:System', 'Scope:Mixed', 'type:CUSTOM']],
+      ]);
+      for (const [title, tags] of exactTagsByTitle) {
+        await h.snapshotPromptWriter.createPromptFromSnapshot({
+          projectId,
+          title,
+          content: title,
+          tags,
+        });
+      }
+
+      const projectsFacade = {
+        exportProject: (id: string, options?: Parameters<typeof exportProjectWithHelper>[1]) =>
+          exportProjectWithHelper(id, options, exportDeps(h)),
+        importProject: (input: Parameters<typeof importProjectWithHelper>[0]) =>
+          importProjectWithHelper(input, importDeps(h) as never),
+      } as unknown as ProjectsService;
+      const upgradeService = new ProjectTemplateUpgradeService(
+        projectsFacade,
+        {} as never,
+        {} as never,
+        h.settings,
+      );
+
+      const backupId = await upgradeService.createBackup(projectId);
+      const originals = await h.storage.listPrompts({ projectId, limit: 100, offset: 0 });
+      for (const prompt of originals.items) {
+        await h.storage.deletePrompt(prompt.id);
+      }
+      await h.storage.createPrompt({
+        projectId,
+        title: 'Replacement',
+        content: 'must be removed',
+        tags: ['type:custom'],
+      });
+
+      await upgradeService.restoreBackup(backupId);
+
+      const restored = await h.storage.listPrompts({ projectId, limit: 100, offset: 0 });
+      expect(restored.items).toHaveLength(exactTagsByTitle.size);
+      expect(restored.items.map((prompt) => prompt.title)).not.toContain('Replacement');
+      for (const prompt of restored.items) {
+        expect((await h.storage.getPrompt(prompt.id)).tags).toEqual(
+          exactTagsByTitle.get(prompt.title),
+        );
+      }
     });
   });
 

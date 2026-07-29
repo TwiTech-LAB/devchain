@@ -3,6 +3,11 @@ import type { Document, Prompt } from '../../storage/models/domain.models';
 import type { DocumentInlineResolution, InstructionsResolved } from '../dtos/mcp.dto';
 import { renderTemplate } from '../../../common/template/handlebars-renderer';
 import { createLogger } from '../../../common/logging/logger';
+import {
+  INSTRUCTION_REFERENCE_PATTERN,
+  PROMPT_REFERENCE_PREFIX,
+  rankPromptCandidatesSystemFirst,
+} from '../../../common/prompt-references';
 
 const logger = createLogger('InstructionsResolver');
 
@@ -29,7 +34,6 @@ type InlineResolver = (
   maxBytes: number,
 ) => Promise<DocumentInlineResolution>;
 
-const REFERENCE_PATTERN = /\[\[([^[\]]+)\]\]/g;
 const DEFAULT_MAX_DEPTH = 2;
 const DEFAULT_MAX_BYTES = 64 * 1024;
 const DEFAULT_MAX_DOCUMENTS = 10;
@@ -208,7 +212,7 @@ export class InstructionsResolver {
   }
 
   private extractReferences(instructions: string): Reference[] {
-    const matches = instructions.matchAll(REFERENCE_PATTERN);
+    const matches = instructions.matchAll(INSTRUCTION_REFERENCE_PATTERN);
     const references: Reference[] = [];
 
     for (const match of matches) {
@@ -222,8 +226,8 @@ export class InstructionsResolver {
         if (key) {
           references.push({ raw, value: key, type: 'tag' });
         }
-      } else if (raw.startsWith('prompt:')) {
-        const title = raw.slice('prompt:'.length).trim();
+      } else if (raw.startsWith(PROMPT_REFERENCE_PREFIX)) {
+        const title = raw.slice(PROMPT_REFERENCE_PREFIX.length).trim();
         if (title) {
           references.push({ raw, value: title, type: 'prompt' });
         }
@@ -336,13 +340,17 @@ export class InstructionsResolver {
     const projectResults = await this.storage.listPrompts({
       projectId,
       q: title,
-      limit: 10,
+      limit: 10000,
+      offset: 0,
     });
 
-    const projectMatch = projectResults.items.find((p) => p.title.toLowerCase() === titleLower);
+    const projectMatches = rankPromptCandidatesSystemFirst(
+      projectResults.items.filter((p) => p.title.toLowerCase() === titleLower),
+    );
+    const projectMatch = projectMatches[0];
 
     if (projectMatch) {
-      if (projectResults.items.filter((p) => p.title.toLowerCase() === titleLower).length > 1) {
+      if (projectMatches.length > 1) {
         logger.warn(
           `Multiple prompts found with title "${title}" in project ${projectId}, using first match`,
         );
@@ -354,13 +362,17 @@ export class InstructionsResolver {
     const globalResults = await this.storage.listPrompts({
       projectId: null,
       q: title,
-      limit: 10,
+      limit: 10000,
+      offset: 0,
     });
 
-    const globalMatch = globalResults.items.find((p) => p.title.toLowerCase() === titleLower);
+    const globalMatches = rankPromptCandidatesSystemFirst(
+      globalResults.items.filter((p) => p.title.toLowerCase() === titleLower),
+    );
+    const globalMatch = globalMatches[0];
 
     if (globalMatch) {
-      if (globalResults.items.filter((p) => p.title.toLowerCase() === titleLower).length > 1) {
+      if (globalMatches.length > 1) {
         logger.warn(
           `Multiple prompts found with title "${title}" in global scope, using first match`,
         );

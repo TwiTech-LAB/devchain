@@ -177,7 +177,7 @@ describe('ExportSchema', () => {
       expect(result.success).toBe(true);
     });
 
-    it('should accept providerSettings with oneMillionContextEnabled', () => {
+    it('consumes pre-split Claude fields and restores the ordinary fallback threshold', () => {
       const template = {
         ...baseTemplate,
         providerSettings: [
@@ -186,17 +186,50 @@ describe('ExportSchema', () => {
       };
       const result = ExportSchema.safeParse(template);
       expect(result.success).toBe(true);
-      expect(result.data!.providerSettings![0].oneMillionContextEnabled).toBe(true);
+      expect(result.data!.providerSettings![0]).toEqual({
+        name: 'claude',
+        autoCompactThreshold: 95,
+      });
     });
 
-    it('should accept providerSettings without oneMillionContextEnabled (backward compatible)', () => {
+    it('consumes split Claude fields while retaining the ordinary threshold', () => {
       const template = {
         ...baseTemplate,
-        providerSettings: [{ name: 'claude', autoCompactThreshold: 10 }],
+        providerSettings: [
+          {
+            name: 'claude',
+            autoCompactThreshold: 95,
+            autoCompactThreshold1m: 50,
+            oneMillionContextEnabled: true,
+          },
+        ],
       };
       const result = ExportSchema.safeParse(template);
       expect(result.success).toBe(true);
-      expect(result.data!.providerSettings![0].oneMillionContextEnabled).toBeUndefined();
+      expect(result.data!.providerSettings![0]).toEqual({
+        name: 'claude',
+        autoCompactThreshold: 95,
+      });
+    });
+
+    it('preserves current and non-1M legacy ordinary thresholds', () => {
+      const template = {
+        ...baseTemplate,
+        providerSettings: [
+          { name: 'claude', autoCompactThreshold: 80 },
+          {
+            name: 'codex',
+            autoCompactThreshold: 50,
+            oneMillionContextEnabled: true,
+          },
+        ],
+      };
+      const result = ExportSchema.safeParse(template);
+      expect(result.success).toBe(true);
+      expect(result.data!.providerSettings).toEqual([
+        { name: 'claude', autoCompactThreshold: 80 },
+        { name: 'codex', autoCompactThreshold: 50 },
+      ]);
     });
   });
 
@@ -1074,6 +1107,33 @@ describe('ExportSchema', () => {
       expect(result.success).toBe(true);
     });
 
+    it('preserves explicit Claude context env in provider configs', () => {
+      const template = {
+        ...baseTemplate,
+        profiles: [
+          {
+            ...baseTemplate.profiles[0],
+            providerConfigs: [
+              {
+                name: 'explicit-context',
+                providerName: 'claude',
+                env: {
+                  CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000',
+                  CLAUDE_CODE_DISABLE_1M_CONTEXT: '1',
+                },
+              },
+            ],
+          },
+        ],
+      };
+
+      const result = ExportSchema.parse(template);
+      expect(result.profiles[0].providerConfigs![0].env).toEqual({
+        CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000',
+        CLAUDE_CODE_DISABLE_1M_CONTEXT: '1',
+      });
+    });
+
     it('should reject providerConfig with invalid env key', () => {
       const template = {
         ...baseTemplate,
@@ -1194,7 +1254,10 @@ describe('ExportSchema', () => {
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.providerSettings![0].env).toBeUndefined();
-        expect(result.data.providerSettings![0].autoCompactThreshold).toBe(80);
+        expect(result.data.providerSettings![0]).toEqual({
+          name: 'claude',
+          autoCompactThreshold: 95,
+        });
       }
     });
 

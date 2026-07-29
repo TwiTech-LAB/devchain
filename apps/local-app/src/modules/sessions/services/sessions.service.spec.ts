@@ -22,6 +22,7 @@ import type { HooksConfigService } from '../../hooks/services/hooks-config.servi
 import type { ProviderAdapterFactory } from '../../providers/adapters/provider-adapter.factory';
 import { SessionCoordinatorService } from './session-coordinator.service';
 import { TerminalSessionRegistry } from '../../terminal/services/terminal-session/terminal-session-registry';
+import type { RuntimeContextCaptureService } from '../../runtime-context-capture/runtime-context-capture.service';
 
 describe('SessionsService', () => {
   let storage: {
@@ -60,6 +61,8 @@ describe('SessionsService', () => {
     dispose: jest.Mock;
     get: jest.Mock;
   };
+  let runtimeContextCapture: { clear: jest.Mock };
+  let claudeLaunchSettings: { cleanupSessionSync: jest.Mock };
   let service: SessionsService;
 
   beforeEach(() => {
@@ -128,6 +131,8 @@ describe('SessionsService', () => {
       dispose: jest.fn(),
       get: jest.fn().mockReturnValue(undefined),
     };
+    runtimeContextCapture = { clear: jest.fn() };
+    claudeLaunchSettings = { cleanupSessionSync: jest.fn() };
 
     service = new SessionsService(
       dbMock,
@@ -143,6 +148,8 @@ describe('SessionsService', () => {
       providerAdapterFactory as unknown as ProviderAdapterFactory,
       eventsService as unknown as EventsService,
       terminalSessionRegistry as unknown as TerminalSessionRegistry,
+      runtimeContextCapture as unknown as RuntimeContextCaptureService,
+      claudeLaunchSettings as never,
     );
   });
 
@@ -181,6 +188,8 @@ describe('SessionsService', () => {
 
       expect(ptyService.stopStreaming).toHaveBeenCalledWith('session-1');
       expect(terminalSessionRegistry.dispose).toHaveBeenCalledWith('session-1');
+      expect(runtimeContextCapture.clear).toHaveBeenCalledWith('session-1');
+      expect(claudeLaunchSettings.cleanupSessionSync).toHaveBeenCalledWith('session-1');
       expect(mockTerminalIO.destroySession).toHaveBeenCalledWith({ name: 'tmux-session' });
       expect(eventsService.publish).toHaveBeenCalledWith('session.stopped', {
         sessionId: 'session-1',
@@ -200,6 +209,7 @@ describe('SessionsService', () => {
 
       await service.terminateSession('nonexistent');
       expect(mockTerminalIO.destroySession).not.toHaveBeenCalled();
+      expect(runtimeContextCapture.clear).toHaveBeenCalledWith('nonexistent');
     });
 
     it('treats stopped session as success but still disposes stale in-memory state', async () => {
@@ -222,6 +232,8 @@ describe('SessionsService', () => {
       // cannot block a later restore with "TerminalSession already exists".
       expect(ptyService.stopStreaming).toHaveBeenCalledWith('session-1');
       expect(terminalSessionRegistry.dispose).toHaveBeenCalledWith('session-1');
+      expect(runtimeContextCapture.clear).toHaveBeenCalledWith('session-1');
+      expect(claudeLaunchSettings.cleanupSessionSync).toHaveBeenCalledWith('session-1');
     });
 
     it('disposes registry entry in terminateSession', async () => {
@@ -452,6 +464,39 @@ describe('SessionsService', () => {
       expect(presenceMap.get('agent-1')).toEqual({ online: false });
       expect(presenceMap.get('agent-2')).toEqual({ online: false });
     });
+
+    it('returns null idleSince for a stored session without live presence', async () => {
+      const storedSession = {
+        id: 'session-1',
+        epic_id: null,
+        agent_id: 'agent-1',
+        tmux_session_id: null,
+        status: 'running',
+        started_at: '2026-07-18T10:00:00.000Z',
+        ended_at: null,
+        last_activity_at: '2026-07-18T10:01:00.000Z',
+        activity_state: 'idle',
+        busy_since: null,
+        transcript_path: null,
+        name: null,
+        created_at: '2026-07-18T10:00:00.000Z',
+        updated_at: '2026-07-18T10:01:00.000Z',
+      };
+      sqlitePrepare.mockReturnValue({
+        run: insertRunMock,
+        get: jest.fn().mockReturnValue(undefined),
+        all: jest.fn().mockReturnValue([storedSession]),
+      });
+
+      const presenceMap = await service.getAgentPresence();
+
+      expect(presenceMap.get('agent-1')).toMatchObject({
+        online: true,
+        sessionId: 'session-1',
+        activityState: 'idle',
+        idleSince: null,
+      });
+    });
   });
 
   describe('listActiveSessions', () => {
@@ -499,6 +544,21 @@ describe('SessionsService', () => {
       // stale registry entry would block restoring the session later.
       expect(ptyService.stopStreaming).toHaveBeenCalledWith('session-1');
       expect(terminalSessionRegistry.dispose).toHaveBeenCalledWith('session-1');
+      expect(runtimeContextCapture.clear).toHaveBeenCalledWith('session-1');
+    });
+  });
+
+  describe('markSessionFailed', () => {
+    it('clears runtime context capture when a dead tmux ends a session', () => {
+      service.markSessionFailed('session-crashed', 'tmux missing');
+
+      expect(runtimeContextCapture.clear).toHaveBeenCalledWith('session-crashed');
+      expect(claudeLaunchSettings.cleanupSessionSync).toHaveBeenCalledWith('session-crashed');
+      expect(insertRunMock).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(String),
+        'session-crashed',
+      );
     });
   });
 

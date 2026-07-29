@@ -5,6 +5,11 @@ import { MemoryRouter } from 'react-router-dom';
 import { useProjectsPageController } from './useProjectsPageController';
 import type { AgentOverridePayload } from '@/ui/pages/projects/lib/project-api';
 
+const toastMock = jest.fn();
+jest.mock('@/ui/hooks/use-toast', () => ({
+  useToast: () => ({ toast: toastMock }),
+}));
+
 // useSelectedProject requires a ProjectSelectionProvider; the retry path only needs
 // setSelectedProjectId, so stub the hook.
 jest.mock('@/ui/hooks/useProjectSelection', () => ({
@@ -81,6 +86,7 @@ describe('useProjectsPageController — providerMappingRequired retry preserves 
   afterEach(() => {
     global.fetch = originalFetch;
     jest.restoreAllMocks();
+    toastMock.mockReset();
   });
 
   it('preserves selectedProviderNames + agentOverrides + teamOverrides through the retry', async () => {
@@ -161,5 +167,96 @@ describe('useProjectsPageController — providerMappingRequired retry preserves 
     expect(retryBody.selectedProviderNames).toEqual(['claude', 'codex']);
     expect(retryBody.teamOverrides).toEqual([{ teamName: 'Reviews' }]);
     expect(retryBody.familyProviderMappings).toEqual({ reasoning: 'codex' });
+  });
+
+  it('reports create prompt preservation and skipping through the success toast', async () => {
+    global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/projects/from-template' && init?.method === 'POST') {
+        return {
+          ok: true,
+          json: async () => ({
+            success: true,
+            project: { id: 'p-new', name: 'P' },
+            promptTransfer: { imported: 2, deleted: 0, preserved: 0, skipped: 1 },
+          }),
+        } as Response;
+      }
+      if (url === '/api/projects') {
+        return { ok: true, json: async () => ({ items: [] }) } as Response;
+      }
+      if (url === '/api/templates') {
+        return { ok: true, json: async () => ({ templates: [], total: 0 }) } as Response;
+      }
+      return { ok: true, json: async () => ({}) } as Response;
+    }) as unknown as typeof fetch;
+    const { result } = renderHook(() => useProjectsPageController(), { wrapper });
+
+    act(() => {
+      result.current.createFromTemplateMutation.mutate({
+        name: 'P',
+        rootPath: '/tmp/p',
+        templateId: 'tpl',
+      });
+    });
+
+    await waitFor(() =>
+      expect(toastMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Success',
+          description: expect.stringContaining('0 preserved, 1 skipped'),
+        }),
+      ),
+    );
+  });
+
+  it('keeps the create dialog open and surfaces a structured prompt preflight failure', async () => {
+    global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/projects/from-template' && init?.method === 'POST') {
+        return {
+          ok: true,
+          json: async () => ({
+            success: false,
+            mutationStarted: false,
+            error: 'Template profiles reference excluded prompts',
+            promptReferenceValidation: {
+              code: 'skipped_prompt_references',
+              promptTitles: ['Private SOP'],
+              issues: [{ promptTitle: 'Private SOP', profileNames: ['Coder'] }],
+            },
+          }),
+        } as Response;
+      }
+      if (url === '/api/projects') {
+        return { ok: true, json: async () => ({ items: [] }) } as Response;
+      }
+      if (url === '/api/templates') {
+        return { ok: true, json: async () => ({ templates: [], total: 0 }) } as Response;
+      }
+      return { ok: true, json: async () => ({}) } as Response;
+    }) as unknown as typeof fetch;
+    const { result } = renderHook(() => useProjectsPageController(), { wrapper });
+
+    act(() => result.current.setShowTemplateDialog(true));
+    act(() => {
+      result.current.createFromTemplateMutation.mutate({
+        name: 'P',
+        rootPath: '/tmp/p',
+        templateId: 'tpl',
+      });
+    });
+
+    await waitFor(() =>
+      expect(toastMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Project creation blocked',
+          description: expect.stringContaining('"Private SOP" (profiles: Coder)'),
+          variant: 'destructive',
+        }),
+      ),
+    );
+    expect(result.current.showTemplateDialog).toBe(true);
+    expect(toastMock).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'Success' }));
   });
 });

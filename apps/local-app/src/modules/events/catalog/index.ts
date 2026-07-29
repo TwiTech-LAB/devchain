@@ -27,6 +27,7 @@ import { sessionTranscriptDiscoveredEvent } from './session.transcript.discovere
 import { sessionProviderSessionIdDiscoveredEvent } from './session.provider-session-id.discovered';
 import { sessionTranscriptUpdatedEvent } from './session.transcript.updated';
 import { sessionTranscriptEndedEvent } from './session.transcript.ended';
+import { sessionRuntimeContextUpdatedEvent } from './session.runtime-context.updated';
 import { teamConfigUpdatedEvent } from './team.config.updated';
 import { teamMemberAddedEvent } from './team.member.added';
 import { teamMemberRemovedEvent } from './team.member.removed';
@@ -76,6 +77,7 @@ export const eventCatalog = {
   [sessionProviderSessionIdDiscoveredEvent.name]: sessionProviderSessionIdDiscoveredEvent.schema,
   [sessionTranscriptUpdatedEvent.name]: sessionTranscriptUpdatedEvent.schema,
   [sessionTranscriptEndedEvent.name]: sessionTranscriptEndedEvent.schema,
+  [sessionRuntimeContextUpdatedEvent.name]: sessionRuntimeContextUpdatedEvent.schema,
   [teamConfigUpdatedEvent.name]: teamConfigUpdatedEvent.schema,
   [teamMemberAddedEvent.name]: teamMemberAddedEvent.schema,
   [teamMemberRemovedEvent.name]: teamMemberRemovedEvent.schema,

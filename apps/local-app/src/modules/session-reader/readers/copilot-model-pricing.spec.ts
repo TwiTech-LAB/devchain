@@ -62,6 +62,7 @@ describe('calculateCopilotMessageCost', () => {
   it('delegates to PricingService with the mapped key and token buckets', () => {
     const mock: PricingServiceInterface = {
       calculateMessageCost: jest.fn().mockReturnValue(0.0042),
+      getCatalogContextWindowSize: jest.fn().mockReturnValue(200_000),
       getContextWindowSize: jest.fn().mockReturnValue(200_000),
     };
 
@@ -75,6 +76,7 @@ describe('calculateCopilotMessageCost', () => {
   it('UNKNOWN model → loud warning + $0 (never folded into parity)', () => {
     const mock: PricingServiceInterface = {
       calculateMessageCost: jest.fn().mockReturnValue(99),
+      getCatalogContextWindowSize: jest.fn(),
       getContextWindowSize: jest.fn(),
     };
     const warn = jest.fn();
@@ -89,6 +91,7 @@ describe('calculateCopilotMessageCost', () => {
   it('`auto` → loud warning + $0 (caller must resolve to the concrete model first)', () => {
     const mock: PricingServiceInterface = {
       calculateMessageCost: jest.fn(),
+      getCatalogContextWindowSize: jest.fn(),
       getContextWindowSize: jest.fn(),
     };
     const warn = jest.fn();

@@ -1,6 +1,11 @@
 import { ExportSchema } from '@devchain/shared';
 import { ValidationError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
+import {
+  buildPromptReferenceValidationFailure,
+  findSkippedTemplatePromptReferences,
+} from '../../../common/prompt-references';
+import { PROMPT_TRANSFER_POLICY, type PromptTransferCounts } from '../../../common/prompt-transfer';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import type { SettingsService } from '../../settings/services/settings.service';
 import type { UnifiedTemplateService } from '../../registry/services/unified-template.service';
@@ -14,7 +19,6 @@ import {
   type FamilyAlternativesResult,
   type ProjectSettingsTemplateInput,
 } from './profile-mapping.helpers';
-import type { ProbeOutcome } from '../../providers/utils/probe-1m';
 import type { PresetAgentConfig } from './project-presets.helpers';
 import type { TeamsService } from '../../teams/services/teams.service';
 import type { WatchersService } from '../../watchers/services/watchers.service';
@@ -116,7 +120,6 @@ interface CreateFromTemplateDeps {
       configLookupMap: Map<string, string>;
     },
   ) => Promise<{ applied: number; warnings: string[] }>;
-  probe1m?: (binPath: string) => Promise<ProbeOutcome>;
   teamsService?: TeamsService;
   /**
    * Real watchers service (starts runners on create) for the watchers codec. Optional: when
@@ -236,6 +239,16 @@ export async function createFromTemplateWithHelper(
     templateSlug: resolvedTemplateSlug,
   } = mappingResolution;
 
+  const promptReferenceFailure = buildPromptReferenceValidationFailure(
+    findSkippedTemplatePromptReferences(
+      selectedProfilesByFamily.profilesToCreate,
+      resolvedPayload.prompts,
+    ),
+  );
+  if (promptReferenceFailure) {
+    return promptReferenceFailure;
+  }
+
   // Build warnings from provider substitutions (for frontend display)
   const warnings: Array<{
     type: 'provider_mismatch';
@@ -275,6 +288,7 @@ export async function createFromTemplateWithHelper(
 
   const buildRuntime = (projectId: string) => ({
     projectId,
+    promptTransferPolicy: PROMPT_TRANSFER_POLICY.Template,
     storage: deps.storage,
     settings: deps.settings,
     watchersService: watcherServiceForCodec,
@@ -283,11 +297,11 @@ export async function createFromTemplateWithHelper(
     existingStatuses: [] as const,
     teamsService: deps.teamsService,
     teamOverrides: input.teamOverrides,
-    probe1m: deps.probe1m,
     scheduledEpicsRefresh: deps.scheduledEpicsRefresh,
     computeNextRunAt: deps.computeNextRunAt,
   });
 
+  let coreResults: Awaited<ReturnType<TemplatePipeline['applySections']>> = [];
   const project = await deps.storage.runInTransaction(async () => {
     const created = await deps.storage.createProjectShell(
       {
@@ -298,7 +312,7 @@ export async function createFromTemplateWithHelper(
       },
       input.projectId ? { projectId: input.projectId } : undefined,
     );
-    await CREATE_TEMPLATE_PIPELINE.applySections(
+    coreResults = await CREATE_TEMPLATE_PIPELINE.applySections(
       ['statuses', 'prompts', 'profiles', 'agents'],
       resolvedPayload,
       pipelineCtx,
@@ -336,6 +350,16 @@ export async function createFromTemplateWithHelper(
   const scheduledEpicsCreated = (logOf('scheduledEpics').scheduledEpics as number | undefined) ?? 0;
   const initialPromptSet =
     (logOf('projectSettings').initialPromptSet as boolean | undefined) ?? false;
+  const promptApply = coreResults.find((result) => result.section === 'prompts')
+    ?.promptTransfer ?? {
+    imported: 0,
+    skipped: 0,
+  };
+  const promptTransfer: PromptTransferCounts = {
+    ...promptApply,
+    deleted: 0,
+    preserved: 0,
+  };
 
   const statusIdMap = pipelineCtx.get('statusIdMap');
   const promptIdMap = pipelineCtx.get('promptIdMap');
@@ -387,7 +411,7 @@ export async function createFromTemplateWithHelper(
     success: true,
     project,
     imported: {
-      prompts: resolvedPayload.prompts.length,
+      prompts: promptTransfer.imported,
       profiles: selectedProfilesByFamily.profilesToCreate.length,
       agents: resolvedPayload.agents.length,
       statuses: resolvedPayload.statuses.length,
@@ -395,6 +419,7 @@ export async function createFromTemplateWithHelper(
       subscribers: subscribersCreated,
       scheduledEpics: scheduledEpicsCreated,
     },
+    promptTransfer,
     mappings: { promptIdMap, profileIdMap, agentIdMap, statusIdMap },
     initialPromptSet,
     message: 'Project created from template successfully.',

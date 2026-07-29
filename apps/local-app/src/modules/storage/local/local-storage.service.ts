@@ -23,6 +23,7 @@ import {
   ListScheduledEpicRunsOptions,
   type ClaimRunResult,
 } from '../interfaces/storage.interface';
+import type { SnapshotPromptWriter } from '../interfaces/snapshot-prompt-writer.interface';
 import {
   Project,
   CreateProject,
@@ -133,7 +134,7 @@ const logger = createLogger('LocalStorageService');
  * Current implementation provides the structure and error handling patterns.
  */
 @Injectable()
-export class LocalStorageService implements StorageService {
+export class LocalStorageService implements StorageService, SnapshotPromptWriter {
   private readonly projectDelegate: ProjectStorageDelegate;
   private readonly statusDelegate: StatusStorageDelegate;
   private readonly epicDelegate: EpicStorageDelegate;
@@ -409,6 +410,10 @@ export class LocalStorageService implements StorageService {
   // Prompts (with optimistic locking)
   async createPrompt(data: CreatePrompt): Promise<Prompt> {
     return this.promptDelegate.createPrompt(data);
+  }
+
+  async createPromptFromSnapshot(data: CreatePrompt): Promise<Prompt> {
+    return this.promptDelegate.createPromptFromSnapshot(data);
   }
 
   async getPrompt(id: string): Promise<Prompt> {

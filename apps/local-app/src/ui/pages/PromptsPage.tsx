@@ -17,6 +17,20 @@ import { useToast } from '@/ui/hooks/use-toast';
 import { X, Plus, Tag as TagIcon } from 'lucide-react';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
+import {
+  canonicalizePromptTypeTags,
+  getPromptType,
+  isPromptTypeTag,
+  PROMPT_TYPE,
+  type PromptType,
+} from '@/common/prompt-type';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/ui/components/ui/select';
 
 interface PromptSummary {
   id: string;
@@ -49,6 +63,11 @@ const PROMPT_VARIABLES = [
   { token: '{session_id}', description: 'Session UUID at launch' },
   { token: '{session_id_short}', description: '8-char session ID prefix for MCP tools' },
 ];
+
+const PROMPT_TYPE_LABEL = {
+  [PROMPT_TYPE.System]: 'System',
+  [PROMPT_TYPE.Custom]: 'Custom',
+} as const satisfies Record<PromptType, string>;
 
 async function fetchPrompts(projectId: string) {
   const res = await fetch(`/api/prompts?projectId=${encodeURIComponent(projectId)}`);
@@ -156,12 +175,24 @@ function TagInput({
   const filteredSuggestions = useMemo(() => {
     if (!input) return [];
     return suggestions
-      .filter((s) => s.toLowerCase().includes(input.toLowerCase()) && !tags.includes(s))
+      .filter(
+        (suggestion) =>
+          !isPromptTypeTag(suggestion) &&
+          suggestion.toLowerCase().includes(input.toLowerCase()) &&
+          !tags.includes(suggestion),
+      )
       .slice(0, 5);
   }, [input, suggestions, tags]);
 
   const handleAddTag = (tag: string) => {
     const trimmed = tag.trim();
+    if (isPromptTypeTag(trimmed)) {
+      setInput('');
+      setShowSuggestions(false);
+      onInputChange?.('');
+      return;
+    }
+
     if (trimmed && !tags.includes(trimmed)) {
       onAddTag(trimmed);
       setInput('');
@@ -201,6 +232,8 @@ function TagInput({
           </Badge>
         ))}
         <input
+          id="prompt-tags"
+          aria-label="Tags"
           type="text"
           value={input}
           onChange={(e) => {
@@ -239,6 +272,7 @@ export function PromptsPage() {
   const [showDialog, setShowDialog] = useState(false);
   const [editingPrompt, setEditingPrompt] = useState<PromptDetail | null>(null);
   const [formData, setFormData] = useState({ title: '', content: '', tags: [] as string[] });
+  const [promptType, setPromptType] = useState<PromptType>(PROMPT_TYPE.Custom);
   const [filterTag, setFilterTag] = useState('');
   const [showPreview, setShowPreview] = useState(false);
   const [pendingTagInput, setPendingTagInput] = useState('');
@@ -375,6 +409,7 @@ export function PromptsPage() {
 
   const resetForm = () => {
     setFormData({ title: '', content: '', tags: [] });
+    setPromptType(PROMPT_TYPE.Custom);
     setEditingPrompt(null);
     setShowPreview(false);
     setPendingTagInput('');
@@ -395,10 +430,11 @@ export function PromptsPage() {
     let finalTags = formData.tags;
     if (pendingTagInput.trim()) {
       const trimmed = pendingTagInput.trim();
-      if (!finalTags.includes(trimmed)) {
+      if (!isPromptTypeTag(trimmed) && !finalTags.includes(trimmed)) {
         finalTags = [...formData.tags, trimmed];
       }
     }
+    finalTags = canonicalizePromptTypeTags(finalTags, promptType);
 
     if (editingPrompt) {
       updateMutation.mutate({
@@ -431,8 +467,9 @@ export function PromptsPage() {
       setFormData({
         title: fullPrompt.title,
         content: fullPrompt.content,
-        tags: [...fullPrompt.tags],
+        tags: fullPrompt.tags.filter((tag) => !isPromptTypeTag(tag)),
       });
+      setPromptType(getPromptType(fullPrompt.tags, PROMPT_TYPE.System));
       setPendingTagInput('');
       setShowDialog(true);
     } catch {
@@ -457,11 +494,22 @@ export function PromptsPage() {
   };
 
   const filteredPrompts = useMemo(() => {
-    return data?.items.filter((p: PromptSummary) => !filterTag || p.tags.includes(filterTag)) || [];
+    return (
+      data?.items.filter(
+        (prompt: PromptSummary) =>
+          !filterTag || prompt.tags.some((tag) => !isPromptTypeTag(tag) && tag === filterTag),
+      ) || []
+    );
   }, [data, filterTag]);
 
   const allTags = useMemo(() => {
-    return Array.from(new Set(data?.items.flatMap((p: PromptSummary) => p.tags) || [])) as string[];
+    return Array.from(
+      new Set(
+        data?.items.flatMap((prompt: PromptSummary) =>
+          prompt.tags.filter((tag) => !isPromptTypeTag(tag)),
+        ) || [],
+      ),
+    ) as string[];
   }, [data]);
 
   return (
@@ -514,6 +562,9 @@ export function PromptsPage() {
                     Version {prompt.version} • Updated{' '}
                     {new Date(prompt.updatedAt).toLocaleDateString()}
                   </p>
+                  <Badge className="mt-2" variant="outline">
+                    Type: {PROMPT_TYPE_LABEL[getPromptType(prompt.tags, PROMPT_TYPE.System)]}
+                  </Badge>
                 </div>
                 <div className="flex gap-2">
                   <Button variant="outline" size="sm" onClick={() => handleEdit(prompt)}>
@@ -527,14 +578,16 @@ export function PromptsPage() {
               <pre className="bg-muted p-3 rounded-md overflow-auto max-h-48 text-sm mb-3 font-mono whitespace-pre-wrap break-words">
                 {prompt.contentPreview}
               </pre>
-              {prompt.tags.length > 0 && (
+              {prompt.tags.some((tag) => !isPromptTypeTag(tag)) && (
                 <div className="flex flex-wrap gap-2">
-                  {prompt.tags.map((tag) => (
-                    <Badge key={tag} variant="secondary">
-                      <TagIcon className="h-3 w-3 mr-1" />
-                      {tag}
-                    </Badge>
-                  ))}
+                  {prompt.tags
+                    .filter((tag) => !isPromptTypeTag(tag))
+                    .map((tag) => (
+                      <Badge key={tag} variant="secondary">
+                        <TagIcon className="h-3 w-3 mr-1" />
+                        {tag}
+                      </Badge>
+                    ))}
                 </div>
               )}
             </div>
@@ -559,6 +612,22 @@ export function PromptsPage() {
           </DialogHeader>
           <div className="grid gap-6 md:grid-cols-[minmax(0,1fr)_280px]">
             <form onSubmit={handleSubmit} className="space-y-4">
+              <div>
+                <Label htmlFor="prompt-type">Type</Label>
+                <Select
+                  value={promptType}
+                  onValueChange={(value: PromptType) => setPromptType(value)}
+                >
+                  <SelectTrigger id="prompt-type">
+                    <SelectValue placeholder="Select prompt type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={PROMPT_TYPE.System}>System</SelectItem>
+                    <SelectItem value={PROMPT_TYPE.Custom}>Custom</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
               <div>
                 <Label htmlFor="title">Title *</Label>
                 <Input
@@ -604,7 +673,7 @@ export function PromptsPage() {
               </div>
 
               <div>
-                <Label>Tags</Label>
+                <Label htmlFor="prompt-tags">Tags</Label>
                 <TagInput
                   tags={formData.tags}
                   suggestions={allTags}

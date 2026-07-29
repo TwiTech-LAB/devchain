@@ -571,6 +571,30 @@ export interface ListAgentsResponse {
 
 export interface GetAgentByNameResponse {
   agent: AgentSummary & {
+    providerConfigId: string | null;
+    providerConfigName: string | null;
+    teams: Array<{
+      teamId: string;
+      teamName: string;
+      isLead: boolean;
+    }>;
+    presence: {
+      online: boolean;
+      activityState: 'idle' | 'busy' | null;
+      lastActivityAt: string | null;
+      busySince: string | null;
+      idleSince: string | null;
+      currentActivityTitle: string | null;
+    } | null;
+    assignedEpics: {
+      items: Array<{
+        id: string;
+        parentId: string | null;
+        title: string;
+        status: string;
+      }>;
+      total: number;
+    };
     profile?: AgentProfileSummary;
   };
 }

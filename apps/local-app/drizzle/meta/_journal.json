@@ -470,6 +470,20 @@
       "when": 1779407000000,
       "tag": "0066_provider_efforts_and_overrides",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "6",
+      "when": 1785073391003,
+      "tag": "0067_remove_claude_1m_provider_state",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "6",
+      "when": 1785151871195,
+      "tag": "0068_claude_launch_settings_json",
+      "breakpoints": true
     }
   ]
 }

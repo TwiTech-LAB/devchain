@@ -161,6 +161,57 @@ describe('HookEventSchema (discriminated union)', () => {
     });
   });
 
+  describe('StatusLine', () => {
+    const statusLine = {
+      hookEventName: 'StatusLine',
+      sessionId: SESSION_ID,
+      epoch: 'process-epoch-1',
+      sequence: 0,
+      claudeSessionId: 'claude-runtime-session-1',
+      modelId: 'claude-sonnet-4-6',
+      contextWindowTokens: 1_000_000,
+    };
+
+    it('accepts only the minimal bounded runtime-context payload', () => {
+      const result = HookEventSchema.safeParse(statusLine);
+      expect(result.success).toBe(true);
+      if (result.success && result.data.hookEventName === 'StatusLine') {
+        expect(result.data).toEqual(statusLine);
+      }
+    });
+
+    it('rejects unknown injected, authentication, and capability fields', () => {
+      expect(HookEventSchema.safeParse({ ...statusLine, projectId: PROJECT_ID }).success).toBe(
+        false,
+      );
+      expect(
+        HookEventSchema.safeParse({ ...statusLine, authorization: 'Bearer value' }).success,
+      ).toBe(false);
+      expect(HookEventSchema.safeParse({ ...statusLine, capabilitySecret: 'secret' }).success).toBe(
+        false,
+      );
+    });
+
+    it.each([0, -1, 10_000_001, 1.5])(
+      'rejects invalid context-window token count %p',
+      (contextWindowTokens) => {
+        expect(HookEventSchema.safeParse({ ...statusLine, contextWindowTokens }).success).toBe(
+          false,
+        );
+      },
+    );
+
+    it('rejects malformed epochs and unsafe sequences', () => {
+      expect(HookEventSchema.safeParse({ ...statusLine, epoch: 'contains spaces' }).success).toBe(
+        false,
+      );
+      expect(HookEventSchema.safeParse({ ...statusLine, sequence: -1 }).success).toBe(false);
+      expect(
+        HookEventSchema.safeParse({ ...statusLine, sequence: Number.MAX_SAFE_INTEGER + 1 }).success,
+      ).toBe(false);
+    });
+  });
+
   describe('provider-aware SessionStart (Copilot)', () => {
     it('accepts a Copilot SessionStart with providerName/providerSessionId and no claudeSessionId', () => {
       const copilotSessionStart = {

@@ -358,8 +358,8 @@ class DisposableAppFixture {
           database
             .prepare(
               `INSERT INTO providers
-                 (id, name, mcp_configured, one_million_context_enabled, created_at, updated_at)
-               VALUES (?, 'claude', 0, 0, ?, ?)`,
+                 (id, name, mcp_configured, created_at, updated_at)
+               VALUES (?, 'claude', 0, ?, ?)`,
             )
             .run(provider.id, now, now);
         }
@@ -494,8 +494,8 @@ class DisposableAppFixture {
         database
           .prepare(
             `INSERT INTO providers
-               (id, name, bin_path, mcp_configured, one_million_context_enabled, created_at, updated_at)
-             VALUES (?, 'claude', ?, 0, 0, ?, ?)`,
+               (id, name, bin_path, mcp_configured, created_at, updated_at)
+             VALUES (?, 'claude', ?, 0, ?, ?)`,
           )
           .run(provider.id, providerRuntime, now, now);
       }

@@ -3,11 +3,11 @@ import type {
   LaunchInitialPromptBehavior,
 } from '../../../providers/adapters/provider-adapter.interface';
 import {
-  isContextWindowCapable,
+  isAutoCompactCapable,
   isEffortCapable,
   isHookCapable,
   type HookEnvContext,
-  type ContextWindowProviderState,
+  type AutoCompactProviderState,
 } from '../../../providers/adapters/capabilities';
 import {
   parseProfileOptions,
@@ -16,6 +16,11 @@ import {
   extractModelFromArgs,
 } from '../../utils/profile-options';
 import { buildSessionCommand, EnvBuilderError } from '../../utils/env-builder';
+import {
+  CONTEXT_WINDOW_ENV_KEY,
+  parseContextWindowEnv,
+  type ModelBoundContextWindow,
+} from '../../../runtime-context-capture/context-window-policy';
 
 export { ProfileOptionsError, EnvBuilderError };
 
@@ -36,14 +41,17 @@ export interface LaunchConfigInput {
    * pipeline. When set AND the adapter is effort-capable, the adapter strips any
    * conflicting raw effort flags and injects its native form. When null/undefined,
    * raw effort options pass through untouched (power-user escape hatch). Applied
-   * AFTER model injection and BEFORE the context-window model-alias rewrite so the
-   * adapter sees the pre-alias model form.
+   * after model injection so the adapter sees the effective model.
    */
   effortOverride?: string | null;
   providerBinPath: string;
   providerEnv: Record<string, string> | null;
   configEnv: Record<string, string> | null;
-  provider: ContextWindowProviderState;
+  provider: AutoCompactProviderState;
+  /** DevChain-owned provider args emitted before every user/profile option. */
+  providerOptionArgs?: string[];
+  /** DevChain-owned launch-only env that must win over configurable env. */
+  runtimeEnv?: Record<string, string>;
   hookContext?: HookEnvContext;
   /**
    * Pre-rendered initial prompt for opt-in seeding adapters
@@ -58,6 +66,7 @@ export interface LaunchConfig {
   argv: string[];
   commandArgs: string[];
   env: Record<string, string> | null;
+  contextWindowOverride: ModelBoundContextWindow | null;
   promptHandshake?: LaunchInitialPromptBehavior;
 }
 
@@ -68,8 +77,19 @@ export function resolve(input: LaunchConfigInput): LaunchConfig {
     optionArgs = injectModelOverride(optionArgs, input.modelOverride);
   }
 
-  const providerEnv = input.providerEnv ?? {};
-  const configEnv = input.configEnv ?? {};
+  const providerEnv = { ...(input.providerEnv ?? {}) };
+  const configEnv = { ...(input.configEnv ?? {}) };
+  const parsedContextWindow = parseContextWindowEnv(configEnv[CONTEXT_WINDOW_ENV_KEY]);
+  delete providerEnv[CONTEXT_WINDOW_ENV_KEY];
+  delete configEnv[CONTEXT_WINDOW_ENV_KEY];
+  const effectiveModel = extractModelFromArgs(optionArgs);
+  const contextWindowOverride =
+    parsedContextWindow.kind === 'valid' && effectiveModel
+      ? {
+          modelId: effectiveModel,
+          contextWindowTokens: parsedContextWindow.contextWindowTokens,
+        }
+      : null;
 
   // Reject any provider-forbidden env var (e.g. Copilot's COPILOT_HOME, R4)
   // BEFORE the process starts — these pass launch but break read-time invariants.
@@ -99,10 +119,8 @@ export function resolve(input: LaunchConfigInput): LaunchConfig {
     env = { ...hookEnv, ...providerEnv, ...configEnv };
   }
 
-  // Effort resolution runs AFTER model injection (above) but BEFORE the
-  // context-window model-alias rewrite (below): the ordering invariant is that
-  // effort must not assume the post-alias model form, so a per-model effort
-  // adapter sees the pre-alias effective model here.
+  // Effort resolution runs after model injection so a per-model effort adapter
+  // sees the effective model here.
   if (isEffortCapable(input.adapter) && input.effortOverride) {
     const effectiveModel = extractModelFromArgs(optionArgs) ?? undefined;
     const effortResult = input.adapter.applyEffort(
@@ -115,24 +133,33 @@ export function resolve(input: LaunchConfigInput): LaunchConfig {
     env = Object.keys(effortResult.env).length > 0 ? effortResult.env : null;
   }
 
-  if (isContextWindowCapable(input.adapter)) {
-    const cwResult = input.adapter.applyContextWindowConfig(optionArgs, env ?? {}, input.provider);
-    optionArgs = cwResult.argv;
-    env = Object.keys(cwResult.env).length > 0 ? cwResult.env : null;
+  if (isAutoCompactCapable(input.adapter)) {
+    const autoCompactResult = input.adapter.applyAutoCompactConfig(
+      optionArgs,
+      env ?? {},
+      input.provider,
+    );
+    optionArgs = autoCompactResult.argv;
+    env = Object.keys(autoCompactResult.env).length > 0 ? autoCompactResult.env : null;
   }
 
+  if (input.runtimeEnv && Object.keys(input.runtimeEnv).length > 0) {
+    env = { ...(env ?? {}), ...input.runtimeEnv };
+  }
+
+  const finalOptionArgs = [...(input.providerOptionArgs ?? []), ...optionArgs];
   const { argv } = input.adapter.buildLaunchArgs({
     mode: input.mode,
     providerSessionId: input.providerSessionId,
     sessionId: input.sessionId,
-    profileOptionArgs: optionArgs,
+    profileOptionArgs: finalOptionArgs,
     initialPrompt: input.initialPrompt,
   });
 
   // Providers declare any env vars that must be cleared from their launch
   // environment via `launchUnsetEnv` (e.g. Claude unsets $TMUX/$TMUX_PANE to
   // avoid its degraded multiplexer renderer). Kept provider-agnostic here.
-  const unsetEnv = input.adapter.launchUnsetEnv;
+  const unsetEnv = [...new Set([...(input.adapter.launchUnsetEnv ?? []), CONTEXT_WINDOW_ENV_KEY])];
 
   const commandArgs = buildSessionCommand(env, input.providerBinPath, argv, unsetEnv);
 
@@ -140,6 +167,7 @@ export function resolve(input: LaunchConfigInput): LaunchConfig {
     argv,
     commandArgs,
     env,
+    contextWindowOverride,
     promptHandshake: input.adapter.launchInitialPromptBehavior,
   };
 }

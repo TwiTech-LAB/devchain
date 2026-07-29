@@ -176,8 +176,11 @@ export function AgentRow({
           {providerIconUri ? (
             <span
               className={cn(
-                'flex h-6 w-6 shrink-0 items-center justify-center rounded-md border transition-colors',
+                'flex h-6 w-6 shrink-0 items-center justify-center rounded-md border transition-[border-color,background-color,box-shadow] duration-300',
                 isOnline ? 'border-border bg-muted/40' : 'border-border/60 bg-muted/20',
+                isOnline &&
+                  activityState === 'busy' &&
+                  'border-primary/60 bg-primary/10 shadow-[0_0_8px_hsl(var(--primary)/0.35)] animate-busy-halo',
               )}
               title={
                 providerName

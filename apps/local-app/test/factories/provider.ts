@@ -9,8 +9,6 @@ export function createMockProvider(overrides: Partial<Provider> = {}): Provider 
     mcpEndpoint: null,
     mcpRegisteredAt: null,
     autoCompactThreshold: null,
-    autoCompactThreshold1m: null,
-    oneMillionContextEnabled: false,
     env: null,
     createdAt: '2024-01-01T00:00:00Z',
     updatedAt: '2024-01-01T00:00:00Z',

@@ -4,7 +4,6 @@ import { ProviderModelsController } from './controllers/provider-models.controll
 import { ProviderEffortsController } from './controllers/provider-efforts.controller';
 import { StorageModule } from '../storage/storage.module';
 import { ProviderAdaptersModule } from './adapters';
-import { ProbeProofService } from './services/probe-proof.service';
 import { ProviderStateManager } from './services/provider-state-manager.service';
 import { ProviderProjectSyncService } from './services/provider-project-sync.service';
 import { ProviderDiscoveryService } from './services/provider-discovery.service';
@@ -32,7 +31,6 @@ import { ProviderEffortSeedingModule } from './services/provider-effort-seeding.
   ],
   controllers: [ProvidersController, ProviderModelsController, ProviderEffortsController],
   providers: [
-    ProbeProofService,
     ProviderStateManager,
     ProviderProjectSyncService,
     ProviderDiscoveryService,

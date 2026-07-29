@@ -8,8 +8,6 @@ import { WatchersService } from '../../watchers/services/watchers.service';
 import { WatcherRunnerService } from '../../watchers/services/watcher-runner.service';
 import { UnifiedTemplateService } from '../../registry/services/unified-template.service';
 import { TeamsService } from '../../teams/services/teams.service';
-import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
-import { FakeProcessExecutor } from '../../terminal/services/process-executor/fake-process-executor';
 import { StorageError } from '../../../common/errors/error-types';
 import * as fs from 'fs';
 import * as envConfig from '../../../common/config/env.config';
@@ -26,10 +24,6 @@ const mockFs = fs as jest.Mocked<typeof fs>;
 jest.mock('../../../common/config/env.config');
 const mockEnvConfig = envConfig as jest.Mocked<typeof envConfig>;
 
-// Mock probe-1m utility
-jest.mock('../../providers/utils/probe-1m', () => ({
-  probe1mSupport: jest.fn(),
-}));
 import { createMockProject } from '../../../../test/factories';
 
 describe('ProjectsService', () => {
@@ -235,7 +229,6 @@ describe('ProjectsService', () => {
           provide: ProjectProviderProvisioningService,
           useValue: { provisionProject: jest.fn().mockResolvedValue({ warnings: [] }) },
         },
-        { provide: ProcessExecutor, useValue: new FakeProcessExecutor() },
       ],
     }).compile();
 

@@ -272,6 +272,7 @@ describe('PricingService', () => {
   describe('getContextWindowSize', () => {
     it('should return default 200000 for unknown model', () => {
       expect(service.getContextWindowSize('unknown-model')).toBe(200_000);
+      expect(service.getCatalogContextWindowSize('unknown-model')).toBeNull();
     });
 
     it('should return max_input_tokens for known model', () => {
@@ -291,9 +292,15 @@ describe('PricingService', () => {
       }
     });
 
-    it('should return 200k default context window for base claude-opus-4-6', () => {
-      const contextWindow = service.getContextWindowSize('claude-opus-4-6');
-      expect(contextWindow).toBe(200_000);
+    it.each([
+      ['claude-opus-4-6', 1_000_000],
+      ['claude-opus-4-6-20260205', 1_000_000],
+      ['claude-sonnet-4-6', 1_000_000],
+      ['claude-sonnet-4-5', 200_000],
+      ['claude-sonnet-4-5-20250929', 200_000],
+    ])('returns the documented direct-Claude window for %s', (model, expected) => {
+      expect(service.getCatalogContextWindowSize(model)).toBe(expected);
+      expect(service.getContextWindowSize(model)).toBe(expected);
     });
   });
 });

@@ -201,6 +201,15 @@ export interface UseSessionTranscriptResult {
 export interface UseSessionTranscriptOptions {
   /** Whether full transcript fetching/polling is enabled (summary can still remain active). */
   enableTranscript?: boolean;
+  /**
+   * Whether the owning DevChain session is still running.
+   *
+   * Transcript `isOngoing` is turn-level state: it becomes false after a normal
+   * assistant `end_turn`, even while the tmux/provider session remains live.
+   * When lifecycle state is available, it is therefore the polling authority;
+   * transcript parsing remains the authority for model and metric values.
+   */
+  isSessionRunning?: boolean;
   /** Poll interval for full transcript fallback refresh when enabled. */
   transcriptRefetchIntervalMs?: number;
   /** Debounce window for WS transcript invalidation bursts. Overrides adaptive debounce when set. */
@@ -220,7 +229,8 @@ export interface UseSessionTranscriptOptions {
  * - WS `updated` events use push-delta protocol: cursor match → inline merge (no HTTP);
  *   cursor mismatch → tail fetch; tail failure → full-transcript fallback
  * - `discovered` and `ended` events trigger immediate full invalidation
- * - Stops polling once session ends (via WS `ended` event or API `isOngoing: false`)
+ * - Uses DevChain lifecycle state to keep polling across completed assistant turns
+ * - Falls back to transcript `isOngoing` only when lifecycle state is unavailable
  * - Cleans up WS subscription on unmount
  */
 export function useSessionTranscript(
@@ -229,6 +239,7 @@ export function useSessionTranscript(
 ): UseSessionTranscriptResult {
   const {
     enableTranscript = true,
+    isSessionRunning,
     transcriptRefetchIntervalMs = 30_000,
     wsInvalidationDebounceMs: explicitDebounceMs,
   } = options ?? {};
@@ -251,6 +262,9 @@ export function useSessionTranscript(
     enabled: summaryEnabled,
     staleTime: 3_000,
     refetchInterval: (query) => {
+      if (isSessionRunning !== undefined) {
+        return isSessionRunning ? 5_000 : false;
+      }
       const data = query.state.data;
       if (data && !data.isOngoing) return false;
       return 5_000;
@@ -480,6 +494,9 @@ export function useSessionTranscript(
     staleTime: adaptiveStaleTime,
     refetchInterval: (query) => {
       if (!transcriptEnabled) return false;
+      if (isSessionRunning !== undefined) {
+        return isSessionRunning ? transcriptRefetchIntervalMs : false;
+      }
       const data = query.state.data;
       if (data && !data.isOngoing) return false;
       return transcriptRefetchIntervalMs;
@@ -514,6 +531,16 @@ export function useSessionTranscript(
   const handleMessage = useCallback(
     (envelope: WsEnvelope) => {
       if (!sessionId) return;
+      if (
+        envelope.topic === `session/${sessionId}/runtime-context` &&
+        envelope.type === 'updated'
+      ) {
+        queryClient.invalidateQueries({
+          queryKey: transcriptQueryKeys.summary(sessionId),
+          exact: true,
+        });
+        return;
+      }
       if (envelope.topic !== `session/${sessionId}/transcript`) return;
 
       switch (envelope.type) {
@@ -572,6 +599,7 @@ export function useSessionTranscript(
       applyDeltaMerge,
       fetchTailAndMerge,
       invalidateTranscriptAndSummary,
+      queryClient,
       requestCanonicalRefetch,
       scheduleTranscriptAndSummaryInvalidation,
       sessionId,
@@ -591,9 +619,10 @@ export function useSessionTranscript(
     : (summary?.metrics ?? visibleSession?.metrics);
   const isLive =
     enabled &&
-    (canonicalRecoveryPending
-      ? (visibleSession?.isOngoing ?? false)
-      : (summary?.isOngoing ?? visibleSession?.isOngoing ?? false));
+    (isSessionRunning ??
+      (canonicalRecoveryPending
+        ? (visibleSession?.isOngoing ?? false)
+        : (summary?.isOngoing ?? visibleSession?.isOngoing ?? false)));
 
   useEffect(() => {
     if (!isLive || !sessionId) return;

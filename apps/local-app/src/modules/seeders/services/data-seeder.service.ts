@@ -17,6 +17,9 @@ import { seedClaudeNoFlickerEnvSeeder } from '../seeders/0007_seed_claude_no_fli
 import { seedRemoveClaudeNoFlickerEnvSeeder } from '../seeders/0008_seed_remove_claude_no_flicker_env';
 import { seedRemoveGeminiProviderSeeder } from '../seeders/0009_seed_remove_gemini_provider';
 import { seedProviderEffortDefaultsSeeder } from '../seeders/0010_seed_provider_effort_defaults';
+import { seedRemoveClaude1mProviderEnvSeeder } from '../seeders/0011_seed_remove_claude_1m_provider_env';
+import { seedClaudeLaunchSettingsSeeder } from '../seeders/0012_seed_claude_launch_settings';
+import { seedPromptTypeTagsSeeder } from '../seeders/0013_seed_prompt_type_tags';
 import { ProviderEffortSeedingService } from '../../providers/services/provider-effort-seeding.service';
 import type { DataSeeder } from '../types/seeder.types';
 
@@ -35,6 +38,9 @@ export const REGISTERED_DATA_SEEDERS: DataSeeder[] = [
   seedRemoveClaudeNoFlickerEnvSeeder,
   seedRemoveGeminiProviderSeeder,
   seedProviderEffortDefaultsSeeder,
+  seedRemoveClaude1mProviderEnvSeeder,
+  seedClaudeLaunchSettingsSeeder,
+  seedPromptTypeTagsSeeder,
 ];
 
 interface SeederJournalEntry {

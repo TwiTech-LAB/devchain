@@ -79,10 +79,21 @@ module.exports = {
           from: { height: 'var(--radix-accordion-content-height)' },
           to: { height: 0 },
         },
+        'busy-halo': {
+          '0%, 100%': {
+            borderColor: 'hsl(var(--primary) / 0.45)',
+            boxShadow: '0 0 6px hsl(var(--primary) / 0.22)',
+          },
+          '50%': {
+            borderColor: 'rgb(34 211 238 / 0.65)',
+            boxShadow: '0 0 10px rgb(34 211 238 / 0.38)',
+          },
+        },
       },
       animation: {
         'accordion-down': 'accordion-down 0.2s ease-out',
         'accordion-up': 'accordion-up 0.2s ease-out',
+        'busy-halo': 'busy-halo 5s ease-in-out infinite',
       },
     },
   },

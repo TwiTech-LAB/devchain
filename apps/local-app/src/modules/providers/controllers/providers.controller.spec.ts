@@ -1,13 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import Database from 'better-sqlite3';
-import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { ProvidersController } from './providers.controller';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
-import { DB_CONNECTION } from '../../storage/db/db.provider';
 import { McpProviderRegistrationService } from '../services/mcp-provider-registration.service';
 import { ProviderMcpEnsureService } from '../services/provider-mcp-ensure.service';
 import { ProviderAdapterFactory } from '../adapters';
-import { ProbeProofService } from '../services/probe-proof.service';
 import { ProviderStateManager } from '../services/provider-state-manager.service';
 import { ProviderProjectSyncService } from '../services/provider-project-sync.service';
 import { ProviderDiscoveryService } from '../services/provider-discovery.service';
@@ -22,32 +18,14 @@ import {
   disableClaudeAutoCompact,
   enableClaudeAutoCompact,
 } from '../../sessions/utils/claude-config';
-import { probe1mSupport, ProbeOutcome } from '../utils/probe-1m';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import { FakeProcessExecutor } from '../../terminal/services/process-executor/fake-process-executor';
-
-function buildProofDb() {
-  const sqlite = new Database(':memory:');
-  sqlite.exec(`
-    CREATE TABLE provider_probe_proofs (
-      provider_id TEXT PRIMARY KEY,
-      bin_path TEXT NOT NULL,
-      recorded_at INTEGER NOT NULL
-    );
-  `);
-  return drizzle(sqlite);
-}
+import { DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON } from '@devchain/shared';
 
 jest.mock('../../sessions/utils/claude-config', () => ({
   disableClaudeAutoCompact: jest.fn(),
   enableClaudeAutoCompact: jest.fn(),
 }));
-
-jest.mock('../utils/probe-1m', () => ({
-  probe1mSupport: jest.fn(),
-}));
-
-const mockProbe1mSupport = probe1mSupport as jest.MockedFunction<typeof probe1mSupport>;
 
 const mockDisableClaudeAutoCompact = disableClaudeAutoCompact as jest.MockedFunction<
   typeof disableClaudeAutoCompact
@@ -79,7 +57,6 @@ describe('ProvidersController', () => {
   let mcpEnsureService: {
     ensureMcp: jest.Mock;
   };
-  let probeProofService: ProbeProofService;
   let providerStateManager: ProviderStateManager;
   let mockSyncService: { syncProviderToAllProjects: jest.Mock };
   let mockDiscoveryService: { discoverInstalledBinaries: jest.Mock };
@@ -97,8 +74,8 @@ describe('ProvidersController', () => {
         mcpConfigured: false,
         mcpEndpoint: null,
         mcpRegisteredAt: null,
-        oneMillionContextEnabled: false,
         autoCompactThreshold: null,
+        claudeLaunchSettingsJson: null,
         env: null,
         createdAt: '2024-01-01',
         updatedAt: '2024-01-01',
@@ -112,8 +89,8 @@ describe('ProvidersController', () => {
         mcpConfigured: false,
         mcpEndpoint: null,
         mcpRegisteredAt: null,
-        oneMillionContextEnabled: false,
         autoCompactThreshold: null,
+        claudeLaunchSettingsJson: null,
         env: null,
         createdAt: '2024-01-01',
         updatedAt: '2024-01-01',
@@ -140,7 +117,6 @@ describe('ProvidersController', () => {
         alias: 'devchain',
       }),
     };
-    mockProbe1mSupport.mockReset();
     mockDisableClaudeAutoCompact.mockResolvedValue({ success: true });
 
     mockSyncService = {
@@ -200,10 +176,8 @@ describe('ProvidersController', () => {
             return mockDiscoveryService;
           },
         },
-        ProbeProofService,
         ProviderStateManager,
         { provide: ProviderEffortSeedingService, useValue: mockEffortSeeding },
-        { provide: DB_CONNECTION, useValue: buildProofDb() },
         {
           provide: ProcessExecutor,
           useFactory: () => {
@@ -216,7 +190,6 @@ describe('ProvidersController', () => {
     }).compile();
 
     controller = module.get(ProvidersController);
-    probeProofService = module.get(ProbeProofService);
     providerStateManager = module.get(ProviderStateManager);
     normalizeBinPathSpy = jest
       .spyOn(providerStateManager, 'normalizeBinPath')
@@ -280,38 +253,66 @@ describe('ProvidersController', () => {
       expect(result.provider.autoCompactThreshold).toBe(10);
     });
 
-    it('rejects oneMillionContextEnabled=true on create (no server proof possible)', async () => {
-      await expect(
-        controller.createProvider({
-          name: 'claude',
-          binPath: '/usr/local/bin/claude',
-          oneMillionContextEnabled: true,
-        }),
-      ).rejects.toThrow(ValidationError);
-
-      expect(storage.createProvider).not.toHaveBeenCalled();
-    });
-
-    it('allows oneMillionContextEnabled=false on create', async () => {
-      const now = new Date('2024-01-01T00:00:00Z');
+    it('passes Claude launch settings through verbatim and preserves omission', async () => {
       storage.createProvider.mockImplementation(async (payload) => ({
         id: 'p1',
         ...payload,
-        createdAt: now.toISOString(),
-        updatedAt: now.toISOString(),
+        claudeLaunchSettingsJson:
+          payload.claudeLaunchSettingsJson === undefined
+            ? DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON
+            : payload.claudeLaunchSettingsJson,
+        createdAt: '2024-01-01',
+        updatedAt: '2024-01-01',
       }));
+      const custom = '{\n  "futureSetting": true\n}';
+
+      const customResult = await controller.createProvider({
+        name: 'claude',
+        claudeLaunchSettingsJson: custom,
+      });
+      expect(storage.createProvider).toHaveBeenLastCalledWith(
+        expect.objectContaining({ claudeLaunchSettingsJson: custom }),
+      );
+      expect(customResult.provider.claudeLaunchSettingsJson).toBe(custom);
+
+      await controller.createProvider({ name: 'claude' });
+      expect(storage.createProvider).toHaveBeenLastCalledWith(
+        expect.objectContaining({ claudeLaunchSettingsJson: undefined }),
+      );
 
       await controller.createProvider({
         name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        oneMillionContextEnabled: false,
+        claudeLaunchSettingsJson: null,
       });
-
-      expect(storage.createProvider).toHaveBeenCalledWith(
-        expect.objectContaining({
-          oneMillionContextEnabled: false,
-        }),
+      expect(storage.createProvider).toHaveBeenLastCalledWith(
+        expect.objectContaining({ claudeLaunchSettingsJson: null }),
       );
+    });
+
+    it('rejects invalid, reserved, and non-Claude launch settings before storage', async () => {
+      await expect(
+        controller.createProvider({
+          name: 'claude',
+          claudeLaunchSettingsJson: '[]',
+        }),
+      ).rejects.toMatchObject({ details: { field: 'claudeLaunchSettingsJson' } });
+      await expect(
+        controller.createProvider({
+          name: 'claude',
+          claudeLaunchSettingsJson: '{"env":{"DEVCHAIN_CONTEXT_WINDOW_TOKENS":"1000000"}}',
+        }),
+      ).rejects.toMatchObject({
+        message: expect.stringContaining('/env/DEVCHAIN_CONTEXT_WINDOW_TOKENS'),
+        details: { field: 'claudeLaunchSettingsJson' },
+      });
+      await expect(
+        controller.createProvider({
+          name: 'codex',
+          claudeLaunchSettingsJson: '{}',
+        }),
+      ).rejects.toMatchObject({ details: { field: 'claudeLaunchSettingsJson' } });
+
+      expect(storage.createProvider).not.toHaveBeenCalled();
     });
 
     it('creates provider with valid env', async () => {
@@ -382,28 +383,6 @@ describe('ProvidersController', () => {
       expect(storage.createProvider).toHaveBeenCalledWith(
         expect.objectContaining({
           env: {},
-        }),
-      );
-    });
-
-    it('defaults oneMillionContextEnabled to undefined when omitted on create', async () => {
-      const now = new Date('2024-01-01T00:00:00Z');
-      storage.createProvider.mockImplementation(async (payload) => ({
-        id: 'p1',
-        oneMillionContextEnabled: false,
-        ...payload,
-        createdAt: now.toISOString(),
-        updatedAt: now.toISOString(),
-      }));
-
-      await controller.createProvider({
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-      });
-
-      expect(storage.createProvider).toHaveBeenCalledWith(
-        expect.objectContaining({
-          oneMillionContextEnabled: undefined,
         }),
       );
     });
@@ -496,6 +475,49 @@ describe('ProvidersController', () => {
       expect(result.autoCompactThreshold).toBeNull();
     });
 
+    it('leaves omitted launch settings unchanged and returns explicit null in camelCase', async () => {
+      const existing = '{\n  "futureSetting": true\n}';
+      storage.getProvider.mockResolvedValue({
+        id: 'p1',
+        name: 'claude',
+        binPath: null,
+        mcpConfigured: false,
+        mcpEndpoint: null,
+        mcpRegisteredAt: null,
+        autoCompactThreshold: null,
+        claudeLaunchSettingsJson: existing,
+        env: null,
+        createdAt: '2024-01-01',
+        updatedAt: '2024-01-01',
+      });
+      storage.updateProviderWithScopes
+        .mockResolvedValueOnce({
+          ...(await storage.getProvider()),
+          binPath: '/new/claude',
+        })
+        .mockResolvedValueOnce({
+          ...(await storage.getProvider()),
+          claudeLaunchSettingsJson: null,
+        });
+
+      const unchanged = await controller.updateProvider('p1', {
+        binPath: '/new/claude',
+      });
+      expect(storage.updateProviderWithScopes.mock.calls[0][1]).not.toHaveProperty(
+        'claudeLaunchSettingsJson',
+      );
+      expect(unchanged.claudeLaunchSettingsJson).toBe(existing);
+
+      const cleared = await controller.updateProvider('p1', {
+        claudeLaunchSettingsJson: null,
+      });
+      expect(storage.updateProviderWithScopes.mock.calls[1][1]).toMatchObject({
+        claudeLaunchSettingsJson: null,
+      });
+      expect(cleared).toHaveProperty('claudeLaunchSettingsJson', null);
+      expect(cleared).not.toHaveProperty('claude_launch_settings_json');
+    });
+
     it('updates provider env with valid keys', async () => {
       storage.getProvider.mockResolvedValue({
         id: 'p1',
@@ -571,531 +593,6 @@ describe('ProvidersController', () => {
       ).rejects.toThrow();
 
       expect(storage.updateProviderWithScopes).not.toHaveBeenCalled();
-    });
-
-    it('allows oneMillionContextEnabled=true with valid server probe proof', async () => {
-      storage.getProvider.mockResolvedValue({
-        id: 'p1',
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: false,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        oneMillionContextEnabled: false,
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-01',
-      });
-      storage.updateProviderWithScopes.mockImplementation(async (id, payload) => ({
-        id,
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: false,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        oneMillionContextEnabled: true,
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-01',
-        ...payload,
-      }));
-
-      // Record server-side proof for the correct binPath
-      probeProofService.recordProof('p1', '/usr/local/bin/claude');
-
-      const result = await controller.updateProvider('p1', {
-        oneMillionContextEnabled: true,
-      });
-
-      expect(storage.updateProviderWithScopes).toHaveBeenCalledWith(
-        'p1',
-        expect.objectContaining({ oneMillionContextEnabled: true }),
-        undefined,
-        expect.any(Array),
-      );
-      expect(result.oneMillionContextEnabled).toBe(true);
-    });
-
-    it('rejects oneMillionContextEnabled=true without server probe proof', async () => {
-      storage.getProvider.mockResolvedValue({
-        id: 'p1',
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: false,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        oneMillionContextEnabled: false,
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-01',
-      });
-
-      await expect(
-        controller.updateProvider('p1', {
-          oneMillionContextEnabled: true,
-        }),
-      ).rejects.toThrow(ValidationError);
-
-      expect(storage.updateProviderWithScopes).not.toHaveBeenCalled();
-    });
-
-    it('rejects oneMillionContextEnabled=true when binPath changed after probe (stale proof)', async () => {
-      storage.getProvider.mockResolvedValue({
-        id: 'p1',
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: false,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        oneMillionContextEnabled: false,
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-01',
-      });
-
-      // Proof recorded for old binPath
-      probeProofService.recordProof('p1', '/usr/local/bin/claude');
-
-      // Update with new binPath AND oneMillionContextEnabled=true
-      await expect(
-        controller.updateProvider('p1', {
-          binPath: '/opt/new-claude/bin/claude',
-          oneMillionContextEnabled: true,
-        }),
-      ).rejects.toThrow(ValidationError);
-
-      expect(storage.updateProviderWithScopes).not.toHaveBeenCalled();
-    });
-
-    it('rejects forged probeConfirmed boolean in request body on update', async () => {
-      storage.getProvider.mockResolvedValue({
-        id: 'p1',
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: false,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        oneMillionContextEnabled: false,
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-01',
-      });
-
-      // No server-side proof recorded — forged boolean should not bypass gate
-      await expect(
-        controller.updateProvider('p1', {
-          oneMillionContextEnabled: true,
-          probeConfirmed: true, // forged client boolean
-        } as Record<string, unknown>),
-      ).rejects.toThrow(ValidationError);
-
-      expect(storage.updateProviderWithScopes).not.toHaveBeenCalled();
-    });
-
-    it('allows oneMillionContextEnabled=false without server proof', async () => {
-      storage.updateProviderWithScopes.mockImplementation(async (id, payload) => ({
-        id,
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: false,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        oneMillionContextEnabled: false,
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-01',
-        ...payload,
-      }));
-
-      await controller.updateProvider('p1', {
-        oneMillionContextEnabled: false,
-      });
-
-      expect(storage.updateProviderWithScopes).toHaveBeenCalledWith(
-        'p1',
-        expect.objectContaining({ oneMillionContextEnabled: false }),
-        undefined,
-        expect.any(Array),
-      );
-    });
-    it('auto-disables oneMillionContextEnabled when binPath changes on already-enabled Claude provider', async () => {
-      storage.getProvider.mockResolvedValue({
-        id: 'p1',
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: false,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        oneMillionContextEnabled: true,
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-01',
-      });
-      storage.updateProviderWithScopes.mockImplementation(async (id, payload) => ({
-        id,
-        name: 'claude',
-        binPath: '/opt/new-claude/bin/claude',
-        mcpConfigured: false,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        oneMillionContextEnabled: false,
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-01',
-        ...payload,
-      }));
-
-      // Proof exists for old binPath
-      probeProofService.recordProof('p1', '/usr/local/bin/claude');
-
-      // binPath-only update — no oneMillionContextEnabled in payload
-      const result = await controller.updateProvider('p1', {
-        binPath: '/opt/new-claude/bin/claude',
-      });
-
-      expect(storage.updateProviderWithScopes).toHaveBeenCalledWith(
-        'p1',
-        expect.objectContaining({
-          binPath: '/opt/new-claude/bin/claude',
-          oneMillionContextEnabled: false,
-          autoCompactThreshold: 95,
-        }),
-        undefined,
-        expect.any(Array),
-      );
-      expect(result.oneMillionContextEnabled).toBe(false);
-
-      // Proof should be cleared
-      expect(probeProofService.hasValidProof('p1', '/usr/local/bin/claude')).toBe(false);
-      expect(probeProofService.hasValidProof('p1', '/opt/new-claude/bin/claude')).toBe(false);
-    });
-
-    it('does not auto-disable when binPath changes on non-Claude provider', async () => {
-      storage.getProvider.mockResolvedValue({
-        id: 'p1',
-        name: 'codex',
-        binPath: '/usr/local/bin/codex',
-        mcpConfigured: false,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        oneMillionContextEnabled: false,
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-01',
-      });
-      storage.updateProviderWithScopes.mockImplementation(async (id, payload) => ({
-        id,
-        name: 'codex',
-        binPath: '/opt/new/codex',
-        mcpConfigured: false,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        oneMillionContextEnabled: false,
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-01',
-        ...payload,
-      }));
-
-      await controller.updateProvider('p1', {
-        binPath: '/opt/new/codex',
-      });
-
-      // Should NOT include oneMillionContextEnabled in the payload
-      expect(storage.updateProviderWithScopes).toHaveBeenCalledWith(
-        'p1',
-        { binPath: '/opt/new/codex' },
-        undefined,
-        expect.any(Array),
-      );
-    });
-
-    it('does not auto-disable when binPath unchanged on already-enabled Claude provider', async () => {
-      storage.getProvider.mockResolvedValue({
-        id: 'p1',
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: false,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        oneMillionContextEnabled: true,
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-01',
-      });
-      storage.updateProviderWithScopes.mockImplementation(async (id, payload) => ({
-        id,
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: false,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        oneMillionContextEnabled: true,
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-01',
-        ...payload,
-      }));
-
-      probeProofService.recordProof('p1', '/usr/local/bin/claude');
-
-      // Same binPath — should not auto-disable
-      await controller.updateProvider('p1', {
-        binPath: '/usr/local/bin/claude',
-      });
-
-      // Should NOT include oneMillionContextEnabled in the payload
-      expect(storage.updateProviderWithScopes).toHaveBeenCalledWith(
-        'p1',
-        { binPath: '/usr/local/bin/claude' },
-        undefined,
-        expect.any(Array),
-      );
-    });
-
-    it('full reprobe cycle: binPath change auto-disables, then reprobe + enable succeeds for new path', async () => {
-      // Step 1: existing enabled Claude provider
-      const existingProvider = {
-        id: 'p1',
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: false,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        oneMillionContextEnabled: true,
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-01',
-      };
-      storage.getProvider.mockResolvedValue(existingProvider);
-      storage.updateProviderWithScopes.mockImplementation(async (id, payload) => ({
-        ...existingProvider,
-        ...payload,
-        id,
-      }));
-
-      probeProofService.recordProof('p1', '/usr/local/bin/claude');
-
-      // Step 2: update binPath — should auto-disable 1M and clear proof
-      await controller.updateProvider('p1', {
-        binPath: '/opt/new-claude/bin/claude',
-      });
-
-      expect(storage.updateProviderWithScopes).toHaveBeenCalledWith(
-        'p1',
-        expect.objectContaining({
-          binPath: '/opt/new-claude/bin/claude',
-          oneMillionContextEnabled: false,
-          autoCompactThreshold: 95,
-        }),
-        undefined,
-        expect.any(Array),
-      );
-      expect(probeProofService.hasValidProof('p1', '/usr/local/bin/claude')).toBe(false);
-      expect(probeProofService.hasValidProof('p1', '/opt/new-claude/bin/claude')).toBe(false);
-
-      // Step 3: probe with new binPath — should record proof for new path
-      storage.getProvider.mockResolvedValue({
-        ...existingProvider,
-        binPath: '/opt/new-claude/bin/claude',
-        oneMillionContextEnabled: false,
-      });
-      mockProbe1mSupport.mockResolvedValue({
-        supported: true,
-        status: 'supported',
-        capture: '{}',
-      });
-
-      const probeResult = await controller.probe1mContext('p1');
-      expect(probeResult.supported).toBe(true);
-      expect(probeProofService.hasValidProof('p1', '/opt/new-claude/bin/claude')).toBe(true);
-
-      // Step 4: enable 1M with new proof — should succeed
-      storage.updateProviderWithScopes.mockClear();
-      storage.updateProviderWithScopes.mockImplementation(async (id, payload) => ({
-        ...existingProvider,
-        binPath: '/opt/new-claude/bin/claude',
-        oneMillionContextEnabled: true,
-        ...payload,
-        id,
-      }));
-
-      const result = await controller.updateProvider('p1', {
-        oneMillionContextEnabled: true,
-      });
-
-      expect(result.oneMillionContextEnabled).toBe(true);
-      expect(storage.updateProviderWithScopes).toHaveBeenCalledWith(
-        'p1',
-        expect.objectContaining({
-          oneMillionContextEnabled: true,
-          autoCompactThreshold1m: 50,
-          autoCompactThreshold: 95,
-        }),
-        undefined,
-        expect.any(Array),
-      );
-    });
-
-    it('defaults autoCompactThreshold1m to 50 when enabling 1M via API without explicit threshold', async () => {
-      const existingProvider = {
-        id: 'p1',
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: false,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        oneMillionContextEnabled: false,
-        autoCompactThreshold: null,
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-01',
-      };
-      storage.getProvider.mockResolvedValue(existingProvider);
-      storage.updateProviderWithScopes.mockImplementation(async (id, payload) => ({
-        ...existingProvider,
-        ...payload,
-        id,
-      }));
-
-      probeProofService.recordProof('p1', '/usr/local/bin/claude');
-
-      await controller.updateProvider('p1', {
-        oneMillionContextEnabled: true,
-      });
-
-      expect(storage.updateProviderWithScopes).toHaveBeenCalledWith(
-        'p1',
-        expect.objectContaining({
-          oneMillionContextEnabled: true,
-          autoCompactThreshold1m: 50,
-          autoCompactThreshold: 95,
-        }),
-        undefined,
-        expect.any(Array),
-      );
-    });
-
-    it('defaults autoCompactThreshold to 95 when disabling 1M via API without explicit threshold', async () => {
-      const existingProvider = {
-        id: 'p1',
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: false,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        oneMillionContextEnabled: true,
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-01',
-      };
-      storage.getProvider.mockResolvedValue(existingProvider);
-      storage.updateProviderWithScopes.mockImplementation(async (id, payload) => ({
-        ...existingProvider,
-        ...payload,
-        id,
-      }));
-
-      await controller.updateProvider('p1', {
-        oneMillionContextEnabled: false,
-      });
-
-      expect(storage.updateProviderWithScopes).toHaveBeenCalledWith(
-        'p1',
-        expect.objectContaining({
-          oneMillionContextEnabled: false,
-          autoCompactThreshold: 95,
-        }),
-        undefined,
-        expect.any(Array),
-      );
-    });
-
-    it('preserves explicit autoCompactThreshold when enabling 1M via API', async () => {
-      const existingProvider = {
-        id: 'p1',
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: false,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        oneMillionContextEnabled: false,
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-01',
-      };
-      storage.getProvider.mockResolvedValue(existingProvider);
-      storage.updateProviderWithScopes.mockImplementation(async (id, payload) => ({
-        ...existingProvider,
-        ...payload,
-        id,
-      }));
-
-      probeProofService.recordProof('p1', '/usr/local/bin/claude');
-
-      await controller.updateProvider('p1', {
-        oneMillionContextEnabled: true,
-        autoCompactThreshold: 60,
-      });
-
-      expect(storage.updateProviderWithScopes).toHaveBeenCalledWith(
-        'p1',
-        expect.objectContaining({
-          oneMillionContextEnabled: true,
-          autoCompactThreshold: 60,
-        }),
-        undefined,
-        expect.any(Array),
-      );
-    });
-
-    it('preserves explicit autoCompactThreshold when disabling 1M via API', async () => {
-      const existingProvider = {
-        id: 'p1',
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: false,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        oneMillionContextEnabled: true,
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-01',
-      };
-      storage.getProvider.mockResolvedValue(existingProvider);
-      storage.updateProviderWithScopes.mockImplementation(async (id, payload) => ({
-        ...existingProvider,
-        ...payload,
-        id,
-      }));
-
-      await controller.updateProvider('p1', {
-        oneMillionContextEnabled: false,
-        autoCompactThreshold: 80,
-      });
-
-      expect(storage.updateProviderWithScopes).toHaveBeenCalledWith(
-        'p1',
-        expect.objectContaining({
-          oneMillionContextEnabled: false,
-          autoCompactThreshold: 80,
-        }),
-        undefined,
-        expect.any(Array),
-      );
-    });
-
-    it('reprobe after binPath change fails when new binary does not support 1M', async () => {
-      const existingProvider = {
-        id: 'p1',
-        name: 'claude',
-        binPath: '/opt/new-claude/bin/claude',
-        mcpConfigured: false,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        oneMillionContextEnabled: false,
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-01',
-      };
-      storage.getProvider.mockResolvedValue(existingProvider);
-      mockProbe1mSupport.mockResolvedValue({
-        supported: false,
-        status: 'unsupported',
-        capture: '{}',
-      });
-
-      // Probe with unsupported binary — no proof recorded
-      const probeResult = await controller.probe1mContext('p1');
-      expect(probeResult.supported).toBe(false);
-      expect(probeProofService.hasValidProof('p1', '/opt/new-claude/bin/claude')).toBe(false);
-
-      // Attempt to enable 1M — should fail
-      await expect(
-        controller.updateProvider('p1', { oneMillionContextEnabled: true }),
-      ).rejects.toThrow(ValidationError);
     });
   });
 
@@ -1468,280 +965,6 @@ describe('ProvidersController', () => {
     });
   });
 
-  describe('probe1mContext', () => {
-    const claudeProvider = {
-      id: 'p1',
-      name: 'claude',
-      binPath: '/usr/local/bin/claude',
-      mcpConfigured: true,
-      mcpEndpoint: null,
-      mcpRegisteredAt: null,
-      autoCompactThreshold: null,
-      oneMillionContextEnabled: false,
-      createdAt: '',
-      updatedAt: '',
-    };
-
-    it('rejects non-Claude providers', async () => {
-      storage.getProvider.mockResolvedValue({ ...claudeProvider, name: 'codex' });
-
-      await expect(controller.probe1mContext('p1')).rejects.toThrow(ValidationError);
-      expect(mockProbe1mSupport).not.toHaveBeenCalled();
-    });
-
-    it('rejects Claude provider without binPath', async () => {
-      storage.getProvider.mockResolvedValue({ ...claudeProvider, binPath: null });
-
-      await expect(controller.probe1mContext('p1')).rejects.toThrow(ValidationError);
-      expect(mockProbe1mSupport).not.toHaveBeenCalled();
-    });
-
-    it('delegates to probe1mSupport with binPath and timeout', async () => {
-      storage.getProvider.mockResolvedValue(claudeProvider);
-      mockProbe1mSupport.mockResolvedValue({
-        supported: true,
-        status: 'supported',
-        capture: '{}',
-      });
-
-      await controller.probe1mContext('p1');
-
-      expect(mockProbe1mSupport).toHaveBeenCalledWith(
-        expect.any(FakeProcessExecutor),
-        '/usr/local/bin/claude',
-        30_000,
-      );
-    });
-
-    it('records proof when outcome is supported', async () => {
-      storage.getProvider.mockResolvedValue(claudeProvider);
-      mockProbe1mSupport.mockResolvedValue({
-        supported: true,
-        status: 'supported',
-        capture: '{}',
-      });
-
-      const result = await controller.probe1mContext('p1');
-
-      expect(result.supported).toBe(true);
-      expect(result.status).toBe('supported');
-      expect(probeProofService.hasValidProof('p1', '/usr/local/bin/claude')).toBe(true);
-    });
-
-    it('does not record proof when outcome is unsupported', async () => {
-      storage.getProvider.mockResolvedValue(claudeProvider);
-      mockProbe1mSupport.mockResolvedValue({
-        supported: false,
-        status: 'unsupported',
-        capture: '{}',
-      });
-
-      const result = await controller.probe1mContext('p1');
-
-      expect(result.supported).toBe(false);
-      expect(result.status).toBe('unsupported');
-      expect(probeProofService.hasValidProof('p1', '/usr/local/bin/claude')).toBe(false);
-    });
-
-    it('does not record proof on timeout', async () => {
-      storage.getProvider.mockResolvedValue(claudeProvider);
-      mockProbe1mSupport.mockResolvedValue({
-        supported: false,
-        status: 'timeout',
-        detail: 'Timed out',
-      });
-
-      const result = await controller.probe1mContext('p1');
-
-      expect(result.supported).toBe(false);
-      expect(result.status).toBe('timeout');
-      expect(probeProofService.hasValidProof('p1', '/usr/local/bin/claude')).toBe(false);
-    });
-
-    it('does not record proof on launch_failure', async () => {
-      storage.getProvider.mockResolvedValue(claudeProvider);
-      mockProbe1mSupport.mockResolvedValue({
-        supported: false,
-        status: 'launch_failure',
-        detail: 'No output from probe command',
-      });
-
-      const result = await controller.probe1mContext('p1');
-
-      expect(result.supported).toBe(false);
-      expect(result.status).toBe('launch_failure');
-      expect(probeProofService.hasValidProof('p1', '/usr/local/bin/claude')).toBe(false);
-    });
-
-    it('returns the outcome from probe1mSupport as-is', async () => {
-      storage.getProvider.mockResolvedValue(claudeProvider);
-      const outcome: ProbeOutcome = {
-        supported: false,
-        status: 'launch_failure',
-        capture: 'some output',
-        detail: 'Probe returned error',
-      };
-      mockProbe1mSupport.mockResolvedValue(outcome);
-
-      const result = await controller.probe1mContext('p1');
-
-      expect(result).toEqual(outcome);
-    });
-  });
-
-  describe('model-aware threshold on enable/disable 1M', () => {
-    const baseProvider = {
-      id: 'p1',
-      name: 'claude',
-      binPath: '/usr/local/bin/claude',
-      mcpConfigured: false,
-      mcpEndpoint: null,
-      mcpRegisteredAt: null,
-      oneMillionContextEnabled: false,
-      createdAt: '2024-01-01',
-      updatedAt: '2024-01-01',
-    };
-
-    it('enable 1M with no explicit thresholds and existing standard=null sets autoCompactThreshold1m=50 and autoCompactThreshold=95', async () => {
-      storage.getProvider.mockResolvedValue({
-        ...baseProvider,
-        autoCompactThreshold: null,
-      });
-      storage.updateProviderWithScopes.mockImplementation(async (id, payload) => ({
-        ...baseProvider,
-        autoCompactThreshold: null,
-        ...payload,
-        id,
-      }));
-      probeProofService.recordProof('p1', '/usr/local/bin/claude');
-
-      await controller.updateProvider('p1', { oneMillionContextEnabled: true });
-
-      expect(storage.updateProviderWithScopes).toHaveBeenCalledWith(
-        'p1',
-        expect.objectContaining({
-          oneMillionContextEnabled: true,
-          autoCompactThreshold1m: 50,
-          autoCompactThreshold: 95,
-        }),
-        undefined,
-        expect.any(Array),
-      );
-    });
-
-    it('enable 1M with no explicit thresholds and existing standard=85 sets autoCompactThreshold1m=50 and does NOT overwrite standard', async () => {
-      storage.getProvider.mockResolvedValue({
-        ...baseProvider,
-        autoCompactThreshold: 85,
-      });
-      storage.updateProviderWithScopes.mockImplementation(async (id, payload) => ({
-        ...baseProvider,
-        autoCompactThreshold: 85,
-        ...payload,
-        id,
-      }));
-      probeProofService.recordProof('p1', '/usr/local/bin/claude');
-
-      await controller.updateProvider('p1', { oneMillionContextEnabled: true });
-
-      const call = storage.updateProviderWithScopes.mock.calls[0][1] as Record<string, unknown>;
-      expect(call.autoCompactThreshold1m).toBe(50);
-      // Standard threshold must not be touched — autoCompactThreshold should be absent from payload
-      expect(call).not.toHaveProperty('autoCompactThreshold');
-    });
-
-    it('enable 1M with explicit autoCompactThreshold1m=60 respects the user value', async () => {
-      storage.getProvider.mockResolvedValue({
-        ...baseProvider,
-        autoCompactThreshold: null,
-      });
-      storage.updateProviderWithScopes.mockImplementation(async (id, payload) => ({
-        ...baseProvider,
-        autoCompactThreshold: null,
-        ...payload,
-        id,
-      }));
-      probeProofService.recordProof('p1', '/usr/local/bin/claude');
-
-      await controller.updateProvider('p1', {
-        oneMillionContextEnabled: true,
-        autoCompactThreshold1m: 60,
-      });
-
-      expect(storage.updateProviderWithScopes).toHaveBeenCalledWith(
-        'p1',
-        expect.objectContaining({
-          oneMillionContextEnabled: true,
-          autoCompactThreshold1m: 60,
-        }),
-        undefined,
-        expect.any(Array),
-      );
-    });
-
-    it('disable 1M sets autoCompactThreshold1m=null and autoCompactThreshold=95', async () => {
-      storage.getProvider.mockResolvedValue({
-        ...baseProvider,
-        oneMillionContextEnabled: true,
-        autoCompactThreshold: null,
-        autoCompactThreshold1m: 50,
-      });
-      storage.updateProviderWithScopes.mockImplementation(async (id, payload) => ({
-        ...baseProvider,
-        oneMillionContextEnabled: false,
-        autoCompactThreshold: 95,
-        autoCompactThreshold1m: null,
-        ...payload,
-        id,
-      }));
-
-      await controller.updateProvider('p1', { oneMillionContextEnabled: false });
-
-      expect(storage.updateProviderWithScopes).toHaveBeenCalledWith(
-        'p1',
-        expect.objectContaining({
-          oneMillionContextEnabled: false,
-          autoCompactThreshold1m: null,
-          autoCompactThreshold: 95,
-        }),
-        undefined,
-        expect.any(Array),
-      );
-    });
-
-    it('binPath change on 1M-enabled provider auto-disables and sets autoCompactThreshold1m=null and autoCompactThreshold=95', async () => {
-      storage.getProvider.mockResolvedValue({
-        ...baseProvider,
-        oneMillionContextEnabled: true,
-        autoCompactThreshold: null,
-        autoCompactThreshold1m: 50,
-      });
-      storage.updateProviderWithScopes.mockImplementation(async (id, payload) => ({
-        ...baseProvider,
-        oneMillionContextEnabled: false,
-        autoCompactThreshold: 95,
-        autoCompactThreshold1m: null,
-        ...payload,
-        id,
-      }));
-      probeProofService.recordProof('p1', '/usr/local/bin/claude');
-
-      await controller.updateProvider('p1', { binPath: '/opt/new-claude/bin/claude' });
-
-      expect(storage.updateProviderWithScopes).toHaveBeenCalledWith(
-        'p1',
-        expect.objectContaining({
-          binPath: '/opt/new-claude/bin/claude',
-          oneMillionContextEnabled: false,
-          autoCompactThreshold1m: null,
-          autoCompactThreshold: 95,
-        }),
-        undefined,
-        expect.any(Array),
-      );
-    });
-  });
-
   describe('createProvider - sync integration', () => {
     it('invokes sync after provider creation and returns { provider, sync }', async () => {
       const now = new Date('2024-01-01T00:00:00Z');
@@ -1834,7 +1057,6 @@ describe('ProvidersController', () => {
       mcpConfigured: false,
       mcpEndpoint: null,
       mcpRegisteredAt: null,
-      oneMillionContextEnabled: false,
       autoCompactThreshold: null,
       env: { API_KEY: 'secret' },
       createdAt: '2024-01-01',

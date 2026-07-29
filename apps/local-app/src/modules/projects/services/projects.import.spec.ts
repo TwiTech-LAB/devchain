@@ -8,8 +8,6 @@ import { WatchersService } from '../../watchers/services/watchers.service';
 import { WatcherRunnerService } from '../../watchers/services/watcher-runner.service';
 import { UnifiedTemplateService } from '../../registry/services/unified-template.service';
 import { TeamsService } from '../../teams/services/teams.service';
-import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
-import { FakeProcessExecutor } from '../../terminal/services/process-executor/fake-process-executor';
 import { SCHEDULED_EPIC_RUNNER_REFRESH } from '../../scheduled-epics/services/scheduled-epics.service';
 import { StorageError } from '../../../common/errors/error-types';
 import * as devchainShared from '@devchain/shared';
@@ -18,12 +16,6 @@ jest.mock('../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
 }));
 
-// Mock probe-1m utility
-jest.mock('../../providers/utils/probe-1m', () => ({
-  probe1mSupport: jest.fn(),
-}));
-import { probe1mSupport } from '../../providers/utils/probe-1m';
-const mockProbe1mSupport = probe1mSupport as jest.Mock;
 import { createMockProject } from '../../../../test/factories';
 
 describe('ProjectsService', () => {
@@ -245,7 +237,6 @@ describe('ProjectsService', () => {
           provide: ProjectProviderProvisioningService,
           useValue: { provisionProject: jest.fn().mockResolvedValue({ warnings: [] }) },
         },
-        { provide: ProcessExecutor, useValue: new FakeProcessExecutor() },
         {
           provide: SCHEDULED_EPIC_RUNNER_REFRESH,
           useValue: { refreshScheduleWindow: jest.fn() },
@@ -340,6 +331,12 @@ describe('ProjectsService', () => {
             subscribers: 0,
             scheduledEpics: 0,
           },
+        },
+        promptTransfer: {
+          imported: 1,
+          deleted: 1,
+          preserved: 0,
+          skipped: 0,
         },
       });
 
@@ -1892,7 +1889,6 @@ describe('ProjectsService', () => {
       providerSettings?: Array<{
         name: string;
         autoCompactThreshold?: number | null;
-        oneMillionContextEnabled?: boolean;
       }>,
       providerModels?: Array<{ providerName: string; models: string[] }>,
     ) {
@@ -2011,334 +2007,6 @@ describe('ProjectsService', () => {
         return updatePayload.autoCompactThreshold !== undefined;
       });
       expect(thresholdCalls).toHaveLength(0);
-
-      jest.restoreAllMocks();
-    });
-
-    it('should include oneMillionContextEnabled in export providerSettings when enabled', async () => {
-      const projectId = 'project-123';
-
-      storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
-      storage.listAgentProfiles.mockResolvedValue({
-        items: [{ id: 'prof-1', name: 'Test Profile' }],
-        total: 1,
-        limit: 1000,
-        offset: 0,
-      });
-      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
-        {
-          id: 'config-1',
-          profileId: 'prof-1',
-          providerId: 'prov-1',
-          name: 'default',
-          options: null,
-          env: null,
-          position: 0,
-          createdAt: '',
-          updatedAt: '',
-        },
-      ]);
-      storage.listProvidersByIds.mockResolvedValue([
-        {
-          id: 'prov-1',
-          name: 'claude',
-          autoCompactThreshold: 50,
-          oneMillionContextEnabled: true,
-        },
-      ]);
-      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
-      storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
-      storage.getInitialSessionPrompt.mockResolvedValue(null);
-      storage.listWatchers.mockResolvedValue([]);
-      storage.listSubscribers.mockResolvedValue([]);
-
-      const result = await service.exportProject(projectId);
-
-      expect(result.providerSettings).toEqual([
-        { name: 'claude', autoCompactThreshold: 50, oneMillionContextEnabled: true },
-      ]);
-    });
-
-    it('should not include oneMillionContextEnabled in export when disabled', async () => {
-      const projectId = 'project-123';
-
-      storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
-      storage.listAgentProfiles.mockResolvedValue({
-        items: [{ id: 'prof-1', name: 'Test Profile' }],
-        total: 1,
-        limit: 1000,
-        offset: 0,
-      });
-      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
-        {
-          id: 'config-1',
-          profileId: 'prof-1',
-          providerId: 'prov-1',
-          name: 'default',
-          options: null,
-          env: null,
-          position: 0,
-          createdAt: '',
-          updatedAt: '',
-        },
-      ]);
-      storage.listProvidersByIds.mockResolvedValue([
-        {
-          id: 'prov-1',
-          name: 'claude',
-          autoCompactThreshold: 10,
-          oneMillionContextEnabled: false,
-        },
-      ]);
-      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
-      storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
-      storage.getInitialSessionPrompt.mockResolvedValue(null);
-      storage.listWatchers.mockResolvedValue([]);
-      storage.listSubscribers.mockResolvedValue([]);
-
-      const result = await service.exportProject(projectId);
-
-      expect(result.providerSettings).toEqual([{ name: 'claude', autoCompactThreshold: 10 }]);
-    });
-
-    it('should disable oneMillionContextEnabled and set threshold to 95 on import when no threshold exists', async () => {
-      const payload = buildMinimalPayload([{ name: 'claude', oneMillionContextEnabled: true }]);
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(payload);
-      setupImportMocks();
-
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: 'prov-1', name: 'claude', autoCompactThreshold: null }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      await service.importProject({ projectId, payload, dryRun: false });
-
-      // Should disable 1M and set safe fallback threshold of 95
-      expect(storage.updateProvider).toHaveBeenCalledWith('prov-1', {
-        autoCompactThreshold: 95,
-        autoCompactThreshold1m: null,
-        oneMillionContextEnabled: false,
-      });
-
-      jest.restoreAllMocks();
-    });
-
-    it('should force threshold 95 when template has threshold 50 but 1M probe fails on import', async () => {
-      const payload = buildMinimalPayload([
-        { name: 'claude', autoCompactThreshold: 50, oneMillionContextEnabled: true },
-      ]);
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(payload);
-      setupImportMocks();
-
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: 'prov-1', name: 'claude', autoCompactThreshold: null }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      await service.importProject({ projectId, payload, dryRun: false });
-
-      // Template threshold 50 is only appropriate when 1M is enabled;
-      // since 1M is disabled (no binPath/probe), threshold must be forced to 95
-      expect(storage.updateProvider).toHaveBeenCalledWith('prov-1', {
-        autoCompactThreshold: 95,
-        autoCompactThreshold1m: null,
-        oneMillionContextEnabled: false,
-      });
-
-      jest.restoreAllMocks();
-    });
-
-    it('should force threshold 95 when 1M disabled even if local provider has existing threshold', async () => {
-      const payload = buildMinimalPayload([{ name: 'claude', oneMillionContextEnabled: true }]);
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(payload);
-      setupImportMocks();
-
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: 'prov-1', name: 'claude', autoCompactThreshold: 80 }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      await service.importProject({ projectId, payload, dryRun: false });
-
-      // Should disable 1M; local threshold 80 preserved (not overwritten)
-      expect(storage.updateProvider).toHaveBeenCalledWith('prov-1', {
-        autoCompactThreshold1m: null,
-        oneMillionContextEnabled: false,
-      });
-
-      jest.restoreAllMocks();
-    });
-
-    it('should enable oneMillionContextEnabled when auto-probe succeeds on import', async () => {
-      const payload = buildMinimalPayload([{ name: 'claude', oneMillionContextEnabled: true }]);
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(payload);
-      setupImportMocks();
-
-      storage.listProviders.mockResolvedValue({
-        items: [
-          { id: 'prov-1', name: 'claude', autoCompactThreshold: null, binPath: '/usr/bin/claude' },
-        ],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      mockProbe1mSupport.mockResolvedValue({ supported: true, status: 'supported' });
-
-      await service.importProject({ projectId, payload, dryRun: false });
-
-      expect(mockProbe1mSupport).toHaveBeenCalledWith(expect.anything(), '/usr/bin/claude');
-      expect(storage.updateProvider).toHaveBeenCalledWith('prov-1', {
-        autoCompactThreshold: 95,
-        autoCompactThreshold1m: 50,
-        oneMillionContextEnabled: true,
-      });
-
-      jest.restoreAllMocks();
-    });
-
-    it('should disable oneMillionContextEnabled when auto-probe fails on import', async () => {
-      const payload = buildMinimalPayload([{ name: 'claude', oneMillionContextEnabled: true }]);
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(payload);
-      setupImportMocks();
-
-      storage.listProviders.mockResolvedValue({
-        items: [
-          { id: 'prov-1', name: 'claude', autoCompactThreshold: null, binPath: '/usr/bin/claude' },
-        ],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      mockProbe1mSupport.mockResolvedValue({ supported: false, status: 'unsupported' });
-
-      await service.importProject({ projectId, payload, dryRun: false });
-
-      expect(mockProbe1mSupport).toHaveBeenCalledWith(expect.anything(), '/usr/bin/claude');
-      expect(storage.updateProvider).toHaveBeenCalledWith('prov-1', {
-        autoCompactThreshold: 95,
-        autoCompactThreshold1m: null,
-        oneMillionContextEnabled: false,
-      });
-
-      jest.restoreAllMocks();
-    });
-
-    it('should disable oneMillionContextEnabled when provider has no binPath on import', async () => {
-      const payload = buildMinimalPayload([{ name: 'claude', oneMillionContextEnabled: true }]);
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(payload);
-      setupImportMocks();
-
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: 'prov-1', name: 'claude', autoCompactThreshold: null, binPath: null }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      await service.importProject({ projectId, payload, dryRun: false });
-
-      expect(mockProbe1mSupport).not.toHaveBeenCalled();
-      expect(storage.updateProvider).toHaveBeenCalledWith('prov-1', {
-        autoCompactThreshold: 95,
-        autoCompactThreshold1m: null,
-        oneMillionContextEnabled: false,
-      });
-
-      jest.restoreAllMocks();
-    });
-
-    it('should force threshold 95 when template has threshold 50 and probe fails on import', async () => {
-      const payload = buildMinimalPayload([
-        { name: 'claude', autoCompactThreshold: 50, oneMillionContextEnabled: true },
-      ]);
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(payload);
-      setupImportMocks();
-
-      storage.listProviders.mockResolvedValue({
-        items: [
-          { id: 'prov-1', name: 'claude', autoCompactThreshold: null, binPath: '/usr/bin/claude' },
-        ],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      mockProbe1mSupport.mockResolvedValue({ supported: false, status: 'unsupported' });
-
-      await service.importProject({ projectId, payload, dryRun: false });
-
-      // Template threshold 50 is overridden to 95 because 1M probe failed
-      expect(storage.updateProvider).toHaveBeenCalledWith('prov-1', {
-        autoCompactThreshold: 95,
-        autoCompactThreshold1m: null,
-        oneMillionContextEnabled: false,
-      });
-
-      jest.restoreAllMocks();
-    });
-
-    it('should keep threshold 50 when template has threshold 50 and probe succeeds on import', async () => {
-      const payload = buildMinimalPayload([
-        { name: 'claude', autoCompactThreshold: 50, oneMillionContextEnabled: true },
-      ]);
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(payload);
-      setupImportMocks();
-
-      storage.listProviders.mockResolvedValue({
-        items: [
-          { id: 'prov-1', name: 'claude', autoCompactThreshold: null, binPath: '/usr/bin/claude' },
-        ],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      mockProbe1mSupport.mockResolvedValue({ supported: true, status: 'supported' });
-
-      await service.importProject({ projectId, payload, dryRun: false });
-
-      // Legacy template: standard threshold forced to 95; 1M threshold gets template value (50)
-      expect(storage.updateProvider).toHaveBeenCalledWith('prov-1', {
-        autoCompactThreshold: 95,
-        autoCompactThreshold1m: 50,
-        oneMillionContextEnabled: true,
-      });
-
-      jest.restoreAllMocks();
-    });
-
-    it('should force threshold 50 when local provider has threshold 95 and probe succeeds on import', async () => {
-      const payload = buildMinimalPayload([{ name: 'claude', oneMillionContextEnabled: true }]);
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(payload);
-      setupImportMocks();
-
-      storage.listProviders.mockResolvedValue({
-        items: [
-          { id: 'prov-1', name: 'claude', autoCompactThreshold: 95, binPath: '/usr/bin/claude' },
-        ],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      mockProbe1mSupport.mockResolvedValue({ supported: true, status: 'supported' });
-
-      await service.importProject({ projectId, payload, dryRun: false });
-
-      expect(mockProbe1mSupport).toHaveBeenCalledWith(expect.anything(), '/usr/bin/claude');
-      // Local provider had threshold 95 — preserved (not overwritten); 1M threshold = 50
-      expect(storage.updateProvider).toHaveBeenCalledWith('prov-1', {
-        autoCompactThreshold1m: 50,
-        oneMillionContextEnabled: true,
-      });
 
       jest.restoreAllMocks();
     });
@@ -2706,7 +2374,6 @@ describe('ProjectsService', () => {
             provide: ProjectProviderProvisioningService,
             useValue: { provisionProject: jest.fn().mockResolvedValue({ warnings: [] }) },
           },
-          { provide: ProcessExecutor, useValue: new FakeProcessExecutor() },
           {
             provide: SCHEDULED_EPIC_RUNNER_REFRESH,
             useValue: { refreshScheduleWindow: jest.fn() },

@@ -38,6 +38,7 @@ function cleanup(filePath: string): void {
 
 const mockPricing: PricingServiceInterface = {
   calculateMessageCost: jest.fn().mockReturnValue(0.01),
+  getCatalogContextWindowSize: jest.fn().mockReturnValue(200_000),
   getContextWindowSize: jest.fn().mockReturnValue(200_000),
 };
 

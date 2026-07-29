@@ -7,6 +7,15 @@
  * `createdPrompts` ({id,title}) for downstream initial-prompt resolution.
  */
 import type { ImportContext } from '../import-context';
+import {
+  PROMPT_TRANSFER_POLICY,
+  partitionPromptsForTransfer,
+} from '../../../../common/prompt-transfer';
+import {
+  canonicalizePromptTypeTags,
+  getPromptType,
+  PROMPT_TYPE,
+} from '../../../../common/prompt-type';
 import type {
   CodecApplyResult,
   CodecApplyRuntime,
@@ -61,15 +70,30 @@ class PromptsCodec implements TemplateSectionCodec<PromptsSection> {
     rt: CodecApplyRuntime,
   ): Promise<CodecApplyResult> {
     const { projectId, storage } = rt;
+    const policy = rt.promptTransferPolicy ?? PROMPT_TRANSFER_POLICY.Template;
+    const partition = partitionPromptsForTransfer(prompts, policy);
+    const createPrompt =
+      policy === PROMPT_TRANSFER_POLICY.Snapshot
+        ? rt.snapshotPromptWriter?.createPromptFromSnapshot.bind(rt.snapshotPromptWriter)
+        : storage.createPrompt.bind(storage);
+    if (!createPrompt) {
+      throw new Error('Snapshot prompt writer is unavailable');
+    }
     const promptIdMap: Record<string, string> = {};
     const createdPrompts: Array<{ id: string; title: string }> = [];
 
-    for (const prompt of prompts) {
-      const created = await storage.createPrompt({
+    for (const prompt of partition.transfer) {
+      const created = await createPrompt({
         projectId,
         title: prompt.title,
         content: prompt.content,
-        tags: prompt.tags ?? [],
+        tags:
+          policy === PROMPT_TRANSFER_POLICY.Template
+            ? canonicalizePromptTypeTags(
+                prompt.tags ?? [],
+                getPromptType(prompt.tags ?? [], PROMPT_TYPE.System),
+              )
+            : (prompt.tags ?? []),
       });
 
       if (prompt.id) promptIdMap[prompt.id] = created.id;
@@ -79,7 +103,14 @@ class PromptsCodec implements TemplateSectionCodec<PromptsSection> {
     ctx.set('promptIdMap', promptIdMap);
     ctx.set('createdPrompts', createdPrompts);
 
-    return { section: 'prompts', log: { created: createdPrompts.length } };
+    return {
+      section: 'prompts',
+      log: { created: createdPrompts.length },
+      promptTransfer: {
+        imported: createdPrompts.length,
+        skipped: partition.retain.length,
+      },
+    };
   }
 }
 

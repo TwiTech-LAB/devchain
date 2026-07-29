@@ -149,22 +149,106 @@ export async function handleGetAgentByName(
   const profile = agentWithProfile.profile;
   const sessionContext = sessionCtxResult.data as SessionContext;
   const callerAgentId = sessionContext.type === 'agent' ? sessionContext.agent?.id : undefined;
-  let teamCtx = { team_name: '', team_names: '', is_team_lead: false };
-  if (callerAgentId) {
+  const isSelfLookup = callerAgentId === agentWithProfile.id;
+
+  let providerConfigName: string | null = null;
+  if (agentWithProfile.providerConfigId) {
     try {
-      teamCtx = await loadAgentRecipientContext(ctx.teamsService, callerAgentId);
+      const providerConfig = await ctx.storage.getProfileProviderConfig(
+        agentWithProfile.providerConfigId,
+      );
+      providerConfigName = providerConfig.name;
+    } catch (error) {
+      logger.warn(
+        {
+          agentId: agentWithProfile.id,
+          providerConfigId: agentWithProfile.providerConfigId,
+          error,
+        },
+        'Provider config name lookup failed for agent directory card',
+      );
+    }
+  }
+
+  let teams: GetAgentByNameResponse['agent']['teams'] = [];
+  try {
+    const targetTeams = await ctx.teamsService.listTeamsByAgent(agentWithProfile.id);
+    teams = targetTeams
+      .filter((team) => team.projectId === project.id)
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((team) => ({
+        teamId: team.id,
+        teamName: team.name,
+        isLead: team.teamLeadAgentId === agentWithProfile.id,
+      }));
+  } catch (error) {
+    if (!(error instanceof ServiceUnavailableError)) throw error;
+  }
+
+  let presence: GetAgentByNameResponse['agent']['presence'] = null;
+  try {
+    const entry = (await ctx.sessionsService.getAgentPresence(project.id)).get(agentWithProfile.id);
+    if (entry) {
+      const activityState = entry.online ? (entry.activityState ?? null) : null;
+      presence = {
+        online: entry.online,
+        activityState,
+        lastActivityAt: entry.online ? (entry.lastActivityAt ?? null) : null,
+        busySince: entry.online && activityState === 'busy' ? (entry.busySince ?? null) : null,
+        idleSince: entry.online && activityState === 'idle' ? (entry.idleSince ?? null) : null,
+        currentActivityTitle: entry.online ? (entry.currentActivityTitle ?? null) : null,
+      };
+    }
+  } catch (error) {
+    if (!(error instanceof ServiceUnavailableError)) throw error;
+  }
+
+  let assignedEpics: GetAgentByNameResponse['agent']['assignedEpics'] = {
+    items: [],
+    total: 0,
+  };
+  try {
+    const [assignedResult, statusesResult] = await Promise.all([
+      ctx.storage.listAssignedEpics(project.id, {
+        agentName: agentWithProfile.name,
+        excludeMcpHidden: true,
+        limit: 100,
+        offset: 0,
+      }),
+      ctx.storage.listStatuses(project.id, { limit: 1000, offset: 0 }),
+    ]);
+    const statusById = new Map(statusesResult.items.map((status) => [status.id, status.label]));
+    const openEpics = assignedResult.items
+      .map((epic) => ({ epic, status: statusById.get(epic.statusId) ?? 'Unknown' }))
+      .filter(({ status }) => status.toLowerCase() !== 'done')
+      .sort((a, b) => b.epic.updatedAt.localeCompare(a.epic.updatedAt));
+
+    assignedEpics = {
+      items: openEpics.slice(0, 20).map(({ epic, status }) => ({
+        id: epic.id,
+        parentId: epic.parentId,
+        title: epic.title,
+        status,
+      })),
+      total: openEpics.length,
+    };
+  } catch {
+    assignedEpics = { items: [], total: 0 };
+  }
+
+  let resolvedInstructions: Awaited<ReturnType<InstructionsResolver['resolve']>> | null = null;
+  if (profile && isSelfLookup) {
+    let teamCtx = { team_name: '', team_names: '', is_team_lead: false };
+    try {
+      teamCtx = await loadAgentRecipientContext(ctx.teamsService, agentWithProfile.id);
     } catch (error) {
       if (!(error instanceof ServiceUnavailableError)) throw error;
     }
-  }
-  const renderVars: Record<string, unknown> = {
-    agent_name: sessionContext.type === 'agent' ? (sessionContext.agent?.name ?? '') : '',
-    project_name: project.name,
-    ...teamCtx,
-  };
-
-  let resolvedInstructions: Awaited<ReturnType<InstructionsResolver['resolve']>> | null = null;
-  if (profile) {
+    const renderVars: Record<string, unknown> = {
+      agent_name: sessionContext.type === 'agent' ? (sessionContext.agent?.name ?? '') : '',
+      project_name: project.name,
+      ...teamCtx,
+    };
     try {
       resolvedInstructions = await ctx.instructionsResolver.resolve(
         project.id,
@@ -198,13 +282,20 @@ export async function handleGetAgentByName(
       name: agentWithProfile.name,
       profileId: agentWithProfile.profileId,
       description: agentWithProfile.description,
+      providerConfigId: agentWithProfile.providerConfigId ?? null,
+      providerConfigName,
+      teams,
+      presence,
+      assignedEpics,
       profile: profile
-        ? {
-            id: profile.id,
-            name: profile.name,
-            instructions: profile.instructions ?? null,
-            instructionsResolved: resolvedInstructions ?? undefined,
-          }
+        ? isSelfLookup
+          ? {
+              id: profile.id,
+              name: profile.name,
+              instructions: profile.instructions ?? null,
+              instructionsResolved: resolvedInstructions ?? undefined,
+            }
+          : { id: profile.id, name: profile.name }
         : undefined,
     },
   };

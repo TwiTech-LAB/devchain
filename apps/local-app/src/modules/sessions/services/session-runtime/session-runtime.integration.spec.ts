@@ -31,7 +31,7 @@ jest.mock('@devchain/shared', () => ({
 }));
 
 jest.mock('../../../providers/adapters/capabilities', () => ({
-  isContextWindowCapable: () => false,
+  isAutoCompactCapable: () => false,
   isHookCapable: () => false,
   isProjectProvisioningCapable: () => false,
 }));

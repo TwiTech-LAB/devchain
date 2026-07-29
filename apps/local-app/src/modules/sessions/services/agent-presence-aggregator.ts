@@ -7,6 +7,7 @@ export interface PresenceEntry {
   readonly activityState?: 'idle' | 'busy' | null;
   readonly lastActivityAt?: string | null;
   readonly busySince?: string | null;
+  readonly idleSince?: string | null;
 }
 
 export interface SessionAgentMapping {
@@ -34,6 +35,7 @@ export function aggregatePresence(
       activityState: state,
       lastActivityAt: activity.lastDataAt ? new Date(activity.lastDataAt).toISOString() : null,
       busySince: activity.busySince ? new Date(activity.busySince).toISOString() : null,
+      idleSince: activity.idleSince ? new Date(activity.idleSince).toISOString() : null,
     });
   }
 

@@ -40,7 +40,7 @@ const CreateProviderSchema = z.object({
   mcpEndpoint: z.string().nullable().optional(),
   mcpRegisteredAt: z.string().nullable().optional(),
   autoCompactThreshold: z.number().int().min(1).max(100).nullable().optional(),
-  oneMillionContextEnabled: z.boolean().optional(),
+  claudeLaunchSettingsJson: z.string().nullable().optional(),
   env: EnvVarsSchema.transform((v) => (v === undefined ? null : v)),
 });
 
@@ -51,8 +51,7 @@ const UpdateProviderSchema = z.object({
   mcpEndpoint: z.string().nullable().optional(),
   mcpRegisteredAt: z.string().nullable().optional(),
   autoCompactThreshold: z.number().int().min(1).max(100).nullable().optional(),
-  autoCompactThreshold1m: z.number().int().min(1).max(100).nullable().optional(),
-  oneMillionContextEnabled: z.boolean().optional(),
+  claudeLaunchSettingsJson: z.string().nullable().optional(),
   env: EnvVarsSchema,
   envScopes: z.record(z.array(z.string())).optional(),
 });
@@ -243,12 +242,6 @@ export class ProvidersController {
       throw new InternalServerErrorException('Failed to write ~/.claude.json');
     }
     return { success: true };
-  }
-
-  @Post(':id/1m-context/probe')
-  async probe1mContext(@Param('id') id: string) {
-    logger.info({ id }, 'POST /api/providers/:id/1m-context/probe');
-    return this.providerStateManager.probe1m(id);
   }
 
   @Post(':id/mcp')

@@ -15,9 +15,9 @@
  * querying the persisted result — NOT by inspecting internal pipeline mock calls.
  *
  * The only mocked collaborators are true externals: `unifiedTemplateService` (template
- * content/source/version), `probe1m` (1M-context probe), and jest-spy wrappers around the
- * real `teamsService.createTeam` / `watchersService.createWatcher` seams so we can assert
- * the exact arguments the create path resolves for those services.
+ * content/source/version) and jest-spy wrappers around the real `teamsService.createTeam` /
+ * `watchersService.createWatcher` seams so we can assert the exact arguments the create path
+ * resolves for those services.
  */
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
@@ -128,13 +128,12 @@ interface DepsBundle {
   createTeam: jest.Mock;
   deleteTeamsByIds: jest.Mock;
   createWatcher: jest.Mock;
-  probe1m: jest.Mock;
   refreshScheduleWindow: jest.Mock;
 }
 
 /**
  * Wire the create-from-template deps to the real services, with jest-spy wrappers around the
- * true-external seams (teams createTeam, watchers createWatcher, 1M probe, schedule refresh).
+ * true-external seams (teams createTeam, watchers createWatcher, schedule refresh).
  */
 function buildDeps(h: Harness, unified: UnifiedMock): DepsBundle {
   const adapter = teamsAdapter(h.teamsStore);
@@ -149,7 +148,6 @@ function buildDeps(h: Harness, unified: UnifiedMock): DepsBundle {
   );
   const watchersService = { createWatcher };
 
-  const probe1m = jest.fn(async () => ({ supported: false, status: 'unsupported' }));
   const refreshScheduleWindow = jest.fn();
 
   const deps = {
@@ -182,12 +180,11 @@ function buildDeps(h: Harness, unified: UnifiedMock): DepsBundle {
       applyAgentConfigs(projectId, agentConfigs, { storage: h.storage }, nameMaps),
     teamsService: teamsService as never,
     watchersService: watchersService as never,
-    probe1m,
     scheduledEpicsRefresh: { refreshScheduleWindow },
     computeNextRunAt: getNextRunAt,
   };
 
-  return { deps, createTeam, deleteTeamsByIds, createWatcher, probe1m, refreshScheduleWindow };
+  return { deps, createTeam, deleteTeamsByIds, createWatcher, refreshScheduleWindow };
 }
 
 // ---------------------------------------------------------------------------
@@ -198,8 +195,7 @@ async function seedClaudeProvider(
   h: Harness,
   binPath: string | null = null,
 ): Promise<{ id: string }> {
-  // Force a null autoCompactThreshold (claude otherwise defaults to 85) so the
-  // providerSettings 1M codec exercises its "no local threshold set → import 95" branch.
+  // Force a null autoCompactThreshold so providerSettings can import the template default.
   return h.storage.createProvider({ name: 'claude', binPath, autoCompactThreshold: null });
 }
 
@@ -362,6 +358,103 @@ describe('ProjectsService.createFromTemplate (real storage)', () => {
 
         expect(result).toMatchObject({ success: true, project: { name: `Project ${slug}` } });
       }
+    });
+
+    it('reports actual prompt counts and maps when template creation imports every prompt type', async () => {
+      const template = emptyTemplate();
+      template.prompts = [
+        {
+          id: '11111111-1111-4111-8111-111111111111',
+          title: 'System',
+          content: 'system',
+          version: 1,
+          tags: ['scope:shared', 'type:system'],
+        },
+        {
+          id: '22222222-2222-4222-8222-222222222222',
+          title: 'Legacy',
+          content: 'legacy',
+          version: 1,
+          tags: ['scope:legacy'],
+        },
+        {
+          id: '33333333-3333-4333-8333-333333333333',
+          title: 'Custom',
+          content: 'custom',
+          version: 1,
+          tags: ['type:custom'],
+        },
+      ];
+      const { deps } = buildDeps(h, bundledUnified(template));
+
+      const result = (await createFromTemplateWithHelper(
+        { name: 'Prompt Project', rootPath: '/test/prompts', slug: 'prompt-template' },
+        deps as never,
+      )) as AnyRec;
+      const project = result.project as { id: string };
+      const prompts = await h.storage.listPrompts({ projectId: project.id });
+
+      expect(result).toMatchObject({
+        success: true,
+        imported: { prompts: 3 },
+        promptTransfer: { imported: 3, deleted: 0, preserved: 0, skipped: 0 },
+        mappings: {
+          promptIdMap: {
+            '11111111-1111-4111-8111-111111111111': expect.any(String),
+            '22222222-2222-4222-8222-222222222222': expect.any(String),
+            '33333333-3333-4333-8333-333333333333': expect.any(String),
+          },
+        },
+      });
+      expect(prompts.items).toHaveLength(3);
+      expect(prompts.items.map((prompt) => prompt.title).sort()).toEqual([
+        'Custom',
+        'Legacy',
+        'System',
+      ]);
+      expect(prompts.items.find((prompt) => prompt.title === 'Custom')?.tags).toContain(
+        'type:custom',
+      );
+    });
+
+    it('creates a project whose profile references an incoming Custom prompt', async () => {
+      await seedClaudeProvider(h);
+      const template = claudeTemplate({
+        prompts: [
+          {
+            id: '44444444-4444-4444-8444-444444444444',
+            title: 'Private SOP',
+            content: 'private',
+            version: 1,
+            tags: ['type:custom'],
+          },
+        ],
+        profiles: [
+          {
+            id: PROFILE_ID,
+            name: 'Test Profile',
+            provider: { name: 'claude' },
+            instructions: 'Follow [[prompt:Private SOP]].',
+            temperature: null,
+            maxTokens: null,
+          },
+        ],
+      });
+      const { deps } = buildDeps(h, bundledUnified(template));
+      const createProjectShell = jest.spyOn(h.storage, 'createProjectShell');
+
+      const result = await createFromTemplateWithHelper(
+        { name: 'Unsafe Project', rootPath: '/test/unsafe', slug: 'unsafe' },
+        deps as never,
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        promptTransfer: { imported: 1, skipped: 0 },
+      });
+      expect(result).not.toHaveProperty('promptReferenceValidation');
+      expect(createProjectShell).toHaveBeenCalled();
+      expect((await h.storage.listProjects()).items).toHaveLength(1);
     });
 
     it('passes the pre-generated projectId to createProjectShell when provided', async () => {
@@ -722,15 +815,21 @@ describe('ProjectsService.createFromTemplate (real storage)', () => {
   });
 
   // -------------------------------------------------------------------------
-  // providerSettings — 1M-context enable/disable via probe.
+  // providerSettings — legacy normalization and post-upgrade env safety.
   // -------------------------------------------------------------------------
-  describe('providerSettings 1M-context', () => {
-    const oneMTemplate = () =>
-      claudeTemplate({ providerSettings: [{ name: 'claude', oneMillionContextEnabled: true }] });
-
-    it('disables 1M and sets a safe fallback threshold when provider has no binPath', async () => {
-      const provider = await seedClaudeProvider(h, null);
-      const { deps, probe1m } = buildDeps(h, bundledUnified(oneMTemplate()));
+  describe('providerSettings legacy compatibility', () => {
+    it('imports a pre-split Claude template with the established default fallback', async () => {
+      const provider = await seedClaudeProvider(h);
+      const template = claudeTemplate({
+        providerSettings: [
+          {
+            name: 'claude',
+            autoCompactThreshold: 50,
+            oneMillionContextEnabled: true,
+          },
+        ],
+      });
+      const { deps } = buildDeps(h, bundledUnified(template));
 
       await createFromTemplateWithHelper(
         { name: 'Test Project', rootPath: '/test', slug: 'my-template' },
@@ -738,49 +837,34 @@ describe('ProjectsService.createFromTemplate (real storage)', () => {
       );
 
       const updated = await h.storage.getProvider(provider.id);
-      expect(updated).toMatchObject({
-        autoCompactThreshold: 95,
-        autoCompactThreshold1m: null,
-        oneMillionContextEnabled: false,
-      });
-      expect(probe1m).not.toHaveBeenCalled();
+      expect(updated.autoCompactThreshold).toBe(95);
     });
 
-    it('enables 1M when the auto-probe succeeds', async () => {
-      const provider = await seedClaudeProvider(h, '/usr/bin/claude');
-      const { deps, probe1m } = buildDeps(h, bundledUnified(oneMTemplate()));
-      probe1m.mockResolvedValue({ supported: true, status: 'supported' });
-
-      await createFromTemplateWithHelper(
-        { name: 'Test Project', rootPath: '/test', slug: 'my-template' },
-        deps as never,
-      );
-
-      expect(probe1m).toHaveBeenCalledWith('/usr/bin/claude');
-      const updated = await h.storage.getProvider(provider.id);
-      expect(updated).toMatchObject({
-        autoCompactThreshold: 95,
-        autoCompactThreshold1m: 50,
-        oneMillionContextEnabled: true,
+    it('cannot restore the seeded-away exact provider window during a later import', async () => {
+      const provider = await seedClaudeProvider(h);
+      const template = claudeTemplate({
+        providerSettings: [
+          {
+            name: 'claude',
+            env: {
+              CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000',
+              CLAUDE_CODE_DISABLE_1M_CONTEXT: '1',
+              KEEP: 'value',
+            },
+          },
+        ],
       });
-    });
-
-    it('disables 1M when the auto-probe fails', async () => {
-      const provider = await seedClaudeProvider(h, '/usr/bin/claude');
-      const { deps, probe1m } = buildDeps(h, bundledUnified(oneMTemplate()));
-      probe1m.mockResolvedValue({ supported: false, status: 'unsupported' });
+      const { deps } = buildDeps(h, bundledUnified(template));
 
       await createFromTemplateWithHelper(
         { name: 'Test Project', rootPath: '/test', slug: 'my-template' },
         deps as never,
       );
 
-      expect(probe1m).toHaveBeenCalledWith('/usr/bin/claude');
       const updated = await h.storage.getProvider(provider.id);
-      expect(updated).toMatchObject({
-        autoCompactThreshold: 95,
-        autoCompactThreshold1m: null,
-        oneMillionContextEnabled: false,
+      expect(updated.env).toEqual({
+        CLAUDE_CODE_DISABLE_1M_CONTEXT: '1',
+        KEEP: 'value',
       });
     });
   });

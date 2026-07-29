@@ -419,6 +419,59 @@ describe('LocalStorageService', () => {
   // ==========================================
 
   describe('Prompts', () => {
+    it('defaults an untyped prompt to Custom and canonicalizes explicit types', async () => {
+      const project = await seedProject();
+
+      const custom = await service.createPrompt({
+        projectId: project.id,
+        title: 'Custom Prompt',
+        content: 'Hello',
+      });
+      const system = await service.createPrompt({
+        projectId: project.id,
+        title: 'System Prompt',
+        content: 'Hello',
+        tags: ['feature', ' TYPE : SYSTEM ', 'type:future'],
+      });
+
+      expect(custom.tags).toEqual(['type:custom']);
+      expect(system.tags).toEqual(['feature', 'type:system']);
+    });
+
+    it('retains the current type when an update supplies only unrelated tags', async () => {
+      const project = await seedProject();
+      const prompt = await service.createPrompt({
+        projectId: project.id,
+        title: 'System Prompt',
+        content: 'Hello',
+        tags: ['type:system'],
+      });
+
+      const updated = await service.updatePrompt(
+        prompt.id,
+        { tags: ['feature', 'scope:local'] },
+        prompt.version,
+      );
+
+      expect(updated.tags).toEqual(['feature', 'scope:local', 'type:system']);
+    });
+
+    it('uses Custom when adding tags to a legacy untyped prompt', async () => {
+      const project = await seedProject();
+      const now = new Date().toISOString();
+      const { randomUUID } = await import('crypto');
+      const promptId = randomUUID();
+      sqlite
+        .prepare(
+          'INSERT INTO prompts (id, project_id, title, content, version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        )
+        .run(promptId, project.id, 'Legacy Prompt', 'Hello', 1, now, now);
+
+      const updated = await service.updatePrompt(promptId, { tags: ['feature'] }, 1);
+
+      expect(updated.tags).toEqual(['feature', 'type:custom']);
+    });
+
     it('throws OptimisticLockError on version conflict during update', async () => {
       const project = await seedProject();
       const prompt = await service.createPrompt({

@@ -6,7 +6,7 @@
  * flags). OpenCode adoption (per-model env overlay) is a later task and is the
  * reason `applyEffort` returns env alongside argv and accepts `effectiveModel`.
  *
- * Mirrors `ContextWindowCapability`: consumed via `isEffortCapable` type-guard
+ * Mirrors `AutoCompactCapability`: consumed via `isEffortCapable` type-guard
  * narrowing at the `ProviderLaunchConfig` composition point only.
  */
 export interface EffortCapability {
@@ -30,10 +30,9 @@ export interface EffortCapability {
   /**
    * Strip any conflicting raw effort flags from `args`, then inject this
    * provider's native effort form for `effortValue`. Return shape is pinned to
-   * `{ argv, env }` (mirrors `applyContextWindowConfig`): flag-based adapters
+   * `{ argv, env }` (mirrors `applyAutoCompactConfig`): flag-based adapters
    * return `env` unchanged; the env channel exists for the per-model overlay
-   * adopter. `effectiveModel` is the pre-1M model string (see the launch ordering
-   * invariant) and is consulted only when `requiresModelForEffort`.
+   * adopter. `effectiveModel` is consulted only when `requiresModelForEffort`.
    */
   applyEffort(
     args: string[],

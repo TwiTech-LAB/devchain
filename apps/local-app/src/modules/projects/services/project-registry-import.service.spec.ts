@@ -7,7 +7,25 @@ import { StorageService } from '../../storage/interfaces/storage.interface';
 import { ProjectsService } from './projects.service';
 
 const cachedTemplate = {
-  content: { prompts: [], presets: [{ name: 'default', agentConfigs: [] }] },
+  content: {
+    prompts: [
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        title: 'Registry Custom',
+        content: 'custom',
+        version: 1,
+        tags: ['type:custom'],
+      },
+      {
+        id: '22222222-2222-4222-8222-222222222222',
+        title: 'Registry Legacy',
+        content: 'legacy',
+        version: 1,
+        tags: [],
+      },
+    ],
+    presets: [{ name: 'default', agentConfigs: [] }],
+  },
   metadata: {
     slug: 'template-1',
     version: '1.0.0',
@@ -19,12 +37,12 @@ const cachedTemplate = {
 
 function createImportResult() {
   return {
-    dryRun: false,
-    missingProviders: [],
-    unmatchedStatuses: [],
-    templateStatuses: [],
-    counts: { toImport: {}, toDelete: {} },
-    imported: { prompts: 1, profiles: 2, agents: 3, statuses: 4 },
+    success: true,
+    counts: {
+      imported: { prompts: 2, profiles: 2, agents: 3, statuses: 4 },
+      deleted: { prompts: 0 },
+    },
+    promptTransfer: { imported: 2, deleted: 0, preserved: 0, skipped: 0 },
   };
 }
 
@@ -104,7 +122,13 @@ describe('ProjectRegistryImportService', () => {
       'project-1',
       cachedTemplate.content.presets,
     );
-    expect(result.imported).toEqual({ prompts: 1, profiles: 2, agents: 3, statuses: 4 });
+    expect(result.imported).toEqual({ prompts: 2, profiles: 2, agents: 3, statuses: 4 });
+    expect(result.promptTransfer).toEqual({
+      imported: 2,
+      deleted: 0,
+      preserved: 0,
+      skipped: 0,
+    });
   });
 
   it('downloads before import when the template is not already cached', async () => {

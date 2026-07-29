@@ -23,6 +23,7 @@ import { ProvidersModule } from '../providers/providers.module';
 import { RealtimeBroadcastModule } from '../realtime/realtime-broadcast.module';
 import { SessionsReadModule } from './sessions-read.module';
 import { SessionLauncherFacade } from './services/session-launcher-facade.service';
+import { RuntimeContextCaptureModule } from '../runtime-context-capture/runtime-context-capture.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { SessionLauncherFacade } from './services/session-launcher-facade.servic
     HooksModule,
     ProviderAdaptersModule,
     forwardRef(() => ProvidersModule),
+    RuntimeContextCaptureModule,
   ],
   providers: [
     SessionsService,

@@ -1,15 +1,17 @@
 import { z } from 'zod';
+import { MAX_RUNTIME_CONTEXT_WINDOW_TOKENS } from '../../runtime-context-capture/runtime-context-capture.types';
 
 /**
  * Incoming hook event payload from a provider relay script.
  * The relay augments the provider's hook JSON with env-derived fields.
  *
- * `hookEventName` is the discriminator. Four variants are accepted:
+ * `hookEventName` is the discriminator. Five variants are accepted:
  *  - `SessionStart`  — session lifecycle start; requires `source`. Claude + Copilot.
  *  - `Stop`          — agent finished a turn (Copilot `agentStop`); carries
  *                      `transcriptPath` + `stopReason` for downstream metrics.
  *  - `PreToolUse`    — matched to `AskUserQuestion`; carries the pending questions.
  *  - `PostToolUse`   — matched to `AskUserQuestion`; reconciliation (resolved).
+ *  - `StatusLine`     — minimal direct-Claude runtime context report.
  *
  * Each variant is `.strict()`: unknown keys are rejected. The Claude ingestion
  * contract is byte-for-byte backward compatible — `claudeSessionId` is still
@@ -114,17 +116,35 @@ export const PostToolUseHookSchema = z
   })
   .strict();
 
+export const StatusLineHookSchema = z
+  .object({
+    hookEventName: z.literal('StatusLine'),
+    sessionId: z.string().uuid(),
+    epoch: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(/^[A-Za-z0-9._-]+$/),
+    sequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    claudeSessionId: z.string().min(1).max(200),
+    modelId: z.string().min(1).max(200),
+    contextWindowTokens: z.number().int().positive().max(MAX_RUNTIME_CONTEXT_WINDOW_TOKENS),
+  })
+  .strict();
+
 export const HookEventSchema = z.discriminatedUnion('hookEventName', [
   SessionStartHookSchema,
   StopHookSchema,
   PreToolUseHookSchema,
   PostToolUseHookSchema,
+  StatusLineHookSchema,
 ]);
 
 export type SessionStartHookEvent = z.infer<typeof SessionStartHookSchema>;
 export type StopHookEvent = z.infer<typeof StopHookSchema>;
 export type PreToolUseHookEvent = z.infer<typeof PreToolUseHookSchema>;
 export type PostToolUseHookEvent = z.infer<typeof PostToolUseHookSchema>;
+export type StatusLineHookEvent = z.infer<typeof StatusLineHookSchema>;
 export type HookEventData = z.infer<typeof HookEventSchema>;
 
 /**

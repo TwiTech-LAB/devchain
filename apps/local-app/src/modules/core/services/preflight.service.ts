@@ -17,6 +17,11 @@ import { McpProviderRegistrationService } from '../../providers/services/mcp-pro
 import { parseProfileOptions, ProfileOptionsError } from '../../sessions/utils/profile-options';
 import { ProviderAdapterFactory, isMcpCli, isAuthProbeCapable } from '../../providers/adapters';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
+import {
+  CONTEXT_WINDOW_ENV_KEY,
+  parseContextWindowEnv,
+} from '../../runtime-context-capture/context-window-policy';
+import { MAX_RUNTIME_CONTEXT_WINDOW_TOKENS } from '../../runtime-context-capture/runtime-context-capture.types';
 
 const logger = createLogger('PreflightService');
 
@@ -721,6 +726,7 @@ export class PreflightService {
     let providerEnvStatus: 'pass' | 'fail' | 'warn' = 'pass';
     let providerEnvMessage: string | undefined;
     const providerEnvErrors: string[] = [];
+    const providerEnvWarnings: string[] = [];
 
     if (provider.env) {
       for (const [key, value] of Object.entries(provider.env)) {
@@ -735,17 +741,31 @@ export class PreflightService {
             providerEnvErrors.push(`Provider "${provider.name}": invalid env var "${key}"`);
           }
         }
+        if (key === CONTEXT_WINDOW_ENV_KEY) {
+          providerEnvWarnings.push(
+            `${CONTEXT_WINDOW_ENV_KEY} is only read from provider configuration env and will be ignored here.`,
+          );
+        }
       }
     }
 
-    if (providerEnvErrors.length > 0) {
-      providerEnvMessage = `Invalid provider env vars: ${providerEnvErrors.join(' | ')}`;
+    if (providerEnvErrors.length > 0 || providerEnvWarnings.length > 0) {
+      providerEnvStatus = providerEnvErrors.length > 0 ? 'fail' : 'warn';
+      providerEnvMessage = [
+        providerEnvErrors.length > 0
+          ? `Invalid provider env vars: ${providerEnvErrors.join(' | ')}`
+          : undefined,
+        providerEnvWarnings.join(' | ') || undefined,
+      ]
+        .filter(Boolean)
+        .join(' | ');
     }
 
     // Validate configs' env vars
     let configEnvStatus: 'pass' | 'fail' | 'warn' = 'pass';
     let configEnvMessage: string | undefined;
     const envErrors: string[] = [];
+    const envWarnings: string[] = [];
 
     for (const config of configs) {
       if (!config.env) {
@@ -764,11 +784,22 @@ export class PreflightService {
             envErrors.push(`Config ${config.id.slice(0, 8)}: invalid env var`);
           }
         }
+        if (key === CONTEXT_WINDOW_ENV_KEY && parseContextWindowEnv(value).kind === 'invalid') {
+          envWarnings.push(
+            `Config ${config.id.slice(0, 8)}: ${CONTEXT_WINDOW_ENV_KEY} must be a positive integer no greater than ${MAX_RUNTIME_CONTEXT_WINDOW_TOKENS}; it will be ignored at launch.`,
+          );
+        }
       }
     }
 
-    if (envErrors.length > 0) {
-      configEnvMessage = `Invalid env vars: ${envErrors.join(' | ')}`;
+    if (envErrors.length > 0 || envWarnings.length > 0) {
+      configEnvStatus = envErrors.length > 0 ? 'fail' : 'warn';
+      configEnvMessage = [
+        envErrors.length > 0 ? `Invalid env vars: ${envErrors.join(' | ')}` : undefined,
+        envWarnings.join(' | ') || undefined,
+      ]
+        .filter(Boolean)
+        .join(' | ');
     }
 
     // Validate config options

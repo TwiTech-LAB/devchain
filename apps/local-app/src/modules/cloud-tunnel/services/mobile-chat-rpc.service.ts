@@ -7,6 +7,7 @@ import {
   ForbiddenError,
   NotFoundError,
 } from '../../../common/errors/error-types';
+import { getPromptType, PROMPT_TYPE } from '../../../common/prompt-type';
 import { ActiveSessionLookup } from '../../sessions/services/active-session-lookup.service';
 import { SessionLifecycleFacade } from '../../sessions/services/session-lifecycle-facade.service';
 import type { SessionDto, SessionHistoryResponseDto } from '../../sessions/dtos/sessions.dto';
@@ -128,6 +129,17 @@ export interface SendMessageResult {
   messageId?: string;
   /** Echoed idempotency key when the caller supplied one, so mobile can correlate. */
   clientMessageId?: string;
+}
+
+/** Read-only list item returned by `chat.listCustomPrompts`. */
+export interface MobileCustomPromptSummary {
+  id: string;
+  title: string;
+}
+
+/** Selection-time detail returned by `chat.getCustomPrompt`. */
+export interface MobileCustomPromptDetail extends MobileCustomPromptSummary {
+  content: string;
 }
 
 /** Immediate result of an async lifecycle RPC — the client polls getOperationStatus next. */
@@ -485,6 +497,54 @@ export class MobileChatRpcService {
     const sessionId = params['sessionId'] as string;
     await this.assertSessionInProject(sessionId, params['projectId'] as string);
     return this.sessionReader.getTranscriptTail(sessionId, params['since'] as string);
+  }
+
+  async listCustomPrompts(params: Record<string, unknown>): Promise<MobileCustomPromptSummary[]> {
+    const sessionId = params['sessionId'] as string;
+    const projectId = params['projectId'] as string;
+    await this.assertSessionInProject(sessionId, projectId);
+
+    const prompts = await this.storage.listPrompts({
+      projectId,
+      limit: 10000,
+      offset: 0,
+    });
+    if (prompts.total > prompts.items.length) {
+      throw new AppError(
+        'Custom prompt list exceeds the supported mobile limit',
+        'CUSTOM_PROMPT_LIST_TRUNCATED',
+        409,
+        {
+          total: prompts.total,
+          returned: prompts.items.length,
+        },
+      );
+    }
+
+    return prompts.items
+      .filter(
+        (prompt) =>
+          prompt.projectId === projectId &&
+          getPromptType(prompt.tags ?? [], PROMPT_TYPE.System) === PROMPT_TYPE.Custom,
+      )
+      .map(({ id, title }) => ({ id, title }));
+  }
+
+  async getCustomPrompt(params: Record<string, unknown>): Promise<MobileCustomPromptDetail> {
+    const sessionId = params['sessionId'] as string;
+    const projectId = params['projectId'] as string;
+    const promptId = params['promptId'] as string;
+    await this.assertSessionInProject(sessionId, projectId);
+
+    const prompt = await this.storage.getPrompt(promptId);
+    if (
+      prompt.projectId !== projectId ||
+      getPromptType(prompt.tags ?? [], PROMPT_TYPE.System) !== PROMPT_TYPE.Custom
+    ) {
+      throw new NotFoundError('Custom prompt', promptId);
+    }
+
+    return { id: prompt.id, title: prompt.title, content: prompt.content };
   }
 
   /**

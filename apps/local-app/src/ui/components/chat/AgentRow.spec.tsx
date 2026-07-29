@@ -117,8 +117,16 @@ describe('AgentRow', () => {
     expect(screen.getByLabelText(/Chat with Alpha \(online\)/i)).toBeInTheDocument();
     expect(screen.getByText('Busy 10s')).toBeInTheDocument();
     const providerIconFrame = screen.getByTitle('Provider: Claude (online)');
-    expect(providerIconFrame).toHaveClass('h-6', 'w-6', 'bg-muted/40', 'border-border');
+    expect(providerIconFrame).toHaveClass(
+      'h-6',
+      'w-6',
+      'bg-primary/10',
+      'border-primary/60',
+      'shadow-[0_0_8px_hsl(var(--primary)/0.35)]',
+      'animate-busy-halo',
+    );
     expect(providerIconFrame.querySelector('img')).toHaveClass('h-4', 'w-4');
+    expect(providerIconFrame.querySelector('img')).not.toHaveClass('animate-spin');
     expect(providerIconFrame.querySelector('img')).not.toHaveClass('grayscale');
     expect(screen.getByText('Alpha')).toHaveClass('truncate', 'text-foreground');
     expect(screen.getByText('Sonnet')).toHaveClass('text-muted-foreground');
@@ -138,8 +146,24 @@ describe('AgentRow', () => {
     expect(screen.getByLabelText(/Chat with Alpha \(offline\)/i)).toBeInTheDocument();
     const providerIconFrame = screen.getByTitle('Provider: Claude (offline)');
     expect(providerIconFrame).toHaveClass('bg-muted/20', 'border-border/60');
+    expect(providerIconFrame).not.toHaveClass('shadow-[0_0_8px_hsl(var(--primary)/0.35)]');
     expect(providerIconFrame.querySelector('img')).toHaveClass('grayscale', 'opacity-50');
+    expect(providerIconFrame.querySelector('img')).not.toHaveClass('animate-spin');
     expect(screen.queryByText('Reviewing code')).not.toBeInTheDocument();
+  });
+
+  it('keeps the provider icon still while the online agent is idle', () => {
+    renderAgentRow({
+      activityState: 'idle',
+      currentActivityTitle: null,
+      activityBadge: undefined,
+    });
+
+    const providerIconFrame = screen.getByTitle('Provider: Claude (online)');
+    expect(providerIconFrame).toHaveClass('bg-muted/40', 'border-border');
+    expect(providerIconFrame).not.toHaveClass('shadow-[0_0_8px_hsl(var(--primary)/0.35)]');
+    expect(providerIconFrame).not.toHaveClass('animate-busy-halo');
+    expect(providerIconFrame.querySelector('img')).not.toHaveClass('animate-spin');
   });
 
   it('Copilot provider icon is decorative (alt="" + aria-hidden) — the adjacent agent name is the accessible label', () => {
