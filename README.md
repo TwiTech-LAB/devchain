@@ -3,10 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/twitech-lab/devchain/releases"><img src="https://img.shields.io/github/v/release/twitech-lab/devchain?style=flat-square&color=6366f1" alt="Latest release"></a>
-  <a href="https://www.npmjs.com/package/devchain-cli"><img src="https://img.shields.io/npm/v/devchain-cli?style=flat-square&color=8b5cf6" alt="npm version"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Elastic--2.0-blue?style=flat-square" alt="License: Elastic 2.0"></a>
-  <a href="https://devchain.cc"><img src="https://img.shields.io/badge/docs-devchain.cc-6366f1?style=flat-square" alt="Documentation"></a>
+  <a href="https://github.com/twitech-lab/devchain/releases"><img src="https://img.shields.io/github/v/release/twitech-lab/devchain?style=flat-square&color=6366f1" alt="Latest release"></a> <a href="https://www.npmjs.com/package/devchain-cli"><img src="https://img.shields.io/npm/v/devchain-cli?style=flat-square&color=8b5cf6" alt="npm version"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/license-Elastic--2.0-blue?style=flat-square" alt="License: Elastic 2.0"></a> <a href="https://devchain.cc"><img src="https://img.shields.io/badge/docs-devchain.cc-6366f1?style=flat-square" alt="Documentation"></a>
 </p>
 
 <p align="center">
