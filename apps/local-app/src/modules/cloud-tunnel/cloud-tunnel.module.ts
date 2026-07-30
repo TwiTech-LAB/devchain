@@ -31,7 +31,7 @@ import { ViewportFrameSink } from './services/viewport-frame-sink';
   // Mobile chat composes domain services through the *narrowest* facade modules
   // only — never HTTP controllers and never ChatModule (thread-free by design).
   // This makes CloudTunnelModule a leaf/transitive consumer of the allowlisted
-  // Sessions↔Terminal SCC; see docs/cycle-allowlist.md.
+  // Sessions↔Terminal SCC; see apps/local-app/scripts/cycle-allowlist.json.
   //   - SessionsReadModule        → ActiveSessionLookup (presence + ownership)
   //   - SessionReaderModule       → SessionReaderService (transcripts)
   //   - SessionsLifecycleModule   → SessionLifecycleFacade (launch/restart/restore/terminate)
@@ -60,7 +60,8 @@ import { ViewportFrameSink } from './services/viewport-frame-sink';
     HooksModule,
     // NARROW viewport facade (TerminalViewportFacade only) for the live tmux viewport
     // streamer. Imported instead of TerminalModule wholesale so CloudTunnel stays a
-    // leaf/transitive consumer of the Sessions↔Terminal SCC (docs/cycle-allowlist.md).
+    // leaf/transitive consumer of the Sessions↔Terminal SCC
+    // (apps/local-app/scripts/cycle-allowlist.json).
     TerminalViewportModule,
     // NARROW key-input facade (TerminalKeyInputFacade only) for discrete mobile key presses
     // (terminal.sendKey). Same leaf-consumer rationale as TerminalViewportModule above;

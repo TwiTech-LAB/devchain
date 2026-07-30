@@ -29,6 +29,21 @@ describe('MetricsService aggregate and event-loop contracts', () => {
     return { module, service: module.get(MetricsService) };
   }
 
+  async function waitForEventLoopSample(service: MetricsService) {
+    const maxAttempts = 50;
+    const pollIntervalMs = 20;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+      const sample = service.getMetrics().process.eventLoopDelay;
+      if (sample !== null) return sample;
+    }
+
+    throw new Error(
+      `event-loop histogram did not produce a sample after ${maxAttempts} polling attempts`,
+    );
+  }
+
   it('instantiates through Nest DI and aggregates registered cache providers', async () => {
     const { module, service } = await createModule();
     service.registerCacheStatsProvider('parsed', () => ({
@@ -155,15 +170,15 @@ describe('MetricsService aggregate and event-loop contracts', () => {
   it('returns finite millisecond values after lifecycle sampling', async () => {
     const { module, service } = await createModule();
     await module.init();
-    await new Promise((resolve) => setTimeout(resolve, 50));
 
-    const eventLoopDelay = service.getMetrics().process.eventLoopDelay;
-
-    expect(eventLoopDelay).not.toBeNull();
-    for (const value of Object.values(eventLoopDelay ?? {})) {
-      expect(Number.isFinite(value)).toBe(true);
+    try {
+      const eventLoopDelay = await waitForEventLoopSample(service);
+      for (const value of Object.values(eventLoopDelay)) {
+        expect(Number.isFinite(value)).toBe(true);
+      }
+    } finally {
+      await module.close();
     }
-    await module.close();
   });
 
   it('registers generic stat providers on a real service instance', async () => {

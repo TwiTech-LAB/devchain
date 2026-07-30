@@ -40,7 +40,7 @@ Model families such as GLM are available through per-provider configs, and you c
 
 ## Quick start
 
-Requirements: **Node.js ≥ 20**, **tmux** (`brew install tmux` / `sudo apt install tmux`), and at least one provider CLI from the table above.
+Requirements: **Node.js 24 LTS or newer**, **tmux** (`brew install tmux` / `sudo apt install tmux`), and at least one provider CLI from the table above.
 
 ```bash
 npm install -g devchain-cli
@@ -48,6 +48,12 @@ devchain start
 ```
 
 The browser opens automatically. Create a project, import a template, and start the Brainstormer session with a description of what you want to build. Run `devchain start --help` for ports, host binding, and foreground mode; `devchain stop` shuts the server down.
+
+### Native installation
+
+`better-sqlite3` v13 ships bundled Node-API artifacts, so mainstream supported installations do not need a C/C++ compiler for SQLite. DevChain's postinstall check opens an in-memory database, executes a query, and closes it; an unusable artifact now fails installation instead of only printing a diagnostic. Set `DEVCHAIN_SKIP_POSTINSTALL=1` only when intentionally bypassing that verification.
+
+CI executes the application and SQLite checks on Linux x64 with Node 24, plus a focused Node 26 compatibility lane. Published binaries or image manifests for other platform/architecture combinations prove artifact presence only; they are not runtime-execution evidence for macOS, Windows, or arm64.
 
 | Template | Agents | Best for |
 |----------|--------|----------|

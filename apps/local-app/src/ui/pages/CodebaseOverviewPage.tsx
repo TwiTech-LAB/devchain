@@ -17,7 +17,10 @@ import {
   AlertTriangle,
   Settings2,
 } from 'lucide-react';
-import type { CodebaseOverviewSnapshot, TargetDetail } from '@devchain/codebase-overview';
+import type {
+  CodebaseOverviewSnapshot,
+  TargetDetail,
+} from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { useSelectedProject } from '../hooks/useProjectSelection';
 import { useProjectActivityReporter } from '../hooks/useProjectActivityReporter';
 import { useSubNavSearchParam } from '../hooks/useSubNavSearchParam';

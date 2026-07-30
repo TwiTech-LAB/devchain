@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Users, ChevronRight, HelpCircle } from 'lucide-react';
-import type { CodebaseOverviewSnapshot } from '@devchain/codebase-overview';
+import type { CodebaseOverviewSnapshot } from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/ui/components/ui/card';
 import { Badge } from '@/ui/components/ui/badge';
 import {

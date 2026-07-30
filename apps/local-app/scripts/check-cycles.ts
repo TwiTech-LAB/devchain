@@ -2,7 +2,7 @@
  * Cycle detector — CI guard for module-graph health.
  *
  * Mechanism: madge --circular + classified allowlist comparison.
- * Allowlist: docs/cycle-allowlist.md
+ * Allowlist: apps/local-app/scripts/cycle-allowlist.json
  *
  * Exit codes:
  *   0 = all cycles allowlisted, no stale entries
@@ -11,16 +11,17 @@
 
 import { execSync } from 'child_process';
 import { readFileSync } from 'fs';
-import { resolve, relative } from 'path';
+import { resolve } from 'path';
 
 const ROOT = resolve(__dirname, '..');
-const REPO_ROOT = resolve(ROOT, '../..');
-const ALLOWLIST_PATH = resolve(REPO_ROOT, 'docs/cycle-allowlist.md');
+const ALLOWLIST_PATH = resolve(__dirname, 'cycle-allowlist.json');
+const ALLOWLIST_DISPLAY_PATH = 'apps/local-app/scripts/cycle-allowlist.json';
 const MODULES_DIR = resolve(ROOT, 'src/modules');
 const TSCONFIG = resolve(ROOT, 'tsconfig.json');
 
 function runMadge(): string[][] {
-  const madgeBin = resolve(ROOT, 'node_modules/.bin/madge');
+  // Revalidate this package subpath when upgrading Madge.
+  const madgeBin = require.resolve('madge/bin/cli.js');
   const cmd = `"${madgeBin}" --circular --json --extensions ts --exclude '.*\\.spec\\.ts$' --ts-config "${TSCONFIG}" "${MODULES_DIR}"`;
   try {
     const result = execSync(cmd, { encoding: 'utf-8', cwd: ROOT, maxBuffer: 10 * 1024 * 1024 });
@@ -39,79 +40,106 @@ function runMadge(): string[][] {
 }
 
 function normalizeCyclePath(cycle: string[]): string {
-  return cycle
-    .map((f) => f.replace(/^src\/modules\//, ''))
-    .join(' > ');
+  return cycle.map((f) => f.replace(/^src\/modules\//, '')).join(' > ');
 }
+
+type AllowlistKind = 'file-structure' | 'nest-module-structural';
 
 type AllowlistEntry = {
   path: string;
-  kind: string;
+  kind: AllowlistKind;
+  rationale: string;
+  expiry: string;
 };
 
+const REQUIRED_FIELDS = ['path', 'kind', 'rationale', 'expiry'] as const;
 const VALID_KINDS = new Set(['file-structure', 'nest-module-structural']);
 
 function parseAllowlist(): AllowlistEntry[] {
-  const content = readFileSync(ALLOWLIST_PATH, 'utf-8');
-  const entries: AllowlistEntry[] = [];
-
-  const yamlBlocks = content.match(/```yaml\n([\s\S]*?)```/g);
-  if (!yamlBlocks) return entries;
-
-  for (const block of yamlBlocks) {
-    const lines = block.split('\n');
-    let currentPath: string | null = null;
-    let currentKind: string | null = null;
-
-    for (const line of lines) {
-      const pathMatch = line.match(/^\s*-?\s*path:\s*"(.+)"$/);
-      if (pathMatch) {
-        if (currentPath) {
-          entries.push({ path: currentPath, kind: currentKind ?? '' });
-        }
-        currentPath = pathMatch[1];
-        currentKind = null;
-        continue;
-      }
-
-      const kindMatch = line.match(/^\s*kind:\s*([A-Za-z0-9_-]+)\s*$/);
-      if (kindMatch && currentPath) {
-        currentKind = kindMatch[1];
-      }
-    }
-
-    if (currentPath) {
-      entries.push({ path: currentPath, kind: currentKind ?? '' });
-    }
+  let content: string;
+  try {
+    content = readFileSync(ALLOWLIST_PATH, 'utf-8');
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`${ALLOWLIST_DISPLAY_PATH}: unable to read cycle policy (${detail})`);
   }
 
-  return entries;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`${ALLOWLIST_DISPLAY_PATH}: invalid JSON (${detail})`);
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new Error(`${ALLOWLIST_DISPLAY_PATH}: expected the top-level value to be an array`);
+  }
+  if (parsed.length === 0) {
+    throw new Error(`${ALLOWLIST_DISPLAY_PATH}: expected at least one policy entry`);
+  }
+
+  const firstIndexByPath = new Map<string, number>();
+
+  return parsed.map((candidate, index) => {
+    const entryPath = `$[${index}]`;
+    if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      throw new Error(`${ALLOWLIST_DISPLAY_PATH}: ${entryPath} must be an object`);
+    }
+
+    const entry = candidate as Record<string, unknown>;
+    for (const field of REQUIRED_FIELDS) {
+      if (typeof entry[field] !== 'string' || entry[field].trim() === '') {
+        throw new Error(
+          `${ALLOWLIST_DISPLAY_PATH}: ${entryPath}.${field} must be a non-empty string`,
+        );
+      }
+    }
+
+    if (!VALID_KINDS.has(entry.kind as string)) {
+      throw new Error(
+        `${ALLOWLIST_DISPLAY_PATH}: ${entryPath}.kind must be one of ${[...VALID_KINDS].join(
+          ', ',
+        )}`,
+      );
+    }
+
+    const path = entry.path as string;
+    const firstIndex = firstIndexByPath.get(path);
+    if (firstIndex !== undefined) {
+      throw new Error(
+        `${ALLOWLIST_DISPLAY_PATH}: ${entryPath}.path duplicates $[${firstIndex}].path (${JSON.stringify(path)})`,
+      );
+    }
+    firstIndexByPath.set(path, index);
+
+    return {
+      path,
+      kind: entry.kind as AllowlistKind,
+      rationale: entry.rationale as string,
+      expiry: entry.expiry as string,
+    };
+  });
 }
 
 function main(): void {
   console.log('🔍 Running cycle detector (madge --circular)...\n');
 
+  let allowlistEntries: AllowlistEntry[];
+  try {
+    allowlistEntries = parseAllowlist();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(`❌ INVALID CYCLE POLICY: ${detail}`);
+    process.exit(1);
+  }
+
   const cycles = runMadge();
   const normalizedCycles = cycles.map(normalizeCyclePath);
-  const allowlistEntries = parseAllowlist();
   const allowedPaths = allowlistEntries.map((entry) => entry.path);
 
   console.log(`  Detected: ${cycles.length} circular dependencies`);
   console.log(`  Allowlisted: ${allowlistEntries.length} entries\n`);
-
-  const invalidKindEntries = allowlistEntries.filter((entry) => !VALID_KINDS.has(entry.kind));
-  if (invalidKindEntries.length > 0) {
-    console.log('❌ INVALID ALLOWLIST KINDS:\n');
-    for (const entry of invalidKindEntries) {
-      const shownKind = entry.kind.length > 0 ? entry.kind : '<missing>';
-      console.log(`   ${entry.path} (kind: ${shownKind})`);
-    }
-    console.log('');
-    console.log(
-      `   → Allowed kinds are: ${Array.from(VALID_KINDS).join(', ')}. Update docs/cycle-allowlist.md.\n`,
-    );
-    process.exit(1);
-  }
 
   const hitAllowlist = new Set<string>();
   const newCycles: string[] = [];
@@ -135,7 +163,9 @@ function main(): void {
       console.log(`   ${c}`);
     }
     console.log('');
-    console.log('   → Fix the cycle OR add to docs/cycle-allowlist.md with architect approval.\n');
+    console.log(
+      `   → Fix the cycle OR add to ${ALLOWLIST_DISPLAY_PATH} with architect approval.\n`,
+    );
   }
 
   if (stalePaths.length > 0) {
@@ -145,7 +175,7 @@ function main(): void {
       console.log(`   ${s}`);
     }
     console.log('');
-    console.log('   → Remove stale entries from docs/cycle-allowlist.md.\n');
+    console.log(`   → Remove stale entries from ${ALLOWLIST_DISPLAY_PATH}.\n`);
   }
 
   if (!failed) {

@@ -10,10 +10,10 @@ describe.each(TEMPLATE_NAMES)('%s provider settings', (templateName) => {
     return JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
   };
 
-  it('exports only the surviving Claude provider settings', () => {
+  it('exports only the intentional bundled Claude provider settings', () => {
     const parsed = ExportSchema.parse(loadTemplate());
 
-    expect(parsed.providerSettings).toEqual([{ name: 'claude', autoCompactThreshold: 95 }]);
+    expect(parsed.providerSettings).toEqual([{ name: 'claude', autoCompactThreshold: 50 }]);
   });
 
   it('preserves the GLM config boundary exactly', () => {

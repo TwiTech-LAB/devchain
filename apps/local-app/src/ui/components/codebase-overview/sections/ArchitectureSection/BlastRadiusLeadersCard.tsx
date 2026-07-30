@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { Zap, HelpCircle } from 'lucide-react';
-import type { DistrictSignals } from '@devchain/codebase-overview';
+import type { DistrictSignals } from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/ui/components/ui/card';
 import { Badge } from '@/ui/components/ui/badge';
 import {

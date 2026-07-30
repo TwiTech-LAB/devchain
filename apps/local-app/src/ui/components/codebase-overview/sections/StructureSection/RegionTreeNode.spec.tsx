@@ -1,6 +1,9 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { RegionNode, DistrictSignals } from '@devchain/codebase-overview';
+import type {
+  RegionNode,
+  DistrictSignals,
+} from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { RegionTreeNode } from './RegionTreeNode';
 
 function makeRegion(overrides: Partial<RegionNode> = {}): RegionNode {

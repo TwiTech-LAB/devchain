@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import type { DistrictNode } from '@devchain/codebase-overview';
+import type { DistrictNode } from '../types/overview.types';
 import { DistrictSplittingService, classifyFileRole } from './district-splitting.service';
 
 function makeDistrict(

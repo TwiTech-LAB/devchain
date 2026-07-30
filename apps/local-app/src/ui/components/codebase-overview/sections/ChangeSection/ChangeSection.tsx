@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { TrendingUp } from 'lucide-react';
-import type { CodebaseOverviewSnapshot } from '@devchain/codebase-overview';
+import type { CodebaseOverviewSnapshot } from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { EmptyState } from '../../primitives';
 import { AcceleratingCallout } from './AcceleratingCallout';
 import { GoneQuietCallout } from './GoneQuietCallout';

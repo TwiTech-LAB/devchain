@@ -1,6 +1,9 @@
 import { useMemo } from 'react';
 import { AlertTriangle, HelpCircle } from 'lucide-react';
-import type { DistrictSignals, DependencyEdge } from '@devchain/codebase-overview';
+import type {
+  DistrictSignals,
+  DependencyEdge,
+} from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/ui/components/ui/card';
 import { Badge } from '@/ui/components/ui/badge';
 import {

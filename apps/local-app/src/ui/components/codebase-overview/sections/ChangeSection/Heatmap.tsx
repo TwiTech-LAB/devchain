@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity } from 'lucide-react';
-import type { CodebaseOverviewSnapshot } from '@devchain/codebase-overview';
+import type { CodebaseOverviewSnapshot } from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { cn } from '@/ui/lib/utils';
 import { HeatmapCell, EmptyState } from '../../primitives';
 

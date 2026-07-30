@@ -4,7 +4,7 @@ import type {
   CodebaseOverviewSnapshot,
   DistrictSignals,
   RegionNode,
-} from '@devchain/codebase-overview';
+} from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { StructureSection } from './StructureSection';
 
 function makeSignal(overrides: Partial<DistrictSignals> & { districtId: string }): DistrictSignals {

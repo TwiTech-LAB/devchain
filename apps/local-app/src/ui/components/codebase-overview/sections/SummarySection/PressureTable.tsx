@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { ChevronUp, ChevronDown, Search, X } from 'lucide-react';
-import type { DistrictSignals } from '@devchain/codebase-overview';
+import type { DistrictSignals } from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { cn } from '@/ui/lib/utils';
 import { Input } from '@/ui/components/ui/input';
 import { Button } from '@/ui/components/ui/button';

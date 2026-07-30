@@ -17,7 +17,7 @@ import type {
   DistrictFilePage,
   CommitSummary,
   AuthorShare,
-} from '@devchain/codebase-overview';
+} from '../types/overview.types';
 import { createLogger } from '../../../common/logging/logger';
 import {
   IdentityResolverService,

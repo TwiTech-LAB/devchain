@@ -1,13 +1,11 @@
 /*
   Postinstall verifier for native deps.
   - Restores bundled node-pty prebuilds if available.
-  - Verifies better-sqlite3 can load.
-  - If not, attempts a rebuild.
-  - Provides actionable errors without failing install unless absolutely necessary.
+  - Verifies the bundled better-sqlite3 artifact can open, query, and close.
+  - Fails installation when better-sqlite3 is unusable.
 */
 
 /* eslint-disable no-console */
-const { spawnSync } = require('child_process');
 const { dirname, join } = require('path');
 const { existsSync, cpSync, mkdirSync } = require('fs');
 
@@ -57,18 +55,29 @@ function restoreNodePtyPrebuilds() {
 }
 
 function tryLoad() {
+  let db;
   try {
     const Database = require('better-sqlite3');
-    const db = new Database(':memory:');
+    db = new Database(':memory:');
     db.prepare('select 1').get();
+    db.close();
+    db = undefined;
     return true;
   } catch (e) {
     console.warn('[devchain] better-sqlite3 failed to load:', String(e && e.message || e));
     return false;
+  } finally {
+    if (db) {
+      try {
+        db.close();
+      } catch {
+        // The original load/query/close error is the actionable failure.
+      }
+    }
   }
 }
 
-async function main() {
+function main() {
   if (process.env.DEVCHAIN_SKIP_POSTINSTALL) {
     console.log('[devchain] Skipping postinstall per DEVCHAIN_SKIP_POSTINSTALL');
     return;
@@ -78,51 +87,14 @@ async function main() {
   restoreNodePtyPrebuilds();
 
   if (tryLoad()) {
-    console.log('[devchain] better-sqlite3 prebuild present.');
+    console.log('[devchain] better-sqlite3 bundled artifact verified.');
     return;
   }
 
-  // Prefer fetching upstream prebuilds for better-sqlite3
-  try {
-    const prebuildInstallBin = require.resolve('prebuild-install/bin.js');
-    const betterPkg = require.resolve('better-sqlite3/package.json');
-    const betterDir = dirname(betterPkg);
-    console.log('[devchain] Attempting to fetch better-sqlite3 prebuilds via prebuild-install...');
-    const pr = spawnSync(process.execPath, [prebuildInstallBin], {
-      stdio: 'inherit',
-      cwd: betterDir,
-    });
-    if (pr.status === 0 && tryLoad()) {
-      console.log('[devchain] better-sqlite3 prebuild installed.');
-      return;
-    }
-  } catch (e) {
-    console.warn('[devchain] prebuild-install not available or failed:', String(e && e.message || e));
-  }
-
-  console.log('[devchain] Attempting `npm rebuild better-sqlite3` to compile native binary...');
-  const res = spawnSync(process.env.npm_execpath || 'npm', ['rebuild', 'better-sqlite3'], {
-    stdio: 'inherit',
-    shell: process.platform === 'win32',
-  });
-
-  if (res.status !== 0) {
-    console.warn('[devchain] Rebuild failed. You may need build tools (python3, make, C/C++ toolchain).');
-  }
-
-  if (!tryLoad()) {
-    const supported = (process.platform === 'linux' || process.platform === 'darwin') &&
-      (process.arch === 'x64' || process.arch === 'arm64');
-    console.error('[devchain] better-sqlite3 is not available. Devchain may not run without it.');
-    if (!supported) {
-      console.error(`[devchain] Unsupported platform/arch for prebuilds: ${process.platform}-${process.arch}.`);
-      console.error('Please use a supported platform (linux/darwin x64/arm64) or install build tools to compile from source.');
-    } else {
-      console.error('If you lack compilers, ensure your platform is supported by better-sqlite3 prebuilds or install build tools.');
-    }
-  }
+  console.error(
+    `[devchain] better-sqlite3's bundled artifact is unavailable for ${process.platform}-${process.arch}.`,
+  );
+  process.exitCode = 1;
 }
 
-main().catch((e) => {
-  console.error('[devchain] postinstall error:', e);
-});
+main();

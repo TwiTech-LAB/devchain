@@ -315,7 +315,7 @@
     "access": "public"
   },
   "engines": {
-    "node": ">=20.0.0",
+    "node": ">=24.0.0",
     "pnpm": ">=8.0.0"
   },
   "scripts": {
@@ -324,7 +324,7 @@
     "dev": "pnpm --filter shared build && node scripts/cli.js start --dev",
     "dev:pure": "pnpm --filter local-app dev",
     "dev:ui": "pnpm --filter local-app dev:ui",
-    "build": "pnpm --filter shared build && pnpm --filter @devchain/codebase-overview build && pnpm --filter local-app build && node scripts/copy-local-app-dist.js && node scripts/copy-cli.js && node scripts/copy-prebuilds.js",
+    "build": "pnpm --filter shared build && pnpm --filter local-app build && node scripts/copy-local-app-dist.js && node scripts/copy-cli.js && node scripts/copy-prebuilds.js",
     "build:fast": "pnpm --filter local-app build",
     "prepack": "npm run build",
     "postinstall": "node scripts/postinstall.js",
@@ -391,14 +391,13 @@
     "@xterm/addon-fit": "0.11.0",
     "@xterm/xterm": "6.0.0",
     "ansi-to-html": "0.7.2",
-    "better-sqlite3": "11.5.0",
+    "better-sqlite3": "13.0.2",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "commander": "^12.1.0",
     "croner": "10.0.1",
-    "devchain-cli": "0.4.1",
     "dockerode": "4.0.9",
     "dompurify": "3.3.1",
     "dotenv": "^16.4.5",
@@ -416,7 +415,6 @@
     "pino": "^8.19.0",
     "pino-http": "^9.0.0",
     "pino-pretty": "^11.0.0",
-    "prebuild-install": "^7.1.1",
     "qrcode.react": "4.2.0",
     "react": "^18.2.0",
     "react-diff-view": "3.3.2",

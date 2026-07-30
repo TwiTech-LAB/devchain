@@ -1,5 +1,5 @@
 import { Users } from 'lucide-react';
-import type { CodebaseOverviewSnapshot } from '@devchain/codebase-overview';
+import type { CodebaseOverviewSnapshot } from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { EmptyState } from '../../primitives';
 import { BusFactorCard } from './BusFactorCard';
 import { LoneAuthorCard } from './LoneAuthorCard';

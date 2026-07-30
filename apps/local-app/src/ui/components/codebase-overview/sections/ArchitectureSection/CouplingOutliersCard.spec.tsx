@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { DistrictSignals } from '@devchain/codebase-overview';
+import type { DistrictSignals } from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { CouplingOutliersCard } from './CouplingOutliersCard';
 
 function makeSignal(overrides: Partial<DistrictSignals> & { districtId: string }): DistrictSignals {

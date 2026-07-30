@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { DependencyAggregationService, type FileEdge } from './dependency-aggregation.service';
-import type { DistrictNode } from '@devchain/codebase-overview';
+import type { DistrictNode } from '../types/overview.types';
 
 function makeDistrict(
   overrides: Partial<DistrictNode> & { id: string; name: string },

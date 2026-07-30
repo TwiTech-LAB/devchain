@@ -50,7 +50,7 @@ describe('OrchestratorDockerService integration', () => {
     try {
       const info = await service.createContainer({
         name: containerName,
-        image: process.env.ORCHESTRATOR_DOCKER_TEST_IMAGE ?? 'node:20-alpine',
+        image: process.env.ORCHESTRATOR_DOCKER_TEST_IMAGE ?? 'node:24-alpine',
         worktreePath,
         dataPath,
         command: [
@@ -101,7 +101,7 @@ describe('OrchestratorDockerService integration', () => {
     const worktreeContainerName = `devchain-wt-${worktreeName}`;
     const composeNetworkName = `${worktreeName}_default`;
     const serviceContainerName = `${worktreeName}-postgres-1`;
-    const testImage = process.env.ORCHESTRATOR_DOCKER_TEST_IMAGE ?? 'node:20-alpine';
+    const testImage = process.env.ORCHESTRATOR_DOCKER_TEST_IMAGE ?? 'node:24-alpine';
 
     let worktreeContainerId: string | null = null;
     let serviceContainerId: string | null = null;

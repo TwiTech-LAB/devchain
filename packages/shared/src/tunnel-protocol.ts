@@ -1,11 +1,13 @@
 // Tunnel wire protocol — single source of truth shared between the local-app
 // (tunnel client) and the devchain-bridge (tunnel server).
 //
-// The bridge is compiled to CommonJS and supports Node >=20, where `require()` of
-// an ESM-only package throws. This module is therefore consumed by the bridge as
-// **types only** (`import type … from '@devchain/shared'`, fully erased at emit),
-// while the local-app and this package's own tests use the runtime guards/consts.
-// Keeping the *shape* defined exactly once here prevents the two sides from drifting.
+// The bridge is compiled to CommonJS. On the former Node <22.12 floor it could not
+// rely on synchronously `require()`-ing an ESM-only package, so a runtime import was
+// unsafe; the supported Node >=24 floor no longer has that compatibility constraint.
+// The bridge still consumes this module as **types only** (`import type … from
+// '@devchain/shared'`, fully erased at emit), while the local-app and this package's
+// tests use the runtime guards/consts. Keeping the *shape* defined exactly once here
+// prevents the two sides from drifting.
 
 // Type-only import (fully erased at emit) so this module carries NO runtime cross-file `.js`
 // specifier — the bridge's ts-jest compiles tunnel-protocol.ts directly and does not rewrite

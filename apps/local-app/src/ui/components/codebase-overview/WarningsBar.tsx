@@ -1,4 +1,7 @@
-import type { AnalysisWarning, AnalysisWarningCode } from '@devchain/codebase-overview';
+import type {
+  AnalysisWarning,
+  AnalysisWarningCode,
+} from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { HelpCircle } from 'lucide-react';
 import { Alert, AlertDescription } from '../ui/alert';
 import { Badge } from '../ui/badge';

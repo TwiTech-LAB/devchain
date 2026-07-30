@@ -4,7 +4,7 @@ import type {
   CodebaseOverviewSnapshot,
   DistrictSignals,
   DependencyEdge,
-} from '@devchain/codebase-overview';
+} from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { TestabilitySection } from './TestabilitySection';
 
 // ---------------------------------------------------------------------------

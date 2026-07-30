@@ -233,45 +233,47 @@ export class TaskMergeService {
   ): Promise<void> {
     type InsertTarget = Pick<OrchestratorDatabase, 'insert'>;
 
-    const persist = async (targetDb: InsertTarget): Promise<void> => {
+    const persist = (targetDb: InsertTarget): void => {
       if (mergedEpicRows.length > 0) {
-        await targetDb
+        targetDb
           .insert(mergedEpics)
           .values(mergedEpicRows)
           .onConflictDoNothing({
             target: [mergedEpics.worktreeId, mergedEpics.devchainEpicId],
-          });
+          })
+          .run();
       }
 
       if (mergedAgentRows.length > 0) {
-        await targetDb
+        targetDb
           .insert(mergedAgents)
           .values(mergedAgentRows)
           .onConflictDoNothing({
             target: [mergedAgents.worktreeId, mergedAgents.devchainAgentId],
-          });
+          })
+          .run();
       }
     };
 
     const rawSqlite = this.resolveRawSqliteClientForOrchestratorDb();
     if (!rawSqlite) {
       const dbWithTransaction = this.db as unknown as {
-        transaction?: <T>(callback: (tx: unknown) => Promise<T>) => Promise<T>;
+        transaction?: <T>(callback: (tx: unknown) => T) => T;
       };
       if (typeof dbWithTransaction.transaction === 'function') {
-        await dbWithTransaction.transaction(async (tx) => {
-          await persist(tx as InsertTarget);
+        dbWithTransaction.transaction((tx) => {
+          persist(tx as InsertTarget);
         });
         return;
       }
-      await persist(this.db as InsertTarget);
+      persist(this.db as InsertTarget);
       return;
     }
 
-    await this.runWithSqliteMergeLock(async () => {
+    await this.runWithSqliteMergeLock(() => {
       rawSqlite.exec('BEGIN IMMEDIATE TRANSACTION');
       try {
-        await persist(this.db as InsertTarget);
+        persist(this.db as InsertTarget);
         rawSqlite.exec('COMMIT');
       } catch (error) {
         try {
@@ -908,7 +910,7 @@ export class TaskMergeService {
     }
   }
 
-  private async runWithSqliteMergeLock<T>(fn: () => Promise<T>): Promise<T> {
+  private async runWithSqliteMergeLock<T>(fn: () => T | Promise<T>): Promise<T> {
     const previous = this.sqliteMergeImportQueue;
     let release!: () => void;
     this.sqliteMergeImportQueue = new Promise<void>((resolve) => {

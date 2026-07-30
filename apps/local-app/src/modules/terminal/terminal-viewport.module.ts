@@ -10,7 +10,8 @@ import { TerminalViewportFacade } from './services/terminal-viewport/terminal-vi
  *
  * `CloudTunnelModule` imports THIS module — not `TerminalModule` wholesale — so it stays a
  * leaf/transitive consumer of the Sessions↔Terminal SCC with no back-edge (no Sessions or
- * Terminal module imports CloudTunnel or this module). See docs/cycle-allowlist.md (~65-76).
+ * Terminal module imports CloudTunnel or this module). See
+ * apps/local-app/scripts/cycle-allowlist.json.
  */
 @Module({
   imports: [TerminalModule, ProcessExecutorModule],

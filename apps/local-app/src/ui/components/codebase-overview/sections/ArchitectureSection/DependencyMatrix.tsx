@@ -1,6 +1,9 @@
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import type { CodebaseOverviewSnapshot, DependencyPairDetail } from '@devchain/codebase-overview';
+import type {
+  CodebaseOverviewSnapshot,
+  DependencyPairDetail,
+} from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { Grid3X3, ArrowLeftRight, X } from 'lucide-react';
 import { fetchJsonOrThrow } from '@/ui/lib/sessions';
 import { cn } from '@/ui/lib/utils';

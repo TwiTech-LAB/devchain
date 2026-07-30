@@ -16,8 +16,8 @@ export class SessionStorageDelegate extends BaseStorageDelegate {
     const { sessions } = await import('../../db/schema');
     const { inArray, and, sql } = await import('drizzle-orm');
 
-    return this.db.transaction(async (tx) => {
-      const rows = await tx
+    return this.txRunner.runImmediate(() => {
+      const rows = this.db
         .select({ id: sessions.id, agentId: sessions.agentId })
         .from(sessions)
         .where(
@@ -25,7 +25,8 @@ export class SessionStorageDelegate extends BaseStorageDelegate {
             inArray(sessions.agentId, agentIds),
             sql`${sessions.status} IN ('stopped', 'failed')`,
           ),
-        );
+        )
+        .all();
 
       const result = new Map<string, string[]>();
       const allSessionIds: string[] = [];
@@ -43,10 +44,11 @@ export class SessionStorageDelegate extends BaseStorageDelegate {
 
       if (allSessionIds.length > 0) {
         const now = new Date().toISOString();
-        await tx
+        this.db
           .update(sessions)
           .set({ agentId: null, updatedAt: now })
-          .where(inArray(sessions.id, allSessionIds));
+          .where(inArray(sessions.id, allSessionIds))
+          .run();
 
         logger.info({ agentIds, parkedCount: allSessionIds.length }, 'Parked sessions from agents');
       }
@@ -66,13 +68,14 @@ export class SessionStorageDelegate extends BaseStorageDelegate {
     const { sessions, chatThreadSessionInvites } = await import('../../db/schema');
     const { inArray } = await import('drizzle-orm');
 
-    await this.db.transaction(async (tx) => {
+    this.txRunner.runImmediate(() => {
       if (toDelete.length > 0) {
-        await tx
+        this.db
           .delete(chatThreadSessionInvites)
-          .where(inArray(chatThreadSessionInvites.sessionId, toDelete));
+          .where(inArray(chatThreadSessionInvites.sessionId, toDelete))
+          .run();
 
-        await tx.delete(sessions).where(inArray(sessions.id, toDelete));
+        this.db.delete(sessions).where(inArray(sessions.id, toDelete)).run();
 
         logger.info({ deletedCount: toDelete.length }, 'Deleted sessions and their invites');
       }
@@ -90,10 +93,11 @@ export class SessionStorageDelegate extends BaseStorageDelegate {
 
         const now = new Date().toISOString();
         for (const [newAgentId, sessionIds] of grouped) {
-          await tx
+          this.db
             .update(sessions)
             .set({ agentId: newAgentId, updatedAt: now })
-            .where(inArray(sessions.id, sessionIds));
+            .where(inArray(sessions.id, sessionIds))
+            .run();
         }
 
         logger.info(

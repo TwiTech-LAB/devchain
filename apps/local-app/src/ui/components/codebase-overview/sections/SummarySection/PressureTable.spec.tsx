@@ -1,6 +1,6 @@
 import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { DistrictSignals } from '@devchain/codebase-overview';
+import type { DistrictSignals } from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { PressureTable } from './PressureTable';
 
 // ---------------------------------------------------------------------------

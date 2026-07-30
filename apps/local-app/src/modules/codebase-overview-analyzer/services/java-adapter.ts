@@ -1,5 +1,5 @@
 import { dirname, basename, extname, join } from 'path';
-import type { FileRole, LanguageAdapter } from '@devchain/codebase-overview';
+import type { FileRole, LanguageAdapter } from '../types/overview.types';
 
 const JAVA_EXTENSIONS = ['.java'];
 

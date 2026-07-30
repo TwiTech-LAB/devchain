@@ -1,6 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, fireEvent } from '@testing-library/react';
-import type { CodebaseOverviewSnapshot, DistrictSignals } from '@devchain/codebase-overview';
+import type {
+  CodebaseOverviewSnapshot,
+  DistrictSignals,
+} from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { Callouts } from './Callouts';
 
 // ---------------------------------------------------------------------------

@@ -12,7 +12,7 @@ import type {
   StructureNode,
   CommitSummary,
   AuthorShare,
-} from '@devchain/codebase-overview';
+} from '../types/overview.types';
 import { classifyFileRole } from './district-splitting.service';
 import { isTestFile, type FileChurnData } from './hotspot-scoring.service';
 import type { FileAdapterEnrichment } from './language-adapter-registry.service';

@@ -70,22 +70,24 @@ describe('TaskMergeService', () => {
     const tx = {
       insert: jest.fn((table: unknown) => ({
         values: jest.fn((values: unknown) => ({
-          onConflictDoNothing: jest.fn(async (args?: unknown) => {
-            const rows = Array.isArray(values) ? values : [values];
-            if (table === mergedEpics) {
-              insertedEpics.push(...(rows as Array<typeof mergedEpics.$inferInsert>));
-              epicConflictArgs.push(args);
-            } else if (table === mergedAgents) {
-              insertedAgents.push(...(rows as Array<typeof mergedAgents.$inferInsert>));
-              agentConflictArgs.push(args);
-            }
-          }),
+          onConflictDoNothing: jest.fn((args?: unknown) => ({
+            run: jest.fn(() => {
+              const rows = Array.isArray(values) ? values : [values];
+              if (table === mergedEpics) {
+                insertedEpics.push(...(rows as Array<typeof mergedEpics.$inferInsert>));
+                epicConflictArgs.push(args);
+              } else if (table === mergedAgents) {
+                insertedAgents.push(...(rows as Array<typeof mergedAgents.$inferInsert>));
+                agentConflictArgs.push(args);
+              }
+            }),
+          })),
         })),
       })),
     };
 
     db = {
-      transaction: jest.fn(async (callback: (trx: typeof tx) => Promise<void>) => callback(tx)),
+      transaction: jest.fn((callback: (trx: typeof tx) => void) => callback(tx)),
     } as unknown as OrchestratorDatabase;
 
     service = new TaskMergeService(store as unknown as WorktreesStore, db);
@@ -821,16 +823,18 @@ describe('TaskMergeService', () => {
 
     const insertMock = jest.fn((table: unknown) => ({
       values: jest.fn((values: unknown) => ({
-        onConflictDoNothing: jest.fn(async (args?: unknown) => {
-          const rows = Array.isArray(values) ? values : [values];
-          if (table === mergedEpics) {
-            insertedEpics.push(...(rows as Array<typeof mergedEpics.$inferInsert>));
-            epicConflictArgs.push(args);
-          } else if (table === mergedAgents) {
-            insertedAgents.push(...(rows as Array<typeof mergedAgents.$inferInsert>));
-            agentConflictArgs.push(args);
-          }
-        }),
+        onConflictDoNothing: jest.fn((args?: unknown) => ({
+          run: jest.fn(() => {
+            const rows = Array.isArray(values) ? values : [values];
+            if (table === mergedEpics) {
+              insertedEpics.push(...(rows as Array<typeof mergedEpics.$inferInsert>));
+              epicConflictArgs.push(args);
+            } else if (table === mergedAgents) {
+              insertedAgents.push(...(rows as Array<typeof mergedAgents.$inferInsert>));
+              agentConflictArgs.push(args);
+            }
+          }),
+        })),
       })),
     }));
 
@@ -874,9 +878,11 @@ describe('TaskMergeService', () => {
     const dbWithFailingInsert = {
       insert: jest.fn(() => ({
         values: jest.fn(() => ({
-          onConflictDoNothing: jest.fn(async () => {
-            throw new Error('sqlite write failed');
-          }),
+          onConflictDoNothing: jest.fn(() => ({
+            run: jest.fn(() => {
+              throw new Error('sqlite write failed');
+            }),
+          })),
         })),
       })),
       transaction: jest.fn(),

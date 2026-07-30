@@ -8,14 +8,15 @@ import { TerminalModule } from '../../modules/terminal/terminal.module';
 type AllowlistEntry = {
   path: string;
   kind: string;
+  rationale: string;
+  expiry: string;
 };
 
 const EVENTS_DOMAIN_MODULE_TOKEN = 'Events' + 'DomainModule';
 const APP_ROOT = resolve(__dirname, '..', '..', '..');
-const REPO_ROOT = resolve(APP_ROOT, '..', '..');
 const SRC_ROOT = join(APP_ROOT, 'src');
 const MODULES_ROOT = join(SRC_ROOT, 'modules');
-const ALLOWLIST_PATH = join(REPO_ROOT, 'docs', 'cycle-allowlist.md');
+const ALLOWLIST_PATH = join(APP_ROOT, 'scripts', 'cycle-allowlist.json');
 
 function listSourceFiles(dir: string): string[] {
   const entries = readdirSync(dir);
@@ -53,45 +54,14 @@ function moduleName(value: unknown): string | undefined {
   return undefined;
 }
 
-function parseAllowlistFile(filePath: string): AllowlistEntry[] {
-  const content = readText(filePath);
-  const yamlBlocks = content.match(/```yaml\n([\s\S]*?)```/g);
-  if (!yamlBlocks) return [];
-
-  const entries: AllowlistEntry[] = [];
-  for (const block of yamlBlocks) {
-    const lines = block.split('\n');
-    let currentPath: string | null = null;
-    let currentKind: string | null = null;
-
-    for (const line of lines) {
-      const pathMatch = line.match(/^\s*-?\s*path:\s*"(.+)"$/);
-      if (pathMatch) {
-        if (currentPath) {
-          entries.push({ path: currentPath, kind: currentKind ?? '' });
-        }
-        currentPath = pathMatch[1];
-        currentKind = null;
-        continue;
-      }
-
-      const kindMatch = line.match(/^\s*kind:\s*([A-Za-z0-9_-]+)\s*$/);
-      if (kindMatch && currentPath) {
-        currentKind = kindMatch[1];
-      }
-    }
-
-    if (currentPath) {
-      entries.push({ path: currentPath, kind: currentKind ?? '' });
-    }
-  }
-
-  return entries;
+function parseAllowlistFile(filePath: string): unknown {
+  return JSON.parse(readText(filePath));
 }
 
 describe('Phase 7 architecture invariants', () => {
   it('EventsCoreModule has zero domain imports', () => {
-    const imports = (Reflect.getMetadata(MODULE_METADATA.IMPORTS, EventsCoreModule) ?? []) as unknown[];
+    const imports = (Reflect.getMetadata(MODULE_METADATA.IMPORTS, EventsCoreModule) ??
+      []) as unknown[];
     const forbidden = new Set([
       'ChatModule',
       'SessionsModule',
@@ -139,7 +109,9 @@ describe('Phase 7 architecture invariants', () => {
         /moduleRef\s*\.\s*get\(\s*Terminal\w+/,
       ].filter((rule) => rule.test(content));
       return violations.length > 0
-        ? [`${relative(APP_ROOT, file)} matched ${violations.length} forbidden ModuleRef.get pattern(s)`]
+        ? [
+            `${relative(APP_ROOT, file)} matched ${violations.length} forbidden ModuleRef.get pattern(s)`,
+          ]
         : [];
     });
 
@@ -165,7 +137,8 @@ describe('Phase 7 architecture invariants', () => {
   });
 
   it('TerminalModule.providers does not contain TerminalIOService (relocated to TerminalDeliveryModule)', () => {
-    const providers = (Reflect.getMetadata(MODULE_METADATA.PROVIDERS, TerminalModule) ?? []) as unknown[];
+    const providers = (Reflect.getMetadata(MODULE_METADATA.PROVIDERS, TerminalModule) ??
+      []) as unknown[];
     const providerNames = providers.map(moduleName).filter((name): name is string => Boolean(name));
     expect(providerNames).not.toContain('TerminalIOService');
   });
@@ -210,12 +183,39 @@ describe('Phase 7 architecture invariants', () => {
     expect(eventsModule).not.toMatch(staleDomainImportPattern);
   });
 
-  it('Cycle allowlist contains only file-structure or nest-module-structural kinds', () => {
-    const entries = parseAllowlistFile(ALLOWLIST_PATH);
+  it('Cycle allowlist has valid required fields, kinds, and unique paths', () => {
+    const parsed = parseAllowlistFile(ALLOWLIST_PATH);
+    expect(Array.isArray(parsed)).toBe(true);
+
+    const entries = parsed as unknown[];
     const allowedKinds = new Set(['file-structure', 'nest-module-structural']);
-    const invalid = entries.filter((entry) => !allowedKinds.has(entry.kind));
+    const requiredFields: (keyof AllowlistEntry)[] = ['path', 'kind', 'rationale', 'expiry'];
+    const errors: string[] = [];
+    const paths: string[] = [];
+
+    entries.forEach((candidate, index) => {
+      if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) {
+        errors.push(`$[${index}] must be an object`);
+        return;
+      }
+
+      const entry = candidate as Record<string, unknown>;
+      for (const field of requiredFields) {
+        const value = entry[field];
+        if (typeof value !== 'string' || value.trim() === '') {
+          errors.push(`$[${index}].${field} must be a non-empty string`);
+        }
+      }
+      if (!allowedKinds.has(entry.kind as string)) {
+        errors.push(`$[${index}].kind is invalid`);
+      }
+      if (typeof entry.path === 'string') {
+        paths.push(entry.path);
+      }
+    });
 
     expect(entries.length).toBeGreaterThan(0);
-    expect(invalid).toEqual([]);
+    expect(errors).toEqual([]);
+    expect(new Set(paths).size).toBe(paths.length);
   });
 });

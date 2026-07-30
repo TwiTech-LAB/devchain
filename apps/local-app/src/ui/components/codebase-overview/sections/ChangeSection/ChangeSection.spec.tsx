@@ -1,6 +1,9 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { CodebaseOverviewSnapshot, DistrictSignals } from '@devchain/codebase-overview';
+import type {
+  CodebaseOverviewSnapshot,
+  DistrictSignals,
+} from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { ChangeSection } from './ChangeSection';
 
 const onSelectDistrict = jest.fn();

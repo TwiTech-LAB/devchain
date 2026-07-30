@@ -1,6 +1,9 @@
 import { useMemo } from 'react';
 import { FolderTree, Settings2 } from 'lucide-react';
-import type { CodebaseOverviewSnapshot, DistrictSignals } from '@devchain/codebase-overview';
+import type {
+  CodebaseOverviewSnapshot,
+  DistrictSignals,
+} from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { EmptyState } from '../../primitives';
 import { Button } from '@/ui/components/ui/button';
 import { RegionTreeNode } from './RegionTreeNode';

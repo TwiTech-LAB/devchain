@@ -6,7 +6,7 @@ import type {
   ActivitySummary,
   AnalysisWarning,
   CodebaseOverviewMetrics,
-} from '@devchain/codebase-overview';
+} from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { Heatmap, formatTooltipDate } from './Heatmap';
 
 // ---------------------------------------------------------------------------

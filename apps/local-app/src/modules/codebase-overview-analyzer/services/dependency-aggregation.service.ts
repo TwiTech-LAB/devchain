@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { DependencyEdge, DistrictNode } from '@devchain/codebase-overview';
+import type { DependencyEdge, DistrictNode } from '../types/overview.types';
 
 // ---------------------------------------------------------------------------
 // Public types

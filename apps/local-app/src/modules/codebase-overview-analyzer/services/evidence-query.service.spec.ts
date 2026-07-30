@@ -4,7 +4,7 @@ import type {
   DependencyEdge,
   HotspotEntry,
   ActivitySummary,
-} from '@devchain/codebase-overview';
+} from '../types/overview.types';
 import { EvidenceQueryService } from './evidence-query.service';
 import type { FileChurnData } from './hotspot-scoring.service';
 import type { FileAdapterEnrichment } from './language-adapter-registry.service';

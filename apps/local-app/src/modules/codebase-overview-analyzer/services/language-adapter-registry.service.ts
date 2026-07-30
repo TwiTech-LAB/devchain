@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { extname } from 'path';
-import type { FileRole, LanguageAdapter } from '@devchain/codebase-overview';
+import type { FileRole, LanguageAdapter } from '../types/overview.types';
 import { goAdapter } from './go-adapter';
 import { javaAdapter } from './java-adapter';
 import { phpAdapter } from './php-adapter';

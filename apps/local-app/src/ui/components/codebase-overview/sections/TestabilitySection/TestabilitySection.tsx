@@ -5,7 +5,7 @@ import type {
   CodebaseOverviewSnapshot,
   DistrictSignals,
   DependencyEdge,
-} from '@devchain/codebase-overview';
+} from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/ui/components/ui/card';
 import { Badge } from '@/ui/components/ui/badge';
 import {

@@ -15,7 +15,7 @@ import type {
   TargetDetail,
   DependencyPairDetail,
   DistrictFilePage,
-} from '@devchain/codebase-overview';
+} from '../types/overview.types';
 import type { FolderScopeEntry } from '../types/scope.types';
 import * as fsPromises from 'fs/promises';
 

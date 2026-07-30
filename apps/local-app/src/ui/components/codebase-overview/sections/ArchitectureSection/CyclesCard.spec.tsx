@@ -4,7 +4,7 @@ import type {
   CodebaseOverviewSnapshot,
   DependencyEdge,
   DistrictSignals,
-} from '@devchain/codebase-overview';
+} from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { CyclesCard } from './CyclesCard';
 
 function makeSignal(id: string, name: string): DistrictSignals {

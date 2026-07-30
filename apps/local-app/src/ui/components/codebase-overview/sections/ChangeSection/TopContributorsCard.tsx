@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { Users } from 'lucide-react';
-import type { CodebaseOverviewSnapshot } from '@devchain/codebase-overview';
+import type { CodebaseOverviewSnapshot } from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/ui/components/ui/card';
 
 const MAX_CONTRIBUTORS = 10;

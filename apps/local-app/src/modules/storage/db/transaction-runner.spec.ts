@@ -48,6 +48,18 @@ describe('TransactionRunner', () => {
     expect(rows.map((r) => r.name)).toEqual(['existing']);
   });
 
+  it('rejects Promise-returning native callbacks without committing', () => {
+    const nativeTransaction = sqlite.transaction(() => {
+      sqlite.prepare('INSERT INTO items (name) VALUES (?)').run('should-vanish');
+      return Promise.resolve();
+    });
+
+    expect(() => nativeTransaction()).toThrow(/promise/i);
+
+    const rows = sqlite.prepare('SELECT name FROM items').all() as { name: string }[];
+    expect(rows).toEqual([]);
+  });
+
   it('re-throws domain errors after rollback', () => {
     class ConflictError extends Error {
       constructor(message: string) {

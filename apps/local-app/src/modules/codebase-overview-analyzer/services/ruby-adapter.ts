@@ -1,5 +1,5 @@
 import { extname, dirname, basename, join, normalize } from 'path';
-import type { FileRole, LanguageAdapter } from '@devchain/codebase-overview';
+import type { FileRole, LanguageAdapter } from '../types/overview.types';
 
 // ---------------------------------------------------------------------------
 // Constants

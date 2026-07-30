@@ -1,6 +1,9 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { DistrictSignals, DependencyEdge } from '@devchain/codebase-overview';
+import type {
+  DistrictSignals,
+  DependencyEdge,
+} from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { BusFactorCard } from './BusFactorCard';
 
 function makeSignal(overrides: Partial<DistrictSignals> & { districtId: string }): DistrictSignals {

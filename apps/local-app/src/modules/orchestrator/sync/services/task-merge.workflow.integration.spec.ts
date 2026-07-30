@@ -147,20 +147,22 @@ describe('Task merge workflow integration', () => {
     const tx = {
       insert: jest.fn((table: unknown) => ({
         values: jest.fn((values: unknown) => ({
-          onConflictDoNothing: jest.fn(async () => {
-            const rows = Array.isArray(values) ? values : [values];
-            if (table === mergedEpics) {
-              insertedEpics.push(...(rows as Array<typeof mergedEpics.$inferInsert>));
-            } else if (table === mergedAgents) {
-              insertedAgents.push(...(rows as Array<typeof mergedAgents.$inferInsert>));
-            }
-          }),
+          onConflictDoNothing: jest.fn(() => ({
+            run: jest.fn(() => {
+              const rows = Array.isArray(values) ? values : [values];
+              if (table === mergedEpics) {
+                insertedEpics.push(...(rows as Array<typeof mergedEpics.$inferInsert>));
+              } else if (table === mergedAgents) {
+                insertedAgents.push(...(rows as Array<typeof mergedAgents.$inferInsert>));
+              }
+            }),
+          })),
         })),
       })),
     };
 
     const db = {
-      transaction: jest.fn(async (callback: (trx: typeof tx) => Promise<void>) => callback(tx)),
+      transaction: jest.fn((callback: (trx: typeof tx) => void) => callback(tx)),
     } as unknown as OrchestratorDatabase;
 
     eventEmitter = new EventEmitter2({ wildcard: true, delimiter: '.' });

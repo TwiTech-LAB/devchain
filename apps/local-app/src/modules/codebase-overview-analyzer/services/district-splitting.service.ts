@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { DistrictNode, FileRole } from '@devchain/codebase-overview';
+import type { DistrictNode, FileRole } from '../types/overview.types';
 import { basename } from 'path';
 
 // ---------------------------------------------------------------------------

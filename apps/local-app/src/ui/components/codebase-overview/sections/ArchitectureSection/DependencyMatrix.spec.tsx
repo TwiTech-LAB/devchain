@@ -1,6 +1,6 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
-import type { CodebaseOverviewSnapshot } from '@devchain/codebase-overview';
+import type { CodebaseOverviewSnapshot } from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { DependencyMatrix } from './DependencyMatrix';
 
 function makeSnapshot(overrides: Partial<CodebaseOverviewSnapshot> = {}): CodebaseOverviewSnapshot {

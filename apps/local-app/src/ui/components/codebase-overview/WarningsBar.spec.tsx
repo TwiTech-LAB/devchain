@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { AnalysisWarning } from '@devchain/codebase-overview';
+import type { AnalysisWarning } from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { WarningsBar } from './WarningsBar';
 
 describe('WarningsBar', () => {

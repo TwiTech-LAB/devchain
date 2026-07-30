@@ -1,0 +1,20 @@
+[
+  {
+    "path": "sessions/sessions.module.ts > terminal/terminal.module.ts",
+    "kind": "nest-module-structural",
+    "rationale": "Sessions↔Terminal bidirectional infrastructure ownership: Sessions launches/restores via terminal infrastructure and Terminal rehydrates from Sessions records.",
+    "expiry": "When a full infrastructure boundary redesign is funded."
+  },
+  {
+    "path": "terminal/services/pty.service.ts > sessions/services/sessions.service.ts",
+    "kind": "file-structure",
+    "rationale": "Cross-module file-level cycle between Sessions and Terminal services. pty.service.ts now imports sessions.service.ts directly (path shortened from the previous 3-hop via gateway). Not a module-import cycle — both modules already import each other at @Module level (allowlisted above).",
+    "expiry": "When the Sessions↔Terminal boundary is refactored."
+  },
+  {
+    "path": "terminal/services/pty.service.ts > terminal/gateways/terminal.gateway.ts",
+    "kind": "file-structure",
+    "rationale": "Intra-module file cycle within TerminalModule (pty ↔ gateway).",
+    "expiry": "When terminal internals are refactored."
+  }
+]

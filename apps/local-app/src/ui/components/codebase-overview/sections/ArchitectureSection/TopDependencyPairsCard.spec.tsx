@@ -1,6 +1,9 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { CodebaseOverviewSnapshot, DependencyEdge } from '@devchain/codebase-overview';
+import type {
+  CodebaseOverviewSnapshot,
+  DependencyEdge,
+} from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { TopDependencyPairsCard } from './TopDependencyPairsCard';
 
 function makeSnapshot(deps: DependencyEdge[]): CodebaseOverviewSnapshot {

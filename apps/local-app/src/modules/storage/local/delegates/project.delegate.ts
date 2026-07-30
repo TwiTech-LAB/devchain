@@ -16,11 +16,13 @@ export class ProjectStorageDelegate extends BaseStorageDelegate {
     super(context);
   }
 
-  private async listSeedableSourceNamesForNewProject(): Promise<string[]> {
-    const { communitySkillSources } = await import('../../db/schema');
-    const communitySourceRows = await this.db
+  private listSeedableSourceNamesForNewProject(
+    communitySkillSources: typeof import('../../db/schema').communitySkillSources,
+  ): string[] {
+    const communitySourceRows = this.db
       .select({ name: communitySkillSources.name })
-      .from(communitySkillSources);
+      .from(communitySkillSources)
+      .all();
 
     const sourceNames = communitySourceRows
       .map((row) => row.name.trim().toLowerCase())
@@ -65,19 +67,25 @@ export class ProjectStorageDelegate extends BaseStorageDelegate {
       updatedAt: now,
     };
 
-    const seedableSourceNames = await this.listSeedableSourceNamesForNewProject();
-    const { projects, statuses, sourceProjectEnabled } = await import('../../db/schema');
+    const { projects, statuses, sourceProjectEnabled, communitySkillSources } = await import(
+      '../../db/schema'
+    );
 
-    await this.db.transaction(async (tx) => {
-      await tx.insert(projects).values({
-        id: project.id,
-        name: project.name,
-        description: project.description,
-        rootPath: project.rootPath,
-        isTemplate: project.isTemplate,
-        createdAt: project.createdAt,
-        updatedAt: project.updatedAt,
-      });
+    this.txRunner.runImmediate(() => {
+      const seedableSourceNames = this.listSeedableSourceNamesForNewProject(communitySkillSources);
+
+      this.db
+        .insert(projects)
+        .values({
+          id: project.id,
+          name: project.name,
+          description: project.description,
+          rootPath: project.rootPath,
+          isTemplate: project.isTemplate,
+          createdAt: project.createdAt,
+          updatedAt: project.updatedAt,
+        })
+        .run();
 
       // Create default statuses atomically with project
       const defaultStatuses = [
@@ -89,27 +97,33 @@ export class ProjectStorageDelegate extends BaseStorageDelegate {
       ];
 
       for (const status of defaultStatuses) {
-        await tx.insert(statuses).values({
-          id: randomUUID(),
-          projectId: project.id,
-          label: status.label,
-          color: status.color,
-          position: status.position,
-          createdAt: now,
-          updatedAt: now,
-        });
+        this.db
+          .insert(statuses)
+          .values({
+            id: randomUUID(),
+            projectId: project.id,
+            label: status.label,
+            color: status.color,
+            position: status.position,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .run();
       }
 
       if (seedableSourceNames.length > 0) {
-        await tx.insert(sourceProjectEnabled).values(
-          seedableSourceNames.map((sourceName) => ({
-            id: randomUUID(),
-            projectId: project.id,
-            sourceName,
-            enabled: true,
-            createdAt: now,
-          })),
-        );
+        this.db
+          .insert(sourceProjectEnabled)
+          .values(
+            seedableSourceNames.map((sourceName) => ({
+              id: randomUUID(),
+              projectId: project.id,
+              sourceName,
+              enabled: true,
+              createdAt: now,
+            })),
+          )
+          .run();
       }
     });
 
@@ -142,8 +156,10 @@ export class ProjectStorageDelegate extends BaseStorageDelegate {
       updatedAt: now,
     };
 
-    const seedableSourceNames = await this.listSeedableSourceNamesForNewProject();
-    const { projects, sourceProjectEnabled } = await import('../../db/schema');
+    const { projects, sourceProjectEnabled, communitySkillSources } = await import(
+      '../../db/schema'
+    );
+    const seedableSourceNames = this.listSeedableSourceNamesForNewProject(communitySkillSources);
 
     try {
       await this.db.insert(projects).values({

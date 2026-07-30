@@ -10,7 +10,6 @@ function main() {
   const templatesDest = join(__dirname, '..', 'dist', 'templates');
   const sharedSrc = join(__dirname, '..', 'packages', 'shared', 'dist');
   const sharedDest = join(__dirname, '..', 'dist', 'node_modules', '@devchain', 'shared');
-  const overviewSrc = join(__dirname, '..', 'packages', 'codebase-overview', 'dist');
   const overviewDest = join(
     __dirname,
     '..',
@@ -19,6 +18,10 @@ function main() {
     '@devchain',
     'codebase-overview',
   );
+
+  // This type-only package no longer exists, but dirty incremental builds may
+  // still contain a previously materialized copy that must not reach npm packages.
+  rmSync(overviewDest, { recursive: true, force: true });
 
   // Clean dest
   if (existsSync(dest)) {
@@ -72,26 +75,6 @@ function main() {
     console.log(`Copied @devchain/shared to ${sharedDest}`);
   }
 
-  // Copy @devchain/codebase-overview package for runtime resolution (ESM)
-  if (existsSync(overviewSrc)) {
-    if (existsSync(overviewDest)) {
-      rmSync(overviewDest, { recursive: true, force: true });
-    }
-    mkdirSync(overviewDest, { recursive: true });
-    cpSync(overviewSrc, overviewDest, { recursive: true });
-    const overviewPkg = {
-      name: '@devchain/codebase-overview',
-      version: '0.0.0',
-      type: 'module',
-      main: 'index.js',
-      module: 'index.js',
-      types: 'index.d.ts',
-    };
-    writeFileSync(join(overviewDest, 'package.json'), JSON.stringify(overviewPkg, null, 2));
-    // eslint-disable-next-line no-console
-    console.log(`Copied @devchain/codebase-overview to ${overviewDest}`);
-  }
 }
 
 main();
-

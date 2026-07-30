@@ -13,7 +13,8 @@ export type { ViewportCapture } from '../terminal-io/viewport-capture';
  *
  * It is exported by {@link TerminalViewportModule} so `CloudTunnelModule` can consume the
  * viewport surface WITHOUT importing `TerminalModule` wholesale — keeping CloudTunnel a
- * leaf/transitive consumer of the Sessions↔Terminal SCC (see docs/cycle-allowlist.md).
+ * leaf/transitive consumer of the Sessions↔Terminal SCC (see
+ * apps/local-app/scripts/cycle-allowlist.json).
  *
  * Read-only by construction: it never creates/disposes a session and never tears down the
  * PTY — it only reads the registry and attaches/detaches a `data`-frame listener.

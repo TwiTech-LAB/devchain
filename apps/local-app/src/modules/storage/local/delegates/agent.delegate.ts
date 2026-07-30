@@ -192,8 +192,8 @@ export class AgentStorageDelegate extends BaseStorageDelegate {
     const { agents, sessions, teamMembers, teams } = await import('../../db/schema');
     const { eq, inArray, sql } = await import('drizzle-orm');
 
-    await this.db.transaction(async (tx) => {
-      const relatedSessions = await tx.select().from(sessions).where(eq(sessions.agentId, id));
+    this.txRunner.runImmediate(() => {
+      const relatedSessions = this.db.select().from(sessions).where(eq(sessions.agentId, id)).all();
       const runningSessions = relatedSessions.filter((s) => s.status === 'running');
 
       if (runningSessions.length > 0) {
@@ -202,18 +202,20 @@ export class AgentStorageDelegate extends BaseStorageDelegate {
         );
       }
 
-      const memberTeams = await tx
+      const memberTeams = this.db
         .select({ teamId: teamMembers.teamId })
         .from(teamMembers)
-        .where(eq(teamMembers.agentId, id));
+        .where(eq(teamMembers.agentId, id))
+        .all();
 
       const teamIdsToDisband: string[] = [];
 
       for (const memberTeam of memberTeams) {
-        const countResult = await tx
+        const countResult = this.db
           .select({ count: sql<number>`count(*)` })
           .from(teamMembers)
-          .where(eq(teamMembers.teamId, memberTeam.teamId));
+          .where(eq(teamMembers.teamId, memberTeam.teamId))
+          .all();
 
         if (Number(countResult[0]?.count ?? 0) <= 1) {
           teamIdsToDisband.push(memberTeam.teamId);
@@ -226,7 +228,7 @@ export class AgentStorageDelegate extends BaseStorageDelegate {
           { agentId: id, teamIds: uniqueTeamIdsToDisband },
           'Disbanding teams that would become empty after agent deletion',
         );
-        await tx.delete(teams).where(inArray(teams.id, uniqueTeamIdsToDisband));
+        this.db.delete(teams).where(inArray(teams.id, uniqueTeamIdsToDisband)).run();
       }
 
       const completedSessions = relatedSessions.filter(
@@ -240,11 +242,11 @@ export class AgentStorageDelegate extends BaseStorageDelegate {
         );
 
         for (const session of completedSessions) {
-          await tx.delete(sessions).where(eq(sessions.id, session.id));
+          this.db.delete(sessions).where(eq(sessions.id, session.id)).run();
         }
       }
 
-      await tx.delete(agents).where(eq(agents.id, id));
+      this.db.delete(agents).where(eq(agents.id, id)).run();
       logger.info(
         {
           agentId: id,

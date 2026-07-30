@@ -3,7 +3,10 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { CodebaseOverviewPage } from './CodebaseOverviewPage';
-import type { CodebaseOverviewSnapshot, TargetDetail } from '@devchain/codebase-overview';
+import type {
+  CodebaseOverviewSnapshot,
+  TargetDetail,
+} from '@/modules/codebase-overview-analyzer/types/overview.types';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -513,7 +516,7 @@ describe('CodebaseOverviewPage Shell', () => {
       render(<CodebaseOverviewPage />, { wrapper: Wrapper });
     });
 
-    await screen.findByText('Architecture');
+    await screen.findByRole('heading', { name: 'Architecture', level: 2 });
     expect(screen.getByText('Is the structure decaying?')).toBeInTheDocument();
     await act(async () => {
       queryClient.clear();
@@ -546,7 +549,7 @@ describe('CodebaseOverviewPage Shell', () => {
       render(<CodebaseOverviewPage />, { wrapper: Wrapper });
     });
 
-    await screen.findByText('Structure');
+    await screen.findByRole('heading', { name: 'Structure', level: 2 });
     expect(screen.getByText("What's in this repo?")).toBeInTheDocument();
     await act(async () => {
       queryClient.clear();

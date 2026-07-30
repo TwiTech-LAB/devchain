@@ -1,7 +1,16 @@
-This directory is reserved for native prebuilt binaries (e.g., better-sqlite3) packaged with releases.
+# Bundled node-pty prebuilds
 
-In CI, populate architecture-specific artifacts under:
-  prebuilds/<platform>-<arch>/better_sqlite3.node
+This directory contains the package-owned copy of `node-pty` prebuilt artifacts for users
+without native build tools. The root build runs `scripts/copy-prebuilds.js`, which copies the
+installed package's artifacts into:
 
-At install-time, prebuild-install is used to fetch upstream prebuilds; when shipping first-party prebuilds, ensure they are included here and verified.
+```text
+prebuilds/node-pty/<platform>-<arch>/
+```
 
+During installation, `scripts/postinstall.js` restores the matching platform directory into
+`node_modules/node-pty/prebuilds` when it is not already present.
+
+`better-sqlite3` artifacts do not belong here. Version 13 ships its Node-API binaries inside
+the dependency package; DevChain's postinstall step only verifies that the installed artifact
+can open, query, and close an in-memory database.

@@ -1,5 +1,8 @@
 import { useMemo } from 'react';
-import type { DistrictSignals, DependencyEdge } from '@devchain/codebase-overview';
+import type {
+  DistrictSignals,
+  DependencyEdge,
+} from '@/modules/codebase-overview-analyzer/types/overview.types';
 
 export interface CyclePair {
   fromId: string;

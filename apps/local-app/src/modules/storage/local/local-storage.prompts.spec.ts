@@ -12,6 +12,7 @@ describe('LocalStorageService — profile prompt assignments', () => {
     delete: jest.Mock;
     update: jest.Mock;
     transaction: jest.Mock;
+    exec: jest.Mock;
   };
 
   beforeEach(async () => {
@@ -24,6 +25,7 @@ describe('LocalStorageService — profile prompt assignments', () => {
       limit: jest.fn().mockReturnThis(),
       offset: jest.fn().mockReturnThis(),
       innerJoin: jest.fn().mockReturnThis(),
+      run: jest.fn(),
     };
 
     db = {
@@ -34,6 +36,7 @@ describe('LocalStorageService — profile prompt assignments', () => {
       transaction: jest.fn(async (fn: (tx: unknown) => Promise<void>) => {
         await fn(db);
       }),
+      exec: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -43,22 +46,30 @@ describe('LocalStorageService — profile prompt assignments', () => {
     service = module.get(LocalStorageService);
   });
 
-  it('replaces assignments transactionally and preserves order', async () => {
-    // Profile exists
-    jest
-      .spyOn(service, 'getAgentProfile')
-      .mockResolvedValue({ id: 'prof-1', projectId: 'project-1' } as unknown as Awaited<
-        ReturnType<typeof service.getAgentProfile>
-      >);
-    // Prompts existence within same project
-    db.select = jest.fn().mockReturnValue({
+  function mockProfileAndPrompts(
+    profileProjectId: string,
+    promptRows: Array<{ id: string; projectId: string }>,
+  ): void {
+    db.select.mockImplementation((selection?: Record<string, unknown>) => ({
       from: jest.fn().mockReturnValue({
-        where: jest.fn().mockResolvedValue([
-          { id: 'p1', projectId: 'project-1' },
-          { id: 'p2', projectId: 'project-1' },
-        ]),
+        where: jest.fn().mockReturnValue(
+          selection && 'id' in selection
+            ? { all: jest.fn().mockReturnValue(promptRows) }
+            : {
+                limit: jest.fn().mockReturnValue({
+                  get: jest.fn().mockReturnValue({ projectId: profileProjectId }),
+                }),
+              },
+        ),
       }),
-    });
+    }));
+  }
+
+  it('replaces assignments transactionally and preserves order', async () => {
+    mockProfileAndPrompts('project-1', [
+      { id: 'p1', projectId: 'project-1' },
+      { id: 'p2', projectId: 'project-1' },
+    ]);
 
     await service.setAgentProfilePrompts('prof-1', ['p1', 'p2']);
 
@@ -70,32 +81,14 @@ describe('LocalStorageService — profile prompt assignments', () => {
   });
 
   it('rejects cross-project prompt assignments', async () => {
-    jest
-      .spyOn(service, 'getAgentProfile')
-      .mockResolvedValue({ id: 'prof-1', projectId: 'project-1' } as unknown as Awaited<
-        ReturnType<typeof service.getAgentProfile>
-      >);
-    db.select = jest.fn().mockReturnValue({
-      from: jest.fn().mockReturnValue({
-        where: jest.fn().mockResolvedValue([{ id: 'p1', projectId: 'project-2' }]),
-      }),
-    });
+    mockProfileAndPrompts('project-1', [{ id: 'p1', projectId: 'project-2' }]);
 
     await expect(service.setAgentProfilePrompts('prof-1', ['p1'])).rejects.toThrow(ValidationError);
     expect(db.insert).not.toHaveBeenCalled();
   });
 
   it('rejects unknown prompt ids', async () => {
-    jest
-      .spyOn(service, 'getAgentProfile')
-      .mockResolvedValue({ id: 'prof-1', projectId: 'project-1' } as unknown as Awaited<
-        ReturnType<typeof service.getAgentProfile>
-      >);
-    db.select = jest.fn().mockReturnValue({
-      from: jest.fn().mockReturnValue({
-        where: jest.fn().mockResolvedValue([{ id: 'p1', projectId: 'project-1' }]),
-      }),
-    });
+    mockProfileAndPrompts('project-1', [{ id: 'p1', projectId: 'project-1' }]);
 
     await expect(service.setAgentProfilePrompts('prof-1', ['p1', 'p9'])).rejects.toThrow(
       ValidationError,
@@ -104,19 +97,10 @@ describe('LocalStorageService — profile prompt assignments', () => {
   });
 
   it('idempotency: last call order wins', async () => {
-    jest
-      .spyOn(service, 'getAgentProfile')
-      .mockResolvedValue({ id: 'prof-2', projectId: 'project-1' } as unknown as Awaited<
-        ReturnType<typeof service.getAgentProfile>
-      >);
-    db.select = jest.fn().mockReturnValue({
-      from: jest.fn().mockReturnValue({
-        where: jest.fn().mockResolvedValue([
-          { id: 'p1', projectId: 'project-1' },
-          { id: 'p2', projectId: 'project-1' },
-        ]),
-      }),
-    });
+    mockProfileAndPrompts('project-1', [
+      { id: 'p1', projectId: 'project-1' },
+      { id: 'p2', projectId: 'project-1' },
+    ]);
 
     await service.setAgentProfilePrompts('prof-2', ['p1', 'p2']);
     await service.setAgentProfilePrompts('prof-2', ['p2', 'p1']);

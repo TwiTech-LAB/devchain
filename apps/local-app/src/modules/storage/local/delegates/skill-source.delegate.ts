@@ -280,14 +280,36 @@ export class SkillSourceStorageDelegate extends BaseStorageDelegate {
   }
 
   async deleteCommunitySkillSource(id: string): Promise<void> {
-    const source = await this.dependencies.getCommunitySkillSource(id);
+    const normalizedId = id.trim();
+    if (!normalizedId) {
+      throw new ValidationError('id is required.', { fieldName: 'id' });
+    }
+
     const { communitySkillSources, skills, sourceProjectEnabled } = await import('../../db/schema');
     const { eq } = await import('drizzle-orm');
 
-    await this.db.transaction(async (tx) => {
-      await tx.delete(skills).where(eq(skills.source, source.name));
-      await tx.delete(sourceProjectEnabled).where(eq(sourceProjectEnabled.sourceName, source.name));
-      await tx.delete(communitySkillSources).where(eq(communitySkillSources.id, source.id));
+    const source = this.txRunner.runImmediate(() => {
+      const existingSource = this.db
+        .select()
+        .from(communitySkillSources)
+        .where(eq(communitySkillSources.id, normalizedId))
+        .limit(1)
+        .get() as CommunitySkillSource | undefined;
+
+      if (!existingSource) {
+        throw new NotFoundError('Community skill source', normalizedId);
+      }
+
+      this.db.delete(skills).where(eq(skills.source, existingSource.name)).run();
+      this.db
+        .delete(sourceProjectEnabled)
+        .where(eq(sourceProjectEnabled.sourceName, existingSource.name))
+        .run();
+      this.db
+        .delete(communitySkillSources)
+        .where(eq(communitySkillSources.id, existingSource.id))
+        .run();
+      return existingSource;
     });
 
     logger.info(
@@ -380,18 +402,33 @@ export class SkillSourceStorageDelegate extends BaseStorageDelegate {
   }
 
   async deleteLocalSkillSource(id: string): Promise<void> {
-    const source = await this.dependencies.getLocalSkillSource(id);
-    if (!source) {
-      throw new NotFoundError('Local skill source', id.trim());
+    const normalizedId = id.trim();
+    if (!normalizedId) {
+      throw new ValidationError('id is required.', { fieldName: 'id' });
     }
 
     const { localSkillSources, skills, sourceProjectEnabled } = await import('../../db/schema');
     const { eq } = await import('drizzle-orm');
 
-    await this.db.transaction(async (tx) => {
-      await tx.delete(skills).where(eq(skills.source, source.name));
-      await tx.delete(sourceProjectEnabled).where(eq(sourceProjectEnabled.sourceName, source.name));
-      await tx.delete(localSkillSources).where(eq(localSkillSources.id, source.id));
+    const source = this.txRunner.runImmediate(() => {
+      const existingSource = this.db
+        .select()
+        .from(localSkillSources)
+        .where(eq(localSkillSources.id, normalizedId))
+        .limit(1)
+        .get() as LocalSkillSource | undefined;
+
+      if (!existingSource) {
+        throw new NotFoundError('Local skill source', normalizedId);
+      }
+
+      this.db.delete(skills).where(eq(skills.source, existingSource.name)).run();
+      this.db
+        .delete(sourceProjectEnabled)
+        .where(eq(sourceProjectEnabled.sourceName, existingSource.name))
+        .run();
+      this.db.delete(localSkillSources).where(eq(localSkillSources.id, existingSource.id)).run();
+      return existingSource;
     });
 
     logger.info(

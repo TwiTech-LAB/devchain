@@ -139,38 +139,44 @@ export class AgentProfileStorageDelegate extends BaseStorageDelegate {
   }
 
   async setAgentProfilePrompts(profileId: string, promptIdsOrdered: string[]): Promise<void> {
-    const { agentProfilePrompts, prompts } = await import('../../db/schema');
+    const { agentProfilePrompts, agentProfiles, prompts } = await import('../../db/schema');
     const { eq, inArray } = await import('drizzle-orm');
 
-    // Validate profile exists and obtain its projectId
-    const profile = await this.dependencies.getAgentProfile(profileId);
+    this.txRunner.runImmediate(() => {
+      const profile = this.db
+        .select({ projectId: agentProfiles.projectId })
+        .from(agentProfiles)
+        .where(eq(agentProfiles.id, profileId))
+        .limit(1)
+        .get();
 
-    // Validate provided prompts exist and belong to same project
-    if (promptIdsOrdered.length > 0) {
-      const items = await this.db
-        .select({ id: prompts.id, projectId: prompts.projectId })
-        .from(prompts)
-        .where(inArray(prompts.id, promptIdsOrdered));
-
-      const foundIds = new Set(items.map((i) => i.id));
-      const missing = promptIdsOrdered.filter((id) => !foundIds.has(id));
-      if (missing.length > 0) {
-        throw new ValidationError('Unknown prompt ids provided', { missing });
+      if (!profile) {
+        throw new NotFoundError('Agent profile', profileId);
       }
 
-      // Enforce project scoping: prompt.projectId must equal profile.projectId
-      const crossProject = items.filter((i) => i.projectId !== (profile.projectId ?? null));
-      if (crossProject.length > 0) {
-        throw new ValidationError('Cross-project prompts are not allowed for this profile', {
-          profileProjectId: profile.projectId ?? null,
-          promptIds: crossProject.map((i) => i.id),
-        });
-      }
-    }
+      if (promptIdsOrdered.length > 0) {
+        const items = this.db
+          .select({ id: prompts.id, projectId: prompts.projectId })
+          .from(prompts)
+          .where(inArray(prompts.id, promptIdsOrdered))
+          .all();
 
-    // Replace assignments atomically
-    await this.db.transaction(async (tx) => {
-      await tx.delete(agentProfilePrompts).where(eq(agentProfilePrompts.profileId, profileId));
+        const foundIds = new Set(items.map((i) => i.id));
+        const missing = promptIdsOrdered.filter((id) => !foundIds.has(id));
+        if (missing.length > 0) {
+          throw new ValidationError('Unknown prompt ids provided', { missing });
+        }
+
+        const crossProject = items.filter((i) => i.projectId !== profile.projectId);
+        if (crossProject.length > 0) {
+          throw new ValidationError('Cross-project prompts are not allowed for this profile', {
+            profileProjectId: profile.projectId,
+            promptIds: crossProject.map((i) => i.id),
+          });
+        }
+      }
+
+      this.db.delete(agentProfilePrompts).where(eq(agentProfilePrompts.profileId, profileId)).run();
 
       if (promptIdsOrdered.length === 0) return;
 
@@ -180,7 +186,7 @@ export class AgentProfileStorageDelegate extends BaseStorageDelegate {
         promptId: pid,
         createdAt: new Date(base.getTime() + idx).toISOString(),
       }));
-      await tx.insert(agentProfilePrompts).values(rows);
+      this.db.insert(agentProfilePrompts).values(rows).run();
     });
   }
 

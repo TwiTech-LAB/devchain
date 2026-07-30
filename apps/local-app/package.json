@@ -44,7 +44,6 @@
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
-    "@devchain/codebase-overview": "workspace:*",
     "@devchain/shared": "workspace:*",
     "@fastify/http-proxy": "9.5.0",
     "@fastify/static": "^7.0.4",
@@ -82,7 +81,7 @@
     "@xterm/addon-fit": "0.11.0",
     "@xterm/xterm": "6.0.0",
     "ansi-to-html": "0.7.2",
-    "better-sqlite3": "11.5.0",
+    "better-sqlite3": "13.0.2",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
     "class-variance-authority": "0.7.1",
@@ -135,7 +134,7 @@
     "@types/express": "^4.17.21",
     "@types/jest": "^29.5.12",
     "@types/jest-axe": "3.5.9",
-    "@types/node": "^20.11.24",
+    "@types/node": "^24.13.3",
     "@types/react": "^18.2.61",
     "@types/react-dom": "^18.2.19",
     "@types/semver": "^7.5.8",
@@ -201,10 +200,6 @@
     "moduleNameMapper": {
       "^@/(.*)$": "<rootDir>/$1",
       "^@devchain/shared$": "<rootDir>/test/mocks/devchain-shared.ts",
-      "^react$": "<rootDir>/../node_modules/react",
-      "^react-dom$": "<rootDir>/../node_modules/react-dom",
-      "^react/jsx-runtime$": "<rootDir>/../node_modules/react/jsx-runtime.js",
-      "^react/jsx-dev-runtime$": "<rootDir>/../node_modules/react/jsx-dev-runtime.js",
       "\\.(css|less|scss|sass)$": "identity-obj-proxy",
       "^(\\.{1,2}/.*)\\.js$": "$1"
     },
@@ -231,10 +226,6 @@
         "moduleNameMapper": {
           "^@/(.*)$": "<rootDir>/$1",
           "^@devchain/shared$": "<rootDir>/../test/mocks/devchain-shared.ts",
-          "^react$": "<rootDir>/../node_modules/react",
-          "^react-dom$": "<rootDir>/../node_modules/react-dom",
-          "^react/jsx-runtime$": "<rootDir>/../node_modules/react/jsx-runtime.js",
-          "^react/jsx-dev-runtime$": "<rootDir>/../node_modules/react/jsx-dev-runtime.js",
           "^(\\.{1,2}/.*)\\.js$": "$1"
         }
       },
@@ -255,10 +246,6 @@
         "moduleNameMapper": {
           "^@/(.*)$": "<rootDir>/$1",
           "^@devchain/shared$": "<rootDir>/../test/mocks/devchain-shared.ts",
-          "^react$": "<rootDir>/../node_modules/react",
-          "^react-dom$": "<rootDir>/../node_modules/react-dom",
-          "^react/jsx-runtime$": "<rootDir>/../node_modules/react/jsx-runtime.js",
-          "^react/jsx-dev-runtime$": "<rootDir>/../node_modules/react/jsx-dev-runtime.js",
           "^(\\.{1,2}/.*)\\.js$": "$1"
         }
       },
@@ -278,10 +265,6 @@
         "moduleNameMapper": {
           "^@/(.*)$": "<rootDir>/$1",
           "^@devchain/shared$": "<rootDir>/../test/mocks/devchain-shared.ts",
-          "^react$": "<rootDir>/../node_modules/react",
-          "^react-dom$": "<rootDir>/../node_modules/react-dom",
-          "^react/jsx-runtime$": "<rootDir>/../node_modules/react/jsx-runtime.js",
-          "^react/jsx-dev-runtime$": "<rootDir>/../node_modules/react/jsx-dev-runtime.js",
           "\\.(css|less|scss|sass)$": "identity-obj-proxy",
           "\\?raw$": "<rootDir>/../test/mocks/raw-file.ts",
           "^(\\.{1,2}/.*)\\.js$": "$1"
@@ -313,10 +296,6 @@
         "moduleNameMapper": {
           "^@/(.*)$": "<rootDir>/$1",
           "^@devchain/shared$": "<rootDir>/../test/mocks/devchain-shared.ts",
-          "^react$": "<rootDir>/../node_modules/react",
-          "^react-dom$": "<rootDir>/../node_modules/react-dom",
-          "^react/jsx-runtime$": "<rootDir>/../node_modules/react/jsx-runtime.js",
-          "^react/jsx-dev-runtime$": "<rootDir>/../node_modules/react/jsx-dev-runtime.js",
           "^(\\.{1,2}/.*)\\.js$": "$1"
         }
       }

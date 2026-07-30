@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import type { DistrictNode } from '@devchain/codebase-overview';
+import type { DistrictNode } from '../types/overview.types';
 import { HotspotScoringService, isTestFile, type FileChurnData } from './hotspot-scoring.service';
 import type { FileAdapterEnrichment } from './language-adapter-registry.service';
 

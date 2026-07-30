@@ -5,7 +5,7 @@ import type {
   HotspotEntry,
   HotspotMetric,
   ActivitySummary,
-} from '@devchain/codebase-overview';
+} from '../types/overview.types';
 import { classifyFileRole } from './district-splitting.service';
 import type { FileAdapterEnrichment } from './language-adapter-registry.service';
 

@@ -22,7 +22,7 @@ import type {
   TargetDetail,
   DependencyPairDetail,
   DistrictFilePage,
-} from '@devchain/codebase-overview';
+} from '../types/overview.types';
 import type { FolderScopeEntry } from '../types/scope.types';
 import { FolderScopeEntrySchema } from '../types/scope.schema';
 import { z } from 'zod';

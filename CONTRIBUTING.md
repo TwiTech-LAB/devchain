@@ -6,7 +6,7 @@ Welcome to the Devchain project! This guide will help you set up your developmen
 
 Before you begin, ensure you have the following installed:
 
-- **Node.js** >= 20.0.0
+- **Node.js** >= 24.0.0 (Node 24 LTS is the production floor)
 - **pnpm** >= 8.0.0
 - **tmux** (required for terminal session management on Linux/macOS)
 - At least one AI provider CLI:

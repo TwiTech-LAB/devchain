@@ -1,6 +1,9 @@
 import { useCallback, useState } from 'react';
 import { ChevronRight, FolderOpen } from 'lucide-react';
-import type { RegionNode, DistrictSignals } from '@devchain/codebase-overview';
+import type {
+  RegionNode,
+  DistrictSignals,
+} from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { cn } from '@/ui/lib/utils';
 import {
   Collapsible,

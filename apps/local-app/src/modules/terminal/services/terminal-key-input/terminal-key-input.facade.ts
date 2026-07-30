@@ -54,8 +54,9 @@ function toSendControlArgs(key: string): string[] {
  * NARROW write facade exposing ONLY discrete mobile key input (`sendKey`). It is the sole
  * export of {@link TerminalKeyInputModule}, which `CloudTunnelModule` imports instead of
  * `TerminalModule` wholesale — keeping CloudTunnel a leaf/transitive consumer of the
- * Sessions↔Terminal SCC (see docs/cycle-allowlist.md). The cloud-tunnel layer never
- * injects `TerminalIOService` directly; it goes through this facade.
+ * Sessions↔Terminal SCC (see apps/local-app/scripts/cycle-allowlist.json). The
+ * cloud-tunnel layer never injects `TerminalIOService` directly; it goes through this
+ * facade.
  *
  * Unlike `control-keys.ts`, this whitelist does NOT fall back to passing unmapped input
  * through to tmux — at an RPC trust boundary that fallback is an injection hole, so every
