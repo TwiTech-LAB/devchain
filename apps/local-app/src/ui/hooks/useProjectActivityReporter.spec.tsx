@@ -1,4 +1,4 @@
-import { renderHook } from '@testing-library/react';
+import { act, renderHook } from '@testing-library/react';
 import {
   PROJECT_ACTIVITY_TOUCH_THROTTLE_MS,
   resetProjectActivityTouchThrottleForTests,
@@ -29,6 +29,7 @@ describe('useProjectActivityReporter', () => {
   beforeEach(() => {
     resetProjectActivityTouchThrottleForTests();
     fetchMock = jest.fn().mockResolvedValue(okResponse()) as jest.MockedFunction<typeof fetch>;
+    global.fetch = fetchMock as unknown as typeof fetch;
     setDocumentActivityState('visible', true);
   });
 
@@ -37,7 +38,90 @@ describe('useProjectActivityReporter', () => {
   });
 
   it('does not report activity merely from having a selected project', () => {
+    const { result } = renderHook(() => useProjectActivityReporter('project-1'));
+
+    expect(result.current).toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('registers only capture-phase pointerdown and keydown listeners', () => {
+    const addEventListenerSpy = jest.spyOn(document, 'addEventListener');
+    const removeEventListenerSpy = jest.spyOn(document, 'removeEventListener');
+    const { unmount } = renderHook(() => useProjectActivityReporter('project-1'));
+
+    expect(
+      addEventListenerSpy.mock.calls.map(([eventName, _listener, options]) => [eventName, options]),
+    ).toEqual([
+      ['pointerdown', { capture: true }],
+      ['keydown', { capture: true }],
+    ]);
+
+    unmount();
+
+    expect(
+      removeEventListenerSpy.mock.calls.map(([eventName, _listener, options]) => [
+        eventName,
+        options,
+      ]),
+    ).toEqual([
+      ['pointerdown', { capture: true }],
+      ['keydown', { capture: true }],
+    ]);
+  });
+
+  it('reports visible focused pointer and keyboard input for the current project', () => {
+    const { rerender } = renderHook(
+      ({ projectId }: { projectId: string }) => useProjectActivityReporter(projectId),
+      { initialProps: { projectId: 'project-1' } },
+    );
+
+    act(() => {
+      document.dispatchEvent(new Event('pointerdown'));
+    });
+
+    rerender({ projectId: 'project-2' });
+    resetProjectActivityTouchThrottleForTests();
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }));
+    });
+
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      '/api/cloud/activity/projects/project-1/touch',
+      '/api/cloud/activity/projects/project-2/touch',
+    ]);
+  });
+
+  it('does not report an unregistered passive event', () => {
     renderHook(() => useProjectActivityReporter('project-1'));
+
+    act(() => {
+      document.dispatchEvent(new Event('scroll'));
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps document input gated by project selection and active document state', () => {
+    const { rerender } = renderHook(
+      ({ projectId }: { projectId: string | undefined }) => useProjectActivityReporter(projectId),
+      { initialProps: { projectId: undefined } },
+    );
+
+    act(() => {
+      document.dispatchEvent(new Event('pointerdown'));
+    });
+
+    rerender({ projectId: 'project-1' });
+    setDocumentActivityState('hidden', true);
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }));
+    });
+
+    setDocumentActivityState('visible', false);
+    act(() => {
+      document.dispatchEvent(new Event('pointerdown'));
+    });
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -52,6 +136,19 @@ describe('useProjectActivityReporter', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/cloud/activity/projects/project-1/touch', {
       method: 'POST',
     });
+  });
+
+  it('URL-encodes the project id in the touch path', async () => {
+    const touched = await touchProjectActivity('project/alpha:1', {
+      fetchImpl: fetchMock,
+      now: () => 0,
+    });
+
+    expect(touched).toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/cloud/activity/projects/project%2Falpha%3A1/touch',
+      { method: 'POST' },
+    );
   });
 
   it('does not touch when project id is missing', async () => {

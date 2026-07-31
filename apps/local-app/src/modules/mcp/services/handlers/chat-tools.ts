@@ -21,8 +21,36 @@ import {
   getAvailableRecipientNames,
   type ResolvedRecipient,
 } from './chat-tools/recipient-resolution';
+import type {
+  AgentDescriptor,
+  AgentMessageRouting,
+  TeamDeliveryMode,
+} from '../../../agent-message-delivery/dtos/delivery.types';
 
 const logger = createLogger('McpService');
+
+function resolveAgentMessageRouting(
+  resolvedRecipientCount: number,
+  teamRouting:
+    | {
+        teamId: string;
+        teamName: string;
+        teamDeliveryMode: TeamDeliveryMode;
+      }
+    | undefined,
+): AgentMessageRouting {
+  if (teamRouting) {
+    return {
+      routingKind: 'group',
+      groupKind: 'team',
+      ...teamRouting,
+    };
+  }
+
+  return resolvedRecipientCount === 1
+    ? { routingKind: 'direct' }
+    : { routingKind: 'group', groupKind: 'explicit' };
+}
 
 export async function handleSendMessage(
   ctx: ChatToolContext,
@@ -126,7 +154,7 @@ export async function handleSendMessage(
 
     const recipientType = effectiveTeamName ? 'agents' : (validated.recipient ?? 'agents');
 
-    const resolvedRecipients: ResolvedRecipient[] = [];
+    const recipientCandidates: ResolvedRecipient[] = [];
     let teamDelivery:
       | {
           teamName: string;
@@ -135,7 +163,13 @@ export async function handleSendMessage(
           summary: string;
         }
       | undefined;
-    let teamDeliveryMode: 'lead' | 'lead_excluded' | 'no_lead' | undefined;
+    let teamRouting:
+      | {
+          teamId: string;
+          teamName: string;
+          teamDeliveryMode: TeamDeliveryMode;
+        }
+      | undefined;
 
     if (effectiveTeamName) {
       const matchedTeam = await ctx.teamsService.findTeamByExactName(project.id, effectiveTeamName);
@@ -174,7 +208,7 @@ export async function handleSendMessage(
         }
 
         const agent = await ctx.storage.getAgent(agentId);
-        resolvedRecipients.push({
+        recipientCandidates.push({
           type: 'agent',
           id: agent.id,
           name: agent.name,
@@ -187,7 +221,11 @@ export async function handleSendMessage(
         routedToLead,
         summary: '',
       };
-      teamDeliveryMode = routedToLead ? 'lead' : teamHasLead ? 'lead_excluded' : 'no_lead';
+      teamRouting = {
+        teamId: fullTeam.id,
+        teamName: fullTeam.name,
+        teamDeliveryMode: routedToLead ? 'lead' : teamHasLead ? 'lead_excluded' : 'no_lead',
+      };
     } else if (validated.recipientAgentNames && validated.recipientAgentNames.length > 0) {
       for (const name of validated.recipientAgentNames) {
         const recipient = await resolveRecipientByName(ctx, project.id, name);
@@ -202,15 +240,15 @@ export async function handleSendMessage(
           };
         }
         if (recipient.id !== senderId) {
-          resolvedRecipients.push(recipient);
+          recipientCandidates.push(recipient);
         }
       }
     }
-    const uniqueRecipients = resolvedRecipients.filter(
+    const resolvedRecipients = recipientCandidates.filter(
       (r, i, arr) => arr.findIndex((x) => x.id === r.id) === i,
     );
 
-    if (effectiveTeamName && uniqueRecipients.length === 0) {
+    if (effectiveTeamName && resolvedRecipients.length === 0) {
       return {
         success: false,
         error: {
@@ -223,18 +261,18 @@ export async function handleSendMessage(
     if (teamDelivery) {
       teamDelivery = {
         ...teamDelivery,
-        recipientCount: uniqueRecipients.length,
+        recipientCount: resolvedRecipients.length,
         summary:
-          teamDeliveryMode === 'lead'
+          teamRouting?.teamDeliveryMode === 'lead'
             ? 'Delivered to 1 agent (team lead)'
-            : teamDeliveryMode === 'lead_excluded'
-              ? `Delivered to ${uniqueRecipients.length} agent(s) (team lead excluded)`
-              : `Delivered to ${uniqueRecipients.length} agent(s) (no lead assigned)`,
+            : teamRouting?.teamDeliveryMode === 'lead_excluded'
+              ? `Delivered to ${resolvedRecipients.length} agent(s) (team lead excluded)`
+              : `Delivered to ${resolvedRecipients.length} agent(s) (no lead assigned)`,
       };
     }
 
     if (!validated.threadId && senderId && recipientType !== 'user') {
-      if (uniqueRecipients.length === 0) {
+      if (resolvedRecipients.length === 0) {
         return {
           success: false,
           error: {
@@ -251,28 +289,46 @@ export async function handleSendMessage(
         error?: string;
       }> = [];
 
-      const agentRecipients = uniqueRecipients.filter((r) => r.type === 'agent');
-      const guestRecipients = uniqueRecipients.filter((r) => r.type === 'guest');
+      const agentDescriptors: AgentDescriptor[] = resolvedRecipients
+        .filter((recipient) => recipient.type === 'agent')
+        .map((recipient) => ({
+          agentId: recipient.id,
+          agentName: recipient.name,
+        }));
+      const guestRecipients = resolvedRecipients.filter((recipient) => recipient.type === 'guest');
 
-      if (agentRecipients.length > 0) {
-        const outcome = await ctx.agentMessageDelivery.deliver(
-          agentRecipients.map((r) => r.id),
-          {
-            kind: 'mcp.direct',
-            body: validated.message,
-            source: 'mcp.send_message',
-            projectId: project.id,
-            senderName,
-            senderType: senderType as 'agent' | 'guest',
-            senderAgentId: senderId,
-          },
-          { submitKeys: ['Enter'] },
-        );
+      if (agentDescriptors.length > 0) {
+        const message = {
+          kind: 'mcp.direct' as const,
+          body: validated.message,
+          source: 'mcp.send_message',
+          projectId: project.id,
+          senderName,
+          senderType: senderType as 'agent' | 'guest',
+          senderAgentId: senderId,
+        };
+        const policy = { submitKeys: ['Enter'] as const };
+
+        const outcome =
+          senderType === 'agent'
+            ? await ctx.agentMessageDelivery.deliverAgentMessage(
+                agentDescriptors,
+                resolveAgentMessageRouting(resolvedRecipients.length, teamRouting),
+                message,
+                policy,
+              )
+            : await ctx.agentMessageDelivery.deliver(
+                agentDescriptors.map((descriptor) => descriptor.agentId),
+                message,
+                policy,
+              );
 
         for (const result of outcome.results) {
-          const recipient = agentRecipients.find((r) => r.id === result.agentId);
+          const recipient = agentDescriptors.find(
+            (descriptor) => descriptor.agentId === result.agentId,
+          );
           queued.push({
-            name: recipient?.name ?? result.agentId,
+            name: recipient?.agentName ?? result.agentId,
             type: 'agent',
             status: result.status === 'failed' ? 'failed' : 'queued',
             error: result.error,
@@ -369,7 +425,9 @@ export async function handleSendMessage(
       content: validated.message,
     });
 
-    let targetAgentIds = uniqueRecipients.filter((r) => r.type === 'agent').map((r) => r.id);
+    let targetAgentIds = resolvedRecipients
+      .filter((recipient) => recipient.type === 'agent')
+      .map((recipient) => recipient.id);
 
     if (senderId && thread.members && thread.members.length > 1 && targetAgentIds.length === 0) {
       targetAgentIds = thread.members.filter((id) => id !== senderId);

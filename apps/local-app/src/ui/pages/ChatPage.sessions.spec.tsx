@@ -70,6 +70,18 @@ const openWorktreeTerminalWindowMock = jest.fn();
 const closeWindowMock = jest.fn();
 const terminalWindowsMock: Array<{ id: string; minimized?: boolean }> = [];
 const appSocketEmitMock = jest.fn();
+const mockAppSocket = {
+  connected: true,
+  on: jest.fn(),
+  off: jest.fn(),
+  emit: appSocketEmitMock,
+};
+const mockWorktreeSocket = {
+  connected: true,
+  on: jest.fn(),
+  off: jest.fn(),
+  emit: jest.fn(),
+};
 const mockInlineTerminalHandle = {
   clear: jest.fn(),
   fit: jest.fn(),
@@ -190,26 +202,11 @@ jest.mock('@/ui/hooks/useWorktreeTab', () => ({
 
 // Socket mock — must return a Socket-like object with `connected` property
 jest.mock('@/ui/hooks/useAppSocket', () => ({
-  useAppSocket: jest.fn(() => ({
-    connected: true,
-    on: jest.fn(),
-    off: jest.fn(),
-    emit: appSocketEmitMock,
-  })),
+  useAppSocket: jest.fn(() => mockAppSocket),
 }));
 jest.mock('@/ui/lib/socket', () => ({
-  getAppSocket: jest.fn(() => ({
-    connected: true,
-    on: jest.fn(),
-    off: jest.fn(),
-    emit: appSocketEmitMock,
-  })),
-  getWorktreeSocket: jest.fn(() => ({
-    connected: true,
-    on: jest.fn(),
-    off: jest.fn(),
-    emit: jest.fn(),
-  })),
+  getAppSocket: jest.fn(() => mockAppSocket),
+  getWorktreeSocket: jest.fn(() => mockWorktreeSocket),
   releaseAppSocket: jest.fn(),
   releaseWorktreeSocket: jest.fn(),
 }));

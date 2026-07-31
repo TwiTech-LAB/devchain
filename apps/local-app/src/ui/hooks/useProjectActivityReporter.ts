@@ -1,12 +1,6 @@
-import { useCallback, useMemo } from 'react';
-import type { HTMLAttributes } from 'react';
+import { useEffect } from 'react';
 
 export const PROJECT_ACTIVITY_TOUCH_THROTTLE_MS = 60_000;
-
-type ProjectActivityHandlers = Pick<
-  HTMLAttributes<HTMLElement>,
-  'onFocusCapture' | 'onKeyDown' | 'onPointerDown'
->;
 
 interface TouchProjectActivityOptions {
   documentRef?: Document;
@@ -58,22 +52,18 @@ export async function touchProjectActivity(
   }
 }
 
-export function useProjectActivityReporter(projectId: string | null | undefined): {
-  projectActivityHandlers: ProjectActivityHandlers;
-  reportProjectActivity: () => void;
-} {
-  const reportProjectActivity = useCallback(() => {
-    void touchProjectActivity(projectId);
+export function useProjectActivityReporter(projectId: string | null | undefined): void {
+  useEffect(() => {
+    const reportProjectActivity = () => {
+      void touchProjectActivity(projectId);
+    };
+
+    document.addEventListener('pointerdown', reportProjectActivity, { capture: true });
+    document.addEventListener('keydown', reportProjectActivity, { capture: true });
+
+    return () => {
+      document.removeEventListener('pointerdown', reportProjectActivity, { capture: true });
+      document.removeEventListener('keydown', reportProjectActivity, { capture: true });
+    };
   }, [projectId]);
-
-  const projectActivityHandlers = useMemo<ProjectActivityHandlers>(
-    () => ({
-      onFocusCapture: reportProjectActivity,
-      onKeyDown: reportProjectActivity,
-      onPointerDown: reportProjectActivity,
-    }),
-    [reportProjectActivity],
-  );
-
-  return { projectActivityHandlers, reportProjectActivity };
 }

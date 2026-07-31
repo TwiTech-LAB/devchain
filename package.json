@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.18.0",
+  "version": "0.19.1",
   "description": "AI driven development platform",
   "homepage": "https://devchain.cc/",
   "repository": {
@@ -8,6 +8,17 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.19.1": [
+      "Template updates"
+    ],
+    "0.19.0": [
+      "Event bus: watch your team work in realtime — agent messages, session starts, and epic handoffs",
+      "Chat: stale \"Idle\" activity badges are gone; agent activity now shows through the event bus instead",
+      "Notifications: Smart notifications improvements",
+      "Cloud: event forwarding is enabled by default for new projects",
+      "Runtime: switched to SQLite's Node-API driver on Node 24",
+      "Template updates"
+    ],
     "0.18.0": [
       "Custom prompts: build your own and insert them into any agent chat on web with Alt+Shift+P",
       "DevChain MCP: extended agent info — provider config, team memberships, live online/busy presence, and open assigned epics",
@@ -352,7 +363,7 @@
   ],
   "dependencies": {
     "@fastify/http-proxy": "9.5.0",
-    "@fastify/static": "^7.0.4",
+    "@fastify/send": "2.1.0",
     "@modelcontextprotocol/sdk": "1.20.1",
     "@multiavatar/multiavatar": "1.0.7",
     "@noble/ciphers": "^1.3.0",
@@ -398,7 +409,7 @@
     "clsx": "2.1.1",
     "commander": "^12.1.0",
     "croner": "10.0.1",
-    "dockerode": "4.0.9",
+    "dockerode": "5.0.1",
     "dompurify": "3.3.1",
     "dotenv": "^16.4.5",
     "drizzle-orm": "0.44.6",
@@ -428,8 +439,9 @@
     "semver": "^7.6.0",
     "socket.io": "4.8.1",
     "socket.io-client": "4.8.1",
+    "swagger-ui-dist": "5.17.14",
     "tailwind-merge": "3.3.1",
-    "tar": "7.5.7",
+    "tar": "^7.5.22",
     "ws": "8.20.0",
     "zod": "^3.22.4"
   },

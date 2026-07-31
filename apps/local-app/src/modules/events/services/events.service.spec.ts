@@ -3,6 +3,9 @@ import { ZodError } from 'zod';
 import { EventsService, getEventMetadata } from './events.service';
 import { EventLogService } from './event-log.service';
 
+// Layer: module unit. Calling EventsService with mocked persistence and emitter
+// edges is the cheapest reliable proof of schema parsing, metadata attachment,
+// and publication orchestration without involving storage or realtime transport.
 describe('EventsService', () => {
   let eventEmitter: EventEmitter2;
   let eventLogService: { recordPublished: jest.Mock };
@@ -25,6 +28,7 @@ describe('EventsService', () => {
   it('publishes known event with valid payload', async () => {
     const payload = {
       sessionId: 'session-1',
+      projectId: 'project-1',
       epicId: null,
       agentId: 'agent-1',
       tmuxSessionName: 'devchain_project_epic_agent_session',
@@ -44,16 +48,55 @@ describe('EventsService', () => {
     expect(metadata).toEqual({ id: 'event-123' });
   });
 
-  it('rejects invalid payloads with ZodError', async () => {
+  it.each([undefined, ''])(
+    'rejects session.started with invalid projectId=%p',
+    async (projectId) => {
+      const publish = service.publish.bind(service) as unknown as (
+        name: string,
+        payload: unknown,
+      ) => Promise<string>;
+      await expect(
+        publish('session.started', {
+          sessionId: 'session-1',
+          projectId,
+          epicId: null,
+          agentId: 'agent-1',
+          tmuxSessionName: 'devchain_project_epic_agent_session',
+        }),
+      ).rejects.toBeInstanceOf(ZodError);
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+      expect(eventLogService.recordPublished).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps session.started non-strict and strips unknown fields', async () => {
     const publish = service.publish.bind(service) as unknown as (
       name: string,
       payload: unknown,
     ) => Promise<string>;
-    await expect(publish('session.started', { sessionId: 'session-1' })).rejects.toBeInstanceOf(
-      ZodError,
-    );
-    expect(eventEmitter.emit).not.toHaveBeenCalled();
-    expect(eventLogService.recordPublished).not.toHaveBeenCalled();
+
+    await publish('session.started', {
+      sessionId: 'session-1',
+      projectId: 'project-1',
+      epicId: null,
+      agentId: 'agent-1',
+      tmuxSessionName: 'devchain_project_epic_agent_session',
+      legacyExtension: 'accepted-but-not-published',
+    });
+
+    const projectedPayload = {
+      sessionId: 'session-1',
+      projectId: 'project-1',
+      epicId: null,
+      agentId: 'agent-1',
+      tmuxSessionName: 'devchain_project_epic_agent_session',
+    };
+    expect(eventLogService.recordPublished).toHaveBeenCalledWith({
+      name: 'session.started',
+      payload: projectedPayload,
+      requestId: null,
+    });
+    expect(eventEmitter.emit).toHaveBeenCalledWith('session.started', projectedPayload);
   });
 
   it('rejects unknown event names', async () => {

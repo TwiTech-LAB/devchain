@@ -3,6 +3,9 @@ import { CatalogBroadcasterService } from './catalog-broadcaster.service';
 import { broadcastRegistry } from '../catalog/broadcast-registry';
 import type { RealtimeBroadcaster } from '../../realtime/ports/realtime-broadcaster.port';
 
+// Layer: module unit. A real in-process emitter with the realtime port mocked is
+// the cheapest reliable proof of registry fanout and payload projection; a
+// Socket.IO server would add transport cost without strengthening this contract.
 describe('CatalogBroadcasterService', () => {
   let emitter: EventEmitter2;
   let mockBroadcaster: { broadcastEvent: jest.Mock };
@@ -39,6 +42,93 @@ describe('CatalogBroadcasterService', () => {
     });
   });
 
+  it('broadcasts an epic re-assignment as agent ids only, and skips non-assignment edits', () => {
+    emitter.emit('epic.updated', {
+      epicId: 'e1',
+      projectId: 'p1',
+      version: 5,
+      epicTitle: 'Some epic',
+      changes: {
+        statusId: { previous: 's1', current: 's2' },
+        agentId: { previous: 'a1', current: 'a2', previousName: 'Epic Manager' },
+      },
+    });
+
+    expect(mockBroadcaster.broadcastEvent).toHaveBeenCalledWith(
+      'project/p1/agent-messages',
+      'epic.assignment',
+      { fromAgentId: 'a1', toAgentId: 'a2' },
+    );
+
+    (mockBroadcaster.broadcastEvent as jest.Mock).mockClear();
+
+    // A status-only edit must never reach the visualization topic: `shouldBroadcast`
+    // gates it rather than emitting a frame the client is expected to discard.
+    emitter.emit('epic.updated', {
+      epicId: 'e1',
+      projectId: 'p1',
+      version: 6,
+      epicTitle: 'Some epic',
+      changes: { statusId: { previous: 's2', current: 's3' } },
+    });
+
+    expect(
+      (mockBroadcaster.broadcastEvent as jest.Mock).mock.calls.filter(
+        ([topic]: [string]) => topic === 'project/p1/agent-messages',
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('treats a first assignment as having no source and an unassignment as nothing', () => {
+    emitter.emit('epic.updated', {
+      epicId: 'e1',
+      projectId: 'p1',
+      version: 2,
+      epicTitle: 'Some epic',
+      changes: { agentId: { previous: null, current: 'a2' } },
+    });
+
+    expect(mockBroadcaster.broadcastEvent).toHaveBeenCalledWith(
+      'project/p1/agent-messages',
+      'epic.assignment',
+      { fromAgentId: null, toAgentId: 'a2' },
+    );
+
+    (mockBroadcaster.broadcastEvent as jest.Mock).mockClear();
+
+    // Unassignment has no recipient to travel to, so it produces no route at all.
+    emitter.emit('epic.updated', {
+      epicId: 'e1',
+      projectId: 'p1',
+      version: 3,
+      epicTitle: 'Some epic',
+      changes: { agentId: { previous: 'a2', current: null } },
+    });
+
+    expect(
+      (mockBroadcaster.broadcastEvent as jest.Mock).mock.calls.filter(
+        ([topic]: [string]) => topic === 'project/p1/agent-messages',
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('broadcasts session.starting with only the target agent identity', () => {
+    emitter.emit('session.starting', {
+      sessionId: 's1',
+      projectId: 'p1',
+      epicId: 'e1',
+      agentId: 'a1',
+      tmuxSessionName: 'tmux-1',
+    });
+
+    expect(mockBroadcaster.broadcastEvent).toHaveBeenCalledWith(
+      'project/p1/agent-messages',
+      'session.starting',
+      { agentId: 'a1' },
+    );
+    expect(Object.keys(mockBroadcaster.broadcastEvent.mock.calls[0][2])).toEqual(['agentId']);
+  });
+
   // ── Chat ──
   it('broadcasts chat.message.created with message payload', () => {
     const message = {
@@ -70,6 +160,71 @@ describe('CatalogBroadcasterService', () => {
       agentId: 'a1',
       readAt: '2026-01-01T00:00:00Z',
     });
+  });
+
+  it('broadcasts agent.message.sent with only visualization metadata', () => {
+    emitter.emit('agent.message.sent', {
+      projectId: 'p1',
+      senderAgentId: 'sender-1',
+      senderAgentName: 'Sender',
+      routingKind: 'group',
+      groupKind: 'team',
+      teamId: 'team-1',
+      teamName: 'Team One',
+      teamDeliveryMode: 'lead_excluded',
+      recipients: [
+        { agentId: 'recipient-1', agentName: 'Recipient One', status: 'delivered' },
+        { agentId: 'recipient-2', agentName: 'Recipient Two', status: 'failed' },
+      ],
+      recipientCount: 2,
+      deliveryStatus: 'partial',
+      message: 'must not be forwarded',
+    });
+
+    expect(mockBroadcaster.broadcastEvent).toHaveBeenCalledWith(
+      'project/p1/agent-messages',
+      'sent',
+      {
+        senderAgentId: 'sender-1',
+        routingKind: 'group',
+        teamId: 'team-1',
+        recipients: [
+          { agentId: 'recipient-1', status: 'delivered' },
+          { agentId: 'recipient-2', status: 'failed' },
+        ],
+      },
+    );
+
+    const projected = mockBroadcaster.broadcastEvent.mock.calls[0][2];
+    expect(Object.keys(projected)).toEqual([
+      'senderAgentId',
+      'routingKind',
+      'teamId',
+      'recipients',
+    ]);
+    expect(projected).not.toHaveProperty('senderAgentName');
+    expect(projected).not.toHaveProperty('teamName');
+    expect(projected).not.toHaveProperty('message');
+  });
+
+  it('omits teamId from direct agent.message.sent frames', () => {
+    emitter.emit('agent.message.sent', {
+      projectId: 'p1',
+      senderAgentId: 'sender-1',
+      senderAgentName: 'Sender',
+      routingKind: 'direct',
+      recipients: [{ agentId: 'recipient-1', agentName: 'Recipient One', status: 'queued' }],
+      recipientCount: 1,
+      deliveryStatus: 'queued',
+    });
+
+    const projected = mockBroadcaster.broadcastEvent.mock.calls[0][2];
+    expect(projected).toEqual({
+      senderAgentId: 'sender-1',
+      routingKind: 'direct',
+      recipients: [{ agentId: 'recipient-1', status: 'queued' }],
+    });
+    expect(projected).not.toHaveProperty('teamId');
   });
 
   // ── Epics ──
@@ -369,8 +524,10 @@ describe('broadcastRegistry contract', () => {
   it('covers all expected event names', () => {
     const expectedEvents = [
       'session.activity.changed',
+      'session.starting',
       'chat.message.created',
       'chat.message.read',
+      'agent.message.sent',
       'epic.created',
       'epic.updated',
       'epic.comment.created',

@@ -171,6 +171,7 @@ describe('Runtime signal state-before-broadcast ordering', () => {
 
     await eventsService.publish('session.started', {
       sessionId: 's1',
+      projectId: 'p1',
       epicId: null,
       agentId: 'a1',
       tmuxSessionName: 'tmux-1',

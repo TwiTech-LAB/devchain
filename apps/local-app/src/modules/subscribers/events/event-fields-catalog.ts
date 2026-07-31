@@ -71,6 +71,30 @@ export const EVENT_FIELDS_CATALOG: Record<string, SubscribableEventDefinition> =
     ],
   },
 
+  'agent.message.sent': {
+    name: 'agent.message.sent',
+    label: 'Agent Message Sent',
+    description: 'Fired after an MCP agent message is delivered through the agent pool',
+    category: 'chat',
+    fields: [
+      { field: 'projectId', label: 'Project ID', type: 'string' },
+      { field: 'senderAgentId', label: 'Sender Agent ID', type: 'string' },
+      { field: 'senderAgentName', label: 'Sender Agent Name', type: 'string' },
+      { field: 'routingKind', label: 'Routing Kind', type: 'string' },
+      { field: 'groupKind', label: 'Group Kind', type: 'string', nullable: true },
+      { field: 'teamId', label: 'Team ID', type: 'string', nullable: true },
+      { field: 'teamName', label: 'Team Name', type: 'string', nullable: true },
+      {
+        field: 'teamDeliveryMode',
+        label: 'Team Delivery Mode',
+        type: 'string',
+        nullable: true,
+      },
+      { field: 'recipientCount', label: 'Recipient Count', type: 'number' },
+      { field: 'deliveryStatus', label: 'Delivery Status', type: 'string' },
+    ],
+  },
+
   /**
    * @deprecated Use epic.updated with changes.agentId instead.
    * This event is emitted for backward compatibility and will be removed in a future release.
@@ -232,6 +256,19 @@ export const EVENT_FIELDS_CATALOG: Record<string, SubscribableEventDefinition> =
     ],
   },
 
+  'session.starting': {
+    name: 'session.starting',
+    label: 'Session Starting',
+    description:
+      'Fired immediately before the provider CLI is launched, when DevChain commits to starting the agent. An intent, not proof the session started — see session.started for that.',
+    category: 'session',
+    fields: [
+      { field: 'sessionId', label: 'Session ID', type: 'string' },
+      { field: 'projectId', label: 'Project ID', type: 'string' },
+      { field: 'agentId', label: 'Agent ID', type: 'string' },
+    ],
+  },
+
   'session.started': {
     name: 'session.started',
     label: 'Session Started',
@@ -239,6 +276,7 @@ export const EVENT_FIELDS_CATALOG: Record<string, SubscribableEventDefinition> =
     category: 'session',
     fields: [
       { field: 'sessionId', label: 'Session ID', type: 'string' },
+      { field: 'projectId', label: 'Project ID', type: 'string' },
       { field: 'epicId', label: 'Epic ID', type: 'string', nullable: true },
       { field: 'agentId', label: 'Agent ID', type: 'string' },
       { field: 'tmuxSessionName', label: 'Tmux Session Name', type: 'string' },

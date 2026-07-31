@@ -1,12 +1,14 @@
 import { z } from 'zod';
 import { agentCreatedEvent } from './agent.created';
 import { agentDeletedEvent } from './agent.deleted';
+import { agentMessageSentEvent } from './agent.message.sent';
 import { chatMessageReadEvent } from './chat.message.read';
 import { epicCreatedEvent } from './epic.created';
 import { epicDeletedEvent } from './epic.deleted';
 import { epicUpdatedEvent } from './epic.updated';
 import { epicCommentCreatedEvent } from './epic.comment.created';
 import { sessionStartedEvent } from './session.started';
+import { sessionStartingEvent } from './session.starting';
 import { sessionRestoredEvent } from './session.restored';
 import { sessionStoppedEvent } from './session.stopped';
 import { sessionCrashedEvent } from './session.crashed';
@@ -40,9 +42,12 @@ import { scheduledEpicExecutedEvent } from './scheduled-epic.executed';
 
 // Re-export individual event definitions for direct import
 export { settingsTerminalChangedEvent } from './settings.terminal.changed';
+export { sessionStartingEvent } from './session.starting';
 export { sessionRestoredEvent } from './session.restored';
 export type { SessionRestoredEventPayload } from './session.restored';
 export { scheduledEpicExecutedEvent } from './scheduled-epic.executed';
+export { agentMessageSentEvent } from './agent.message.sent';
+export type { AgentMessageSentEventPayload } from './agent.message.sent';
 export type {
   ScheduledEpicExecutedEventPayload,
   ScheduledEpicErrorCode,
@@ -51,12 +56,14 @@ export type {
 export const eventCatalog = {
   [agentCreatedEvent.name]: agentCreatedEvent.schema,
   [agentDeletedEvent.name]: agentDeletedEvent.schema,
+  [agentMessageSentEvent.name]: agentMessageSentEvent.schema,
   [chatMessageReadEvent.name]: chatMessageReadEvent.schema,
   [epicCreatedEvent.name]: epicCreatedEvent.schema,
   [epicDeletedEvent.name]: epicDeletedEvent.schema,
   [epicUpdatedEvent.name]: epicUpdatedEvent.schema,
   [epicCommentCreatedEvent.name]: epicCommentCreatedEvent.schema,
   [sessionStartedEvent.name]: sessionStartedEvent.schema,
+  [sessionStartingEvent.name]: sessionStartingEvent.schema,
   [sessionRestoredEvent.name]: sessionRestoredEvent.schema,
   [sessionStoppedEvent.name]: sessionStoppedEvent.schema,
   [sessionCrashedEvent.name]: sessionCrashedEvent.schema,

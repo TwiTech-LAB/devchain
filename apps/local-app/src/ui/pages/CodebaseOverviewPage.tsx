@@ -22,7 +22,6 @@ import type {
   TargetDetail,
 } from '@/modules/codebase-overview-analyzer/types/overview.types';
 import { useSelectedProject } from '../hooks/useProjectSelection';
-import { useProjectActivityReporter } from '../hooks/useProjectActivityReporter';
 import { useSubNavSearchParam } from '../hooks/useSubNavSearchParam';
 import { fetchJsonOrThrow } from '../lib/sessions';
 import { cn } from '../lib/utils';
@@ -146,7 +145,6 @@ export type OverviewSectionProps = {
 
 export function CodebaseOverviewPage() {
   const { selectedProjectId } = useSelectedProject();
-  const { projectActivityHandlers } = useProjectActivityReporter(selectedProjectId);
   const queryClient = useQueryClient();
 
   const [activeSection, setActiveSection] = useSubNavSearchParam(
@@ -359,7 +357,7 @@ export function CodebaseOverviewPage() {
   ];
 
   return (
-    <div className="flex flex-col h-full" {...projectActivityHandlers}>
+    <div className="flex flex-col h-full">
       <PageHeader
         title="Overview"
         description="Project issue radar"

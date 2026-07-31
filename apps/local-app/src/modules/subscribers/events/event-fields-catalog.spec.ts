@@ -7,7 +7,59 @@ import {
   getEventsByCategory,
 } from './event-fields-catalog';
 
+// Layer: pure unit (static catalog contract). Direct catalog/function assertions
+// are the cheapest reliable proof of subscriber field metadata because no
+// runtime service or UI behavior participates in this mapping.
 describe('EVENT_FIELDS_CATALOG', () => {
+  describe('session.started', () => {
+    const entry = EVENT_FIELDS_CATALOG['session.started'];
+
+    it('exposes required project scope to subscribers', () => {
+      const projectId = entry.fields.find((field) => field.field === 'projectId');
+
+      expect(projectId).toEqual({ field: 'projectId', label: 'Project ID', type: 'string' });
+    });
+  });
+
+  describe('agent.message.sent', () => {
+    const entry = EVENT_FIELDS_CATALOG['agent.message.sent'];
+
+    it('is discoverable in the chat category', () => {
+      expect(entry).toBeDefined();
+      expect(entry.name).toBe('agent.message.sent');
+      expect(entry.category).toBe('chat');
+      expect(getSubscribableEvents()).toContain('agent.message.sent');
+
+      const chatEvents = getEventsByCategory().get('chat') ?? [];
+      expect(chatEvents.map((event) => event.name)).toContain('agent.message.sent');
+    });
+
+    it('exposes only the supported scalar payload fields', () => {
+      expect(entry.fields.map((field) => field.field)).toEqual([
+        'projectId',
+        'senderAgentId',
+        'senderAgentName',
+        'routingKind',
+        'groupKind',
+        'teamId',
+        'teamName',
+        'teamDeliveryMode',
+        'recipientCount',
+        'deliveryStatus',
+      ]);
+      expect(entry.fields.find((field) => field.field === 'recipientCount')?.type).toBe('number');
+      expect(entry.fields.some((field) => field.field.startsWith('recipients'))).toBe(false);
+    });
+
+    it('marks group and team fields as nullable', () => {
+      const nullableFields = entry.fields
+        .filter((field) => field.nullable)
+        .map((field) => field.field);
+
+      expect(nullableFields).toEqual(['groupKind', 'teamId', 'teamName', 'teamDeliveryMode']);
+    });
+  });
+
   describe('scheduled_epic.executed', () => {
     const entry = EVENT_FIELDS_CATALOG['scheduled_epic.executed'];
 

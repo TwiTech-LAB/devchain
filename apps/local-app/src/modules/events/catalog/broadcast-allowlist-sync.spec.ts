@@ -2,6 +2,9 @@ import { isAllowlistedTunnelPushTopic } from '@devchain/shared';
 import { broadcastRegistry } from './broadcast-registry';
 import type { BroadcastTopicEntry } from './broadcast-metadata';
 
+// Layer: pure unit (static registry contract). Exercising the real registry
+// entries against the shared predicate is the cheapest reliable proof of
+// web/mobile allowlist boundaries; no broadcaster or tunnel process is needed.
 // Guards that the bridge receiver's push-topic allowlist (the canonical
 // MOBILE_PUSH_TOPIC_ALLOWLIST in @devchain/shared) stays in sync with the
 // broadcast-registry — the producer / source of truth. The bridge cannot
@@ -61,5 +64,14 @@ describe('broadcast-registry ↔ shared push allowlist sync', () => {
         expect(isAllowlistedTunnelPushTopic(topic, eventType)).toBe(false);
       }
     }
+  });
+
+  it('does NOT allowlist the web-only session.starting visualization frame', () => {
+    const entry = broadcastRegistry['session.starting'][0];
+    const { topic, eventType } = resolve(entry);
+
+    expect(topic).toBe('project/proj-1/agent-messages');
+    expect(eventType).toBe('session.starting');
+    expect(isAllowlistedTunnelPushTopic(topic, eventType)).toBe(false);
   });
 });

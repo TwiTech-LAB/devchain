@@ -26,7 +26,6 @@ import {
   useDefaultLayout,
 } from '@/ui/components/ui/resizable';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
-import { useProjectActivityReporter } from '@/ui/hooks/useProjectActivityReporter';
 import {
   FolderOpen,
   FileCode,
@@ -142,7 +141,6 @@ export function ReviewsPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { selectedProject, selectedProjectId, projectsLoading } = useSelectedProject();
-  const { projectActivityHandlers } = useProjectActivityReporter(selectedProjectId);
   const apiFetch = useFetchFactory();
 
   // UI state
@@ -614,7 +612,7 @@ export function ReviewsPage() {
   const hasChanges = changedFiles.length > 0;
 
   return (
-    <div className="flex flex-col h-full" {...projectActivityHandlers}>
+    <div className="flex flex-col h-full">
       {/* Header */}
       <div className="border-b px-4 py-3 bg-card">
         <div className="flex items-center gap-4">

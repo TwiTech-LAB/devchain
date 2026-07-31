@@ -10,7 +10,7 @@ export const chatMetadata: ToolMetadataEntry[] = [
   {
     name: 'devchain_send_message',
     description:
-      'Send a chat message. Sender is derived from session agent. Provide threadId to reply in a thread, recipientAgentNames to create a new agent-initiated group, or teamName for pooled team routing. Omit all recipient fields to fan out to your own team (resolved from session).',
+      'Send a chat message. Sender is derived from session agent. Provide threadId to reply in a thread, recipientAgentNames for pooled delivery to one or more explicit recipients without creating a thread, or teamName for pooled team routing. Omit all recipient fields to fan out to your own team (resolved from session).',
     inputSchema: {
       type: 'object',
       required: ['sessionId', 'message'],
@@ -29,7 +29,7 @@ export const chatMetadata: ToolMetadataEntry[] = [
           items: { type: 'string' },
           minItems: 1,
           description:
-            'Agent names (case-insensitive) to receive the message. Required only when creating a new thread (no threadId).',
+            'Agent names (case-insensitive) for pooled delivery. Accepts one or more recipients and does not create a thread.',
         },
         teamName: {
           type: 'string',

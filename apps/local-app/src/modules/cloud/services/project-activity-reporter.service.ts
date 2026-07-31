@@ -1,90 +1,24 @@
-import {
-  HttpException,
-  HttpStatus,
-  Inject,
-  Injectable,
-  UnauthorizedException,
-} from '@nestjs/common';
-import { OnEvent } from '@nestjs/event-emitter';
-import { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { createLogger } from '../../../common/logging/logger';
-import { DB_CONNECTION } from '../../storage/db/db.provider';
-import { getRawSqliteClient } from '../../storage/db/sqlite-raw';
-import type { SessionActivityChangedEventPayload } from '../../events/catalog/session.activity.changed';
+import { HttpException, HttpStatus, Injectable, UnauthorizedException } from '@nestjs/common';
 import { CloudSessionManagerService } from './cloud-session-manager.service';
 import { RefreshGateService } from './refresh-gate.service';
 
-const PROJECT_ACTIVITY_THROTTLE_MS = 60_000;
-const logger = createLogger('ProjectActivityReporter');
-
-interface TouchProjectOptions {
-  respectThrottle?: boolean;
-}
-
 @Injectable()
 export class ProjectActivityReporterService {
-  private readonly sqlite: ReturnType<typeof getRawSqliteClient>;
-  private readonly lastTouchedByProjectId = new Map<string, number>();
-
   constructor(
-    @Inject(DB_CONNECTION) db: BetterSQLite3Database,
     private readonly cloudSession: CloudSessionManagerService,
     private readonly refreshGate: RefreshGateService,
-  ) {
-    this.sqlite = getRawSqliteClient(db);
-  }
+  ) {}
 
-  @OnEvent('session.activity.changed', { async: true })
-  async onSessionActivityChanged(payload: SessionActivityChangedEventPayload): Promise<void> {
-    if (payload.state !== 'busy') return;
-
-    const projectId = this.resolveSessionProjectId(payload.sessionId);
-    if (!projectId) return;
-
-    try {
-      await this.touchProject(projectId);
-    } catch (error) {
-      logger.debug({ error, projectId, sessionId: payload.sessionId }, 'Activity touch failed');
-    }
-  }
-
-  async touchProject(projectId: string, options: TouchProjectOptions = {}): Promise<null> {
+  async touchProject(projectId: string): Promise<null> {
     const normalizedProjectId = projectId.trim();
     if (!normalizedProjectId) {
       throw new HttpException('Project id is required', HttpStatus.BAD_REQUEST);
-    }
-
-    const respectThrottle = options.respectThrottle ?? true;
-    if (respectThrottle && this.isThrottled(normalizedProjectId)) {
-      return null;
-    }
-
-    if (respectThrottle) {
-      this.lastTouchedByProjectId.set(normalizedProjectId, Date.now());
     }
 
     return this.forwardUpstream(
       'POST',
       `/api/v1/activity/projects/${encodeURIComponent(normalizedProjectId)}/touch`,
     );
-  }
-
-  private resolveSessionProjectId(sessionId: string): string | null {
-    const row = this.sqlite
-      .prepare(
-        `SELECT agents.project_id AS projectId
-         FROM sessions
-         JOIN agents ON agents.id = sessions.agent_id
-         WHERE sessions.id = ?`,
-      )
-      .get(sessionId) as { projectId: string | null } | undefined;
-
-    return row?.projectId ?? null;
-  }
-
-  private isThrottled(projectId: string): boolean {
-    const lastTouchedAt = this.lastTouchedByProjectId.get(projectId);
-    return lastTouchedAt !== undefined && Date.now() - lastTouchedAt < PROJECT_ACTIVITY_THROTTLE_MS;
   }
 
   private async forwardUpstream(method: string, path: string, body?: unknown): Promise<null> {

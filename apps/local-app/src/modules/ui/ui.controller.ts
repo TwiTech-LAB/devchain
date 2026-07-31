@@ -1,42 +1,40 @@
-import { Controller, Get, Req, Res } from '@nestjs/common';
+import { Controller, Get, Inject, Req, Res } from '@nestjs/common';
 import { FastifyReply, FastifyRequest } from 'fastify';
-import { join } from 'path';
-import { existsSync, readFileSync } from 'fs';
+import { selectUiAsset } from '../../common/http/runtime-route-classification';
+import { sendAllowlistedFile } from '../../common/http/send-allowlisted-file';
+import { hasUiBuild } from './ui-root';
+import { UI_ASSET_PATHS, UI_ASSET_SERVING_ENABLED, UI_ROOT } from './ui.tokens';
+
+const SPA_FILE_ALLOWLIST = new Set(['index.html']);
 
 @Controller()
 export class UiController {
+  constructor(
+    @Inject(UI_ROOT) private readonly uiRoot: string,
+    @Inject(UI_ASSET_PATHS) private readonly uiAssetPaths: ReadonlySet<string>,
+    @Inject(UI_ASSET_SERVING_ENABLED) private readonly assetServingEnabled: boolean,
+  ) {}
+
   /**
    * Serve the SPA for all non-API routes (SPA fallback).
    * API paths (/api/...) are never served as HTML — return 404 so clients
    * get a proper JSON error instead of the SPA shell.
    */
   @Get('*')
-  async serveSpa(@Req() req: FastifyRequest, @Res() res: FastifyReply): Promise<void> {
-    const pathname = req.url.split('?')[0];
+  serveSpa(@Req() req: FastifyRequest, @Res() res: FastifyReply): void {
+    const pathname = req.raw.url?.split('?')[0] ?? req.url.split('?')[0];
     if (pathname === '/api' || pathname.startsWith('/api/')) {
       res.code(404).send({ statusCode: 404, message: 'Not Found' });
       return;
     }
 
-    // Prefer production build path next to compiled server code
-    const candidates = [
-      // When running compiled code: dist/modules/ui/../../ui → dist/ui
-      join(__dirname, '../../ui'),
-      // When running TS tests: src/modules/ui/../../../dist/ui → dist/ui
-      join(__dirname, '../../../dist/ui'),
-    ];
-
-    let indexPath: string | null = null;
-    for (const base of candidates) {
-      const candidate = join(base, 'index.html');
-      if (existsSync(candidate)) {
-        indexPath = candidate;
-        break;
-      }
+    const assetPath = selectUiAsset(pathname);
+    if (assetPath !== undefined && !this.assetServingEnabled) {
+      res.code(404).send();
+      return;
     }
 
-    // Check if UI build exists
-    if (!indexPath) {
+    if (!hasUiBuild(this.uiRoot)) {
       res.code(503).send({
         statusCode: 503,
         message: 'UI not built. Run `pnpm --filter local-app build` first.',
@@ -44,8 +42,15 @@ export class UiController {
       return;
     }
 
-    // Read and send index.html for SPA routing
-    const html = readFileSync(indexPath, 'utf-8');
-    res.type('text/html').send(html);
+    if (assetPath === null) {
+      res.code(404).send();
+      return;
+    }
+
+    sendAllowlistedFile(req, res, {
+      root: this.uiRoot,
+      encodedRelativePath: assetPath ?? 'index.html',
+      allowedRelativePaths: assetPath === undefined ? SPA_FILE_ALLOWLIST : this.uiAssetPaths,
+    });
   }
 }

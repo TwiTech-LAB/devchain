@@ -8,6 +8,6 @@ export class ActivityProxyController {
   @Post('projects/:projectId/touch')
   @HttpCode(HttpStatus.NO_CONTENT)
   async touchProject(@Param('projectId') projectId: string) {
-    return this.activityReporter.touchProject(projectId, { respectThrottle: false });
+    return this.activityReporter.touchProject(projectId);
   }
 }

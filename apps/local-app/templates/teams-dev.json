@@ -1,10 +1,9 @@
 {
   "_manifest": {
     "slug": "teams-dev",
-    "order": 10,
     "name": "Teams Development Flow",
     "description": "A multi-agent development workflow that automates software delivery through three phases:\n\n1. Planning — A Brainstormer agent collaborates with a technical validator to refine user requirements into an approved master plan, then breaks it down into epics and tasks.\n2. Execution — A Coder agent implements tasks while an Epic Manager reviews and controls the flow—approving, revising, or flagging issues until all work is complete.\n3. Code Review — A Code Reviewer audits the completed work against architectural standards, generating findings that feed back into new remediation tasks if needed.\n\nSupported agents: claude, codex, glm, agy",
-    "version": "1.1.41",
+    "version": "1.1.43",
     "category": "development",
     "tags": [
       "development",
@@ -16,10 +15,10 @@
     "authorName": "Devchain",
     "changelog": "",
     "minDevchainVersion": "0.12.0",
-    "publishedAt": "2026-07-29T21:52:27.210Z"
+    "publishedAt": "2026-07-31T21:47:42.820Z"
   },
   "version": 1,
-  "exportedAt": "2026-07-29T21:52:27.210Z",
+  "exportedAt": "2026-07-31T21:47:42.820Z",
   "prompts": [
     {
       "id": "ef8c118f-6dc8-4f28-ada5-8caecd6bc47f",
@@ -38,6 +37,15 @@
       "tags": [
         "agent:profile:sub-architect",
         "type:system"
+      ]
+    },
+    {
+      "id": "035f1f29-7a77-4c17-990f-9c2303d0e297",
+      "title": "Commit-message",
+      "content": "Create a commit based on the work done:\n# Writing Commits\n\n  Your commit message is the only durable record of *why* this change exists.\n  The diff already says what changed. If you only restate the diff, the reasoning dies with your session.\n\n  ## Subject line\n  - Conventional prefix + scope, matching this repo's existing style — run `git log --oneline -15` and match what you see, don't impose a new convention.\n  - Imperative mood, ~72 chars max, no trailing period.\n  - Describe the change in the reader's terms, not the file's: \"render event pulses as glowing dots\", not \"update AgentEventBus.tsx\".\n\n  ## Body — spend your context here\n  Wrap at 72 chars. Blank line after the subject. Cover, in rough priority order:\n\n  1. **What was wrong before.** State the old behaviour concretely, with the\n     values or paths that made it wrong.\n  2. **Why the obvious fix doesn't work.** If you hit a trap that cost you time,\n     record it. The next person will otherwise hit it too. This is the highest\n     value content in the message.\n  3. **Non-obvious constraints** that shaped the approach — a platform limit, an\n     invariant, a rule you had to work around.\n  4. **Misleading diffs.** If a file's line count overstates the real change\n     (autoformatting, reindentation, generated output), say so and say what the\n     real change is. This saves a reviewer from hunting.\n  5. **Collateral fixes** and why they were needed — e.g. a test that was stale\n     for an unrelated reason you discovered while working.\n\n  ## Never\n  - Never invent rationale. If you did not do the work and cannot recover the\n    \"why\" from the diff, prior commits, code comments, or the linked task, then\n    either ask, or write only what you can verify. Plausible-sounding invented\n    reasoning is worse than none.\n  - Never claim verification you didn't run. Don't write \"all tests pass\" unless\n    you ran them and saw them pass.\n  - No marketing language, no adjectives like \"robust\" / \"improved\" /\n    \"comprehensive\". State the mechanism, let the reader judge.\n  - No process narration. \"First I tried X, then Y\" belongs nowhere. State the\n    resulting facts.\n  - No filler trailers unless this repo actually uses them.\n\n  ## Scope discipline\n  - Commit only files belonging to this change. If the working tree contains\n    unrelated work (common in shared worktrees), stage selectively, leave the\n    rest, and say in your report what you left and why.\n  - Before staging a file with a suspiciously large diff, check `git diff -w` to confirm what's actually semantic.\n  - Commit only when asked. Don't push unless asked.\n  - Never use `--no-verify` or skip hooks.\n\n  ## Before committing\n  - Re-read your own message and delete every sentence that a reader could infer from the diff. What remains is the message.",
+      "version": 1,
+      "tags": [
+        "type:custom"
       ]
     },
     {
@@ -113,7 +121,7 @@
       "id": "72f03241-e881-40ba-81c8-7283e8a43902",
       "title": "Test Prompt",
       "content": "**** This is a test prompt ****\n\n  Create and manage reusable instructions under Prompts → Create Prompt. Prompts marked as Custom are available in agent terminals for quick access whenever you need them.\n\n  Press Alt+Shift+P to open the custom prompt picker.",
-      "version": 1,
+      "version": 2,
       "tags": [
         "type:custom"
       ]
@@ -163,7 +171,7 @@
           "position": 1
         },
         {
-          "name": "gpt-high",
+          "name": "gpt",
           "providerName": "codex",
           "description": null,
           "options": "--dangerously-bypass-approvals-and-sandbox",
@@ -179,7 +187,7 @@
           "options": "--dangerously-skip-permissions",
           "env": null,
           "model": "Gemini 3.1 Pro (High)",
-          "position": 3
+          "position": 4
         },
         {
           "name": "opencode",
@@ -187,7 +195,7 @@
           "description": null,
           "options": null,
           "env": null,
-          "position": 4
+          "position": 5
         },
         {
           "name": "copilot",
@@ -195,7 +203,7 @@
           "description": null,
           "options": "--yolo",
           "env": null,
-          "position": 5
+          "position": 6
         }
       ]
     },
@@ -222,24 +230,14 @@
           "position": 0
         },
         {
-          "name": "gpt-xhigh",
+          "name": "gpt",
           "providerName": "codex",
           "description": null,
           "options": "--dangerously-bypass-approvals-and-sandbox",
           "env": null,
           "model": "gpt-5.6-sol",
           "effort": "xhigh",
-          "position": 2
-        },
-        {
-          "name": "gpt-high",
-          "providerName": "codex",
-          "description": null,
-          "options": "--dangerously-bypass-approvals-and-sandbox",
-          "env": null,
-          "model": "gpt-5.6-sol",
-          "effort": "high",
-          "position": 3
+          "position": 1
         },
         {
           "name": "agy",
@@ -291,13 +289,13 @@
           "position": 0
         },
         {
-          "name": "gpt-high",
+          "name": "gpt",
           "providerName": "codex",
           "description": null,
           "options": "--dangerously-bypass-approvals-and-sandbox",
           "env": null,
           "model": "gpt-5.6-sol",
-          "effort": "high",
+          "effort": "xhigh",
           "position": 1
         },
         {
@@ -307,7 +305,7 @@
           "options": "--dangerously-skip-permissions",
           "env": null,
           "model": "Gemini 3.1 Pro (High)",
-          "position": 2
+          "position": 3
         },
         {
           "name": "opencode",
@@ -315,7 +313,7 @@
           "description": null,
           "options": null,
           "env": null,
-          "position": 3
+          "position": 4
         },
         {
           "name": "copilot",
@@ -323,7 +321,7 @@
           "description": null,
           "options": "--yolo",
           "env": null,
-          "position": 4
+          "position": 5
         }
       ]
     },
@@ -380,6 +378,16 @@
           "position": 3
         },
         {
+          "name": "gpt-med",
+          "providerName": "codex",
+          "description": "Junior/Mid-level software engineer, for Backend/Frontend work",
+          "options": "--dangerously-bypass-approvals-and-sandbox",
+          "env": null,
+          "model": "gpt-5.6-luna",
+          "effort": "max",
+          "position": 4
+        },
+        {
           "name": "glm",
           "providerName": "claude",
           "description": "Junior/Mid-level software engineer, for Backend/Frontend work",
@@ -392,7 +400,7 @@
             "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "450000",
             "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "95"
           },
-          "position": 4
+          "position": 5
         },
         {
           "name": "opencode",
@@ -400,7 +408,7 @@
           "description": "Junior/Mid-level software engineer, for Backend/Frontend work",
           "options": null,
           "env": null,
-          "position": 5
+          "position": 6
         },
         {
           "name": "agy",
@@ -409,7 +417,7 @@
           "options": "--dangerously-skip-permissions",
           "env": null,
           "model": "Gemini 3.1 Pro (High)",
-          "position": 6
+          "position": 7
         },
         {
           "name": "copilot",
@@ -417,16 +425,6 @@
           "description": null,
           "options": "--yolo",
           "env": null,
-          "position": 7
-        },
-        {
-          "name": "gpt-med",
-          "providerName": "codex",
-          "description": "Junior/Mid-level software engineer, for Backend/Frontend work",
-          "options": "--dangerously-bypass-approvals-and-sandbox",
-          "env": null,
-          "model": "gpt-5.6-sol",
-          "effort": "medium",
           "position": 8
         }
       ]
@@ -558,7 +556,7 @@
       "profileId": "fcc21d6e-9de0-446a-9aaa-1a836c8f52ef",
       "description": null,
       "modelOverride": null,
-      "providerConfigName": "gpt-high"
+      "providerConfigName": "gpt"
     },
     {
       "id": "1082100f-3484-46a8-b86e-b669de274f21",
@@ -566,7 +564,7 @@
       "profileId": "e11c487d-76cc-459d-aaf7-5d10def90bb7",
       "description": "responsible for code review of completed phases",
       "modelOverride": null,
-      "providerConfigName": "gpt-high"
+      "providerConfigName": "gpt"
     }
   ],
   "statuses": [
@@ -664,7 +662,8 @@
         "gpt-5.4",
         "gpt-5.5",
         "gpt-5.6-terra",
-        "gpt-5.6-sol"
+        "gpt-5.6-sol",
+        "gpt-5.6-luna"
       ]
     },
     {
@@ -1085,8 +1084,7 @@
           "profileName": "Architect",
           "configNames": [
             "opus",
-            "opus46",
-            "gpt-high"
+            "opus46"
           ]
         }
       ]
@@ -1109,6 +1107,7 @@
           "configNames": [
             "gpt",
             "opus46",
+            "gpt-med",
             "opus",
             "sonnet"
           ]
@@ -1118,116 +1117,42 @@
   ],
   "presets": [
     {
-      "name": "Tier-B[opus:opencode:codex]",
-      "description": "Budget friendly set\nRequires claude, glm, gpt subscriptions",
-      "agentConfigs": [
-        {
-          "agentName": "Brainstormer",
-          "providerConfigName": "opus",
-          "modelOverride": null
-        },
-        {
-          "agentName": "Epic Manager",
-          "providerConfigName": "opus",
-          "modelOverride": "sonnet"
-        },
-        {
-          "agentName": "Code Reviewer",
-          "providerConfigName": "gpt-high",
-          "modelOverride": null
-        },
-        {
-          "agentName": "Architect",
-          "providerConfigName": "gpt-high",
-          "modelOverride": null
-        }
-      ]
-    },
-    {
-      "name": "Tier-A[gpt-high]",
-      "description": null,
-      "agentConfigs": [
-        {
-          "agentName": "Brainstormer",
-          "providerConfigName": "gpt-high",
-          "modelOverride": null
-        },
-        {
-          "agentName": "Epic Manager",
-          "providerConfigName": "gpt-medium",
-          "modelOverride": null
-        },
-        {
-          "agentName": "Code Reviewer",
-          "providerConfigName": "gpt-high",
-          "modelOverride": null
-        },
-        {
-          "agentName": "Architect",
-          "providerConfigName": "gpt-high",
-          "modelOverride": null
-        }
-      ]
-    },
-    {
       "name": "Tier-A[opus]",
       "description": null,
       "agentConfigs": [
         {
           "agentName": "Brainstormer",
           "providerConfigName": "opus",
-          "modelOverride": null
+          "modelOverride": null,
+          "effortOverride": null
         },
         {
           "agentName": "Epic Manager",
           "providerConfigName": "opus",
-          "modelOverride": "sonnet"
+          "modelOverride": "sonnet",
+          "effortOverride": null
         },
         {
           "agentName": "Code Reviewer",
           "providerConfigName": "opus",
-          "modelOverride": null
+          "modelOverride": null,
+          "effortOverride": null
         },
         {
           "agentName": "Architect",
           "providerConfigName": "opus",
-          "modelOverride": null
+          "modelOverride": null,
+          "effortOverride": null
         }
       ]
     },
     {
-      "name": "Tier-A+[opus:sonnet:codex]",
-      "description": "Budget friendly\nRecommended for use with Claude Pro + Codex plus Plans",
+      "name": "Tier-A[gpt]",
+      "description": null,
       "agentConfigs": [
         {
           "agentName": "Brainstormer",
-          "providerConfigName": "opus",
-          "modelOverride": null
-        },
-        {
-          "agentName": "Epic Manager",
-          "providerConfigName": "opus",
-          "modelOverride": "sonnet"
-        },
-        {
-          "agentName": "Code Reviewer",
-          "providerConfigName": "gpt-high",
-          "modelOverride": null
-        },
-        {
-          "agentName": "Architect",
-          "providerConfigName": "gpt-high",
-          "modelOverride": null
-        }
-      ]
-    },
-    {
-      "name": "Tier-S[codex:opus:codex]",
-      "description": "Best Results , High token consumption. \nMost of the of the load is handled by ChatGPT\nRecommended for ChatGPT Pro subscriptions",
-      "agentConfigs": [
-        {
-          "agentName": "Brainstormer",
-          "providerConfigName": "gpt-xhigh",
+          "providerConfigName": "gpt",
           "modelOverride": null,
           "effortOverride": null
         },
@@ -1239,20 +1164,20 @@
         },
         {
           "agentName": "Code Reviewer",
-          "providerConfigName": "gpt-high",
+          "providerConfigName": "gpt",
           "modelOverride": null,
           "effortOverride": null
         },
         {
           "agentName": "Architect",
-          "providerConfigName": "opus",
+          "providerConfigName": "gpt",
           "modelOverride": null,
           "effortOverride": null
         }
       ]
     },
     {
-      "name": "Tier-S[opus:codex:codex]",
+      "name": "Tier-S[opus:codex]",
       "description": "Best Results , High token consumption. \nMost of the of the load is handled by GPT5 model\nRecommended for Claude + Codex subscriptions",
       "agentConfigs": [
         {
@@ -1269,43 +1194,43 @@
         },
         {
           "agentName": "Code Reviewer",
-          "providerConfigName": "gpt-high",
+          "providerConfigName": "gpt",
           "modelOverride": null,
           "effortOverride": null
         },
         {
           "agentName": "Architect",
-          "providerConfigName": "gpt-high",
+          "providerConfigName": "gpt",
           "modelOverride": null,
           "effortOverride": null
         }
       ]
     },
     {
-      "name": "Tier-S[opus:opus:codex]",
-      "description": "Best Results , High token consumption. \nMost of the of the load is handled by Opus model\nRecommended for Claude MAX subscriptions",
+      "name": "Tier-S[codex:opus]",
+      "description": "Best Results , High token consumption. \nMost of the of the load is handled by ChatGPT\nRecommended for ChatGPT Pro subscriptions",
       "agentConfigs": [
         {
           "agentName": "Brainstormer",
-          "providerConfigName": "opus",
+          "providerConfigName": "gpt",
           "modelOverride": null,
           "effortOverride": null
         },
         {
           "agentName": "Epic Manager",
-          "providerConfigName": "opus",
-          "modelOverride": "sonnet",
+          "providerConfigName": "gpt-medium",
+          "modelOverride": null,
           "effortOverride": null
         },
         {
           "agentName": "Code Reviewer",
-          "providerConfigName": "gpt-high",
+          "providerConfigName": "opus",
           "modelOverride": null,
           "effortOverride": null
         },
         {
           "agentName": "Architect",
-          "providerConfigName": "gpt-high",
+          "providerConfigName": "opus",
           "modelOverride": null,
           "effortOverride": null
         }

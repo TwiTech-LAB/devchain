@@ -157,6 +157,23 @@ describe('tool-descriptors', () => {
       expect(schema?.properties?.recipientAgentNames?.minItems).toBe(1);
     });
 
+    it('documents explicit recipients as pooled delivery without thread creation', () => {
+      const entry = allMetadata.find((m) => m.name === 'devchain_send_message');
+      const schema = entry?.inputSchema as {
+        properties?: Record<string, { description?: string }>;
+      };
+
+      expect(entry?.description).toContain(
+        'pooled delivery to one or more explicit recipients without creating a thread',
+      );
+      expect(schema?.properties?.recipientAgentNames?.description).toContain(
+        'Accepts one or more recipients',
+      );
+      expect(schema?.properties?.recipientAgentNames?.description).toContain(
+        'does not create a thread',
+      );
+    });
+
     it('includes teamName with self-team hint', () => {
       const entry = allMetadata.find((m) => m.name === 'devchain_send_message');
       const schema = entry?.inputSchema as {

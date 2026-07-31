@@ -1,4 +1,4 @@
-import { useRef, type ReactNode } from 'react';
+import { useCallback, useRef, type ReactNode, type RefCallback } from 'react';
 import {
   AlertTriangle,
   Circle,
@@ -28,6 +28,7 @@ import {
 import { cn } from '@/ui/lib/utils';
 import type { AgentOrGuest } from '@/ui/hooks/useChatQueries';
 import type { AgentContextMetrics } from '@/ui/hooks/useAgentSessionMetrics';
+import type { AgentEventBusAnchorDescriptor } from './agent-event-bus';
 
 interface AgentRowProps {
   agent: AgentOrGuest;
@@ -50,6 +51,8 @@ interface AgentRowProps {
   isRestarting: boolean;
   isLaunchingChat: boolean;
   activityBadge?: ReactNode;
+  eventBusAnchor?: AgentEventBusAnchorDescriptor;
+  anchorRef?: RefCallback<HTMLElement>;
   /** Whether to show the "Overrides…" context-menu entry (hidden for guests). */
   canOverride?: boolean;
   /** Opens the shared Overrides dialog; receives the row trigger for focus restoration. */
@@ -136,6 +139,8 @@ export function AgentRow({
   isRestarting,
   isLaunchingChat,
   activityBadge,
+  eventBusAnchor,
+  anchorRef,
   canOverride = false,
   onOpenOverrides,
   isTeamLead = false,
@@ -153,13 +158,20 @@ export function AgentRow({
   onToggleContextTracking,
 }: AgentRowProps) {
   const anyBusy = isLaunching || isRestarting;
-  const triggerRef = useRef<HTMLButtonElement>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const setTriggerRef = useCallback<RefCallback<HTMLButtonElement>>(
+    (element) => {
+      triggerRef.current = element;
+      anchorRef?.(element);
+    },
+    [anchorRef],
+  );
 
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
         <button
-          ref={triggerRef}
+          ref={setTriggerRef}
           onClick={onClick}
           disabled={isLaunchingChat}
           className={cn(
@@ -172,6 +184,9 @@ export function AgentRow({
           aria-label={`Chat with ${agent.name}${isOnline ? ' (online)' : ' (offline)'}`}
           aria-current={isSelected ? 'true' : undefined}
           data-context-metrics-key={contextTrackingEnabled ? contextMetricsKey : undefined}
+          data-agent-event-bus-key={eventBusAnchor?.key}
+          data-agent-event-bus-agent-id={eventBusAnchor?.agentId}
+          data-agent-event-bus-team-id={eventBusAnchor?.teamId}
         >
           {providerIconUri ? (
             <span

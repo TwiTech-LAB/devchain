@@ -111,6 +111,21 @@ describe('McpService', () => {
         status: 'queued',
         results: [{ agentId: TEST_AGENT.id, status: 'queued' }],
       }),
+      deliverAgentMessage: jest
+        .fn()
+        .mockImplementation(
+          (
+            descriptors: Array<{ agentId: string }>,
+            _routing: unknown,
+            message: unknown,
+            policy: unknown,
+          ) =>
+            (agentMessageDelivery as { deliver: jest.Mock }).deliver(
+              descriptors.map((descriptor) => descriptor.agentId),
+              message,
+              policy,
+            ),
+        ),
       ack: jest.fn().mockResolvedValue(undefined),
       formatMessage: jest
         .fn()

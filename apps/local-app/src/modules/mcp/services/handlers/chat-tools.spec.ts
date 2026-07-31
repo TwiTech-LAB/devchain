@@ -25,6 +25,7 @@ const MESSAGE_ID = '00000000-0000-0000-0000-000000000005';
 const GUEST_ID = '00000000-0000-0000-0000-000000000006';
 const RECIPIENT_AGENT_ID = '00000000-0000-0000-0000-000000000007';
 const TEAM_ID = '00000000-0000-0000-0000-000000000008';
+const RECIPIENT_GUEST_ID = '00000000-0000-0000-0000-000000000009';
 
 function makeAgentCtx(): AgentSessionContext {
   return {
@@ -61,11 +62,22 @@ function makeCtx(
         throw new NotFoundError('Agent', id);
       }),
       getAgentByName: jest.fn().mockImplementation(async (_projectId: string, name: string) => {
+        if (name === AGENT_NAME) return { id: AGENT_ID, name: AGENT_NAME, projectId: PROJECT_ID };
         if (name === 'Agent-B')
           return { id: RECIPIENT_AGENT_ID, name: 'Agent-B', projectId: PROJECT_ID };
         throw new NotFoundError('Agent', name);
       }),
-      getGuestByName: jest.fn().mockResolvedValue(null),
+      getGuestByName: jest.fn().mockImplementation(async (_projectId: string, name: string) => {
+        if (name === 'Guest-B') {
+          return {
+            id: RECIPIENT_GUEST_ID,
+            name: 'Guest-B',
+            projectId: PROJECT_ID,
+            tmuxSessionId: 'tmux-guest-b',
+          };
+        }
+        return null;
+      }),
       listAgents: jest.fn().mockResolvedValue({ items: [], total: 0 }),
       listGuests: jest.fn().mockResolvedValue([]),
     } as never,
@@ -234,6 +246,199 @@ describe('chat-tools handlers', () => {
       });
       expect(result.success).toBe(false);
       expect(result.error?.code).toBe('RECIPIENT_NOT_FOUND');
+    });
+
+    it('classifies a deduplicated non-self explicit recipient as direct', async () => {
+      const deliverAgentMessage = jest.fn().mockResolvedValue({
+        status: 'queued',
+        results: [{ agentId: RECIPIENT_AGENT_ID, status: 'queued' }],
+      });
+      const ctx = makeCtx(null, {
+        agentMessageDelivery: {
+          deliverAgentMessage,
+        } as unknown as AgentMessageDeliveryService,
+      });
+
+      const result = await handleSendMessage(ctx, {
+        sessionId: SESSION_ID,
+        recipientAgentNames: [AGENT_NAME, 'Agent-B', 'Agent-B'],
+        message: 'hello',
+      });
+
+      expect(result.success).toBe(true);
+      expect(deliverAgentMessage).toHaveBeenCalledWith(
+        [{ agentId: RECIPIENT_AGENT_ID, agentName: 'Agent-B' }],
+        { routingKind: 'direct' },
+        expect.objectContaining({
+          kind: 'mcp.direct',
+          senderAgentId: AGENT_ID,
+          senderName: AGENT_NAME,
+        }),
+        { submitKeys: ['Enter'] },
+      );
+    });
+
+    it('classifies a mixed explicit route as a group while publishing only agent descriptors', async () => {
+      const deliverAgentMessage = jest.fn().mockResolvedValue({
+        status: 'delivered',
+        results: [{ agentId: RECIPIENT_AGENT_ID, status: 'delivered' }],
+      });
+      const deliverToGuest = jest.fn().mockResolvedValue({ delivered: true });
+      const ctx = makeCtx(null, {
+        agentMessageDelivery: {
+          deliverAgentMessage,
+          deliverToGuest,
+          formatMessage: jest.fn().mockReturnValue('formatted'),
+        } as unknown as AgentMessageDeliveryService,
+      });
+
+      const result = await handleSendMessage(ctx, {
+        sessionId: SESSION_ID,
+        recipientAgentNames: ['Agent-B', 'Guest-B'],
+        message: 'hello',
+      });
+
+      expect(result.success).toBe(true);
+      expect(deliverAgentMessage).toHaveBeenCalledWith(
+        [{ agentId: RECIPIENT_AGENT_ID, agentName: 'Agent-B' }],
+        { routingKind: 'group', groupKind: 'explicit' },
+        expect.any(Object),
+        { submitKeys: ['Enter'] },
+      );
+      expect(deliverToGuest).toHaveBeenCalledWith('tmux-guest-b', 'formatted', ['Enter']);
+    });
+
+    it('keeps team-to-lead routing as a team group with only the lead descriptor', async () => {
+      const deliverAgentMessage = jest.fn().mockResolvedValue({
+        status: 'queued',
+        results: [{ agentId: RECIPIENT_AGENT_ID, status: 'queued' }],
+      });
+      const ctx = makeCtx(null, {
+        agentMessageDelivery: {
+          deliverAgentMessage,
+        } as unknown as AgentMessageDeliveryService,
+      });
+      (ctx.teamsService.findTeamByExactName as jest.Mock).mockResolvedValue({
+        id: TEAM_ID,
+        name: 'Builders',
+      });
+      (ctx.teamsService.getTeam as jest.Mock).mockResolvedValue({
+        id: TEAM_ID,
+        name: 'Builders',
+        teamLeadAgentId: RECIPIENT_AGENT_ID,
+        members: [{ agentId: RECIPIENT_AGENT_ID }, { agentId: AGENT_ID }],
+      });
+
+      const result = await handleSendMessage(ctx, {
+        sessionId: SESSION_ID,
+        teamName: 'Builders',
+        message: 'hello',
+      });
+
+      expect(result.success).toBe(true);
+      expect(deliverAgentMessage).toHaveBeenCalledWith(
+        [{ agentId: RECIPIENT_AGENT_ID, agentName: 'Agent-B' }],
+        {
+          routingKind: 'group',
+          groupKind: 'team',
+          teamId: TEAM_ID,
+          teamName: 'Builders',
+          teamDeliveryMode: 'lead',
+        },
+        expect.any(Object),
+        { submitKeys: ['Enter'] },
+      );
+    });
+
+    it('keeps a one-recipient self-team fan-out as a team group', async () => {
+      const deliverAgentMessage = jest.fn().mockResolvedValue({
+        status: 'queued',
+        results: [{ agentId: RECIPIENT_AGENT_ID, status: 'queued' }],
+      });
+      const ctx = makeCtx(null, {
+        agentMessageDelivery: {
+          deliverAgentMessage,
+        } as unknown as AgentMessageDeliveryService,
+      });
+      (ctx.teamsService.listTeamsByAgent as jest.Mock).mockResolvedValue([
+        { id: TEAM_ID, name: 'Builders' },
+      ]);
+      (ctx.teamsService.findTeamByExactName as jest.Mock).mockResolvedValue({
+        id: TEAM_ID,
+        name: 'Builders',
+      });
+      (ctx.teamsService.getTeam as jest.Mock).mockResolvedValue({
+        id: TEAM_ID,
+        name: 'Builders',
+        teamLeadAgentId: AGENT_ID,
+        members: [{ agentId: AGENT_ID }, { agentId: RECIPIENT_AGENT_ID }],
+      });
+
+      const result = await handleSendMessage(ctx, {
+        sessionId: SESSION_ID,
+        message: 'hello',
+      });
+
+      expect(result.success).toBe(true);
+      expect(deliverAgentMessage).toHaveBeenCalledWith(
+        [{ agentId: RECIPIENT_AGENT_ID, agentName: 'Agent-B' }],
+        expect.objectContaining({
+          routingKind: 'group',
+          groupKind: 'team',
+          teamDeliveryMode: 'lead_excluded',
+        }),
+        expect.any(Object),
+        { submitKeys: ['Enter'] },
+      );
+    });
+
+    it('makes no agent-message publication attempt for a guest-only route', async () => {
+      const deliverAgentMessage = jest.fn();
+      const deliver = jest.fn();
+      const deliverToGuest = jest.fn().mockResolvedValue({ delivered: true });
+      const ctx = makeCtx(null, {
+        agentMessageDelivery: {
+          deliverAgentMessage,
+          deliver,
+          deliverToGuest,
+          formatMessage: jest.fn().mockReturnValue('formatted'),
+        } as unknown as AgentMessageDeliveryService,
+      });
+
+      const result = await handleSendMessage(ctx, {
+        sessionId: SESSION_ID,
+        recipientAgentNames: ['Guest-B'],
+        message: 'hello',
+      });
+
+      expect(result.success).toBe(true);
+      expect(deliverAgentMessage).not.toHaveBeenCalled();
+      expect(deliver).not.toHaveBeenCalled();
+      expect(deliverToGuest).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps guest-sender delivery on the generic event-free path', async () => {
+      const deliverAgentMessage = jest.fn();
+      const deliver = jest.fn().mockResolvedValue({
+        status: 'queued',
+        results: [{ agentId: RECIPIENT_AGENT_ID, status: 'queued' }],
+      });
+      const ctx = makeCtx(makeGuestCtx(), {
+        agentMessageDelivery: {
+          deliverAgentMessage,
+          deliver,
+        } as unknown as AgentMessageDeliveryService,
+      });
+
+      const result = await handleSendMessage(ctx, {
+        sessionId: SESSION_ID,
+        recipientAgentNames: ['Agent-B'],
+        message: 'hello',
+      });
+
+      expect(result.success).toBe(true);
+      expect(deliverAgentMessage).not.toHaveBeenCalled();
+      expect(deliver).toHaveBeenCalledTimes(1);
     });
   });
 

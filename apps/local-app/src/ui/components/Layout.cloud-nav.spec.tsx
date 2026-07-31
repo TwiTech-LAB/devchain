@@ -7,11 +7,19 @@ import { Layout } from './Layout';
 import { RuntimeProvider } from '../hooks/useRuntime';
 import { WorktreeTabProvider } from '../hooks/useWorktreeTab';
 
+// Layer: UI component unit. Mocking project selection and the activity hook is the cheapest
+// reliable proof that Layout owns the wiring without duplicating the hook's event matrix.
 const useSelectedProjectMock = jest.fn();
+const mockUseProjectActivityReporter = jest.fn();
 let cloudUiEnabled = false;
 
 jest.mock('../hooks/useProjectSelection', () => ({
   useSelectedProject: () => useSelectedProjectMock(),
+}));
+
+jest.mock('../hooks/useProjectActivityReporter', () => ({
+  useProjectActivityReporter: (projectId: string | null | undefined) =>
+    mockUseProjectActivityReporter(projectId),
 }));
 
 jest.mock('../hooks/use-toast', () => ({
@@ -121,6 +129,7 @@ async function renderLayout(initialEntries: string[] = ['/projects']) {
 describe('Cloud sidebar navigation', () => {
   beforeEach(() => {
     cloudUiEnabled = false;
+    mockUseProjectActivityReporter.mockClear();
     useSelectedProjectMock.mockReturnValue({
       projects: [{ id: 'project-1', name: 'Project One', rootPath: '/tmp/project-one' }],
       projectsLoading: false,
@@ -176,6 +185,12 @@ describe('Cloud sidebar navigation', () => {
     expect(screen.queryByRole('link', { name: 'Cloud' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Notifications' })).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Settings' })).toBeInTheDocument();
+  });
+
+  it('mounts the activity reporter with the effective selected project', async () => {
+    await renderLayout();
+
+    expect(mockUseProjectActivityReporter).toHaveBeenCalledWith('project-1');
   });
 
   it('shows Cloud and Notifications nav items when Cloud UI is enabled', async () => {

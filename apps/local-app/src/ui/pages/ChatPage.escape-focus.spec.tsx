@@ -5,6 +5,18 @@ import { MemoryRouter } from 'react-router-dom';
 
 const socketEmitSpy = jest.fn();
 const focusedWindowIdMock = { value: null as string | null };
+const mockAppSocket = {
+  connected: true,
+  on: jest.fn(),
+  off: jest.fn(),
+  emit: socketEmitSpy,
+};
+const mockWorktreeSocket = {
+  connected: true,
+  on: jest.fn(),
+  off: jest.fn(),
+  emit: jest.fn(),
+};
 
 jest.mock('@xterm/xterm/css/xterm.css', () => ({}), { virtual: true });
 jest.mock('@xterm/xterm', () => {
@@ -65,26 +77,11 @@ jest.mock('@/ui/hooks/useWorktreeTab', () => ({
   }),
 }));
 jest.mock('@/ui/hooks/useAppSocket', () => ({
-  useAppSocket: jest.fn(() => ({
-    connected: true,
-    on: jest.fn(),
-    off: jest.fn(),
-    emit: socketEmitSpy,
-  })),
+  useAppSocket: jest.fn(() => mockAppSocket),
 }));
 jest.mock('@/ui/lib/socket', () => ({
-  getAppSocket: jest.fn(() => ({
-    connected: true,
-    on: jest.fn(),
-    off: jest.fn(),
-    emit: socketEmitSpy,
-  })),
-  getWorktreeSocket: jest.fn(() => ({
-    connected: true,
-    on: jest.fn(),
-    off: jest.fn(),
-    emit: jest.fn(),
-  })),
+  getAppSocket: jest.fn(() => mockAppSocket),
+  getWorktreeSocket: jest.fn(() => mockWorktreeSocket),
   releaseAppSocket: jest.fn(),
   releaseWorktreeSocket: jest.fn(),
 }));

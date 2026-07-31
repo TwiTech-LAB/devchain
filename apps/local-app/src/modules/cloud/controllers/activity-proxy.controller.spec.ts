@@ -4,7 +4,10 @@ import { ActivityProxyController } from './activity-proxy.controller';
 import { CloudSessionManagerService } from '../services/cloud-session-manager.service';
 import { RefreshGateService } from '../services/refresh-gate.service';
 import { ProjectActivityReporterService } from '../services/project-activity-reporter.service';
-import { DB_CONNECTION } from '../../storage/db/db.provider';
+
+// Layer: module unit. This controller exercises the cloud proxy with auth, refresh, and fetch boundaries mocked.
+
+const PROJECT_ID = '550e8400-e29b-41d4-a716-446655440000';
 
 function mockFetchResponse(status: number, body: unknown = {}, ok?: boolean) {
   return {
@@ -27,7 +30,6 @@ describe('ActivityProxyController', () => {
   let controller: ActivityProxyController;
   let cloudSession: jest.Mocked<Pick<CloudSessionManagerService, 'getStatus' | 'getAccessToken'>>;
   let refreshGate: jest.Mocked<Pick<RefreshGateService, 'attemptRefresh'>>;
-  let mockDb: { prepare: jest.Mock };
   let fetchSpy: jest.SpyInstance;
 
   beforeEach(async () => {
@@ -38,15 +40,11 @@ describe('ActivityProxyController', () => {
     refreshGate = {
       attemptRefresh: jest.fn(),
     };
-    mockDb = {
-      prepare: jest.fn(),
-    };
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [ActivityProxyController],
       providers: [
         ProjectActivityReporterService,
-        { provide: DB_CONNECTION, useValue: mockDb },
         { provide: CloudSessionManagerService, useValue: cloudSession },
         { provide: RefreshGateService, useValue: refreshGate },
       ],
@@ -63,7 +61,7 @@ describe('ActivityProxyController', () => {
   it('throws 401 when cloud is not connected and does not call upstream', async () => {
     cloudSession.getStatus.mockReturnValue({ connected: false, identityServiceUrl: '' });
 
-    await expect(controller.touchProject('project-1')).rejects.toThrow(UnauthorizedException);
+    await expect(controller.touchProject(PROJECT_ID)).rejects.toThrow(UnauthorizedException);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -72,11 +70,11 @@ describe('ActivityProxyController', () => {
     cloudSession.getAccessToken.mockReturnValue('tok-abc');
     fetchSpy.mockResolvedValue(mockFetchResponse(204, '', true));
 
-    const result = await controller.touchProject('project-1');
+    const result = await controller.touchProject(PROJECT_ID);
 
     expect(result).toBeNull();
     expect(fetchSpy).toHaveBeenCalledWith(
-      expect.stringContaining('/api/v1/activity/projects/project-1/touch'),
+      expect.stringContaining(`/api/v1/activity/projects/${PROJECT_ID}/touch`),
       expect.objectContaining({
         method: 'POST',
         headers: expect.objectContaining({ Authorization: 'Bearer tok-abc' }),
@@ -91,7 +89,7 @@ describe('ActivityProxyController', () => {
     const jsonSpy = jest.spyOn(response, 'json');
     fetchSpy.mockResolvedValue(response);
 
-    const result = await controller.touchProject('project-1');
+    const result = await controller.touchProject(PROJECT_ID);
 
     expect(result).toBeNull();
     expect(jsonSpy).not.toHaveBeenCalled();
@@ -116,13 +114,13 @@ describe('ActivityProxyController', () => {
       .mockResolvedValueOnce(mockFetchResponse(401, 'Unauthorized'))
       .mockResolvedValueOnce(mockFetchResponse(204, '', true));
 
-    const result = await controller.touchProject('project-1');
+    const result = await controller.touchProject(PROJECT_ID);
 
     expect(result).toBeNull();
     expect(refreshGate.attemptRefresh).toHaveBeenCalledTimes(1);
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     expect(fetchSpy).toHaveBeenLastCalledWith(
-      expect.stringContaining('/api/v1/activity/projects/project-1/touch'),
+      expect.stringContaining(`/api/v1/activity/projects/${PROJECT_ID}/touch`),
       expect.objectContaining({
         method: 'POST',
         headers: expect.objectContaining({ Authorization: 'Bearer fresh' }),
@@ -136,7 +134,7 @@ describe('ActivityProxyController', () => {
     refreshGate.attemptRefresh.mockResolvedValue('permanent_failure');
     fetchSpy.mockResolvedValue(mockFetchResponse(401, 'Unauthorized'));
 
-    await expect(controller.touchProject('project-1')).rejects.toThrow(UnauthorizedException);
+    await expect(controller.touchProject(PROJECT_ID)).rejects.toThrow(UnauthorizedException);
     expect(refreshGate.attemptRefresh).toHaveBeenCalledTimes(1);
   });
 
@@ -148,7 +146,7 @@ describe('ActivityProxyController', () => {
       fetchSpy.mockResolvedValue(mockFetchResponse(statusCode, 'error body'));
 
       try {
-        await controller.touchProject('project-1');
+        await controller.touchProject(PROJECT_ID);
         fail('Expected HttpException');
       } catch (error) {
         expect(error).toBeInstanceOf(HttpException);

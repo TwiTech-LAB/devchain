@@ -55,6 +55,34 @@ export interface DeliveryOutcome {
   readonly results: readonly RecipientResult[];
 }
 
+export interface AgentDescriptor {
+  readonly agentId: string;
+  readonly agentName: string;
+}
+
+export type TeamDeliveryMode = 'lead' | 'lead_excluded' | 'no_lead';
+
+export type AgentMessageRouting =
+  | {
+      readonly routingKind: 'direct';
+    }
+  | {
+      readonly routingKind: 'group';
+      readonly groupKind: 'explicit';
+    }
+  | {
+      readonly routingKind: 'group';
+      readonly groupKind: 'team';
+      readonly teamId: string;
+      readonly teamName: string;
+      readonly teamDeliveryMode: TeamDeliveryMode;
+    };
+
+export type AgentMessageDeliveryMessage = DeliveryMessage & {
+  readonly kind: 'mcp.direct';
+  readonly senderAgentId: string;
+};
+
 export interface RecipientResult {
   readonly agentId: string;
   readonly status: 'queued' | 'delivered' | 'failed' | 'unconfirmed';

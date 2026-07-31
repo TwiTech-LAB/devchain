@@ -180,6 +180,29 @@ describe('ChatSidebar header controls', () => {
     }
   });
 
+  // Layer: UI component (jsdom). Rendering ChatSidebar is the cheapest reliable
+  // proof of React ownership and MAIN-only registration; browser pixel geometry
+  // and hit-testing are covered by the dedicated Playwright spec.
+  it('mounts the bus in the unchanged MAIN padding wrapper and registers only the MAIN row', () => {
+    renderSidebar();
+
+    const wrapper = screen.getByTestId('chat-main-agents-wrapper');
+    const mainRegion = wrapper.querySelector('#chat-main-agents');
+    const overlay = screen.getByTestId('agent-event-bus-svg');
+    const lane = screen.getByLabelText('Agent event bus controls');
+    const mainRow = screen.getByRole('listitem', { name: /Chat with Alpha/i });
+
+    expect(wrapper).toHaveClass('relative', 'px-4', 'py-4');
+    expect(mainRegion?.parentElement).toBe(wrapper);
+    expect(overlay.parentElement).toBe(wrapper);
+    expect(lane.parentElement).toBe(wrapper);
+    expect(mainRegion).not.toContainElement(overlay);
+    expect(mainRow).toHaveAttribute('data-agent-event-bus-key', 'all:agent-1');
+    expect(mainRow).toHaveAttribute('data-agent-event-bus-agent-id', 'agent-1');
+    expect(mainRow).not.toHaveAttribute('data-agent-event-bus-team-id');
+    expect(wrapper.querySelectorAll('[data-agent-event-bus-agent-id]')).toHaveLength(1);
+  });
+
   it('renders the agents panel actions with theme-safe bulk control styles and preset options', async () => {
     const onStartAllAgents = jest.fn();
     const onTerminateAllConfirm = jest.fn();
@@ -489,6 +512,30 @@ describe('ChatSidebar activity badges', () => {
 
     const badge = screen.getByLabelText('Busy for 1m');
     expect(badge).toHaveTextContent(/^1m$/);
+  });
+
+  // Layer: UI component (jsdom). Rendering the sidebar is the cheapest reliable
+  // proof that idle presence produces no activity marker in the agent list.
+  it('hides the activity badge while an online agent is idle', async () => {
+    renderSidebar({
+      agentPresence: {
+        [agent.id]: {
+          online: true,
+          sessionId: 'session-1',
+          activityState: 'idle',
+        },
+      } as unknown as FlatChatSidebarProps['agentPresence'],
+      agentsWithSessions: [agent],
+      offlineAgents: [],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: 'All' })).toHaveAttribute('aria-selected', 'true');
+    });
+
+    expect(screen.queryByLabelText('Idle')).not.toBeInTheDocument();
+    expect(screen.queryByText('Idle')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Busy for/i)).not.toBeInTheDocument();
   });
 });
 
@@ -867,6 +914,89 @@ describe('ChatSidebar team lead-as-header rendering', () => {
       allowTeamLeadCreateAgents: false,
     });
   });
+
+  // Layer: UI component (jsdom). Rendering the sidebar with two mocked team
+  // responses is the cheapest reliable proof that React preserves both mounted
+  // copies and assigns stable team-scoped keys.
+  it('retains duplicate mounted copies with stable team-scoped registration keys', async () => {
+    const sharedAgent = agentMember;
+    const teams = [
+      { id: 'team-a', name: 'Team A' },
+      { id: 'team-b', name: 'Team B' },
+    ];
+    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.startsWith('/api/teams?')) {
+        return {
+          ok: true,
+          json: async () => ({
+            items: teams.map((team) => ({
+              ...team,
+              description: null,
+              teamLeadAgentId: null,
+              teamLeadAgentName: null,
+              maxMembers: 5,
+              maxConcurrentTasks: 3,
+              allowTeamLeadCreateAgents: false,
+              memberCount: 1,
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            })),
+            total: teams.length,
+            limit: 50,
+            offset: 0,
+          }),
+        };
+      }
+      const team = teams.find((candidate) => url.endsWith(`/api/teams/${candidate.id}`));
+      if (team) {
+        return {
+          ok: true,
+          json: async () => ({
+            ...team,
+            projectId: 'project-1',
+            description: null,
+            teamLeadAgentId: null,
+            teamLeadAgentName: null,
+            maxMembers: 5,
+            maxConcurrentTasks: 3,
+            allowTeamLeadCreateAgents: false,
+            members: [
+              {
+                agentId: sharedAgent.id,
+                agentName: sharedAgent.name,
+                isLead: false,
+                createdAt: '2024-01-01T00:00:00.000Z',
+              },
+            ],
+            profileIds: [],
+            profileConfigSelections: [],
+            createdAt: '2024-01-01T00:00:00.000Z',
+            updatedAt: '2024-01-01T00:00:00.000Z',
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+
+    const { container } = renderSidebar({
+      agents: [sharedAgent],
+      offlineAgents: [sharedAgent],
+    });
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('listitem', { name: /Chat with Member Agent/i })).toHaveLength(2);
+    });
+
+    const anchors = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-agent-event-bus-agent-id="agent-member"]'),
+    );
+    expect(anchors.map((row) => row.dataset.agentEventBusKey)).toEqual([
+      'team-a:agent-member',
+      'team-b:agent-member',
+    ]);
+    expect(anchors.map((row) => row.dataset.agentEventBusTeamId)).toEqual(['team-a', 'team-b']);
+  });
 });
 
 describe('ChatSidebar guest and worktree compatibility', () => {
@@ -943,6 +1073,7 @@ describe('ChatSidebar guest and worktree compatibility', () => {
     const guestRow = screen.getByRole('listitem', { name: 'Guest: Guest Agent (online)' });
     expect(guestRow).toHaveAttribute('type', 'button');
     expect(guestRow).toHaveClass('cursor-default', 'bg-card/40');
+    expect(guestRow).not.toHaveAttribute('data-agent-event-bus-agent-id');
 
     fireEvent.click(guestRow);
     expect(onLaunchChat).not.toHaveBeenCalled();
@@ -968,6 +1099,7 @@ describe('ChatSidebar guest and worktree compatibility', () => {
       name: 'Open terminal for Worktree Agent in feature-auth (online)',
     });
     expect(worktreeRow).toHaveClass('bg-card/40', 'hover:border-border');
+    expect(worktreeRow).not.toHaveAttribute('data-agent-event-bus-agent-id');
 
     const providerIconFrame = screen.getByTitle('Provider: Claude');
     expect(providerIconFrame).toHaveClass(

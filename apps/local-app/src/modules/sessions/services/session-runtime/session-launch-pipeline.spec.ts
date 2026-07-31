@@ -115,10 +115,13 @@ describe('SessionLaunchPipeline', () => {
       const result = await runWithTimers(() => pipeline.launch(launchDto));
 
       // session.started event published
-      expect(mocks.eventsService.publish).toHaveBeenCalledWith(
-        'session.started',
-        expect.objectContaining({ agentId: 'agent-1' }),
-      );
+      expect(mocks.eventsService.publish).toHaveBeenCalledWith('session.started', {
+        sessionId: expect.any(String),
+        projectId: 'project-1',
+        epicId: 'epic-1',
+        agentId: 'agent-1',
+        tmuxSessionName: expect.any(String),
+      });
 
       // DB insert happened (prepare was called with INSERT)
       const insertCalls = mocks.sqliteMock.prepare.mock.calls.filter(([sql]: [string]) =>
@@ -132,6 +135,54 @@ describe('SessionLaunchPipeline', () => {
           agentId: 'agent-1',
           status: 'running',
         }),
+      );
+    });
+
+    // Layer: pipeline unit test with mocked terminal/event edges; this is the
+    // cheapest layer that observes the launch-prompt and event call ordering.
+    it('publishes session.started after prompt handling and before online presence', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      mocks.storage.getInitialSessionPrompt.mockResolvedValue({ content: 'Hello agent' });
+
+      await runWithTimers(() => pipeline.launch(launchDto));
+
+      const publishNames = mocks.eventsService.publish.mock.calls.map(([name]) => name);
+      const startedIndex = publishNames.indexOf('session.started');
+      const presenceIndex = publishNames.indexOf('session.presence.changed');
+
+      expect(mocks.terminalIO.deliver).toHaveBeenCalled();
+      expect(mocks.terminalIO.deliver.mock.invocationCallOrder[0]).toBeLessThan(
+        mocks.eventsService.publish.mock.invocationCallOrder[startedIndex],
+      );
+      expect(mocks.eventsService.publish.mock.invocationCallOrder[startedIndex]).toBeLessThan(
+        mocks.eventsService.publish.mock.invocationCallOrder[presenceIndex],
+      );
+    });
+
+    it('publishes session.starting before the provider command is typed', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      mocks.storage.getInitialSessionPrompt.mockResolvedValue({ content: 'Hello agent' });
+
+      await runWithTimers(() => pipeline.launch(launchDto));
+
+      const publishNames = mocks.eventsService.publish.mock.calls.map(([name]) => name);
+      const startingIndex = publishNames.indexOf('session.starting');
+      const startedIndex = publishNames.indexOf('session.started');
+
+      expect(startingIndex).toBeGreaterThanOrEqual(0);
+      expect(mocks.eventsService.publish).toHaveBeenCalledWith('session.starting', {
+        sessionId: expect.any(String),
+        projectId: 'project-1',
+        agentId: 'agent-1',
+      });
+      // The whole point of this event: it must land BEFORE the CLI is launched, because
+      // session.started only follows provider output plus the minimum launch delay and so
+      // arrives seconds after the agent is visibly running.
+      expect(mocks.eventsService.publish.mock.invocationCallOrder[startingIndex]).toBeLessThan(
+        mocks.terminalIO.typeCommand.mock.invocationCallOrder[0],
+      );
+      expect(mocks.eventsService.publish.mock.invocationCallOrder[startingIndex]).toBeLessThan(
+        mocks.eventsService.publish.mock.invocationCallOrder[startedIndex],
       );
     });
 

@@ -23,13 +23,19 @@
     --border: 214.3 31.8% 91.4%;
     --input: 214.3 31.8% 91.4%;
     --ring: 221.2 83.2% 53.3%;
+    --event-bus-agent-message: 188 78% 38%;
+    --event-bus-session-started: 38 92% 48%;
+    --event-bus-epic-assigned: 276 55% 45%;
+    --event-bus-spark: 222.2 47.4% 11.2%;
     --radius: 0.5rem;
     --terminal-background: 210 40% 98%;
     --terminal-foreground: 222.2 47.4% 11.2%;
     --terminal-cursor: 221.2 83.2% 53.3%;
     --terminal-selection: 221.2 83.2% 53.3%;
     --terminal-selection-opacity: 0.22;
-    --font-mono: 'Ubuntu Mono', 'JetBrains Mono', 'Fira Code', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'Liberation Mono', 'Courier New', monospace;
+    --font-mono:
+      'Ubuntu Mono', 'JetBrains Mono', 'Fira Code', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas',
+      'Liberation Mono', 'Courier New', monospace;
   }
 
   .dark {
@@ -53,25 +59,31 @@
     --border: 0 0% 22%; /* visible neutral borders */
     --input: 0 0% 18%;
     --ring: 210 90% 55%;
+    --event-bus-agent-message: 186 90% 58%;
+    --event-bus-session-started: 42 94% 60%;
+    --event-bus-epic-assigned: 276 76% 68%;
+    --event-bus-spark: 0 0% 96%;
     --terminal-background: 0 0% 10%; /* matches main background */
     --terminal-foreground: 0 0% 88%;
     --terminal-cursor: 210 90% 55%;
     --terminal-selection: 210 90% 55%;
     --terminal-selection-opacity: 0.38;
-    --font-mono: 'Ubuntu Mono', 'JetBrains Mono', 'Fira Code', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'Liberation Mono', 'Courier New', monospace;
+    --font-mono:
+      'Ubuntu Mono', 'JetBrains Mono', 'Fira Code', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas',
+      'Liberation Mono', 'Courier New', monospace;
   }
 
   /* react-diff-view dark mode — html.dark beats library :root specificity */
   html.dark {
-    --diff-gutter-insert-background-color: rgba(46, 160, 67, 0.20);
-    --diff-gutter-delete-background-color: rgba(248, 81, 73, 0.20);
-    --diff-code-insert-background-color: rgba(46, 160, 67, 0.10);
-    --diff-code-delete-background-color: rgba(248, 81, 73, 0.10);
+    --diff-gutter-insert-background-color: rgba(46, 160, 67, 0.2);
+    --diff-gutter-delete-background-color: rgba(248, 81, 73, 0.2);
+    --diff-code-insert-background-color: rgba(46, 160, 67, 0.1);
+    --diff-code-delete-background-color: rgba(248, 81, 73, 0.1);
     --diff-code-insert-edit-background-color: rgba(46, 160, 67, 0.35);
     --diff-code-delete-edit-background-color: rgba(248, 81, 73, 0.35);
-    --diff-gutter-selected-background-color: rgba(180, 160, 40, 0.20);
-    --diff-code-selected-background-color: rgba(180, 160, 40, 0.10);
-    --diff-omit-gutter-line-color: rgba(248, 81, 73, 0.60);
+    --diff-gutter-selected-background-color: rgba(180, 160, 40, 0.2);
+    --diff-code-selected-background-color: rgba(180, 160, 40, 0.1);
+    --diff-omit-gutter-line-color: rgba(248, 81, 73, 0.6);
   }
 
   /* Ocean theme: calm, refined palette with depth */
@@ -95,12 +107,18 @@
     --border: 210 20% 85%; /* visible but soft borders */
     --input: 210 25% 88%;
     --ring: 205 80% 45%;
+    --event-bus-agent-message: 174 72% 34%;
+    --event-bus-session-started: 30 88% 48%;
+    --event-bus-epic-assigned: 276 55% 45%;
+    --event-bus-spark: 215 35% 18%;
     --terminal-background: 210 20% 93%;
     --terminal-foreground: 215 25% 18%;
     --terminal-cursor: 205 80% 45%;
     --terminal-selection: 205 80% 50%;
     --terminal-selection-opacity: 0.25;
-    --font-mono: 'Ubuntu Mono', 'JetBrains Mono', 'Fira Code', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'Liberation Mono', 'Courier New', monospace;
+    --font-mono:
+      'Ubuntu Mono', 'JetBrains Mono', 'Fira Code', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas',
+      'Liberation Mono', 'Courier New', monospace;
   }
 }
 
@@ -110,7 +128,9 @@
   }
   body {
     @apply bg-background text-foreground;
-    font-feature-settings: "rlig" 1, "calt" 1;
+    font-feature-settings:
+      'rlig' 1,
+      'calt' 1;
   }
 }
 
@@ -270,7 +290,7 @@
 /* Widget row - special handling for comment widgets */
 .diff-viewer .diff-widget-content {
   /* Override max-content width for widget cells */
-  width: 1px;  /* Collapse cell, let content define width */
+  width: 1px; /* Collapse cell, let content define width */
 }
 
 /* Comment widget wrapper - constrain to reasonable width */
@@ -283,7 +303,7 @@
 
 /* Comment and form widgets */
 .diff-viewer .new-comment-form,
-.diff-viewer [data-testid="comment-thread"] {
+.diff-viewer [data-testid='comment-thread'] {
   width: 100%;
   max-width: 100%;
   overflow-wrap: anywhere;
@@ -293,7 +313,7 @@
 /* Ensure comment content text wraps properly */
 .diff-viewer .inline-comment-wrapper p,
 .diff-viewer .inline-comment-wrapper .text-sm,
-.diff-viewer [data-testid="comment-thread"] p,
+.diff-viewer [data-testid='comment-thread'] p,
 .diff-viewer .pl-4 p {
   overflow-wrap: anywhere;
   word-break: break-word;

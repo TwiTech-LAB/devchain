@@ -19,7 +19,6 @@ import {
   type DataTableProps,
 } from '@/ui/components/shared';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
-import { useProjectActivityReporter } from '@/ui/hooks/useProjectActivityReporter';
 import { useBreadcrumbs } from '@/ui/hooks/useBreadcrumbs';
 
 interface EpicSummary {
@@ -80,7 +79,6 @@ const TYPE_ALL = 'all';
 
 export function RecordsPage() {
   const { selectedProjectId, projectsLoading } = useSelectedProject();
-  const { projectActivityHandlers } = useProjectActivityReporter(selectedProjectId);
   const { setBreadcrumbs, clearBreadcrumbs } = useBreadcrumbs();
   const [selectedEpicId, setSelectedEpicId] = useState<string | undefined>();
   const [selectedRecord, setSelectedRecord] = useState<EpicRecordListItem | null>(null);
@@ -237,7 +235,7 @@ export function RecordsPage() {
   }, [selectedProjectId, selectedEpicId, refetchEpics, refetchRecords]);
 
   return (
-    <div className="space-y-6" {...projectActivityHandlers}>
+    <div className="space-y-6">
       <PageHeader
         title="Records"
         description="Browse agent-generated records by epic and inspect their structured data."

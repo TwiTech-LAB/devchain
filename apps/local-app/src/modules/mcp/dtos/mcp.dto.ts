@@ -691,7 +691,7 @@ export interface DeleteEpicResponse {
 // Sender identity is derived from sessionId (ctx.agent).
 // Allows:
 // - threadId (agent replies into existing thread; recipients optional for fan-out)
-// - recipientAgentNames (creates new agent-initiated injection if threadId omitted)
+// - recipientAgentNames (pooled delivery to explicit agents; does not create a thread)
 // - teamName (pooled team routing; handler logic resolved separately)
 // - recipient: internal-only, not exposed in tool schema
 export const SendMessageParamsSchema = z

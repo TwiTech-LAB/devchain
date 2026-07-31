@@ -688,28 +688,28 @@
     "input_cost_per_token": 7.5e-7,
     "output_cost_per_token": 0.0000045,
     "cache_read_input_token_cost": 7.5e-8,
-    "max_input_tokens": 400000,
+    "max_input_tokens": 272000,
     "max_output_tokens": 128000
   },
   "azure_ai/gpt-5.4-mini-2026-03-17": {
     "input_cost_per_token": 7.5e-7,
     "output_cost_per_token": 0.0000045,
     "cache_read_input_token_cost": 7.5e-8,
-    "max_input_tokens": 400000,
+    "max_input_tokens": 272000,
     "max_output_tokens": 128000
   },
   "azure_ai/gpt-5.4-nano": {
     "input_cost_per_token": 2e-7,
     "output_cost_per_token": 0.00000125,
     "cache_read_input_token_cost": 2e-8,
-    "max_input_tokens": 400000,
+    "max_input_tokens": 272000,
     "max_output_tokens": 128000
   },
   "azure_ai/gpt-5.4-nano-2026-03-17": {
     "input_cost_per_token": 2e-7,
     "output_cost_per_token": 0.00000125,
     "cache_read_input_token_cost": 2e-8,
-    "max_input_tokens": 400000,
+    "max_input_tokens": 272000,
     "max_output_tokens": 128000
   },
   "azure/eu/gpt-4o-2024-08-06": {
@@ -1581,28 +1581,28 @@
     "input_cost_per_token": 7.5e-7,
     "output_cost_per_token": 0.0000045,
     "cache_read_input_token_cost": 7.5e-8,
-    "max_input_tokens": 1050000,
+    "max_input_tokens": 272000,
     "max_output_tokens": 128000
   },
   "azure/gpt-5.4-mini-2026-03-17": {
     "input_cost_per_token": 7.5e-7,
     "output_cost_per_token": 0.0000045,
     "cache_read_input_token_cost": 7.5e-8,
-    "max_input_tokens": 1050000,
+    "max_input_tokens": 272000,
     "max_output_tokens": 128000
   },
   "azure/gpt-5.4-nano": {
     "input_cost_per_token": 2e-7,
     "output_cost_per_token": 0.00000125,
     "cache_read_input_token_cost": 2e-8,
-    "max_input_tokens": 1050000,
+    "max_input_tokens": 272000,
     "max_output_tokens": 128000
   },
   "azure/gpt-5.4-nano-2026-03-17": {
     "input_cost_per_token": 2e-7,
     "output_cost_per_token": 0.00000125,
     "cache_read_input_token_cost": 2e-8,
-    "max_input_tokens": 1050000,
+    "max_input_tokens": 272000,
     "max_output_tokens": 128000
   },
   "azure/gpt-image-2": {
@@ -3685,18 +3685,18 @@
     "max_output_tokens": 128000
   },
   "gpt-5.6-terra": {
-    "input_cost_per_token": 0.0000025,
-    "output_cost_per_token": 0.000015,
-    "cache_read_input_token_cost": 2.5e-7,
-    "cache_creation_input_token_cost": 0.000003125,
+    "input_cost_per_token": 0.000002,
+    "output_cost_per_token": 0.000012,
+    "cache_read_input_token_cost": 2e-7,
+    "cache_creation_input_token_cost": 0.0000025,
     "max_input_tokens": 1050000,
     "max_output_tokens": 128000
   },
   "gpt-5.6-luna": {
-    "input_cost_per_token": 0.000001,
-    "output_cost_per_token": 0.000006,
-    "cache_read_input_token_cost": 1e-7,
-    "cache_creation_input_token_cost": 0.00000125,
+    "input_cost_per_token": 2e-7,
+    "output_cost_per_token": 0.0000012,
+    "cache_read_input_token_cost": 2e-8,
+    "cache_creation_input_token_cost": 2.5e-7,
     "max_input_tokens": 1050000,
     "max_output_tokens": 128000
   },
@@ -3760,28 +3760,28 @@
     "input_cost_per_token": 7.5e-7,
     "output_cost_per_token": 0.0000045,
     "cache_read_input_token_cost": 7.5e-8,
-    "max_input_tokens": 1050000,
+    "max_input_tokens": 272000,
     "max_output_tokens": 128000
   },
   "gpt-5.4-mini-2026-03-17": {
     "input_cost_per_token": 7.5e-7,
     "output_cost_per_token": 0.0000045,
     "cache_read_input_token_cost": 7.5e-8,
-    "max_input_tokens": 1050000,
+    "max_input_tokens": 272000,
     "max_output_tokens": 128000
   },
   "gpt-5.4-nano": {
     "input_cost_per_token": 2e-7,
     "output_cost_per_token": 0.00000125,
     "cache_read_input_token_cost": 2e-8,
-    "max_input_tokens": 1050000,
+    "max_input_tokens": 272000,
     "max_output_tokens": 128000
   },
   "gpt-5.4-nano-2026-03-17": {
     "input_cost_per_token": 2e-7,
     "output_cost_per_token": 0.00000125,
     "cache_read_input_token_cost": 2e-8,
-    "max_input_tokens": 1050000,
+    "max_input_tokens": 272000,
     "max_output_tokens": 128000
   },
   "gpt-5-pro": {

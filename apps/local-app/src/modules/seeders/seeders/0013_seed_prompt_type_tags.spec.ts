@@ -9,6 +9,7 @@ import { WatchersService } from '../../watchers/services/watchers.service';
 import { DataSeederService, REGISTERED_DATA_SEEDERS } from '../services/data-seeder.service';
 import type { SeederContext } from '../types/seeder.types';
 import { runSeedPromptTypeTags, seedPromptTypeTagsSeeder } from './0013_seed_prompt_type_tags';
+import { seedPreserveProjectEgressDefaultsSeeder } from './0014_seed_preserve_project_egress_defaults';
 
 const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
 const TS = '2026-07-28T00:00:00.000Z';
@@ -293,14 +294,17 @@ describe('0013_seed_prompt_type_tags', () => {
     });
   });
 
-  it('is registered after 0012 with the permanent version-1 journal identity', () => {
+  it('is registered immediately before 0014 with the permanent version-1 journal identity', () => {
     expect(seedPromptTypeTagsSeeder).toMatchObject({
       name: '0013_seed_prompt_type_tags',
       version: 1,
     });
-    expect(REGISTERED_DATA_SEEDERS.slice(-2).map((seeder) => seeder.name)).toEqual([
-      '0012_seed_claude_launch_settings',
-      '0013_seed_prompt_type_tags',
-    ]);
+    const promptTypeTagsIndex = REGISTERED_DATA_SEEDERS.indexOf(seedPromptTypeTagsSeeder);
+    const preserveEgressDefaultsIndex = REGISTERED_DATA_SEEDERS.indexOf(
+      seedPreserveProjectEgressDefaultsSeeder,
+    );
+
+    expect(promptTypeTagsIndex).toBeGreaterThan(-1);
+    expect(preserveEgressDefaultsIndex).toBe(promptTypeTagsIndex + 1);
   });
 });

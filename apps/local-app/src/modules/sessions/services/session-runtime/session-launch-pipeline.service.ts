@@ -259,6 +259,25 @@ export class SessionLaunchPipeline {
         this.terminalSessionRegistry.bind(sessionId, this.terminalIO);
 
         // Phase 11: pasteInitialPrompt + launch CLI + emit session.started
+        //
+        // `session.starting` announces the launch BEFORE the command is typed, because
+        // `launchCliAndPastePrompt` below waits for provider output and then holds for a
+        // minimum launch delay — so `session.started` lands several seconds after the
+        // agent is visibly running. Consumers that need to react as the session begins
+        // use this one. Failure here is non-fatal: it must not block a real launch.
+        try {
+          await this.eventsService.publish('session.starting', {
+            sessionId,
+            projectId: project.id,
+            agentId,
+          });
+        } catch (error) {
+          logger.warn(
+            { sessionId, agentId, error: error instanceof Error ? error.message : String(error) },
+            'Failed to publish session.starting',
+          );
+        }
+
         await this.launchCliAndPastePrompt(sessionId, tmuxSessionName, finalConfig, {
           agent,
           project,
@@ -271,6 +290,7 @@ export class SessionLaunchPipeline {
 
         await this.eventsService.publish('session.started', {
           sessionId,
+          projectId: project.id,
           epicId: epicId ?? null,
           agentId,
           tmuxSessionName,

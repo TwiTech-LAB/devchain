@@ -1,4 +1,13 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentProps,
+  type ReactNode,
+} from 'react';
 import { HelpButton } from '@/ui/components/shared';
 import { Button } from '@/ui/components/ui/button';
 import { Badge } from '@/ui/components/ui/badge';
@@ -68,6 +77,11 @@ import { shortModelName } from '@/ui/lib/model-utils';
 import { Link } from 'react-router-dom';
 import { fetchTeamDetail, fetchTeams, teamsQueryKeys, type TeamDetail } from '@/ui/lib/teams';
 import { TeamQuickAddButton } from './TeamQuickAddButton';
+import {
+  AgentEventBus,
+  useAgentEventBusAnchor,
+  type AgentEventBusAnchorDescriptor,
+} from './agent-event-bus';
 
 // ============================================
 // Feature Flags
@@ -197,6 +211,15 @@ export interface ChatSidebarProps {
 }
 
 type AgentGroupMode = 'all' | 'teams';
+
+interface EventBusAgentRowProps extends ComponentProps<typeof AgentRow> {
+  eventBusAnchor: AgentEventBusAnchorDescriptor;
+}
+
+function EventBusAgentRow({ eventBusAnchor, ...props }: EventBusAgentRowProps) {
+  const anchorRef = useAgentEventBusAnchor(eventBusAnchor);
+  return <AgentRow {...props} eventBusAnchor={eventBusAnchor} anchorRef={anchorRef} />;
+}
 
 // ============================================
 // Component
@@ -461,6 +484,7 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     }
   });
   const sidebarRef = useRef<HTMLDivElement>(null);
+  const mainAgentsContainerRef = useRef<HTMLDivElement>(null);
   const [visibleContextKeys, setVisibleContextKeys] = useState<Set<string>>(() => new Set());
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -538,14 +562,6 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
         >
           {label}
         </span>
-      );
-    }
-
-    if (activityState === 'idle') {
-      return (
-        <Badge variant="outline" className="shrink-0" aria-label="Idle">
-          Idle
-        </Badge>
       );
     }
 
@@ -820,7 +836,7 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     const configDisplay = getAgentConfigDisplay(agent);
 
     return (
-      <AgentRow
+      <EventBusAgentRow
         key={`${keyPrefix}:${agent.id}`}
         agent={agent}
         isSelected={isSelected}
@@ -888,6 +904,11 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
           }
         }}
         onToggleContextTracking={() => handleToggleContextBar(metricsKey)}
+        eventBusAnchor={{
+          key: `${keyPrefix}:${agent.id}`,
+          agentId: agent.id,
+          ...(options?.teamId ? { teamId: options.teamId } : {}),
+        }}
       />
     );
   }
@@ -957,746 +978,777 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
         </div>
       </div>
 
-      <ScrollArea className="flex-1" hideScrollbar>
-        {/* Agents Section */}
-        <div className="px-4 py-4">
-          <div className="mb-3 flex w-full items-center gap-2 rounded-md border border-border/70 bg-muted/30 px-2 py-1.5">
-            <button
-              type="button"
-              className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1 text-left hover:bg-muted/50"
-              onClick={() => setMainExpanded((previous) => !previous)}
-              aria-expanded={mainExpanded}
-              aria-controls="chat-main-agents"
-            >
-              {mainExpanded ? (
-                <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-              ) : (
-                <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-              )}
-              <UsersRound className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              <span className="text-sm font-semibold text-muted-foreground">MAIN</span>
-            </button>
-            <Tabs
-              value={agentGroupMode}
-              onValueChange={(value) => {
-                if (value === 'all' || value === 'teams') {
-                  handleAgentGroupModeChange(value);
-                }
-              }}
-              className="shrink-0"
-            >
-              <TabsList
-                aria-label="Agent grouping mode"
-                className="h-8 rounded-md bg-muted/70 p-0.5"
-              >
-                <TabsTrigger value="all" className="h-7 px-2.5 text-xs">
-                  All
-                </TabsTrigger>
-                <TabsTrigger value="teams" className="h-7 px-2.5 text-xs">
-                  Teams
-                </TabsTrigger>
-              </TabsList>
-            </Tabs>
-            <PresetPopover
-              presets={validatedPresets}
-              activePreset={activePreset}
-              applying={applyingPreset}
-              onApply={onApplyPreset}
-              disabled={!hasSelectedProject}
-            />
-          </div>
-          {mainExpanded && (
-            <div
-              id="chat-main-agents"
-              className="space-y-1"
-              role={agentGroupMode === 'all' ? 'list' : undefined}
-              aria-label={agentGroupMode === 'all' ? 'Direct messages' : undefined}
-            >
-              {agentGroupMode === 'teams' ? (
-                <>
-                  {teamViewLoading ? (
-                    <div className="space-y-2" aria-hidden>
-                      {Array.from({ length: 3 }).map((_, index) => (
-                        <Skeleton key={index} className="h-10 w-full" />
-                      ))}
-                    </div>
-                  ) : teams.length === 0 ? (
-                    <>
-                      <div className="rounded-md border border-dashed border-border/70 bg-muted/20 px-3 py-4">
-                        <p className="text-xs text-muted-foreground">
-                          No teams configured.{' '}
-                          <Link
-                            to="/teams"
-                            className="font-medium text-foreground underline underline-offset-2"
-                          >
-                            Open Teams
-                          </Link>
-                        </p>
-                      </div>
-                      {teamSections.noTeamAgents.length > 0 && (
-                        <div className="pt-2">
-                          {renderVisualSectionHeader(
-                            'STANDALONE',
-                            formatSectionCount(teamSections.noTeamAgents.length, 'agent'),
-                            <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />,
-                          )}
-                          <div className="space-y-1" role="list" aria-label="Standalone agents">
-                            {teamSections.noTeamAgents.map((agent) =>
-                              renderMainAgentRow(agent, { keyPrefix: 'no-team' }),
-                            )}
-                          </div>
-                        </div>
-                      )}
-                    </>
+      {/*
+        `-ml-4` widens the scroll viewport 16px to the LEFT, into the page gutter between
+        the nav and this panel (the page wrapper's `px-4`). A scroll container cannot paint
+        outside itself — `overflow-x: visible` is not possible alongside vertical scrolling
+        — so this is what lets the event bus bloom spill into that gap instead of being cut
+        at the panel edge. The agents region below re-adds the 16px as padding, so every row
+        stays exactly where it was.
+      */}
+      <ScrollArea className="-ml-4 flex-1" hideScrollbar>
+        {/* Re-adds the 16px the ScrollArea borrowed, so all content stays put. */}
+        <div className="pl-4">
+          {/* Agents Section */}
+          <div
+            ref={mainAgentsContainerRef}
+            className="relative px-4 py-4"
+            data-testid="chat-main-agents-wrapper"
+          >
+            <AgentEventBus projectId={projectId} containerRef={mainAgentsContainerRef}>
+              <div className="mb-3 flex w-full items-center gap-2 rounded-md border border-border/70 bg-muted/30 px-2 py-1.5">
+                <button
+                  type="button"
+                  className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1 text-left hover:bg-muted/50"
+                  onClick={() => setMainExpanded((previous) => !previous)}
+                  aria-expanded={mainExpanded}
+                  aria-controls="chat-main-agents"
+                >
+                  {mainExpanded ? (
+                    <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
                   ) : (
-                    <>
-                      {teamSections.items.map(({ team, detail, agents: teamAgents }) => {
-                        const leadAgent = detail.teamLeadAgentId
-                          ? teamAgents.find((a) => a.id === detail.teamLeadAgentId)
-                          : null;
-                        const otherMembers = leadAgent
-                          ? teamAgents.filter((a) => a.id !== detail.teamLeadAgentId)
-                          : teamAgents;
-                        const isExpanded = !collapsedTeamGroups[team.id];
-                        const hasExpandable = otherMembers.length > 0;
-
-                        if (!leadAgent) {
-                          return (
-                            <div
-                              key={team.id}
-                              className="overflow-hidden rounded-md border border-border bg-card/80 shadow-sm"
-                            >
-                              <div className="flex w-full items-center gap-2 border-b border-border/70 bg-muted/20 px-3 py-2 text-xs">
-                                <button
-                                  type="button"
-                                  onClick={() => toggleTeamGroup(team.id)}
-                                  className="flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-muted/50"
-                                  aria-expanded={isExpanded}
-                                  aria-controls={`chat-team-group-${team.id}`}
-                                  aria-label={`Toggle ${team.name} members`}
-                                >
-                                  {isExpanded ? (
-                                    <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-                                  ) : (
-                                    <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-                                  )}
-                                  <UsersRound className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                                  <span className="min-w-0 flex-1 truncate font-medium text-foreground">
-                                    {team.name}
-                                  </span>
-                                </button>
-                                {onAddTeamAgent && (
-                                  <TeamQuickAddButton
-                                    teamId={team.id}
-                                    teamName={team.name}
-                                    teamLeadAgentId={detail.teamLeadAgentId}
-                                    profileIds={detail.profileIds ?? []}
-                                    profilesById={profilesById}
-                                    agents={agents}
-                                    onAddAgent={onAddTeamAgent}
-                                  />
-                                )}
-                              </div>
-                              {isExpanded && (
-                                <div
-                                  id={`chat-team-group-${team.id}`}
-                                  className="space-y-1 bg-muted/10 px-2 py-2"
-                                  role="list"
-                                  aria-label={`${team.name} agents`}
-                                >
-                                  {teamAgents.map((agent) =>
-                                    renderMainAgentRow(agent, {
-                                      keyPrefix: team.id,
-                                      canDelete: Boolean(onDeleteAgent),
-                                      teamId: team.id,
-                                      teamName: team.name,
-                                    }),
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                          );
-                        }
-
-                        return (
-                          <div
-                            key={team.id}
-                            className="overflow-hidden rounded-md border border-border bg-card/80 shadow-sm"
-                          >
-                            <div className="bg-muted/10">
-                              {renderMainAgentRow(leadAgent, {
-                                isTeamLead: true,
-                                keyPrefix: team.id,
-                                teamId: team.id,
-                                teamName: team.name,
-                                maxMembers: detail.maxMembers,
-                                maxConcurrentTasks: detail.maxConcurrentTasks,
-                                allowTeamLeadCreateAgents: detail.allowTeamLeadCreateAgents,
-                              })}
-                              <div className="flex min-w-0 items-center gap-1 px-3 pb-1 text-[10px] text-muted-foreground">
-                                <span className="min-w-0 flex-1 truncate">
-                                  {team.name}
-                                  {otherMembers.length > 0
-                                    ? ` · ${otherMembers.length} member${otherMembers.length !== 1 ? 's' : ''}`
-                                    : ''}
-                                </span>
-                                {onAddTeamAgent && (
-                                  <TeamQuickAddButton
-                                    teamId={team.id}
-                                    teamName={team.name}
-                                    teamLeadAgentId={detail.teamLeadAgentId}
-                                    profileIds={detail.profileIds ?? []}
-                                    profilesById={profilesById}
-                                    agents={agents}
-                                    onAddAgent={onAddTeamAgent}
-                                  />
-                                )}
-                                {hasExpandable && (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      toggleTeamGroup(team.id);
-                                    }}
-                                    className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded hover:bg-muted/50"
-                                    aria-expanded={isExpanded}
-                                    aria-controls={`chat-team-group-${team.id}`}
-                                    aria-label={`Toggle ${team.name} members`}
-                                  >
-                                    {isExpanded ? (
-                                      <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                                    ) : (
-                                      <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                                    )}
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-                            {hasExpandable && isExpanded && (
-                              <div
-                                id={`chat-team-group-${team.id}`}
-                                className="space-y-1 border-t border-border/70 bg-muted/10 py-2 pl-4 pr-0"
-                                role="list"
-                                aria-label={`${team.name} members`}
-                              >
-                                {otherMembers.map((agent) =>
-                                  renderMainAgentRow(agent, {
-                                    keyPrefix: team.id,
-                                    canDelete: Boolean(onDeleteAgent),
-                                    teamId: team.id,
-                                    teamName: team.name,
-                                  }),
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                      {teamSections.noTeamAgents.length > 0 && (
-                        <div className="pt-2">
-                          {renderVisualSectionHeader(
-                            'STANDALONE',
-                            formatSectionCount(teamSections.noTeamAgents.length, 'agent'),
-                            <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />,
-                          )}
-                          <div className="space-y-1" role="list" aria-label="Standalone agents">
-                            {teamSections.noTeamAgents.map((agent) =>
-                              renderMainAgentRow(agent, { keyPrefix: 'no-team' }),
-                            )}
-                          </div>
-                        </div>
-                      )}
-                      {teamSections.items.length === 0 &&
-                        teamSections.noTeamAgents.length === 0 && (
-                          <p className="text-xs text-muted-foreground">No agents yet.</p>
-                        )}
-                    </>
+                    <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
                   )}
-                </>
-              ) : (
-                <>
-                  {agentsLoading ? (
-                    <div className="space-y-2" aria-hidden>
-                      {Array.from({ length: 3 }).map((_, index) => (
-                        <Skeleton key={index} className="h-8 w-full" />
-                      ))}
-                    </div>
-                  ) : agentsError ? (
-                    <p className="text-xs text-destructive">
-                      Failed to load agents. Please try again.
-                    </p>
-                  ) : agents.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">No agents yet.</p>
-                  ) : (
-                    agents.map((agent) => renderMainAgentRow(agent))
-                  )}
-                </>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* Worktree Agent Groups */}
-        {worktreeAgentGroupsLoading && (
-          <>
-            <Separator />
-            <div className="space-y-3 px-4 py-4" aria-hidden>
-              <Skeleton className="h-6 w-full" />
-              <Skeleton className="h-6 w-full" />
-            </div>
-          </>
-        )}
-        {!worktreeAgentGroupsLoading && worktreeAgentGroups.length > 0 && (
-          <>
-            <Separator />
-            <div className="space-y-2 px-4 py-4">
-              <h3 className="text-sm font-semibold text-muted-foreground">WORKTREES</h3>
-              {worktreeAgentGroups.map((group) => {
-                const groupKey = `worktree:${group.id}`;
-                const isExpanded = !collapsedWorktreeGroups[groupKey];
-                const statusLabel = formatWorktreeStatus(group.status);
-                const hasAgents = group.agents.length > 0;
-                const isUnavailable = group.disabled || Boolean(group.error);
-                const runtimeTypeLabel = formatWorktreeRuntimeType(group.runtimeType);
-
-                return (
-                  <div
-                    key={group.id}
-                    className="overflow-hidden rounded-md border border-border bg-card/70 shadow-sm"
+                  <UsersRound className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span className="text-sm font-semibold text-muted-foreground">MAIN</span>
+                </button>
+                <Tabs
+                  value={agentGroupMode}
+                  onValueChange={(value) => {
+                    if (value === 'all' || value === 'teams') {
+                      handleAgentGroupModeChange(value);
+                    }
+                  }}
+                  className="shrink-0"
+                >
+                  <TabsList
+                    aria-label="Agent grouping mode"
+                    className="h-8 rounded-md bg-muted/70 p-0.5"
                   >
-                    <div className="flex w-full items-center gap-1 border-b border-border/70 bg-muted/20 px-3 py-2">
-                      <button
-                        type="button"
-                        onClick={() => toggleWorktreeGroup(group.id)}
-                        className="flex min-w-0 flex-1 items-center justify-between gap-2 rounded-md px-1 py-0.5 text-left hover:bg-muted/50"
-                        aria-expanded={isExpanded}
-                        aria-controls={`worktree-group-${group.id}`}
-                      >
-                        <span className="inline-flex min-w-0 items-center gap-2">
-                          <GitBranch className="h-4 w-4 text-muted-foreground" />
-                          <span className="truncate text-sm font-medium">{group.name}</span>
-                        </span>
-                        <TooltipProvider>
-                          <span className="inline-flex shrink-0 items-center gap-1.5">
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <span
-                                  className={cn(
-                                    'inline-block h-2 w-2 shrink-0 rounded-full',
-                                    isUnavailable ? 'bg-red-500' : 'bg-emerald-500',
-                                  )}
-                                  aria-label={statusLabel}
-                                />
-                              </TooltipTrigger>
-                              <TooltipContent side="top">{statusLabel}</TooltipContent>
-                            </Tooltip>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <span
-                                  className="inline-flex shrink-0 text-muted-foreground"
-                                  aria-label={runtimeTypeLabel}
-                                >
-                                  {runtimeTypeLabel === 'Process' ? (
-                                    <Terminal className="h-3.5 w-3.5" />
-                                  ) : (
-                                    <Box className="h-3.5 w-3.5" />
-                                  )}
-                                </span>
-                              </TooltipTrigger>
-                              <TooltipContent side="top">{runtimeTypeLabel}</TooltipContent>
-                            </Tooltip>
-                            {isExpanded ? (
-                              <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                            ) : (
-                              <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                            )}
-                          </span>
-                        </TooltipProvider>
-                      </button>
-                      <WorktreePresetButton group={group} onMarkForRestart={onMarkForRestart} />
-                    </div>
-                    {isExpanded && (
-                      <div
-                        id={`worktree-group-${group.id}`}
-                        className="space-y-1 bg-muted/10 px-2 py-2"
-                      >
-                        {group.error ? (
-                          <p className="px-2 py-1 text-xs text-destructive">{group.error}</p>
-                        ) : !hasAgents ? (
-                          <p className="px-2 py-1 text-xs text-muted-foreground">
-                            {isUnavailable ? 'Worktree unavailable.' : 'No agents found.'}
-                          </p>
-                        ) : (
-                          group.agents.map((agent) => {
-                            const isOnline = group.agentPresence[agent.id]?.online ?? false;
-                            const sessionId = group.agentPresence[agent.id]?.sessionId ?? null;
-                            const hasSession = Boolean(isOnline && sessionId);
-                            const worktreeAgentKey = `${group.name}:${agent.id}`;
-                            const worktreeBusyAction =
-                              worktreeSessionActionsByAgentKey[worktreeAgentKey] ?? null;
-                            const isLaunching = worktreeBusyAction === 'launching';
-                            const isRestarting = worktreeBusyAction === 'restarting';
-                            const isTerminating = worktreeBusyAction === 'terminating';
-                            const anyWorktreeBusy = Boolean(worktreeBusyAction);
-                            const isDisabled = isLaunchingChat || anyWorktreeBusy;
-                            const isSelected =
-                              selectedWorktreeAgent?.worktreeName === group.name &&
-                              selectedWorktreeAgent?.agentId === agent.id;
-                            const providerName =
-                              getProviderForAgent(agent.id) ??
-                              agent.providerConfig?.providerName ??
-                              agent.providerConfig?.providerId ??
-                              null;
-                            const providerIcon = providerName
-                              ? getProviderIconDataUri(providerName)
+                    <TabsTrigger value="all" className="h-7 px-2.5 text-xs">
+                      All
+                    </TabsTrigger>
+                    <TabsTrigger value="teams" className="h-7 px-2.5 text-xs">
+                      Teams
+                    </TabsTrigger>
+                  </TabsList>
+                </Tabs>
+                <PresetPopover
+                  presets={validatedPresets}
+                  activePreset={activePreset}
+                  applying={applyingPreset}
+                  onApply={onApplyPreset}
+                  disabled={!hasSelectedProject}
+                />
+              </div>
+              {mainExpanded && (
+                <div
+                  id="chat-main-agents"
+                  className="space-y-1"
+                  role={agentGroupMode === 'all' ? 'list' : undefined}
+                  aria-label={agentGroupMode === 'all' ? 'Direct messages' : undefined}
+                >
+                  {agentGroupMode === 'teams' ? (
+                    <>
+                      {teamViewLoading ? (
+                        <div className="space-y-2" aria-hidden>
+                          {Array.from({ length: 3 }).map((_, index) => (
+                            <Skeleton key={index} className="h-10 w-full" />
+                          ))}
+                        </div>
+                      ) : teams.length === 0 ? (
+                        <>
+                          <div className="rounded-md border border-dashed border-border/70 bg-muted/20 px-3 py-4">
+                            <p className="text-xs text-muted-foreground">
+                              No teams configured.{' '}
+                              <Link
+                                to="/teams"
+                                className="font-medium text-foreground underline underline-offset-2"
+                              >
+                                Open Teams
+                              </Link>
+                            </p>
+                          </div>
+                          {teamSections.noTeamAgents.length > 0 && (
+                            <div className="pt-2">
+                              {renderVisualSectionHeader(
+                                'STANDALONE',
+                                formatSectionCount(teamSections.noTeamAgents.length, 'agent'),
+                                <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />,
+                              )}
+                              <div className="space-y-1" role="list" aria-label="Standalone agents">
+                                {teamSections.noTeamAgents.map((agent) =>
+                                  renderMainAgentRow(agent, { keyPrefix: 'no-team' }),
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          {teamSections.items.map(({ team, detail, agents: teamAgents }) => {
+                            const leadAgent = detail.teamLeadAgentId
+                              ? teamAgents.find((a) => a.id === detail.teamLeadAgentId)
                               : null;
-                            const worktreeContextMenuKey = `${group.apiBase}:${agent.id}`;
-                            const worktreeActivityBadge = renderActivityBadgeForPresence(
-                              group.agentPresence[agent.id],
-                            );
-                            const worktreeConfigDisplay = getAgentConfigDisplay(agent);
-                            return (
-                              <ContextMenu key={`${group.id}:${agent.id}`}>
-                                <ContextMenuTrigger asChild>
-                                  <button
-                                    ref={(el) => {
-                                      worktreeRowRefs.current[worktreeContextMenuKey] = el;
-                                    }}
-                                    onClick={() => onLaunchWorktreeAgentChat(group, agent.id)}
-                                    disabled={isDisabled}
-                                    className={cn(
-                                      'flex w-full items-center gap-2 rounded-md border border-transparent bg-card/40 px-3 py-2 text-sm transition-colors hover:border-border hover:bg-muted/50',
-                                      isSelected && 'border-border bg-muted',
-                                      isDisabled &&
-                                        'cursor-not-allowed opacity-50 hover:bg-transparent',
-                                    )}
-                                    role="listitem"
-                                    aria-label={`Open terminal for ${agent.name} in ${group.name}${isOnline ? ' (online)' : ' (offline)'}`}
-                                    aria-current={isSelected ? 'true' : undefined}
-                                    data-context-metrics-key={
-                                      !contextBarHidden.has(getMetricsKey(agent.id, group.apiBase))
-                                        ? getMetricsKey(agent.id, group.apiBase)
-                                        : undefined
-                                    }
-                                  >
-                                    <Circle
-                                      className={cn(
-                                        'h-2 w-2 fill-current',
-                                        isOnline ? 'text-green-500' : 'text-muted-foreground',
+                            const otherMembers = leadAgent
+                              ? teamAgents.filter((a) => a.id !== detail.teamLeadAgentId)
+                              : teamAgents;
+                            const isExpanded = !collapsedTeamGroups[team.id];
+                            const hasExpandable = otherMembers.length > 0;
+
+                            if (!leadAgent) {
+                              return (
+                                <div
+                                  key={team.id}
+                                  className="overflow-hidden rounded-md border border-border bg-card/80 shadow-sm"
+                                >
+                                  <div className="flex w-full items-center gap-2 border-b border-border/70 bg-muted/20 px-3 py-2 text-xs">
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleTeamGroup(team.id)}
+                                      className="flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-muted/50"
+                                      aria-expanded={isExpanded}
+                                      aria-controls={`chat-team-group-${team.id}`}
+                                      aria-label={`Toggle ${team.name} members`}
+                                    >
+                                      {isExpanded ? (
+                                        <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                                      ) : (
+                                        <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
                                       )}
-                                      aria-hidden="true"
-                                    />
-                                    {providerIcon && (
-                                      <span
-                                        className={cn(
-                                          'flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border bg-muted/40 transition-[border-color,background-color,box-shadow] duration-300',
-                                          isOnline &&
-                                            group.agentPresence[agent.id]?.activityState ===
-                                              'busy' &&
-                                            'border-primary/60 bg-primary/10 shadow-[0_0_8px_hsl(var(--primary)/0.35)] animate-busy-halo',
-                                        )}
-                                        title={`Provider: ${providerName}`}
-                                      >
-                                        <img
-                                          src={providerIcon}
-                                          className="h-4 w-4"
-                                          aria-hidden="true"
-                                          alt=""
-                                        />
+                                      <UsersRound className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                      <span className="min-w-0 flex-1 truncate font-medium text-foreground">
+                                        {team.name}
                                       </span>
-                                    )}
-                                    <AgentIdentity
-                                      agentName={agent.name}
-                                      configDisplayName={worktreeConfigDisplay?.label ?? null}
-                                      configDisplayTitle={worktreeConfigDisplay?.title ?? null}
-                                    />
-                                    {worktreeActivityBadge && (
-                                      <span className="ml-1 shrink-0">{worktreeActivityBadge}</span>
-                                    )}
-                                    {pendingRestartAgentIds.has(
-                                      restartKeyForWorktree(group.apiBase, agent.id),
-                                    ) &&
-                                      isOnline && (
-                                        <TooltipProvider>
-                                          <Tooltip>
-                                            <TooltipTrigger asChild>
-                                              <AlertTriangle className="ml-1 h-4 w-4 flex-shrink-0 text-yellow-500" />
-                                            </TooltipTrigger>
-                                            <TooltipContent>
-                                              Restart to apply config changes
-                                            </TooltipContent>
-                                          </Tooltip>
-                                        </TooltipProvider>
-                                      )}
-                                  </button>
-                                </ContextMenuTrigger>
-                                {contextMetrics.has(getMetricsKey(agent.id, group.apiBase)) &&
-                                  !contextBarHidden.has(getMetricsKey(agent.id, group.apiBase)) && (
-                                    <div className="px-3 -mt-0.5 pb-1">
-                                      <AgentContextBar
-                                        {...contextMetrics.get(
-                                          getMetricsKey(agent.id, group.apiBase),
-                                        )!}
+                                    </button>
+                                    {onAddTeamAgent && (
+                                      <TeamQuickAddButton
+                                        teamId={team.id}
+                                        teamName={team.name}
+                                        teamLeadAgentId={detail.teamLeadAgentId}
+                                        profileIds={detail.profileIds ?? []}
+                                        profilesById={profilesById}
+                                        agents={agents}
+                                        onAddAgent={onAddTeamAgent}
                                       />
+                                    )}
+                                  </div>
+                                  {isExpanded && (
+                                    <div
+                                      id={`chat-team-group-${team.id}`}
+                                      className="space-y-1 bg-muted/10 px-2 py-2"
+                                      role="list"
+                                      aria-label={`${team.name} agents`}
+                                    >
+                                      {teamAgents.map((agent) =>
+                                        renderMainAgentRow(agent, {
+                                          keyPrefix: team.id,
+                                          canDelete: Boolean(onDeleteAgent),
+                                          teamId: team.id,
+                                          teamName: team.name,
+                                        }),
+                                      )}
                                     </div>
                                   )}
-                                <ContextMenuContent className="w-56">
-                                  {agent.type !== 'guest' && Boolean(agent.profileId) && (
-                                    <ContextMenuItem
-                                      onSelect={(event) => {
-                                        event.preventDefault();
-                                        setOverridesTarget({
-                                          agent,
-                                          isOnline,
-                                          triggerEl:
-                                            worktreeRowRefs.current[worktreeContextMenuKey] ?? null,
-                                          group,
-                                        });
-                                      }}
-                                      disabled={!group.devchainProjectId || anyWorktreeBusy}
-                                    >
-                                      <SlidersHorizontal className="mr-2 h-4 w-4" />
-                                      Overrides…
-                                    </ContextMenuItem>
-                                  )}
-                                  <ContextMenuSeparator />
-                                  <ContextMenuCheckboxItem
-                                    checked={
-                                      !contextBarHidden.has(getMetricsKey(agent.id, group.apiBase))
-                                    }
-                                    onCheckedChange={() =>
-                                      handleToggleContextBar(getMetricsKey(agent.id, group.apiBase))
-                                    }
-                                  >
-                                    Context tracking
-                                  </ContextMenuCheckboxItem>
-                                  <ContextMenuSeparator />
-                                  <ContextMenuItem
-                                    onSelect={async (event) => {
-                                      event.preventDefault();
-                                      await onRestartWorktreeSession(group, agent.id);
-                                    }}
-                                    disabled={isRestarting || !group.devchainProjectId}
-                                  >
-                                    {isRestarting ? (
-                                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                    ) : (
-                                      <RotateCcw className="mr-2 h-4 w-4" />
+                                </div>
+                              );
+                            }
+
+                            return (
+                              <div
+                                key={team.id}
+                                className="overflow-hidden rounded-md border border-border bg-card/80 shadow-sm"
+                              >
+                                <div className="bg-muted/10">
+                                  {renderMainAgentRow(leadAgent, {
+                                    isTeamLead: true,
+                                    keyPrefix: team.id,
+                                    teamId: team.id,
+                                    teamName: team.name,
+                                    maxMembers: detail.maxMembers,
+                                    maxConcurrentTasks: detail.maxConcurrentTasks,
+                                    allowTeamLeadCreateAgents: detail.allowTeamLeadCreateAgents,
+                                  })}
+                                  <div className="flex min-w-0 items-center gap-1 px-3 pb-1 text-[10px] text-muted-foreground">
+                                    <span className="min-w-0 flex-1 truncate">
+                                      {team.name}
+                                      {otherMembers.length > 0
+                                        ? ` · ${otherMembers.length} member${otherMembers.length !== 1 ? 's' : ''}`
+                                        : ''}
+                                    </span>
+                                    {onAddTeamAgent && (
+                                      <TeamQuickAddButton
+                                        teamId={team.id}
+                                        teamName={team.name}
+                                        teamLeadAgentId={detail.teamLeadAgentId}
+                                        profileIds={detail.profileIds ?? []}
+                                        profilesById={profilesById}
+                                        agents={agents}
+                                        onAddAgent={onAddTeamAgent}
+                                      />
                                     )}
-                                    Restart session
-                                  </ContextMenuItem>
-                                  {!hasSession && (
+                                    {hasExpandable && (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          toggleTeamGroup(team.id);
+                                        }}
+                                        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded hover:bg-muted/50"
+                                        aria-expanded={isExpanded}
+                                        aria-controls={`chat-team-group-${team.id}`}
+                                        aria-label={`Toggle ${team.name} members`}
+                                      >
+                                        {isExpanded ? (
+                                          <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                                        ) : (
+                                          <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                                        )}
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                                {hasExpandable && isExpanded && (
+                                  <div
+                                    id={`chat-team-group-${team.id}`}
+                                    className="space-y-1 border-t border-border/70 bg-muted/10 py-2 pl-4 pr-0"
+                                    role="list"
+                                    aria-label={`${team.name} members`}
+                                  >
+                                    {otherMembers.map((agent) =>
+                                      renderMainAgentRow(agent, {
+                                        keyPrefix: team.id,
+                                        canDelete: Boolean(onDeleteAgent),
+                                        teamId: team.id,
+                                        teamName: team.name,
+                                      }),
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                          {teamSections.noTeamAgents.length > 0 && (
+                            <div className="pt-2">
+                              {renderVisualSectionHeader(
+                                'STANDALONE',
+                                formatSectionCount(teamSections.noTeamAgents.length, 'agent'),
+                                <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />,
+                              )}
+                              <div className="space-y-1" role="list" aria-label="Standalone agents">
+                                {teamSections.noTeamAgents.map((agent) =>
+                                  renderMainAgentRow(agent, { keyPrefix: 'no-team' }),
+                                )}
+                              </div>
+                            </div>
+                          )}
+                          {teamSections.items.length === 0 &&
+                            teamSections.noTeamAgents.length === 0 && (
+                              <p className="text-xs text-muted-foreground">No agents yet.</p>
+                            )}
+                        </>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      {agentsLoading ? (
+                        <div className="space-y-2" aria-hidden>
+                          {Array.from({ length: 3 }).map((_, index) => (
+                            <Skeleton key={index} className="h-8 w-full" />
+                          ))}
+                        </div>
+                      ) : agentsError ? (
+                        <p className="text-xs text-destructive">
+                          Failed to load agents. Please try again.
+                        </p>
+                      ) : agents.length === 0 ? (
+                        <p className="text-xs text-muted-foreground">No agents yet.</p>
+                      ) : (
+                        agents.map((agent) => renderMainAgentRow(agent))
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+            </AgentEventBus>
+          </div>
+
+          {/* Worktree Agent Groups */}
+          {worktreeAgentGroupsLoading && (
+            <>
+              <Separator />
+              <div className="space-y-3 px-4 py-4" aria-hidden>
+                <Skeleton className="h-6 w-full" />
+                <Skeleton className="h-6 w-full" />
+              </div>
+            </>
+          )}
+          {!worktreeAgentGroupsLoading && worktreeAgentGroups.length > 0 && (
+            <>
+              <Separator />
+              <div className="space-y-2 px-4 py-4">
+                <h3 className="text-sm font-semibold text-muted-foreground">WORKTREES</h3>
+                {worktreeAgentGroups.map((group) => {
+                  const groupKey = `worktree:${group.id}`;
+                  const isExpanded = !collapsedWorktreeGroups[groupKey];
+                  const statusLabel = formatWorktreeStatus(group.status);
+                  const hasAgents = group.agents.length > 0;
+                  const isUnavailable = group.disabled || Boolean(group.error);
+                  const runtimeTypeLabel = formatWorktreeRuntimeType(group.runtimeType);
+
+                  return (
+                    <div
+                      key={group.id}
+                      className="overflow-hidden rounded-md border border-border bg-card/70 shadow-sm"
+                    >
+                      <div className="flex w-full items-center gap-1 border-b border-border/70 bg-muted/20 px-3 py-2">
+                        <button
+                          type="button"
+                          onClick={() => toggleWorktreeGroup(group.id)}
+                          className="flex min-w-0 flex-1 items-center justify-between gap-2 rounded-md px-1 py-0.5 text-left hover:bg-muted/50"
+                          aria-expanded={isExpanded}
+                          aria-controls={`worktree-group-${group.id}`}
+                        >
+                          <span className="inline-flex min-w-0 items-center gap-2">
+                            <GitBranch className="h-4 w-4 text-muted-foreground" />
+                            <span className="truncate text-sm font-medium">{group.name}</span>
+                          </span>
+                          <TooltipProvider>
+                            <span className="inline-flex shrink-0 items-center gap-1.5">
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <span
+                                    className={cn(
+                                      'inline-block h-2 w-2 shrink-0 rounded-full',
+                                      isUnavailable ? 'bg-red-500' : 'bg-emerald-500',
+                                    )}
+                                    aria-label={statusLabel}
+                                  />
+                                </TooltipTrigger>
+                                <TooltipContent side="top">{statusLabel}</TooltipContent>
+                              </Tooltip>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <span
+                                    className="inline-flex shrink-0 text-muted-foreground"
+                                    aria-label={runtimeTypeLabel}
+                                  >
+                                    {runtimeTypeLabel === 'Process' ? (
+                                      <Terminal className="h-3.5 w-3.5" />
+                                    ) : (
+                                      <Box className="h-3.5 w-3.5" />
+                                    )}
+                                  </span>
+                                </TooltipTrigger>
+                                <TooltipContent side="top">{runtimeTypeLabel}</TooltipContent>
+                              </Tooltip>
+                              {isExpanded ? (
+                                <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                              ) : (
+                                <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                              )}
+                            </span>
+                          </TooltipProvider>
+                        </button>
+                        <WorktreePresetButton group={group} onMarkForRestart={onMarkForRestart} />
+                      </div>
+                      {isExpanded && (
+                        <div
+                          id={`worktree-group-${group.id}`}
+                          className="space-y-1 bg-muted/10 px-2 py-2"
+                        >
+                          {group.error ? (
+                            <p className="px-2 py-1 text-xs text-destructive">{group.error}</p>
+                          ) : !hasAgents ? (
+                            <p className="px-2 py-1 text-xs text-muted-foreground">
+                              {isUnavailable ? 'Worktree unavailable.' : 'No agents found.'}
+                            </p>
+                          ) : (
+                            group.agents.map((agent) => {
+                              const isOnline = group.agentPresence[agent.id]?.online ?? false;
+                              const sessionId = group.agentPresence[agent.id]?.sessionId ?? null;
+                              const hasSession = Boolean(isOnline && sessionId);
+                              const worktreeAgentKey = `${group.name}:${agent.id}`;
+                              const worktreeBusyAction =
+                                worktreeSessionActionsByAgentKey[worktreeAgentKey] ?? null;
+                              const isLaunching = worktreeBusyAction === 'launching';
+                              const isRestarting = worktreeBusyAction === 'restarting';
+                              const isTerminating = worktreeBusyAction === 'terminating';
+                              const anyWorktreeBusy = Boolean(worktreeBusyAction);
+                              const isDisabled = isLaunchingChat || anyWorktreeBusy;
+                              const isSelected =
+                                selectedWorktreeAgent?.worktreeName === group.name &&
+                                selectedWorktreeAgent?.agentId === agent.id;
+                              const providerName =
+                                getProviderForAgent(agent.id) ??
+                                agent.providerConfig?.providerName ??
+                                agent.providerConfig?.providerId ??
+                                null;
+                              const providerIcon = providerName
+                                ? getProviderIconDataUri(providerName)
+                                : null;
+                              const worktreeContextMenuKey = `${group.apiBase}:${agent.id}`;
+                              const worktreeActivityBadge = renderActivityBadgeForPresence(
+                                group.agentPresence[agent.id],
+                              );
+                              const worktreeConfigDisplay = getAgentConfigDisplay(agent);
+                              return (
+                                <ContextMenu key={`${group.id}:${agent.id}`}>
+                                  <ContextMenuTrigger asChild>
+                                    <button
+                                      ref={(el) => {
+                                        worktreeRowRefs.current[worktreeContextMenuKey] = el;
+                                      }}
+                                      onClick={() => onLaunchWorktreeAgentChat(group, agent.id)}
+                                      disabled={isDisabled}
+                                      className={cn(
+                                        'flex w-full items-center gap-2 rounded-md border border-transparent bg-card/40 px-3 py-2 text-sm transition-colors hover:border-border hover:bg-muted/50',
+                                        isSelected && 'border-border bg-muted',
+                                        isDisabled &&
+                                          'cursor-not-allowed opacity-50 hover:bg-transparent',
+                                      )}
+                                      role="listitem"
+                                      aria-label={`Open terminal for ${agent.name} in ${group.name}${isOnline ? ' (online)' : ' (offline)'}`}
+                                      aria-current={isSelected ? 'true' : undefined}
+                                      data-context-metrics-key={
+                                        !contextBarHidden.has(
+                                          getMetricsKey(agent.id, group.apiBase),
+                                        )
+                                          ? getMetricsKey(agent.id, group.apiBase)
+                                          : undefined
+                                      }
+                                    >
+                                      <Circle
+                                        className={cn(
+                                          'h-2 w-2 fill-current',
+                                          isOnline ? 'text-green-500' : 'text-muted-foreground',
+                                        )}
+                                        aria-hidden="true"
+                                      />
+                                      {providerIcon && (
+                                        <span
+                                          className={cn(
+                                            'flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border bg-muted/40 transition-[border-color,background-color,box-shadow] duration-300',
+                                            isOnline &&
+                                              group.agentPresence[agent.id]?.activityState ===
+                                                'busy' &&
+                                              'border-primary/60 bg-primary/10 shadow-[0_0_8px_hsl(var(--primary)/0.35)] animate-busy-halo',
+                                          )}
+                                          title={`Provider: ${providerName}`}
+                                        >
+                                          <img
+                                            src={providerIcon}
+                                            className="h-4 w-4"
+                                            aria-hidden="true"
+                                            alt=""
+                                          />
+                                        </span>
+                                      )}
+                                      <AgentIdentity
+                                        agentName={agent.name}
+                                        configDisplayName={worktreeConfigDisplay?.label ?? null}
+                                        configDisplayTitle={worktreeConfigDisplay?.title ?? null}
+                                      />
+                                      {worktreeActivityBadge && (
+                                        <span className="ml-1 shrink-0">
+                                          {worktreeActivityBadge}
+                                        </span>
+                                      )}
+                                      {pendingRestartAgentIds.has(
+                                        restartKeyForWorktree(group.apiBase, agent.id),
+                                      ) &&
+                                        isOnline && (
+                                          <TooltipProvider>
+                                            <Tooltip>
+                                              <TooltipTrigger asChild>
+                                                <AlertTriangle className="ml-1 h-4 w-4 flex-shrink-0 text-yellow-500" />
+                                              </TooltipTrigger>
+                                              <TooltipContent>
+                                                Restart to apply config changes
+                                              </TooltipContent>
+                                            </Tooltip>
+                                          </TooltipProvider>
+                                        )}
+                                    </button>
+                                  </ContextMenuTrigger>
+                                  {contextMetrics.has(getMetricsKey(agent.id, group.apiBase)) &&
+                                    !contextBarHidden.has(
+                                      getMetricsKey(agent.id, group.apiBase),
+                                    ) && (
+                                      <div className="px-3 -mt-0.5 pb-1">
+                                        <AgentContextBar
+                                          {...contextMetrics.get(
+                                            getMetricsKey(agent.id, group.apiBase),
+                                          )!}
+                                        />
+                                      </div>
+                                    )}
+                                  <ContextMenuContent className="w-56">
+                                    {agent.type !== 'guest' && Boolean(agent.profileId) && (
+                                      <ContextMenuItem
+                                        onSelect={(event) => {
+                                          event.preventDefault();
+                                          setOverridesTarget({
+                                            agent,
+                                            isOnline,
+                                            triggerEl:
+                                              worktreeRowRefs.current[worktreeContextMenuKey] ??
+                                              null,
+                                            group,
+                                          });
+                                        }}
+                                        disabled={!group.devchainProjectId || anyWorktreeBusy}
+                                      >
+                                        <SlidersHorizontal className="mr-2 h-4 w-4" />
+                                        Overrides…
+                                      </ContextMenuItem>
+                                    )}
+                                    <ContextMenuSeparator />
+                                    <ContextMenuCheckboxItem
+                                      checked={
+                                        !contextBarHidden.has(
+                                          getMetricsKey(agent.id, group.apiBase),
+                                        )
+                                      }
+                                      onCheckedChange={() =>
+                                        handleToggleContextBar(
+                                          getMetricsKey(agent.id, group.apiBase),
+                                        )
+                                      }
+                                    >
+                                      Context tracking
+                                    </ContextMenuCheckboxItem>
+                                    <ContextMenuSeparator />
                                     <ContextMenuItem
                                       onSelect={async (event) => {
                                         event.preventDefault();
-                                        await onLaunchWorktreeSession(group, agent.id);
+                                        await onRestartWorktreeSession(group, agent.id);
                                       }}
-                                      disabled={isLaunching || !group.devchainProjectId}
+                                      disabled={isRestarting || !group.devchainProjectId}
                                     >
-                                      {isLaunching ? (
+                                      {isRestarting ? (
                                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                                       ) : (
-                                        <Play className="mr-2 h-4 w-4" />
+                                        <RotateCcw className="mr-2 h-4 w-4" />
                                       )}
-                                      Launch session
+                                      Restart session
                                     </ContextMenuItem>
-                                  )}
-                                  {hasSession && sessionId && (
-                                    <>
-                                      <ContextMenuSeparator />
+                                    {!hasSession && (
                                       <ContextMenuItem
                                         onSelect={async (event) => {
                                           event.preventDefault();
-                                          await onTerminateWorktreeSession(
-                                            group,
-                                            agent.id,
-                                            sessionId,
-                                          );
+                                          await onLaunchWorktreeSession(group, agent.id);
                                         }}
-                                        disabled={isTerminating || !group.devchainProjectId}
+                                        disabled={isLaunching || !group.devchainProjectId}
                                       >
-                                        {isTerminating ? (
+                                        {isLaunching ? (
                                           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                                         ) : (
-                                          <Power className="mr-2 h-4 w-4" />
+                                          <Play className="mr-2 h-4 w-4" />
                                         )}
-                                        Terminate session
+                                        Launch session
                                       </ContextMenuItem>
-                                    </>
-                                  )}
-                                </ContextMenuContent>
-                              </ContextMenu>
-                            );
-                          })
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </>
-        )}
-
-        {/* Guests Section */}
-        {guests.length > 0 && (
-          <>
-            <Separator />
-            <div className="px-4 py-4">
-              {renderVisualSectionHeader(
-                'GUESTS',
-                formatSectionCount(guests.length, 'guest'),
-                <Users className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />,
-              )}
-              <div className="space-y-1" role="list" aria-label="Guest agents">
-                {guests.map((guest) => {
-                  const isOnline = true;
-
-                  return (
-                    <button
-                      key={guest.id}
-                      type="button"
-                      className={cn(
-                        'flex w-full cursor-default items-center gap-2 rounded-md border border-transparent bg-card/40 px-3 py-2 text-sm transition-colors hover:border-border hover:bg-muted/50',
-                      )}
-                      role="listitem"
-                      aria-label={`Guest: ${guest.name}${isOnline ? ' (online)' : ' (offline)'}`}
-                    >
-                      <Circle
-                        className={cn(
-                          'h-2 w-2 fill-current',
-                          isOnline ? 'text-green-500' : 'text-muted-foreground',
-                        )}
-                        aria-hidden="true"
-                      />
-                      <User
-                        className="h-4 w-4 flex-shrink-0 text-muted-foreground"
-                        aria-hidden="true"
-                      />
-                      <div className="flex-1 overflow-hidden text-left">
-                        <div className="flex items-center gap-2">
-                          <span className="truncate">{guest.name}</span>
-                          <Badge
-                            variant="outline"
-                            className="border-purple-500/40 bg-purple-500/10 text-[10px] uppercase text-purple-600"
-                            aria-label="Guest type"
-                          >
-                            Guest
-                          </Badge>
+                                    )}
+                                    {hasSession && sessionId && (
+                                      <>
+                                        <ContextMenuSeparator />
+                                        <ContextMenuItem
+                                          onSelect={async (event) => {
+                                            event.preventDefault();
+                                            await onTerminateWorktreeSession(
+                                              group,
+                                              agent.id,
+                                              sessionId,
+                                            );
+                                          }}
+                                          disabled={isTerminating || !group.devchainProjectId}
+                                        >
+                                          {isTerminating ? (
+                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                          ) : (
+                                            <Power className="mr-2 h-4 w-4" />
+                                          )}
+                                          Terminate session
+                                        </ContextMenuItem>
+                                      </>
+                                    )}
+                                  </ContextMenuContent>
+                                </ContextMenu>
+                              );
+                            })
+                          )}
                         </div>
-                      </div>
-                    </button>
+                      )}
+                    </div>
                   );
                 })}
               </div>
-            </div>
-          </>
-        )}
+            </>
+          )}
 
-        <Separator />
-
-        {CHAT_THREADS_ENABLED && (
-          <>
-            {/* Groups Section */}
-            <div className="px-4 py-4">
-              <div className="mb-2 flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-muted-foreground">GROUPS</h3>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={onCreateGroup}
-                  className="h-6 w-6 p-0"
-                  aria-label="Create new group"
-                  disabled={agents.length < 2 || createGroupPending}
-                >
-                  <Plus className="h-4 w-4" />
-                </Button>
-              </div>
-              <div className="space-y-1" role="list" aria-label="Group chats">
-                {userThreadsLoading ? (
-                  <div className="space-y-2" aria-hidden>
-                    {Array.from({ length: 2 }).map((_, index) => (
-                      <Skeleton key={index} className="h-8 w-full" />
-                    ))}
-                  </div>
-                ) : groups.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">No group threads yet.</p>
-                ) : (
-                  groups.map((group) => (
-                    <button
-                      key={group.id}
-                      onClick={() => onSelectThread(group.id)}
-                      className={cn(
-                        'flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-muted',
-                        selectedThreadId === group.id && 'bg-secondary',
-                      )}
-                      role="listitem"
-                      aria-label={`${group.name} group with ${group.memberCount} members`}
-                      aria-current={selectedThreadId === group.id ? 'true' : undefined}
-                    >
-                      <Users className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-                      <span className="flex-1 truncate text-left">{group.name}</span>
-                      <Badge
-                        variant="secondary"
-                        className="text-xs"
-                        aria-label={`${group.memberCount} members`}
-                      >
-                        {group.memberCount}
-                      </Badge>
-                    </button>
-                  ))
+          {/* Guests Section */}
+          {guests.length > 0 && (
+            <>
+              <Separator />
+              <div className="px-4 py-4">
+                {renderVisualSectionHeader(
+                  'GUESTS',
+                  formatSectionCount(guests.length, 'guest'),
+                  <Users className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />,
                 )}
-              </div>
-            </div>
+                <div className="space-y-1" role="list" aria-label="Guest agents">
+                  {guests.map((guest) => {
+                    const isOnline = true;
 
-            <Separator />
-
-            {/* Agent Threads Section */}
-            <div className="px-4 py-4">
-              <div className="mb-2">
-                <h3 className="text-sm font-semibold text-muted-foreground">AGENT THREADS</h3>
-                <p className="text-xs text-muted-foreground">Read-only agent conversations</p>
-              </div>
-              <div className="space-y-1" role="list" aria-label="Agent-initiated threads">
-                {agentThreadsLoading ? (
-                  <div className="space-y-2" aria-hidden>
-                    {Array.from({ length: 2 }).map((_, index) => (
-                      <Skeleton key={index} className="h-6 w-full" />
-                    ))}
-                  </div>
-                ) : agentThreads.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">No agent-initiated threads.</p>
-                ) : (
-                  agentThreads.map((thread) => (
-                    <button
-                      key={thread.id}
-                      onClick={() => onSelectThread(thread.id)}
-                      className={cn(
-                        'flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-muted',
-                        selectedThreadId === thread.id && 'bg-secondary',
-                      )}
-                      role="listitem"
-                      aria-label={`${thread.title || 'Agent Thread'} with ${thread.members?.length ?? 0} agents`}
-                      aria-current={selectedThreadId === thread.id ? 'true' : undefined}
-                    >
-                      <MessageSquare className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-                      <span className="flex-1 truncate text-left text-xs">
-                        {thread.title || 'Agent Thread'}
-                      </span>
-                      <Badge
-                        variant="outline"
-                        className="text-xs"
-                        aria-label={`${thread.members?.length ?? 0} agents`}
+                    return (
+                      <button
+                        key={guest.id}
+                        type="button"
+                        className={cn(
+                          'flex w-full cursor-default items-center gap-2 rounded-md border border-transparent bg-card/40 px-3 py-2 text-sm transition-colors hover:border-border hover:bg-muted/50',
+                        )}
+                        role="listitem"
+                        aria-label={`Guest: ${guest.name}${isOnline ? ' (online)' : ' (offline)'}`}
                       >
-                        {thread.members?.length ?? 0}
-                      </Badge>
-                    </button>
-                  ))
-                )}
+                        <Circle
+                          className={cn(
+                            'h-2 w-2 fill-current',
+                            isOnline ? 'text-green-500' : 'text-muted-foreground',
+                          )}
+                          aria-hidden="true"
+                        />
+                        <User
+                          className="h-4 w-4 flex-shrink-0 text-muted-foreground"
+                          aria-hidden="true"
+                        />
+                        <div className="flex-1 overflow-hidden text-left">
+                          <div className="flex items-center gap-2">
+                            <span className="truncate">{guest.name}</span>
+                            <Badge
+                              variant="outline"
+                              className="border-purple-500/40 bg-purple-500/10 text-[10px] uppercase text-purple-600"
+                              aria-label="Guest type"
+                            >
+                              Guest
+                            </Badge>
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
-          </>
-        )}
+            </>
+          )}
+
+          <Separator />
+
+          {CHAT_THREADS_ENABLED && (
+            <>
+              {/* Groups Section */}
+              <div className="px-4 py-4">
+                <div className="mb-2 flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-muted-foreground">GROUPS</h3>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={onCreateGroup}
+                    className="h-6 w-6 p-0"
+                    aria-label="Create new group"
+                    disabled={agents.length < 2 || createGroupPending}
+                  >
+                    <Plus className="h-4 w-4" />
+                  </Button>
+                </div>
+                <div className="space-y-1" role="list" aria-label="Group chats">
+                  {userThreadsLoading ? (
+                    <div className="space-y-2" aria-hidden>
+                      {Array.from({ length: 2 }).map((_, index) => (
+                        <Skeleton key={index} className="h-8 w-full" />
+                      ))}
+                    </div>
+                  ) : groups.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No group threads yet.</p>
+                  ) : (
+                    groups.map((group) => (
+                      <button
+                        key={group.id}
+                        onClick={() => onSelectThread(group.id)}
+                        className={cn(
+                          'flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-muted',
+                          selectedThreadId === group.id && 'bg-secondary',
+                        )}
+                        role="listitem"
+                        aria-label={`${group.name} group with ${group.memberCount} members`}
+                        aria-current={selectedThreadId === group.id ? 'true' : undefined}
+                      >
+                        <Users className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+                        <span className="flex-1 truncate text-left">{group.name}</span>
+                        <Badge
+                          variant="secondary"
+                          className="text-xs"
+                          aria-label={`${group.memberCount} members`}
+                        >
+                          {group.memberCount}
+                        </Badge>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <Separator />
+
+              {/* Agent Threads Section */}
+              <div className="px-4 py-4">
+                <div className="mb-2">
+                  <h3 className="text-sm font-semibold text-muted-foreground">AGENT THREADS</h3>
+                  <p className="text-xs text-muted-foreground">Read-only agent conversations</p>
+                </div>
+                <div className="space-y-1" role="list" aria-label="Agent-initiated threads">
+                  {agentThreadsLoading ? (
+                    <div className="space-y-2" aria-hidden>
+                      {Array.from({ length: 2 }).map((_, index) => (
+                        <Skeleton key={index} className="h-6 w-full" />
+                      ))}
+                    </div>
+                  ) : agentThreads.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No agent-initiated threads.</p>
+                  ) : (
+                    agentThreads.map((thread) => (
+                      <button
+                        key={thread.id}
+                        onClick={() => onSelectThread(thread.id)}
+                        className={cn(
+                          'flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-muted',
+                          selectedThreadId === thread.id && 'bg-secondary',
+                        )}
+                        role="listitem"
+                        aria-label={`${thread.title || 'Agent Thread'} with ${thread.members?.length ?? 0} agents`}
+                        aria-current={selectedThreadId === thread.id ? 'true' : undefined}
+                      >
+                        <MessageSquare
+                          className="h-4 w-4 text-muted-foreground"
+                          aria-hidden="true"
+                        />
+                        <span className="flex-1 truncate text-left text-xs">
+                          {thread.title || 'Agent Thread'}
+                        </span>
+                        <Badge
+                          variant="outline"
+                          className="text-xs"
+                          aria-label={`${thread.members?.length ?? 0} agents`}
+                        >
+                          {thread.members?.length ?? 0}
+                        </Badge>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
       </ScrollArea>
 
       {overridesTarget &&

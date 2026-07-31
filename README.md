@@ -58,7 +58,6 @@ CI executes the application and SQLite checks on Linux x64 with Node 24, plus a 
 | Template | Agents | Best for |
 |----------|--------|----------|
 | `teams-dev` **(recommended)** | Planning team (Brainstormer + Architect), Builders team (Epic Manager + Coders), Code Reviewer | Auto-scaling Builders, parallel planning, tier-aware model routing |
-| `3-agents-dev` | Brainstormer, SubBSM, Coder | Faster iteration with lower token overhead |
 
 ## How it works
 

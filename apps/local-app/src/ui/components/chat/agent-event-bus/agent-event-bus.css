@@ -1,0 +1,173 @@
+.agent-event-bus__overlay {
+  --agent-event-bus-idle: hsl(var(--muted-foreground));
+  --agent-event-bus-agent-message: hsl(var(--event-bus-agent-message));
+  --agent-event-bus-session-started: hsl(var(--event-bus-session-started));
+  --agent-event-bus-epic-assigned: hsl(var(--event-bus-epic-assigned));
+  --agent-event-bus-spark: hsl(var(--event-bus-spark));
+  --agent-event-bus-failure: hsl(var(--destructive));
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.agent-event-bus__idle-conductor,
+.agent-event-bus__idle-branch,
+.agent-event-bus__active-branch,
+.agent-event-bus__route-tail,
+.agent-event-bus__route-body,
+.agent-event-bus__route-head {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.agent-event-bus__idle-conductor {
+  stroke: var(--agent-event-bus-idle);
+  stroke-width: 1;
+  opacity: 0.24;
+}
+
+.agent-event-bus__idle-branch {
+  stroke: var(--agent-event-bus-idle);
+  stroke-width: 1;
+  opacity: 0.16;
+}
+
+.agent-event-bus__idle-anchor {
+  fill: hsl(var(--background));
+  stroke: var(--agent-event-bus-idle);
+  stroke-width: 0.5;
+  opacity: 0.44;
+}
+
+.agent-event-bus__active-branch {
+  stroke: currentColor;
+  stroke-width: 1.25;
+  opacity: 0.72;
+}
+
+.agent-event-bus__active-anchor {
+  fill: currentColor;
+  stroke: hsl(var(--background));
+  stroke-width: 0.5;
+  opacity: 0.96;
+}
+
+.agent-event-bus__failed-anchor {
+  opacity: 0.74;
+}
+
+.agent-event-bus__feedback--session-started {
+  color: var(--agent-event-bus-session-started);
+}
+
+.agent-event-bus__feedback--agent-message {
+  color: var(--agent-event-bus-agent-message);
+}
+
+.agent-event-bus__feedback--epic-assigned {
+  color: var(--agent-event-bus-epic-assigned);
+}
+
+.agent-event-bus__feedback--failed {
+  color: var(--agent-event-bus-failure);
+}
+
+.agent-event-bus__route--agent-message {
+  color: var(--agent-event-bus-agent-message);
+}
+
+.agent-event-bus__route--session-started {
+  color: var(--agent-event-bus-session-started);
+}
+
+.agent-event-bus__route--epic-assigned {
+  color: var(--agent-event-bus-epic-assigned);
+}
+
+.agent-event-bus__route-tail,
+.agent-event-bus__route-body,
+.agent-event-bus__route-head {
+  stroke: currentColor;
+}
+
+/*
+ * The travelling layers are zero-length round-capped dashes, so each renders as a
+ * circle whose diameter is its stroke width. Widths below are therefore the radial
+ * falloff of a single point light: a soft outer bloom, a coloured inner glow, and a
+ * small high-contrast core carrying the spark token. Keep them concentric — do not
+ * give the layers dash lengths.
+ */
+.agent-event-bus__route-tail {
+  stroke-width: 18;
+  opacity: 0;
+}
+
+.agent-event-bus__route-body {
+  stroke-width: 7;
+  opacity: 0;
+}
+
+.agent-event-bus__route-head {
+  stroke: var(--agent-event-bus-spark);
+  stroke-width: 2.4;
+  opacity: 0.9;
+}
+
+.agent-event-bus__runtime-origin-halo {
+  fill: currentColor;
+  opacity: 0.3;
+}
+
+.agent-event-bus__marker {
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+/* Concentric falloff matching the travelling pulse: soft outer bloom, brighter inner
+   halo, spark core. A stroked outline here would read as a ripple, not as light. */
+.agent-event-bus__marker-bloom {
+  fill: currentColor;
+  opacity: 0.18;
+}
+
+.agent-event-bus__marker-ring {
+  fill: currentColor;
+  opacity: 0.38;
+}
+
+/* Hollow domain silhouettes (ring, diamond). Drawn as an outline so the shape reads at
+   ~13px; the filled disc variant above stays the messaging default. */
+.agent-event-bus__marker-ring--outline {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.1;
+  opacity: 0.95;
+}
+
+.agent-event-bus__marker-core {
+  fill: var(--agent-event-bus-spark);
+  stroke: hsl(var(--background));
+  stroke-width: 0.35;
+}
+
+.agent-event-bus__control-lane {
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  z-index: 4;
+  width: 12px;
+  cursor: context-menu;
+  outline: none;
+}
+
+.agent-event-bus__control-lane:focus-visible {
+  border-radius: calc(var(--radius) / 2);
+  box-shadow: inset 0 0 0 1px hsl(var(--ring));
+}

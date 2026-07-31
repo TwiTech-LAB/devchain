@@ -209,6 +209,34 @@ describe('AgentRow', () => {
     expect(onOpenOverrides.mock.calls[0][0]).toBeInstanceOf(HTMLElement);
   });
 
+  // Layer: UI component (jsdom). Rendering AgentRow is the cheapest reliable
+  // proof that its composed refs share one DOM node and preserve context-menu
+  // focus ownership without mounting the full sidebar.
+  it('composes the event-bus anchor ref with the overrides trigger ref', async () => {
+    const anchorRef = jest.fn();
+    const { onOpenOverrides, unmount } = renderAgentRow({
+      anchorRef,
+      eventBusAnchor: {
+        key: 'team-1:agent-1',
+        agentId: 'agent-1',
+        teamId: 'team-1',
+      },
+    });
+    const row = screen.getByLabelText(/Chat with Alpha/i);
+
+    expect(anchorRef).toHaveBeenCalledWith(row);
+    expect(row).toHaveAttribute('data-agent-event-bus-key', 'team-1:agent-1');
+    expect(row).toHaveAttribute('data-agent-event-bus-agent-id', 'agent-1');
+    expect(row).toHaveAttribute('data-agent-event-bus-team-id', 'team-1');
+
+    fireEvent.contextMenu(row);
+    fireEvent.click(await screen.findByText('Overrides…'));
+    expect(onOpenOverrides).toHaveBeenCalledWith(row);
+
+    unmount();
+    expect(anchorRef).toHaveBeenLastCalledWith(null);
+  });
+
   it('hides the Overrides item when canOverride is false', async () => {
     renderAgentRow({ canOverride: false });
 

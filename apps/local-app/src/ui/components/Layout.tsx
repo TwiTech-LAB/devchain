@@ -2,6 +2,7 @@ import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 're
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useSelectedProject } from '../hooks/useProjectSelection';
+import { useProjectActivityReporter } from '../hooks/useProjectActivityReporter';
 import { preloadReviewsPage } from '../pages/ReviewsPage.lazy';
 import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -319,6 +320,7 @@ function LayoutShell({
     selectedProject,
     setSelectedProjectId,
   } = useSelectedProject();
+  useProjectActivityReporter(selectedProjectId);
   const { toast } = useToast();
   const { activeWorktree, setActiveWorktree } = useOptionalWorktreeTab();
   const [sidebarOpen, setSidebarOpen] = useState(false);

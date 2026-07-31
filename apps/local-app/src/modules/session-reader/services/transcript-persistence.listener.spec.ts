@@ -294,6 +294,7 @@ describe('TranscriptPersistenceListener', () => {
 
   const sessionStartedPayload: SessionStartedEventPayload = {
     sessionId: '33333333-3333-3333-3333-333333333333',
+    projectId: '11111111-1111-1111-1111-111111111111',
     epicId: null,
     agentId: '22222222-2222-2222-2222-222222222222',
     tmuxSessionName: 'agent-session',

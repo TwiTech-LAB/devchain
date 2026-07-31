@@ -163,6 +163,9 @@ export class TunnelEventForwarderService implements OnModuleInit, OnModuleDestro
 
       const entries = broadcastRegistry[event] ?? [];
       for (const entry of entries) {
+        // Same gate the socket.io broadcaster applies, so the two transports cannot
+        // disagree about which payloads are broadcastable.
+        if (entry.shouldBroadcast && !entry.shouldBroadcast(payload)) continue;
         const projected = projectBroadcast(entry, payload);
         const outboundPayload =
           channel.mode === 'encrypted'

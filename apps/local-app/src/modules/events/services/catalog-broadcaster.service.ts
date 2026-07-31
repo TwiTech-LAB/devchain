@@ -22,6 +22,7 @@ export class CatalogBroadcasterService implements OnModuleInit {
       this.eventEmitter.on(eventName, (payload: Record<string, unknown>) => {
         for (const entry of entries) {
           try {
+            if (entry.shouldBroadcast && !entry.shouldBroadcast(payload)) continue;
             const projected = projectBroadcast(entry, payload);
             this.broadcaster.broadcastEvent(projected.topic, projected.type, projected.payload);
           } catch (error) {

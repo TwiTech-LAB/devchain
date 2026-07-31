@@ -2,6 +2,23 @@ import type { BroadcastRegistryTopicEntry } from './broadcast-metadata';
 
 type P = Record<string, unknown>;
 
+/**
+ * Narrow `epic.updated`'s `changes.agentId` record. `previous`/`current` are agent IDs
+ * (the sibling `*Name` fields carry display names); either side may be null for a first
+ * assignment or an unassignment.
+ */
+function agentIdChange(payload: P): { previous: string | null; current: string | null } | null {
+  const changes = payload.changes;
+  if (typeof changes !== 'object' || changes === null) return null;
+  const change = (changes as Record<string, unknown>).agentId;
+  if (typeof change !== 'object' || change === null) return null;
+  const { previous, current } = change as { previous?: unknown; current?: unknown };
+  return {
+    previous: typeof previous === 'string' && previous.length > 0 ? previous : null,
+    current: typeof current === 'string' && current.length > 0 ? current : null,
+  };
+}
+
 export const broadcastRegistry: Record<string, BroadcastRegistryTopicEntry<P>[]> = {
   // ── Activity ──
   'session.activity.changed': [
@@ -14,6 +31,17 @@ export const broadcastRegistry: Record<string, BroadcastRegistryTopicEntry<P>[]>
         busySince: p.busySince,
       }),
       clientReaction: { kind: 'invalidate', owner: 'useChatSocket' },
+    },
+  ],
+  // Rides `session.starting`, not `session.started`: the latter only publishes after the
+  // provider CLI has produced output and the pipeline has waited out its minimum launch
+  // delay, which puts it seconds behind the agent visibly starting.
+  'session.starting': [
+    {
+      topic: (p) => `project/${p.projectId}/agent-messages`,
+      type: 'session.starting',
+      payloadProjection: (p) => ({ agentId: p.agentId }),
+      clientReaction: { kind: 'custom-handler', owner: 'useAgentEventBusStream' },
     },
   ],
 
@@ -38,6 +66,22 @@ export const broadcastRegistry: Record<string, BroadcastRegistryTopicEntry<P>[]>
         readAt: p.readAt,
       }),
       clientReaction: { kind: 'no-op', owner: 'global' },
+    },
+  ],
+  'agent.message.sent': [
+    {
+      topic: (p) => `project/${p.projectId}/agent-messages`,
+      type: 'sent',
+      payloadProjection: (p) => ({
+        senderAgentId: p.senderAgentId,
+        routingKind: p.routingKind,
+        ...(typeof p.teamId === 'string' ? { teamId: p.teamId } : {}),
+        recipients: (p.recipients as Record<string, unknown>[]).map((recipient) => ({
+          agentId: recipient.agentId,
+          status: recipient.status,
+        })),
+      }),
+      clientReaction: { kind: 'custom-handler', owner: 'useAgentEventBusStream' },
     },
   ],
 
@@ -82,6 +126,23 @@ export const broadcastRegistry: Record<string, BroadcastRegistryTopicEntry<P>[]>
         changes: p.changes,
       }),
       clientReaction: { kind: 'invalidate', owner: 'useBoardSync' },
+    },
+    // Second entry: the event-bus visualization. `epic.updated` fires for every field
+    // change, so `shouldBroadcast` keeps status/title/parent edits off this topic and
+    // only an actual re-assignment reaches it. Projects agent IDs only — never the
+    // resolved display names the domain event also carries.
+    {
+      topic: (p) => `project/${p.projectId}/agent-messages`,
+      type: 'epic.assignment',
+      shouldBroadcast: (p) => {
+        const change = agentIdChange(p);
+        return change !== null && change.current !== null && change.current !== change.previous;
+      },
+      payloadProjection: (p) => {
+        const change = agentIdChange(p);
+        return { fromAgentId: change?.previous ?? null, toAgentId: change?.current ?? null };
+      },
+      clientReaction: { kind: 'custom-handler', owner: 'useAgentEventBusStream' },
     },
   ],
   'epic.comment.created': [

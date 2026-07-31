@@ -2,6 +2,19 @@ export interface BroadcastTopicEntry<T = unknown> {
   topic: string | ((payload: T) => string);
   type: string | ((payload: T) => string);
   payloadProjection?: (payload: T) => unknown;
+  /**
+   * Optional gate for domain events whose broadcasts are only meaningful for a subset of
+   * payloads — e.g. `epic.updated` fires for every field change, but only an assignment
+   * change is worth putting on the event-bus topic.
+   *
+   * Returning `false` skips this entry entirely. Without it the alternative is emitting
+   * frames the consumer is expected to throw away, which puts noise on the wire and reads
+   * like a bug. Omit it and the entry always broadcasts.
+   *
+   * Honoured by BOTH transports (`CatalogBroadcasterService` and the tunnel forwarder) so
+   * they cannot drift in what they consider broadcastable.
+   */
+  shouldBroadcast?: (payload: T) => boolean;
 }
 
 export interface BroadcastRegistryTopicEntry<T = unknown> extends BroadcastTopicEntry<T> {

@@ -5,6 +5,7 @@
  * Justification: Tests the facade's orchestration logic via injected port mocks.
  */
 
+import { Logger } from '@nestjs/common';
 import { AgentMessageDeliveryService } from './agent-message-delivery.service';
 import type { MessageEnqueueService } from '../sessions/services/message-enqueue.service';
 import type { SessionLauncherFacade } from '../sessions/services/session-launcher-facade.service';
@@ -13,6 +14,7 @@ import type { GuestDeliveryService } from '../terminal/services/guest-delivery.s
 import type { DeliveryRecipientResolver } from './ports/delivery-recipient-resolver';
 import type { DeliveryFormatter } from './ports/delivery-formatter';
 import type { DeliveryMessage, DeliveryPolicy } from './dtos/delivery.types';
+import type { EventsService } from '../events/services/events.service';
 
 function buildService() {
   const resolver: jest.Mocked<DeliveryRecipientResolver> = {
@@ -53,6 +55,9 @@ function buildService() {
       name: null,
     }),
   };
+  const eventsService = {
+    publish: jest.fn().mockResolvedValue('event-1'),
+  };
   const service = new AgentMessageDeliveryService(
     resolver,
     launcher as SessionLauncherFacade,
@@ -60,6 +65,7 @@ function buildService() {
     messageEnqueue as MessageEnqueueService,
     guestDelivery as GuestDeliveryService,
     activeSessionLookup as ActiveSessionLookup,
+    eventsService as unknown as EventsService,
   );
 
   return {
@@ -70,6 +76,7 @@ function buildService() {
     messageEnqueue,
     guestDelivery,
     activeSessionLookup,
+    eventsService,
   };
 }
 
@@ -326,6 +333,173 @@ describe('AgentMessageDeliveryService', () => {
       expect(guestDelivery.deliverToGuest).toHaveBeenCalledWith({ name: 'guest-tmux' }, 'hello', {
         submitKeys: ['Escape'],
       });
+    });
+  });
+
+  describe('deliverAgentMessage()', () => {
+    const message = {
+      kind: 'mcp.direct' as const,
+      body: 'secret message body',
+      source: 'mcp.send_message',
+      projectId: 'project-1',
+      senderName: 'Alpha',
+      senderType: 'agent' as const,
+      senderAgentId: 'sender-1',
+    };
+
+    it('publishes direct metadata with the raw delivery status and no message body', async () => {
+      const { service, eventsService } = buildService();
+
+      const outcome = await service.deliverAgentMessage(
+        [{ agentId: 'agent-1', agentName: 'Beta' }],
+        { routingKind: 'direct' },
+        message,
+        { submitKeys: ['Enter'] },
+      );
+
+      expect(outcome.status).toBe('queued');
+      expect(eventsService.publish).toHaveBeenCalledTimes(1);
+      expect(eventsService.publish).toHaveBeenCalledWith('agent.message.sent', {
+        projectId: 'project-1',
+        senderAgentId: 'sender-1',
+        senderAgentName: 'Alpha',
+        routingKind: 'direct',
+        recipients: [{ agentId: 'agent-1', agentName: 'Beta', status: 'queued' }],
+        recipientCount: 1,
+        deliveryStatus: 'queued',
+      });
+      expect(eventsService.publish.mock.calls[0][1]).not.toHaveProperty('body');
+      expect(eventsService.publish.mock.calls[0][1]).not.toHaveProperty('message');
+    });
+
+    it('publishes explicit-group metadata in descriptor order with exact statuses', async () => {
+      const { service, resolver, messageEnqueue, eventsService } = buildService();
+      resolver.resolve.mockResolvedValue({ agentIds: ['agent-1', 'agent-2'] });
+      messageEnqueue.enqueue
+        .mockResolvedValueOnce([{ agentId: 'agent-1', status: 'delivered' }])
+        .mockResolvedValueOnce([{ agentId: 'agent-2', status: 'unconfirmed' }]);
+
+      const outcome = await service.deliverAgentMessage(
+        [
+          { agentId: 'agent-1', agentName: 'Beta' },
+          { agentId: 'agent-2', agentName: 'Gamma' },
+        ],
+        { routingKind: 'group', groupKind: 'explicit' },
+        message,
+      );
+
+      expect(outcome.status).toBe('unconfirmed');
+      expect(eventsService.publish).toHaveBeenCalledWith(
+        'agent.message.sent',
+        expect.objectContaining({
+          routingKind: 'group',
+          groupKind: 'explicit',
+          recipients: [
+            { agentId: 'agent-1', agentName: 'Beta', status: 'delivered' },
+            { agentId: 'agent-2', agentName: 'Gamma', status: 'unconfirmed' },
+          ],
+          recipientCount: 2,
+          deliveryStatus: 'unconfirmed',
+        }),
+      );
+    });
+
+    it('publishes team-group metadata including the team delivery mode', async () => {
+      const { service, eventsService } = buildService();
+
+      await service.deliverAgentMessage(
+        [{ agentId: 'agent-1', agentName: 'Lead' }],
+        {
+          routingKind: 'group',
+          groupKind: 'team',
+          teamId: 'team-1',
+          teamName: 'Builders',
+          teamDeliveryMode: 'lead',
+        },
+        message,
+      );
+
+      expect(eventsService.publish).toHaveBeenCalledWith(
+        'agent.message.sent',
+        expect.objectContaining({
+          routingKind: 'group',
+          groupKind: 'team',
+          teamId: 'team-1',
+          teamName: 'Builders',
+          teamDeliveryMode: 'lead',
+          recipientCount: 1,
+        }),
+      );
+    });
+
+    it('returns the unchanged outcome when event publication fails', async () => {
+      const { service, eventsService } = buildService();
+      eventsService.publish.mockRejectedValueOnce(new Error('event store unavailable'));
+      (jest.spyOn(Logger.prototype, 'error') as jest.SpyInstance).mockClear();
+
+      const outcome = await service.deliverAgentMessage(
+        [{ agentId: 'agent-1', agentName: 'Beta' }],
+        { routingKind: 'direct' },
+        message,
+      );
+
+      expect(outcome).toEqual({
+        status: 'queued',
+        results: [{ agentId: 'agent-1', status: 'queued' }],
+      });
+      expect(eventsService.publish).toHaveBeenCalledTimes(1);
+      expect(Logger.prototype.error).toHaveBeenCalledWith({
+        senderAgentId: 'sender-1',
+        descriptorAgentIds: ['agent-1'],
+        resultAgentIds: ['agent-1'],
+        error: 'event store unavailable',
+      });
+      expect(JSON.stringify((Logger.prototype.error as jest.Mock).mock.calls)).not.toContain(
+        message.body,
+      );
+    });
+
+    it('does not publish or fabricate a status when descriptors and results mismatch', async () => {
+      const { service, resolver, eventsService } = buildService();
+      resolver.resolve.mockResolvedValue({ agentIds: [] });
+      (jest.spyOn(Logger.prototype, 'error') as jest.SpyInstance).mockClear();
+
+      const outcome = await service.deliverAgentMessage(
+        [{ agentId: 'agent-1', agentName: 'Beta' }],
+        { routingKind: 'direct' },
+        message,
+      );
+
+      expect(outcome).toEqual({ status: 'delivered', results: [] });
+      expect(eventsService.publish).not.toHaveBeenCalled();
+      expect(Logger.prototype.error).toHaveBeenCalledWith({
+        senderAgentId: 'sender-1',
+        descriptorAgentIds: ['agent-1'],
+        resultAgentIds: [],
+        error: 'Agent descriptor and delivery result IDs do not reconcile',
+      });
+    });
+
+    it('keeps generic delivery event-free', async () => {
+      const { service, eventsService } = buildService();
+
+      await service.deliver(['agent-1'], message);
+
+      expect(eventsService.publish).not.toHaveBeenCalled();
+    });
+
+    it('keeps empty agent-only delivery event-free', async () => {
+      const { service, resolver, eventsService } = buildService();
+      resolver.resolve.mockResolvedValue({ agentIds: [] });
+
+      const outcome = await service.deliverAgentMessage(
+        [],
+        { routingKind: 'group', groupKind: 'explicit' },
+        message,
+      );
+
+      expect(outcome).toEqual({ status: 'delivered', results: [] });
+      expect(eventsService.publish).not.toHaveBeenCalled();
     });
   });
 });

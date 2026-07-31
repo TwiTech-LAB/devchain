@@ -1,13 +1,13 @@
 import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, NestFastifyApplication } from '@nestjs/platform-fastify';
-import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { ValidationPipe } from '@nestjs/common';
 import { getEnvConfig } from './common/config/env.config';
 import { HostResolver } from '@devchain/shared';
 import { logger, createLogger } from './common/logging/logger';
-import { join } from 'path';
-import { existsSync } from 'fs';
 import { writeRuntimeContextEndpointDiscovery } from './modules/runtime-context-capture/runtime-context-capture-files';
+import { configureSwagger } from './common/http/swagger';
+import { normalizeFastifyFrameworkError } from './common/http/runtime-route-classification';
+import { hasUiBuild, resolveUiRoot } from './modules/ui/ui-root';
 
 async function bootstrap() {
   const mode = process.env.DEVCHAIN_MODE === 'main' ? 'main' : 'normal';
@@ -59,25 +59,18 @@ async function bootstrap() {
       logger: fastifyLogger,
       requestIdLogLabel: 'requestId',
       disableRequestLogging: logLevel === 'error', // Disable request logging in error-only mode
+      frameworkErrors: normalizeFastifyFrameworkError,
     }),
     {
       logger: logLevels,
     },
   );
 
-  // Register static file serving for SPA assets (production mode only).
-  const uiPath = join(__dirname, 'ui');
+  const uiPath = resolveUiRoot();
   const isProduction = config.NODE_ENV === 'production';
 
-  if (isProduction && existsSync(uiPath)) {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    await app.register(require('@fastify/static'), {
-      root: uiPath,
-      prefix: '/',
-      decorateReply: false, // Don't override sendFile
-      wildcard: false, // Don't create wildcard route - UiController handles SPA fallback
-    });
-    appLogger.info({ mode, path: uiPath }, 'Static UI assets registered');
+  if (isProduction && hasUiBuild(uiPath)) {
+    appLogger.info({ mode, path: uiPath }, 'UI asset routes enabled');
   } else if (!isProduction) {
     appLogger.info('Development mode: UI served by Vite dev server at http://127.0.0.1:5175');
   } else {
@@ -111,16 +104,7 @@ async function bootstrap() {
   process.on('SIGINT', () => gracefulShutdown('SIGINT'));
   process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 
-  // Swagger/OpenAPI documentation
-  const swaggerConfig = new DocumentBuilder()
-    .setTitle('Devchain Local App API')
-    .setDescription('Local-first AI agent orchestration API')
-    .setVersion('0.1.0')
-    .addTag('health', 'Health check endpoints')
-    .build();
-
-  const document = SwaggerModule.createDocument(app, swaggerConfig);
-  SwaggerModule.setup('api/docs', app, document);
+  configureSwagger(app);
 
   // Bind to localhost only for security
   await app.listen(config.PORT, config.HOST);
