@@ -2,7 +2,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { ExportSchema } from '@devchain/shared';
 
-const TEMPLATE_NAMES = ['3-agents-dev.json', 'teams-dev.json'] as const;
+const TEMPLATE_NAMES = ['teams-dev.json'] as const;
 
 describe.each(TEMPLATE_NAMES)('%s provider settings', (templateName) => {
   const loadTemplate = () => {

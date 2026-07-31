@@ -76,14 +76,11 @@ describe('OrchestratorTemplatesController', () => {
     const controller = new OrchestratorTemplatesController();
 
     const result = await controller.listTemplates();
+    const slugs = result.templates.map(({ slug }) => slug);
 
-    expect(result.templates).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ slug: '3-agents-dev' }),
-        expect.objectContaining({ slug: 'teams-dev' }),
-      ]),
-    );
-    expect(result.total).toBeGreaterThanOrEqual(2);
+    expect(slugs).toContain('teams-dev');
+    expect(slugs).not.toContain('3-agents-dev');
+    expect(result.total).toBe(result.templates.length);
   });
 
   it('skips invalid json files and preserves valid entries', async () => {
