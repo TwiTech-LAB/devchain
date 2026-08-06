@@ -55,6 +55,19 @@ describe('EpicsController - skillsRequired validation', () => {
     ).rejects.toThrow(ZodError);
   });
 
+  it('does not accept caller-supplied createdBy on create', async () => {
+    await controller.createEpic({
+      projectId: 'project-1',
+      title: 'Epic',
+      statusId: 'status-1',
+      createdBy: 'Spoofed Creator',
+    });
+
+    expect(epicsService.createEpic).toHaveBeenCalledWith(
+      expect.not.objectContaining({ createdBy: expect.anything() }),
+    );
+  });
+
   it('normalizes and deduplicates skillsRequired on update', async () => {
     await controller.updateEpic('epic-1', {
       version: 3,
@@ -77,5 +90,19 @@ describe('EpicsController - skillsRequired validation', () => {
         skillsRequired: ['openai/review!'],
       }),
     ).rejects.toThrow(ZodError);
+  });
+
+  it('does not accept caller-supplied createdBy on update', async () => {
+    await controller.updateEpic('epic-1', {
+      version: 3,
+      title: 'Updated',
+      createdBy: 'Spoofed Creator',
+    });
+
+    expect(epicsService.updateEpic).toHaveBeenCalledWith(
+      'epic-1',
+      expect.not.objectContaining({ createdBy: expect.anything() }),
+      3,
+    );
   });
 });

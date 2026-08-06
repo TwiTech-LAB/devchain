@@ -5,6 +5,7 @@ import {
   injectModelOverride,
   extractModelFromArgs,
   stripFlag,
+  hasCodexProfileSelector,
 } from './profile-options';
 
 describe('parseProfileOptions', () => {
@@ -91,6 +92,28 @@ describe('hasFlagOccurrence', () => {
   it('does not match prefixes or unrelated flags', () => {
     expect(hasFlagOccurrence(['--settings-file', 'x', '--verbose'], '--settings')).toBe(false);
   });
+});
+
+describe('hasCodexProfileSelector', () => {
+  it.each([
+    [['-p', 'managed']],
+    [['-pmanaged']],
+    [['-p=managed']],
+    [['--profile', 'managed']],
+    [['--profile=managed']],
+    [['-p']],
+    [['--profile']],
+    [['--profile=']],
+  ])('detects owned selector form %p', (args) => {
+    expect(hasCodexProfileSelector(args)).toBe(true);
+  });
+
+  it.each([[[]], [['--profiles', 'x']], [['--model', 'x']]])(
+    'ignores unrelated form %p',
+    (args) => {
+      expect(hasCodexProfileSelector(args)).toBe(false);
+    },
+  );
 });
 
 describe('injectModelOverride', () => {

@@ -276,6 +276,58 @@ describe('ExportSchema', () => {
     });
   });
 
+  describe('agents.isProjectOwner', () => {
+    const baseTemplate = {
+      version: 1,
+      exportedAt: '2024-01-01T00:00:00Z',
+      prompts: [],
+      profiles: [],
+      agents: [{ name: 'Coder' }],
+      statuses: [],
+    };
+
+    it('defaults an omitted owner designation to false', () => {
+      const result = ExportSchema.safeParse(baseTemplate);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.agents[0].isProjectOwner).toBe(false);
+      }
+    });
+
+    it.each([false, true])('accepts an explicit %s owner designation', (isProjectOwner) => {
+      const result = ExportSchema.safeParse({
+        ...baseTemplate,
+        agents: [{ name: 'Coder', isProjectOwner }],
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.agents[0].isProjectOwner).toBe(isProjectOwner);
+      }
+    });
+
+    it('rejects multiple owner designations at the agents path', () => {
+      const result = ExportSchema.safeParse({
+        ...baseTemplate,
+        agents: [
+          { name: 'Coder', isProjectOwner: true },
+          { name: 'Reviewer', isProjectOwner: true },
+        ],
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues).toContainEqual(
+          expect.objectContaining({
+            path: ['agents'],
+            message: 'At most one agent can be designated as project owner',
+          }),
+        );
+      }
+    });
+  });
+
   describe('providerModels', () => {
     const baseTemplate = {
       version: 1,

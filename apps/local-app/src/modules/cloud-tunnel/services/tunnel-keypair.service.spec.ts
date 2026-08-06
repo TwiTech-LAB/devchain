@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-var-requires */
+/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-require-imports */
 import { createPublicKey, verify } from 'crypto';
 import { TunnelKeypairService } from './tunnel-keypair.service';
 

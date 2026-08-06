@@ -16,7 +16,7 @@ jest.mock('@/ui/hooks/use-toast', () => ({
 }));
 
 jest.mock('@/ui/components/ui/select', () => {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const React = require('react');
   let currentTriggerId: string | undefined;
 

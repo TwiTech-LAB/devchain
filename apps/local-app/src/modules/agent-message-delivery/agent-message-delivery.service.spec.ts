@@ -432,6 +432,203 @@ describe('AgentMessageDeliveryService', () => {
       );
     });
 
+    it('keeps target delivery scope while publishing one source-scoped project event', async () => {
+      const { service, launcher, messageEnqueue, eventsService } = buildService();
+      const sourceProjectId = '11111111-2222-4333-8444-555555555555';
+      const targetProjectId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+
+      const outcome = await service.deliverAgentMessage(
+        [{ agentId: 'agent-1', agentName: 'Target Owner' }],
+        {
+          routingKind: 'project',
+          sourceProjectId,
+          sourceProjectName: 'Source Project',
+          targetProjectId,
+          targetProjectName: 'Target Project',
+        },
+        {
+          kind: 'mcp.project',
+          body: 'secret project message',
+          source: 'mcp.send_message',
+          projectId: targetProjectId,
+          senderName: 'Source Owner',
+          senderType: 'agent',
+          senderAgentId: 'sender-1',
+          sourceProjectId,
+          sourceProjectName: 'Source Project',
+        },
+      );
+
+      expect(outcome.status).toBe('queued');
+      expect(launcher.ensureActiveSession).toHaveBeenCalledWith('agent-1', targetProjectId);
+      expect(messageEnqueue.enqueue).toHaveBeenCalledWith([
+        expect.objectContaining({
+          agentId: 'agent-1',
+          projectId: targetProjectId,
+          source: 'mcp.send_message',
+          failureDisclosure: 'project-safe',
+        }),
+      ]);
+      expect(eventsService.publish).toHaveBeenCalledTimes(1);
+      expect(eventsService.publish).toHaveBeenCalledWith('agent.message.sent', {
+        projectId: sourceProjectId,
+        senderAgentId: 'sender-1',
+        senderAgentName: 'Source Owner',
+        routingKind: 'project',
+        sourceProjectId,
+        sourceProjectName: 'Source Project',
+        targetProjectId,
+        targetProjectName: 'Target Project',
+        recipients: [{ agentId: 'agent-1', agentName: 'Target Owner', status: 'queued' }],
+        recipientCount: 1,
+        deliveryStatus: 'queued',
+      });
+      expect(eventsService.publish.mock.calls[0][1]).not.toHaveProperty('body');
+    });
+
+    it('leaves legacy delivery kinds on the default disclosure policy', async () => {
+      const { service, messageEnqueue } = buildService();
+
+      await service.deliver(
+        ['agent-1'],
+        {
+          kind: 'mcp.direct',
+          body: 'message',
+          source: 'mcp.send_message',
+          projectId: 'project-1',
+          senderName: 'Source Owner',
+        },
+        {},
+      );
+
+      expect(messageEnqueue.enqueue).toHaveBeenCalledWith([
+        expect.not.objectContaining({ failureDisclosure: expect.anything() }),
+      ]);
+    });
+
+    it('uses the target project for active-session lookup on deliver-only project sends', async () => {
+      const { service, launcher, activeSessionLookup, messageEnqueue } = buildService();
+      const sourceProjectId = '11111111-2222-4333-8444-555555555555';
+      const targetProjectId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+
+      await service.deliverAgentMessage(
+        [{ agentId: 'agent-1', agentName: 'Target Owner' }],
+        {
+          routingKind: 'project',
+          sourceProjectId,
+          sourceProjectName: 'Source Project',
+          targetProjectId,
+          targetProjectName: 'Target Project',
+        },
+        {
+          kind: 'mcp.project',
+          body: 'message',
+          source: 'mcp.send_message',
+          projectId: targetProjectId,
+          senderName: 'Source Owner',
+          senderAgentId: 'sender-1',
+          sourceProjectId,
+          sourceProjectName: 'Source Project',
+        },
+        { requireActiveSession: true },
+      );
+
+      expect(activeSessionLookup.getActiveSession).toHaveBeenCalledWith('agent-1', targetProjectId);
+      expect(launcher.ensureActiveSession).not.toHaveBeenCalled();
+      expect(messageEnqueue.enqueue).toHaveBeenCalledWith([
+        expect.objectContaining({ projectId: targetProjectId }),
+      ]);
+    });
+
+    it('returns a stable project delivery failure without exposing path-bearing errors', async () => {
+      const { service, launcher, eventsService } = buildService();
+      (jest.spyOn(Logger.prototype, 'error') as jest.SpyInstance).mockClear();
+      launcher.ensureActiveSession.mockRejectedValueOnce(
+        new Error('ENOENT: missing /private/source/project/provider-bin'),
+      );
+      const sourceProjectId = '11111111-2222-4333-8444-555555555555';
+      const targetProjectId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+
+      const outcome = await service.deliverAgentMessage(
+        [{ agentId: 'agent-1', agentName: 'Target Owner' }],
+        {
+          routingKind: 'project',
+          sourceProjectId,
+          sourceProjectName: 'Source Project',
+          targetProjectId,
+          targetProjectName: 'Target Project',
+        },
+        {
+          kind: 'mcp.project',
+          body: 'message',
+          source: 'mcp.send_message',
+          projectId: targetProjectId,
+          senderName: 'Source Owner',
+          senderAgentId: 'sender-1',
+          sourceProjectId,
+          sourceProjectName: 'Source Project',
+        },
+      );
+
+      expect(outcome).toEqual({
+        status: 'failed',
+        results: [{ agentId: 'agent-1', status: 'failed', error: 'DELIVERY_FAILED' }],
+      });
+      expect(JSON.stringify(outcome)).not.toContain('/private/source/project');
+      expect(Logger.prototype.error).toHaveBeenCalledWith({
+        code: 'DELIVERY_FAILED',
+        agentId: 'agent-1',
+        projectId: targetProjectId,
+      });
+      expect(JSON.stringify((Logger.prototype.error as jest.Mock).mock.calls)).not.toContain(
+        '/private/source/project',
+      );
+      expect(eventsService.publish).toHaveBeenCalledTimes(1);
+      expect(eventsService.publish.mock.calls[0][1]).not.toHaveProperty('body');
+    });
+
+    it('logs a stable code when project event publication fails', async () => {
+      const { service, eventsService } = buildService();
+      eventsService.publish.mockRejectedValueOnce(
+        new Error('EACCES: /private/source/project/event-log'),
+      );
+      (jest.spyOn(Logger.prototype, 'error') as jest.SpyInstance).mockClear();
+      const sourceProjectId = '11111111-2222-4333-8444-555555555555';
+      const targetProjectId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+
+      const outcome = await service.deliverAgentMessage(
+        [{ agentId: 'agent-1', agentName: 'Target Owner' }],
+        {
+          routingKind: 'project',
+          sourceProjectId,
+          sourceProjectName: 'Source Project',
+          targetProjectId,
+          targetProjectName: 'Target Project',
+        },
+        {
+          kind: 'mcp.project',
+          body: 'message',
+          source: 'mcp.send_message',
+          projectId: targetProjectId,
+          senderName: 'Source Owner',
+          senderAgentId: 'sender-1',
+          sourceProjectId,
+          sourceProjectName: 'Source Project',
+        },
+      );
+
+      expect(outcome.status).toBe('queued');
+      expect(Logger.prototype.error).toHaveBeenCalledWith({
+        senderAgentId: 'sender-1',
+        descriptorAgentIds: ['agent-1'],
+        resultAgentIds: ['agent-1'],
+        error: 'EVENT_PUBLISH_FAILED',
+      });
+      expect(JSON.stringify((Logger.prototype.error as jest.Mock).mock.calls)).not.toContain(
+        '/private/source/project',
+      );
+    });
+
     it('returns the unchanged outcome when event publication fails', async () => {
       const { service, eventsService } = buildService();
       eventsService.publish.mockRejectedValueOnce(new Error('event store unavailable'));

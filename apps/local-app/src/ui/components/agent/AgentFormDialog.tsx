@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Button } from '@/ui/components/ui/button';
+import { Checkbox } from '@/ui/components/ui/checkbox';
 import { Input } from '@/ui/components/ui/input';
 import { Textarea } from '@/ui/components/ui/textarea';
 import { Label } from '@/ui/components/ui/label';
@@ -62,6 +63,7 @@ export interface AgentFormValues {
   description: string;
   modelOverride: string | null;
   effortOverride: string | null;
+  isProjectOwner?: boolean;
 }
 
 export interface AgentFormSubmitData {
@@ -71,6 +73,7 @@ export interface AgentFormSubmitData {
   description: string | null;
   modelOverride: string | null;
   effortOverride: string | null;
+  isProjectOwner?: boolean;
 }
 
 export interface AgentFormDialogProps {
@@ -102,6 +105,7 @@ const EMPTY_FORM: AgentFormValues = {
   description: '',
   modelOverride: null,
   effortOverride: null,
+  isProjectOwner: false,
 };
 
 const DEFAULT_MODEL_OVERRIDE = '__default_model_override__';
@@ -168,6 +172,7 @@ export function AgentFormDialog({
         ...(initialValues ?? EMPTY_FORM),
         modelOverride: initialValues?.modelOverride ?? null,
         effortOverride: initialValues?.effortOverride ?? null,
+        isProjectOwner: initialValues?.isProjectOwner === true,
       });
     }
   }, [open, initialValues]);
@@ -293,14 +298,18 @@ export function AgentFormDialog({
     e.preventDefault();
     const trimmedName = formData.name.trim();
     if (!trimmedName) return;
-    onSubmit({
+    const submitData: AgentFormSubmitData = {
       name: trimmedName,
       profileId: formData.profileId,
       providerConfigId: formData.providerConfigId || null,
       description: formData.description.trim() || null,
       modelOverride: formData.modelOverride || null,
       effortOverride: formData.effortOverride || null,
-    });
+    };
+    if (isEdit) {
+      submitData.isProjectOwner = formData.isProjectOwner === true;
+    }
+    onSubmit(submitData);
   };
 
   const handleCancel = () => {
@@ -460,6 +469,28 @@ export function AgentFormDialog({
                   </div>
                 </div>
               )}
+            </div>
+          )}
+
+          {isEdit && (
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id={`${idPrefix}-project-owner`}
+                  checked={formData.isProjectOwner === true}
+                  aria-describedby={`${idPrefix}-project-owner-help`}
+                  onCheckedChange={(checked) =>
+                    setFormData((prev) => ({ ...prev, isProjectOwner: checked === true }))
+                  }
+                />
+                <Label htmlFor={`${idPrefix}-project-owner`}>Project owner</Label>
+              </div>
+              <p
+                id={`${idPrefix}-project-owner-help`}
+                className="pl-6 text-xs text-muted-foreground"
+              >
+                Selecting this checkbox replaces the current project owner.
+              </p>
             </div>
           )}
 

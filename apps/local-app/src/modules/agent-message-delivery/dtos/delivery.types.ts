@@ -1,4 +1,4 @@
-export type DeliveryKind = 'mcp.direct' | 'mcp.thread' | 'chat.user' | 'pooled';
+export type DeliveryKind = 'mcp.direct' | 'mcp.project' | 'mcp.thread' | 'chat.user' | 'pooled';
 
 export interface DeliveryMessage {
   readonly kind: DeliveryKind;
@@ -10,6 +10,9 @@ export interface DeliveryMessage {
   readonly threadId?: string;
   readonly messageId?: string;
   readonly senderAgentId?: string;
+  /** Source identity rendered only for cross-project agent messages. */
+  readonly sourceProjectId?: string;
+  readonly sourceProjectName?: string;
   /**
    * Caller-supplied idempotency key threaded into the message pool so a retry
    * with the same key dedups instead of double-delivering (mobile sends). The
@@ -18,7 +21,7 @@ export interface DeliveryMessage {
   readonly clientMessageId?: string;
   /**
    * Tmux framing directive for `kind:'mcp.direct'` deliveries. Only applies to
-   * `mcp.direct`; ignored for `'mcp.thread'`, `'chat.user'`, and `'pooled'`.
+   * `mcp.direct`; ignored for `'mcp.project'`, `'mcp.thread'`, `'chat.user'`, and `'pooled'`.
    * `'agent-banner'` (default when unset) wraps the body in the agent-oriented
    * `[This message is sent from …]` banner; `'plain'` delivers the raw body with
    * no wrapper — used for human (mobile) user turns where the banner is wrong.
@@ -76,12 +79,26 @@ export type AgentMessageRouting =
       readonly teamId: string;
       readonly teamName: string;
       readonly teamDeliveryMode: TeamDeliveryMode;
+    }
+  | {
+      readonly routingKind: 'project';
+      readonly sourceProjectId: string;
+      readonly sourceProjectName: string;
+      readonly targetProjectId: string;
+      readonly targetProjectName: string;
     };
 
-export type AgentMessageDeliveryMessage = DeliveryMessage & {
-  readonly kind: 'mcp.direct';
-  readonly senderAgentId: string;
-};
+export type AgentMessageDeliveryMessage =
+  | (DeliveryMessage & {
+      readonly kind: 'mcp.direct';
+      readonly senderAgentId: string;
+    })
+  | (DeliveryMessage & {
+      readonly kind: 'mcp.project';
+      readonly senderAgentId: string;
+      readonly sourceProjectId: string;
+      readonly sourceProjectName: string;
+    });
 
 export interface RecipientResult {
   readonly agentId: string;

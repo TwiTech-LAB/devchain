@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { render, waitFor } from '@testing-library/react';
 // Import as ComponentType to avoid strict JSX component typing complaints in isolated TS
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const BoardPage: React.ComponentType = require('./BoardPage').BoardPage;
 
 // Mock project selection hook

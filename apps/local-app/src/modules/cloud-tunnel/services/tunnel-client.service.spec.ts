@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-var-requires, @typescript-eslint/ban-types */
+/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-require-imports, @typescript-eslint/no-empty-object-type, @typescript-eslint/no-unsafe-function-type, @typescript-eslint/no-wrapper-object-types */
 import { TunnelClientService } from './tunnel-client.service';
 import { CloudSessionManagerService } from '../../cloud/services/cloud-session-manager.service';
 import { RefreshGateService } from '../../cloud/services/refresh-gate.service';

@@ -1,5 +1,7 @@
 export const FAILURE_NOTICE_SOURCE = 'pool.failure_notice';
 
+export type FailureDisclosurePolicy = 'legacy' | 'project-safe';
+
 export interface MessagePoolConfig {
   enabled: boolean;
   delayMs: number;
@@ -15,6 +17,7 @@ export interface PooledMessage {
   submitKeys: string[];
   senderAgentId?: string;
   logEntryId: string;
+  failureDisclosure?: FailureDisclosurePolicy;
   /** Caller-supplied idempotency key (mobile sends); see {@link EnqueueOptions.clientMessageId}. */
   clientMessageId?: string;
 }
@@ -30,6 +33,7 @@ export interface EnqueueOptions {
   immediate?: boolean;
   projectId?: string;
   agentName?: string;
+  failureDisclosure?: FailureDisclosurePolicy;
   /**
    * Caller-supplied idempotency key. When set, a re-enqueue with the same
    * `clientMessageId` + `agentId` + `source` returns the existing entry instead
@@ -59,6 +63,7 @@ export interface FlushResult {
 export type DeliveryFailureCode =
   | 'paste_not_confirmed'
   | 'no_active_session'
+  | 'project_delivery_failed'
   | 'send_keys_failed'
   | 'tmux_error';
 

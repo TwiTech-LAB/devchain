@@ -141,7 +141,7 @@ jest.mock('@/ui/lib/socket', () => ({
   releaseWorktreeSocket: jest.fn(),
 }));
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const ChatPage = require('./ChatPage').ChatPage as React.ComponentType;
 
 // ============================================

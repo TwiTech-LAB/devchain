@@ -114,6 +114,7 @@ export const ExportSchema = z
           description: z.string().nullable().optional(),
           modelOverride: z.string().nullable().optional(),
           effortOverride: z.string().nullable().optional(),
+          isProjectOwner: z.boolean().optional().default(false),
           // Provider config reference (new in v2)
           // References a config by name within the agent's profile
           providerConfigName: z.string().nullable().optional(),
@@ -329,7 +330,16 @@ export const ExportSchema = z
     // Template manifest metadata (optional, for display/UX purposes)
     _manifest: ManifestSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((payload, ctx) => {
+    if (payload.agents.filter((agent) => agent.isProjectOwner).length > 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['agents'],
+        message: 'At most one agent can be designated as project owner',
+      });
+    }
+  });
 
 /** Inferred TypeScript type from the ExportSchema */
 export type ExportData = z.infer<typeof ExportSchema>;

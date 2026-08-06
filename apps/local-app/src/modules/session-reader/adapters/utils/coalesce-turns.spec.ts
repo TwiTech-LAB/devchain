@@ -19,7 +19,7 @@ jest.mock('../../../../common/logging/logger', () => ({
     error: jest.fn(),
   }),
 }));
-/* eslint-disable @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires */
+/* eslint-disable @typescript-eslint/no-require-imports */
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -27,7 +27,7 @@ const { parseClaudeJsonl } =
   require('../../parsers/claude-jsonl.parser') as typeof import('../../parsers/claude-jsonl.parser');
 const { parseCodexJsonl } =
   require('../../parsers/codex-jsonl.parser') as typeof import('../../parsers/codex-jsonl.parser');
-/* eslint-enable @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires */
+/* eslint-enable @typescript-eslint/no-require-imports */
 
 // ---------------------------------------------------------------------------
 // Builders

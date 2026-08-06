@@ -3,6 +3,7 @@ import {
   ChatAckParamsSchema,
   ChatReadHistoryParamsSchema,
   ChatListMembersParamsSchema,
+  PROJECT_ID_PREFIX_PATTERN,
 } from '../dtos/mcp.dto';
 import type { ToolMetadataEntry } from './types';
 
@@ -10,7 +11,7 @@ export const chatMetadata: ToolMetadataEntry[] = [
   {
     name: 'devchain_send_message',
     description:
-      'Send a chat message. Sender is derived from session agent. Provide threadId to reply in a thread, recipientAgentNames for pooled delivery to one or more explicit recipients without creating a thread, or teamName for pooled team routing. Omit all recipient fields to fan out to your own team (resolved from session).',
+      'Send a chat message. Sender is derived from session agent. Provide recipientProjectId for Project Owner delivery, threadId to reply in a thread, recipientAgentNames for pooled delivery to one or more explicit recipients without creating a thread, or teamName for pooled team routing. Omit all recipient fields to fan out to your own team (resolved from session).',
     inputSchema: {
       type: 'object',
       required: ['sessionId', 'message'],
@@ -35,6 +36,12 @@ export const chatMetadata: ToolMetadataEntry[] = [
           type: 'string',
           description:
             'Team name (case-insensitive). Routes to team lead if assigned, otherwise to all members. Mutually exclusive with recipientAgentNames. Cannot be combined with threadId. Omit all recipient fields to fan out to your own team (resolved from session).',
+        },
+        recipientProjectId: {
+          type: 'string',
+          pattern: PROJECT_ID_PREFIX_PATTERN.source,
+          description:
+            'Full project UUID or valid 8+ character UUID prefix. Mutually exclusive with thread, agent, team, and internal recipient routing.',
         },
         message: { type: 'string', description: 'Message content to deliver.' },
       },

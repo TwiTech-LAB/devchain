@@ -108,7 +108,32 @@ describe('LegacyDeliveryFormatterAdapter', () => {
     });
   });
 
-  describe('non-mcp.direct kinds ignore framing', () => {
+  describe('mcp.project framing', () => {
+    it('renders a sanitized, replyable source-project banner without path metadata', () => {
+      const sourceProjectId = '11111111-2222-4333-8444-555555555555';
+      const out = formatter.format(
+        msg({
+          kind: 'mcp.project',
+          senderName: '  Alice\n\u0000 "Owner"  ',
+          senderType: 'agent',
+          sourceProjectId,
+          sourceProjectName: '  Source\t Project\u007f "One"  ',
+          body: 'Cross-project body',
+          sourceProjectRootPath: '/private/source/project',
+        } as Partial<DeliveryMessage> & { sourceProjectRootPath: string }),
+      );
+
+      expect(out).toBe(
+        '\n[This project message is sent from Project Owner "Alice \\"Owner\\"" in project "Source Project \\"One\\"". To reply, use devchain_send_message with recipientProjectId: "11111111-2222-4333-8444-555555555555".]\nCross-project body\n',
+      );
+      expect(out).not.toContain('\u0000');
+      expect(out).not.toContain('\u007f');
+      expect(out).not.toContain('\t');
+      expect(out).not.toContain('/private/source/project');
+    });
+  });
+
+  describe('other kinds ignore framing', () => {
     it("formats 'mcp.thread' as the thread turn with the [ACK] tool call (framing ignored)", () => {
       const out = formatter.format(
         msg({

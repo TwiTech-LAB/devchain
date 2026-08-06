@@ -26,6 +26,7 @@ import { HooksConfigService } from '../../hooks/services/hooks-config.service';
 import { ProviderAdapterFactory } from '../../providers/adapters/provider-adapter.factory';
 import { RuntimeContextCaptureService } from '../../runtime-context-capture/runtime-context-capture.service';
 import { ClaudeLaunchSettingsMaterializerService } from '../../runtime-context-capture/claude-launch-settings-materializer.service';
+import { CodexPluginProfileMaterializerService } from '../../runtime-context-capture/codex-plugin-profile-materializer.service';
 
 const logger = createLogger('SessionsService');
 
@@ -89,6 +90,7 @@ export class SessionsService {
     private readonly terminalSessionRegistry: TerminalSessionRegistry,
     private readonly runtimeContextCapture: RuntimeContextCaptureService,
     private readonly claudeLaunchSettings: ClaudeLaunchSettingsMaterializerService,
+    private readonly codexPluginProfiles: CodexPluginProfileMaterializerService,
   ) {
     this.sqlite = getRawSqliteClient(this.db);
     this.txRunner = new TransactionRunner(this.sqlite);
@@ -120,6 +122,13 @@ export class SessionsService {
       // so a stale registry entry cannot block a later restore.
       this.ptyService.stopStreaming(sessionId);
       this.terminalSessionRegistry.dispose(sessionId);
+      if (
+        session.tmuxSessionId &&
+        (await this.terminalIO.sessionExists({ name: session.tmuxSessionId }))
+      ) {
+        await this.terminalIO.destroySession({ name: session.tmuxSessionId });
+      }
+      await this.codexPluginProfiles.cleanupSession(sessionId);
       return;
     }
 
@@ -139,6 +148,7 @@ export class SessionsService {
         );
       }
     }
+    await this.codexPluginProfiles.cleanupSession(sessionId);
 
     // Best-effort: read transcript file size at stop time to avoid per-request stat on history queries.
     // If transcript_path is NULL or stat fails (deleted file, race with auto-discovery), leave size_bytes NULL.
@@ -507,6 +517,7 @@ export class SessionsService {
           this.terminalSessionRegistry.dispose(row.id);
           this.runtimeContextCapture.clear(row.id);
           this.claudeLaunchSettings.cleanupSessionSync(row.id);
+          await this.codexPluginProfiles.cleanupSession(row.id);
 
           // Update row status for return value
           row.status = 'stopped';
@@ -635,12 +646,19 @@ export class SessionsService {
     logger.warn({ sessionId, reason }, 'Marking session as failed due to dead tmux');
     this.runtimeContextCapture.clear(sessionId);
     this.claudeLaunchSettings.cleanupSessionSync(sessionId);
+    void this.codexPluginProfiles.cleanupSession(sessionId).catch((error) => {
+      logger.warn({ sessionId, error }, 'Failed to clean Codex profile lifecycle after tmux death');
+    });
     const now = new Date().toISOString();
     this.sqlite
       .prepare(
         `UPDATE sessions SET status = 'failed', ended_at = ?, updated_at = ? WHERE id = ? AND status = 'running'`,
       )
       .run(now, now, sessionId);
+  }
+
+  async reconcileCodexPluginProfiles(nonLiveSessionIds: ReadonlySet<string>): Promise<void> {
+    await this.codexPluginProfiles.reconcileStartup(nonLiveSessionIds);
   }
 
   /**

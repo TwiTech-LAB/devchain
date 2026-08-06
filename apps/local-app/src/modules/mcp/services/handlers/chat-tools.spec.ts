@@ -11,6 +11,7 @@ import { createNullAdapter } from './null-adapter';
 import type { ChatService } from '../../../chat/services/chat.service';
 import type { SessionsService } from '../../../sessions/services/sessions.service';
 import type { AgentMessageDeliveryService } from '../../../agent-message-delivery/agent-message-delivery.service';
+import type { ProjectCommunicationService } from '../../../project-communication/project-communication.service';
 
 jest.mock('../../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
@@ -102,6 +103,9 @@ function makeCtx(
     agentMessageDelivery: createNullAdapter<AgentMessageDeliveryService>(
       'AgentMessageDeliveryService',
     ),
+    projectCommunicationService: createNullAdapter<ProjectCommunicationService>(
+      'ProjectCommunicationService',
+    ),
     settingsService: {
       getMessagePoolConfigForProject: jest.fn().mockReturnValue({
         enabled: true,
@@ -125,6 +129,71 @@ describe('chat-tools handlers', () => {
   });
 
   describe('handleSendMessage', () => {
+    it('delegates the project route before self-team fallback and maps success', async () => {
+      const projectCommunicationService = {
+        sendToProject: jest.fn().mockResolvedValue({
+          result: {
+            mode: 'project',
+            targetProject: {
+              id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+              shortId: 'aaaaaaaa',
+              name: 'Target',
+            },
+            deliveryStatus: 'queued',
+          },
+        }),
+      };
+      const ctx = makeCtx(null, { projectCommunicationService } as never);
+
+      const result = await handleSendMessage(ctx, {
+        sessionId: SESSION_ID,
+        recipientProjectId: 'aaaaaaaa',
+        message: 'cross-project hello',
+      });
+
+      expect(projectCommunicationService.sendToProject).toHaveBeenCalledWith({
+        callerAgentId: AGENT_ID,
+        recipientProjectId: 'aaaaaaaa',
+        message: 'cross-project hello',
+      });
+      expect(ctx.teamsService.listTeamsByAgent).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        success: true,
+        data: {
+          mode: 'project',
+          targetProject: {
+            id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+            shortId: 'aaaaaaaa',
+            name: 'Target',
+          },
+          deliveryStatus: 'queued',
+        },
+      });
+    });
+
+    it('passes null caller context for project sends from guests', async () => {
+      const projectCommunicationService = {
+        sendToProject: jest.fn().mockResolvedValue({
+          error: { code: 'AGENT_CONTEXT_REQUIRED', message: 'Agent required' },
+        }),
+      };
+      const ctx = makeCtx(makeGuestCtx(), { projectCommunicationService } as never);
+
+      const result = await handleSendMessage(ctx, {
+        sessionId: SESSION_ID,
+        recipientProjectId: 'aaaaaaaa',
+        message: 'hello',
+      });
+
+      expect(projectCommunicationService.sendToProject).toHaveBeenCalledWith(
+        expect.objectContaining({ callerAgentId: null }),
+      );
+      expect(result).toEqual({
+        success: false,
+        error: { code: 'AGENT_CONTEXT_REQUIRED', message: 'Agent required' },
+      });
+    });
+
     it('returns error when sessionsService unavailable', async () => {
       const ctx = makeCtx(null, {
         sessionsService: createNullAdapter<SessionsService>('SessionsService'),

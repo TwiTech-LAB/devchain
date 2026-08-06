@@ -61,7 +61,7 @@ if (!(global as unknown as { ResizeObserver?: typeof ResizeObserver }).ResizeObs
 }
 
 // Import as any to avoid TSX type friction in isolated test env
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const ChatPage = require('./ChatPage').ChatPage as React.ComponentType;
 const toastSpy = jest.fn();
 const setActiveWorktreeMock = jest.fn();

@@ -161,6 +161,7 @@ describe('AgentFormDialog', () => {
         modelOverride: null,
       }),
     );
+    expect(onSubmit.mock.calls[0]?.[0]).not.toHaveProperty('isProjectOwner');
   });
 
   // ---- Edit mode ----
@@ -210,6 +211,92 @@ describe('AgentFormDialog', () => {
 
     expect(screen.getByRole('button', { name: /save changes/i })).toBeInTheDocument();
   });
+
+  it('exposes the project owner checkbox only in edit mode with replacement guidance', () => {
+    setupFetchMock();
+    const { Wrapper } = createWrapper();
+    const { rerender } = render(<AgentFormDialog {...buildProps()} />, { wrapper: Wrapper });
+
+    expect(screen.queryByRole('checkbox', { name: /project owner/i })).not.toBeInTheDocument();
+
+    rerender(
+      <AgentFormDialog
+        {...buildProps({
+          mode: 'edit',
+          initialValues: {
+            name: 'Agent One',
+            profileId: 'profile-1',
+            providerConfigId: 'config-1',
+            description: '',
+            modelOverride: null,
+            isProjectOwner: false,
+          },
+          editAgentId: 'agent-1',
+        })}
+      />,
+    );
+
+    expect(screen.getByRole('checkbox', { name: /project owner/i })).toBeInTheDocument();
+    expect(
+      screen.getByText('Selecting this checkbox replaces the current project owner.'),
+    ).toBeInTheDocument();
+  });
+
+  it('initializes the project owner checkbox from the edit agent value', () => {
+    setupFetchMock();
+    const { Wrapper } = createWrapper();
+    render(
+      <AgentFormDialog
+        {...buildProps({
+          mode: 'edit',
+          initialValues: {
+            name: 'Agent One',
+            profileId: 'profile-1',
+            providerConfigId: 'config-1',
+            description: '',
+            modelOverride: null,
+            isProjectOwner: true,
+          },
+          editAgentId: 'agent-1',
+        })}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    expect(screen.getByRole('checkbox', { name: /project owner/i })).toBeChecked();
+  });
+
+  it.each([true, false])(
+    'submits an explicit isProjectOwner=%s value in edit mode',
+    async (isProjectOwner) => {
+      setupFetchMock();
+      const onSubmit = jest.fn();
+      const user = userEvent.setup();
+      const { Wrapper } = createWrapper();
+      render(
+        <AgentFormDialog
+          {...buildProps({
+            mode: 'edit',
+            initialValues: {
+              name: 'Agent One',
+              profileId: 'profile-1',
+              providerConfigId: 'config-1',
+              description: '',
+              modelOverride: null,
+              isProjectOwner,
+            },
+            editAgentId: 'agent-1',
+            onSubmit,
+          })}
+        />,
+        { wrapper: Wrapper },
+      );
+
+      await user.click(screen.getByRole('button', { name: /save changes/i }));
+
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ isProjectOwner }));
+    },
+  );
 
   it('populates form with initialValues in edit mode', () => {
     setupFetchMock();

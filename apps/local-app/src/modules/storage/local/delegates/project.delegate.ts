@@ -364,6 +364,39 @@ export class ProjectStorageDelegate extends BaseStorageDelegate {
     };
   }
 
+  async getProjectsByIdPrefix(prefix: string): Promise<Project[]> {
+    const normalizedPrefix = prefix.toLowerCase();
+
+    // Project addresses are UUIDs (or UUID prefixes). Keep this read strict so
+    // callers cannot turn an address into a wildcard or arbitrary substring
+    // query. A full UUID naturally becomes an exact match through substr().
+    if (!/^[a-f0-9-]{8,36}$/.test(normalizedPrefix)) {
+      return [];
+    }
+
+    const { projects } = await import('../../db/schema');
+    const { sql } = await import('drizzle-orm');
+    const rows = await this.db
+      .select()
+      .from(projects)
+      .where(
+        sql`lower(substr(${projects.id}, 1, ${normalizedPrefix.length})) = ${normalizedPrefix}`,
+      );
+
+    return (rows as Array<Record<string, unknown>>).map(
+      (row) =>
+        ({
+          id: row.id,
+          name: row.name,
+          description: row.description ?? null,
+          rootPath: row.rootPath,
+          isTemplate: Boolean(row.isTemplate ?? false),
+          createdAt: row.createdAt,
+          updatedAt: row.updatedAt,
+        }) as Project,
+    );
+  }
+
   async updateProject(id: string, data: UpdateProject): Promise<Project> {
     const { projects } = await import('../../db/schema');
     const { eq } = await import('drizzle-orm');

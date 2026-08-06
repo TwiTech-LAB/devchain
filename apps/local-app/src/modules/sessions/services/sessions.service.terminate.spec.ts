@@ -129,6 +129,10 @@ describe('SessionsService.terminateSession — size_bytes', () => {
       terminalSessionRegistry,
       { clear: jest.fn() } as unknown as RuntimeContextCaptureService,
       { cleanupSessionSync: jest.fn() } as never,
+      {
+        cleanupSession: jest.fn().mockResolvedValue(undefined),
+        reconcileStartup: jest.fn().mockResolvedValue(undefined),
+      } as never,
     );
   });
 

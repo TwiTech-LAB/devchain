@@ -34,6 +34,7 @@ describe('EpicsService', () => {
     statusId: 'status-1',
     parentId: null,
     agentId: null,
+    createdBy: null,
     version: 1,
     data: null,
     skillsRequired: null,
@@ -172,6 +173,113 @@ describe('EpicsService', () => {
         baseEpic.projectId,
         expect.objectContaining({ title: baseEpic.title, skillsRequired: ['openai/review'] }),
       );
+    });
+
+    it('persists the trusted agent-name snapshot through createEpic', async () => {
+      const persisted = {
+        ...baseEpic,
+        agentId: 'creator-agent',
+        createdBy: 'Creator Snapshot',
+      };
+      storage.createEpic.mockResolvedValue(persisted);
+      storage.getProject.mockResolvedValue({ id: 'project-1', name: 'Test Project' });
+      storage.getStatus.mockResolvedValue({ id: 'status-1', label: 'New' });
+      storage.getAgent.mockRejectedValue(new Error('Agent was deleted after insert'));
+
+      await service.createEpic(
+        { ...baseEpic, createdBy: 'Spoofed Input' } as unknown as CreateEpic,
+        {
+          actor: { type: 'agent', id: 'creator-agent' },
+          creatorAgentName: 'Creator Snapshot',
+        },
+      );
+
+      expect(storage.createEpic).toHaveBeenCalledWith(
+        expect.objectContaining({ createdBy: 'Creator Snapshot' }),
+      );
+      expect(eventsService.publish).toHaveBeenCalledWith(
+        'epic.created',
+        expect.objectContaining({ creatorName: 'Creator Snapshot' }),
+      );
+      expect(storage.getAgent).toHaveBeenCalledWith('creator-agent');
+    });
+
+    it('persists the trusted agent-name snapshot through createEpicForProject', async () => {
+      const persisted = {
+        ...baseEpic,
+        agentId: 'creator-agent',
+        createdBy: 'Creator Snapshot',
+      };
+      storage.createEpicForProject.mockResolvedValue(persisted);
+      storage.getProject.mockResolvedValue({ id: 'project-1', name: 'Test Project' });
+      storage.getStatus.mockResolvedValue({ id: 'status-1', label: 'New' });
+      storage.getAgent.mockResolvedValue({ id: 'creator-agent', name: 'Renamed Creator' });
+
+      await service.createEpicForProject(
+        baseEpic.projectId,
+        { title: baseEpic.title, createdBy: 'Spoofed Input' },
+        {
+          actor: { type: 'agent', id: 'creator-agent' },
+          creatorAgentName: 'Creator Snapshot',
+        },
+      );
+
+      expect(storage.createEpicForProject).toHaveBeenCalledWith(
+        baseEpic.projectId,
+        expect.objectContaining({ createdBy: 'Creator Snapshot' }),
+      );
+      expect(eventsService.publish).toHaveBeenCalledWith(
+        'epic.created',
+        expect.objectContaining({
+          agentName: 'Renamed Creator',
+          creatorName: 'Creator Snapshot',
+        }),
+      );
+      expect(storage.getAgent).toHaveBeenCalledWith('creator-agent');
+    });
+
+    it('persists null attribution while retaining readable guest event attribution', async () => {
+      storage.createEpic.mockResolvedValue(baseEpic);
+      storage.getProject.mockResolvedValue({ id: 'project-1', name: 'Test Project' });
+      storage.getStatus.mockResolvedValue({ id: 'status-1', label: 'New' });
+      storage.getGuest.mockResolvedValue({ id: 'guest-1', name: 'Guest' });
+
+      await service.createEpic(
+        { ...baseEpic, createdBy: 'Spoofed Input' } as unknown as CreateEpic,
+        { actor: { type: 'guest', id: 'guest-1' } },
+      );
+
+      expect(storage.createEpic).toHaveBeenCalledWith(expect.objectContaining({ createdBy: null }));
+      expect(eventsService.publish).toHaveBeenCalledWith(
+        'epic.created',
+        expect.objectContaining({ creatorName: 'Guest' }),
+      );
+    });
+
+    it.each([
+      [
+        'an agent actor without a trusted name',
+        { actor: { type: 'agent' as const, id: 'agent-1' } },
+      ],
+      ['unknown/system creation', undefined],
+    ])('persists null attribution for %s', async (_label, context) => {
+      storage.createEpic.mockResolvedValue(baseEpic);
+      storage.getProject.mockResolvedValue({ id: 'project-1', name: 'Test Project' });
+      storage.getStatus.mockResolvedValue({ id: 'status-1', label: 'New' });
+      storage.getAgent.mockResolvedValue({ id: 'agent-1', name: 'Legacy Agent' });
+
+      await service.createEpic(
+        { ...baseEpic, createdBy: 'Spoofed Input' } as unknown as CreateEpic,
+        context,
+      );
+
+      expect(storage.createEpic).toHaveBeenCalledWith(expect.objectContaining({ createdBy: null }));
+      if (context?.actor.type === 'agent') {
+        expect(eventsService.publish).toHaveBeenCalledWith(
+          'epic.created',
+          expect.objectContaining({ creatorName: 'Legacy Agent' }),
+        );
+      }
     });
 
     it('includes resolved names in epic.created payload', async () => {

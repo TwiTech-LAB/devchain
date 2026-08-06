@@ -26,6 +26,7 @@ const baseAgent: AgentCardData = {
   projectId: 'project-1',
   profileId: 'profile-1',
   name: 'Agent One',
+  isProjectOwner: false,
   description: 'A test agent description',
   profile: baseProfile,
   createdAt: '2024-06-15T00:00:00.000Z',
@@ -95,6 +96,19 @@ describe('AgentCard', () => {
     render(<AgentCard {...buildProps({ isLastUsed: false })} />);
 
     expect(screen.queryByText('Last launched')).not.toBeInTheDocument();
+  });
+
+  it('shows an accessible Project owner badge for the owner agent', () => {
+    render(<AgentCard {...buildProps({ agent: { ...baseAgent, isProjectOwner: true } })} />);
+
+    expect(screen.getByText('Project owner')).toBeInTheDocument();
+    expect(screen.getByLabelText('Project owner')).toHaveTextContent('Project owner');
+  });
+
+  it('does not show a Project owner badge for ordinary agents', () => {
+    render(<AgentCard {...buildProps()} />);
+
+    expect(screen.queryByText('Project owner')).not.toBeInTheDocument();
   });
 
   it('shows provider name badge', () => {

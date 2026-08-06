@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor, act } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, act, within } from '@testing-library/react';
 import { AgentsPage } from './AgentsPage';
 
 const toastSpy = jest.fn();
@@ -60,6 +60,7 @@ const baseAgent = {
   projectId: 'project-1',
   profileId: baseProfile.id,
   name: 'Agent One',
+  isProjectOwner: false,
   createdAt: '2024-01-01T00:00:00.000Z',
   updatedAt: '2024-01-01T00:00:00.000Z',
   profile: agentProfile,
@@ -94,8 +95,9 @@ function createWrapper() {
 function buildFetchMock(overrides?: {
   onLaunch?: () => Promise<Response> | Response;
   onUpdate?: () => Promise<Response> | Response;
+  agents?: Array<typeof baseAgent>;
 }) {
-  let currentAgent = { ...baseAgent };
+  let currentAgents = overrides?.agents?.map((agent) => ({ ...agent })) ?? [{ ...baseAgent }];
   return jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.toString();
 
@@ -135,7 +137,7 @@ function buildFetchMock(overrides?: {
     if (url.startsWith('/api/agents') && (!init || init.method === undefined)) {
       return {
         ok: true,
-        json: async () => ({ items: [currentAgent], total: 1 }),
+        json: async () => ({ items: currentAgents, total: currentAgents.length }),
       } as Response;
     }
 
@@ -185,17 +187,19 @@ function buildFetchMock(overrides?: {
       } as Response;
     }
 
-    if (url === `/api/agents/${baseAgent.id}` && init?.method === 'PATCH') {
+    if (url.startsWith('/api/agents/') && init?.method === 'PATCH') {
       if (overrides?.onUpdate) {
         return overrides.onUpdate();
       }
 
+      const id = url.slice('/api/agents/'.length);
+      const body = JSON.parse(String(init.body ?? '{}')) as Partial<typeof baseAgent>;
+      currentAgents = currentAgents.map((agent) =>
+        agent.id === id ? { ...agent, ...body, name: body.name ?? 'Agent One Updated' } : agent,
+      );
       return {
         ok: true,
-        json: async () => {
-          currentAgent = { ...currentAgent, name: 'Agent One Updated' };
-          return currentAgent;
-        },
+        json: async () => currentAgents.find((agent) => agent.id === id) ?? currentAgents[0],
       } as Response;
     }
 
@@ -288,7 +292,10 @@ describe('AgentsPage', () => {
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         `/api/agents/${baseAgent.id}`,
-        expect.objectContaining({ method: 'PATCH' }),
+        expect.objectContaining({
+          method: 'PATCH',
+          body: expect.stringContaining('"isProjectOwner":false'),
+        }),
       );
     });
 
@@ -344,6 +351,97 @@ describe('AgentsPage', () => {
       expect(screen.getByText('Agent One')).toBeInTheDocument();
     });
     expect(screen.getByText('Edit Agent')).toBeInTheDocument();
+
+    queryClient.clear();
+  });
+
+  it('optimistically hands the project owner designation from agent A to agent B', async () => {
+    let resolvePatch: ((value: Response) => void) | undefined;
+    const ownerAgent = { ...baseAgent, isProjectOwner: true };
+    const nextAgent = { ...baseAgent, id: 'agent-2', name: 'Agent Two', isProjectOwner: false };
+    const fetchMock = buildFetchMock({
+      agents: [ownerAgent, nextAgent],
+      onUpdate: () =>
+        new Promise<Response>((resolve) => {
+          resolvePatch = resolve;
+        }),
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const { Wrapper, queryClient } = createWrapper();
+    render(<AgentsPage />, { wrapper: Wrapper });
+
+    await screen.findByText('Agent Two');
+    const ownerCard = screen.getByTestId('agent-card-agent-1');
+    const nextCard = screen.getByTestId('agent-card-agent-2');
+    expect(within(ownerCard).getByText('Project owner')).toBeInTheDocument();
+    expect(within(nextCard).queryByText('Project owner')).not.toBeInTheDocument();
+
+    fireEvent.click(within(nextCard).getByRole('button', { name: /edit/i }));
+    const ownerCheckbox = await screen.findByRole('checkbox', { name: /project owner/i });
+    expect(ownerCheckbox).not.toBeChecked();
+    fireEvent.click(ownerCheckbox);
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => {
+      expect(within(ownerCard).queryByText('Project owner')).not.toBeInTheDocument();
+      expect(within(nextCard).getByText('Project owner')).toBeInTheDocument();
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/agents/agent-2',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: expect.stringContaining('"isProjectOwner":true'),
+      }),
+    );
+
+    resolvePatch?.({
+      ok: true,
+      json: async () => ({ ...nextAgent, isProjectOwner: true }),
+    } as Response);
+    await waitFor(() => expect(screen.queryByText('Edit Agent')).not.toBeInTheDocument());
+
+    queryClient.clear();
+  });
+
+  it('rolls back the owner handoff when the PATCH fails', async () => {
+    let resolvePatch: ((value: Response) => void) | undefined;
+    const ownerAgent = { ...baseAgent, isProjectOwner: true };
+    const nextAgent = { ...baseAgent, id: 'agent-2', name: 'Agent Two', isProjectOwner: false };
+    const fetchMock = buildFetchMock({
+      agents: [ownerAgent, nextAgent],
+      onUpdate: () =>
+        new Promise<Response>((resolve) => {
+          resolvePatch = resolve;
+        }),
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const { Wrapper, queryClient } = createWrapper();
+    render(<AgentsPage />, { wrapper: Wrapper });
+
+    await screen.findByText('Agent Two');
+    const ownerCard = screen.getByTestId('agent-card-agent-1');
+    const nextCard = screen.getByTestId('agent-card-agent-2');
+    fireEvent.click(within(nextCard).getByRole('button', { name: /edit/i }));
+    fireEvent.click(await screen.findByRole('checkbox', { name: /project owner/i }));
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => {
+      expect(within(ownerCard).queryByText('Project owner')).not.toBeInTheDocument();
+      expect(within(nextCard).getByText('Project owner')).toBeInTheDocument();
+    });
+
+    resolvePatch?.({
+      ok: false,
+      json: async () => ({ message: 'Failed to update agent' }),
+    } as Response);
+
+    await waitFor(() => {
+      expect(toastSpy).toHaveBeenCalledWith(expect.objectContaining({ title: 'Update failed' }));
+      expect(within(ownerCard).getByText('Project owner')).toBeInTheDocument();
+      expect(within(nextCard).queryByText('Project owner')).not.toBeInTheDocument();
+    });
 
     queryClient.clear();
   });

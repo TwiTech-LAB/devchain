@@ -38,6 +38,7 @@ export class AgentStorageDelegate extends BaseStorageDelegate {
     const agent: Agent = {
       id: randomUUID(),
       ...data,
+      isProjectOwner: data.isProjectOwner ?? false,
       description: data.description ?? null,
       providerConfigId: data.providerConfigId,
       modelOverride: data.modelOverride ?? null,
@@ -69,6 +70,7 @@ export class AgentStorageDelegate extends BaseStorageDelegate {
     await this.db.insert(agents).values({
       id: agent.id,
       projectId: agent.projectId,
+      isProjectOwner: agent.isProjectOwner,
       profileId: agent.profileId,
       providerConfigId: agent.providerConfigId,
       modelOverride: agent.modelOverride,
@@ -114,6 +116,23 @@ export class AgentStorageDelegate extends BaseStorageDelegate {
     };
   }
 
+  async listProjectOwners(projectIds: string[]): Promise<Agent[]> {
+    if (projectIds.length === 0) {
+      return [];
+    }
+
+    const { agents } = await import('../../db/schema');
+    const { and, eq, inArray } = await import('drizzle-orm');
+    const rows = await this.db
+      .select()
+      .from(agents)
+      .where(and(eq(agents.isProjectOwner, true), inArray(agents.projectId, projectIds)));
+
+    // The partial unique index on (project_id) for owner rows guarantees that
+    // this single read can produce at most one owner for each project.
+    return rows.map((row) => this.mapAgentRow(row));
+  }
+
   async getAgentByName(
     projectId: string,
     name: string,
@@ -142,7 +161,7 @@ export class AgentStorageDelegate extends BaseStorageDelegate {
 
   async updateAgent(id: string, data: UpdateAgent): Promise<Agent> {
     const { agents } = await import('../../db/schema');
-    const { eq } = await import('drizzle-orm');
+    const { and, eq } = await import('drizzle-orm');
     const now = new Date().toISOString();
     let currentAgent: Agent | null = null;
 
@@ -176,6 +195,37 @@ export class AgentStorageDelegate extends BaseStorageDelegate {
           expectedProfileId: newProfileId,
         });
       }
+    }
+
+    if (data.isProjectOwner === true) {
+      return this.txRunner.runImmediate(() => {
+        const target = this.db.select().from(agents).where(eq(agents.id, id)).limit(1).get();
+        if (!target) {
+          throw new NotFoundError('Agent', id);
+        }
+
+        const projectId = target.projectId;
+        this.db
+          .update(agents)
+          .set({ isProjectOwner: false, updatedAt: now })
+          .where(and(eq(agents.projectId, projectId), eq(agents.isProjectOwner, true)))
+          .run();
+
+        const result = this.db
+          .update(agents)
+          .set({ ...data, isProjectOwner: true, updatedAt: now })
+          .where(eq(agents.id, id))
+          .run();
+        if (result.changes !== 1) {
+          throw new NotFoundError('Agent', id);
+        }
+
+        const updated = this.db.select().from(agents).where(eq(agents.id, id)).limit(1).get();
+        if (!updated) {
+          throw new NotFoundError('Agent', id);
+        }
+        return this.mapAgentRow(updated);
+      });
     }
 
     const updatePayload: UpdateAgent = { ...data };
@@ -261,6 +311,7 @@ export class AgentStorageDelegate extends BaseStorageDelegate {
   private mapAgentRow(row: {
     id: string;
     projectId: string;
+    isProjectOwner: boolean;
     profileId: string;
     providerConfigId: string;
     modelOverride?: string | null;
@@ -273,6 +324,7 @@ export class AgentStorageDelegate extends BaseStorageDelegate {
     return {
       id: row.id,
       projectId: row.projectId,
+      isProjectOwner: row.isProjectOwner,
       profileId: row.profileId,
       providerConfigId: row.providerConfigId,
       modelOverride: row.modelOverride ?? null,

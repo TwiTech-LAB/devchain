@@ -1,3 +1,14 @@
+const mockLogger = {
+  error: jest.fn(),
+  warn: jest.fn(),
+  info: jest.fn(),
+  debug: jest.fn(),
+};
+
+jest.mock('../../../common/logging/logger', () => ({
+  createLogger: () => mockLogger,
+}));
+
 /**
  * Layer: module-unit
  * Justification: Tests the notifier's direct-path delivery via mocked
@@ -28,6 +39,7 @@ describe('DeliveryFailureNotifierService', () => {
   let mockSessions: jest.Mocked<Pick<SessionsService, 'listActiveSessions'>>;
 
   beforeEach(() => {
+    jest.clearAllMocks();
     mockTerminalIO = {
       deliverImmediate: jest.fn().mockResolvedValue({ confirmed: true, nonce: 'n', retryCount: 0 }),
     };
@@ -102,6 +114,66 @@ describe('DeliveryFailureNotifierService', () => {
         'No active session',
       ),
     ).resolves.toBeUndefined();
+  });
+
+  it('uses the strictest disclosure for a mixed sender notification', async () => {
+    const rawReason = 'provider failed at /private/source/project';
+
+    await notifier.notifySendersOfFailure(
+      [
+        makeMessage({ senderAgentId: 'sender-1' }),
+        makeMessage({
+          senderAgentId: 'sender-1',
+          failureDisclosure: 'project-safe',
+          logEntryId: 'log-2',
+        }),
+      ],
+      'recipient-1',
+      rawReason,
+    );
+
+    const deliveredText = mockTerminalIO.deliverImmediate.mock.calls[0][1];
+    expect(deliveredText).toContain('DELIVERY_FAILED');
+    expect(deliveredText).not.toContain(rawReason);
+    expect(JSON.stringify(mockLogger.info.mock.calls)).not.toContain(rawReason);
+  });
+
+  it('does not log a raw notification-delivery error for protected messages', async () => {
+    const rawError = 'tmux failed at /private/source/project';
+    mockTerminalIO.deliverImmediate.mockRejectedValue(new Error(rawError));
+
+    await notifier.notifySendersOfFailure(
+      [makeMessage({ senderAgentId: 'sender-1', failureDisclosure: 'project-safe' })],
+      'recipient-1',
+      'provider failed at /private/source/project',
+    );
+
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ error: 'DELIVERY_FAILED' }),
+      'Failed to notify sender of delivery failure (best-effort, ignored)',
+    );
+    expect(JSON.stringify(mockLogger.warn.mock.calls)).not.toContain(rawError);
+  });
+
+  it('preserves raw legacy notification reasons and delivery errors', async () => {
+    const rawReason = 'provider failed at /legacy/project';
+    const rawError = 'tmux failed at /legacy/project';
+    mockTerminalIO.deliverImmediate.mockRejectedValue(new Error(rawError));
+
+    await notifier.notifySendersOfFailure(
+      [makeMessage({ senderAgentId: 'sender-1' })],
+      'recipient-1',
+      rawReason,
+    );
+
+    expect(mockLogger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: rawReason }),
+      'Notifying senders of delivery failure',
+    );
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ error: rawError }),
+      'Failed to notify sender of delivery failure (best-effort, ignored)',
+    );
   });
 
   it('does nothing when no sender agent IDs in messages', async () => {

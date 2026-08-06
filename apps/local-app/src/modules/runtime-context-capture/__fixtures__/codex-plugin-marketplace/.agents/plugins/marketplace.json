@@ -1,0 +1,20 @@
+{
+  "name": "devchain-contract",
+  "interface": {
+    "displayName": "DevChain Contract"
+  },
+  "plugins": [
+    {
+      "name": "profile-effect",
+      "source": {
+        "source": "local",
+        "path": "./plugins/profile-effect"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

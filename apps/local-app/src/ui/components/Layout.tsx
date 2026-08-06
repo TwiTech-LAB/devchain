@@ -135,6 +135,7 @@ const navSections: NavSection[] = [
       { label: 'Reviews', path: '/reviews', icon: GitCompareArrows },
       { label: 'Registry', path: '/registry', icon: Package, mainModeOnly: true },
       { label: 'Skills', path: '/skills', icon: Sparkles },
+      { label: 'Plugins', path: '/plugins', icon: Package },
       {
         label: 'Notifications',
         path: '/cloud?section=notifications',

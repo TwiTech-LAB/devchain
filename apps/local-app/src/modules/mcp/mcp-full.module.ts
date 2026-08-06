@@ -18,6 +18,7 @@ import { McpHttpController } from './controllers/mcp-http.controller';
 import { McpSdkController } from './controllers/mcp-sdk.controller';
 import { McpTestController } from './controllers/mcp-test.controller';
 import { RealtimeBroadcastModule } from '../realtime/realtime-broadcast.module';
+import { ProjectCommunicationModule } from '../project-communication/project-communication.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { RealtimeBroadcastModule } from '../realtime/realtime-broadcast.module';
     SkillsModule,
     forwardRef(() => TeamsModule),
     forwardRef(() => AgentMessageDeliveryModule),
+    ProjectCommunicationModule,
   ],
   controllers: [McpHttpController, McpSdkController, McpTestController],
   providers: [McpService, McpServerService, McpGateway],

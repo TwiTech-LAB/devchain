@@ -11,8 +11,8 @@ function unwrapZodSchema(schema: ZodSchema): ZodSchema {
 
 describe('tool-descriptors', () => {
   describe('metadata', () => {
-    it('has exactly 44 tool metadata entries', () => {
-      expect(allMetadata.length).toBe(44);
+    it('has exactly 45 tool metadata entries', () => {
+      expect(allMetadata.length).toBe(45);
     });
 
     it('all entries have required shape', () => {
@@ -50,8 +50,8 @@ describe('tool-descriptors', () => {
   });
 
   describe('bindings', () => {
-    it('has exactly 44 tool binding entries', () => {
-      expect(allBindings.length).toBe(44);
+    it('has exactly 45 tool binding entries', () => {
+      expect(allBindings.length).toBe(45);
     });
 
     it('all bindings have name and handler function', () => {
@@ -82,11 +82,11 @@ describe('tool-descriptors', () => {
       expect(orphans.map(([name]) => name)).toEqual([]);
     });
 
-    it('counts match: metadata == bindings == 44', () => {
-      expect(allMetadata.length).toBe(44);
-      expect(allBindings.length).toBe(44);
-      expect(metadataNames.size).toBe(44);
-      expect(bindingNames.size).toBe(44);
+    it('counts match: metadata == bindings == 45', () => {
+      expect(allMetadata.length).toBe(45);
+      expect(allBindings.length).toBe(45);
+      expect(metadataNames.size).toBe(45);
+      expect(bindingNames.size).toBe(45);
     });
   });
 
@@ -145,6 +145,18 @@ describe('tool-descriptors', () => {
   });
 
   describe('devchain_send_message', () => {
+    it('includes recipientProjectId as a UUID-prefix project route', () => {
+      const entry = allMetadata.find((m) => m.name === 'devchain_send_message');
+      const schema = entry?.inputSchema as {
+        properties?: Record<string, { pattern?: string; description?: string }>;
+      };
+      expect(schema?.properties?.recipientProjectId?.pattern).toBeDefined();
+      expect(new RegExp(schema!.properties!.recipientProjectId.pattern!).test('AAAAAAAA')).toBe(
+        true,
+      );
+      expect(schema?.properties?.recipientProjectId?.description).toContain('8+ character');
+    });
+
     it('includes threadId in schema properties', () => {
       const entry = allMetadata.find((m) => m.name === 'devchain_send_message');
       const schema = entry?.inputSchema as { properties?: Record<string, unknown> };
@@ -180,6 +192,24 @@ describe('tool-descriptors', () => {
         properties?: Record<string, { description?: string }>;
       };
       expect(schema?.properties?.teamName?.description).toContain('Routes to team lead');
+    });
+  });
+
+  describe('devchain_projects_list', () => {
+    it('has a strict, resource-first project directory descriptor', () => {
+      const metadata = allMetadata.find((m) => m.name === 'devchain_projects_list');
+      const binding = allBindings.find(([name]) => name === 'devchain_projects_list');
+      const schema = metadata?.inputSchema as {
+        required?: string[];
+        properties?: Record<string, unknown>;
+        additionalProperties?: boolean;
+      };
+
+      expect(metadata?.description).toContain('Project Owner');
+      expect(binding).toBeDefined();
+      expect(schema.required).toEqual(['sessionId']);
+      expect(Object.keys(schema.properties ?? {}).sort()).toEqual(['limit', 'offset', 'sessionId']);
+      expect(schema.additionalProperties).toBe(false);
     });
   });
 
@@ -292,6 +322,7 @@ describe('tool-descriptors', () => {
         'devchain_chat_read_history',
         'devchain_chat_list_members',
       ],
+      projects: ['devchain_projects_list'],
       activity: ['devchain_activity_start', 'devchain_activity_finish'],
       team: [
         'devchain_teams_list',
@@ -311,9 +342,9 @@ describe('tool-descriptors', () => {
       ],
     };
 
-    it('all categorized tools sum to 44', () => {
+    it('all categorized tools sum to 45', () => {
       const total = Object.values(categories).reduce((sum, tools) => sum + tools.length, 0);
-      expect(total).toBe(44);
+      expect(total).toBe(45);
     });
 
     Object.entries(categories).forEach(([category, tools]) => {

@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.19.1",
+  "version": "0.20.0",
   "description": "AI driven development platform",
   "homepage": "https://devchain.cc/",
   "repository": {
@@ -8,6 +8,13 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.20.0": [
+      "Projects: designate an agent as the Project Owner",
+      "Cross-project messaging: Project Owners can discover other local projects and message each other",
+      "Plugins: new Plugins page for Claude provider plugins — enable or disable each plugin globally or per project",
+      "Event bus: persisted event history is pruned after 30 days",
+      "Subscribers: the \"Send Message to Agent\" action can target a different agent by name"
+    ],
     "0.19.1": [
       "Template updates"
     ],
@@ -339,7 +346,7 @@
     "build:fast": "pnpm --filter local-app build",
     "prepack": "npm run build",
     "postinstall": "node scripts/postinstall.js",
-    "lint": "pnpm --filter local-app lint",
+    "lint": "pnpm --recursive --if-present lint",
     "format": "pnpm --filter local-app format",
     "test": "turbo run test --filter=local-app"
   },

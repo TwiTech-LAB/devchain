@@ -74,6 +74,7 @@ interface Epic {
   version: number;
   parentId: string | null;
   agentId: string | null;
+  createdBy: string | null;
   tags: string[];
   skillsRequired: string[] | null;
   createdAt: string;
@@ -1545,6 +1546,12 @@ export function EpicDetailPage() {
                 <span>Created</span>
                 <span className="font-medium text-foreground">{formatDate(epic.createdAt)}</span>
               </div>
+              {epic.createdBy && (
+                <div className="flex items-center justify-between gap-2">
+                  <span>Created by</span>
+                  <span className="font-medium text-foreground">{epic.createdBy}</span>
+                </div>
+              )}
               <div className="flex items-center justify-between gap-2">
                 <span>Last Updated</span>
                 <span className="font-medium text-foreground">{formatDate(epic.updatedAt)}</span>

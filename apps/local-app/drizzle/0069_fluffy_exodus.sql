@@ -1,0 +1,2 @@
+ALTER TABLE `agents` ADD `is_project_owner` integer DEFAULT false NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX `idx_agents_project_owner` ON `agents` (`project_id`) WHERE "agents"."is_project_owner" = 1;

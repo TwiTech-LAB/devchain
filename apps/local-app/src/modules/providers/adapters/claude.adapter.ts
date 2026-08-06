@@ -18,7 +18,17 @@ import type {
   HookEnvContext,
   TranscriptDiscoveryCapability,
   ProjectMcpSettingsCapability,
+  ProviderPluginCapability,
 } from './capabilities';
+import type { ProviderPluginCatalogEntry } from '../dtos/provider-plugin.dto';
+import {
+  optionalBoolean,
+  optionalNumber,
+  optionalString,
+  parseProviderPluginCatalogPayload,
+  parseQualifiedPluginId,
+  requireString,
+} from './plugin-catalog.utils';
 
 import { stripFlag } from '../../sessions/utils/profile-options';
 
@@ -40,7 +50,8 @@ export class ClaudeAdapter
     EffortCapability,
     HookCapability,
     TranscriptDiscoveryCapability,
-    ProjectMcpSettingsCapability
+    ProjectMcpSettingsCapability,
+    ProviderPluginCapability
 {
   readonly providerName = 'claude';
 
@@ -70,6 +81,66 @@ export class ClaudeAdapter
   readonly hooksEnabled = true as const;
   readonly hooksEventName = 'claude.hooks.session.started';
   readonly hooksProvideTranscriptPath = true;
+
+  listProviderPlugins(): string[] {
+    return ['plugin', 'list', '--available', '--json'];
+  }
+
+  installProviderPlugin(pluginId: string): string[] {
+    return ['plugin', 'install', pluginId, '--scope', 'user'];
+  }
+
+  parseProviderPluginCatalog(stdout: string): ProviderPluginCatalogEntry[] {
+    const payload = parseProviderPluginCatalogPayload(stdout, this.providerName);
+    const entries = new Map<string, ProviderPluginCatalogEntry>();
+
+    for (const available of payload.available) {
+      const pluginId = requireString(available, 'pluginId', 'Claude available plugin');
+      entries.set(pluginId, {
+        pluginId,
+        name: requireString(available, 'name', `Claude plugin ${pluginId}`),
+        description: optionalString(available, 'description'),
+        marketplaceName: optionalString(available, 'marketplaceName'),
+        version: optionalString(available, 'version'),
+        installed: false,
+        available: true,
+        providerEnabled: false,
+        installationScopes: [],
+        installCount: optionalNumber(available, 'installCount'),
+        installPolicy: null,
+        authPolicy: null,
+      });
+    }
+
+    for (const installed of payload.installed) {
+      const pluginId = requireString(installed, 'id', 'Claude installed plugin');
+      const existing = entries.get(pluginId);
+      const identity = parseQualifiedPluginId(pluginId);
+      const scope = optionalString(installed, 'scope');
+      const installationScopes = existing ? [...existing.installationScopes] : [];
+      if (scope && !installationScopes.includes(scope)) {
+        installationScopes.push(scope);
+      }
+
+      entries.set(pluginId, {
+        pluginId,
+        name: existing?.name ?? identity.name,
+        description: existing?.description ?? null,
+        marketplaceName: existing?.marketplaceName ?? identity.marketplaceName,
+        version: optionalString(installed, 'version') ?? existing?.version ?? null,
+        installed: true,
+        available: existing?.available ?? false,
+        providerEnabled:
+          (existing?.providerEnabled ?? false) || optionalBoolean(installed, 'enabled'),
+        installationScopes,
+        installCount: existing?.installCount ?? null,
+        installPolicy: null,
+        authPolicy: null,
+      });
+    }
+
+    return [...entries.values()];
+  }
 
   buildHookEnv(context: HookEnvContext): Record<string, string> {
     return {

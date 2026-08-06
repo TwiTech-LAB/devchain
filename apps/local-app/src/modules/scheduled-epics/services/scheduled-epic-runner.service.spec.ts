@@ -61,6 +61,7 @@ function makeEpic(): Epic {
     statusId: 'status-1',
     parentId: null,
     agentId: null,
+    createdBy: null,
     version: 1,
     data: null,
     skillsRequired: null,
@@ -164,6 +165,7 @@ describe('ScheduledEpicRunnerService', () => {
         'proj-1',
         expect.objectContaining({ title: expect.any(String) }),
       );
+      expect(epicsService.createEpicForProject.mock.calls[0][1]).not.toHaveProperty('createdBy');
       expect(storage.updateScheduledEpicRun).toHaveBeenCalledWith(
         'run-1',
         expect.objectContaining({ status: 'completed', createdEpicId: 'epic-1' }),

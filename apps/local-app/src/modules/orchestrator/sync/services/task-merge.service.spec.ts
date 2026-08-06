@@ -671,6 +671,7 @@ describe('TaskMergeService', () => {
       expect(importedEpics.total).toBe(1);
       expect(importedEpics.items).toHaveLength(1);
       expect(importedEpics.items[0]?.tags).toEqual(expect.arrayContaining(['merged:feature-auth']));
+      expect(importedEpics.items[0]?.createdBy).toBeNull();
     } finally {
       sqlite.close();
     }

@@ -112,6 +112,7 @@ describe('LocalStorageService - Hierarchical Epic List Integration', () => {
       title: 'Child A1',
       statusId: normalStatusId,
       parentId: parentAId,
+      createdBy: 'Creator Agent',
     });
     childA1Id = childA1.id;
 
@@ -372,6 +373,16 @@ describe('LocalStorageService - Hierarchical Epic List Integration', () => {
       for (const epic of children) {
         expect(Array.isArray(epic.tags)).toBe(true);
       }
+    });
+
+    it('should project nullable creator attribution from batched raw rows', async () => {
+      const result = await service.listSubEpicsForParents(projectId, [parentAId], {
+        type: 'all',
+      });
+      const children = result.get(parentAId) ?? [];
+
+      expect(children.find((epic) => epic.id === childA1Id)?.createdBy).toBe('Creator Agent');
+      expect(children.find((epic) => epic.id === childA2Id)?.createdBy).toBeNull();
     });
   });
 });

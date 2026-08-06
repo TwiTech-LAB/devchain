@@ -11,6 +11,7 @@ function createRehydrator(options?: {
     listRunningSessionMetas: jest.fn().mockReturnValue(options?.metas ?? []),
     markSessionFailed: jest.fn(),
     shouldNormalizeLfFor: jest.fn().mockReturnValue(true),
+    reconcileCodexPluginProfiles: jest.fn().mockResolvedValue(undefined),
   };
 
   const terminalIO: Partial<TerminalIOService> = {
@@ -107,7 +108,7 @@ describe('TerminalRegistryRehydrator', () => {
     expect(terminalIO.startHealthCheck).not.toHaveBeenCalledWith('tmux_dead', 'dead');
   });
 
-  it('skips sessions already in registry (no double-create)', async () => {
+  it('verifies sessions already in registry without double-create', async () => {
     const { rehydrator, registry, terminalIO } = createRehydrator({
       metas: [{ sessionId: 'existing', tmuxSessionName: 'tmux_existing', providerName: 'claude' }],
     });
@@ -117,7 +118,7 @@ describe('TerminalRegistryRehydrator', () => {
     await rehydrator.onApplicationBootstrap();
 
     expect(registry.size).toBe(1);
-    expect(terminalIO.sessionExists).not.toHaveBeenCalled();
+    expect(terminalIO.sessionExists).toHaveBeenCalledWith({ name: 'tmux_existing' });
   });
 
   it('is a no-op when no running sessions exist', async () => {

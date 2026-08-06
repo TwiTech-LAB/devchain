@@ -17,9 +17,15 @@ import {
   type EnqueueResult,
   type FlushResult,
   type DeliveryFailureCode,
+  type FailureDisclosurePolicy,
   type MessageLogEntry,
   type PoolDetails,
 } from './message-pool.types';
+import {
+  classifyDeliveryFailure,
+  getStrictestFailureDisclosure,
+  PROJECT_SAFE_DELIVERY_ERROR,
+} from './delivery-failure-disclosure';
 export {
   FAILURE_NOTICE_SOURCE,
   type MessagePoolConfig,
@@ -28,6 +34,7 @@ export {
   type EnqueueResult,
   type FlushResult,
   type DeliveryFailureCode,
+  type FailureDisclosurePolicy,
   type MessageLogEntry,
   type PoolDetails,
 } from './message-pool.types';
@@ -87,7 +94,10 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     }
   }
 
-  private getConfigForProject(projectId: string): MessagePoolConfig {
+  private getConfigForProject(
+    projectId: string,
+    failureDisclosure: FailureDisclosurePolicy = 'legacy',
+  ): MessagePoolConfig {
     try {
       const settingsConfig = this.settings.getMessagePoolConfigForProject(projectId);
       return {
@@ -98,7 +108,10 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
         separator: settingsConfig.separator,
       };
     } catch (error) {
-      logger.warn({ projectId, error }, 'Failed to load project config, using global config');
+      logger.warn(
+        { projectId, error: this.disclosedLogError(failureDisclosure, error) },
+        'Failed to load project config, using global config',
+      );
       return this.config;
     }
   }
@@ -143,7 +156,13 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       );
       setTimeout(() => {
         this.flushNow(agentId).catch((err) => {
-          logger.error({ agentId, error: err }, 'Immediate flush after config reload failed');
+          logger.error(
+            {
+              agentId,
+              error: this.disclosedLogError(getStrictestFailureDisclosure(pool.messages), err),
+            },
+            'Immediate flush after config reload failed',
+          );
         });
       }, 0);
       return;
@@ -155,7 +174,13 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
         'Max wait timer triggered (after config reload)',
       );
       this.flushNow(agentId).catch((err) => {
-        logger.error({ agentId, error: err }, 'Max wait flush failed');
+        logger.error(
+          {
+            agentId,
+            error: this.disclosedLogError(getStrictestFailureDisclosure(pool.messages), err),
+          },
+          'Max wait flush failed',
+        );
       });
     }, remaining);
   }
@@ -173,10 +198,11 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       senderAgentId,
       immediate = false,
       clientMessageId,
+      failureDisclosure = 'legacy',
     } = options;
 
     const { projectId, agentName } = await this.resolveProjectInfo(agentId, options);
-    const projectConfig = this.getConfigForProject(projectId);
+    const projectConfig = this.getConfigForProject(projectId, failureDisclosure);
 
     const logEntryId = randomUUID();
     const timestamp = Date.now();
@@ -254,17 +280,18 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
         return { status, logEntryId };
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
-        logger.error({ agentId, source, error: errorMsg }, 'Immediate delivery failed');
+        const failure = classifyDeliveryFailure(failureDisclosure, errorMsg, 'tmux_error');
+        logger.error({ agentId, source, error: failure.error }, 'Immediate delivery failed');
         this.messageLog.update(logEntryId, {
           status: 'failed',
-          error: errorMsg,
-          failureCode: 'tmux_error',
+          error: failure.error,
+          failureCode: failure.failureCode,
         });
         const failedEntry = this.messageLog.getById(logEntryId);
         if (failedEntry) {
           this.activityStream.broadcastFailed(failedEntry);
         }
-        return { status: 'failed', error: errorMsg, logEntryId };
+        return { status: 'failed', error: failure.error, logEntryId };
       }
     }
 
@@ -279,11 +306,21 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
         projectId,
       };
       this.pools.set(agentId, pool);
+      const scheduledPool = pool;
 
       pool.maxWaitTimer = setTimeout(() => {
         logger.debug({ agentId, projectId }, 'Max wait timer triggered');
         this.flushNow(agentId).catch((err) => {
-          logger.error({ agentId, error: err }, 'Max wait flush failed');
+          logger.error(
+            {
+              agentId,
+              error: this.disclosedLogError(
+                getStrictestFailureDisclosure(scheduledPool.messages),
+                err,
+              ),
+            },
+            'Max wait flush failed',
+          );
         });
       }, projectConfig.maxWaitMs);
 
@@ -357,6 +394,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       senderAgentId,
       logEntryId,
       clientMessageId,
+      failureDisclosure,
     };
     pool.messages.push(message);
 
@@ -380,10 +418,20 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     if (pool.timer) {
       clearTimeout(pool.timer);
     }
+    const scheduledPool = pool;
     pool.timer = setTimeout(() => {
       logger.debug({ agentId, projectId }, 'Debounce timer triggered');
       this.flushNow(agentId).catch((err) => {
-        logger.error({ agentId, error: err }, 'Debounce flush failed');
+        logger.error(
+          {
+            agentId,
+            error: this.disclosedLogError(
+              getStrictestFailureDisclosure(scheduledPool.messages),
+              err,
+            ),
+          },
+          'Debounce flush failed',
+        );
       });
     }, pool.config.delayMs);
 
@@ -423,13 +471,19 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
   }
 
   async flushAll(): Promise<void> {
-    const agentIds = Array.from(this.pools.keys());
-    logger.info({ agentCount: agentIds.length }, 'Flushing all message pools');
+    const pendingPools = Array.from(this.pools.entries()).map(([agentId, pool]) => ({
+      agentId,
+      failureDisclosure: getStrictestFailureDisclosure(pool.messages),
+    }));
+    logger.info({ agentCount: pendingPools.length }, 'Flushing all message pools');
 
     await Promise.all(
-      agentIds.map((agentId) =>
+      pendingPools.map(({ agentId, failureDisclosure }) =>
         this.flushNow(agentId).catch((err) => {
-          logger.error({ agentId, error: err }, 'Failed to flush pool during flushAll');
+          logger.error(
+            { agentId, error: this.disclosedLogError(failureDisclosure, err) },
+            'Failed to flush pool during flushAll',
+          );
         }),
       ),
     );
@@ -557,21 +611,33 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     separator: string = this.config.separator,
   ): Promise<FlushResult> {
     const batchId = randomUUID();
+    const failureDisclosure = getStrictestFailureDisclosure(messages);
 
     const activeSessions = await this.sessions.listActiveSessions();
     const session = activeSessions.find((s) => s.agentId === agentId);
 
     if (!session || !session.tmuxSessionId) {
+      const rawReason = 'No active session';
+      const batchFailure = classifyDeliveryFailure(
+        failureDisclosure,
+        rawReason,
+        'no_active_session',
+      );
       logger.warn(
         { agentId, messageCount: messages.length },
         'No active session for agent, messages discarded',
       );
       for (const msg of messages) {
+        const failure = classifyDeliveryFailure(
+          msg.failureDisclosure,
+          rawReason,
+          'no_active_session',
+        );
         this.messageLog.update(msg.logEntryId, {
           status: 'failed',
           batchId,
-          error: 'No active session',
-          failureCode: 'no_active_session',
+          error: failure.error,
+          failureCode: failure.failureCode,
         });
         const entry = this.messageLog.getById(msg.logEntryId);
         if (entry) {
@@ -580,11 +646,17 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       }
       this.broadcastPoolsUpdate();
       await this.failureNotifier
-        .notifySendersOfFailure(messages, agentId, 'No active session')
+        .notifySendersOfFailure(messages, agentId, batchFailure.error)
         .catch((err: unknown) =>
-          logger.warn({ agentId, error: err }, 'Failure notification error (best-effort)'),
+          logger.warn(
+            {
+              agentId,
+              error: failureDisclosure === 'project-safe' ? PROJECT_SAFE_DELIVERY_ERROR : err,
+            },
+            'Failure notification error (best-effort)',
+          ),
         );
-      return { success: false, discardedCount: messages.length, reason: 'No active session' };
+      return { success: false, discardedCount: messages.length, reason: batchFailure.error };
     }
 
     const tmuxSessionId = session.tmuxSessionId;
@@ -642,30 +714,38 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       };
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
-      logger.error(
-        { agentId, sessionId: session.id, error: errorMsg },
-        'Failed to deliver batch to agent session',
-      );
       const failureCode: DeliveryFailureCode = errorMsg.includes('send keys')
         ? 'send_keys_failed'
         : 'tmux_error';
+      const batchFailure = classifyDeliveryFailure(failureDisclosure, errorMsg, failureCode);
+      logger.error(
+        { agentId, sessionId: session.id, error: batchFailure.error },
+        'Failed to deliver batch to agent session',
+      );
       for (const msg of messages) {
+        const failure = classifyDeliveryFailure(msg.failureDisclosure, errorMsg, failureCode);
         this.messageLog.update(msg.logEntryId, {
           status: 'failed',
           batchId,
-          error: errorMsg,
-          failureCode,
+          error: failure.error,
+          failureCode: failure.failureCode,
         });
         const entry = this.messageLog.getById(msg.logEntryId);
         if (entry) this.activityStream.broadcastFailed(entry);
       }
       this.broadcastPoolsUpdate();
       await this.failureNotifier
-        .notifySendersOfFailure(messages, agentId, errorMsg)
+        .notifySendersOfFailure(messages, agentId, batchFailure.error)
         .catch((err: unknown) =>
-          logger.warn({ agentId, error: err }, 'Failure notification error (best-effort)'),
+          logger.warn(
+            {
+              agentId,
+              error: failureDisclosure === 'project-safe' ? PROJECT_SAFE_DELIVERY_ERROR : err,
+            },
+            'Failure notification error (best-effort)',
+          ),
         );
-      return { success: false, discardedCount: messages.length, reason: errorMsg };
+      return { success: false, discardedCount: messages.length, reason: batchFailure.error };
     }
   }
 
@@ -745,10 +825,20 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
         if (!options.agentName) agentName = agent.name;
         if (!options.projectId && agent.projectId) projectId = agent.projectId;
       } catch (error) {
-        logger.debug({ agentId, error }, 'Failed to resolve project info from storage');
+        logger.debug(
+          { agentId, error: this.disclosedLogError(options.failureDisclosure, error) },
+          'Failed to resolve project info from storage',
+        );
       }
     }
 
     return { projectId, agentName };
+  }
+
+  private disclosedLogError(
+    failureDisclosure: FailureDisclosurePolicy | undefined,
+    error: unknown,
+  ): unknown {
+    return failureDisclosure === 'project-safe' ? PROJECT_SAFE_DELIVERY_ERROR : error;
   }
 }

@@ -7,6 +7,7 @@ import type { ActionDefinition, ActionContext, ActionResult } from './action.int
  * Uses TerminalIOService to paste and submit text to the agent's terminal.
  *
  * Features:
+ * - Optional agent-name override within the event project
  * - Optional submit key (Enter or none)
  * - Bracketed paste mode for TUI compatibility
  *
@@ -16,10 +17,19 @@ import type { ActionDefinition, ActionContext, ActionResult } from './action.int
 export const sendMessageAction: ActionDefinition = {
   type: 'send_agent_message',
   name: 'Send Message to Agent',
-  description: 'Send text input to the agent terminal session',
+  description: 'Send text input to an agent terminal session',
   category: 'terminal',
 
   inputs: [
+    {
+      name: 'agentName',
+      label: 'Agent Name (Override)',
+      type: 'string',
+      required: false,
+      description:
+        'Optional: Send to a different agent in this project. Leave empty to use the agent from the triggering event.',
+      placeholder: 'e.g., Planner',
+    },
     {
       name: 'text',
       label: 'Message Text',
@@ -57,10 +67,11 @@ export const sendMessageAction: ActionDefinition = {
     context: ActionContext,
     inputs: Record<string, unknown>,
   ): Promise<ActionResult> => {
-    const { amd, sessionId, agentId, projectId, event, logger } = context;
+    const { amd, storage, sessionId, agentId, projectId, event, logger } = context;
 
     // Extract and validate inputs
     const text = inputs.text as string;
+    const inputAgentName = typeof inputs.agentName === 'string' ? inputs.agentName.trim() : '';
     const submitKey = (inputs.submitKey as string) || 'Enter';
     const immediate = (inputs.immediate as boolean) ?? false;
 
@@ -71,14 +82,41 @@ export const sendMessageAction: ActionDefinition = {
       };
     }
 
-    if (!agentId) {
-      return {
-        success: false,
-        error: 'No agent ID available',
-      };
-    }
-
     try {
+      let resolvedAgentId = agentId;
+      let resolvedBy: 'event' | 'agentName' = 'event';
+
+      if (inputAgentName) {
+        try {
+          const agent = await storage.getAgentByName(projectId, inputAgentName);
+          if (agent.projectId !== projectId) {
+            return {
+              success: false,
+              error: `Refusing to message agent from a different project (agentProjectId=${agent.projectId}, contextProjectId=${projectId})`,
+            };
+          }
+          resolvedAgentId = agent.id;
+          resolvedBy = 'agentName';
+          logger.debug(
+            { agentName: inputAgentName, resolvedAgentId },
+            'Resolved message recipient by name',
+          );
+        } catch {
+          return {
+            success: false,
+            error: `Agent not found: "${inputAgentName}" in project ${projectId}`,
+          };
+        }
+      }
+
+      if (!resolvedAgentId) {
+        return {
+          success: false,
+          error:
+            'No recipient specified: provide agentName input, or trigger from an event with agentId',
+        };
+      }
+
       // Determine submit keys based on submitKey input
       const submitKeys = submitKey === 'none' ? [] : ['Enter'];
 
@@ -86,7 +124,7 @@ export const sendMessageAction: ActionDefinition = {
       const agentName = (event.payload?.agentName as string) ?? undefined;
 
       const result = await amd.deliver(
-        [agentId],
+        [resolvedAgentId],
         {
           kind: 'pooled',
           body: text,
@@ -103,7 +141,7 @@ export const sendMessageAction: ActionDefinition = {
       const failed = result.results.find((recipientResult) => recipientResult.status === 'failed');
       if (failed || result.status === 'failed') {
         const error = failed?.error;
-        logger.error({ sessionId, error }, 'Failed to deliver message');
+        logger.error({ sessionId, resolvedAgentId, error }, 'Failed to deliver message');
         return {
           success: false,
           error: `Failed to send message: ${error ?? 'delivery failed'}`,
@@ -113,6 +151,8 @@ export const sendMessageAction: ActionDefinition = {
       logger.info(
         {
           sessionId,
+          resolvedAgentId,
+          resolvedBy,
           textLength: text.length,
           submitKey,
           immediate,
@@ -125,10 +165,12 @@ export const sendMessageAction: ActionDefinition = {
         success: true,
         message:
           result.status === 'queued'
-            ? `Message queued for session ${sessionId}`
-            : `Message sent to session ${sessionId}`,
+            ? `Message queued for agent ${resolvedAgentId}`
+            : `Message sent to agent ${resolvedAgentId}`,
         data: {
           sessionId,
+          resolvedAgentId,
+          resolvedBy,
           textLength: text.length,
           submitKey,
           immediate,

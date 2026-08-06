@@ -14,10 +14,10 @@ jest.mock('../../../common/logging/logger', () => ({
 }));
 
 // Must import parser after mock is set up (jest.mock is hoisted but this makes intent clear)
-/* eslint-disable @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires */
+/* eslint-disable @typescript-eslint/no-require-imports */
 const { parseClaudeJsonl } =
   require('./claude-jsonl.parser') as typeof import('./claude-jsonl.parser');
-/* eslint-enable @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires */
+/* eslint-enable @typescript-eslint/no-require-imports */
 
 function writeTempJsonl(lines: object[]): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-test-'));

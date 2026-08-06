@@ -62,6 +62,19 @@ export async function handleSendMessage(
     const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
     if (!sessionCtxResult.success) return sessionCtxResult;
     const sessionCtx = sessionCtxResult.data as SessionContext;
+
+    if (validated.recipientProjectId) {
+      const outcome = await ctx.projectCommunicationService.sendToProject({
+        callerAgentId: sessionCtx.type === 'agent' ? (sessionCtx.agent?.id ?? null) : null,
+        recipientProjectId: validated.recipientProjectId,
+        message: validated.message,
+      });
+
+      return 'error' in outcome
+        ? { success: false, error: outcome.error }
+        : { success: true, data: outcome.result };
+    }
+
     const sender = getActorFromContext(sessionCtx);
     const project = sessionCtx.project;
 

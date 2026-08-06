@@ -59,16 +59,10 @@ describe('Phase 2 fixtures', () => {
       ),
     ).toBe(true);
     expect(
-      isAllowlistedTunnelPushTopic(
-        AUQ_PENDING_ENVELOPE.topic,
-        AUQ_PENDING_ENVELOPE.eventType,
-      ),
+      isAllowlistedTunnelPushTopic(AUQ_PENDING_ENVELOPE.topic, AUQ_PENDING_ENVELOPE.eventType),
     ).toBe(true);
     expect(
-      isAllowlistedTunnelPushTopic(
-        AUQ_RESOLVED_ENVELOPE.topic,
-        AUQ_RESOLVED_ENVELOPE.eventType,
-      ),
+      isAllowlistedTunnelPushTopic(AUQ_RESOLVED_ENVELOPE.topic, AUQ_RESOLVED_ENVELOPE.eventType),
     ).toBe(true);
     expect(
       isAllowlistedTunnelPushTopic(
@@ -93,10 +87,7 @@ describe('Phase 2 fixtures', () => {
   it('the unknown-topic envelope is structurally valid but NOT allowlisted (reject-before-dispatch territory)', () => {
     expect(isTunnelPushFrame(UNKNOWN_TOPIC_ENVELOPE)).toBe(true);
     expect(
-      isAllowlistedTunnelPushTopic(
-        UNKNOWN_TOPIC_ENVELOPE.topic,
-        UNKNOWN_TOPIC_ENVELOPE.eventType,
-      ),
+      isAllowlistedTunnelPushTopic(UNKNOWN_TOPIC_ENVELOPE.topic, UNKNOWN_TOPIC_ENVELOPE.eventType),
     ).toBe(false);
   });
 
@@ -115,8 +106,6 @@ describe('Phase 2 fixtures', () => {
     expect(isTunnelPushFrame(frame)).toBe(true);
     expect(frame.eventId).toBe('client-smuggled-999'); // present on input
     // Allowlist accepts the (topic, eventType) regardless of eventId.
-    expect(
-      isAllowlistedTunnelPushTopic(frame.topic, frame.eventType),
-    ).toBe(true);
+    expect(isAllowlistedTunnelPushTopic(frame.topic, frame.eventType)).toBe(true);
   });
 });

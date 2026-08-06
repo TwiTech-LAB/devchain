@@ -3,7 +3,7 @@ jest.mock('node-pty', () => ({
 }));
 
 import { PtyService } from './pty.service';
-// eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const ptyMod = require('node-pty') as { spawn: jest.Mock };
 
 import type { TerminalGateway } from '../gateways/terminal.gateway';

@@ -8,6 +8,7 @@ import type { EffortCapability } from './effort.capability';
 import type { HookCapability } from './hook.capability';
 import type { ProjectProvisioningCapability } from './project-provisioning.capability';
 import type { ProjectMcpSettingsCapability } from './project-mcp-settings.capability';
+import type { ProviderPluginCapability } from './provider-plugin.capability';
 import type { TranscriptDiscoveryCapability } from './transcript-discovery.capability';
 export type { AutoCompactCapability, AutoCompactProviderState } from './auto-compact.capability';
 export type { EffortCapability } from './effort.capability';
@@ -18,6 +19,7 @@ export type {
   ProvisioningWarningItem,
 } from './project-provisioning.capability';
 export type { ProjectMcpSettingsCapability } from './project-mcp-settings.capability';
+export type { ProviderPluginCapability } from './provider-plugin.capability';
 export type { TranscriptDiscoveryCapability } from './transcript-discovery.capability';
 
 /**
@@ -136,6 +138,16 @@ export function isTranscriptDiscoveryCapable(
   adapter: ProviderAdapter,
 ): adapter is ProviderAdapter & TranscriptDiscoveryCapability {
   return 'transcriptDiscoveryStrategy' in adapter;
+}
+
+export function isProviderPluginCapable(
+  adapter: ProviderAdapter,
+): adapter is ProviderAdapter & ProviderPluginCapability {
+  return (
+    'listProviderPlugins' in adapter &&
+    'installProviderPlugin' in adapter &&
+    'parseProviderPluginCatalog' in adapter
+  );
 }
 
 export function isProjectMcpSettingsCapable(

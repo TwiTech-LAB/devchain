@@ -32,6 +32,44 @@ describe('agentMessageSentEvent schema', () => {
     ).toBe(true);
   });
 
+  it('accepts project routing only when event scope is the source project', () => {
+    const projectPayload = {
+      ...directPayload,
+      projectId: 'source-project',
+      routingKind: 'project',
+      sourceProjectId: 'source-project',
+      sourceProjectName: 'Source Project',
+      targetProjectId: 'target-project',
+      targetProjectName: 'Target Project',
+    };
+
+    expect(agentMessageSentEvent.schema.safeParse(projectPayload).success).toBe(true);
+    expect(
+      agentMessageSentEvent.schema.safeParse({
+        ...projectPayload,
+        projectId: 'target-project',
+      }).success,
+    ).toBe(false);
+    expect(
+      agentMessageSentEvent.schema.safeParse({
+        ...projectPayload,
+        body: 'must not persist',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('requires complete source and target project routing metadata', () => {
+    expect(
+      agentMessageSentEvent.schema.safeParse({
+        ...directPayload,
+        routingKind: 'project',
+        sourceProjectId: 'project-1',
+        sourceProjectName: 'Source Project',
+        targetProjectId: 'project-2',
+      }).success,
+    ).toBe(false);
+  });
+
   it('requires team metadata only for team-group routing', () => {
     expect(
       agentMessageSentEvent.schema.safeParse({

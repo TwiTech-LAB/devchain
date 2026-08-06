@@ -44,7 +44,7 @@ jest.mock('@/ui/lib/preset-validation', () => ({
 }));
 
 jest.mock('@/ui/components/ui/select', () => {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const React = require('react');
   const SelectContext = React.createContext({
     value: '',

@@ -14,7 +14,7 @@ import {
 export type { ThemeValue };
 export { getStoredTheme, applyTheme };
 
-export interface ThemeToggleProps extends ThemeSelectProps {}
+export type ThemeToggleProps = ThemeSelectProps;
 
 export function ThemeToggle(props: ThemeToggleProps) {
   useEffect(() => {

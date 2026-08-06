@@ -111,5 +111,32 @@ export function validateClaudeLaunchSettingsJson(
     }
   }
 
+  const enabledPlugins = (parsed as Record<string, unknown>).enabledPlugins;
+  if (enabledPlugins !== undefined) {
+    if (
+      enabledPlugins === null ||
+      typeof enabledPlugins !== 'object' ||
+      Array.isArray(enabledPlugins) ||
+      Object.getPrototypeOf(enabledPlugins) !== Object.prototype
+    ) {
+      return {
+        valid: false,
+        message: 'Claude launch settings /enabledPlugins must be a plain object.',
+        path: '/enabledPlugins',
+      };
+    }
+
+    for (const [pluginId, enabled] of Object.entries(enabledPlugins)) {
+      if (typeof enabled !== 'boolean') {
+        const path = `/enabledPlugins/${escapeJsonPointerSegment(pluginId)}`;
+        return {
+          valid: false,
+          message: `Claude launch settings ${path} must be a boolean.`,
+          path,
+        };
+      }
+    }
+  }
+
   return { valid: true, parsed: parsed as Record<string, unknown> };
 }

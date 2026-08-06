@@ -378,6 +378,10 @@ describe('DiffViewer multi-line selection', () => {
     const startLine = screen.getByText("import { User } from './types';");
     const endLine = screen.getByText('export function login(user: User) {');
     selectTextRange(startLine, endLine);
+    const selection = window.getSelection();
+    expect(selection).not.toBeNull();
+    const clearSelectionSpy = jest.spyOn(selection as Selection, 'removeAllRanges');
+    clearSelectionSpy.mockClear();
 
     const row = startLine.closest('tr');
     expect(row).toBeTruthy();
@@ -393,7 +397,7 @@ describe('DiffViewer multi-line selection', () => {
     expect(form.textContent).toContain('Lines');
     expect(form.textContent).toContain('(new)');
 
-    expect(window.getSelection()?.rangeCount ?? 0).toBe(0);
+    expect(clearSelectionSpy).toHaveBeenCalled();
   });
 
   it('in split view, text selection uses the clicked gutter side (new)', async () => {

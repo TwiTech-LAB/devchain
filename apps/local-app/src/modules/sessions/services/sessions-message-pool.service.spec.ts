@@ -1,3 +1,14 @@
+const mockLogger = {
+  error: jest.fn(),
+  warn: jest.fn(),
+  info: jest.fn(),
+  debug: jest.fn(),
+};
+
+jest.mock('../../../common/logging/logger', () => ({
+  createLogger: () => mockLogger,
+}));
+
 import { SessionsMessagePoolService, FAILURE_NOTICE_SOURCE } from './sessions-message-pool.service';
 import type { SessionsService } from './sessions.service';
 import type { SessionCoordinatorService } from './session-coordinator.service';
@@ -234,6 +245,31 @@ describe('SessionsMessagePoolService', () => {
 
       expect(result.status).toBe('failed');
       expect(result.error).toContain('No active session');
+    });
+
+    it('classifies protected immediate failures without retaining provider details', async () => {
+      const rawError = 'provider failed at /private/source/project';
+      mockTerminalIO.deliverImmediate.mockRejectedValue(new Error(rawError));
+
+      const result = await service.enqueue('agent-1', 'Message', {
+        source: 'mcp.send_message',
+        immediate: true,
+        failureDisclosure: 'project-safe',
+      });
+
+      expect(result).toMatchObject({ status: 'failed', error: 'DELIVERY_FAILED' });
+      expect(service.getMessageLog()[0]).toMatchObject({
+        status: 'failed',
+        error: 'DELIVERY_FAILED',
+        failureCode: 'project_delivery_failed',
+      });
+      expect(mockActivityStream.broadcastFailed).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: 'DELIVERY_FAILED',
+          failureCode: 'project_delivery_failed',
+        }),
+      );
+      expect(JSON.stringify(mockLogger.error.mock.calls)).not.toContain(rawError);
     });
 
     it('should use deliver (gap-enforced) when pooling is disabled and immediate is false', async () => {
@@ -710,6 +746,74 @@ describe('SessionsMessagePoolService', () => {
       expect(result.success).toBe(false);
       expect(result.discardedCount).toBe(1);
       expect(result.reason).toBe('Tmux connection failed');
+    });
+
+    it('classifies protected no-session failures across log, activity, notifier, and flush', async () => {
+      mockSessionsService.listActiveSessions.mockResolvedValue([]);
+
+      await service.enqueue('agent-1', 'Protected', {
+        source: 'mcp.send_message',
+        senderAgentId: 'sender-1',
+        failureDisclosure: 'project-safe',
+      });
+      const result = await service.flushNow('agent-1');
+
+      expect(result).toEqual({
+        success: false,
+        discardedCount: 1,
+        reason: 'DELIVERY_FAILED',
+      });
+      expect(service.getMessageLog()[0]).toMatchObject({
+        error: 'DELIVERY_FAILED',
+        failureCode: 'project_delivery_failed',
+      });
+      expect(mockActivityStream.broadcastFailed).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: 'DELIVERY_FAILED',
+          failureCode: 'project_delivery_failed',
+        }),
+      );
+      const notifier = (
+        service as unknown as { failureNotifier: { notifySendersOfFailure: jest.Mock } }
+      ).failureNotifier;
+      expect(notifier.notifySendersOfFailure).toHaveBeenCalledWith(
+        expect.any(Array),
+        'agent-1',
+        'DELIVERY_FAILED',
+      );
+    });
+
+    it('uses project-safe disclosure on shared mixed-batch surfaces', async () => {
+      const rawError = 'send keys failed at /private/source/project';
+      mockTerminalIO.deliver.mockRejectedValue(new Error(rawError));
+
+      await service.enqueue('agent-1', 'Legacy', { source: 'test' });
+      await service.enqueue('agent-1', 'Protected', {
+        source: 'mcp.send_message',
+        senderAgentId: 'sender-1',
+        failureDisclosure: 'project-safe',
+      });
+      const result = await service.flushNow('agent-1');
+
+      expect(result.reason).toBe('DELIVERY_FAILED');
+      const log = service.getMessageLog();
+      expect(log.find((entry) => entry.text === 'Legacy')).toMatchObject({
+        error: rawError,
+        failureCode: 'send_keys_failed',
+      });
+      expect(log.find((entry) => entry.text === 'Protected')).toMatchObject({
+        error: 'DELIVERY_FAILED',
+        failureCode: 'project_delivery_failed',
+      });
+      const notifier = (
+        service as unknown as { failureNotifier: { notifySendersOfFailure: jest.Mock } }
+      ).failureNotifier;
+      expect(notifier.notifySendersOfFailure).toHaveBeenCalledWith(
+        expect.any(Array),
+        'agent-1',
+        'DELIVERY_FAILED',
+      );
+      expect(JSON.stringify(mockLogger.error.mock.calls)).not.toContain(rawError);
     });
   });
 

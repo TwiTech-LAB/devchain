@@ -22,6 +22,8 @@ import { teamMetadata } from './team.metadata';
 import { teamBindings } from './team.bindings';
 import { reviewMetadata } from './review.metadata';
 import { reviewBindings } from './review.bindings';
+import { projectMetadata } from './project.metadata';
+import { projectBindings } from './project.bindings';
 
 export const allMetadata: ToolMetadataEntry[] = [
   ...sessionMetadata,
@@ -32,6 +34,7 @@ export const allMetadata: ToolMetadataEntry[] = [
   ...epicMetadata,
   ...recordMetadata,
   ...chatMetadata,
+  ...projectMetadata,
   ...activityMetadata,
   ...teamMetadata,
   ...reviewMetadata,
@@ -46,6 +49,7 @@ export const allBindings: ToolBindingEntry[] = [
   ...epicBindings,
   ...recordBindings,
   ...chatBindings,
+  ...projectBindings,
   ...activityBindings,
   ...teamBindings,
   ...reviewBindings,

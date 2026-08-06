@@ -12,7 +12,7 @@ type ExecCallback = (error: Error | null, stdout: string, stderr: string) => voi
 
 // Mock dependencies with custom promisify support
 jest.mock('child_process', () => {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { promisify } = require('util');
   const mockExecFn = jest.fn();
   const mockExecFileFn = jest.fn();

@@ -55,6 +55,7 @@ describe('MessageEnqueueService', () => {
           immediate: false,
           projectId: 'project-1',
           agentName: 'Agent One',
+          failureDisclosure: 'project-safe',
         },
         {
           agentId: 'agent-2',
@@ -71,18 +72,26 @@ describe('MessageEnqueueService', () => {
     expect(pool.enqueue).toHaveBeenNthCalledWith(1, 'agent-1', 'hello', {
       source: 'test',
       submitKeys: ['Enter', 'C-m'],
+      preKeys: undefined,
+      preDelayMs: undefined,
       senderAgentId: 'sender-1',
       immediate: false,
       projectId: 'project-1',
       agentName: 'Agent One',
+      failureDisclosure: 'project-safe',
+      clientMessageId: undefined,
     });
     expect(pool.enqueue).toHaveBeenNthCalledWith(2, 'agent-2', 'world', {
       source: 'test',
       submitKeys: undefined,
+      preKeys: undefined,
+      preDelayMs: undefined,
       senderAgentId: undefined,
       immediate: true,
       projectId: undefined,
       agentName: undefined,
+      failureDisclosure: undefined,
+      clientMessageId: undefined,
     });
     expect(pool.enqueue.mock.calls[0][2]?.submitKeys).not.toBe(submitKeys);
   });

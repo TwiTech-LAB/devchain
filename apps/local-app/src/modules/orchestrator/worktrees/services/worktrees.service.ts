@@ -52,8 +52,7 @@ const MAX_CONSECUTIVE_HEALTH_FAILURES = 3;
 const OVERVIEW_FETCH_TIMEOUT_MS = 2_500;
 const WORKTREE_ACTIVITY_EVENT_NAME = 'orchestrator.worktree.activity';
 
-const WORKTREE_STATUS_VALUES = WorktreeStatusSchema.options;
-type WorktreeStatus = (typeof WORKTREE_STATUS_VALUES)[number];
+type WorktreeStatus = (typeof WorktreeStatusSchema.options)[number];
 type WorktreeRuntimeType = 'container' | 'process';
 type WorktreeActivityType =
   | 'created'

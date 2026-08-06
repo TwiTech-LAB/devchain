@@ -10,6 +10,7 @@ import {
 } from './claude-launch-settings-materializer.service';
 import { writeRuntimeContextEndpointDiscovery } from './runtime-context-capture-files';
 import { StatusLineHookSchema } from '../hooks/dtos/hook-event.dto';
+import { ConflictError, IOError, ValidationError } from '../../common/errors/error-types';
 
 const SESSION_ID = '11111111-1111-4111-8111-111111111111';
 const STATUS_LINE_INPUT = JSON.stringify({
@@ -48,8 +49,9 @@ describe('ClaudeLaunchSettingsMaterializerService', () => {
 
   function prepare(
     overrides: Partial<Parameters<ClaudeLaunchSettingsMaterializerService['prepare']>[0]> = {},
+    target = service,
   ) {
-    return service.prepare({
+    return target.prepare({
       providerName: 'claude',
       settingsJson: DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON,
       profileOptionArgs: ['--model', 'sonnet'],
@@ -176,6 +178,148 @@ describe('ClaudeLaunchSettingsMaterializerService', () => {
     await writeFile(projectFile, 'occupied');
 
     await expect(prepare({ projectRootPath: projectFile })).resolves.toEqual({
+      optionArgs: [],
+      runtimeEnv: {},
+      captureEnabled: false,
+    });
+  });
+
+  it('merges sparse policy over valid direct-Claude settings and preserves unmatched keys', async () => {
+    const settingsJson = JSON.stringify({
+      tui: 'default',
+      statusLine: {
+        type: 'command',
+        command: CANONICAL_DEVCHAIN_STATUS_LINE_COMMAND,
+      },
+      enabledPlugins: {
+        'base-only@marketplace': true,
+        'overridden@marketplace': false,
+      },
+      futureSetting: { preserved: true },
+    });
+
+    const result = await prepare({
+      settingsJson,
+      pluginPolicy: [
+        { pluginId: 'overridden@marketplace', enabled: true },
+        { pluginId: 'removed-plugin@old-marketplace', enabled: false },
+      ],
+      policyRequired: true,
+    });
+    const materialized = JSON.parse(await readFile(result.optionArgs[1], 'utf8')) as Record<
+      string,
+      unknown
+    >;
+
+    expect(result.captureEnabled).toBe(true);
+    expect(materialized).toEqual({
+      tui: 'default',
+      statusLine: {
+        type: 'command',
+        command: CANONICAL_DEVCHAIN_STATUS_LINE_COMMAND,
+      },
+      enabledPlugins: {
+        'base-only@marketplace': true,
+        'overridden@marketplace': true,
+        'removed-plugin@old-marketplace': false,
+      },
+      futureSetting: { preserved: true },
+    });
+    const repeated = await prepare({
+      settingsJson,
+      pluginPolicy: [
+        { pluginId: 'overridden@marketplace', enabled: true },
+        { pluginId: 'removed-plugin@old-marketplace', enabled: false },
+      ],
+      policyRequired: true,
+    });
+    expect(repeated.optionArgs[1]).toBe(result.optionArgs[1]);
+  });
+
+  it.each([
+    ['explicit-null settings', { settingsJson: null }],
+    ['alternate base URL', { configEnv: { ANTHROPIC_BASE_URL: 'https://alternate.example' } }],
+  ])('uses an enabledPlugins-only base for %s', async (_label, overrides) => {
+    const result = await prepare({
+      ...overrides,
+      pluginPolicy: [{ pluginId: 'plugin@marketplace', enabled: true }],
+      policyRequired: true,
+    });
+    const materialized = JSON.parse(await readFile(result.optionArgs[1], 'utf8'));
+
+    expect(materialized).toEqual({ enabledPlugins: { 'plugin@marketplace': true } });
+    expect(result).toMatchObject({ runtimeEnv: {}, captureEnabled: false });
+  });
+
+  it.each([[['--settings', 'user.json']], [['--settings=user.json']], [['--settings']]])(
+    'rejects profile-owned settings when explicit policy is required',
+    async (profileOptionArgs) => {
+      await expect(
+        prepare({
+          profileOptionArgs,
+          pluginPolicy: [{ pluginId: 'plugin@marketplace', enabled: true }],
+          policyRequired: true,
+        }),
+      ).rejects.toBeInstanceOf(ConflictError);
+    },
+  );
+
+  it('fails closed when required policy settings cannot be validated or written', async () => {
+    await expect(
+      prepare({
+        settingsJson: '[]',
+        pluginPolicy: [{ pluginId: 'plugin@marketplace', enabled: true }],
+        policyRequired: true,
+      }),
+    ).rejects.toBeInstanceOf(ValidationError);
+
+    const oversizedPolicy = Array.from({ length: 70 }, (_, index) => ({
+      pluginId: `${index}-${'x'.repeat(500)}`,
+      enabled: true,
+    }));
+    await expect(
+      prepare({ settingsJson: '{}', pluginPolicy: oversizedPolicy, policyRequired: true }),
+    ).rejects.toBeInstanceOf(ValidationError);
+
+    const blockedRoot = join(tempRoot, 'blocked-runtime-root');
+    await writeFile(blockedRoot, 'occupied');
+    const blockedService = new ClaudeLaunchSettingsMaterializerService(blockedRoot);
+    await expect(
+      prepare(
+        {
+          settingsJson: null,
+          pluginPolicy: [{ pluginId: 'plugin@marketplace', enabled: true }],
+          policyRequired: true,
+        },
+        blockedService,
+      ),
+    ).rejects.toBeInstanceOf(IOError);
+  });
+
+  it('keeps required plugin policy active when status capture materialization fails', async () => {
+    const projectFile = join(tempRoot, 'not-a-project-directory');
+    await writeFile(projectFile, 'occupied');
+
+    const result = await prepare({
+      projectRootPath: projectFile,
+      pluginPolicy: [{ pluginId: 'plugin@marketplace', enabled: false }],
+      policyRequired: true,
+    });
+    const materialized = JSON.parse(await readFile(result.optionArgs[1], 'utf8')) as {
+      enabledPlugins: Record<string, boolean>;
+    };
+
+    expect(result).toMatchObject({ runtimeEnv: {}, captureEnabled: false });
+    expect(result.optionArgs[0]).toBe('--settings');
+    expect(materialized.enabledPlugins).toEqual({ 'plugin@marketplace': false });
+  });
+
+  it('preserves legacy fail-open behavior when no policy settings revision can be written', async () => {
+    const blockedRoot = join(tempRoot, 'legacy-blocked-runtime-root');
+    await writeFile(blockedRoot, 'occupied');
+    const blockedService = new ClaudeLaunchSettingsMaterializerService(blockedRoot);
+
+    await expect(prepare({}, blockedService)).resolves.toEqual({
       optionArgs: [],
       runtimeEnv: {},
       captureEnabled: false,

@@ -63,6 +63,7 @@ export class EpicStorageDelegate extends BaseStorageDelegate {
       statusId: data.statusId,
       parentId: data.parentId ?? null,
       agentId: data.agentId ?? null,
+      createdBy: data.createdBy ?? null,
       version: 1,
       data: data.data ?? null,
       skillsRequired: data.skillsRequired ?? null,
@@ -79,6 +80,7 @@ export class EpicStorageDelegate extends BaseStorageDelegate {
       statusId: epic.statusId,
       parentId: epic.parentId,
       agentId: epic.agentId,
+      createdBy: epic.createdBy,
       version: epic.version,
       data: epic.data ? JSON.stringify(epic.data) : null,
       skillsRequired: serializeSkillsRequired(epic.skillsRequired),
@@ -421,6 +423,7 @@ export class EpicStorageDelegate extends BaseStorageDelegate {
       statusId,
       parentId: input.parentId ?? null,
       agentId,
+      createdBy: input.createdBy ?? null,
       skillsRequired: input.skillsRequired ?? null,
       tags: input.tags ?? [],
       data: null,
@@ -449,6 +452,7 @@ export class EpicStorageDelegate extends BaseStorageDelegate {
     }
 
     const updateData: Record<string, unknown> = { ...data };
+    delete updateData.createdBy;
     if (data.data !== undefined) {
       updateData.data = JSON.stringify(data.data);
     }
@@ -603,6 +607,7 @@ export class EpicStorageDelegate extends BaseStorageDelegate {
           e.status_id,
           e.parent_id,
           e.agent_id,
+          e.created_by,
           e.version,
           e.data,
           e.skills_required,
@@ -636,6 +641,7 @@ export class EpicStorageDelegate extends BaseStorageDelegate {
       status_id: string;
       parent_id: string | null;
       agent_id: string | null;
+      created_by: string | null;
       version: number;
       data: string | null;
       skills_required: string | null;
@@ -658,6 +664,7 @@ export class EpicStorageDelegate extends BaseStorageDelegate {
         statusId: row.status_id,
         parentId: row.parent_id,
         agentId: row.agent_id,
+        createdBy: row.created_by,
         version: row.version,
         data: row.data ? JSON.parse(row.data) : null,
         skillsRequired: parseSkillsRequired(row.skills_required),

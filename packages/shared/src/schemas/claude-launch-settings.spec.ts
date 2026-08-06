@@ -70,4 +70,29 @@ describe('validateClaudeLaunchSettingsJson', () => {
       });
     },
   );
+
+  it('accepts opaque and stale plugin selectors with boolean policy values', () => {
+    expect(
+      validateClaudeLaunchSettingsJson(
+        JSON.stringify({
+          enabledPlugins: {
+            'known@marketplace': true,
+            'removed-plugin@old-marketplace': false,
+            'future:opaque/id': true,
+          },
+        }),
+      ),
+    ).toMatchObject({ valid: true });
+  });
+
+  it.each([
+    ['array', '{"enabledPlugins":[]}'],
+    ['null', '{"enabledPlugins":null}'],
+    ['non-boolean value', '{"enabledPlugins":{"plugin@marketplace":"yes"}}'],
+  ])('rejects invalid enabledPlugins shape: %s', (_label, text) => {
+    expect(validateClaudeLaunchSettingsJson(text)).toMatchObject({
+      valid: false,
+      path: expect.stringContaining('/enabledPlugins'),
+    });
+  });
 });

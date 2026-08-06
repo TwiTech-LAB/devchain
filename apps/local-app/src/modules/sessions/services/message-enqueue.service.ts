@@ -1,5 +1,9 @@
 import { Injectable } from '@nestjs/common';
-import { SessionsMessagePoolService, type EnqueueResult } from './sessions-message-pool.service';
+import {
+  SessionsMessagePoolService,
+  type EnqueueResult,
+  type FailureDisclosurePolicy,
+} from './sessions-message-pool.service';
 
 export interface PoolMessage {
   readonly agentId: string;
@@ -14,6 +18,7 @@ export interface PoolMessage {
   readonly immediate?: boolean;
   readonly projectId?: string;
   readonly agentName?: string;
+  readonly failureDisclosure?: FailureDisclosurePolicy;
   /** Caller-supplied idempotency key (mobile sends); threaded into the pool for dedup. */
   readonly clientMessageId?: string;
 }
@@ -49,6 +54,7 @@ export class MessageEnqueueService {
         immediate: message.immediate,
         projectId: message.projectId,
         agentName: message.agentName,
+        failureDisclosure: message.failureDisclosure,
         clientMessageId: message.clientMessageId,
       });
 

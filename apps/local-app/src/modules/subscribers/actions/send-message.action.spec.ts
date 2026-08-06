@@ -6,6 +6,9 @@ describe('SendMessageAction', () => {
   let mockAmd: {
     deliver: jest.Mock;
   };
+  let mockStorage: {
+    getAgentByName: jest.Mock;
+  };
   let mockLogger: {
     info: jest.Mock;
     debug: jest.Mock;
@@ -17,6 +20,14 @@ describe('SendMessageAction', () => {
       deliver: jest.fn().mockResolvedValue({
         status: 'queued',
         results: [{ agentId: 'agent-456', status: 'queued' }],
+      }),
+    };
+
+    mockStorage = {
+      getAgentByName: jest.fn().mockResolvedValue({
+        id: 'resolved-agent-id',
+        name: 'Planner',
+        projectId: 'project-789',
       }),
     };
 
@@ -32,7 +43,7 @@ describe('SendMessageAction', () => {
       sessionRuntime: {} as ActionContext['sessionRuntime'],
       sessionCoordinator: {} as ActionContext['sessionCoordinator'],
       amd: mockAmd as unknown as ActionContext['amd'],
-      storage: {} as ActionContext['storage'],
+      storage: mockStorage as unknown as ActionContext['storage'],
       sessionId: 'session-123',
       agentId: 'agent-456',
       projectId: 'project-789',
@@ -84,6 +95,13 @@ describe('SendMessageAction', () => {
       expect(textInput?.required).toBe(true);
     });
 
+    it('should have an optional agent-name override', () => {
+      const agentNameInput = sendMessageAction.inputs.find((i) => i.name === 'agentName');
+      expect(agentNameInput).toBeDefined();
+      expect(agentNameInput?.type).toBe('string');
+      expect(agentNameInput?.required).toBe(false);
+    });
+
     it('should have submitKey input with options', () => {
       const submitKeyInput = sendMessageAction.inputs.find((i) => i.name === 'submitKey');
       expect(submitKeyInput).toBeDefined();
@@ -116,6 +134,73 @@ describe('SendMessageAction', () => {
   });
 
   describe('execute', () => {
+    it('should resolve a named recipient within the event project', async () => {
+      const result = await sendMessageAction.execute(mockContext, {
+        agentName: '  Planner  ',
+        text: 'Epic completed',
+      });
+
+      expect(mockStorage.getAgentByName).toHaveBeenCalledWith('project-789', 'Planner');
+      expect(mockAmd.deliver).toHaveBeenCalledWith(
+        ['resolved-agent-id'],
+        expect.objectContaining({ body: 'Epic completed', projectId: 'project-789' }),
+        expect.any(Object),
+      );
+      expect(result).toMatchObject({
+        success: true,
+        data: {
+          resolvedAgentId: 'resolved-agent-id',
+          resolvedBy: 'agentName',
+        },
+      });
+    });
+
+    it('should use the named recipient when the event has no agent ID', async () => {
+      mockContext.agentId = null;
+
+      const result = await sendMessageAction.execute(mockContext, {
+        agentName: 'Planner',
+        text: 'Epic completed',
+      });
+
+      expect(result.success).toBe(true);
+      expect(mockAmd.deliver).toHaveBeenCalledWith(
+        ['resolved-agent-id'],
+        expect.any(Object),
+        expect.any(Object),
+      );
+    });
+
+    it('should fail when the named recipient does not exist in the project', async () => {
+      mockStorage.getAgentByName.mockRejectedValue(new Error('Agent not found'));
+
+      const result = await sendMessageAction.execute(mockContext, {
+        agentName: 'Missing Agent',
+        text: 'Epic completed',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Agent not found: "Missing Agent" in project project-789');
+      expect(mockAmd.deliver).not.toHaveBeenCalled();
+    });
+
+    it('should reject a named recipient resolved outside the event project', async () => {
+      mockStorage.getAgentByName.mockResolvedValue({
+        id: 'foreign-agent-id',
+        name: 'Planner',
+        projectId: 'another-project',
+      });
+
+      const result = await sendMessageAction.execute(mockContext, {
+        agentName: 'Planner',
+        text: 'Epic completed',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Refusing to message agent from a different project');
+      expect(mockAmd.deliver).not.toHaveBeenCalled();
+    });
+
     it('should deliver message with Enter key by default (pooled)', async () => {
       const inputs = { text: 'Hello, world!' };
 
@@ -209,14 +294,16 @@ describe('SendMessageAction', () => {
       expect(result.error).toBe('Text is required');
     });
 
-    it('should return error when agentId is not available', async () => {
+    it('should return an actionable error when no recipient is available', async () => {
       mockContext.agentId = null;
       const inputs = { text: 'Test message' };
 
       const result = await sendMessageAction.execute(mockContext, inputs);
 
       expect(result.success).toBe(false);
-      expect(result.error).toBe('No agent ID available');
+      expect(result.error).toBe(
+        'No recipient specified: provide agentName input, or trigger from an event with agentId',
+      );
     });
 
     it('should handle delivery failure', async () => {
@@ -252,6 +339,8 @@ describe('SendMessageAction', () => {
       expect(result.success).toBe(true);
       expect(result.data).toEqual({
         sessionId: 'session-123',
+        resolvedAgentId: 'agent-456',
+        resolvedBy: 'event',
         textLength: 12,
         submitKey: 'Enter',
         immediate: false,

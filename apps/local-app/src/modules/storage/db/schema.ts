@@ -61,6 +61,48 @@ export const providers = sqliteTable('providers', {
   updatedAt: text('updated_at').notNull(),
 });
 
+// Explicit DevChain-wide plugin policy. Missing rows inherit the provider's native state.
+export const providerPluginDefaults = sqliteTable(
+  'provider_plugin_defaults',
+  {
+    providerId: text('provider_id')
+      .notNull()
+      .references(() => providers.id, { onDelete: 'cascade' }),
+    pluginId: text('plugin_id').notNull(),
+    enabled: integer('enabled', { mode: 'boolean' }).notNull(),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    providerPluginUnique: unique('provider_plugin_defaults_provider_plugin_unique').on(
+      table.providerId,
+      table.pluginId,
+    ),
+  }),
+);
+
+// Explicit project policy. Missing rows inherit the matching DevChain-wide default.
+export const projectProviderPluginOverrides = sqliteTable(
+  'project_provider_plugin_overrides',
+  {
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    providerId: text('provider_id')
+      .notNull()
+      .references(() => providers.id, { onDelete: 'cascade' }),
+    pluginId: text('plugin_id').notNull(),
+    enabled: integer('enabled', { mode: 'boolean' }).notNull(),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    projectProviderPluginUnique: unique(
+      'project_provider_plugin_overrides_project_provider_plugin_unique',
+    ).on(table.projectId, table.providerId, table.pluginId),
+  }),
+);
+
 // Provider Models (supported model variants per provider)
 export const providerModels = sqliteTable(
   'provider_models',
@@ -199,24 +241,33 @@ export const profileProviderConfigs = sqliteTable(
 );
 
 // Agents (project-specific instances)
-export const agents = sqliteTable('agents', {
-  id: text('id').primaryKey(),
-  projectId: text('project_id')
-    .notNull()
-    .references(() => projects.id, { onDelete: 'cascade' }),
-  profileId: text('profile_id')
-    .notNull()
-    .references(() => agentProfiles.id),
-  providerConfigId: text('provider_config_id')
-    .notNull()
-    .references(() => profileProviderConfigs.id, { onDelete: 'restrict' }),
-  modelOverride: text('model_override'),
-  effortOverride: text('effort_override'),
-  name: text('name').notNull(),
-  description: text('description'),
-  createdAt: text('created_at').notNull(),
-  updatedAt: text('updated_at').notNull(),
-});
+export const agents = sqliteTable(
+  'agents',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    isProjectOwner: integer('is_project_owner', { mode: 'boolean' }).notNull().default(false),
+    profileId: text('profile_id')
+      .notNull()
+      .references(() => agentProfiles.id),
+    providerConfigId: text('provider_config_id')
+      .notNull()
+      .references(() => profileProviderConfigs.id, { onDelete: 'restrict' }),
+    modelOverride: text('model_override'),
+    effortOverride: text('effort_override'),
+    name: text('name').notNull(),
+    description: text('description'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    projectOwnerUnique: uniqueIndex('idx_agents_project_owner')
+      .on(table.projectId)
+      .where(sql`${table.isProjectOwner} = 1`),
+  }),
+);
 
 // Epics (work items)
 export const epics = sqliteTable(
@@ -233,6 +284,7 @@ export const epics = sqliteTable(
       .references(() => statuses.id),
     parentId: text('parent_id'),
     agentId: text('agent_id'),
+    createdBy: text('created_by'),
     version: integer('version').notNull().default(1),
     data: text('data', { mode: 'json' }), // JSON object
     skillsRequired: text('skills_required'),

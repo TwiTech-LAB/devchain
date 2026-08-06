@@ -26,6 +26,7 @@ function epic(over: Partial<Epic> = {}): Epic {
     statusId: 'status-1',
     parentId: null,
     agentId: null,
+    createdBy: null,
     version: 3,
     data: null,
     skillsRequired: null,

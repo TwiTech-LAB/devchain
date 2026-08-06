@@ -4,7 +4,7 @@ import { MemoryRouter, Route, Routes, useNavigate, useLocation } from 'react-rou
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 // Import as ComponentType to avoid strict JSX component typing complaints in isolated TS
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const BoardPage: React.ComponentType = require('./BoardPage').BoardPage;
 
 // Mock project selection to provide a selected project

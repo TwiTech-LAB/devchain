@@ -9,6 +9,7 @@ export function createMockEpic(overrides: Partial<Epic> = {}): Epic {
     statusId: 'status-test-1',
     parentId: null,
     agentId: null,
+    createdBy: null,
     version: 1,
     data: null,
     skillsRequired: null,

@@ -20,7 +20,7 @@ import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storag
 import { UpdateProject, Project } from '../../storage/models/domain.models';
 import { z } from 'zod';
 import { createLogger } from '../../../common/logging/logger';
-import { getEnvConfig } from '../../../common/config/env.config';
+import { getContainerScopedProjectId } from '../../../common/config/container-scope';
 import { NotFoundError as StorageNotFoundError } from '../../../common/errors/error-types';
 import {
   SLUG_PATTERN,
@@ -209,7 +209,7 @@ export class ProjectsController {
   @Get()
   async listProjects(@Query('limit') limit?: string, @Query('offset') offset?: string) {
     logger.info('GET /api/projects');
-    const scopedProjectId = this.getContainerScopedProjectId();
+    const scopedProjectId = getContainerScopedProjectId();
     let projects: Project[];
     let total: number;
     let resolvedLimit: number;
@@ -1053,16 +1053,8 @@ export class ProjectsController {
     return { deleted: true };
   }
 
-  private getContainerScopedProjectId(): string | null {
-    const env = getEnvConfig();
-    if (env.DEVCHAIN_MODE !== 'normal') {
-      return null;
-    }
-    return env.CONTAINER_PROJECT_ID ?? null;
-  }
-
   private assertMutationAllowedForScopedProject(projectId: string): void {
-    const scopedProjectId = this.getContainerScopedProjectId();
+    const scopedProjectId = getContainerScopedProjectId();
     if (scopedProjectId && scopedProjectId !== projectId) {
       throw new ForbiddenException(
         'Project mutation is restricted to CONTAINER_PROJECT_ID in container mode',

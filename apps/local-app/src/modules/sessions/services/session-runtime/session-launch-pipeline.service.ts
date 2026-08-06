@@ -16,7 +16,7 @@ import type {
   AgentProfile,
   Provider,
 } from '../../../storage/models/domain.models';
-import { ValidationError } from '../../../../common/errors/error-types';
+import { ConflictError, ValidationError } from '../../../../common/errors/error-types';
 import { createLogger } from '../../../../common/logging/logger';
 import { getEnvConfig } from '../../../../common/config/env.config';
 import { HostResolver } from '@devchain/shared';
@@ -42,7 +42,12 @@ import { ProviderMcpEnsureService } from '../../../providers/services/provider-m
 import { EventsService } from '../../../events/services/events.service';
 import { TeamsStore } from '../../../teams/storage/teams.store';
 import { resolve as resolveLaunchConfig, type LaunchConfig } from '../provider-launch-config';
-import { parseProfileOptions, extractModelFromArgs } from '../../utils/profile-options';
+import {
+  parseProfileOptions,
+  extractModelFromArgs,
+  hasCodexProfileSelector,
+  hasFlagOccurrence,
+} from '../../utils/profile-options';
 import { buildTmuxSessionName } from '../../utils/tmux-naming.util';
 import { renderTemplate } from '../../../../common/template/handlebars-renderer';
 import { buildPromptRenderContext } from '../../../../common/template/prompt-render-context';
@@ -50,6 +55,13 @@ import { CleanupStack } from './cleanup-stack';
 import type { LaunchSessionDto, SessionDetailDto } from '../../dtos/sessions.dto';
 import { RuntimeContextCaptureService } from '../../../runtime-context-capture/runtime-context-capture.service';
 import { ClaudeLaunchSettingsMaterializerService } from '../../../runtime-context-capture/claude-launch-settings-materializer.service';
+import {
+  CodexPluginProfileMaterializerService,
+  type PreparedCodexPluginProfile,
+} from '../../../runtime-context-capture/codex-plugin-profile-materializer.service';
+import { ProviderPluginPolicyService } from '../../../providers/services/provider-plugin-policy.service';
+import { buildSessionCommand } from '../../utils/env-builder';
+import { CONTEXT_WINDOW_ENV_KEY } from '../../../runtime-context-capture/context-window-policy';
 
 const logger = createLogger('SessionLaunchPipeline');
 
@@ -73,6 +85,8 @@ export class SessionLaunchPipeline {
     private readonly teamsStore: TeamsStore,
     private readonly runtimeContextCapture: RuntimeContextCaptureService,
     private readonly claudeLaunchSettings: ClaudeLaunchSettingsMaterializerService,
+    private readonly codexPluginProfiles: CodexPluginProfileMaterializerService,
+    private readonly providerPluginPolicy: ProviderPluginPolicyService,
   ) {
     this.sqlite = getRawSqliteClient(db);
   }
@@ -148,6 +162,29 @@ export class SessionLaunchPipeline {
           : null;
 
         const providerEnv = this.storage.getProviderEnvForProject(provider.id, projectId);
+        const profileOptionArgs = parseProfileOptions(options);
+        const pluginPolicy = await this.providerPluginPolicy.resolveAll(project.id, provider.id);
+        const providerName = provider.name.toLowerCase();
+        if (
+          pluginPolicy.length > 0 &&
+          providerName === 'claude' &&
+          hasFlagOccurrence(profileOptionArgs, '--settings')
+        ) {
+          throw new ConflictError(
+            'Profile-supplied --settings conflicts with required DevChain Claude plugin policy.',
+            { field: 'profileOptions', flag: '--settings' },
+          );
+        }
+        if (
+          pluginPolicy.length > 0 &&
+          providerName === 'codex' &&
+          hasCodexProfileSelector(profileOptionArgs)
+        ) {
+          throw new ConflictError(
+            'Profile-supplied Codex profile selector conflicts with required DevChain plugin policy.',
+            { field: 'profileOptions', flag: '--profile' },
+          );
+        }
         const launchConfigInput = {
           mode: 'new',
           // Thread devchain's freshly-minted sessions.id (line ~103) so a
@@ -203,23 +240,59 @@ export class SessionLaunchPipeline {
         const preparedSettings = await this.claudeLaunchSettings.prepare({
           providerName: provider.name,
           settingsJson: provider.claudeLaunchSettingsJson,
-          profileOptionArgs: parseProfileOptions(options),
+          profileOptionArgs,
           providerEnv,
           configEnv,
           sessionId,
           epoch,
           projectRootPath: project.rootPath,
+          pluginPolicy: providerName === 'claude' ? pluginPolicy : [],
+          policyRequired: providerName === 'claude' && pluginPolicy.length > 0,
         });
-        if (preparedSettings.optionArgs.length > 0) {
+        const preparedCodex: PreparedCodexPluginProfile | null =
+          providerName === 'codex'
+            ? await this.codexPluginProfiles.prepare({
+                projectId: project.id,
+                projectName: project.name,
+                sessionId,
+                pluginPolicy,
+                attemptNonce: randomUUID(),
+              })
+            : null;
+        const managedOptionArgs = [
+          ...preparedSettings.optionArgs,
+          ...(preparedCodex?.providerOptionArgs ?? []),
+        ];
+        if (managedOptionArgs.length > 0) {
           finalConfig = resolveLaunchConfig({
             ...launchConfigInput,
-            providerOptionArgs: preparedSettings.optionArgs,
+            providerOptionArgs: managedOptionArgs,
             runtimeEnv: preparedSettings.runtimeEnv,
           });
         }
         cleanup.push('claudeLaunchSettings', async () => {
           await this.claudeLaunchSettings.cleanupSession(sessionId!);
         });
+        if (preparedCodex) {
+          const helperArgv = this.codexPluginProfiles.buildHelperArgv(
+            preparedCodex,
+            provider.binPath!,
+            finalConfig.argv,
+            {
+              projectId: project.id,
+              attemptNonce: preparedCodex.attemptNonce,
+            },
+          );
+          finalConfig = {
+            ...finalConfig,
+            commandArgs: buildSessionCommand(finalConfig.env, helperArgv[0], helperArgv.slice(1), [
+              ...new Set([...(adapter.launchUnsetEnv ?? []), CONTEXT_WINDOW_ENV_KEY]),
+            ]),
+          };
+          cleanup.push('codexPluginProfile', async () => {
+            await this.codexPluginProfiles.cleanupPrepared(preparedCodex);
+          });
+        }
 
         // ── Runtime plan finalized checkpoint ──────────────────────────
         // From here: argv, env, sessionId, and generated artifact paths are immutable.
@@ -278,15 +351,27 @@ export class SessionLaunchPipeline {
           );
         }
 
-        await this.launchCliAndPastePrompt(sessionId, tmuxSessionName, finalConfig, {
-          agent,
-          project,
-          epic,
-          profile,
-          provider,
-          seedMode,
-          seededPrompt,
-        });
+        await this.launchCliAndPastePrompt(
+          sessionId,
+          tmuxSessionName,
+          finalConfig,
+          {
+            agent,
+            project,
+            epic,
+            profile,
+            provider,
+            seedMode,
+            seededPrompt,
+          },
+          preparedCodex
+            ? () =>
+                this.codexPluginProfiles.awaitAcknowledgement(preparedCodex, {
+                  projectId: project.id,
+                  attemptNonce: preparedCodex.attemptNonce,
+                })
+            : undefined,
+        );
 
         await this.eventsService.publish('session.started', {
           sessionId,
@@ -375,6 +460,7 @@ export class SessionLaunchPipeline {
       .prepare(`UPDATE sessions SET status = 'stopped', ended_at = ?, updated_at = ? WHERE id = ?`)
       .run(new Date().toISOString(), new Date().toISOString(), row.id);
     this.runtimeContextCapture.clear(row.id as string);
+    await this.codexPluginProfiles.cleanupSession(row.id as string);
 
     return null;
   }
@@ -565,8 +651,10 @@ export class SessionLaunchPipeline {
       seedMode?: 'argv' | 'stdin';
       seededPrompt: string | null;
     },
+    afterCommand?: () => Promise<unknown>,
   ): Promise<void> {
     await this.terminalIO.typeCommand({ name: tmuxSessionName }, config.commandArgs);
+    await afterCommand?.();
 
     const launchTimestamp = Date.now();
     await this.terminalIO.waitForOutput(

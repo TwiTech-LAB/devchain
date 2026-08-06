@@ -6,6 +6,7 @@ import { EpicDetailPage } from './EpicDetailPage';
 const mockNavigate = jest.fn();
 const mockUseSelectedProject = jest.fn();
 const mockApiFetch = jest.fn();
+let epicCreatedBy: string | null = null;
 
 jest.mock('@/ui/hooks/useProjectSelection', () => ({
   useSelectedProject: () => mockUseSelectedProject(),
@@ -117,6 +118,7 @@ function mockEpicFetches() {
         version: 7,
         parentId: null,
         agentId: null,
+        createdBy: epicCreatedBy,
         tags: [],
         skillsRequired: [],
         createdAt: '2026-01-01T00:00:00.000Z',
@@ -199,7 +201,35 @@ describe('EpicDetailPage confirm dialogs', () => {
         rootPath: '/workspace/project',
       },
     });
+    epicCreatedBy = null;
     mockEpicFetches();
+  });
+
+  it('shows creator attribution in metadata when present', async () => {
+    epicCreatedBy = 'Creator Agent';
+    const { Wrapper } = createWrapper();
+
+    render(
+      <Wrapper>
+        <EpicDetailPage />
+      </Wrapper>,
+    );
+
+    expect(await screen.findByText('Created by')).toBeInTheDocument();
+    expect(screen.getByText('Creator Agent')).toBeInTheDocument();
+  });
+
+  it('keeps metadata unchanged when creator attribution is null', async () => {
+    const { Wrapper } = createWrapper();
+
+    render(
+      <Wrapper>
+        <EpicDetailPage />
+      </Wrapper>,
+    );
+
+    await screen.findByText('Metadata');
+    expect(screen.queryByText('Created by')).not.toBeInTheDocument();
   });
 
   it('cancels sub-epic delete without calling the delete endpoint', async () => {

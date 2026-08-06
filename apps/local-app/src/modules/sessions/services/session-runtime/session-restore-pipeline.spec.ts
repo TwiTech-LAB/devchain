@@ -189,6 +189,87 @@ describe('SessionRestorePipeline', () => {
     });
   });
 
+  describe('managed Codex policy restore', () => {
+    it('wraps the final restore argv and waits for the bound acknowledgement', async () => {
+      const { pipeline, stoppedSessionRow, mocks } = createRestorePipelineHarness();
+      const resolveMock = resolveLaunchConfig as jest.Mock;
+      resolveMock.mockClear();
+      stoppedSessionRow.provider_name_at_launch = 'codex';
+      mocks.storage.getProvider.mockResolvedValue(fakeProvider({ name: 'codex' }));
+      mocks.providerPluginPolicy.resolveAll.mockResolvedValue([
+        { providerId: 'provider-1', pluginId: 'plugin@market', enabled: false, source: 'project' },
+      ]);
+      mocks.codexPluginProfiles.prepare.mockImplementation(async (input) => ({
+        profileName: 'devchain-profile',
+        projectDigest: 'a'.repeat(64),
+        policyHash: 'b'.repeat(64),
+        sourceRevisionPath: '/private/source.toml',
+        helperPath: '/private/helper',
+        sessionId: input.sessionId,
+        attemptNonce: input.attemptNonce,
+        referencePath: '/private/reference.json',
+        locatorPath: '/private/locator.json',
+        acknowledgementPath: '/private/ack.json',
+        providerOptionArgs: ['--profile', 'devchain-profile'],
+      }));
+      mocks.codexPluginProfiles.buildHelperArgv.mockReturnValue([
+        '/private/helper',
+        '--',
+        '/usr/bin/test-provider',
+      ]);
+
+      await pipeline.restore(sessionId, projectId);
+
+      expect(resolveMock).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          mode: 'restore',
+          providerOptionArgs: ['--profile', 'devchain-profile'],
+        }),
+      );
+      expect(mocks.terminalIO.typeCommand).toHaveBeenCalledWith(expect.anything(), [
+        'env',
+        '-u',
+        'DEVCHAIN_CONTEXT_WINDOW_TOKENS',
+        '/private/helper',
+        '--',
+        '/usr/bin/test-provider',
+      ]);
+      expect(mocks.codexPluginProfiles.awaitAcknowledgement).toHaveBeenCalled();
+    });
+
+    it('destroys tmux before profile cleanup when acknowledgement validation fails', async () => {
+      const { pipeline, stoppedSessionRow, mocks } = createRestorePipelineHarness();
+      stoppedSessionRow.provider_name_at_launch = 'codex';
+      mocks.storage.getProvider.mockResolvedValue(fakeProvider({ name: 'codex' }));
+      mocks.providerPluginPolicy.resolveAll.mockResolvedValue([
+        { providerId: 'provider-1', pluginId: 'plugin@market', enabled: true, source: 'default' },
+      ]);
+      mocks.codexPluginProfiles.prepare.mockImplementation(async (input) => ({
+        profileName: 'devchain-profile',
+        projectDigest: 'a'.repeat(64),
+        policyHash: 'b'.repeat(64),
+        sourceRevisionPath: '/private/source.toml',
+        helperPath: '/private/helper',
+        sessionId: input.sessionId,
+        attemptNonce: input.attemptNonce,
+        referencePath: '/private/reference.json',
+        locatorPath: '/private/locator.json',
+        acknowledgementPath: '/private/ack.json',
+        providerOptionArgs: ['--profile', 'devchain-profile'],
+      }));
+      mocks.codexPluginProfiles.buildHelperArgv.mockReturnValue(['/private/helper']);
+      mocks.codexPluginProfiles.awaitAcknowledgement.mockRejectedValue(new Error('foreign ack'));
+
+      await expect(pipeline.restore(sessionId, projectId)).rejects.toThrow('foreign ack');
+
+      expect(mocks.terminalIO.destroySession).toHaveBeenCalled();
+      expect(mocks.codexPluginProfiles.cleanupPrepared).toHaveBeenCalled();
+      expect(mocks.terminalIO.destroySession.mock.invocationCallOrder[0]).toBeLessThan(
+        mocks.codexPluginProfiles.cleanupPrepared.mock.invocationCallOrder[0],
+      );
+    });
+  });
+
   // ── Effective model/effort resolution (restore parity with launch) ───────
   // Restore must apply the same effective model/effort as a fresh launch. Layer:
   // pipeline unit test with the shared harness (resolve is mocked) — asserts the

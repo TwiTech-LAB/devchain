@@ -108,6 +108,87 @@ describe('ClaudeAdapter', () => {
     });
   });
 
+  describe('ProviderPluginCapability', () => {
+    it('uses the JSON catalog and normal user-scope install commands', () => {
+      expect(adapter.listProviderPlugins()).toEqual(['plugin', 'list', '--available', '--json']);
+      expect(adapter.installProviderPlugin('sample@market')).toEqual([
+        'plugin',
+        'install',
+        'sample@market',
+        '--scope',
+        'user',
+      ]);
+    });
+
+    it('normalizes available and installed records without losing qualified identity', () => {
+      const entries = adapter.parseProviderPluginCatalog(
+        JSON.stringify({
+          installed: [
+            {
+              id: 'sample@market',
+              version: '1.2.3',
+              scope: 'user',
+              enabled: true,
+            },
+            {
+              id: 'local-only@private',
+              version: '0.4.0',
+              scope: 'local',
+              enabled: false,
+            },
+          ],
+          available: [
+            {
+              pluginId: 'sample@market',
+              name: 'sample',
+              description: 'Sample plugin',
+              marketplaceName: 'market',
+              version: '1.2.2',
+              installCount: 42,
+            },
+          ],
+        }),
+      );
+
+      expect(entries).toEqual([
+        {
+          pluginId: 'sample@market',
+          name: 'sample',
+          description: 'Sample plugin',
+          marketplaceName: 'market',
+          version: '1.2.3',
+          installed: true,
+          available: true,
+          providerEnabled: true,
+          installationScopes: ['user'],
+          installCount: 42,
+          installPolicy: null,
+          authPolicy: null,
+        },
+        {
+          pluginId: 'local-only@private',
+          name: 'local-only',
+          description: null,
+          marketplaceName: 'private',
+          version: '0.4.0',
+          installed: true,
+          available: false,
+          providerEnabled: false,
+          installationScopes: ['local'],
+          installCount: null,
+          installPolicy: null,
+          authPolicy: null,
+        },
+      ]);
+    });
+
+    it('rejects malformed catalog JSON', () => {
+      expect(() => adapter.parseProviderPluginCatalog('{not-json')).toThrow(
+        'claude plugin catalog returned invalid JSON',
+      );
+    });
+  });
+
   describe('addMcpServer', () => {
     it('builds command with default alias', () => {
       const args = adapter.addMcpServer({

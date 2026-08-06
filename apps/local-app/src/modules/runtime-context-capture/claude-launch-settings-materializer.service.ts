@@ -4,6 +4,7 @@ import { constants, rmSync } from 'fs';
 import { access, chmod, link, mkdir, readFile, rename, rm, unlink, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { validateClaudeLaunchSettingsJson } from '@devchain/shared';
+import { ConflictError, IOError, ValidationError } from '../../common/errors/error-types';
 import { createLogger } from '../../common/logging/logger';
 import { hasFlagOccurrence } from '../sessions/utils/profile-options';
 import {
@@ -33,6 +34,13 @@ export interface PrepareClaudeLaunchSettingsInput {
   sessionId: string;
   epoch: string;
   projectRootPath: string;
+  pluginPolicy?: ReadonlyArray<ClaudePluginPolicyEntry>;
+  policyRequired?: boolean;
+}
+
+export interface ClaudePluginPolicyEntry {
+  pluginId: string;
+  enabled: boolean;
 }
 
 export interface PreparedClaudeLaunchSettings {
@@ -210,16 +218,33 @@ export class ClaudeLaunchSettingsMaterializerService {
   }
 
   async prepare(input: PrepareClaudeLaunchSettingsInput): Promise<PreparedClaudeLaunchSettings> {
-    const validation = this.validateEligibility(input);
-    if (!validation) return INACTIVE_RESULT;
+    const prepared = this.prepareSettings(input);
+    if (!prepared) return INACTIVE_RESULT;
+
+    let settingsPath: string;
+    try {
+      settingsPath = await this.materializeSettingsRevision(prepared.settingsJson);
+    } catch {
+      await this.cleanupSession(input.sessionId);
+      if (prepared.policyRequired) {
+        throw new IOError('Failed to materialize required Claude plugin policy settings.', {
+          stage: 'settings_revision',
+        });
+      }
+      this.logFailOpen(input.sessionId);
+      return INACTIVE_RESULT;
+    }
+
+    const settingsOnlyResult: PreparedClaudeLaunchSettings = {
+      optionArgs: [SETTINGS_FLAG, settingsPath],
+      runtimeEnv: {},
+      captureEnabled: false,
+    };
+    if (!this.hasCanonicalStatusLine(prepared.parsed)) {
+      return settingsOnlyResult;
+    }
 
     try {
-      const settingsPath = await this.materializeSettingsRevision(input.settingsJson!);
-      const captureEnabled = this.hasCanonicalStatusLine(validation.parsed);
-      if (!captureEnabled) {
-        return { optionArgs: [SETTINGS_FLAG, settingsPath], runtimeEnv: {}, captureEnabled: false };
-      }
-
       await this.materializeStatusLineScript(input.projectRootPath);
       const locatorPath = await this.materializeSessionLocator(input.sessionId, input.epoch);
       return {
@@ -229,12 +254,23 @@ export class ClaudeLaunchSettingsMaterializerService {
       };
     } catch {
       await this.cleanupSession(input.sessionId);
-      logger.warn(
-        { sessionId: input.sessionId },
-        'Claude launch settings materialization failed; launching without provider settings',
-      );
+      if (prepared.policyRequired) {
+        logger.warn(
+          { sessionId: input.sessionId },
+          'Claude status capture materialization failed; required plugin policy remains active',
+        );
+        return settingsOnlyResult;
+      }
+      this.logFailOpen(input.sessionId);
       return INACTIVE_RESULT;
     }
+  }
+
+  private logFailOpen(sessionId: string): void {
+    logger.warn(
+      { sessionId },
+      'Claude launch settings materialization failed; launching without provider settings',
+    );
   }
 
   async cleanupSession(sessionId: string): Promise<void> {
@@ -261,19 +297,104 @@ export class ClaudeLaunchSettingsMaterializerService {
     }
   }
 
-  private validateEligibility(
-    input: PrepareClaudeLaunchSettingsInput,
-  ): { valid: true; parsed: Record<string, unknown> } | null {
-    if (input.providerName.toLowerCase() !== 'claude') return null;
-    if (hasFlagOccurrence(input.profileOptionArgs, SETTINGS_FLAG)) return null;
+  private prepareSettings(input: PrepareClaudeLaunchSettingsInput): {
+    settingsJson: string;
+    parsed: Record<string, unknown>;
+    policyRequired: boolean;
+  } | null {
+    const pluginPolicy = input.pluginPolicy ?? [];
+    const policyRequired = input.policyRequired === true || pluginPolicy.length > 0;
+
+    if (input.providerName.toLowerCase() !== 'claude') {
+      if (policyRequired) {
+        throw new ValidationError(
+          'Required Claude plugin policy cannot target a non-Claude provider.',
+        );
+      }
+      return null;
+    }
+    if (hasFlagOccurrence(input.profileOptionArgs, SETTINGS_FLAG)) {
+      if (policyRequired) {
+        throw new ConflictError(
+          'Profile-supplied --settings conflicts with required DevChain Claude plugin policy.',
+          { field: 'profileOptions', flag: SETTINGS_FLAG },
+        );
+      }
+      return null;
+    }
 
     const effectiveBaseUrl =
       input.configEnv?.ANTHROPIC_BASE_URL ?? input.providerEnv?.ANTHROPIC_BASE_URL;
-    if (typeof effectiveBaseUrl === 'string' && effectiveBaseUrl.trim().length > 0) return null;
+    const usesAlternateBase =
+      typeof effectiveBaseUrl === 'string' && effectiveBaseUrl.trim().length > 0;
 
-    const validation = validateClaudeLaunchSettingsJson(input.settingsJson);
-    if (!validation.valid || validation.parsed === null) return null;
-    return { valid: true, parsed: validation.parsed };
+    if (!policyRequired) {
+      if (usesAlternateBase) return null;
+
+      const validation = validateClaudeLaunchSettingsJson(input.settingsJson);
+      if (!validation.valid || validation.parsed === null) return null;
+      return {
+        settingsJson: input.settingsJson as string,
+        parsed: validation.parsed,
+        policyRequired: false,
+      };
+    }
+
+    let base: Record<string, unknown> = {};
+    if (!usesAlternateBase && input.settingsJson !== null) {
+      const baseValidation = validateClaudeLaunchSettingsJson(input.settingsJson);
+      if (!baseValidation.valid) {
+        throw this.toPolicyValidationError(baseValidation);
+      }
+      if (baseValidation.parsed === null) {
+        throw new ValidationError('Required Claude plugin policy settings have no merge base.', {
+          field: 'pluginPolicy',
+        });
+      }
+      base = baseValidation.parsed;
+    }
+
+    const existingEnabledPlugins = base.enabledPlugins as Record<string, boolean> | undefined;
+    const enabledPlugins = Object.assign(
+      Object.create(null) as Record<string, boolean>,
+      existingEnabledPlugins ?? {},
+    );
+    for (const entry of pluginPolicy) {
+      if (typeof entry.pluginId !== 'string' || typeof entry.enabled !== 'boolean') {
+        throw new ValidationError('Resolved Claude plugin policy entries are invalid.', {
+          field: 'pluginPolicy',
+        });
+      }
+      enabledPlugins[entry.pluginId] = entry.enabled;
+    }
+
+    const settingsJson = JSON.stringify({ ...base, enabledPlugins }, null, 2);
+    const finalValidation = validateClaudeLaunchSettingsJson(settingsJson);
+    if (!finalValidation.valid) {
+      throw this.toPolicyValidationError(finalValidation);
+    }
+    if (finalValidation.parsed === null) {
+      throw new ValidationError('Required Claude plugin policy settings did not compose.', {
+        field: 'pluginPolicy',
+      });
+    }
+    return {
+      settingsJson,
+      parsed: finalValidation.parsed,
+      policyRequired: true,
+    };
+  }
+
+  private toPolicyValidationError(
+    validation: Exclude<ReturnType<typeof validateClaudeLaunchSettingsJson>, { valid: true }>,
+  ): ValidationError {
+    return new ValidationError(
+      `Required Claude plugin policy settings are invalid: ${validation.message}`,
+      {
+        field: 'pluginPolicy',
+        ...(validation.path ? { path: validation.path } : {}),
+      },
+    );
   }
 
   private hasCanonicalStatusLine(parsed: Record<string, unknown>): boolean {

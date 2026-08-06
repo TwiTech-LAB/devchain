@@ -43,7 +43,7 @@ export function bytesToBase64(bytes: Uint8Array): string {
  * map it to a typed envelope error instead of producing silently-wrong bytes.
  */
 export function base64ToBytes(b64: string): Uint8Array {
-  let len = b64.length;
+  const len = b64.length;
   if (len % 4 !== 0) throw new InvalidBase64Error('length is not a multiple of 4');
   let pad = 0;
   if (len > 0 && b64.charCodeAt(len - 1) === 61 /* = */) {

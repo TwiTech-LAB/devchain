@@ -7,6 +7,7 @@ import {
   DeleteEpicParamsSchema,
   DeleteEpicResponse,
   GetEpicByIdParamsSchema,
+  ProjectsListParamsSchema,
   SendMessageParamsSchema,
   SendMessageResponse,
   TmuxSessionIdSchema,
@@ -121,6 +122,53 @@ describe('RegisterGuestParamsSchema - uses secure tmuxSessionId validation', () 
 });
 
 describe('MCP chat DTO schemas', () => {
+  it.each([
+    'aaaaaaaa',
+    'aaaaaaaa-b',
+    'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+    'AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE',
+  ])('accepts valid project address %s for send_message', (recipientProjectId) => {
+    expect(
+      SendMessageParamsSchema.safeParse({
+        sessionId: 'abcd1234',
+        recipientProjectId,
+        message: 'hello',
+      }).success,
+    ).toBe(true);
+  });
+
+  it.each([
+    'aaaaaaa',
+    'aaaaaaaa_',
+    'aaaaaaaa-bbbbb',
+    'aaaaaaaa-b-bbbb',
+    'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeeee',
+  ])('rejects malformed project address %s for send_message', (recipientProjectId) => {
+    expect(
+      SendMessageParamsSchema.safeParse({
+        sessionId: 'abcd1234',
+        recipientProjectId,
+        message: 'hello',
+      }).success,
+    ).toBe(false);
+  });
+
+  it.each([
+    ['threadId', '00000000-0000-0000-0000-000000000000'],
+    ['recipientAgentNames', ['Beta']],
+    ['teamName', 'Platform'],
+    ['recipient', 'user'],
+  ])('rejects recipientProjectId with %s', (field, value) => {
+    expect(
+      SendMessageParamsSchema.safeParse({
+        sessionId: 'abcd1234',
+        recipientProjectId: 'aaaaaaaa',
+        [field]: value,
+        message: 'hello',
+      }).success,
+    ).toBe(false);
+  });
+
   it('accepts teamName as a send_message routing target', () => {
     expect(() =>
       SendMessageParamsSchema.parse({
@@ -199,6 +247,17 @@ describe('MCP chat DTO schemas', () => {
     expect(response.teamDelivery?.routedToLead).toBe(true);
   });
 
+  it('allows the transport-neutral project send response', () => {
+    const response: SendMessageResponse = {
+      mode: 'project',
+      targetProject: { id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', shortId: 'aaaaaaaa', name: 'B' },
+      deliveryStatus: 'failed',
+      error: { code: 'DELIVERY_FAILED', message: 'Delivery failed' },
+    };
+
+    expect(response.mode).toBe('project');
+  });
+
   it('requires thread_id for list members tool', () => {
     expect(() => ChatListMembersParamsSchema.parse({})).toThrow(ZodError);
     expect(() =>
@@ -248,6 +307,33 @@ describe('MCP chat DTO schemas', () => {
       expect(unrecognizedIssue).toBeDefined();
       expect((unrecognizedIssue as { keys: string[] }).keys).toContain('unknown_param');
     }
+  });
+});
+
+describe('ProjectsListParamsSchema', () => {
+  it('accepts only sessionId, limit, and offset with pagination defaults', () => {
+    expect(ProjectsListParamsSchema.parse({ sessionId: 'abcd1234' })).toEqual({
+      sessionId: 'abcd1234',
+      limit: 100,
+      offset: 0,
+    });
+    expect(
+      ProjectsListParamsSchema.safeParse({
+        sessionId: 'abcd1234',
+        limit: 25,
+        offset: 5,
+        rootPath: '/private/project',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects invalid pagination', () => {
+    expect(ProjectsListParamsSchema.safeParse({ sessionId: 'abcd1234', limit: 101 }).success).toBe(
+      false,
+    );
+    expect(ProjectsListParamsSchema.safeParse({ sessionId: 'abcd1234', offset: -1 }).success).toBe(
+      false,
+    );
   });
 });
 

@@ -34,6 +34,7 @@ function makeEpic(overrides: Partial<Epic> = {}): Epic {
     version: 1,
     parentId: null,
     agentId: null,
+    createdBy: null,
     tags: [],
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',

@@ -23,6 +23,8 @@ interface EpicBroadcastPayload {
 export interface EpicOperationContext {
   /** Actor who triggered this operation (agent or guest), null if unknown/system */
   actor?: { type: 'agent' | 'guest'; id: string } | null;
+  /** Trusted agent-name snapshot captured at the operation boundary. */
+  creatorAgentName?: string;
 }
 
 export interface UpdateEpicOutcome {
@@ -46,7 +48,10 @@ export class EpicsService {
     // Clear agentId if creating in an auto-clean status
     this.applyAutoCleanIfNeeded(data.projectId, data.statusId, data);
 
-    const epic = await this.storage.createEpic(data);
+    const epic = await this.storage.createEpic({
+      ...data,
+      createdBy: this.deriveCreatedBy(context),
+    });
 
     // Publish epic.created event (best-effort persisted event - failures logged but don't block create)
     let resolvedNames: Awaited<ReturnType<typeof this.resolveEpicCreatedNames>> = {};
@@ -123,7 +128,10 @@ export class EpicsService {
     // Clear agentId if creating in an auto-clean status
     this.applyAutoCleanIfNeeded(projectId, input.statusId, input);
 
-    const epic = await this.storage.createEpicForProject(projectId, input);
+    const epic = await this.storage.createEpicForProject(projectId, {
+      ...input,
+      createdBy: this.deriveCreatedBy(context),
+    });
 
     // Publish epic.created event (best-effort persisted event - failures logged but don't block create)
     let resolvedNames: Awaited<ReturnType<typeof this.resolveEpicCreatedNames>> = {};
@@ -638,7 +646,9 @@ export class EpicsService {
       }
     }
 
-    if (actor) {
+    if (actor?.type === 'agent' && epic.createdBy) {
+      result.creatorName = epic.createdBy;
+    } else if (actor) {
       try {
         if (actor.type === 'agent') {
           const agent = await this.storage.getAgent(actor.id);
@@ -656,6 +666,12 @@ export class EpicsService {
     }
 
     return result;
+  }
+
+  private deriveCreatedBy(context?: EpicOperationContext): string | null {
+    return context?.actor?.type === 'agent' && context.creatorAgentName
+      ? context.creatorAgentName
+      : null;
   }
 
   private buildAgentRecipientIds(

@@ -164,6 +164,72 @@ describe('LocalStorageService', () => {
       expect(page2.items).toHaveLength(1);
     });
 
+    it('resolves full IDs and UUID prefixes case-insensitively without wildcard matching', async () => {
+      const storedId = 'AbCdEf12-3456-4789-AbCd-0123456789ab';
+      await service.createProjectShell(
+        { name: 'Mixed Case', description: null, rootPath: '/tmp/mixed-case', isTemplate: false },
+        { projectId: storedId },
+      );
+
+      const uniquePrefixMatches = await service.getProjectsByIdPrefix('abcdef12');
+      expect(uniquePrefixMatches).toHaveLength(1);
+      expect(uniquePrefixMatches[0].id).toBe(storedId);
+      expect(uniquePrefixMatches[0].id.slice(0, 8)).toBe('AbCdEf12');
+
+      const fullIdMatches = await service.getProjectsByIdPrefix(storedId.toUpperCase());
+      expect(fullIdMatches.map((project) => project.id)).toEqual([storedId]);
+
+      const caseCollisionId = 'c0ffee00-1111-4111-8111-111111111111';
+      const caseCollisionVariant = 'C0fFeE00-1111-4111-8111-111111111111';
+      await service.createProjectShell(
+        {
+          name: 'Case Collision A',
+          description: null,
+          rootPath: '/tmp/case-collision-a',
+          isTemplate: false,
+        },
+        { projectId: caseCollisionId },
+      );
+      await service.createProjectShell(
+        {
+          name: 'Case Collision B',
+          description: null,
+          rootPath: '/tmp/case-collision-b',
+          isTemplate: false,
+        },
+        { projectId: caseCollisionVariant },
+      );
+      expect(await service.getProjectsByIdPrefix(caseCollisionId.toUpperCase())).toHaveLength(2);
+
+      await service.createProjectShell(
+        {
+          name: 'Prefix A',
+          description: null,
+          rootPath: '/tmp/prefix-a',
+          isTemplate: false,
+        },
+        { projectId: 'aabbccdd-1111-4111-8111-111111111111' },
+      );
+      await service.createProjectShell(
+        {
+          name: 'Prefix B',
+          description: null,
+          rootPath: '/tmp/prefix-b',
+          isTemplate: false,
+        },
+        { projectId: 'AABBCCDD-2222-4222-8222-222222222222' },
+      );
+
+      const ambiguousMatches = await service.getProjectsByIdPrefix('AABBCCDD');
+      expect(ambiguousMatches.map((project) => project.name).sort()).toEqual([
+        'Prefix A',
+        'Prefix B',
+      ]);
+
+      expect(await service.getProjectsByIdPrefix('abc%def_')).toEqual([]);
+      expect(await service.getProjectsByIdPrefix('not-a-project-id')).toEqual([]);
+    });
+
     it('updates a project', async () => {
       const project = await seedProject();
 
@@ -242,6 +308,28 @@ describe('LocalStorageService', () => {
       expect(epic.version).toBe(1);
       expect(epic.title).toBe('Test Epic');
       expect(epic.tags.sort()).toEqual(['feature', 'urgent']);
+      expect(epic.createdBy).toBeNull();
+    });
+
+    it('persists creator attribution and rejects runtime update attempts', async () => {
+      const epic = await service.createEpic({
+        projectId: project.id,
+        title: 'Attributed Epic',
+        statusId: defaultStatusId,
+        createdBy: 'Original Creator',
+      });
+
+      expect(epic.createdBy).toBe('Original Creator');
+      expect((await service.getEpic(epic.id)).createdBy).toBe('Original Creator');
+
+      const updated = await service.updateEpic(
+        epic.id,
+        { title: 'Updated', createdBy: 'Spoofed Creator' } as never,
+        epic.version,
+      );
+
+      expect(updated.title).toBe('Updated');
+      expect(updated.createdBy).toBe('Original Creator');
     });
 
     it('updates epic and increments version', async () => {
@@ -342,6 +430,7 @@ describe('LocalStorageService', () => {
       expect(epic.title).toBe('Auto-status Epic');
       expect(epic.statusId).toBeDefined();
       expect(epic.agentId).toBe(agent.id);
+      expect(epic.createdBy).toBeNull();
     });
   });
 
@@ -718,6 +807,44 @@ describe('LocalStorageService', () => {
 
     it('throws NotFoundError for missing agent', async () => {
       await expect(service.getAgent('nonexistent-id')).rejects.toThrow(NotFoundError);
+    });
+
+    it('lists at most one current owner per requested project in one batch read', async () => {
+      const otherProject = await seedProject('Other Owner Project');
+      const ownerlessProject = await seedProject('Ownerless Project');
+      const first = await seedFullAgent(project.id, 'Owner-A');
+      const second = await seedFullAgent(project.id, 'Owner-B');
+      const other = await seedFullAgent(otherProject.id, 'Other-Owner');
+
+      await service.updateAgent(first.agent.id, { isProjectOwner: true });
+      await service.updateAgent(other.agent.id, { isProjectOwner: true });
+
+      let owners = await service.listProjectOwners([
+        project.id,
+        otherProject.id,
+        ownerlessProject.id,
+      ]);
+      expect(owners.map((agent) => agent.id).sort()).toEqual(
+        [first.agent.id, other.agent.id].sort(),
+      );
+
+      // Reassignment, explicit clearing, and deletion are all reflected by
+      // the same batch read without exposing stale owner rows.
+      await service.updateAgent(second.agent.id, { isProjectOwner: true });
+      owners = await service.listProjectOwners([project.id, otherProject.id]);
+      expect(owners.map((agent) => agent.id).sort()).toEqual(
+        [second.agent.id, other.agent.id].sort(),
+      );
+
+      await service.updateAgent(second.agent.id, { isProjectOwner: false });
+      owners = await service.listProjectOwners([project.id, otherProject.id]);
+      expect(owners.map((agent) => agent.id)).toEqual([other.agent.id]);
+
+      await service.updateAgent(first.agent.id, { isProjectOwner: true });
+      await service.deleteAgent(first.agent.id);
+      owners = await service.listProjectOwners([project.id, otherProject.id]);
+      expect(owners.map((agent) => agent.id)).toEqual([other.agent.id]);
+      expect(await service.listProjectOwners([])).toEqual([]);
     });
 
     it('validates profile belongs to the same project on create', async () => {

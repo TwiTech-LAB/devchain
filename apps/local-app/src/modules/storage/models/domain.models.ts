@@ -30,6 +30,7 @@ export interface Epic {
   statusId: string;
   parentId: string | null;
   agentId: string | null;
+  createdBy: string | null;
   version: number; // For optimistic locking
   data: Record<string, unknown> | null;
   skillsRequired: string[] | null;
@@ -155,6 +156,28 @@ export interface ProviderMcpMetadata {
   mcpRegisteredAt: string | null;
 }
 
+export interface ProviderPluginDefault {
+  providerId: string;
+  pluginId: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectProviderPluginOverride extends ProviderPluginDefault {
+  projectId: string;
+}
+
+export type UpsertProviderPluginDefault = Pick<
+  ProviderPluginDefault,
+  'providerId' | 'pluginId' | 'enabled'
+>;
+
+export type UpsertProjectProviderPluginOverride = Pick<
+  ProjectProviderPluginOverride,
+  'projectId' | 'providerId' | 'pluginId' | 'enabled'
+>;
+
 export interface AgentProfile {
   id: string;
   projectId?: string | null;
@@ -202,6 +225,7 @@ export interface Document {
 export interface Agent {
   id: string;
   projectId: string;
+  isProjectOwner: boolean;
   profileId: string;
   providerConfigId: string; // FK to profile_provider_configs.id
   modelOverride: string | null;
@@ -243,13 +267,21 @@ export type UpdateStatus = Partial<Omit<Status, 'id' | 'createdAt' | 'updatedAt'
 
 export type CreateEpic = Omit<
   Epic,
-  'id' | 'version' | 'createdAt' | 'updatedAt' | 'parentId' | 'agentId' | 'skillsRequired'
+  | 'id'
+  | 'version'
+  | 'createdAt'
+  | 'updatedAt'
+  | 'parentId'
+  | 'agentId'
+  | 'createdBy'
+  | 'skillsRequired'
 > & {
   parentId?: string | null;
   agentId?: string | null;
+  createdBy?: string | null;
   skillsRequired?: string[] | null;
 };
-export type UpdateEpic = Partial<Omit<Epic, 'id' | 'createdAt' | 'updatedAt'>>;
+export type UpdateEpic = Partial<Omit<Epic, 'id' | 'createdBy' | 'createdAt' | 'updatedAt'>>;
 
 export type CreateSkill = Omit<Skill, 'id' | 'createdAt' | 'updatedAt'>;
 export type UpdateSkill = Partial<Omit<Skill, 'id' | 'createdAt' | 'updatedAt'>>;
@@ -341,11 +373,13 @@ export type CreateAgent = Omit<
   | 'providerConfigId'
   | 'modelOverride'
   | 'effortOverride'
+  | 'isProjectOwner'
 > & {
   description?: string | null;
   providerConfigId: string;
   modelOverride?: string | null;
   effortOverride?: string | null;
+  isProjectOwner?: boolean;
 };
 export type UpdateAgent = Partial<Omit<Agent, 'id' | 'createdAt' | 'updatedAt'>>;
 

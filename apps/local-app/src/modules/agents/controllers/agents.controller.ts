@@ -43,6 +43,7 @@ export interface AgentWithProvider extends Agent {
 export interface AgentOrGuestItem {
   id: string;
   name: string;
+  isProjectOwner: boolean;
   profileId: string | null;
   description?: string | null;
   type: 'agent' | 'guest';
@@ -89,6 +90,7 @@ const CreateAgentSchema = z.object({
 
 const UpdateAgentSchema = z.object({
   name: z.string().min(1).optional(),
+  isProjectOwner: z.boolean().optional(),
   profileId: z.string().min(1).optional(),
   description: z.string().nullable().optional(),
   // providerConfigId can be updated but NOT set to null (DB column is NOT NULL)
@@ -183,6 +185,7 @@ export class AgentsController {
       return {
         id: agent.id,
         name: agent.name,
+        isProjectOwner: agent.isProjectOwner,
         profileId: agent.profileId,
         description: agent.description,
         type: 'agent' as const,
@@ -206,6 +209,7 @@ export class AgentsController {
     const guestItems: AgentOrGuestItem[] = guests.map((guest) => ({
       id: guest.id,
       name: guest.name,
+      isProjectOwner: false,
       profileId: null,
       description: null,
       type: 'guest' as const,

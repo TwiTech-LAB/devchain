@@ -81,7 +81,7 @@ jest.mock('@/ui/components/DocumentPreviewPane', () => ({
 }));
 
 jest.mock('@/ui/components/ui/select', () => {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const React = require('react');
   let currentTriggerId: string | undefined;
 

@@ -17,13 +17,13 @@ export class TerminalRegistryRehydrator implements OnApplicationBootstrap {
 
   async onApplicationBootstrap(): Promise<void> {
     const metas = this.sessionsService.listRunningSessionMetas();
-    if (metas.length === 0) return;
+    const nonLiveSessionIds = new Set<string>();
 
-    logger.info({ count: metas.length }, 'Rehydrating terminal session registry');
+    if (metas.length > 0) {
+      logger.info({ count: metas.length }, 'Rehydrating terminal session registry');
+    }
 
     for (const meta of metas) {
-      if (this.registry.get(meta.sessionId)) continue;
-
       const alive = await this.terminalIO.sessionExists({ name: meta.tmuxSessionName });
       if (!alive) {
         logger.warn(
@@ -34,8 +34,10 @@ export class TerminalRegistryRehydrator implements OnApplicationBootstrap {
           meta.sessionId,
           'tmux session no longer exists at bootstrap',
         );
+        nonLiveSessionIds.add(meta.sessionId);
         continue;
       }
+      if (this.registry.get(meta.sessionId)) continue;
 
       try {
         this.registry.create(meta.sessionId, meta.tmuxSessionName, {
@@ -54,5 +56,6 @@ export class TerminalRegistryRehydrator implements OnApplicationBootstrap {
         logger.debug({ sessionId: meta.sessionId }, 'Concurrent rehydration; entry already exists');
       }
     }
+    await this.sessionsService.reconcileCodexPluginProfiles(nonLiveSessionIds);
   }
 }

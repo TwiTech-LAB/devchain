@@ -24,6 +24,10 @@ import {
   UpdateProvider,
   ProviderMcpMetadata,
   UpdateProviderMcpMetadata,
+  ProviderPluginDefault,
+  ProjectProviderPluginOverride,
+  UpsertProviderPluginDefault,
+  UpsertProjectProviderPluginOverride,
   EnvScopesMap,
   AgentProfile,
   CreateAgentProfile,
@@ -198,6 +202,7 @@ export interface CreateEpicForProjectInput {
   statusId?: string;
   agentId?: string | null;
   agentName?: string;
+  createdBy?: string | null;
   parentId?: string | null;
   skillsRequired?: string[] | null;
 }
@@ -244,6 +249,13 @@ export interface ProjectStorage {
   getProject(id: string): Promise<Project>;
   findProjectByPath(path: string): Promise<Project | null>;
   listProjects(options?: ListOptions): Promise<ListResult<Project>>;
+  /**
+   * Return every project whose stored ID starts with `prefix`, matching the
+   * address case-insensitively. A full UUID can be supplied and is therefore
+   * treated as an exact address match. Invalid or wildcard-bearing prefixes
+   * return an empty array rather than being interpreted as a pattern.
+   */
+  getProjectsByIdPrefix(prefix: string): Promise<Project[]>;
   updateProject(id: string, data: UpdateProject): Promise<Project>;
   deleteProject(id: string): Promise<void>;
   getProjectByRootPath(rootPath: string): Promise<Project | null>;
@@ -353,6 +365,33 @@ export interface ProviderStorage {
   updateProviderMcpMetadata(id: string, metadata: UpdateProviderMcpMetadata): Promise<Provider>;
 }
 
+export interface ProviderPluginPolicyStorage {
+  upsertProviderPluginDefault(data: UpsertProviderPluginDefault): Promise<ProviderPluginDefault>;
+  getProviderPluginDefault(
+    providerId: string,
+    pluginId: string,
+  ): Promise<ProviderPluginDefault | null>;
+  listProviderPluginDefaults(providerId: string): Promise<ProviderPluginDefault[]>;
+  deleteProviderPluginDefault(providerId: string, pluginId: string): Promise<boolean>;
+  upsertProjectProviderPluginOverride(
+    data: UpsertProjectProviderPluginOverride,
+  ): Promise<ProjectProviderPluginOverride>;
+  getProjectProviderPluginOverride(
+    projectId: string,
+    providerId: string,
+    pluginId: string,
+  ): Promise<ProjectProviderPluginOverride | null>;
+  listProjectProviderPluginOverrides(
+    projectId: string,
+    providerId: string,
+  ): Promise<ProjectProviderPluginOverride[]>;
+  deleteProjectProviderPluginOverride(
+    projectId: string,
+    providerId: string,
+    pluginId: string,
+  ): Promise<boolean>;
+}
+
 export interface SkillSourceStorage {
   listCommunitySkillSources(): Promise<CommunitySkillSource[]>;
   getCommunitySkillSource(id: string): Promise<CommunitySkillSource>;
@@ -434,6 +473,8 @@ export interface AgentStorage {
   createAgent(data: CreateAgent): Promise<Agent>;
   getAgent(id: string): Promise<Agent>;
   listAgents(projectId: string, options?: ListOptions): Promise<ListResult<Agent>>;
+  /** Return the at-most-one designated owner for each requested project. */
+  listProjectOwners(projectIds: string[]): Promise<Agent[]>;
   getAgentByName(projectId: string, name: string): Promise<Agent & { profile?: AgentProfile }>;
   updateAgent(id: string, data: UpdateAgent): Promise<Agent>;
   deleteAgent(id: string): Promise<void>;
@@ -565,6 +606,7 @@ export interface StorageService
     PromptStorage,
     TagStorage,
     ProviderStorage,
+    ProviderPluginPolicyStorage,
     SkillSourceStorage,
     AgentProfileStorage,
     ProfileProviderConfigStorage,

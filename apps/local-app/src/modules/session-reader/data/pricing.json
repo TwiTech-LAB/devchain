@@ -1452,16 +1452,16 @@
     "max_output_tokens": 128000
   },
   "azure/gpt-5.6-terra": {
-    "input_cost_per_token": 0.0000025,
-    "output_cost_per_token": 0.000015,
-    "cache_read_input_token_cost": 2.5e-7,
+    "input_cost_per_token": 0.000002,
+    "output_cost_per_token": 0.000012,
+    "cache_read_input_token_cost": 2e-7,
     "max_input_tokens": 1050000,
     "max_output_tokens": 128000
   },
   "azure/gpt-5.6-luna": {
-    "input_cost_per_token": 0.000001,
-    "output_cost_per_token": 0.000006,
-    "cache_read_input_token_cost": 1e-7,
+    "input_cost_per_token": 2e-7,
+    "output_cost_per_token": 0.0000012,
+    "cache_read_input_token_cost": 2e-8,
     "max_input_tokens": 1050000,
     "max_output_tokens": 128000
   },
@@ -1480,16 +1480,16 @@
     "max_output_tokens": 128000
   },
   "azure/us/gpt-5.6-terra": {
-    "input_cost_per_token": 0.00000275,
-    "output_cost_per_token": 0.0000165,
-    "cache_read_input_token_cost": 2.75e-7,
+    "input_cost_per_token": 0.0000022,
+    "output_cost_per_token": 0.0000132,
+    "cache_read_input_token_cost": 2.2e-7,
     "max_input_tokens": 1050000,
     "max_output_tokens": 128000
   },
   "azure/us/gpt-5.6-luna": {
-    "input_cost_per_token": 0.0000011,
-    "output_cost_per_token": 0.0000066,
-    "cache_read_input_token_cost": 1.1e-7,
+    "input_cost_per_token": 2.2e-7,
+    "output_cost_per_token": 0.00000132,
+    "cache_read_input_token_cost": 2.2e-8,
     "max_input_tokens": 1050000,
     "max_output_tokens": 128000
   },
@@ -1508,16 +1508,16 @@
     "max_output_tokens": 128000
   },
   "azure/eu/gpt-5.6-terra": {
-    "input_cost_per_token": 0.00000275,
-    "output_cost_per_token": 0.0000165,
-    "cache_read_input_token_cost": 2.75e-7,
+    "input_cost_per_token": 0.0000022,
+    "output_cost_per_token": 0.0000132,
+    "cache_read_input_token_cost": 2.2e-7,
     "max_input_tokens": 1050000,
     "max_output_tokens": 128000
   },
   "azure/eu/gpt-5.6-luna": {
-    "input_cost_per_token": 0.0000011,
-    "output_cost_per_token": 0.0000066,
-    "cache_read_input_token_cost": 1.1e-7,
+    "input_cost_per_token": 2.2e-7,
+    "output_cost_per_token": 0.00000132,
+    "cache_read_input_token_cost": 2.2e-8,
     "max_input_tokens": 1050000,
     "max_output_tokens": 128000
   },
@@ -2816,6 +2816,19 @@
     "cache_read_input_token_cost": 0,
     "max_input_tokens": 1048576,
     "max_output_tokens": 65535
+  },
+  "gemini/gemini-robotics-er-2-preview": {
+    "input_cost_per_token": 0.000002,
+    "output_cost_per_token": 0.00001,
+    "cache_read_input_token_cost": 2e-7,
+    "max_input_tokens": 131072,
+    "max_output_tokens": 65536
+  },
+  "gemini/gemini-robotics-er-1.6-preview": {
+    "input_cost_per_token": 0.000001,
+    "output_cost_per_token": 0.000005,
+    "max_input_tokens": 131072,
+    "max_output_tokens": 65536
   },
   "gemini-2.5-computer-use-preview-10-2025": {
     "input_cost_per_token": 0.00000125,

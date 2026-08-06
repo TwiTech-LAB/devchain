@@ -5,6 +5,7 @@ import type { TeamsService } from '../../../teams/services/teams.service';
 import type { AgentMessageDeliveryService } from '../../../agent-message-delivery/agent-message-delivery.service';
 import type { SettingsService } from '../../../settings/services/settings.service';
 import type { McpResponse } from '../../dtos/mcp.dto';
+import type { ProjectCommunicationService } from '../../../project-communication/project-communication.service';
 
 export type ChatToolStorage = AgentStorage & GuestStorage;
 
@@ -15,5 +16,6 @@ export interface ChatToolContext {
   teamsService: TeamsService;
   agentMessageDelivery: AgentMessageDeliveryService;
   settingsService: SettingsService;
+  projectCommunicationService: ProjectCommunicationService;
   resolveSessionContext: (sessionId: string) => Promise<McpResponse>;
 }

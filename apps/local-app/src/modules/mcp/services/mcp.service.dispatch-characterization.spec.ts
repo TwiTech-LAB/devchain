@@ -6,7 +6,7 @@
  * dispatch path with all optional deps left undefined — proving the null-adapter
  * pattern works end-to-end through the builders.
  *
- * Run: pnpm --filter local-app test -- --testPathPattern mcp.service.dispatch-characterization
+ * Run: pnpm --filter local-app test -- --testPathPatterns mcp.service.dispatch-characterization
  */
 
 import { McpService } from './mcp.service';

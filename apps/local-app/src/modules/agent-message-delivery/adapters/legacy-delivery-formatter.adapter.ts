@@ -2,6 +2,13 @@ import { Injectable } from '@nestjs/common';
 import { DeliveryFormatter } from '../ports/delivery-formatter';
 import type { DeliveryMessage } from '../dtos/delivery.types';
 
+function sanitizeBannerLabel(value: string): string {
+  return value
+    .replace(/[\u0000-\u001f\u007f]/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim();
+}
+
 @Injectable()
 export class LegacyDeliveryFormatterAdapter extends DeliveryFormatter {
   format(message: DeliveryMessage): string {
@@ -20,6 +27,16 @@ export class LegacyDeliveryFormatterAdapter extends DeliveryFormatter {
         }
         const senderType = message.senderType ?? 'agent';
         return `\n[This message is sent from "${message.senderName}" ${senderType} use devchain_send_message tool for communication]\n${message.body}\n`;
+      }
+      case 'mcp.project': {
+        const ownerLabel = JSON.stringify(sanitizeBannerLabel(message.senderName));
+        const projectLabel = JSON.stringify(
+          sanitizeBannerLabel(message.sourceProjectName ?? 'Unknown project'),
+        );
+        const sourceProjectId = JSON.stringify(
+          sanitizeBannerLabel(message.sourceProjectId ?? 'unknown'),
+        );
+        return `\n[This project message is sent from Project Owner ${ownerLabel} in project ${projectLabel}. To reply, use devchain_send_message with recipientProjectId: ${sourceProjectId}.]\n${message.body}\n`;
       }
       case 'mcp.thread':
       case 'chat.user': {

@@ -72,6 +72,7 @@ export const broadcastRegistry: Record<string, BroadcastRegistryTopicEntry<P>[]>
     {
       topic: (p) => `project/${p.projectId}/agent-messages`,
       type: 'sent',
+      shouldBroadcast: (p) => p.routingKind !== 'project',
       payloadProjection: (p) => ({
         senderAgentId: p.senderAgentId,
         routingKind: p.routingKind,

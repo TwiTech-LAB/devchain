@@ -10,12 +10,15 @@ import type {
   EventLogListFilters,
   EventLogListResult,
 } from '../dtos/event-log.dto';
+import { transientEventNames } from '../catalog';
 import { EventsStreamService } from './events-stream.service';
 
 const logger = createLogger('EventLogService');
-const WORKTREE_ACTIVITY_EVENT_NAME = 'orchestrator.worktree.activity';
-const WORKTREE_ACTIVITY_RETENTION_DAYS = 30;
-const WORKTREE_ACTIVITY_CLEANUP_INTERVAL_MS = 86_400_000;
+const EVENT_RETENTION_MS = 30 * 86_400_000;
+const EVENT_CLEANUP_BATCH_SIZE = 100;
+const EVENT_CLEANUP_CATCH_UP_MS = 5_000;
+const EVENT_CLEANUP_MAINTENANCE_MS = 86_400_000;
+const EVENT_CLEANUP_RETRY_MS = 60_000;
 
 function safeStringify(value: unknown): string | null {
   if (value === null || value === undefined) {
@@ -50,6 +53,7 @@ function safeParse(value: string | null): unknown {
 @Injectable()
 export class EventLogService implements OnModuleInit, OnModuleDestroy {
   private cleanupTimer?: NodeJS.Timeout;
+  private destroyed = false;
 
   constructor(
     @Inject(DB_CONNECTION) private readonly db: BetterSQLite3Database,
@@ -57,44 +61,72 @@ export class EventLogService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   async onModuleInit(): Promise<void> {
+    this.destroyed = false;
     if (this.cleanupTimer) {
-      clearInterval(this.cleanupTimer);
+      clearTimeout(this.cleanupTimer);
       this.cleanupTimer = undefined;
     }
 
-    await this.cleanupOldWorktreeActivityEvents().catch((error) => {
-      logger.warn({ error }, 'Failed initial cleanup of worktree activity events');
-    });
-
-    this.cleanupTimer = setInterval(() => {
-      this.cleanupOldWorktreeActivityEvents().catch((error) => {
-        logger.warn({ error }, 'Failed scheduled cleanup of worktree activity events');
-      });
-    }, WORKTREE_ACTIVITY_CLEANUP_INTERVAL_MS);
-    this.cleanupTimer.unref?.();
+    await this.runCleanupBatchAndScheduleNext();
   }
 
   onModuleDestroy(): void {
-    if (!this.cleanupTimer) {
-      return;
+    this.destroyed = true;
+    if (this.cleanupTimer) {
+      clearTimeout(this.cleanupTimer);
+      this.cleanupTimer = undefined;
     }
-    clearInterval(this.cleanupTimer);
-    this.cleanupTimer = undefined;
   }
 
-  async cleanupOldWorktreeActivityEvents(params?: { retentionDays?: number }): Promise<void> {
-    const retentionDaysRaw = params?.retentionDays ?? WORKTREE_ACTIVITY_RETENTION_DAYS;
-    const retentionDays = Number.isFinite(retentionDaysRaw)
-      ? Math.max(1, Math.trunc(retentionDaysRaw))
-      : WORKTREE_ACTIVITY_RETENTION_DAYS;
-    const cutoffIso = new Date(Date.now() - retentionDays * 86_400_000).toISOString();
-
+  async cleanupExpiredEvents(): Promise<number> {
+    const cutoffIso = new Date(Date.now() - EVENT_RETENTION_MS).toISOString();
     const { events } = await import('../../storage/db/schema');
-    const { and, eq, lt } = await import('drizzle-orm');
+    const { inArray, lt } = await import('drizzle-orm');
 
-    await this.db
+    const transientResult = await this.db
       .delete(events)
-      .where(and(eq(events.name, WORKTREE_ACTIVITY_EVENT_NAME), lt(events.publishedAt, cutoffIso)));
+      .where(inArray(events.name, [...transientEventNames]))
+      .limit(EVENT_CLEANUP_BATCH_SIZE);
+    const transientDeleted = transientResult.changes;
+    const remaining = EVENT_CLEANUP_BATCH_SIZE - transientDeleted;
+    if (remaining === 0) {
+      return transientDeleted;
+    }
+
+    const agedResult = await this.db
+      .delete(events)
+      .where(lt(events.publishedAt, cutoffIso))
+      .limit(remaining);
+    return transientDeleted + agedResult.changes;
+  }
+
+  private async runCleanupBatchAndScheduleNext(): Promise<void> {
+    let delayMs: number;
+    try {
+      const deletedCount = await this.cleanupExpiredEvents();
+      if (this.destroyed) {
+        return;
+      }
+      delayMs =
+        deletedCount === EVENT_CLEANUP_BATCH_SIZE
+          ? EVENT_CLEANUP_CATCH_UP_MS
+          : EVENT_CLEANUP_MAINTENANCE_MS;
+    } catch (error) {
+      if (this.destroyed) {
+        return;
+      }
+      logger.warn({ error }, 'Failed event retention cleanup batch');
+      delayMs = EVENT_CLEANUP_RETRY_MS;
+    }
+
+    if (this.destroyed) {
+      return;
+    }
+    this.cleanupTimer = setTimeout(() => {
+      this.cleanupTimer = undefined;
+      void this.runCleanupBatchAndScheduleNext();
+    }, delayMs);
+    this.cleanupTimer.unref?.();
   }
 
   async recordPublished(params: {

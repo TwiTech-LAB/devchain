@@ -6,7 +6,7 @@
  * preserves the contract. Every SERVICE_UNAVAILABLE code path in the MCP
  * handler layer is exercised here.
  *
- * Run: pnpm --filter local-app test -- --testPathPattern service-unavailable.characterization
+ * Run: pnpm --filter local-app test -- --testPathPatterns service-unavailable.characterization
  */
 
 import {

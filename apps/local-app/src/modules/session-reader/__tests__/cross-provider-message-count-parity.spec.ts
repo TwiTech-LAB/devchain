@@ -32,7 +32,7 @@ jest.mock('../../../common/logging/logger', () => ({
 }));
 
 // Import parsers AFTER the logger mock is declared (mirrors the per-parser specs).
-/* eslint-disable @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires */
+/* eslint-disable @typescript-eslint/no-require-imports */
 const { parseClaudeJsonl } =
   require('../parsers/claude-jsonl.parser') as typeof import('../parsers/claude-jsonl.parser');
 const { parseCodexJsonl } =
@@ -41,7 +41,7 @@ const { OpencodeSqliteReader } =
   require('../readers/opencode-sqlite.reader') as typeof import('../readers/opencode-sqlite.reader');
 const { coalesceAssistantTurns } =
   require('../adapters/utils/coalesce-turns') as typeof import('../adapters/utils/coalesce-turns');
-/* eslint-enable @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires */
+/* eslint-enable @typescript-eslint/no-require-imports */
 
 // ---------------------------------------------------------------------------
 // Shared expectations (the parity contract)

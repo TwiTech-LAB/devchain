@@ -227,6 +227,24 @@ describe('CatalogBroadcasterService', () => {
     expect(projected).not.toHaveProperty('teamId');
   });
 
+  it('suppresses project-routed agent.message.sent events from the browser catalog path', () => {
+    emitter.emit('agent.message.sent', {
+      projectId: 'source-project',
+      senderAgentId: 'sender-1',
+      senderAgentName: 'Source Owner',
+      routingKind: 'project',
+      sourceProjectId: 'source-project',
+      sourceProjectName: 'Source Project',
+      targetProjectId: 'target-project',
+      targetProjectName: 'Target Project',
+      recipients: [{ agentId: 'recipient-1', agentName: 'Target Owner', status: 'queued' }],
+      recipientCount: 1,
+      deliveryStatus: 'queued',
+    });
+
+    expect(mockBroadcaster.broadcastEvent).not.toHaveBeenCalled();
+  });
+
   // ── Epics ──
   it('broadcasts epic.created to project/{projectId}/epics', () => {
     emitter.emit('epic.created', {

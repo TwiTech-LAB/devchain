@@ -563,6 +563,7 @@ describe('project-presets.helpers', () => {
         providerConfigId: 'old-cfg',
         modelOverride: 'keep-me',
         effortOverride: 'low',
+        isProjectOwner: true,
       });
       storage.updateAgent.mockResolvedValue({} as never);
 
@@ -578,6 +579,7 @@ describe('project-presets.helpers', () => {
       expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', {
         providerConfigId: 'cfg-claude',
       });
+      expect(storage.updateAgent.mock.calls[0]?.[1]).not.toHaveProperty('isProjectOwner');
       // Never mutates active-preset state (that is applyPresetWithHelper's job only).
       expect(settings.setProjectActivePreset).not.toHaveBeenCalled();
     });

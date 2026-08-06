@@ -17,7 +17,6 @@ import { getErrorMessage } from '@/ui/lib/toast-helpers';
 import { useConfirmDialog } from '@/ui/hooks/useFormDialog';
 import {
   optimisticAdd,
-  optimisticMergeById,
   optimisticRemoveById,
   useCrudMutation,
   type ListContainer,
@@ -45,6 +44,7 @@ interface Agent {
   modelOverride?: string | null;
   effortOverride?: string | null;
   name: string;
+  isProjectOwner: boolean;
   description?: string | null;
   profile?: AgentProfile;
   providerConfig?: ProviderConfig;
@@ -137,6 +137,7 @@ async function updateAgentRequest(
     providerConfigId?: string | null;
     modelOverride?: string | null;
     effortOverride?: string | null;
+    isProjectOwner: boolean;
     description?: string | null;
   },
 ): Promise<Agent> {
@@ -332,6 +333,7 @@ export function AgentsPage() {
         const optimistic: Agent = {
           id: `temp-${Date.now()}`,
           ...newAgent,
+          isProjectOwner: false,
           profile,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
@@ -383,6 +385,7 @@ export function AgentsPage() {
     providerConfigId: string | null;
     modelOverride: string | null;
     effortOverride: string | null;
+    isProjectOwner: boolean;
     description: string | null;
   };
 
@@ -394,6 +397,7 @@ export function AgentsPage() {
         providerConfigId: vars.providerConfigId,
         modelOverride: vars.modelOverride,
         effortOverride: vars.effortOverride,
+        isProjectOwner: vars.isProjectOwner,
         description: vars.description,
       }),
     optimistic: {
@@ -402,20 +406,30 @@ export function AgentsPage() {
       project: (previous, vars) => {
         const list = previous as AgentsList | undefined;
         if (!list) return previous;
-        return optimisticMergeById(list, vars.id, (agent: Agent) => ({
-          ...agent,
-          name: vars.name,
-          profileId: vars.profileId,
-          providerConfigId: vars.providerConfigId,
-          modelOverride: vars.modelOverride,
-          effortOverride: vars.effortOverride,
-          description: vars.description,
-          profile:
-            profilesById.get(vars.profileId) ||
-            profilesData?.items.find((p: AgentProfile) => p.id === vars.profileId) ||
-            agent.profile,
-          updatedAt: new Date().toISOString(),
-        }));
+        return {
+          ...list,
+          items: list.items.map((agent) => {
+            if (vars.isProjectOwner) {
+              if (agent.id !== vars.id) return { ...agent, isProjectOwner: false };
+            }
+            if (agent.id !== vars.id) return agent;
+            return {
+              ...agent,
+              name: vars.name,
+              profileId: vars.profileId,
+              providerConfigId: vars.providerConfigId,
+              modelOverride: vars.modelOverride,
+              effortOverride: vars.effortOverride,
+              description: vars.description,
+              profile:
+                profilesById.get(vars.profileId) ||
+                profilesData?.items.find((p: AgentProfile) => p.id === vars.profileId) ||
+                agent.profile,
+              updatedAt: new Date().toISOString(),
+              isProjectOwner: vars.isProjectOwner,
+            };
+          }),
+        };
       },
     },
     invalidateKeys: [agentsKey],
@@ -471,6 +485,7 @@ export function AgentsPage() {
       providerConfigId: data.providerConfigId,
       modelOverride: data.modelOverride,
       effortOverride: data.effortOverride,
+      isProjectOwner: data.isProjectOwner === true,
       description: data.description,
     });
   };
@@ -494,6 +509,7 @@ export function AgentsPage() {
         providerConfigId: editAgent.providerConfigId ?? '',
         modelOverride: editAgent.modelOverride ?? null,
         effortOverride: editAgent.effortOverride ?? null,
+        isProjectOwner: editAgent.isProjectOwner === true,
         description: editAgent.description ?? '',
       }
     : undefined;

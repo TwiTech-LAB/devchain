@@ -78,8 +78,10 @@ export class AgentMessageDeliveryService {
 
     try {
       const recipients = this.reconcileAgentRecipients(agentDescriptors, outcome.results);
+      const projectId =
+        routing.routingKind === 'project' ? routing.sourceProjectId : message.projectId;
       await this.eventsService.publish('agent.message.sent', {
-        projectId: message.projectId,
+        projectId,
         senderAgentId: message.senderAgentId,
         senderAgentName: message.senderName,
         ...routing,
@@ -92,7 +94,12 @@ export class AgentMessageDeliveryService {
         senderAgentId: message.senderAgentId,
         descriptorAgentIds: agentDescriptors.map((descriptor) => descriptor.agentId),
         resultAgentIds: outcome.results.map((result) => result.agentId),
-        error: error instanceof Error ? error.message : String(error),
+        error:
+          routing.routingKind === 'project'
+            ? 'EVENT_PUBLISH_FAILED'
+            : error instanceof Error
+              ? error.message
+              : String(error),
       });
     }
 
@@ -130,10 +137,11 @@ export class AgentMessageDeliveryService {
           projectId: message.projectId,
           agentName: undefined,
           clientMessageId: message.clientMessageId,
+          ...(message.kind === 'mcp.project' ? { failureDisclosure: 'project-safe' as const } : {}),
         },
       ]);
       if (!poolResult) {
-        return { agentId, status: 'failed', error: 'Message enqueue returned no result' };
+        return this.deliveryFailure(agentId, message, 'Message enqueue returned no result');
       }
       return {
         agentId,
@@ -142,8 +150,22 @@ export class AgentMessageDeliveryService {
       };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      return { agentId, status: 'failed', error: msg };
+      return this.deliveryFailure(agentId, message, msg);
     }
+  }
+
+  private deliveryFailure(
+    agentId: string,
+    message: DeliveryMessage,
+    error: string,
+  ): RecipientResult {
+    if (message.kind !== 'mcp.project') {
+      return { agentId, status: 'failed', error };
+    }
+
+    const code = 'DELIVERY_FAILED';
+    this.logger.error({ code, agentId, projectId: message.projectId });
+    return { agentId, status: 'failed', error: code };
   }
 
   async deliverToGuest(

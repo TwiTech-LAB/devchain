@@ -244,10 +244,19 @@ export function createLaunchPipelineHarness() {
     cleanupSession: jest.fn().mockResolvedValue(undefined),
     cleanupSessionSync: jest.fn(),
   };
+  const codexPluginProfiles = {
+    prepare: jest.fn().mockResolvedValue(null),
+    buildHelperArgv: jest.fn(),
+    awaitAcknowledgement: jest.fn().mockResolvedValue('/tmp/codex-profile'),
+    cleanupPrepared: jest.fn().mockResolvedValue(undefined),
+  };
+  const providerPluginPolicy = {
+    resolveAll: jest.fn().mockResolvedValue([]),
+  };
 
   // Build the pipeline via direct instantiation (bypass DI decorators)
   // Constructor order matches the @Injectable constructor parameter order.
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { SessionLaunchPipeline } = require('../session-launch-pipeline.service');
   const pipeline = new SessionLaunchPipeline(
     sqliteMock.db, // @Inject(DB_CONNECTION)
@@ -265,6 +274,8 @@ export function createLaunchPipelineHarness() {
     teamsService, // TeamsService
     runtimeContextCapture, // RuntimeContextCaptureService
     claudeLaunchSettings, // ClaudeLaunchSettingsMaterializerService
+    codexPluginProfiles, // CodexPluginProfileMaterializerService
+    providerPluginPolicy, // ProviderPluginPolicyService
   );
 
   return {
@@ -286,6 +297,8 @@ export function createLaunchPipelineHarness() {
       teamsService,
       runtimeContextCapture,
       claudeLaunchSettings,
+      codexPluginProfiles,
+      providerPluginPolicy,
     },
   };
 }
@@ -374,6 +387,15 @@ export function createRestorePipelineHarness(opts?: { streamService?: unknown })
     cleanupSession: jest.fn().mockResolvedValue(undefined),
     cleanupSessionSync: jest.fn(),
   };
+  const codexPluginProfiles = {
+    prepare: jest.fn().mockResolvedValue(null),
+    buildHelperArgv: jest.fn(),
+    awaitAcknowledgement: jest.fn().mockResolvedValue('/tmp/codex-profile'),
+    cleanupPrepared: jest.fn().mockResolvedValue(undefined),
+  };
+  const providerPluginPolicy = {
+    resolveAll: jest.fn().mockResolvedValue([]),
+  };
 
   // Default: prepare returns a stopped session row when called with SELECT,
   // and a normal statement for INSERT/UPDATE.
@@ -421,7 +443,7 @@ export function createRestorePipelineHarness(opts?: { streamService?: unknown })
     return updateStmt;
   });
 
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { SessionRestorePipeline } = require('../session-restore-pipeline.service');
   const pipeline = new SessionRestorePipeline(
     sqliteMock.db, // @Inject(DB_CONNECTION)
@@ -435,6 +457,8 @@ export function createRestorePipelineHarness(opts?: { streamService?: unknown })
     streamService, // TerminalStreamService
     runtimeContextCapture, // RuntimeContextCaptureService
     claudeLaunchSettings, // ClaudeLaunchSettingsMaterializerService
+    codexPluginProfiles, // CodexPluginProfileMaterializerService
+    providerPluginPolicy, // ProviderPluginPolicyService
   );
 
   /**
@@ -488,6 +512,8 @@ export function createRestorePipelineHarness(opts?: { streamService?: unknown })
       streamService,
       runtimeContextCapture,
       claudeLaunchSettings,
+      codexPluginProfiles,
+      providerPluginPolicy,
     },
   };
 }

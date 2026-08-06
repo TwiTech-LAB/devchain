@@ -21,6 +21,80 @@ describe('CodexAdapter', () => {
     });
   });
 
+  describe('ProviderPluginCapability', () => {
+    it('uses the JSON catalog and native add commands', () => {
+      expect(adapter.listProviderPlugins()).toEqual(['plugin', 'list', '--available', '--json']);
+      expect(adapter.installProviderPlugin('sample@market')).toEqual([
+        'plugin',
+        'add',
+        'sample@market',
+        '--json',
+      ]);
+    });
+
+    it('normalizes the Codex catalog fields into the shared plugin contract', () => {
+      const entries = adapter.parseProviderPluginCatalog(
+        JSON.stringify({
+          installed: [
+            {
+              pluginId: 'installed@market',
+              name: 'installed',
+              marketplaceName: 'market',
+              version: '2.0.0',
+              installed: true,
+              enabled: true,
+              installPolicy: 'AVAILABLE',
+              authPolicy: 'ON_INSTALL',
+            },
+          ],
+          available: [
+            {
+              pluginId: 'available@market',
+              name: 'available',
+              marketplaceName: 'market',
+              version: '1.0.0',
+              installed: false,
+              enabled: false,
+              installPolicy: 'AVAILABLE',
+              authPolicy: 'ON_INSTALL',
+            },
+          ],
+        }),
+      );
+
+      expect(entries).toEqual([
+        {
+          pluginId: 'available@market',
+          name: 'available',
+          description: null,
+          marketplaceName: 'market',
+          version: '1.0.0',
+          installed: false,
+          available: true,
+          providerEnabled: false,
+          installationScopes: [],
+          installCount: null,
+          installPolicy: 'AVAILABLE',
+          authPolicy: 'ON_INSTALL',
+        },
+        {
+          pluginId: 'installed@market',
+          name: 'installed',
+          description: null,
+          marketplaceName: 'market',
+          version: '2.0.0',
+          installed: true,
+          available: false,
+          providerEnabled: true,
+          installationScopes: [],
+          installCount: null,
+          installPolicy: 'AVAILABLE',
+          authPolicy: 'ON_INSTALL',
+        },
+      ]);
+    });
+  });
+
   describe('addMcpServer', () => {
     it('builds command with default alias', () => {
       const args = adapter.addMcpServer({

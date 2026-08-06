@@ -148,6 +148,17 @@ export function hasFlagOccurrence(args: string[], flag: string): boolean {
   return args.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
 }
 
+/** Detect every Codex profile-selector spelling, including incomplete forms. */
+export function hasCodexProfileSelector(args: readonly string[]): boolean {
+  return args.some(
+    (arg) =>
+      arg === '--profile' ||
+      arg.startsWith('--profile=') ||
+      arg === '-p' ||
+      (arg.startsWith('-p') && !arg.startsWith('--')),
+  );
+}
+
 /**
  * Extract the model value from an argv array.
  * Handles: --model X, -m X, --model=X, -m=X.

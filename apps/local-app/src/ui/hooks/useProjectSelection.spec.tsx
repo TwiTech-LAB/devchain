@@ -502,7 +502,9 @@ describe('fetchProjects', () => {
     expect(statsCallArgs[0]).toContain('/stats');
     // Stats fetch should receive the query signal for abort support
     const statsInit = statsCallArgs[1] as RequestInit | undefined;
-    expect(statsInit?.signal).toBe(controller.signal);
+    expect(statsInit?.signal).toBeDefined();
+    controller.abort();
+    expect(statsInit?.signal?.aborted).toBe(true);
     expect(result.items[0].stats).toEqual({ epicsCount: 0, agentsCount: 0 });
   });
 

@@ -150,6 +150,10 @@ describe('SessionsService', () => {
       terminalSessionRegistry as unknown as TerminalSessionRegistry,
       runtimeContextCapture as unknown as RuntimeContextCaptureService,
       claudeLaunchSettings as never,
+      {
+        cleanupSession: jest.fn().mockResolvedValue(undefined),
+        reconcileStartup: jest.fn().mockResolvedValue(undefined),
+      } as never,
     );
   });
 

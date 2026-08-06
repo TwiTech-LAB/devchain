@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 // Import as ComponentType to avoid strict JSX component typing complaints
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const StatusesPage: React.ComponentType = require('./StatusesPage').StatusesPage;
 
 // Mock project selection to provide a selected project

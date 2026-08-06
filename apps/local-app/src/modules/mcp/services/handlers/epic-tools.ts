@@ -239,14 +239,17 @@ export async function handleCreateEpic(
 
   try {
     const sessionCtx = sessionCtxResult.data as SessionContext;
-    const actor =
-      sessionCtx.type === 'agent'
-        ? { type: 'agent' as const, id: (sessionCtx as AgentSessionContext).agent!.id }
-        : sessionCtx.type === 'guest'
-          ? { type: 'guest' as const, id: (sessionCtx as GuestSessionContext).guest!.id }
-          : null;
+    const agentContext = sessionCtx.type === 'agent' ? sessionCtx.agent : null;
+    const actor = agentContext
+      ? { type: 'agent' as const, id: agentContext.id }
+      : sessionCtx.type === 'guest'
+        ? { type: 'guest' as const, id: sessionCtx.guest.id }
+        : null;
 
-    const context: EpicOperationContext = { actor };
+    const context: EpicOperationContext = {
+      actor,
+      creatorAgentName: agentContext?.name,
+    };
 
     const epic = await ctx.epicsService.createEpicForProject(
       project.id,

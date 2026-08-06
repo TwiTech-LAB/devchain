@@ -51,6 +51,7 @@ describe('AgentsController', () => {
   const mockAgent: Agent = {
     id: 'agent-1',
     projectId: 'project-1',
+    isProjectOwner: false,
     profileId: 'profile-1',
     providerConfigId: 'config-1', // Required after Phase 4
     modelOverride: null,
@@ -203,6 +204,7 @@ describe('AgentsController', () => {
       expect(storage.listAgents).toHaveBeenCalledWith('project-1');
       expect(result.items).toHaveLength(1);
       expect(result.items[0].id).toBe('agent-1');
+      expect(result.items[0].isProjectOwner).toBe(false);
     });
 
     it('returns only agents when includeGuests is not true', async () => {
@@ -258,6 +260,7 @@ describe('AgentsController', () => {
       expect(agentItem).toMatchObject({
         id: 'agent-1',
         name: 'Test Agent',
+        isProjectOwner: false,
         profileId: 'profile-1',
         type: 'agent',
         modelOverride: 'openai/gpt-4.1',
@@ -279,6 +282,7 @@ describe('AgentsController', () => {
       expect(guestItem).toMatchObject({
         id: 'guest-1',
         name: 'GuestBot',
+        isProjectOwner: false,
         profileId: null,
         type: 'guest',
         modelOverride: null,
@@ -502,6 +506,27 @@ describe('AgentsController', () => {
       expect(result.name).toBe('New Agent');
       expect(eventsService.publish).toHaveBeenCalled();
     });
+
+    it('does not expose project-owner assignment through public creation', async () => {
+      const createData = {
+        projectId: 'project-1',
+        profileId: 'profile-1',
+        name: 'New Agent',
+        providerConfigId: 'config-1',
+        isProjectOwner: true,
+      };
+      storage.getProfileProviderConfig.mockResolvedValue(mockConfig);
+      storage.createAgent.mockResolvedValue({ ...mockAgent, name: createData.name });
+
+      await controller.createAgent(createData);
+
+      expect(storage.createAgent).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        profileId: 'profile-1',
+        name: 'New Agent',
+        providerConfigId: 'config-1',
+      });
+    });
   });
 
   describe('PUT /api/agents/:id', () => {
@@ -624,6 +649,34 @@ describe('AgentsController', () => {
       await expect(controller.updateAgent('agent-1', { effortOverride: '' })).rejects.toThrow();
       expect(storage.updateAgent).not.toHaveBeenCalled();
     });
+
+    it.each([true, false])('accepts isProjectOwner=%s', async (isProjectOwner) => {
+      storage.updateAgent.mockResolvedValue({ ...mockAgent, isProjectOwner });
+
+      const result = await controller.updateAgent('agent-1', { isProjectOwner });
+
+      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', { isProjectOwner });
+      expect(result.isProjectOwner).toBe(isProjectOwner);
+    });
+
+    it('preserves ownership when isProjectOwner is omitted', async () => {
+      storage.updateAgent.mockResolvedValue({
+        ...mockAgent,
+        isProjectOwner: true,
+        name: 'Renamed',
+      });
+
+      await controller.updateAgent('agent-1', { name: 'Renamed' });
+
+      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', { name: 'Renamed' });
+    });
+
+    it('rejects non-boolean isProjectOwner', async () => {
+      await expect(
+        controller.updateAgent('agent-1', { isProjectOwner: 'true' } as never),
+      ).rejects.toThrow();
+      expect(storage.updateAgent).not.toHaveBeenCalled();
+    });
   });
 
   describe('PATCH /api/agents/:id', () => {
@@ -635,6 +688,34 @@ describe('AgentsController', () => {
 
       expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', patchData);
       expect(result.name).toBe('Patched Agent');
+    });
+
+    it.each([true, false])('accepts isProjectOwner=%s', async (isProjectOwner) => {
+      storage.updateAgent.mockResolvedValue({ ...mockAgent, isProjectOwner });
+
+      const result = await controller.patchAgent('agent-1', { isProjectOwner });
+
+      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', { isProjectOwner });
+      expect(result.isProjectOwner).toBe(isProjectOwner);
+    });
+
+    it('preserves ownership when isProjectOwner is omitted', async () => {
+      storage.updateAgent.mockResolvedValue({
+        ...mockAgent,
+        isProjectOwner: true,
+        name: 'Patched',
+      });
+
+      await controller.patchAgent('agent-1', { name: 'Patched' });
+
+      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', { name: 'Patched' });
+    });
+
+    it('rejects non-boolean isProjectOwner', async () => {
+      await expect(
+        controller.patchAgent('agent-1', { isProjectOwner: 1 } as never),
+      ).rejects.toThrow();
+      expect(storage.updateAgent).not.toHaveBeenCalled();
     });
   });
 

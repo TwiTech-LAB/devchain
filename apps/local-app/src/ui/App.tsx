@@ -22,6 +22,7 @@ import { ProjectSelectionProvider } from './hooks/useProjectSelection';
 import { RecordsDisabledPage } from './pages/RecordsDisabledPage';
 import { RegistryPage } from './pages/RegistryPage';
 import { SkillsPage } from './pages/SkillsPage';
+import { PluginsPage } from './pages/PluginsPage';
 import { WorktreesPage } from './pages/WorktreesPage';
 import { CodebaseOverviewDisabledPage } from './pages/CodebaseOverviewDisabledPage';
 import { RuntimeProvider, useRuntime } from './hooks/useRuntime';
@@ -70,6 +71,7 @@ function AppRoutes() {
                 <Route path="/overview" element={<CodebaseOverviewDisabledPage />} />
                 <Route path="/registry" element={<RegistryPage />} />
                 <Route path="/skills" element={<SkillsPage />} />
+                <Route path="/plugins" element={<PluginsPage />} />
                 <Route path="/documents" element={<DocumentsDisabledPage />} />
                 <Route path="/prompts" element={<PromptsPage />} />
                 <Route path="/profiles" element={<ProfilesPage />} />

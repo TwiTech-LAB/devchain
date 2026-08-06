@@ -4,6 +4,8 @@ import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { EventLogService } from './event-log.service';
 import { EventsStreamService } from './events-stream.service';
 
+// Layer: backend integration. Real in-memory SQLite is the cheapest reliable proof
+// of limited DELETE behavior, query plans, and foreign-key cascades.
 describe('EventLogService', () => {
   let sqlite: Database.Database;
   let service: EventLogService;
@@ -11,9 +13,11 @@ describe('EventLogService', () => {
     broadcastEventCreated: jest.Mock;
     broadcastHandlerResult: jest.Mock;
   };
+  let queries: Array<{ sql: string; params: unknown[] }>;
 
   beforeEach(() => {
     sqlite = new Database(':memory:');
+    sqlite.pragma('foreign_keys = ON');
     sqlite.exec(`
       CREATE TABLE events (
         id TEXT PRIMARY KEY,
@@ -32,6 +36,8 @@ describe('EventLogService', () => {
         ended_at TEXT,
         FOREIGN KEY(event_id) REFERENCES events(id) ON DELETE CASCADE
       );
+      CREATE INDEX events_name_idx ON events(name);
+      CREATE INDEX events_published_at_idx ON events(published_at);
     `);
 
     eventsStreamService = {
@@ -39,7 +45,14 @@ describe('EventLogService', () => {
       broadcastHandlerResult: jest.fn(),
     };
 
-    const db = drizzle(sqlite) as unknown as BetterSQLite3Database;
+    queries = [];
+    const db = drizzle(sqlite, {
+      logger: {
+        logQuery(sql, params) {
+          queries.push({ sql, params });
+        },
+      },
+    }) as unknown as BetterSQLite3Database;
     service = new EventLogService(db, eventsStreamService as unknown as EventsStreamService);
   });
 
@@ -302,61 +315,174 @@ describe('EventLogService', () => {
     expect(filtered.items[0]?.id).toBe('evt-valid-actor-filter');
   });
 
-  it('cleans only old worktree activity events based on retention', async () => {
-    const now = Date.now();
-    const days = 86_400_000;
+  describe('event retention cleanup', () => {
+    const dayMs = 86_400_000;
+    const nowIso = '2026-08-03T12:00:00.000Z';
 
-    await service.recordPublished({
-      id: 'evt-old-activity',
-      name: 'orchestrator.worktree.activity',
-      payload: { type: 'started' },
-      publishedAt: new Date(now - 31 * days).toISOString(),
-    });
-    await service.recordPublished({
-      id: 'evt-recent-activity',
-      name: 'orchestrator.worktree.activity',
-      payload: { type: 'stopped' },
-      publishedAt: new Date(now - 2 * days).toISOString(),
-    });
-    await service.recordPublished({
-      id: 'evt-old-other',
-      name: 'epic.updated',
-      payload: { epicId: 'epic-1' },
-      publishedAt: new Date(now - 31 * days).toISOString(),
+    function insertEvent(id: string, name: string, publishedAt: string): void {
+      sqlite
+        .prepare(
+          `INSERT INTO events (id, name, payload_json, request_id, published_at)
+           VALUES (?, ?, '{}', NULL, ?)`,
+        )
+        .run(id, name, publishedAt);
+    }
+
+    beforeEach(() => {
+      jest.useFakeTimers().setSystemTime(new Date(nowIso));
     });
 
-    await service.cleanupOldWorktreeActivityEvents();
+    it('drains transient rows first, then aged history, under one shared 100-row cap', async () => {
+      const now = Date.parse(nowIso);
+      const cutoff = new Date(now - 30 * dayMs).toISOString();
 
-    const activityEvents = await service.listEvents({
-      name: 'orchestrator.worktree.activity',
-      limit: 20,
-      offset: 0,
-    });
-    expect(activityEvents.total).toBe(1);
-    expect(activityEvents.items[0]?.id).toBe('evt-recent-activity');
+      for (let index = 0; index < 101; index += 1) {
+        insertEvent(
+          `transient-${index}`,
+          'session.transcript.updated',
+          new Date(now - dayMs).toISOString(),
+        );
+      }
+      insertEvent('old-with-handler', 'epic.updated', new Date(now - 31 * dayMs).toISOString());
+      insertEvent('old-other', 'agent.created', new Date(now - 40 * dayMs).toISOString());
+      insertEvent('at-cutoff', 'epic.updated', cutoff);
+      insertEvent('recent', 'epic.updated', new Date(now - dayMs).toISOString());
+      sqlite
+        .prepare(
+          `INSERT INTO event_handlers
+           (id, event_id, handler, status, detail, started_at, ended_at)
+           VALUES (?, ?, ?, ?, NULL, ?, ?)`,
+        )
+        .run('handler-1', 'old-with-handler', 'test-handler', 'success', nowIso, nowIso);
 
-    const otherEvents = await service.listEvents({
-      name: 'epic.updated',
-      limit: 20,
-      offset: 0,
+      await expect(service.cleanupExpiredEvents()).resolves.toBe(100);
+      expect(
+        sqlite
+          .prepare('SELECT count(*) AS count FROM events WHERE name = ?')
+          .get('session.transcript.updated'),
+      ).toEqual({ count: 1 });
+      expect(
+        sqlite.prepare('SELECT count(*) AS count FROM events WHERE id LIKE ?').get('old-%'),
+      ).toEqual({ count: 2 });
+
+      await expect(service.cleanupExpiredEvents()).resolves.toBe(3);
+      await expect(service.cleanupExpiredEvents()).resolves.toBe(0);
+      expect(sqlite.prepare('SELECT id FROM events ORDER BY id').all()).toEqual([
+        { id: 'at-cutoff' },
+        { id: 'recent' },
+      ]);
+      expect(sqlite.prepare('SELECT count(*) AS count FROM event_handlers').get()).toEqual({
+        count: 0,
+      });
     });
-    expect(otherEvents.total).toBe(1);
-    expect(otherEvents.items[0]?.id).toBe('evt-old-other');
+
+    it('keeps transient progress when the aged-history delete fails', async () => {
+      const now = Date.parse(nowIso);
+      insertEvent('transient', 'session.transcript.updated', nowIso);
+      insertEvent('old', 'epic.updated', new Date(now - 31 * dayMs).toISOString());
+      sqlite.exec(`
+        CREATE TRIGGER reject_old_event_delete
+        BEFORE DELETE ON events
+        WHEN OLD.name = 'epic.updated'
+        BEGIN
+          SELECT RAISE(FAIL, 'aged delete failed');
+        END;
+      `);
+
+      await expect(service.cleanupExpiredEvents()).rejects.toThrow('aged delete failed');
+      expect(sqlite.prepare('SELECT id FROM events').all()).toEqual([{ id: 'old' }]);
+    });
+
+    it('uses parameterized limited deletes and both production covering indexes', async () => {
+      const now = Date.parse(nowIso);
+      insertEvent('transient', 'session.transcript.updated', nowIso);
+      insertEvent('old', 'epic.updated', new Date(now - 31 * dayMs).toISOString());
+
+      await service.cleanupExpiredEvents();
+
+      const deleteQueries = queries.filter(({ sql }) => sql.startsWith('delete from "events"'));
+      expect(deleteQueries).toHaveLength(2);
+      for (const query of deleteQueries) {
+        expect(query.sql).toContain('?');
+        expect(query.sql).toMatch(/ limit \?$/);
+        expect(query.sql).not.toMatch(/\b(or|order by|returning|payload_json)\b/i);
+      }
+
+      const transientPlan = sqlite
+        .prepare('EXPLAIN QUERY PLAN DELETE FROM events WHERE name IN (?) LIMIT ?')
+        .all('session.transcript.updated', 100) as Array<{ detail: string }>;
+      const agedPlan = sqlite
+        .prepare('EXPLAIN QUERY PLAN DELETE FROM events WHERE published_at < ? LIMIT ?')
+        .all(new Date(now - 30 * dayMs).toISOString(), 100) as Array<{ detail: string }>;
+      expect(
+        transientPlan.some(({ detail }) => detail.includes('USING COVERING INDEX events_name_idx')),
+      ).toBe(true);
+      expect(
+        agedPlan.some(({ detail }) =>
+          detail.includes('USING COVERING INDEX events_published_at_idx'),
+        ),
+      ).toBe(true);
+    });
   });
 
-  it('runs cleanup on module init and schedules periodic cleanup', async () => {
-    jest.useFakeTimers();
-    const cleanupSpy = jest
-      .spyOn(service, 'cleanupOldWorktreeActivityEvents')
-      .mockResolvedValue(undefined);
+  describe('retention scheduler', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
 
-    await service.onModuleInit();
-    expect(cleanupSpy).toHaveBeenCalledTimes(1);
+    it('runs on init, unrefs the timer, and catches up after five seconds when full', async () => {
+      const setTimeoutSpy = jest.spyOn(global, 'setTimeout');
+      const cleanupSpy = jest
+        .spyOn(service, 'cleanupExpiredEvents')
+        .mockResolvedValueOnce(100)
+        .mockResolvedValue(0);
 
-    jest.advanceTimersByTime(86_400_000);
-    expect(cleanupSpy).toHaveBeenCalledTimes(2);
+      await service.onModuleInit();
 
-    service.onModuleDestroy();
-    cleanupSpy.mockRestore();
+      expect(cleanupSpy).toHaveBeenCalledTimes(1);
+      expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), 5_000);
+      const timer = setTimeoutSpy.mock.results.at(-1)?.value as NodeJS.Timeout;
+      expect(timer.hasRef?.()).toBe(false);
+
+      await jest.advanceTimersByTimeAsync(4_999);
+      expect(cleanupSpy).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(cleanupSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('uses the 24-hour maintenance cadence after a partial batch', async () => {
+      const setTimeoutSpy = jest.spyOn(global, 'setTimeout');
+      jest.spyOn(service, 'cleanupExpiredEvents').mockResolvedValue(99);
+
+      await service.onModuleInit();
+
+      expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), 86_400_000);
+    });
+
+    it('retries after 60 seconds when a batch fails', async () => {
+      const setTimeoutSpy = jest.spyOn(global, 'setTimeout');
+      jest.spyOn(service, 'cleanupExpiredEvents').mockRejectedValue(new Error('database busy'));
+
+      await service.onModuleInit();
+
+      expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), 60_000);
+    });
+
+    it('does not resurrect a timer when destroyed during an awaited batch', async () => {
+      let resolveCleanup!: (deletedCount: number) => void;
+      const cleanup = new Promise<number>((resolve) => {
+        resolveCleanup = resolve;
+      });
+      const setTimeoutSpy = jest.spyOn(global, 'setTimeout');
+      jest.spyOn(service, 'cleanupExpiredEvents').mockReturnValue(cleanup);
+
+      const init = service.onModuleInit();
+      service.onModuleDestroy();
+      resolveCleanup(100);
+      await init;
+
+      expect(setTimeoutSpy).not.toHaveBeenCalled();
+      expect(jest.getTimerCount()).toBe(0);
+    });
   });
 });

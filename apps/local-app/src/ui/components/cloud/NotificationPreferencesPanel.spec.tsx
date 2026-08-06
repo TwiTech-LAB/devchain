@@ -40,7 +40,7 @@ jest.mock('@/ui/hooks/useQuietHours', () => ({
 }));
 
 jest.mock('../ui/select', () => {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const React = require('react');
 
   interface SelectTriggerProps {

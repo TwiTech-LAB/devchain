@@ -428,6 +428,77 @@ describe('SessionLaunchPipeline', () => {
     });
   });
 
+  describe('managed provider plugin policy', () => {
+    it('re-resolves Codex args, launches one helper command, and validates acknowledgement', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      const resolveMock = resolveLaunchConfig as jest.Mock;
+      resolveMock.mockClear();
+      mocks.storage.getProvider.mockResolvedValue(fakeProvider({ name: 'codex' }));
+      mocks.providerPluginPolicy.resolveAll.mockResolvedValue([
+        { providerId: 'provider-1', pluginId: 'plugin@market', enabled: true, source: 'default' },
+      ]);
+      mocks.codexPluginProfiles.prepare.mockImplementation(async (input) => ({
+        profileName: 'devchain-profile',
+        projectDigest: 'a'.repeat(64),
+        policyHash: 'b'.repeat(64),
+        sourceRevisionPath: '/private/source.toml',
+        helperPath: '/private/helper',
+        sessionId: input.sessionId,
+        attemptNonce: input.attemptNonce,
+        referencePath: '/private/reference.json',
+        locatorPath: '/private/locator.json',
+        acknowledgementPath: '/private/ack.json',
+        providerOptionArgs: ['--profile', 'devchain-profile'],
+      }));
+      mocks.codexPluginProfiles.buildHelperArgv.mockReturnValue([
+        '/private/helper',
+        '--',
+        '/usr/bin/test-provider',
+      ]);
+
+      await runWithTimers(() => pipeline.launch(launchDto));
+
+      expect(resolveMock).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          providerOptionArgs: ['--profile', 'devchain-profile'],
+        }),
+      );
+      expect(mocks.terminalIO.typeCommand).toHaveBeenCalledWith(expect.anything(), [
+        'env',
+        '-u',
+        'DEVCHAIN_CONTEXT_WINDOW_TOKENS',
+        '/private/helper',
+        '--',
+        '/usr/bin/test-provider',
+      ]);
+      expect(mocks.codexPluginProfiles.awaitAcknowledgement).toHaveBeenCalled();
+      expect(
+        mocks.codexPluginProfiles.awaitAcknowledgement.mock.invocationCallOrder[0],
+      ).toBeLessThan(mocks.eventsService.publish.mock.invocationCallOrder.at(-2));
+    });
+
+    it.each(['-pmanaged', '-p', '--profile', '--profile='])(
+      'rejects explicit Codex selector %s before launch argv resolution',
+      async (selector) => {
+        const { pipeline, mocks } = createLaunchPipelineHarness();
+        const resolveMock = resolveLaunchConfig as jest.Mock;
+        resolveMock.mockClear();
+        mocks.storage.getProvider.mockResolvedValue(fakeProvider({ name: 'codex' }));
+        mocks.storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+          fakeProfileProviderConfig({ options: selector }),
+        ]);
+        mocks.providerPluginPolicy.resolveAll.mockResolvedValue([
+          { providerId: 'provider-1', pluginId: 'plugin@market', enabled: true, source: 'default' },
+        ]);
+
+        await expect(pipeline.launch(launchDto)).rejects.toThrow('conflicts');
+
+        expect(resolveMock).not.toHaveBeenCalled();
+        expect(mocks.codexPluginProfiles.prepare).not.toHaveBeenCalled();
+      },
+    );
+  });
+
   // Scenario 2: Provider verify fails
   describe('Scenario 2: preflight fails — no DB insert, no tmux create', () => {
     it('throws, never inserts a DB row, never creates tmux', async () => {

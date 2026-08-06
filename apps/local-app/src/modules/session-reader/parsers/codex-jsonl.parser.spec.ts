@@ -17,10 +17,10 @@ jest.mock('../../../common/logging/logger', () => ({
 }));
 
 // Must import parser after mock is set up (jest.mock is hoisted but this makes intent clear)
-/* eslint-disable @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires */
+/* eslint-disable @typescript-eslint/no-require-imports */
 const { parseCodexJsonl } =
   require('./codex-jsonl.parser') as typeof import('./codex-jsonl.parser');
-/* eslint-enable @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires */
+/* eslint-enable @typescript-eslint/no-require-imports */
 
 // ---------------------------------------------------------------------------
 // Helpers

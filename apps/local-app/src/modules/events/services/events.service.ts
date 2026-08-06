@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ZodError } from 'zod';
 import { createLogger } from '../../../common/logging/logger';
-import { eventCatalog, type EventName, type EventPayload } from '../catalog';
+import { eventCatalog, isTransientEvent, type EventName, type EventPayload } from '../catalog';
 import { EventLogService } from './event-log.service';
 
 const logger = createLogger('EventsService');
@@ -26,7 +26,7 @@ export class EventsService {
     name: TEventName,
     payload: EventPayload<TEventName>,
     options?: { requestId?: string | null },
-  ): Promise<string> {
+  ): Promise<string | null> {
     const schema = eventCatalog[name];
     if (!schema) {
       throw new Error(`Unknown event: ${name}`);
@@ -34,6 +34,12 @@ export class EventsService {
 
     try {
       const parsed = schema.parse(payload);
+      if (isTransientEvent(name)) {
+        this.eventEmitter.emit(name, parsed);
+        logger.debug({ name }, 'Transient event published');
+        return null;
+      }
+
       const { id: eventId } = await this.eventLogService.recordPublished({
         name,
         payload: parsed,

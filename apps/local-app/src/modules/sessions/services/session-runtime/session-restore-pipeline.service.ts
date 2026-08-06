@@ -1,4 +1,5 @@
 import { Injectable, Inject } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import type Database from 'better-sqlite3';
 import { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { DB_CONNECTION } from '../../../storage/db/db.provider';
@@ -25,12 +26,24 @@ import { TerminalSessionRegistry } from '../../../terminal/services/terminal-ses
 import { TerminalStreamService } from '../../../terminal/services/terminal-stream.service';
 import { EventsService } from '../../../events/services/events.service';
 import { resolve as resolveLaunchConfig } from '../provider-launch-config';
-import { parseProfileOptions, extractModelFromArgs } from '../../utils/profile-options';
+import {
+  parseProfileOptions,
+  extractModelFromArgs,
+  hasCodexProfileSelector,
+  hasFlagOccurrence,
+} from '../../utils/profile-options';
 import { buildTmuxSessionName } from '../../utils/tmux-naming.util';
 import { CleanupStack } from './cleanup-stack';
 import type { SessionDetailDto } from '../../dtos/sessions.dto';
 import { RuntimeContextCaptureService } from '../../../runtime-context-capture/runtime-context-capture.service';
 import { ClaudeLaunchSettingsMaterializerService } from '../../../runtime-context-capture/claude-launch-settings-materializer.service';
+import {
+  CodexPluginProfileMaterializerService,
+  type PreparedCodexPluginProfile,
+} from '../../../runtime-context-capture/codex-plugin-profile-materializer.service';
+import { ProviderPluginPolicyService } from '../../../providers/services/provider-plugin-policy.service';
+import { buildSessionCommand } from '../../utils/env-builder';
+import { CONTEXT_WINDOW_ENV_KEY } from '../../../runtime-context-capture/context-window-policy';
 
 const logger = createLogger('SessionRestorePipeline');
 
@@ -65,6 +78,8 @@ export class SessionRestorePipeline {
     private readonly streamService: TerminalStreamService,
     private readonly runtimeContextCapture: RuntimeContextCaptureService,
     private readonly claudeLaunchSettings: ClaudeLaunchSettingsMaterializerService,
+    private readonly codexPluginProfiles: CodexPluginProfileMaterializerService,
+    private readonly providerPluginPolicy: ProviderPluginPolicyService,
   ) {
     this.sqlite = getRawSqliteClient(db);
   }
@@ -144,6 +159,29 @@ export class SessionRestorePipeline {
         const tmuxSessionName = buildTmuxSessionName(projectSlug, epicSegment, agent.id, locked.id);
 
         const providerEnv = this.storage.getProviderEnvForProject(provider.id, projectId);
+        const profileOptionArgs = parseProfileOptions(options);
+        const pluginPolicy = await this.providerPluginPolicy.resolveAll(project.id, provider.id);
+        const providerName = provider.name.toLowerCase();
+        if (
+          pluginPolicy.length > 0 &&
+          providerName === 'claude' &&
+          hasFlagOccurrence(profileOptionArgs, '--settings')
+        ) {
+          throw new ConflictError(
+            'Profile-supplied --settings conflicts with required DevChain Claude plugin policy.',
+            { field: 'profileOptions', flag: '--settings' },
+          );
+        }
+        if (
+          pluginPolicy.length > 0 &&
+          providerName === 'codex' &&
+          hasCodexProfileSelector(profileOptionArgs)
+        ) {
+          throw new ConflictError(
+            'Profile-supplied Codex profile selector conflicts with required DevChain plugin policy.',
+            { field: 'profileOptions', flag: '--profile' },
+          );
+        }
         const launchConfigInput = {
           mode: 'restore',
           providerSessionId: locked.provider_session_id!,
@@ -212,23 +250,59 @@ export class SessionRestorePipeline {
         const preparedSettings = await this.claudeLaunchSettings.prepare({
           providerName: provider.name,
           settingsJson: provider.claudeLaunchSettingsJson,
-          profileOptionArgs: parseProfileOptions(options),
+          profileOptionArgs,
           providerEnv,
           configEnv,
           sessionId: locked.id,
           epoch,
           projectRootPath: project.rootPath,
+          pluginPolicy: providerName === 'claude' ? pluginPolicy : [],
+          policyRequired: providerName === 'claude' && pluginPolicy.length > 0,
         });
-        if (preparedSettings.optionArgs.length > 0) {
+        const preparedCodex: PreparedCodexPluginProfile | null =
+          providerName === 'codex'
+            ? await this.codexPluginProfiles.prepare({
+                projectId: project.id,
+                projectName: project.name,
+                sessionId: locked.id,
+                pluginPolicy,
+                attemptNonce: randomUUID(),
+              })
+            : null;
+        const managedOptionArgs = [
+          ...preparedSettings.optionArgs,
+          ...(preparedCodex?.providerOptionArgs ?? []),
+        ];
+        if (managedOptionArgs.length > 0) {
           config = resolveLaunchConfig({
             ...launchConfigInput,
-            providerOptionArgs: preparedSettings.optionArgs,
+            providerOptionArgs: managedOptionArgs,
             runtimeEnv: preparedSettings.runtimeEnv,
           });
         }
         cleanup.push('claudeLaunchSettings', async () => {
           await this.claudeLaunchSettings.cleanupSession(locked.id);
         });
+        if (preparedCodex) {
+          const helperArgv = this.codexPluginProfiles.buildHelperArgv(
+            preparedCodex,
+            provider.binPath,
+            config.argv,
+            {
+              projectId: project.id,
+              attemptNonce: preparedCodex.attemptNonce,
+            },
+          );
+          config = {
+            ...config,
+            commandArgs: buildSessionCommand(config.env, helperArgv[0], helperArgv.slice(1), [
+              ...new Set([...(adapter.launchUnsetEnv ?? []), CONTEXT_WINDOW_ENV_KEY]),
+            ]),
+          };
+          cleanup.push('codexPluginProfile', async () => {
+            await this.codexPluginProfiles.cleanupPrepared(preparedCodex);
+          });
+        }
 
         // Phase 7: createTmuxSession
         await this.terminalIO.createEmptySession(tmuxSessionName, { cwd: project.rootPath });
@@ -270,6 +344,12 @@ export class SessionRestorePipeline {
 
         // Issue the restore command — streaming is bound, output is captured
         await this.terminalIO.typeCommand({ name: tmuxSessionName }, config.commandArgs);
+        if (preparedCodex) {
+          await this.codexPluginProfiles.awaitAcknowledgement(preparedCodex, {
+            projectId: project.id,
+            attemptNonce: preparedCodex.attemptNonce,
+          });
+        }
 
         // Phase 9: emit session.restored (NOT session.started)
         await this.eventsService.publish('session.restored', {

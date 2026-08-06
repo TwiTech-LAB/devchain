@@ -100,3 +100,15 @@ export type EventName = keyof typeof eventCatalog;
 export type EventSchema<TName extends EventName> = (typeof eventCatalog)[TName];
 export type EventPayload<TName extends EventName> = z.infer<EventSchema<TName>>;
 export const eventNames = Object.keys(eventCatalog) as EventName[];
+
+// EventsService.publish enforces this policy. Direct EventLogService.recordPublished callers
+// bypass it; the only current production bypass is non-transient worktree activity.
+export const transientEventNames = [
+  'session.transcript.updated',
+] as const satisfies readonly EventName[];
+
+const transientEventNameSet: ReadonlySet<EventName> = new Set(transientEventNames);
+
+export function isTransientEvent(name: EventName): boolean {
+  return transientEventNameSet.has(name);
+}

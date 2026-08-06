@@ -1,0 +1,6 @@
+{
+  "name": "profile-effect",
+  "version": "1.0.0",
+  "description": "Validates Codex profile-scoped plugin enablement.",
+  "skills": "./skills/"
+}

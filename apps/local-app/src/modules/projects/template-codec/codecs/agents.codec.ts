@@ -35,6 +35,7 @@ interface ExportAgentRow {
   providerConfigId: string | null;
   modelOverride: string | null;
   effortOverride?: string | null;
+  isProjectOwner: boolean;
 }
 
 export function buildExportAgents(
@@ -55,6 +56,7 @@ export function buildExportAgents(
       modelOverride: agent.modelOverride ?? null,
       ...(agent.effortOverride != null && { effortOverride: agent.effortOverride }),
       ...(providerConfigName && { providerConfigName }),
+      ...(agent.isProjectOwner && { isProjectOwner: true }),
     };
   });
 }
@@ -141,6 +143,7 @@ class AgentsCodec implements TemplateSectionCodec<AgentsSection> {
         providerConfigId,
         modelOverride: agent.modelOverride ?? null,
         effortOverride: (agent as { effortOverride?: string | null }).effortOverride ?? null,
+        isProjectOwner: agent.isProjectOwner,
       });
 
       const agentKey = agent.id || `name:${agent.name.trim().toLowerCase()}`;

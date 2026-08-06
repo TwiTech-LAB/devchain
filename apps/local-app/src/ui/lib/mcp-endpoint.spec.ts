@@ -1,18 +1,18 @@
-import { getMcpEndpointUrl } from './mcp-endpoint';
+import { getMcpEndpointUrl as buildMcpEndpointUrl } from './mcp-endpoint';
+
+type EndpointLocation = Pick<Location, 'hostname' | 'port' | 'protocol'>;
+
+let locationOverride: EndpointLocation = window.location;
+
+function getMcpEndpointUrl(apiPort?: number): string {
+  return buildMcpEndpointUrl(apiPort, locationOverride);
+}
 
 function mockWindowLocation(overrides: Partial<Location>) {
-  const original = window.location;
-  Object.defineProperty(window, 'location', {
-    value: { ...original, ...overrides },
-    writable: true,
-    configurable: true,
-  });
+  const original = locationOverride;
+  locationOverride = { ...locationOverride, ...overrides };
   return () => {
-    Object.defineProperty(window, 'location', {
-      value: original,
-      writable: true,
-      configurable: true,
-    });
+    locationOverride = original;
   };
 }
 

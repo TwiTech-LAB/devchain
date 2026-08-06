@@ -818,6 +818,7 @@ describe('McpService', () => {
       statusId: '11111111-1111-1111-1111-111111111111',
       parentId: null,
       agentId: null,
+      createdBy: null,
       version: 1,
       data: null,
       skillsRequired: null,
@@ -906,7 +907,7 @@ describe('McpService', () => {
     it('lists epics with optional filters', async () => {
       const project = makeProject();
       const status = makeStatus();
-      const epic = makeEpic();
+      const epic = makeEpic({ createdBy: 'Creator Agent' });
       const childEpic = makeEpic({ id: 'child-epic-1', title: 'Child Epic', parentId: epic.id });
 
       storage.findProjectByPath.mockResolvedValue(project);
@@ -961,12 +962,14 @@ describe('McpService', () => {
           id: string;
           status?: string;
           title: string;
+          createdBy: string | null;
           tags: string[];
           subEpics?: Array<{ id: string; title: string; status?: string }>;
         }>;
         total: number;
       };
       expect(payload.epics[0].id).toBe(epic.id);
+      expect(payload.epics[0].createdBy).toBe('Creator Agent');
       expect(payload.epics[0].status).toBe(status.label);
       expect(payload.epics[0].subEpics).toHaveLength(1);
       expect(payload.epics[0].subEpics?.[0].id).toBe(childEpic.id);
@@ -1063,8 +1066,12 @@ describe('McpService', () => {
         expect.objectContaining({ agentName: 'Alpha', limit: 100, offset: 0 }),
       );
 
-      const payload = response.data as { epics: Array<{ id: string }>; total: number };
+      const payload = response.data as {
+        epics: Array<{ id: string; createdBy: string | null }>;
+        total: number;
+      };
       expect(payload.epics[0].id).toBe(epic.id);
+      expect(payload.epics[0].createdBy).toBeNull();
       expect(payload.total).toBe(1);
     });
 
@@ -1121,7 +1128,28 @@ describe('McpService', () => {
         expect.any(Object),
       );
 
+      expect(epicsService.createEpicForProject).toHaveBeenCalledWith(
+        project.id,
+        expect.any(Object),
+        expect.objectContaining({
+          actor: { type: 'agent', id: TEST_AGENT.id },
+          creatorAgentName: TEST_AGENT.name,
+        }),
+      );
+
       expect(response.data).toEqual({ id: epic.id, version: epic.version });
+    });
+
+    it('rejects caller-supplied createdBy on MCP create', async () => {
+      const response = await service.handleToolCall('devchain_create_epic', {
+        sessionId: TEST_SESSION_ID,
+        title: 'New Epic',
+        createdBy: 'Spoofed Creator',
+      });
+
+      expect(response.success).toBe(false);
+      expect(response.error?.code).toBe('VALIDATION_ERROR');
+      expect(epicsService.createEpicForProject).not.toHaveBeenCalled();
     });
 
     it('returns agent-not-found when create epic fails to resolve agent', async () => {
@@ -1227,6 +1255,7 @@ describe('McpService', () => {
       const epic = makeEpic({
         id: '66666666-6666-6666-6666-666666666666',
         parentId: parentEpic.id,
+        createdBy: 'Creator Agent',
       });
       const comment = makeComment({ epicId: epic.id });
 
@@ -1270,12 +1299,19 @@ describe('McpService', () => {
 
       expect(response.success).toBe(true);
       const payload = response.data as {
-        epic: { id: string; tags: string[]; skillsRequired: string[]; status?: string };
+        epic: {
+          id: string;
+          createdBy: string | null;
+          tags: string[];
+          skillsRequired: string[];
+          status?: string;
+        };
         comments: Array<{ id: string }>;
         subEpics: Array<{ id: string; status?: string }>;
         parent?: { id: string };
       };
       expect(payload.epic.id).toBe(epic.id);
+      expect(payload.epic.createdBy).toBe('Creator Agent');
       expect(payload.epic.status).toBe(status.label);
       expect(payload.comments[0].id).toBe(comment.id);
       expect(payload.subEpics[0].id).toBe(childEpic.id);

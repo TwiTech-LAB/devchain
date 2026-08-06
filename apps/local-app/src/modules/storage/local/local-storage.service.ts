@@ -49,6 +49,10 @@ import {
   UpdateProvider,
   ProviderMcpMetadata,
   UpdateProviderMcpMetadata,
+  ProviderPluginDefault,
+  ProjectProviderPluginOverride,
+  UpsertProviderPluginDefault,
+  UpsertProjectProviderPluginOverride,
   AgentProfile,
   CreateAgentProfile,
   UpdateAgentProfile,
@@ -112,6 +116,7 @@ import { PromptStorageDelegate } from './delegates/prompt.delegate';
 import { ProviderStorageDelegate } from './delegates/provider.delegate';
 import { ProviderModelStorageDelegate } from './delegates/provider-model.delegate';
 import { ProviderEffortStorageDelegate } from './delegates/provider-effort.delegate';
+import { ProviderPluginPolicyStorageDelegate } from './delegates/provider-plugin-policy.delegate';
 import { ProjectStorageDelegate } from './delegates/project.delegate';
 import { RecordStorageDelegate } from './delegates/record.delegate';
 import { ReviewStorageDelegate } from './delegates/review.delegate';
@@ -153,6 +158,7 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
   private readonly reviewDelegate: ReviewStorageDelegate;
   private readonly providerModelDelegate: ProviderModelStorageDelegate;
   private readonly providerEffortDelegate: ProviderEffortStorageDelegate;
+  private readonly providerPluginPolicyDelegate: ProviderPluginPolicyStorageDelegate;
   private readonly scheduledEpicDelegate: ScheduledEpicStorageDelegate;
   private readonly sessionDelegate: SessionStorageDelegate;
 
@@ -186,6 +192,7 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
     });
     this.providerModelDelegate = new ProviderModelStorageDelegate(context);
     this.providerEffortDelegate = new ProviderEffortStorageDelegate(context);
+    this.providerPluginPolicyDelegate = new ProviderPluginPolicyStorageDelegate(context);
     this.skillSourceDelegate = new SkillSourceStorageDelegate(context, {
       assertLocalSourceNameAvailableAcrossTypes: (sourceName) =>
         this.assertLocalSourceNameAvailableAcrossTypes(sourceName),
@@ -272,6 +279,10 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
 
   async listProjects(options: ListOptions = {}): Promise<ListResult<Project>> {
     return this.projectDelegate.listProjects(options);
+  }
+
+  async getProjectsByIdPrefix(prefix: string): Promise<Project[]> {
+    return this.projectDelegate.getProjectsByIdPrefix(prefix);
   }
 
   async updateProject(id: string, data: UpdateProject): Promise<Project> {
@@ -549,6 +560,67 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
     return this.providerDelegate.deleteProvider(id);
   }
 
+  async upsertProviderPluginDefault(
+    data: UpsertProviderPluginDefault,
+  ): Promise<ProviderPluginDefault> {
+    return this.providerPluginPolicyDelegate.upsertProviderPluginDefault(data);
+  }
+
+  async getProviderPluginDefault(
+    providerId: string,
+    pluginId: string,
+  ): Promise<ProviderPluginDefault | null> {
+    return this.providerPluginPolicyDelegate.getProviderPluginDefault(providerId, pluginId);
+  }
+
+  async listProviderPluginDefaults(providerId: string): Promise<ProviderPluginDefault[]> {
+    return this.providerPluginPolicyDelegate.listProviderPluginDefaults(providerId);
+  }
+
+  async deleteProviderPluginDefault(providerId: string, pluginId: string): Promise<boolean> {
+    return this.providerPluginPolicyDelegate.deleteProviderPluginDefault(providerId, pluginId);
+  }
+
+  async upsertProjectProviderPluginOverride(
+    data: UpsertProjectProviderPluginOverride,
+  ): Promise<ProjectProviderPluginOverride> {
+    return this.providerPluginPolicyDelegate.upsertProjectProviderPluginOverride(data);
+  }
+
+  async getProjectProviderPluginOverride(
+    projectId: string,
+    providerId: string,
+    pluginId: string,
+  ): Promise<ProjectProviderPluginOverride | null> {
+    return this.providerPluginPolicyDelegate.getProjectProviderPluginOverride(
+      projectId,
+      providerId,
+      pluginId,
+    );
+  }
+
+  async listProjectProviderPluginOverrides(
+    projectId: string,
+    providerId: string,
+  ): Promise<ProjectProviderPluginOverride[]> {
+    return this.providerPluginPolicyDelegate.listProjectProviderPluginOverrides(
+      projectId,
+      providerId,
+    );
+  }
+
+  async deleteProjectProviderPluginOverride(
+    projectId: string,
+    providerId: string,
+    pluginId: string,
+  ): Promise<boolean> {
+    return this.providerPluginPolicyDelegate.deleteProjectProviderPluginOverride(
+      projectId,
+      providerId,
+      pluginId,
+    );
+  }
+
   getProviderEnvForProject(providerId: string, projectId: string): Record<string, string> | null {
     return this.providerDelegate.getProviderEnvForProject(providerId, projectId);
   }
@@ -751,6 +823,10 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
 
   async listAgents(projectId: string, options: ListOptions = {}): Promise<ListResult<Agent>> {
     return this.agentDelegate.listAgents(projectId, options);
+  }
+
+  async listProjectOwners(projectIds: string[]): Promise<Agent[]> {
+    return this.agentDelegate.listProjectOwners(projectIds);
   }
 
   async getAgentByName(

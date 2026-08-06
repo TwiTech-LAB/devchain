@@ -24,6 +24,7 @@ export interface Epic {
   version: number;
   parentId: string | null;
   agentId: string | null;
+  createdBy: string | null;
   tags: string[];
   createdAt: string;
   updatedAt: string;

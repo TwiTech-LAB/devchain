@@ -14,6 +14,16 @@ const EpicIdPrefixSchema = z
   .max(36)
   .regex(/^[a-f0-9-]+$/, 'Epic ID prefix must contain only hex characters and hyphens');
 
+export const PROJECT_ID_PREFIX_PATTERN =
+  /^(?:[a-fA-F0-9]{8}|[a-fA-F0-9]{8}-[a-fA-F0-9]{1,4}|[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{1,4}|[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{1,4}|[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{1,12})$/;
+
+const ProjectIdPrefixSchema = z
+  .string()
+  .regex(
+    PROJECT_ID_PREFIX_PATTERN,
+    'Project ID must be a full UUID or a valid 8+ character UUID prefix',
+  );
+
 // devchain.create_record
 export const CreateRecordParamsSchema = z
   .object({
@@ -614,6 +624,7 @@ export interface EpicSummary {
   id: string;
   title: string;
   description: string | null;
+  createdBy: string | null;
   version: number; // Required for optimistic locking in updates
   // Optional resolved status name for convenience without returning full status metadata
   status?: string;
@@ -693,6 +704,7 @@ export interface DeleteEpicResponse {
 // - threadId (agent replies into existing thread; recipients optional for fan-out)
 // - recipientAgentNames (pooled delivery to explicit agents; does not create a thread)
 // - teamName (pooled team routing; handler logic resolved separately)
+// - recipientProjectId (delivery to the target project's current Project Owner)
 // - recipient: internal-only, not exposed in tool schema
 export const SendMessageParamsSchema = z
   .object({
@@ -700,6 +712,7 @@ export const SendMessageParamsSchema = z
     threadId: z.string().uuid().optional(),
     recipientAgentNames: z.array(z.string().min(1)).min(1).optional(), // Target agents to message
     teamName: z.string().min(1).optional(),
+    recipientProjectId: ProjectIdPrefixSchema.optional(),
     message: z.string().min(1),
     // Internal-only: kept for backward compatibility but not exposed in tool schema
     recipient: z.enum(['user', 'agents']).optional(),
@@ -709,6 +722,23 @@ export const SendMessageParamsSchema = z
     const hasRecipientAgentNames = Boolean(
       v.recipientAgentNames && v.recipientAgentNames.length > 0,
     );
+
+    if (v.recipientProjectId) {
+      const conflictingFields = [
+        v.threadId ? 'threadId' : null,
+        hasRecipientAgentNames ? 'recipientAgentNames' : null,
+        v.teamName ? 'teamName' : null,
+        v.recipient ? 'recipient' : null,
+      ].filter((field): field is string => field !== null);
+
+      if (conflictingFields.length > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['recipientProjectId'],
+          message: `recipientProjectId cannot be combined with ${conflictingFields.join(', ')}`,
+        });
+      }
+    }
 
     if (v.teamName && hasRecipientAgentNames) {
       ctx.addIssue({
@@ -734,7 +764,7 @@ export const SendMessageParamsSchema = z
       });
     }
 
-    // All three recipient fields absent is allowed (self-team fallback in handler)
+    // All routing fields absent is allowed (self-team fallback in handler)
     // unless recipient is explicitly 'user' — which is handled separately
   });
 
@@ -770,7 +800,44 @@ export type SendMessageResponse =
         status: 'delivered' | 'queued' | 'unconfirmed' | 'failed';
         error?: string;
       }>;
+    }
+  | {
+      mode: 'project';
+      targetProject: {
+        id: string;
+        shortId: string;
+        name: string;
+      };
+      deliveryStatus: 'queued' | 'delivered' | 'failed' | 'unconfirmed' | 'partial';
+      error?: {
+        code: string;
+        message: string;
+      };
     };
+
+// devchain_projects_list
+export const ProjectsListParamsSchema = z
+  .object({
+    sessionId: z.string().min(8),
+    limit: z.number().int().min(1).max(100).default(100),
+    offset: z.number().int().nonnegative().default(0),
+  })
+  .strict();
+
+export type ProjectsListParams = z.infer<typeof ProjectsListParamsSchema>;
+
+export interface ProjectsListResponse {
+  projects: Array<{
+    id: string;
+    shortId: string;
+    name: string;
+    description: string | null;
+    hasProjectOwner: boolean;
+  }>;
+  total: number;
+  limit: number;
+  offset: number;
+}
 
 // devchain_chat_ack
 export const ChatAckParamsSchema = z

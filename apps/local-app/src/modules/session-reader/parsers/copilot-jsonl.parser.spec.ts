@@ -13,10 +13,10 @@ jest.mock('../../../common/logging/logger', () => ({
   }),
 }));
 
-/* eslint-disable @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires */
+/* eslint-disable @typescript-eslint/no-require-imports */
 const { parseCopilotJsonl } =
   require('./copilot-jsonl.parser') as typeof import('./copilot-jsonl.parser');
-/* eslint-enable @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires */
+/* eslint-enable @typescript-eslint/no-require-imports */
 
 const FIXTURE_MULTITURN = path.join(__dirname, '../__fixtures__/copilot-events-multiturn.jsonl');
 const FIXTURE_SINGLTURN = path.join(__dirname, '../__fixtures__/copilot-events-singleturn.jsonl');

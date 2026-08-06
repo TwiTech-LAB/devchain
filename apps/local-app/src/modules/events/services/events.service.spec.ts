@@ -2,6 +2,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ZodError } from 'zod';
 import { EventsService, getEventMetadata } from './events.service';
 import { EventLogService } from './event-log.service';
+import { transientEventNames } from '../catalog';
 
 // Layer: module unit. Calling EventsService with mocked persistence and emitter
 // edges is the cheapest reliable proof of schema parsing, metadata attachment,
@@ -48,13 +49,49 @@ describe('EventsService', () => {
     expect(metadata).toEqual({ id: 'event-123' });
   });
 
+  it('publishes transcript updates transiently after schema parsing', async () => {
+    const payload = {
+      kind: 'full-refetch-required' as const,
+      sessionId: 'session-1',
+      transcriptPath: '/tmp/transcript.jsonl',
+      sourceChangeKind: 'file-replacement' as const,
+    };
+
+    const eventId = await service.publish('session.transcript.updated', payload);
+
+    expect(transientEventNames).toEqual(['session.transcript.updated']);
+    expect(eventId).toBeNull();
+    expect(eventLogService.recordPublished).not.toHaveBeenCalled();
+    expect(eventEmitter.emit).toHaveBeenCalledWith('session.transcript.updated', payload);
+    const emittedPayload = (eventEmitter.emit as jest.Mock).mock.calls[0][1];
+    expect(getEventMetadata(emittedPayload)).toBeNull();
+  });
+
+  it('validates transient transcript updates before emitting them', async () => {
+    const publish = service.publish.bind(service) as unknown as (
+      name: string,
+      payload: unknown,
+    ) => Promise<string | null>;
+
+    await expect(
+      publish('session.transcript.updated', {
+        kind: 'full-refetch-required',
+        sessionId: 'session-1',
+        transcriptPath: '/tmp/transcript.jsonl',
+        sourceChangeKind: 'invalid-change-kind',
+      }),
+    ).rejects.toBeInstanceOf(ZodError);
+    expect(eventEmitter.emit).not.toHaveBeenCalled();
+    expect(eventLogService.recordPublished).not.toHaveBeenCalled();
+  });
+
   it.each([undefined, ''])(
     'rejects session.started with invalid projectId=%p',
     async (projectId) => {
       const publish = service.publish.bind(service) as unknown as (
         name: string,
         payload: unknown,
-      ) => Promise<string>;
+      ) => Promise<string | null>;
       await expect(
         publish('session.started', {
           sessionId: 'session-1',
@@ -73,7 +110,7 @@ describe('EventsService', () => {
     const publish = service.publish.bind(service) as unknown as (
       name: string,
       payload: unknown,
-    ) => Promise<string>;
+    ) => Promise<string | null>;
 
     await publish('session.started', {
       sessionId: 'session-1',
@@ -151,7 +188,7 @@ describe('EventsService', () => {
       const publish = service.publish.bind(service) as unknown as (
         name: string,
         payload: unknown,
-      ) => Promise<string>;
+      ) => Promise<string | null>;
 
       await expect(publish('agent.created', { agentId: 'agent-1' })).rejects.toBeInstanceOf(
         ZodError,

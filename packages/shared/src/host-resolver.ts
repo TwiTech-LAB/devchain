@@ -34,9 +34,7 @@ export class HostResolver {
     const looksLikeIpv6 = colonCount >= 2 || trimmed.startsWith(':') || trimmed.includes('::');
 
     if (!looksLikeIpv6 && colonCount === 1) {
-      throw new Error(
-        `Invalid host "${trimmed}": looks like host:port — pass only the host part`,
-      );
+      throw new Error(`Invalid host "${trimmed}": looks like host:port — pass only the host part`);
     }
 
     return trimmed;

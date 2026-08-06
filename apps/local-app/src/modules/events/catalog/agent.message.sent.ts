@@ -39,8 +39,25 @@ const payloadSchema = z
         teamDeliveryMode: z.enum(['lead', 'lead_excluded', 'no_lead']),
       })
       .strict(),
+    baseSchema
+      .extend({
+        routingKind: z.literal('project'),
+        sourceProjectId: z.string().min(1),
+        sourceProjectName: z.string().min(1),
+        targetProjectId: z.string().min(1),
+        targetProjectName: z.string().min(1),
+      })
+      .strict(),
   ])
   .superRefine((payload, context) => {
+    if (payload.routingKind === 'project' && payload.projectId !== payload.sourceProjectId) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['projectId'],
+        message: 'project-routed events must be scoped to sourceProjectId',
+      });
+    }
+
     if (payload.recipientCount !== payload.recipients.length) {
       context.addIssue({
         code: z.ZodIssueCode.custom,

@@ -157,12 +157,12 @@ function createDeps(h: Harness, template: Record<string, unknown>) {
       getTemplate: async () => ({
         content: template,
         source: 'bundled' as const,
-        version: '1.0.0',
+        version: String((template._manifest as AnyRec | undefined)?.version ?? '1.0.0'),
       }),
       getTemplateFromFilePath: () => ({
         content: template,
         source: 'file' as const,
-        version: '1.0.0',
+        version: String((template._manifest as AnyRec | undefined)?.version ?? '1.0.0'),
       }),
     } as never,
     deriveSlugFromPath,
@@ -251,6 +251,7 @@ function allSectionsTemplate(): Record<string, unknown> {
         modelOverride: 'sonnet',
         effortOverride: 'medium',
         providerConfigName: 'builder-cfg',
+        isProjectOwner: true,
       },
       {
         name: 'Reviewer Agent',
@@ -449,6 +450,7 @@ function normalizeExport(input: AnyRec): AnyRec {
     modelOverride: a.modelOverride ?? null,
     effortOverride: a.effortOverride ?? null,
     providerConfigName: a.providerConfigName ?? null,
+    isProjectOwner: a.isProjectOwner ?? false,
   }));
 
   e.statuses = sortBy(e.statuses as AnyRec[], 'label').map((s) => ({
@@ -542,7 +544,7 @@ describe('template round-trip contract safety net (real storage)', () => {
   });
 
   describe('all-section normalized round-trip is idempotent on current code', () => {
-    it('fixture → import → export(A) → import → export(B) yields normalize(A) === normalize(B)', async () => {
+    it('preserves normalized exports through replace and create round-trips', async () => {
       await seedClaudeProvider(h);
 
       // Seed project A by importing the all-sections fixture through the real path.
@@ -566,6 +568,18 @@ describe('template round-trip contract safety net (real storage)', () => {
       const exportB = (await exportProjectWithHelper(projectB, undefined, exportDeps(h))) as AnyRec;
 
       expect(normalizeExport(exportB)).toEqual(normalizeExport(exportA));
+
+      const createResult = (await createFromTemplateWithHelper(
+        { name: 'Project C', rootPath: '/tmp/project-c', slug: 'roundtrip-all' },
+        createDeps(h, exportA) as never,
+      )) as AnyRec;
+      const exportC = (await exportProjectWithHelper(
+        String((createResult.project as AnyRec).id),
+        undefined,
+        exportDeps(h),
+      )) as AnyRec;
+
+      expect(normalizeExport(exportC)).toEqual(normalizeExport(exportA));
     });
 
     it('replace-import preserves agent effortOverride and config model/effort (import path is correct)', async () => {
@@ -578,13 +592,46 @@ describe('template round-trip contract safety net (real storage)', () => {
       const exportA = (await exportProjectWithHelper(projectA, undefined, exportDeps(h))) as AnyRec;
 
       const builderAgent = (exportA.agents as AnyRec[]).find((a) => a.name === 'Builder Agent');
-      expect(builderAgent).toMatchObject({ modelOverride: 'sonnet', effortOverride: 'medium' });
+      expect(builderAgent).toMatchObject({
+        modelOverride: 'sonnet',
+        effortOverride: 'medium',
+        isProjectOwner: true,
+      });
+      const reviewerAgent = (exportA.agents as AnyRec[]).find((a) => a.name === 'Reviewer Agent');
+      expect(reviewerAgent).not.toHaveProperty('isProjectOwner');
 
       const builderProfile = (exportA.profiles as AnyRec[]).find((p) => p.name === 'Builder');
       const cfg = (builderProfile?.providerConfigs as AnyRec[])[0];
       expect(cfg).toMatchObject({ name: 'builder-cfg', model: 'opus', effort: 'high' });
       // [position-remediation] explicit providerConfig position survives the replace import path.
       expect(cfg.position).toBe(3);
+    });
+
+    it('rejects multiple owners before a replace import mutates existing agents', async () => {
+      await seedClaudeProvider(h);
+      const projectId = await freshProject(h, 'Owner Validation');
+      await importProjectWithHelper(
+        { projectId, payload: allSectionsTemplate() },
+        importDeps(h) as never,
+      );
+
+      const invalidTemplate = allSectionsTemplate();
+      for (const agent of invalidTemplate.agents as AnyRec[]) {
+        agent.isProjectOwner = true;
+      }
+
+      await expect(
+        importProjectWithHelper({ projectId, payload: invalidTemplate }, importDeps(h) as never),
+      ).rejects.toThrow('At most one agent can be designated as project owner');
+
+      const agents = await h.storage.listAgents(projectId, { limit: 100, offset: 0 });
+      expect(agents.items).toHaveLength(2);
+      expect(agents.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: 'Builder Agent', isProjectOwner: true }),
+          expect.objectContaining({ name: 'Reviewer Agent', isProjectOwner: false }),
+        ]),
+      );
     });
 
     it('replace-import preserves prompt tags, teams profileSelections, presets, and scheduled epics', async () => {
@@ -851,6 +898,52 @@ describe('template round-trip contract safety net (real storage)', () => {
         );
       }
     });
+
+    it('backup restore retains the project owner designation', async () => {
+      await seedClaudeProvider(h);
+      const projectId = await freshProject(h, 'Snapshot Owner');
+      const allSections = allSectionsTemplate();
+      const ownerTemplate = {
+        version: 1,
+        profiles: allSections.profiles,
+        agents: allSections.agents,
+        statuses: [],
+      };
+      await h.settings.setProjectTemplateMetadata(projectId, {
+        templateSlug: 'snapshot-owner',
+        source: 'bundled',
+        installedVersion: '1.0.0',
+        registryUrl: null,
+        installedAt: new Date().toISOString(),
+      });
+      await importProjectWithHelper({ projectId, payload: ownerTemplate }, importDeps(h) as never);
+
+      const projectsFacade = {
+        exportProject: (id: string, options?: Parameters<typeof exportProjectWithHelper>[1]) =>
+          exportProjectWithHelper(id, options, exportDeps(h)),
+        importProject: (input: Parameters<typeof importProjectWithHelper>[0]) =>
+          importProjectWithHelper(input, importDeps(h) as never),
+      } as unknown as ProjectsService;
+      const upgradeService = new ProjectTemplateUpgradeService(
+        projectsFacade,
+        {} as never,
+        {} as never,
+        h.settings,
+      );
+
+      const backupId = await upgradeService.createBackup(projectId);
+      const before = await h.storage.listAgents(projectId, { limit: 100, offset: 0 });
+      const owner = before.items.find((agent) => agent.isProjectOwner);
+      expect(owner?.name).toBe('Builder Agent');
+      await h.storage.updateAgent(owner!.id, { isProjectOwner: false });
+
+      await upgradeService.restoreBackup(backupId);
+
+      const restored = await h.storage.listAgents(projectId, { limit: 100, offset: 0 });
+      expect(restored.items.filter((agent) => agent.isProjectOwner)).toEqual([
+        expect.objectContaining({ name: 'Builder Agent' }),
+      ]);
+    });
   });
 
   describe('env secret redaction discipline', () => {
@@ -899,7 +992,10 @@ describe('template round-trip contract safety net (real storage)', () => {
       // Absent-vs-empty discipline: a legacy agent with no effort exports NO effortOverride key.
       expect(legacyAgent).toBeDefined();
       expect(legacyAgent).not.toHaveProperty('effortOverride');
+      expect(legacyAgent).not.toHaveProperty('isProjectOwner');
       expect(legacyAgent).toMatchObject({ modelOverride: null });
+      const storedAgents = await h.storage.listAgents(projectA, { limit: 100, offset: 0 });
+      expect(storedAgents.items.some((agent) => agent.isProjectOwner)).toBe(false);
       // Legacy import defaults optional collections to empty, not absent-error.
       expect(exportA.providerModels).toEqual([]);
       expect(exportA.providerEfforts).toEqual([]);
@@ -909,6 +1005,8 @@ describe('template round-trip contract safety net (real storage)', () => {
   describe('create-from-template against real storage (preset + teamOverrides + familyProviderMappings)', () => {
     it('creates a project with all sections (preset + teamOverrides + familyProviderMappings)', async () => {
       await seedClaudeProvider(h);
+
+      const transactionSpy = jest.spyOn(h.storage, 'runInTransaction');
 
       const result = await createFromTemplateWithHelper(
         {
@@ -942,6 +1040,12 @@ describe('template round-trip contract safety net (real storage)', () => {
         agents: expect.any(Number),
         statuses: expect.any(Number),
       });
+      expect(transactionSpy).toHaveBeenCalledTimes(1);
+
+      const agents = await h.storage.listAgents(String(project.id), { limit: 100, offset: 0 });
+      expect(agents.items.filter((agent) => agent.isProjectOwner)).toEqual([
+        expect.objectContaining({ name: 'Builder Agent' }),
+      ]);
     });
 
     // ---- Task 8: create path now reaches parity with import (one pipeline, both flows). ----

@@ -33,12 +33,14 @@ import type { SkillToolContext } from './handlers/skill-context';
 import type { SessionToolContext } from './handlers/session-context';
 import type { ActivityToolContext } from './handlers/activity-context';
 import type { AgentToolContext } from './handlers/agent-context';
+import type { ProjectToolContext } from './handlers/project-context';
 import { allBindings, allMetadata, type ToolMetadataEntry } from '../tool-descriptors';
 import { suggestNestedPath } from '../utils/param-suggestion';
 import { SessionContextResolver } from './utils/session-context-resolver';
 import { ResourceResolver } from './utils/resource-resolver';
 import { redactParams } from './utils/redact';
 import { createNullAdapter } from './handlers/null-adapter';
+import { ProjectCommunicationService } from '../../project-communication/project-communication.service';
 
 const logger = createLogger('McpService');
 
@@ -48,6 +50,8 @@ const CHAT_TOOLS = new Set([
   'devchain_chat_read_history',
   'devchain_chat_list_members',
 ]);
+
+const PROJECT_TOOLS = new Set(['devchain_projects_list']);
 
 const EPIC_TOOLS = new Set([
   'devchain_list_epics',
@@ -149,6 +153,8 @@ export class McpService {
     @Optional()
     @Inject(forwardRef(() => AgentMessageDeliveryService))
     private readonly agentMessageDelivery?: AgentMessageDeliveryService,
+    @Optional()
+    private readonly projectCommunicationService?: ProjectCommunicationService,
   ) {
     logger.info('McpService initialized');
     this.featureFlags = this.storage.getFeatureFlags();
@@ -180,6 +186,18 @@ export class McpService {
         createNullAdapter<AgentMessageDeliveryService>('AgentMessageDeliveryService'),
       settingsService:
         this.settingsService ?? createNullAdapter<SettingsService>('SettingsService'),
+      projectCommunicationService:
+        this.projectCommunicationService ??
+        createNullAdapter<ProjectCommunicationService>('ProjectCommunicationService'),
+      resolveSessionContext: (sessionId: string) => this.resolveSessionContext(sessionId),
+    };
+  }
+
+  private buildProjectToolContext(): ProjectToolContext {
+    return {
+      projectCommunicationService:
+        this.projectCommunicationService ??
+        createNullAdapter<ProjectCommunicationService>('ProjectCommunicationService'),
       resolveSessionContext: (sessionId: string) => this.resolveSessionContext(sessionId),
     };
   }
@@ -307,33 +325,35 @@ export class McpService {
       return await handler(
         CHAT_TOOLS.has(normalizedTool)
           ? this.buildChatToolContext()
-          : EPIC_TOOLS.has(normalizedTool)
-            ? this.buildEpicToolContext()
-            : REVIEW_TOOLS.has(normalizedTool)
-              ? this.buildReviewToolContext()
-              : TEAMS_TOOLS.has(normalizedTool)
-                ? this.buildTeamsToolContext()
-                : RECORD_TOOLS.has(normalizedTool)
-                  ? this.buildRecordToolContext()
-                  : DOCUMENT_TOOLS.has(normalizedTool)
-                    ? this.buildDocumentToolContext()
-                    : PROMPT_TOOLS.has(normalizedTool)
-                      ? this.buildPromptToolContext()
-                      : SKILL_TOOLS.has(normalizedTool)
-                        ? this.buildSkillToolContext()
-                        : SESSION_TOOLS.has(normalizedTool)
-                          ? this.buildSessionToolContext()
-                          : ACTIVITY_TOOLS.has(normalizedTool)
-                            ? this.buildActivityToolContext()
-                            : AGENT_TOOLS.has(normalizedTool)
-                              ? this.buildAgentToolContext()
-                              : {
-                                  success: false,
-                                  error: {
-                                    code: 'UNKNOWN_TOOL',
-                                    message: `Unknown tool: ${tool}`,
+          : PROJECT_TOOLS.has(normalizedTool)
+            ? this.buildProjectToolContext()
+            : EPIC_TOOLS.has(normalizedTool)
+              ? this.buildEpicToolContext()
+              : REVIEW_TOOLS.has(normalizedTool)
+                ? this.buildReviewToolContext()
+                : TEAMS_TOOLS.has(normalizedTool)
+                  ? this.buildTeamsToolContext()
+                  : RECORD_TOOLS.has(normalizedTool)
+                    ? this.buildRecordToolContext()
+                    : DOCUMENT_TOOLS.has(normalizedTool)
+                      ? this.buildDocumentToolContext()
+                      : PROMPT_TOOLS.has(normalizedTool)
+                        ? this.buildPromptToolContext()
+                        : SKILL_TOOLS.has(normalizedTool)
+                          ? this.buildSkillToolContext()
+                          : SESSION_TOOLS.has(normalizedTool)
+                            ? this.buildSessionToolContext()
+                            : ACTIVITY_TOOLS.has(normalizedTool)
+                              ? this.buildActivityToolContext()
+                              : AGENT_TOOLS.has(normalizedTool)
+                                ? this.buildAgentToolContext()
+                                : {
+                                    success: false,
+                                    error: {
+                                      code: 'UNKNOWN_TOOL',
+                                      message: `Unknown tool: ${tool}`,
+                                    },
                                   },
-                                },
         parsed,
       );
     } catch (error) {

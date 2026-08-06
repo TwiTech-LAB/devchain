@@ -12,6 +12,7 @@ import {
   isHookCapable,
   isProjectProvisioningCapable,
   isTranscriptDiscoveryCapable,
+  isProviderPluginCapable,
 } from './type-guards';
 
 describe('type-guards', () => {
@@ -88,6 +89,24 @@ describe('type-guards', () => {
       if (isAutoCompactCapable(claude)) {
         expect(typeof claude.applyAutoCompactConfig).toBe('function');
         expect(typeof claude.evaluateAutoCompactConfig).toBe('function');
+      }
+    });
+  });
+
+  describe('isProviderPluginCapable', () => {
+    it('returns true only for Claude and Codex', () => {
+      expect(isProviderPluginCapable(claude)).toBe(true);
+      expect(isProviderPluginCapable(codex)).toBe(true);
+      expect(isProviderPluginCapable(opencode)).toBe(false);
+      expect(isProviderPluginCapable(antigravity)).toBe(false);
+      expect(isProviderPluginCapable(copilot)).toBe(false);
+    });
+
+    it('narrows to the plugin catalog and installation methods', () => {
+      if (isProviderPluginCapable(claude)) {
+        expect(typeof claude.listProviderPlugins).toBe('function');
+        expect(typeof claude.installProviderPlugin).toBe('function');
+        expect(typeof claude.parseProviderPluginCatalog).toBe('function');
       }
     });
   });

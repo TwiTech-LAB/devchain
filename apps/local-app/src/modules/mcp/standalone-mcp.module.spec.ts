@@ -52,4 +52,14 @@ describe('StandaloneMcpModule', () => {
     expect(response.success).toBe(false);
     expect(response.error?.code).toBe('SERVICE_UNAVAILABLE');
   });
+
+  it('advertises project discovery but returns SERVICE_UNAVAILABLE in standalone mode', async () => {
+    const service = module.get(McpService);
+    const response = await service.handleToolCall('devchain_projects_list', {
+      sessionId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+    });
+
+    expect(response.success).toBe(false);
+    expect(response.error?.code).toBe('SERVICE_UNAVAILABLE');
+  });
 });

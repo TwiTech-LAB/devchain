@@ -35,6 +35,7 @@ export function mapEpicSummary(epic: Epic, agentNameById?: Map<string, string>):
     id: epic.id,
     title: epic.title,
     description: epic.description ?? null,
+    createdBy: epic.createdBy,
     version: epic.version,
   };
 

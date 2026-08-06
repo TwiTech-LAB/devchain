@@ -252,6 +252,27 @@ describe('ProjectsService', () => {
   });
 
   describe('importProject', () => {
+    it('rejects multiple project owners before replacing any project data', async () => {
+      await expect(
+        service.importProject({
+          projectId: 'project-123',
+          payload: {
+            agents: [
+              { name: 'Coder', isProjectOwner: true },
+              { name: 'Reviewer', isProjectOwner: true },
+            ],
+          },
+          dryRun: false,
+        }),
+      ).rejects.toThrow('At most one agent can be designated as project owner');
+
+      expect(storage.parkSessionsFromAgents).not.toHaveBeenCalled();
+      expect(storage.deleteAgent).not.toHaveBeenCalled();
+      expect(storage.deleteAgentProfile).not.toHaveBeenCalled();
+      expect(storage.deletePrompt).not.toHaveBeenCalled();
+      expect(storage.deleteStatus).not.toHaveBeenCalled();
+    });
+
     it('should return counts and missingProviders in dry run mode without DB mutations', async () => {
       const projectId = 'project-123';
       const payload = {

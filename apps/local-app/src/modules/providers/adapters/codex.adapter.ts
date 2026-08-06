@@ -10,11 +10,24 @@ import type {
   McpCliCapability,
   TranscriptDiscoveryCapability,
   EffortCapability,
+  ProviderPluginCapability,
 } from './capabilities';
+import type { ProviderPluginCatalogEntry } from '../dtos/provider-plugin.dto';
+import {
+  optionalBoolean,
+  optionalString,
+  parseProviderPluginCatalogPayload,
+  requireString,
+} from './plugin-catalog.utils';
 
 @Injectable()
 export class CodexAdapter
-  implements ProviderAdapter, McpCliCapability, TranscriptDiscoveryCapability, EffortCapability
+  implements
+    ProviderAdapter,
+    McpCliCapability,
+    TranscriptDiscoveryCapability,
+    EffortCapability,
+    ProviderPluginCapability
 {
   readonly providerName = 'codex';
 
@@ -51,6 +64,66 @@ export class CodexAdapter
     '-c',
     'check_for_update_on_startup=false',
   ];
+
+  listProviderPlugins(): string[] {
+    return ['plugin', 'list', '--available', '--json'];
+  }
+
+  installProviderPlugin(pluginId: string): string[] {
+    return ['plugin', 'add', pluginId, '--json'];
+  }
+
+  parseProviderPluginCatalog(stdout: string): ProviderPluginCatalogEntry[] {
+    const payload = parseProviderPluginCatalogPayload(stdout, this.providerName);
+    const entries = new Map<string, ProviderPluginCatalogEntry>();
+
+    for (const available of payload.available) {
+      const pluginId = requireString(available, 'pluginId', 'Codex available plugin');
+      entries.set(pluginId, this.normalizeProviderPlugin(available, pluginId, true));
+    }
+
+    for (const installed of payload.installed) {
+      const pluginId = requireString(installed, 'pluginId', 'Codex installed plugin');
+      const existing = entries.get(pluginId);
+      const normalized = this.normalizeProviderPlugin(
+        installed,
+        pluginId,
+        existing?.available ?? false,
+      );
+      entries.set(pluginId, {
+        ...normalized,
+        description: existing?.description ?? normalized.description,
+        marketplaceName: normalized.marketplaceName ?? existing?.marketplaceName ?? null,
+        available: existing?.available ?? normalized.available,
+        installed: true,
+        installPolicy: normalized.installPolicy ?? existing?.installPolicy ?? null,
+        authPolicy: normalized.authPolicy ?? existing?.authPolicy ?? null,
+      });
+    }
+
+    return [...entries.values()];
+  }
+
+  private normalizeProviderPlugin(
+    plugin: Record<string, unknown>,
+    pluginId: string,
+    available: boolean,
+  ): ProviderPluginCatalogEntry {
+    return {
+      pluginId,
+      name: requireString(plugin, 'name', `Codex plugin ${pluginId}`),
+      description: optionalString(plugin, 'description'),
+      marketplaceName: optionalString(plugin, 'marketplaceName'),
+      version: optionalString(plugin, 'version'),
+      installed: optionalBoolean(plugin, 'installed'),
+      available,
+      providerEnabled: optionalBoolean(plugin, 'enabled'),
+      installationScopes: [],
+      installCount: null,
+      installPolicy: optionalString(plugin, 'installPolicy'),
+      authPolicy: optionalString(plugin, 'authPolicy'),
+    };
+  }
 
   addMcpServer(options: AddMcpServerOptions): string[] {
     const alias = options.alias ?? this.providerName;

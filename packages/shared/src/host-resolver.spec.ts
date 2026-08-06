@@ -264,8 +264,6 @@ describe('regression: no wildcard leaks in generated URLs', () => {
   });
 
   it('snapshot: wildcard IPv6 resolves to loopback', () => {
-    expect(HostResolver.buildInternalBaseUrl({ host: '::', port: 3000 })).toBe(
-      'http://[::1]:3000',
-    );
+    expect(HostResolver.buildInternalBaseUrl({ host: '::', port: 3000 })).toBe('http://[::1]:3000');
   });
 });

@@ -5,7 +5,7 @@ jest.mock('fs/promises', () => ({
   access: jest.fn(),
 }));
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const mockAccess = require('fs/promises').access as jest.Mock;
 
 const originalPlatform = process.platform;
