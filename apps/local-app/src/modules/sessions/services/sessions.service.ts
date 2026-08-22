@@ -728,10 +728,13 @@ export class SessionsService {
       return { confirmed: result.confirmed, method: result.method };
     }
 
+    const draftKeys = await this.providerAdapterFactory.getPromptDraftKeysForAgent(agentId);
+
     const result = await this.terminalIO.deliver({ name: session.tmuxSessionId }, text, {
       agentId,
       submitKeys: ['Enter'],
       postPasteDelayMs,
+      draftKeys,
     });
 
     return { confirmed: result.confirmed, method: result.method };

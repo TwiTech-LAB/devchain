@@ -7,6 +7,7 @@ import type {
   McpServerEntry,
   LaunchInitialPromptBehavior,
   TerminalOutputBehavior,
+  RuntimePromptBehavior,
   BuildLaunchArgsInput,
 } from './provider-adapter.interface';
 import type {
@@ -63,6 +64,14 @@ export class ClaudeAdapter
   readonly launchInitialPromptBehavior: LaunchInitialPromptBehavior = {
     preKeys: ['Enter'],
     preDelayMs: 2000,
+  };
+
+  // Claude's prompt is readline-style: C-u kills the line into a ring that C-y
+  // yanks back ("Ctrl+Y to paste deleted text"). C-e first because C-u alone
+  // kills only to the line start, which would leave the text after the cursor
+  // behind for the injected message to be appended to.
+  readonly runtimePromptBehavior: RuntimePromptBehavior = {
+    promptDraftKeys: { stash: ['C-e', 'C-u'], restore: ['C-y'] },
   };
 
   // Claude's fullscreen renderer previously needed raw LF handling while

@@ -4,6 +4,7 @@ import type {
   AddMcpServerOptions,
   McpServerEntry,
   LaunchInitialPromptBehavior,
+  RuntimePromptBehavior,
   BuildLaunchArgsInput,
 } from './provider-adapter.interface';
 import type {
@@ -44,6 +45,12 @@ export class CodexAdapter
   readonly launchInitialPromptBehavior: LaunchInitialPromptBehavior = {
     preKeys: ['Enter'],
     preDelayMs: 2000,
+  };
+
+  // Codex's composer implements the same readline kill/yank as Claude's prompt:
+  // C-e C-u clears it retaining the text, C-y restores it verbatim.
+  readonly runtimePromptBehavior: RuntimePromptBehavior = {
+    promptDraftKeys: { stash: ['C-e', 'C-u'], restore: ['C-y'] },
   };
 
   /**

@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { ProviderAdapter } from './provider-adapter.interface';
+import { ProviderAdapter, type RuntimePromptBehavior } from './provider-adapter.interface';
+import type { PromptDraftKeys } from '../../terminal/services/terminal-io/types';
 import { ClaudeAdapter } from './claude.adapter';
 import { CodexAdapter } from './codex.adapter';
 import { OpencodeAdapter } from './opencode.adapter';
@@ -71,6 +72,16 @@ export class ProviderAdapterFactory {
   }
 
   async getPostPasteDelayMsForAgent(agentId: string): Promise<number | undefined> {
+    return (await this.getRuntimePromptBehaviorForAgent(agentId))?.postPasteDelayMs;
+  }
+
+  async getPromptDraftKeysForAgent(agentId: string): Promise<PromptDraftKeys | undefined> {
+    return (await this.getRuntimePromptBehaviorForAgent(agentId))?.promptDraftKeys;
+  }
+
+  private async getRuntimePromptBehaviorForAgent(
+    agentId: string,
+  ): Promise<RuntimePromptBehavior | undefined> {
     try {
       const agent = await this.storage.getAgent(agentId);
       if (!agent.providerConfigId) return undefined;
@@ -85,7 +96,7 @@ export class ProviderAdapterFactory {
       if (!providerName) return undefined;
 
       const adapter = this.adapters.get(providerName.toLowerCase());
-      return adapter?.runtimePromptBehavior?.postPasteDelayMs;
+      return adapter?.runtimePromptBehavior;
     } catch {
       return undefined;
     }

@@ -987,10 +987,12 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     try {
       const postPasteDelayMs =
         await this.providerAdapterFactory.getPostPasteDelayMsForAgent(agentId);
+      const draftKeys = await this.providerAdapterFactory.getPromptDraftKeysForAgent(agentId);
       const result = await this.terminalIO.deliver({ name: tmuxSessionId }, baseText, {
         agentId,
         submitKeys,
         postPasteDelayMs,
+        draftKeys,
       });
 
       const deliveredAt = Date.now();
@@ -1091,6 +1093,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     await this.coordinator.withAgentLock(agentId, async () => {
       const postPasteDelayMs =
         await this.providerAdapterFactory.getPostPasteDelayMsForAgent(agentId);
+      const draftKeys = await this.providerAdapterFactory.getPromptDraftKeysForAgent(agentId);
       if (opts?.skipConfirmation) {
         const delivery = await this.terminalIO.deliverImmediate(
           { name: session.tmuxSessionId! },
@@ -1101,6 +1104,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
             confirm: false,
             preKeys: opts?.preKeys,
             preDelayMs: opts?.preDelayMs,
+            draftKeys,
           },
         );
         result = { nonce: delivery.nonce, skipped: true, retryCount: 0 };
@@ -1111,6 +1115,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
           postPasteDelayMs,
           preKeys: opts?.preKeys,
           preDelayMs: opts?.preDelayMs,
+          draftKeys,
         });
         result = {
           nonce: delivery.nonce,

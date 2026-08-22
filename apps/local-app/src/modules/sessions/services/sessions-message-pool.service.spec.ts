@@ -40,7 +40,7 @@ describe('SessionsMessagePoolService', () => {
   let mockStorage: jest.Mocked<Pick<StorageService, 'getAgent'>>;
   let mockActivityStream: jest.Mocked<MessageActivityStreamService>;
   let mockProviderAdapterFactory: jest.Mocked<
-    Pick<ProviderAdapterFactory, 'getPostPasteDelayMsForAgent'>
+    Pick<ProviderAdapterFactory, 'getPostPasteDelayMsForAgent' | 'getPromptDraftKeysForAgent'>
   >;
 
   const createMockAgent = (overrides: { id?: string; name?: string; projectId?: string } = {}) => ({
@@ -125,6 +125,7 @@ describe('SessionsMessagePoolService', () => {
 
     mockProviderAdapterFactory = {
       getPostPasteDelayMsForAgent: jest.fn().mockResolvedValue(undefined),
+      getPromptDraftKeysForAgent: jest.fn().mockResolvedValue(undefined),
     };
 
     const mockMessageLog = new MessageLogService();

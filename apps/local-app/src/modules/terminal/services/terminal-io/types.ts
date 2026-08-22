@@ -42,6 +42,18 @@ export interface WaitForOutputOptions {
   readonly lines?: number;
 }
 
+/**
+ * Keys that move an in-progress user draft out of the prompt before an injected
+ * message is submitted, and put it back afterwards. Providers declare these; see
+ * `RuntimePromptBehavior.promptDraftKeys`.
+ */
+export interface PromptDraftKeys {
+  /** Clears the prompt from any cursor position, retaining the text. */
+  readonly stash: readonly string[];
+  /** Restores the stashed text verbatim. */
+  readonly restore: readonly string[];
+}
+
 export interface DeliveryOptions {
   readonly agentId: string;
   readonly bracketed?: boolean;
@@ -52,6 +64,12 @@ export interface DeliveryOptions {
   readonly confirm?: boolean;
   readonly confirmTimeoutMs?: number;
   readonly maxAttempts?: number;
+  /**
+   * Provider keys used to protect an unsent user draft. Supplied only when the
+   * provider declares support; delivery additionally requires the pane to
+   * actually hold a draft before using them.
+   */
+  readonly draftKeys?: PromptDraftKeys;
 }
 
 export interface DeliveryResult {

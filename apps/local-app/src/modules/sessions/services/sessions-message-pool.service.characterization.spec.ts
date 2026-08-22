@@ -53,6 +53,7 @@ describe('SessionsMessagePoolService characterization', () => {
     };
     const providerAdapterFactory = {
       getPostPasteDelayMsForAgent: jest.fn().mockResolvedValue(undefined),
+      getPromptDraftKeysForAgent: jest.fn().mockResolvedValue(undefined),
     };
     const messageLog = new MessageLogService();
     const failureNotifier = { notifySendersOfFailure: jest.fn().mockResolvedValue(undefined) };

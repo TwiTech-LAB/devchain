@@ -1,3 +1,7 @@
+// Type-only import: prompt-draft keys are consumed by terminal delivery, so the
+// shape is defined once there rather than duplicated here.
+import type { PromptDraftKeys } from '../../terminal/services/terminal-io/types';
+
 export interface McpServerEntry {
   alias: string;
   endpoint: string;
@@ -11,6 +15,24 @@ export interface LaunchInitialPromptBehavior {
 
 export interface RuntimePromptBehavior {
   postPasteDelayMs?: number;
+  /**
+   * Keys that stash an in-progress user draft out of the prompt before an
+   * injected message is submitted, and restore it afterwards. Without these, a
+   * message delivered while the user is mid-sentence is submitted together with
+   * their unsent text, and the rest of what they were typing becomes a separate
+   * message.
+   *
+   * Declare ONLY for providers whose prompt implements readline-style
+   * kill/yank, verified against the real TUI: `stash` must clear the prompt from
+   * ANY cursor position (`C-u` alone kills only to line start, so it needs a
+   * preceding `C-e`), and `restore` must put the text back verbatim.
+   *
+   * Delivery issues stash, paste, submit and restore as a single tmux command
+   * list so the user cannot type into the middle of it, which leaves no room for
+   * `postPasteDelayMs` between the paste and the submit. Only declare these for a
+   * provider that ingests a bracketed paste before reading the following Enter.
+   */
+  promptDraftKeys?: PromptDraftKeys;
 }
 
 export interface TerminalOutputBehavior {

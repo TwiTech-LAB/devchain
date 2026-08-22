@@ -166,6 +166,7 @@ describe('project delivery failure redaction workflow', () => {
     const messageLog = new MessageLogService();
     const providerAdapterFactory = {
       getPostPasteDelayMsForAgent: jest.fn().mockResolvedValue(undefined),
+      getPromptDraftKeysForAgent: jest.fn().mockResolvedValue(undefined),
     };
     const notifier = new DeliveryFailureNotifierService(terminalIO as never, sessions as never);
     pool = new SessionsMessagePoolService(

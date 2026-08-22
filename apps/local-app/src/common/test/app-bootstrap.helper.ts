@@ -183,6 +183,7 @@ function createProviderAdapterFactoryMock(): Record<string, jest.Mock> {
     isSupported: jest.fn().mockReturnValue(true),
     getSupportedProviders: jest.fn().mockReturnValue(['test']),
     getPostPasteDelayMsForAgent: jest.fn().mockResolvedValue(undefined),
+    getPromptDraftKeysForAgent: jest.fn().mockResolvedValue(undefined),
   };
 }
 

@@ -118,7 +118,10 @@ describe('SessionsMessagePoolService idle lifecycle integration', () => {
         },
         {
           provide: ProviderAdapterFactory,
-          useValue: { getPostPasteDelayMsForAgent: jest.fn(async () => undefined) },
+          useValue: {
+            getPostPasteDelayMsForAgent: jest.fn(async () => undefined),
+            getPromptDraftKeysForAgent: jest.fn(async () => undefined),
+          },
         },
         {
           provide: DeliveryFailureNotifierService,

@@ -43,6 +43,8 @@ interface SessionLifecycleState {
 @Injectable()
 export class TerminalIOService implements OnModuleDestroy {
   private readonly gap: SendGap;
+  private readonly draftTracker = new PromptDraftTracker();
+  private readonly paneWrites = new PaneWriteQueue();
   private readonly healthMonitors = new Map<string, HealthMonitorRecord>();
   private readonly lifecycleStates = new Map<string, SessionLifecycleState>();
   private nextMonitorToken = 0;
@@ -63,6 +65,8 @@ export class TerminalIOService implements OnModuleDestroy {
     this.healthMonitors.clear();
     this.lifecycleStates.clear();
     this.gap.clear();
+    this.draftTracker.clearAll();
+    this.paneWrites.clear();
   }
 
   // ── Lifecycle ───────────────────────────────────────────────────────────
@@ -76,6 +80,7 @@ export class TerminalIOService implements OnModuleDestroy {
   }
 
   async destroySession(target: SessionTarget): Promise<void> {
+    this.draftTracker.clear(target.name);
     return lifecycle.destroySession(this.executor, target);
   }
 
@@ -177,6 +182,7 @@ export class TerminalIOService implements OnModuleDestroy {
       argv: ['tmux', 'send-keys', '-t', `=${target.name}:`, 'Enter'],
       mode: 'pipe',
     });
+    this.draftTracker.clear(target.name);
     if (!enterResult.success || enterResult.timedOut) {
       throw new TypeCommandFailedError(
         target.name,
@@ -396,7 +402,30 @@ export class TerminalIOService implements OnModuleDestroy {
     text: string,
     options: DeliveryOptions,
   ): Promise<DeliveryResult> {
-    return deliveryMod.deliver(this.executor, this.gap, target, text, options);
+    return this.paneWrites.run(target.name, async () => {
+      const hasPendingDraft = this.draftTracker.hasPendingDraft(target.name);
+      logger.debug(
+        {
+          session: target.name,
+          agentId: options.agentId,
+          hasPendingDraft,
+          hasDraftKeys: Boolean(options.draftKeys),
+          multilineDraft: this.draftTracker.hasMultilineDraft(target.name),
+          preservesDraft:
+            hasPendingDraft &&
+            Boolean(options.draftKeys) &&
+            !this.draftTracker.hasMultilineDraft(target.name),
+        },
+        'Delivering to pane',
+      );
+      const result = await deliveryMod.deliver(this.executor, this.gap, target, text, options, {
+        hasPendingDraft,
+        draftProbe: this.draftTracker.draftProbe(target.name),
+        multilineDraft: this.draftTracker.hasMultilineDraft(target.name),
+      });
+      this.noteDeliveryCommitted(target, options, hasPendingDraft);
+      return result;
+    });
   }
 
   async deliverImmediate(
@@ -404,11 +433,233 @@ export class TerminalIOService implements OnModuleDestroy {
     text: string,
     options: Omit<DeliveryOptions, 'agentId'>,
   ): Promise<DeliveryResult> {
-    return deliveryMod.deliverImmediate(this.executor, target, text, options);
+    return this.paneWrites.run(target.name, async () => {
+      const hasPendingDraft = this.draftTracker.hasPendingDraft(target.name);
+      const result = await deliveryMod.deliverImmediate(this.executor, target, text, options, {
+        hasPendingDraft,
+        draftProbe: this.draftTracker.draftProbe(target.name),
+        multilineDraft: this.draftTracker.hasMultilineDraft(target.name),
+      });
+      if (!hasPendingDraft || !options.draftKeys) {
+        // No draft was preserved, so the pasted text simply joined whatever is in
+        // the prompt: it is a new draft when nothing submits it, and otherwise the
+        // submit left the prompt empty.
+        if ((options.submitKeys ?? ['Enter']).length === 0) {
+          this.draftTracker.noteDraftContent(target.name, text);
+        } else {
+          this.draftTracker.clear(target.name);
+        }
+      }
+      return result;
+    });
   }
 
   async sendControl(target: SessionTarget, keys: readonly string[]): Promise<void> {
-    return deliveryMod.sendControl(this.executor, target, keys);
+    // Queued behind any injection in flight, so the user's keystrokes cannot land
+    // between a stashed draft and the submit that follows it. They are held, not
+    // dropped, and replay in the order they were typed.
+    return this.paneWrites.run(target.name, async () => {
+      this.draftTracker.noteTypedKeys(target.name, keys);
+      return deliveryMod.sendControl(this.executor, target, keys);
+    });
+  }
+
+  /**
+   * A delivery that ends in a submit key leaves the prompt empty — unless the
+   * draft-preserving path ran, which puts the user's text back.
+   */
+  private noteDeliveryCommitted(
+    target: SessionTarget,
+    options: Omit<DeliveryOptions, 'agentId'>,
+    preservedDraft: boolean,
+  ): void {
+    if (preservedDraft && options.draftKeys) return;
+    if ((options.submitKeys ?? ['Enter']).length === 0) return;
+    this.draftTracker.clear(target.name);
+  }
+}
+
+/**
+ * Serializes writes to a pane, one at a time, in the order they were requested.
+ *
+ * The pane is written to by both the user (keystrokes forwarded from a terminal
+ * view) and by delivery. A draft-preserving delivery has to clear the prompt,
+ * paste, wait for the provider to assemble the paste, and only then submit — so
+ * for the length of that window a keystroke arriving in between would be caught
+ * by the submit. Queuing holds those keystrokes and replays them afterwards
+ * instead, which costs the typist the duration of an injection in latency and is
+ * the reason the injection is kept as short as it can be.
+ */
+class PaneWriteQueue {
+  private readonly tails = new Map<string, Promise<void>>();
+
+  run<T>(pane: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.tails.get(pane) ?? Promise.resolve();
+    // `task` runs whether or not the previous write settled: one failed write
+    // must not strand everything queued behind it.
+    const result = previous.then(task, task);
+    const tail: Promise<void> = result.then(
+      () => {},
+      () => {},
+    );
+    this.tails.set(pane, tail);
+    void tail.then(() => {
+      if (this.tails.get(pane) === tail) this.tails.delete(pane);
+    });
+    return result;
+  }
+
+  clear(): void {
+    this.tails.clear();
+  }
+}
+
+/** How much of a draft's start to remember, for verifying that a stash worked. */
+const DRAFT_PROBE_CHARS = 32;
+/**
+ * Shorter than this and a probe risks matching unrelated text in a capture. Kept
+ * low deliberately: a draft of "line 1" has to be long enough to check, and a
+ * false match only costs preservation — delivery then behaves as it always did.
+ */
+const DRAFT_PROBE_MIN_CHARS = 4;
+
+/** tmux key names that leave the provider's prompt empty. */
+const PROMPT_CLEARING_KEYS: ReadonlySet<string> = new Set(['Enter', 'Escape', 'C-c', 'C-u', 'C-g']);
+/** The same actions as raw bytes, for input forwarded literally. */
+const PROMPT_CLEARING_BYTES: ReadonlySet<string> = new Set(['\r', '\n', '\x1b', '\x03', '\x15']);
+
+/**
+ * Tracks, per pane, whether the user has typed something they have not submitted
+ * yet. Delivery needs this: stashing and restoring a draft that is not there
+ * would yank stale text out of the provider's kill ring and into the prompt.
+ *
+ * Every write DevChain makes to a pane passes through TerminalIOService, so this
+ * sees the input it forwards — but not input from a terminal attached to tmux
+ * directly, which reaches the pty without passing here. For those there is no
+ * draft to know about and delivery behaves as it did before. Only a length and a
+ * short prefix are kept, never the whole draft: the provider's own kill ring does
+ * the stashing, so all this needs to answer is whether something is there and
+ * whether it went away.
+ *
+ * It is an approximation: editing keys DevChain does not model (word kills,
+ * history recall) can leave the count non-zero over an empty prompt. The
+ * consequence is bounded — a stash/restore that yanks previously killed text
+ * back into the prompt, visible to the user and never submitted on its own —
+ * whereas missing a real draft merges it into an agent's message.
+ */
+class PromptDraftTracker {
+  private readonly pendingChars = new Map<string, number>();
+  private readonly probes = new Map<string, string>();
+  private readonly multiline = new Set<string>();
+
+  hasPendingDraft(pane: string): boolean {
+    return (this.pendingChars.get(pane) ?? 0) > 0;
+  }
+
+  /**
+   * The start of the draft, for checking afterwards that a stash really cleared
+   * the prompt. The START specifically: the stash keys clear a single line, so a
+   * multiline draft keeps its first line, and looking for the beginning of the
+   * text is what catches that.
+   */
+  /**
+   * Whether the draft is known to span more than one line. The stash keys clear a
+   * single line, so such a draft cannot be moved aside and delivery must not try.
+   */
+  hasMultilineDraft(pane: string): boolean {
+    return this.multiline.has(pane);
+  }
+
+  draftProbe(pane: string): string | undefined {
+    const probe = this.probes.get(pane);
+    return probe && probe.length >= DRAFT_PROBE_MIN_CHARS ? probe : undefined;
+  }
+
+  /** Input the user typed, as the argv tail of a `tmux send-keys` call. */
+  noteTypedKeys(pane: string, keys: readonly string[]): void {
+    if (keys.length === 0) return;
+
+    // `send-keys -l -- <text>`: characters forwarded literally.
+    if (keys[0] === '-l') {
+      this.noteTypedText(pane, keys[keys.length - 1] ?? '');
+      return;
+    }
+    if (keys.some((key) => PROMPT_CLEARING_KEYS.has(key))) {
+      this.clear(pane);
+      return;
+    }
+    if (keys.includes('BSpace')) this.add(pane, -1);
+  }
+
+  /**
+   * Text the user typed. A submit at the end of the chunk empties the prompt;
+   * terminals batch fast typing, so `abc\r` has to count as a submit too.
+   */
+  private noteTypedText(pane: string, text: string): void {
+    if (text.length === 0) return;
+    // An escape-prefixed return is how terminals send the "insert a newline"
+    // binding (alt/shift+enter). It grows the draft rather than submitting it, and
+    // reading it as a submit would lose track of the draft entirely.
+    if (/^\x1b[\r\n]$/.test(text)) {
+      this.add(pane, 1);
+      this.markMultiline(pane);
+      return;
+    }
+    if (text.endsWith('\r') || text.endsWith('\n')) {
+      this.clear(pane);
+      return;
+    }
+    if (text.length === 1 && PROMPT_CLEARING_BYTES.has(text)) {
+      this.clear(pane);
+      return;
+    }
+    this.add(pane, text.length);
+    this.extendProbe(pane, text);
+  }
+
+  /**
+   * Text placed into the prompt without submitting it (a paste). Never a submit,
+   * whatever it contains — so newlines in it are draft content, not a commit.
+   */
+  noteDraftContent(pane: string, text: string): void {
+    this.add(pane, text.length);
+    this.noteNewlinesIn(pane, text);
+    this.extendProbe(pane, text);
+  }
+
+  clear(pane: string): void {
+    this.pendingChars.delete(pane);
+    this.probes.delete(pane);
+    this.multiline.delete(pane);
+  }
+
+  clearAll(): void {
+    this.pendingChars.clear();
+    this.probes.clear();
+    this.multiline.clear();
+  }
+
+  private markMultiline(pane: string): void {
+    this.multiline.add(pane);
+  }
+
+  private noteNewlinesIn(pane: string, text: string): void {
+    if (/[\r\n]/.test(text)) this.markMultiline(pane);
+  }
+
+  private extendProbe(pane: string, text: string): void {
+    const current = this.probes.get(pane) ?? '';
+    if (current.length >= DRAFT_PROBE_CHARS) return;
+    // Only the first line is usable: the capture it gets compared against holds
+    // one prompt line at a time.
+    const firstLine = (current + text).slice(0, DRAFT_PROBE_CHARS).split(/[\r\n]/)[0] ?? '';
+    this.probes.set(pane, firstLine);
+  }
+
+  private add(pane: string, delta: number): void {
+    const next = (this.pendingChars.get(pane) ?? 0) + delta;
+    if (next <= 0) this.pendingChars.delete(pane);
+    else this.pendingChars.set(pane, next);
   }
 }
 

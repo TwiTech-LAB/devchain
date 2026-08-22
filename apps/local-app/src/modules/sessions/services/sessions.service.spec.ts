@@ -57,7 +57,11 @@ describe('SessionsService', () => {
   let sqlitePrepare: jest.Mock;
   let sqliteExec: jest.Mock;
   let insertRunMock: jest.Mock;
-  let providerAdapterFactory: { getAdapter: jest.Mock; getPostPasteDelayMsForAgent: jest.Mock };
+  let providerAdapterFactory: {
+    getAdapter: jest.Mock;
+    getPostPasteDelayMsForAgent: jest.Mock;
+    getPromptDraftKeysForAgent: jest.Mock;
+  };
   let terminalSessionRegistry: {
     create: jest.Mock;
     bind: jest.Mock;
@@ -128,6 +132,7 @@ describe('SessionsService', () => {
     providerAdapterFactory = {
       getAdapter: jest.fn().mockReturnValue({ providerName: 'claude' }),
       getPostPasteDelayMsForAgent: jest.fn().mockResolvedValue(undefined),
+      getPromptDraftKeysForAgent: jest.fn().mockResolvedValue(undefined),
     };
 
     terminalSessionRegistry = {
