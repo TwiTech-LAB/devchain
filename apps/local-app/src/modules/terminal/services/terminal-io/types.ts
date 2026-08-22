@@ -60,3 +60,14 @@ export interface DeliveryResult {
   readonly retryCount: number;
   readonly method?: 'nonce' | 'paste_indicator' | 'paste_changed';
 }
+
+export interface HumanDraftDeferredResult {
+  readonly deferred: 'human_draft';
+}
+
+export type GuardedDeliveryResult = DeliveryResult | HumanDraftDeferredResult;
+
+export interface GuardedDeliveryMutationFence {
+  canStartMutation(): boolean;
+  markMutationStarted(): void;
+}

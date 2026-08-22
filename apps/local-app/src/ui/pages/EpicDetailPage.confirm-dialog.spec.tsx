@@ -3,6 +3,14 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { EpicDetailPage } from './EpicDetailPage';
 
+jest.mock('@/ui/hooks/useIntegrationAvailability', () => ({
+  useIntegrationAvailability: () => ({
+    canUseIntegrations: true,
+    runtimeResolved: true,
+    reason: null,
+  }),
+}));
+
 const mockNavigate = jest.fn();
 const mockUseSelectedProject = jest.fn();
 const mockApiFetch = jest.fn();

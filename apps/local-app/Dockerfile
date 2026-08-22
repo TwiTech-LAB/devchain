@@ -3,7 +3,7 @@
 FROM node:24-slim AS builder
 
 WORKDIR /app
-ARG PNPM_VERSION=10.21.0
+ARG PNPM_VERSION=11.22.0
 
 # Build toolchain required by node-pty
 RUN apt-get update \
@@ -13,7 +13,7 @@ RUN apt-get update \
 RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate
 
 # Workspace manifests for dependency resolution/cache
-COPY pnpm-lock.yaml pnpm-workspace.yaml package.json .npmrc ./
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY apps/local-app/package.json ./apps/local-app/
 COPY packages/shared/package.json ./packages/shared/
 

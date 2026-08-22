@@ -7,45 +7,9 @@ import { getRawSqliteClient } from '../../storage/db/sqlite-raw';
 import { SettingsService } from '../../settings/services/settings.service';
 import { TerminalSessionRegistry } from './terminal-session/terminal-session-registry';
 import type { FrameEvent } from './terminal-session/terminal-frame-stream';
+import { createMeaningfulOutputPredicate } from '../utils/terminal-activity';
 
 const logger = createLogger('TerminalActivityService');
-
-/**
- * Strip ANSI escape sequences from terminal output.
- * Removes CSI (Control Sequence Introducer) and OSC (Operating System Command) sequences.
- * CSI: ESC [ ... (0x1B 0x5B)
- * OSC: ESC ] ... BEL or ESC \ (0x1B 0x5D terminated by 0x07 or 0x1B 0x5C)
- */
-function stripAnsiSequences(data: string): string {
-  // Remove CSI sequences: ESC[ followed by parameter bytes and intermediate bytes, ending with final byte
-  // Final bytes are 0x40-0x7E (ASCII @ through ~)
-  const csiRegex = /\x1B\[[\x20-\x3F]*[\x40-\x7E]/g;
-  // Remove OSC sequences: ESC] ... terminated by BEL (\x07) or ST (ESC \ = \x1B\)
-  // Uses non-capturing group to properly consume the 2-byte ST terminator
-  const oscRegex = /\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)/g;
-  // Remove simple escape sequences like ESC M (reverse line feed)
-  const simpleEscRegex = /\x1B[\x40-\x5F]/g;
-
-  return data.replace(csiRegex, '').replace(oscRegex, '').replace(simpleEscRegex, '');
-}
-
-/**
- * Strip control characters (0x00-0x1F) except newline (0x0A) and tab (0x09).
- * Preserves printable text while removing terminal control codes.
- */
-function stripControlChars(data: string): string {
-  // Remove chars 0x00-0x08, 0x0B-0x0C, 0x0E-0x1F (keep \n=0x0A, \t=0x09)
-  return data.replace(/[\x00-\x08\x0B-\x0C\x0E-\x1F]/g, '');
-}
-
-/**
- * Check if data contains non-whitespace characters (Unicode-safe).
- * Returns true if there's any printable/visible character present.
- */
-function hasNonWhitespace(data: string): boolean {
-  // \S matches any non-whitespace character (Unicode-aware)
-  return /\S/.test(data);
-}
 
 @Injectable()
 export class TerminalActivityService implements OnModuleDestroy {
@@ -88,17 +52,16 @@ export class TerminalActivityService implements OnModuleDestroy {
     }
 
     this.suppressUntil.set(sessionId, suppressUntil);
+    const hasMeaningfulOutput = createMeaningfulOutputPredicate();
 
     const listener = (frame: FrameEvent) => {
       if (frame.type !== 'data') return;
-      if (Date.now() < (this.suppressUntil.get(sessionId) ?? 0)) return;
       const payload = frame.payload as { data?: unknown };
       if (typeof payload?.data !== 'string') return;
       try {
-        const cleaned = stripControlChars(stripAnsiSequences(payload.data));
-        if (hasNonWhitespace(cleaned)) {
-          this.signal(sessionId);
-        }
+        if (!hasMeaningfulOutput(payload.data)) return;
+        if (Date.now() < (this.suppressUntil.get(sessionId) ?? 0)) return;
+        this.signal(sessionId);
       } catch (error) {
         logger.warn({ sessionId, error }, 'Failed to signal activity');
       }

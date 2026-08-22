@@ -9,6 +9,9 @@ export interface RuntimeInfo {
   features?: {
     cloudUi?: boolean;
   };
+  integrationAdmission?:
+    | { allowed: true; reason: null }
+    | { allowed: false; reason: 'child_runtime' | 'non_loopback_host' };
 }
 
 export async function fetchRuntimeInfo(): Promise<RuntimeInfo> {

@@ -47,6 +47,7 @@ import { CloudModule } from './modules/cloud/cloud.module';
 import { CloudTunnelModule } from './modules/cloud-tunnel/cloud-tunnel.module';
 import { E2eeModule } from './modules/e2ee/e2ee.module';
 import { MetricsModule } from './modules/metrics/metrics.module';
+import { ExternalIntegrationsModule } from './modules/external-integrations/external-integrations.module';
 
 @Module({
   imports: [
@@ -94,6 +95,7 @@ import { MetricsModule } from './modules/metrics/metrics.module';
     CloudModule,
     CloudTunnelModule,
     E2eeModule,
+    ExternalIntegrationsModule,
   ],
   controllers: [],
   providers: [

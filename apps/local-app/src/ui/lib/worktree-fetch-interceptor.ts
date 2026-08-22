@@ -3,6 +3,7 @@ export const MAIN_INSTANCE_API_PREFIXES = [
   '/api/templates',
   '/api/runtime',
   '/api/registry',
+  '/api/integrations',
 ];
 export const WORKTREE_PROXY_UNAVAILABLE_EVENT = 'devchain:worktree-proxy-unavailable';
 

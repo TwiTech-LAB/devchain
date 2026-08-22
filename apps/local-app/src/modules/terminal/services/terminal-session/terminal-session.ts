@@ -1,5 +1,7 @@
 import { TerminalFrameStream } from './terminal-frame-stream';
 import { normalizeLineEndings, stripFinalLineEnding } from '../../utils/normalize-line-endings';
+import { createMeaningfulOutputPredicate } from '../../utils/terminal-activity';
+import type { HumanPromptStateService } from '../human-prompt-state.service';
 
 export interface AuthorityResult {
   readonly granted: boolean;
@@ -39,6 +41,7 @@ export interface TerminalSessionOptions {
   readonly tmuxSessionName: string;
   readonly idleAfterMs?: number;
   readonly normalizeCapturedLineEndings?: boolean;
+  readonly humanPromptState?: HumanPromptStateService;
 }
 
 const ACTIVITY_SUPPRESSION_MS = 750;
@@ -70,6 +73,8 @@ export class TerminalSession {
   private readonly idleAfterMs: number;
   private readonly normalizeCapturedLineEndings: boolean;
   private io?: TerminalIORef;
+  private readonly humanPromptState?: HumanPromptStateService;
+  private readonly hasMeaningfulOutput = createMeaningfulOutputPredicate();
 
   constructor(options: TerminalSessionOptions) {
     this.sessionId = options.sessionId;
@@ -77,6 +82,7 @@ export class TerminalSession {
     this.idleAfterMs =
       options.idleAfterMs && options.idleAfterMs > 0 ? options.idleAfterMs : DEFAULT_IDLE_AFTER_MS;
     this.normalizeCapturedLineEndings = options.normalizeCapturedLineEndings === true;
+    this.humanPromptState = options.humanPromptState;
     this.stream = new TerminalFrameStream();
   }
 
@@ -248,12 +254,17 @@ export class TerminalSession {
 
   signalInput(): void {
     if (this.disposed) return;
+    this.humanPromptState?.recordExecutedInput(this.tmuxSessionName);
     this.lastInputAt = Date.now();
     this.markBusy();
   }
 
   pushFrame(data: string): void {
     if (this.disposed) return;
+
+    if (this.hasMeaningfulOutput(data)) {
+      this.humanPromptState?.recordMeaningfulOutput(this.tmuxSessionName);
+    }
 
     if (Date.now() >= this.suppressActivityUntil) {
       this.lastDataAt = Date.now();

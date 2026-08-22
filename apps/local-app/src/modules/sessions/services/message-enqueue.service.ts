@@ -23,6 +23,10 @@ export interface PoolMessage {
   readonly failureDisclosure?: FailureDisclosurePolicy;
   /** Caller-supplied idempotency key (mobile sends); threaded into the pool for dedup. */
   readonly clientMessageId?: string;
+  /** Internal delivery safety policy derived from structured sender identity. */
+  readonly deferWhileHumanTyping?: boolean;
+  /** Internal marker for an explicit human submit that completes prompt ownership. */
+  readonly humanPromptSubmit?: boolean;
 }
 
 export interface MessageEnqueueResult extends EnqueueResult {
@@ -59,6 +63,8 @@ export class MessageEnqueueService {
         agentName: message.agentName,
         failureDisclosure: message.failureDisclosure,
         clientMessageId: message.clientMessageId,
+        deferWhileHumanTyping: message.deferWhileHumanTyping,
+        humanPromptSubmit: message.humanPromptSubmit,
       });
 
       results.push({ agentId: message.agentId, ...result });

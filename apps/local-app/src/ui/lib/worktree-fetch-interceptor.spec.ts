@@ -96,6 +96,13 @@ describe('rewriteApiRequestUrl', () => {
         origin: TEST_ORIGIN,
       }),
     ).toBe('/api/registry/update-status');
+
+    expect(
+      rewriteApiRequestUrl('/api/integrations/connections', {
+        apiBase: '/wt/feature-auth',
+        origin: TEST_ORIGIN,
+      }),
+    ).toBe('/api/integrations/connections');
   });
 });
 

@@ -19,6 +19,8 @@ Object.defineProperty(window, 'matchMedia', {
 
 let mockActiveWorktree: { id: string; name: string; devchainProjectId: string | null } | null =
   null;
+let mockWorktreeApiBase = '';
+let mockWorktreeRuntimeResolved = true;
 
 // Mock components that use ESM-only modules (must be before App import)
 jest.mock('./components/review/DiffViewer', () => ({
@@ -76,10 +78,10 @@ jest.mock('./hooks/useWorktreeTab', () => ({
   useOptionalWorktreeTab: () => ({
     activeWorktree: mockActiveWorktree,
     setActiveWorktree: jest.fn(),
-    apiBase: '',
+    apiBase: mockWorktreeApiBase,
     worktrees: [],
     worktreesLoading: false,
-    runtimeResolved: true,
+    runtimeResolved: mockWorktreeRuntimeResolved,
   }),
 }));
 
@@ -116,6 +118,12 @@ jest.mock('./pages/ChatPage', () => ({
 
 jest.mock('./pages/CodebaseOverviewDisabledPage', () => ({
   CodebaseOverviewDisabledPage: () => <h1>Overview Disabled Page</h1>,
+}));
+
+const boardPageMock = jest.fn(() => <h1>Native Board Page</h1>);
+
+jest.mock('./pages/BoardPage', () => ({
+  BoardPage: boardPageMock,
 }));
 
 jest.mock('./pages/ReviewsPage.lazy', () => ({
@@ -162,6 +170,8 @@ describe('App startup routing', () => {
   beforeEach(() => {
     runtimeMode = 'normal';
     mockActiveWorktree = null;
+    mockWorktreeApiBase = '';
+    mockWorktreeRuntimeResolved = true;
     queryClient = new QueryClient({
       defaultOptions: {
         queries: {
@@ -206,6 +216,19 @@ describe('App startup routing', () => {
           json: async () => ({
             mode: runtimeMode,
             version: '1.0.0',
+            integrationAdmission: { allowed: true, reason: null },
+          }),
+        } as Response);
+      }
+
+      if (url.startsWith('/api/integrations/connections')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            items: [
+              { provider: 'clickup', connected: false, generation: null, updatedAt: null },
+              { provider: 'jira', connected: false, generation: null, updatedAt: null },
+            ],
           }),
         } as Response);
       }
@@ -429,4 +452,208 @@ describe('App startup routing', () => {
       expect(screen.getByRole('heading', { name: 'Reviews Page' })).toBeInTheDocument();
     });
   });
+});
+
+describe('App board routes', () => {
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    queryClient = new QueryClient({
+      defaultOptions: {
+        queries: {
+          retry: false,
+        },
+      },
+    });
+    boardPageMock.mockClear();
+    mockWorktreeApiBase = '';
+    mockWorktreeRuntimeResolved = true;
+
+    global.fetch = jest.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+
+      if (url.startsWith('/api/projects')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ items: [], total: 0, limit: 100, offset: 0 }),
+        } as Response);
+      }
+
+      if (url.startsWith('/api/settings')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({}),
+        } as Response);
+      }
+
+      if (url.startsWith('/api/preflight')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            overall: 'pass',
+            checks: [],
+            providers: [],
+            timestamp: new Date().toISOString(),
+          }),
+        } as Response);
+      }
+
+      if (url.startsWith('/api/runtime')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            mode: 'normal',
+            version: '1.0.0',
+            integrationAdmission: { allowed: true, reason: null },
+          }),
+        } as Response);
+      }
+
+      if (url.startsWith('/api/integrations/connections')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            items: [
+              { provider: 'clickup', connected: false, generation: null, updatedAt: null },
+              { provider: 'jira', connected: false, generation: null, updatedAt: null },
+            ],
+          }),
+        } as Response);
+      }
+
+      if (url.startsWith('/api/epics/epic-1/comments')) {
+        return Promise.resolve({ ok: true, json: async () => ({ items: [] }) } as Response);
+      }
+
+      if (url === '/api/epics/epic-1') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            id: 'epic-1',
+            projectId: 'project-1',
+            title: 'Imported Epic',
+            description: null,
+            statusId: 'status-1',
+            version: 1,
+            parentId: null,
+            agentId: null,
+            createdBy: null,
+            tags: [],
+            skillsRequired: [],
+            createdAt: '2026-08-19T10:00:00.000Z',
+            updatedAt: '2026-08-19T10:00:00.000Z',
+          }),
+        } as Response);
+      }
+
+      if (url.startsWith('/api/epics?parentId=')) {
+        return Promise.resolve({ ok: true, json: async () => ({ items: [] }) } as Response);
+      }
+
+      if (url.startsWith('/api/statuses') || url.startsWith('/api/agents')) {
+        return Promise.resolve({ ok: true, json: async () => ({ items: [] }) } as Response);
+      }
+
+      if (url.startsWith('/api/sessions')) {
+        return Promise.resolve({ ok: true, json: async () => [] } as Response);
+      }
+
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({}),
+      } as Response);
+    }) as jest.Mock;
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  function renderAt(initialEntry: string) {
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[initialEntry]}>
+          <App />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it('renders the native Board page on /board', async () => {
+    renderAt('/board');
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Native Board Page' })).toBeInTheDocument();
+    });
+    expect(boardPageMock).toHaveBeenCalled();
+  });
+
+  it.each([
+    ['/board/clickup', 'ClickUp My Work'],
+    ['/board/jira', 'Jira My Work'],
+  ])(
+    'renders the external My Work page on %s without mounting the native board',
+    async (path, heading) => {
+      renderAt(path);
+
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { name: heading })).toBeInTheDocument();
+      });
+      expect(boardPageMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it('renders the external work-area route without mounting the native board', async () => {
+    renderAt('/board/clickup/space-901');
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'ClickUp board' })).toBeInTheDocument();
+    });
+    expect(screen.getByRole('link', { name: 'Back to ClickUp My Work' })).toHaveAttribute(
+      'href',
+      '/board/clickup',
+    );
+    expect(boardPageMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps unknown query parameters untouched on external board routes', async () => {
+    renderAt('/board/clickup?archived=all&status=xyz');
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'ClickUp My Work' })).toBeInTheDocument();
+    });
+    expect(boardPageMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['/board/clickup?wt=feature', '/epics/epic-1?wt=feature'])(
+    'issues zero integration requests during a direct worktree cold load of %s',
+    async (path) => {
+      mockWorktreeRuntimeResolved = false;
+      mockWorktreeApiBase = '/wt/feature';
+      queryClient.setQueryData(['integration-connections'], {
+        items: [{ provider: 'clickup', connected: true, generation: 1, updatedAt: null }],
+      });
+      queryClient.setQueryData(['external-my-work', 'epic-sources', 'epic-1'], {
+        items: [
+          {
+            provider: 'clickup',
+            remoteTaskId: 'cached',
+            remoteKey: 'cached',
+            title: 'Cached external source',
+          },
+        ],
+      });
+
+      renderAt(path);
+
+      await waitFor(() =>
+        expect(global.fetch).toHaveBeenCalledWith('/api/runtime', expect.anything()),
+      );
+      const integrationCalls = (global.fetch as jest.Mock).mock.calls.filter(([input]) =>
+        /\/api\/integrations|\/external-sources/.test(String(input)),
+      );
+      expect(integrationCalls).toEqual([]);
+      expect(screen.queryByText('Cached external source')).not.toBeInTheDocument();
+    },
+  );
 });

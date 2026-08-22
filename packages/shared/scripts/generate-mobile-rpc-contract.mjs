@@ -32,9 +32,9 @@ async function loadCanonicalContract(repositoryRoot) {
   if (!Array.isArray(methods) || methods.some((method) => typeof method !== 'string')) {
     throw new Error('Canonical MOBILE_RPC_METHODS must be a string tuple');
   }
-  if (methods.length !== 41 || new Set(methods).size !== methods.length) {
+  if (methods.length !== 42 || new Set(methods).size !== methods.length) {
     throw new Error(
-      `Canonical MOBILE_RPC_METHODS must contain 41 unique methods; found ${methods.length}`,
+      `Canonical MOBILE_RPC_METHODS must contain 42 unique methods; found ${methods.length}`,
     );
   }
   if (!catalog || typeof catalog !== 'object') {

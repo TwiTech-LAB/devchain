@@ -7,10 +7,21 @@ import {
   type ListOptions,
   type ListResult,
 } from '../../storage/interfaces/storage.interface';
-import type { Epic, EpicComment, UpdateEpic, CreateEpic } from '../../storage/models/domain.models';
+import type {
+  Epic,
+  EpicComment,
+  ExternalTaskLink,
+  UpdateEpic,
+  CreateEpic,
+  CreateEpicWithExternalTaskLink,
+  CreateEpicWithExternalTaskLinkResult,
+  IntegrationProvider,
+} from '../../storage/models/domain.models';
 import { EventsService } from '../../events/services/events.service';
 import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
 import { SettingsService } from '../../settings/services/settings.service';
+import { normalizeExternalTaskSourceUrl } from '../../external-integrations/models/external-task-source';
+import type { ExternalTaskSourceSummary } from '../../external-integrations/models/external-provider.models';
 interface EpicBroadcastPayload {
   projectId: string;
   type: 'created' | 'updated' | 'deleted' | 'comment.created';
@@ -33,6 +44,25 @@ export interface UpdateEpicOutcome {
   previousAssigneeAgent: { id: string; name: string } | null;
 }
 
+export interface ImportExternalTaskInput {
+  projectId: string;
+  statusId: string;
+  title: string;
+  description: string | null;
+  remote: {
+    provider: IntegrationProvider;
+    scopeKey: string;
+    taskId: string;
+    remoteKey: string;
+    title: string;
+    description: string | null;
+    webUrl: string;
+    workAreaId: string;
+    workAreaName: string;
+    statusName: string;
+  };
+}
+
 @Injectable()
 export class EpicsService {
   private readonly logger = new Logger(EpicsService.name);
@@ -53,35 +83,118 @@ export class EpicsService {
       createdBy: this.deriveCreatedBy(context),
     });
 
-    // Publish epic.created event (best-effort persisted event - failures logged but don't block create)
-    let resolvedNames: Awaited<ReturnType<typeof this.resolveEpicCreatedNames>> = {};
-    try {
-      resolvedNames = await this.resolveEpicCreatedNames(epic, context?.actor);
-      await this.eventsService.publish('epic.created', {
-        epicId: epic.id,
-        projectId: epic.projectId,
-        title: epic.title,
-        epicTitle: epic.title,
-        statusId: epic.statusId ?? null,
-        agentId: epic.agentId ?? null,
-        parentId: epic.parentId ?? null,
-        actor: context?.actor ?? null,
-        assignmentRecipientIds: this.buildAgentRecipientIds(epic.agentId, context?.actor),
-        subEpicRecipientIds: this.buildAgentRecipientIds(
-          resolvedNames.parentAgentId,
-          context?.actor,
-        ),
-        ...resolvedNames,
-      });
-    } catch (error) {
-      this.logger.error(
-        { epicId: epic.id, projectId: epic.projectId, error },
-        'Failed to publish epic.created event',
-      );
-      // Don't fail the create - gracefully continue
-    }
+    await this.publishEpicCreated(epic, context);
 
     return epic;
+  }
+
+  async createEpicWithExternalTaskLink(
+    data: CreateEpicWithExternalTaskLink,
+    context?: EpicOperationContext,
+  ): Promise<CreateEpicWithExternalTaskLinkResult> {
+    const epic = { ...data.epic };
+    this.applyAutoCleanIfNeeded(epic.projectId, epic.statusId, epic);
+
+    const result = await this.storage.createEpicWithExternalTaskLink({
+      ...data,
+      epic: {
+        ...epic,
+        createdBy: this.deriveCreatedBy(context),
+      },
+    });
+    if (result.created) {
+      await this.publishEpicCreated(result.epic, context);
+    }
+    return result;
+  }
+
+  async importExternalTask(
+    input: ImportExternalTaskInput,
+    context?: EpicOperationContext,
+  ): Promise<CreateEpicWithExternalTaskLinkResult> {
+    const [project, status, connection] = await Promise.all([
+      this.storage.getProject(input.projectId),
+      this.storage.getStatus(input.statusId),
+      this.storage.getIntegrationConnection(input.remote.provider),
+    ]);
+    if (status.projectId !== project.id) {
+      throw new ValidationError('Select a status from the chosen DevChain project.', {
+        field: 'statusId',
+      });
+    }
+    if (!connection) {
+      throw new ValidationError('Connect the integration before importing this task.', {
+        provider: input.remote.provider,
+        reason: 'not_connected',
+      });
+    }
+
+    return this.createEpicWithExternalTaskLink(
+      {
+        epic: {
+          projectId: project.id,
+          statusId: status.id,
+          title: input.title,
+          description: input.description,
+          parentId: null,
+          agentId: null,
+          data: null,
+          skillsRequired: null,
+          tags: [],
+        },
+        externalTaskLink: {
+          connectionId: connection.id,
+          provider: input.remote.provider,
+          remoteScopeKey: input.remote.scopeKey,
+          remoteTaskId: input.remote.taskId,
+          sourceSnapshot: {
+            remoteKey: input.remote.remoteKey,
+            title: input.remote.title,
+            description: input.remote.description,
+            webUrl: input.remote.webUrl,
+            workAreaId: input.remote.workAreaId,
+            workAreaName: input.remote.workAreaName,
+            statusName: input.remote.statusName,
+          },
+        },
+      },
+      context,
+    );
+  }
+
+  async listExternalTaskSources(epicId: string): Promise<ExternalTaskSourceSummary[]> {
+    const links = await this.storage.listExternalTaskLinksForEpic(epicId);
+    return links.map((link) => this.projectExternalTaskSourceSummary(link));
+  }
+
+  async listExternalTaskSourcesBatch(
+    epicIds: string[],
+  ): Promise<Array<{ epicId: string } & ExternalTaskSourceSummary>> {
+    // Deduplicate before the bounded IN query; missing and unlinked IDs simply
+    // produce no rows and are omitted from the response.
+    const uniqueIds = [...new Set(epicIds)];
+    if (uniqueIds.length === 0) return [];
+    const links = await this.storage.listExternalTaskLinksForEpics(uniqueIds);
+    return links.map((link) => ({
+      epicId: link.epicId,
+      ...this.projectExternalTaskSourceSummary(link),
+    }));
+  }
+
+  private projectExternalTaskSourceSummary(link: ExternalTaskLink): ExternalTaskSourceSummary {
+    const snapshot = link.sourceSnapshot;
+    const bounded = (value: unknown, fallback: string, max: number): string =>
+      typeof value === 'string' && value.trim() ? value.trim().slice(0, max) : fallback;
+    return {
+      provider: link.provider,
+      remoteTaskId: link.remoteTaskId,
+      remoteKey: bounded(snapshot.remoteKey, link.remoteTaskId, 256),
+      title: bounded(snapshot.title, link.remoteTaskId, 1_000),
+      workAreaName: bounded(snapshot.workAreaName, 'Unknown work area', 1_000),
+      statusName: bounded(snapshot.statusName, 'Unknown', 256),
+      webUrl: normalizeExternalTaskSourceUrl(link.provider, snapshot.webUrl),
+      linkedAt: link.createdAt,
+    };
   }
 
   async listEpics(params: {
@@ -133,33 +246,7 @@ export class EpicsService {
       createdBy: this.deriveCreatedBy(context),
     });
 
-    // Publish epic.created event (best-effort persisted event - failures logged but don't block create)
-    let resolvedNames: Awaited<ReturnType<typeof this.resolveEpicCreatedNames>> = {};
-    try {
-      resolvedNames = await this.resolveEpicCreatedNames(epic, context?.actor);
-      await this.eventsService.publish('epic.created', {
-        epicId: epic.id,
-        projectId: epic.projectId,
-        title: epic.title,
-        epicTitle: epic.title,
-        statusId: epic.statusId ?? null,
-        agentId: epic.agentId ?? null,
-        parentId: epic.parentId ?? null,
-        actor: context?.actor ?? null,
-        assignmentRecipientIds: this.buildAgentRecipientIds(epic.agentId, context?.actor),
-        subEpicRecipientIds: this.buildAgentRecipientIds(
-          resolvedNames.parentAgentId,
-          context?.actor,
-        ),
-        ...resolvedNames,
-      });
-    } catch (error) {
-      this.logger.error(
-        { epicId: epic.id, projectId: epic.projectId, error },
-        'Failed to publish epic.created event',
-      );
-      // Don't fail the create - gracefully continue
-    }
+    await this.publishEpicCreated(epic, context);
 
     return epic;
   }
@@ -666,6 +753,33 @@ export class EpicsService {
     }
 
     return result;
+  }
+
+  private async publishEpicCreated(epic: Epic, context?: EpicOperationContext): Promise<void> {
+    try {
+      const resolvedNames = await this.resolveEpicCreatedNames(epic, context?.actor);
+      await this.eventsService.publish('epic.created', {
+        epicId: epic.id,
+        projectId: epic.projectId,
+        title: epic.title,
+        epicTitle: epic.title,
+        statusId: epic.statusId ?? null,
+        agentId: epic.agentId ?? null,
+        parentId: epic.parentId ?? null,
+        actor: context?.actor ?? null,
+        assignmentRecipientIds: this.buildAgentRecipientIds(epic.agentId, context?.actor),
+        subEpicRecipientIds: this.buildAgentRecipientIds(
+          resolvedNames.parentAgentId,
+          context?.actor,
+        ),
+        ...resolvedNames,
+      });
+    } catch (error) {
+      this.logger.error(
+        { epicId: epic.id, projectId: epic.projectId, error },
+        'Failed to publish epic.created event',
+      );
+    }
   }
 
   private deriveCreatedBy(context?: EpicOperationContext): string | null {

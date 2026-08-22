@@ -115,6 +115,7 @@ function BoardContent({ content }: { content: BoardContentModel }) {
                   hasRunningWorktrees={column.hasRunningWorktrees}
                   isLightColor={isLightColor}
                   getSubEpicCountsByStatus={(epicId) => column.subEpicStatusCountsByEpicId[epicId]}
+                  externalSources={column.externalSources}
                 />
               ),
             )}
@@ -143,6 +144,7 @@ function BoardContent({ content }: { content: BoardContentModel }) {
           subEpicCounts={content.subEpicCounts}
           onMoveToWorktree={content.hasRunningWorktrees ? content.moveToWorktree : undefined}
           hasRunningWorktrees={content.hasRunningWorktrees}
+          externalSources={content.externalSources}
           className="flex-1 min-h-0"
         />
       );

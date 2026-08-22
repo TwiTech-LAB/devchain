@@ -2205,4 +2205,106 @@ describe('TunnelHandlerService', () => {
       expect(resp.result).toBeUndefined();
     });
   });
+
+  describe('e2ee.bindNotificationRoutingIdentity — sealed-only, trusted sender kid', () => {
+    const SENDER_KID = 'sender'.repeat(5) + 'ss'; // 32 chars
+    const VICTIM_KID = 'victim'.repeat(5) + 'vv';
+    const ROUTING_KID = 'kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k';
+
+    const makeHandler = (bind: jest.Mock) => {
+      const e2eeTrust = {
+        bindNotificationRoutingIdentity: bind,
+      } as unknown as E2eeTrustService;
+      return new TunnelHandlerService({}, mobileChat, mobileBoard, mobileViewport, e2eeTrust);
+    };
+
+    it('binds the routing kid to EXACTLY the crypto-context sender kid and ignores caller-supplied sender identity', async () => {
+      const bind = jest
+        .fn()
+        .mockReturnValue({ kid: SENDER_KID, routingKid: ROUTING_KID, bound: true });
+      const service = makeHandler(bind);
+
+      await expect(
+        service.handle(
+          // Hostile sender-naming params — must be ignored entirely.
+          {
+            jsonrpc: '2.0',
+            id: 'bd1',
+            method: 'e2ee.bindNotificationRoutingIdentity',
+            params: { routingKid: ROUTING_KID, kid: VICTIM_KID, senderKid: VICTIM_KID },
+          },
+          { senderKid: SENDER_KID },
+        ),
+      ).resolves.toMatchObject({
+        result: { kid: SENDER_KID, routingKid: ROUTING_KID, bound: true },
+      });
+      expect(bind).toHaveBeenCalledWith(SENDER_KID, ROUTING_KID);
+      expect(bind).toHaveBeenCalledTimes(1);
+    });
+
+    it('rebinding the same sender is deterministic (same stored value)', async () => {
+      const bind = jest
+        .fn()
+        .mockReturnValue({ kid: SENDER_KID, routingKid: ROUTING_KID, bound: true });
+      const service = makeHandler(bind);
+
+      await expect(
+        service.handle(
+          {
+            jsonrpc: '2.0',
+            id: 'bd2',
+            method: 'e2ee.bindNotificationRoutingIdentity',
+            params: { routingKid: ROUTING_KID },
+          },
+          { senderKid: SENDER_KID },
+        ),
+      ).resolves.toMatchObject({ result: { bound: true } });
+      await expect(
+        service.handle(
+          {
+            jsonrpc: '2.0',
+            id: 'bd3',
+            method: 'e2ee.bindNotificationRoutingIdentity',
+            params: { routingKid: ROUTING_KID },
+          },
+          { senderKid: SENDER_KID },
+        ),
+      ).resolves.toMatchObject({ result: { bound: true } });
+      expect(bind).toHaveBeenCalledTimes(2);
+    });
+
+    it('fails closed and binds NOTHING when the crypto context is absent (off the sealed lane)', async () => {
+      const bind = jest.fn();
+      const service = makeHandler(bind);
+
+      const resp = await service.handle({
+        jsonrpc: '2.0',
+        id: 'bd4',
+        method: 'e2ee.bindNotificationRoutingIdentity',
+        params: { routingKid: ROUTING_KID },
+      }); // no cryptoCtx
+
+      expect(bind).not.toHaveBeenCalled();
+      expect(resp.error?.code).toBe(-32602); // ValidationError → invalid params
+      expect(resp.result).toBeUndefined();
+    });
+
+    it('rejects a malformed routing kid at the contract schema boundary', async () => {
+      const bind = jest.fn();
+      const service = makeHandler(bind);
+
+      const resp = await service.handle(
+        {
+          jsonrpc: '2.0',
+          id: 'bd5',
+          method: 'e2ee.bindNotificationRoutingIdentity',
+          params: { routingKid: 'not-a-thumbprint' },
+        },
+        { senderKid: SENDER_KID },
+      );
+
+      expect(bind).not.toHaveBeenCalled();
+      expect(resp.error?.code).toBe(-32602); // schema rejection — invalid params
+    });
+  });
 });

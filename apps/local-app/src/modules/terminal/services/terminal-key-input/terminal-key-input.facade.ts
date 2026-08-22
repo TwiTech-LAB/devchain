@@ -1,8 +1,10 @@
 import { Injectable } from '@nestjs/common';
-import { OnEvent } from '@nestjs/event-emitter';
+import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { AppError } from '../../../../common/errors/error-types';
 import { TerminalSessionRegistry } from '../terminal-session/terminal-session-registry';
 import { TerminalIOService } from '../terminal-io/terminal-io.service';
+import { HumanPromptStateService } from '../human-prompt-state.service';
+import { emitHumanPromptStateChangedBarrier } from '../../../events/catalog/session.human-prompt-state-changed';
 
 /**
  * The only key shapes a mobile viewport key pad may send. Named navigation/confirm keys
@@ -65,6 +67,8 @@ export class TerminalKeyInputFacade {
   constructor(
     private readonly registry: TerminalSessionRegistry,
     private readonly terminalIO: TerminalIOService,
+    private readonly humanPromptState: HumanPromptStateService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   @OnEvent('session.stopped')
@@ -111,6 +115,13 @@ export class TerminalKeyInputFacade {
     }
 
     const target = { name: session.tmuxSessionName };
+
+    // Enter must observe the generation that existed before the liveness await:
+    // newer digits arriving during that await keep their newer draft_active generation.
+    const promptStateBeforeInput = this.humanPromptState.getState(target.name);
+    const expectedGeneration =
+      promptStateBeforeInput.phase === 'draft_active' ? promptStateBeforeInput.generation : null;
+
     const alive = await this.terminalIO.sessionExists(target);
     if (!alive) {
       throw new AppError(
@@ -121,11 +132,38 @@ export class TerminalKeyInputFacade {
       );
     }
 
-    // Mirror the desktop input path (terminal.gateway.ts): signal activity AFTER the
-    // liveness check and BEFORE the key is delivered, so a mobile press is tracked the
-    // same way as a local keystroke.
+    let activatedGeneration: number | null = null;
+    if (DIGIT_PATTERN.test(key)) {
+      const state = this.humanPromptState.recordPromptText(target.name, 1, true);
+      activatedGeneration = state.generation;
+      await emitHumanPromptStateChangedBarrier(this.eventEmitter, {
+        sessionId,
+        tmuxSessionName: target.name,
+        generation: state.generation,
+        phase: 'draft_active',
+      });
+    }
+
     session.signalInput();
     await this.terminalIO.sendControl(target, keys);
+    if (activatedGeneration !== null) {
+      this.humanPromptState.confirmPromptTextWritten(target.name, activatedGeneration);
+    }
+
+    if (expectedGeneration !== null && !DIGIT_PATTERN.test(key)) {
+      const result =
+        key === 'Enter'
+          ? this.humanPromptState.transitionToAwaiting(target.name, expectedGeneration)
+          : this.humanPromptState.recordControlInput(target.name, expectedGeneration, keys[0]!);
+      if (result.accepted) {
+        await emitHumanPromptStateChangedBarrier(this.eventEmitter, {
+          sessionId,
+          tmuxSessionName: target.name,
+          generation: result.state.generation,
+          phase: 'awaiting_stable_idle',
+        });
+      }
+    }
 
     // Only an accepted key resets the gap window, so a rejected attempt cannot extend it.
     lastAcceptedAtBySession.set(sessionId, Date.now());

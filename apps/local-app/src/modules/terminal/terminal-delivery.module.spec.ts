@@ -12,6 +12,7 @@ import { PtyService } from './services/pty.service';
 import { TerminalIOService } from './services/terminal-io/terminal-io.service';
 import { TerminalDeliveryModule } from './terminal-delivery.module';
 import { TerminalModule } from './terminal.module';
+import { HumanPromptStateService } from './services/human-prompt-state.service';
 
 describe('Terminal delivery wrappers', () => {
   let moduleRef: TestingModule;
@@ -116,10 +117,20 @@ describe('TerminalDeliveryModule shape', () => {
       (Reflect.getMetadata(MODULE_METADATA.EXPORTS, TerminalDeliveryModule) as unknown[]) ?? [];
 
     expect(providers).toEqual(
-      expect.arrayContaining([TerminalIOService, GuestDeliveryService, TerminalDeliveryFacade]),
+      expect.arrayContaining([
+        HumanPromptStateService,
+        TerminalIOService,
+        GuestDeliveryService,
+        TerminalDeliveryFacade,
+      ]),
     );
     expect(exports).toEqual(
-      expect.arrayContaining([TerminalIOService, GuestDeliveryService, TerminalDeliveryFacade]),
+      expect.arrayContaining([
+        HumanPromptStateService,
+        TerminalIOService,
+        GuestDeliveryService,
+        TerminalDeliveryFacade,
+      ]),
     );
   });
 
@@ -145,6 +156,7 @@ describe('TerminalDeliveryModule shape', () => {
     }).compile();
 
     expect(moduleRef.get(TerminalIOService)).toBeInstanceOf(TerminalIOService);
+    expect(moduleRef.get(HumanPromptStateService)).toBeInstanceOf(HumanPromptStateService);
     expect(moduleRef.get(GuestDeliveryService)).toBeInstanceOf(GuestDeliveryService);
     expect(moduleRef.get(TerminalDeliveryFacade)).toBeInstanceOf(TerminalDeliveryFacade);
 

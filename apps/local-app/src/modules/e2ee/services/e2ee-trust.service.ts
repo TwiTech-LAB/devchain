@@ -141,6 +141,28 @@ export class E2eeTrustService {
   }
 
   /**
+   * Bind a registered notification routing kid to a paired device. The `kid` MUST come
+   * from the verified crypto context (sealed envelope sender) — never from RPC params.
+   * Rebinding the same device is deterministic: same kid → same stored value.
+   */
+  bindNotificationRoutingIdentity(
+    kid: string,
+    routingKid: string,
+  ): {
+    kid: string;
+    routingKid: string;
+    bound: boolean;
+  } {
+    if (!kid) throw new ValidationError('kid is required');
+    if (!routingKid || !/^[A-Za-z0-9_-]{43}$/.test(routingKid)) {
+      throw new ValidationError('routingKid must be a 43-char base64url JWK thumbprint');
+    }
+    const record = this.deviceStore.setNotificationRoutingKid(kid, routingKid);
+    if (!record) throw new NotFoundError('E2EE device', kid);
+    return { kid: record.kid, routingKid, bound: true };
+  }
+
+  /**
    * Email-TOFU adopt sink / re-pair seam — reconcile a relayed peer key into the store.
    *
    * `installId` (M2 `paired-device-dedup`) is carried as a SEPARATE param, never folded into

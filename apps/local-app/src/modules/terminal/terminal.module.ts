@@ -15,6 +15,7 @@ import { TerminalDeliveryModule } from './terminal-delivery.module';
 import { MetricsModule } from '../metrics/metrics.module';
 import { TerminalSocketDrainAdapter } from './services/terminal-socket-drain.adapter';
 import { TerminalSendSchedulerService } from './services/terminal-send-scheduler.service';
+import { HumanPromptStateService } from './services/human-prompt-state.service';
 
 @Module({
   imports: [
@@ -34,13 +35,13 @@ import { TerminalSendSchedulerService } from './services/terminal-send-scheduler
     TerminalSendSchedulerService,
     {
       provide: TerminalSessionRegistry,
-      useFactory: (settingsService: SettingsService) =>
+      useFactory: (settingsService: SettingsService, humanPromptState: HumanPromptStateService) =>
         new TerminalSessionRegistry(() => {
           const raw = settingsService.getSetting('activity.idleTimeoutMs');
           const parsed = Number(raw);
           return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
-        }),
-      inject: [SettingsService],
+        }, humanPromptState),
+      inject: [SettingsService, HumanPromptStateService],
     },
     TerminalRegistryRehydrator,
     TerminalActivityService,

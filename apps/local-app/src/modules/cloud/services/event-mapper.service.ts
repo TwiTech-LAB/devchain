@@ -13,7 +13,15 @@ export interface IngestPayload {
   sourceEventType: string;
   forwardingUserId: string;
   recipientMode: 'self';
+  /** Reserved; intentionally unused. */
   recipientHints: never[];
+  /**
+   * Event-time recipient routing kids (deduplicated). Present ONLY on multi-workspace
+   * project events with at least one authorized paired device; absent means the event
+   * is account-wide (single-workspace mode). Frozen at enqueue — later grant changes
+   * never rewrite it.
+   */
+  recipientDeviceKids?: string[];
   occurredAt: string;
   payload: Record<string, unknown>;
   projectId: string | null;

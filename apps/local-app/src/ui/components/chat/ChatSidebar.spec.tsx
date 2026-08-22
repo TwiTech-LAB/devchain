@@ -1082,6 +1082,119 @@ describe('ChatSidebar team lead-as-header rendering', () => {
   });
 });
 
+describe('ChatSidebar human-held message badges', () => {
+  const originalFetch = global.fetch;
+
+  const mainAgent: AgentOrGuest = {
+    id: 'agent-1',
+    name: 'Alpha',
+    profileId: 'profile-1',
+    projectId: 'project-1',
+  } as AgentOrGuest;
+
+  const worktreeAgent: AgentOrGuest = {
+    id: 'agent-wt-1',
+    name: 'Worktree Agent',
+    profileId: 'profile-wt-1',
+    projectId: 'project-wt-1',
+  } as AgentOrGuest;
+
+  const worktreeGroup: WorktreeAgentGroup = {
+    id: 'worktree-1',
+    name: 'feature-auth',
+    status: 'running',
+    runtimeType: 'process',
+    devchainProjectId: 'project-wt-1',
+    apiBase: '/wt/feature-auth',
+    agents: [worktreeAgent],
+    agentPresence: {},
+    disabled: false,
+    error: null,
+  };
+
+  beforeEach(() => {
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ items: [], total: 0, limit: 50, offset: 0 }),
+    })) as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    if (originalFetch) {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it('maps a positive held count onto the main agent row badge and accessible name', async () => {
+    const onReleaseHeldMessages = jest.fn();
+    renderSidebar({
+      agents: [mainAgent],
+      offlineAgents: [mainAgent],
+      humanHeldMessageCounts: { [mainAgent.id]: 2 },
+      humanHeldReleaseEligibleAgentIds: { [mainAgent.id]: true },
+      onReleaseHeldMessages,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: 'All' })).toHaveAttribute('aria-selected', 'true');
+    });
+
+    expect(
+      screen.getByRole('listitem', {
+        name: 'Open terminal for Alpha (offline), 2 messages waiting for you to finish typing',
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('2 waiting')).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole('button', { name: `Release 2 queued messages for ${mainAgent.name}` }),
+    );
+    expect(onReleaseHeldMessages).toHaveBeenCalledWith(mainAgent.id);
+  });
+
+  it('renders no badge when the agent has no held messages', async () => {
+    renderSidebar({
+      agents: [mainAgent],
+      offlineAgents: [mainAgent],
+      humanHeldMessageCounts: {},
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: 'All' })).toHaveAttribute('aria-selected', 'true');
+    });
+
+    expect(
+      screen.getByRole('listitem', { name: 'Open terminal for Alpha (offline)' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/waiting/i)).not.toBeInTheDocument();
+  });
+
+  it('never surfaces root-project held counts on worktree rows', async () => {
+    renderSidebar({
+      agents: [mainAgent],
+      offlineAgents: [mainAgent],
+      worktreeAgentGroups: [worktreeGroup],
+      humanHeldMessageCounts: {
+        [mainAgent.id]: 1,
+        [worktreeAgent.id]: 9,
+      },
+    });
+
+    const worktreeRow = await screen.findByRole('listitem', {
+      name: 'Open terminal for Worktree Agent in feature-auth (offline)',
+    });
+    expect(worktreeRow).not.toHaveTextContent(/waiting/i);
+    expect(within(worktreeRow).queryByText(/waiting/i)).not.toBeInTheDocument();
+
+    // The main row still shows its own compact pre-eligibility count.
+    const mainRow = screen.getByRole('listitem', {
+      name: 'Open terminal for Alpha (offline), 1 message waiting for you to finish typing',
+    });
+    expect(mainRow).toBeInTheDocument();
+    expect(mainRow.parentElement).toHaveTextContent('1');
+    expect(screen.queryByText(/waiting/i)).not.toBeInTheDocument();
+  });
+});
+
 describe('ChatSidebar guest and worktree compatibility', () => {
   const originalFetch = global.fetch;
 

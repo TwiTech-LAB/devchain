@@ -512,6 +512,13 @@
       "when": 1786620289598,
       "tag": "0072_fat_vulcan",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "6",
+      "when": 1787144989417,
+      "tag": "0073_integration_storage",
+      "breakpoints": true
     }
   ]
 }

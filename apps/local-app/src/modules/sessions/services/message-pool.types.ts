@@ -32,6 +32,12 @@ export interface PooledMessage {
   failureDisclosure?: FailureDisclosurePolicy;
   /** Caller-supplied idempotency key (mobile sends); see {@link EnqueueOptions.clientMessageId}. */
   clientMessageId?: string;
+  /** Internal policy; never derived from source text. */
+  deferWhileHumanTyping?: boolean;
+  /** True when this message also requires provider-idle delivery. */
+  requiresProviderIdle?: boolean;
+  /** Generation that caused this message to be held; counting/logging metadata only. */
+  heldGeneration?: number;
 }
 
 export interface EnqueueOptions {
@@ -55,6 +61,10 @@ export interface EnqueueOptions {
    * retry cannot duplicate a send.
    */
   clientMessageId?: string;
+  /** Internal policy derived by Agent Message Delivery from structured sender identity. */
+  deferWhileHumanTyping?: boolean;
+  /** Internal explicit-human-submit marker. */
+  humanPromptSubmit?: boolean;
 }
 
 export interface EnqueueResult {
@@ -70,7 +80,7 @@ export interface FlushResult {
   deliveredCount?: number;
   discardedCount?: number;
   reason?: string;
-  outcome?: 'delivered' | 'unconfirmed';
+  outcome?: 'delivered' | 'unconfirmed' | 'deferred';
 }
 
 export type DeliveryFailureCode =
@@ -108,6 +118,9 @@ export interface PoolDetails {
   agentName: string;
   projectId: string;
   messageCount: number;
+  humanHeldMessageCount: number;
+  /** When the delayed explicit-release affordance may be shown. */
+  humanReleaseEligibleAt?: number;
   waitingMs: number;
   messages: Array<{
     id: string;

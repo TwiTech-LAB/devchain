@@ -172,6 +172,17 @@ describe('SessionTerminalRuntimeService', () => {
     });
   });
 
+  describe('getProviderNameAtLaunch', () => {
+    it('returns the provider only for a running session', () => {
+      insertSession({ id: 'running-provider', providerName: 'codex' });
+      insertSession({ id: 'stopped-provider', providerName: 'claude', status: 'stopped' });
+
+      expect(service.getProviderNameAtLaunch('running-provider')).toBe('codex');
+      expect(service.getProviderNameAtLaunch('stopped-provider')).toBeNull();
+      expect(service.getProviderNameAtLaunch('missing-provider')).toBeNull();
+    });
+  });
+
   it('lists only running startup rows with both required fields', () => {
     insertSession({ id: 'valid', tmuxSessionName: 'tmux-valid', providerName: 'claude' });
     insertSession({

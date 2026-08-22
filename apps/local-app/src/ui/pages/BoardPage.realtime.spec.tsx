@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
+import { RuntimeProvider } from '@/ui/hooks/useRuntime';
 import { render, waitFor } from '@testing-library/react';
 // Import as ComponentType to avoid strict JSX component typing complaints in isolated TS
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -56,7 +57,9 @@ function createWrapper() {
   });
   const Wrapper = ({ children }: { children: React.ReactNode }) => (
     <MemoryRouter>
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      <QueryClientProvider client={queryClient}>
+        <RuntimeProvider>{children}</RuntimeProvider>
+      </QueryClientProvider>
     </MemoryRouter>
   );
   return { Wrapper, queryClient };

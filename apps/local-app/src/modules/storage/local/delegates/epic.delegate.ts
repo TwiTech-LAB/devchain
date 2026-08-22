@@ -48,6 +48,17 @@ export class EpicStorageDelegate extends BaseStorageDelegate {
   }
 
   async createEpic(data: CreateEpic): Promise<Epic> {
+    return this.insertEpic(data);
+  }
+
+  async createEpicInCurrentTransaction(data: CreateEpic): Promise<Epic> {
+    if (!this.rawClient.inTransaction) {
+      throw new StorageError('Epic transaction insert requires an active storage transaction.');
+    }
+    return this.insertEpic(data);
+  }
+
+  private async insertEpic(data: CreateEpic): Promise<Epic> {
     const { randomUUID } = await import('crypto');
     const now = new Date().toISOString();
     const { epics, epicTags, tags } = await import('../../db/schema');
@@ -83,7 +94,7 @@ export class EpicStorageDelegate extends BaseStorageDelegate {
       agentId: epic.agentId,
       createdBy: epic.createdBy,
       version: epic.version,
-      data: epic.data ? JSON.stringify(epic.data) : null,
+      data: epic.data,
       skillsRequired: serializeSkillsRequired(epic.skillsRequired),
       createdAt: epic.createdAt,
       updatedAt: epic.updatedAt,

@@ -1,5 +1,6 @@
 import { MAX_HISTORY_IN_FLIGHT_BYTES, TerminalSession } from './terminal-session';
 import type { FrameEvent } from './terminal-frame-stream';
+import { HumanPromptStateService } from '../human-prompt-state.service';
 
 function createSession(overrides?: { sessionId?: string; tmuxSessionName?: string }) {
   return new TerminalSession({
@@ -391,6 +392,45 @@ describe('TerminalSession', () => {
       session.pushFrame('should-not-emit');
 
       expect(frames).toHaveLength(0);
+    });
+
+    it('records input and meaningful output on gate-owned clocks', () => {
+      const promptState = new HumanPromptStateService();
+      const session = new TerminalSession({
+        sessionId: 'session-1',
+        tmuxSessionName: 'tmux-session-1',
+        humanPromptState: promptState,
+      });
+
+      session.signalInput();
+      session.pushFrame('\x1b[31m');
+      session.pushFrame('ready');
+
+      expect(promptState.getState('tmux-session-1')).toEqual(
+        expect.objectContaining({ executedInputEpoch: 1, meaningfulOutputEpoch: 1 }),
+      );
+    });
+
+    it('records meaningful output before resize activity suppression', () => {
+      jest.useFakeTimers();
+      try {
+        const promptState = new HumanPromptStateService();
+        const session = new TerminalSession({
+          sessionId: 'session-1',
+          tmuxSessionName: 'tmux-session-1',
+          humanPromptState: promptState,
+        });
+        session.subscribe('client-1');
+        session.resize('client-1', { cols: 100, rows: 30 });
+        jest.runOnlyPendingTimers();
+
+        session.pushFrame('provider response');
+
+        expect(session.getActivityState().lastDataAt).toBeNull();
+        expect(promptState.getState('tmux-session-1').meaningfulOutputEpoch).toBe(1);
+      } finally {
+        jest.useRealTimers();
+      }
     });
   });
 

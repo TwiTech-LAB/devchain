@@ -153,6 +153,11 @@ export class TunnelHandlerService {
       // Dormant paired-device revoke: sealed-only. Identity comes from the trusted crypto
       // context (verified envelope kid), not params; ordinary logout never dispatches it.
       'e2ee.revokeDeviceKey': (_p, cryptoCtx) => Promise.resolve(this.revokeDeviceKey(cryptoCtx)),
+      // Bind the sender's notification routing kid to its paired device: sealed-only. The
+      // paired X25519 identity comes ONLY from the verified envelope kid — all
+      // caller-supplied sender identity is ignored.
+      'e2ee.bindNotificationRoutingIdentity': (p, cryptoCtx) =>
+        Promise.resolve(this.bindNotificationRoutingIdentity(p, cryptoCtx)),
     } satisfies MobileRpcHandlerMap;
   }
 
@@ -226,6 +231,27 @@ export class TunnelHandlerService {
       throw new ValidationError('e2ee.revokeDeviceKey requires a sealed sender context');
     }
     return this.e2eeTrust.revokeDevice(cryptoCtx.senderKid);
+  }
+
+  /**
+   * Sealed notification-identity bind: store `params.routingKid` beside the paired device
+   * identified by `cryptoCtx.senderKid` — the VERIFIED envelope kid set by the crypto layer
+   * (decryption proved the sender holds that key). A caller-supplied sender identifier is
+   * never read: a sealed client cannot bind a routing kid to a DIFFERENT paired device. An
+   * absent `cryptoCtx` (only reachable off the sealed lane — the crypto seam already rejects
+   * plaintext for sealed-only methods) fails closed here too; nothing is bound.
+   */
+  private bindNotificationRoutingIdentity(
+    params: Record<string, unknown>,
+    cryptoCtx?: RpcCryptoContext,
+  ): { kid: string; routingKid: string; bound: boolean } {
+    if (!cryptoCtx?.senderKid) {
+      throw new ValidationError(
+        'e2ee.bindNotificationRoutingIdentity requires a sealed sender context',
+      );
+    }
+    const routingKid = params['routingKid'] as string;
+    return this.e2eeTrust.bindNotificationRoutingIdentity(cryptoCtx.senderKid, routingKid);
   }
 
   /**

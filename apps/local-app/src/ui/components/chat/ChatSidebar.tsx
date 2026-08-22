@@ -116,6 +116,14 @@ export interface ChatSidebarData {
   validatedPresets: PresetAvailability[];
   activePreset: string | null;
   projectProfiles?: Array<{ id: string; name: string }>;
+  /**
+   * Positive human-held message counts keyed by main-project agent id. An absent
+   * agent has nothing held. Worktree and guest rows never read this map — the
+   * counts describe the root project's pools only.
+   */
+  humanHeldMessageCounts?: Record<string, number>;
+  /** Agents whose informational waiting badge may now release the held lane. */
+  humanHeldReleaseEligibleAgentIds?: Record<string, true>;
 }
 
 /**
@@ -143,6 +151,8 @@ export interface ChatSidebarSessionController {
   onLaunchSession: (agentId: string, options?: { attach?: boolean }) => Promise<unknown>;
   onRestartSession: (agentId: string) => Promise<void>;
   onTerminateConfirm: (agentId: string, sessionId: string) => void;
+  onReleaseHeldMessages: (agentId: string) => void;
+  releasingHeldAgentId: string | null;
   pendingRestartAgentIds: Set<string>;
   onMarkForRestart: (agentIds: string[]) => void;
   worktreeSessionActionsByAgentKey: Record<
@@ -270,6 +280,8 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     validatedPresets,
     activePreset,
     projectProfiles,
+    humanHeldMessageCounts,
+    humanHeldReleaseEligibleAgentIds,
   } = data;
   const {
     launchingAgentIds,
@@ -286,6 +298,8 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     onLaunchSession,
     onRestartSession,
     onTerminateConfirm,
+    onReleaseHeldMessages,
+    releasingHeldAgentId,
     pendingRestartAgentIds,
     onMarkForRestart,
     worktreeSessionActionsByAgentKey,
@@ -824,6 +838,10 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
         isLaunching={isLaunching}
         isRestarting={isRestarting}
         isLaunchingChat={false}
+        humanHeldMessageCount={humanHeldMessageCounts?.[agent.id] ?? 0}
+        canReleaseHeldMessages={humanHeldReleaseEligibleAgentIds?.[agent.id] === true}
+        onReleaseHeldMessages={() => onReleaseHeldMessages(agent.id)}
+        releasingHeldMessages={releasingHeldAgentId === agent.id}
         activityBadge={renderActivityBadge(agent.id)}
         isTeamLead={options?.isTeamLead ?? false}
         canOverride={agent.type !== 'guest' && Boolean(agent.profileId)}

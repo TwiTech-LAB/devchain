@@ -67,6 +67,7 @@ function renderAgentRow(overrides: Partial<React.ComponentProps<typeof AgentRow>
   const onTerminate = jest.fn();
   const onToggleContextTracking = jest.fn();
   const onOpenOverrides = jest.fn();
+  const onReleaseHeldMessages = jest.fn();
 
   const utils = render(
     <AgentRow
@@ -90,6 +91,7 @@ function renderAgentRow(overrides: Partial<React.ComponentProps<typeof AgentRow>
       activityBadge={<span>Busy 10s</span>}
       canOverride={true}
       onOpenOverrides={onOpenOverrides}
+      onReleaseHeldMessages={onReleaseHeldMessages}
       onClick={onClick}
       onRestart={onRestart}
       onLaunch={onLaunch}
@@ -107,6 +109,7 @@ function renderAgentRow(overrides: Partial<React.ComponentProps<typeof AgentRow>
     onTerminate,
     onToggleContextTracking,
     onOpenOverrides,
+    onReleaseHeldMessages,
   };
 }
 
@@ -393,5 +396,72 @@ describe('AgentRow', () => {
 
     expect(onTerminate).toHaveBeenCalledTimes(1);
     expect(screen.queryByText('Launch session')).not.toBeInTheDocument();
+  });
+
+  describe('human-held message badge', () => {
+    it('shows a compact plural waiting badge and extends the accessible name', () => {
+      renderAgentRow({ humanHeldMessageCount: 2, canReleaseHeldMessages: true });
+
+      const row = screen.getByLabelText(
+        'Open terminal for Alpha (online), 2 messages waiting for you to finish typing',
+      );
+      expect(row).toBeInTheDocument();
+      expect(screen.getByText('2 waiting')).toBeInTheDocument();
+    });
+
+    it('opens the release confirmation action without selecting the agent row', () => {
+      const { onClick, onReleaseHeldMessages } = renderAgentRow({
+        humanHeldMessageCount: 2,
+        canReleaseHeldMessages: true,
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Release 2 queued messages for Alpha' }));
+
+      expect(onReleaseHeldMessages).toHaveBeenCalledTimes(1);
+      expect(onClick).not.toHaveBeenCalled();
+    });
+
+    it('shows only the count before the release action becomes eligible', () => {
+      renderAgentRow({ humanHeldMessageCount: 2, canReleaseHeldMessages: false });
+
+      expect(screen.getByText('2')).toBeInTheDocument();
+      expect(screen.queryByText('2 waiting')).not.toBeInTheDocument();
+      expect(screen.queryByText('Busy 10s')).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole('button', { name: 'Release 2 queued messages for Alpha' }),
+      ).not.toBeInTheDocument();
+    });
+
+    it('replaces the activity timer with the clickable waiting badge after eligibility', () => {
+      renderAgentRow({ humanHeldMessageCount: 2, canReleaseHeldMessages: true });
+
+      expect(screen.getByText('2 waiting')).toBeInTheDocument();
+      expect(screen.queryByText('Busy 10s')).not.toBeInTheDocument();
+    });
+
+    it('uses singular wording for a single held message', () => {
+      renderAgentRow({ humanHeldMessageCount: 1, canReleaseHeldMessages: true });
+
+      expect(
+        screen.getByLabelText(
+          'Open terminal for Alpha (online), 1 message waiting for you to finish typing',
+        ),
+      ).toBeInTheDocument();
+      expect(screen.getByText('1 waiting')).toBeInTheDocument();
+    });
+
+    it('renders no badge and keeps the base accessible name when nothing is held', () => {
+      renderAgentRow({ humanHeldMessageCount: 0 });
+
+      expect(screen.getByLabelText('Open terminal for Alpha (online)')).toBeInTheDocument();
+      expect(screen.queryByText(/waiting/i)).not.toBeInTheDocument();
+    });
+
+    it('defaults to no badge when the count is not provided', () => {
+      renderAgentRow();
+
+      expect(screen.getByLabelText('Open terminal for Alpha (online)')).toBeInTheDocument();
+      expect(screen.queryByText(/waiting/i)).not.toBeInTheDocument();
+    });
   });
 });

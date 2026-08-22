@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronRight, MoreHorizontal, Loader2 } from 'lucide-react';
+import type { ExternalTaskSourceSummary } from '@/modules/external-integrations/models/external-provider.models';
 import { TableCell, TableRow } from '@/ui/components/ui/table';
 import { Checkbox } from '@/ui/components/ui/checkbox';
 import { Badge } from '@/ui/components/ui/badge';
@@ -9,6 +10,7 @@ import { cn } from '@/ui/lib/utils';
 import { getMergedWorktree, isMergedTag } from '@/ui/lib/epic-tags';
 import { EpicTooltipWrapper } from '@/ui/components/shared/EpicTooltipWrapper';
 import { EpicContextMenu } from './EpicContextMenu';
+import { EpicExternalSourceNote } from './EpicExternalSourceNote';
 import { InlineStatusSelect } from './InlineStatusSelect';
 import { InlineAgentSelect } from './InlineAgentSelect';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
@@ -76,6 +78,11 @@ export interface EpicTableRowProps {
   isSubEpic?: boolean;
   /** Number of sub-epics (for showing expand button only when has children) */
   subEpicCount?: number;
+  /**
+   * Stored external source for this row. Only main rows receive one; lazily
+   * expanded sub-epic rows intentionally render no source note.
+   */
+  externalSource?: ExternalTaskSourceSummary;
 }
 
 /**
@@ -109,6 +116,7 @@ export function EpicTableRow({
   depth = 0,
   isSubEpic = false,
   subEpicCount = 0,
+  externalSource,
 }: EpicTableRowProps) {
   const apiFetch = useFetchFactory();
 
@@ -348,6 +356,13 @@ export function EpicTableRow({
                   {epic.title}
                 </button>
               </EpicTooltipWrapper>
+              {externalSource ? (
+                <EpicExternalSourceNote
+                  source={externalSource}
+                  epicId={epic.id}
+                  className="ml-2 inline-flex flex-wrap items-center gap-x-2 rounded-md border bg-muted/40 px-2 py-0.5 text-xs"
+                />
+              ) : null}
             </div>
           </TableCell>
 

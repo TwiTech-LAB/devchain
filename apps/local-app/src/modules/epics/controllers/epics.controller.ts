@@ -8,13 +8,25 @@ import {
   Body,
   Query,
   BadRequestException,
+  UseGuards,
 } from '@nestjs/common';
 import { ListResult, ListOptions } from '../../storage/interfaces/storage.interface';
-import { CreateEpic, UpdateEpic, Epic } from '../../storage/models/domain.models';
+import {
+  CreateEpic,
+  UpdateEpic,
+  Epic,
+  INTEGRATION_PROVIDER_IDS,
+} from '../../storage/models/domain.models';
 import { z } from 'zod';
 import { createLogger } from '../../../common/logging/logger';
 import { EpicsService } from '../services/epics.service';
 import { SkillsRequiredInputSchema } from '../../skills/dtos/skill.dto';
+import { IntegrationAdmissionGuard } from '../../../common/guards/integration-admission.guard';
+import { normalizeExternalTaskSourceUrl } from '../../external-integrations/models/external-task-source';
+import type {
+  ExternalTaskImportResponse,
+  ExternalTaskSourceSummary,
+} from '../../external-integrations/models/external-provider.models';
 
 const logger = createLogger('EpicsController');
 
@@ -53,6 +65,47 @@ const BulkUpdateSchema = z.object({
   parentId: z.string().nullable().optional(),
   updates: z.array(BulkUpdateEntrySchema).min(1),
 });
+const ExternalProviderSchema = z.enum(INTEGRATION_PROVIDER_IDS);
+// 1,000 UUIDs do not belong in a URL; this bounded batch read matches the
+// existing project batch-route pattern. The limit stays below SQLite's
+// bind-variable ceiling, so one IN query needs no chunking.
+const ExternalSourcesBatchSchema = z
+  .object({
+    epicIds: z.array(z.string().uuid()).min(1).max(1_000),
+  })
+  .strict();
+const ImportExternalTaskSchema = z
+  .object({
+    projectId: z.string().uuid(),
+    statusId: z.string().uuid(),
+    agentId: z.null(),
+    title: z.string().trim().min(1).max(1_000),
+    description: z.string().max(65_536).nullable(),
+    remote: z
+      .object({
+        provider: ExternalProviderSchema,
+        scopeKey: z.string().trim().min(1).max(256),
+        taskId: z.string().trim().min(1).max(256),
+        remoteKey: z.string().trim().min(1).max(256),
+        title: z.string().trim().min(1).max(1_000),
+        description: z.string().max(65_536).nullable(),
+        webUrl: z.string().url().max(2_048),
+        workAreaId: z.string().trim().min(1).max(256),
+        workAreaName: z.string().trim().min(1).max(1_000),
+        statusName: z.string().trim().min(1).max(256),
+      })
+      .strict(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (!normalizeExternalTaskSourceUrl(value.remote.provider, value.remote.webUrl)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['remote', 'webUrl'],
+        message: 'Remote task URL is not allowed for this provider.',
+      });
+    }
+  });
 
 @Controller('api/epics')
 export class EpicsController {
@@ -135,6 +188,47 @@ export class EpicsController {
       agentId: parsed.agentId ?? null,
     };
     return this.epicsService.createEpic(data);
+  }
+
+  @Post('import-external-task')
+  @UseGuards(IntegrationAdmissionGuard)
+  async importExternalTask(@Body() body: unknown): Promise<ExternalTaskImportResponse> {
+    const input = ImportExternalTaskSchema.parse(body);
+    const result = await this.epicsService.importExternalTask({
+      projectId: input.projectId,
+      statusId: input.statusId,
+      title: input.title,
+      description: input.description,
+      remote: {
+        ...input.remote,
+        webUrl: normalizeExternalTaskSourceUrl(input.remote.provider, input.remote.webUrl)!,
+      },
+    });
+    return {
+      epic: { id: result.epic.id, projectId: result.epic.projectId },
+      created: result.created,
+    };
+  }
+
+  @Get(':id/external-sources')
+  @UseGuards(IntegrationAdmissionGuard)
+  async getExternalSources(
+    @Param('id') id: string,
+  ): Promise<{ items: ExternalTaskSourceSummary[] }> {
+    await this.epicsService.getEpicById(id);
+    const links = await this.epicsService.listExternalTaskSources(id);
+    return { items: links };
+  }
+
+  @Post('external-sources/batch')
+  @UseGuards(IntegrationAdmissionGuard)
+  async getExternalSourcesBatch(
+    @Body() body: unknown,
+  ): Promise<{ items: Array<{ epicId: string } & ExternalTaskSourceSummary> }> {
+    const parsed = ExternalSourcesBatchSchema.parse(body);
+    // Missing and unlinked Epics are omitted; the batch itself never 404s.
+    const items = await this.epicsService.listExternalTaskSourcesBatch(parsed.epicIds);
+    return { items };
   }
 
   @Post('bulk-update')

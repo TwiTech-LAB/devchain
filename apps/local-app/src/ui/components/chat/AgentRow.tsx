@@ -50,6 +50,11 @@ interface AgentRowProps {
   isLaunching: boolean;
   isRestarting: boolean;
   isLaunchingChat: boolean;
+  /** Messages held by human prompt ownership; only positive counts render. */
+  humanHeldMessageCount?: number;
+  canReleaseHeldMessages?: boolean;
+  onReleaseHeldMessages?: () => void;
+  releasingHeldMessages?: boolean;
   activityBadge?: ReactNode;
   eventBusAnchor?: AgentEventBusAnchorDescriptor;
   anchorRef?: RefCallback<HTMLElement>;
@@ -80,6 +85,9 @@ interface AgentIdentityProps {
   currentActivityTitle?: string | null;
   isTeamLead?: boolean;
 }
+
+const HELD_BADGE_CLASS =
+  'inline-flex h-6 shrink-0 items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 text-[10px] font-medium leading-none text-amber-600 dark:text-amber-400';
 
 export function AgentIdentity({
   agentName,
@@ -138,6 +146,10 @@ export function AgentRow({
   isLaunching,
   isRestarting,
   isLaunchingChat,
+  humanHeldMessageCount = 0,
+  canReleaseHeldMessages = false,
+  onReleaseHeldMessages,
+  releasingHeldMessages = false,
   activityBadge,
   eventBusAnchor,
   anchorRef,
@@ -166,84 +178,115 @@ export function AgentRow({
     },
     [anchorRef],
   );
+  const heldWaitingText =
+    humanHeldMessageCount > 0
+      ? `${humanHeldMessageCount} message${humanHeldMessageCount !== 1 ? 's' : ''} waiting for you to finish typing`
+      : null;
 
   return (
     <ContextMenu>
-      <ContextMenuTrigger asChild>
-        <button
-          ref={setTriggerRef}
-          onClick={onClick}
-          disabled={isLaunchingChat}
-          className={cn(
-            'flex w-full items-center gap-2 rounded-md border border-r-2 border-transparent border-r-transparent bg-card/40 px-3 py-2 text-sm transition-colors hover:border-border hover:bg-muted/50',
-            isTeamLead && 'bg-primary/5 hover:bg-primary/10',
-            isSelected && 'border-border border-r-primary bg-muted hover:border-r-primary',
-            isLaunchingChat && 'cursor-not-allowed opacity-50',
-          )}
-          role="listitem"
-          aria-label={`Open terminal for ${agent.name}${isOnline ? ' (online)' : ' (offline)'}`}
-          aria-current={isSelected ? 'true' : undefined}
-          data-context-metrics-key={contextTrackingEnabled ? contextMetricsKey : undefined}
-          data-agent-event-bus-key={eventBusAnchor?.key}
-          data-agent-event-bus-agent-id={eventBusAnchor?.agentId}
-          data-agent-event-bus-team-id={eventBusAnchor?.teamId}
-        >
-          {providerIconUri ? (
-            <span
-              className={cn(
-                'flex h-6 w-6 shrink-0 items-center justify-center rounded-md border transition-[border-color,background-color,box-shadow] duration-300',
-                isOnline ? 'border-border bg-muted/40' : 'border-border/60 bg-muted/20',
-                isOnline &&
-                  activityState === 'busy' &&
-                  'border-primary/60 bg-primary/10 shadow-[0_0_8px_hsl(var(--primary)/0.35)] animate-busy-halo',
-              )}
-              title={
-                providerName
-                  ? `Provider: ${providerName} (${isOnline ? 'online' : 'offline'})`
-                  : undefined
-              }
-            >
-              <img
-                src={providerIconUri}
+      <div className="flex items-center gap-1">
+        <ContextMenuTrigger asChild>
+          <button
+            ref={setTriggerRef}
+            onClick={onClick}
+            disabled={isLaunchingChat}
+            className={cn(
+              'flex min-w-0 flex-1 items-center gap-2 rounded-md border border-r-2 border-transparent border-r-transparent bg-card/40 px-3 py-2 text-sm transition-colors hover:border-border hover:bg-muted/50',
+              isTeamLead && 'bg-primary/5 hover:bg-primary/10',
+              isSelected && 'border-border border-r-primary bg-muted hover:border-r-primary',
+              isLaunchingChat && 'cursor-not-allowed opacity-50',
+            )}
+            role="listitem"
+            aria-label={`Open terminal for ${agent.name}${isOnline ? ' (online)' : ' (offline)'}${heldWaitingText ? `, ${heldWaitingText}` : ''}`}
+            aria-current={isSelected ? 'true' : undefined}
+            data-context-metrics-key={contextTrackingEnabled ? contextMetricsKey : undefined}
+            data-agent-event-bus-key={eventBusAnchor?.key}
+            data-agent-event-bus-agent-id={eventBusAnchor?.agentId}
+            data-agent-event-bus-team-id={eventBusAnchor?.teamId}
+          >
+            {providerIconUri ? (
+              <span
                 className={cn(
-                  'h-4 w-4 transition-[filter,opacity]',
-                  !isOnline && 'grayscale opacity-50',
+                  'flex h-6 w-6 shrink-0 items-center justify-center rounded-md border transition-[border-color,background-color,box-shadow] duration-300',
+                  isOnline ? 'border-border bg-muted/40' : 'border-border/60 bg-muted/20',
+                  isOnline &&
+                    activityState === 'busy' &&
+                    'border-primary/60 bg-primary/10 shadow-[0_0_8px_hsl(var(--primary)/0.35)] animate-busy-halo',
+                )}
+                title={
+                  providerName
+                    ? `Provider: ${providerName} (${isOnline ? 'online' : 'offline'})`
+                    : undefined
+                }
+              >
+                <img
+                  src={providerIconUri}
+                  className={cn(
+                    'h-4 w-4 transition-[filter,opacity]',
+                    !isOnline && 'grayscale opacity-50',
+                  )}
+                  aria-hidden="true"
+                  alt=""
+                />
+              </span>
+            ) : (
+              <Circle
+                className={cn(
+                  'h-2 w-2 shrink-0 fill-current',
+                  isOnline ? 'text-green-500' : 'text-muted-foreground',
                 )}
                 aria-hidden="true"
-                alt=""
               />
-            </span>
-          ) : (
-            <Circle
-              className={cn(
-                'h-2 w-2 shrink-0 fill-current',
-                isOnline ? 'text-green-500' : 'text-muted-foreground',
-              )}
-              aria-hidden="true"
+            )}
+            <AgentIdentity
+              agentName={agent.name}
+              configDisplayName={configDisplayName}
+              configDisplayTitle={configDisplayTitle}
+              isTeamLead={isTeamLead}
+              currentActivityTitle={
+                isOnline && activityState === 'busy' ? currentActivityTitle : null
+              }
             />
-          )}
-          <AgentIdentity
-            agentName={agent.name}
-            configDisplayName={configDisplayName}
-            configDisplayTitle={configDisplayTitle}
-            isTeamLead={isTeamLead}
-            currentActivityTitle={
-              isOnline && activityState === 'busy' ? currentActivityTitle : null
-            }
-          />
-          {activityBadge && <span className="ml-1 shrink-0">{activityBadge}</span>}
-          {pendingRestart && isOnline && (
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <AlertTriangle className="ml-1 h-4 w-4 flex-shrink-0 text-yellow-500" />
-                </TooltipTrigger>
-                <TooltipContent>Restart to apply config changes</TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-          )}
-        </button>
-      </ContextMenuTrigger>
+            {!heldWaitingText && activityBadge && (
+              <span className="ml-1 shrink-0">{activityBadge}</span>
+            )}
+            {pendingRestart && isOnline && (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <AlertTriangle className="ml-1 h-4 w-4 flex-shrink-0 text-yellow-500" />
+                  </TooltipTrigger>
+                  <TooltipContent>Restart to apply config changes</TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            )}
+          </button>
+        </ContextMenuTrigger>
+        {heldWaitingText && canReleaseHeldMessages && onReleaseHeldMessages ? (
+          <button
+            type="button"
+            onClick={onReleaseHeldMessages}
+            disabled={releasingHeldMessages}
+            className={cn(
+              HELD_BADGE_CLASS,
+              'transition-colors hover:bg-amber-500/20 disabled:cursor-wait disabled:opacity-60',
+            )}
+            title={heldWaitingText}
+            aria-label={`Release ${humanHeldMessageCount} queued message${humanHeldMessageCount === 1 ? '' : 's'} for ${agent.name}`}
+          >
+            {releasingHeldMessages ? (
+              <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+            ) : (
+              `${humanHeldMessageCount} waiting`
+            )}
+          </button>
+        ) : heldWaitingText ? (
+          <span className={HELD_BADGE_CLASS} title={heldWaitingText}>
+            {humanHeldMessageCount}
+          </span>
+        ) : null}
+      </div>
       {sessionMetrics && contextTrackingEnabled && (
         <div className="px-3 -mt-0.5 pb-1">
           <AgentContextBar {...sessionMetrics} />

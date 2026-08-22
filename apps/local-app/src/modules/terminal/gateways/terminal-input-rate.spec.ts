@@ -19,6 +19,8 @@ import { TerminalIOService } from '../services/terminal-io/terminal-io.service';
 import { TerminalSessionRegistry } from '../services/terminal-session/terminal-session-registry';
 import type { SessionTerminalRuntimeService } from '../../session-terminal-runtime/session-terminal-runtime.service';
 import type { Socket } from 'socket.io';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { HumanPromptStateService } from '../services/human-prompt-state.service';
 
 function createMockSocket(id: string): Socket {
   return {
@@ -100,7 +102,8 @@ function createGateway() {
     })),
   };
 
-  const registry = new TerminalSessionRegistry();
+  const humanPromptState = new HumanPromptStateService();
+  const registry = new TerminalSessionRegistry(undefined, humanPromptState);
   const originalGet = registry.get.bind(registry);
   registry.get = (sessionId: string) => {
     let session = originalGet(sessionId);
@@ -134,6 +137,8 @@ function createGateway() {
     ptyService as PtyService,
     seedService as TerminalSeedService,
     terminalIO as TerminalIOService,
+    humanPromptState,
+    new EventEmitter2(),
     registry,
     sessionTerminalRuntime as SessionTerminalRuntimeService,
     mockRealtimeBroadcast as never,

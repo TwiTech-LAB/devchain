@@ -11,6 +11,8 @@ import { MessageActivityStreamService } from './message-activity-stream.service'
 import { MessageLogService } from './message-log.service';
 import { DeliveryFailureNotifierService } from './delivery-failure-notifier.service';
 import type { SessionDto } from '../dtos/sessions.dto';
+import { HumanPromptStateService } from '../../terminal/services/human-prompt-state.service';
+import { emitHumanPromptStateChangedBarrier } from '../../events/catalog/session.human-prompt-state-changed';
 
 /**
  * Layer: backend integration. The real Nest event explorer and EventEmitter2 are the
@@ -21,9 +23,11 @@ describe('SessionsMessagePoolService idle lifecycle integration', () => {
   let moduleRef: TestingModule;
   let service: SessionsMessagePoolService;
   let eventEmitter: EventEmitter2;
+  let humanPromptState: HumanPromptStateService;
+  let coordinator: SessionCoordinatorService;
   let currentSession: SessionDto;
   let emitIdleDuringConfigRead: boolean;
-  let terminalIO: { deliver: jest.Mock; deliverImmediate: jest.Mock };
+  let terminalIO: { deliver: jest.Mock; deliverImmediate: jest.Mock; deliverGuarded: jest.Mock };
 
   const config = {
     enabled: true,
@@ -55,7 +59,20 @@ describe('SessionsMessagePoolService idle lifecycle integration', () => {
     emitIdleDuringConfigRead = false;
     terminalIO = {
       deliver: jest.fn().mockResolvedValue({ confirmed: true, nonce: 'nonce-1', retryCount: 0 }),
-      deliverImmediate: jest.fn(),
+      deliverImmediate: jest
+        .fn()
+        .mockResolvedValue({ confirmed: true, nonce: 'mobile', retryCount: 0 }),
+      deliverGuarded: jest
+        .fn()
+        .mockImplementation(
+          async (...[, , , , mutationFence]: Parameters<TerminalIOService['deliverGuarded']>) => {
+            if (mutationFence && !mutationFence.canStartMutation()) {
+              return { deferred: 'human_draft' };
+            }
+            mutationFence?.markMutationStarted();
+            return { confirmed: true, nonce: 'nonce-1', retryCount: 0 };
+          },
+        ),
     };
 
     moduleRef = await Test.createTestingModule({
@@ -64,6 +81,7 @@ describe('SessionsMessagePoolService idle lifecycle integration', () => {
         SessionsMessagePoolService,
         SessionCoordinatorService,
         MessageLogService,
+        HumanPromptStateService,
         {
           provide: SessionsService,
           useValue: {
@@ -130,6 +148,8 @@ describe('SessionsMessagePoolService idle lifecycle integration', () => {
 
     service = moduleRef.get(SessionsMessagePoolService);
     eventEmitter = moduleRef.get(EventEmitter2);
+    humanPromptState = moduleRef.get(HumanPromptStateService);
+    coordinator = moduleRef.get(SessionCoordinatorService);
   });
 
   afterEach(async () => {
@@ -153,12 +173,94 @@ describe('SessionsMessagePoolService idle lifecycle integration', () => {
 
     await new Promise<void>((resolve) => setImmediate(resolve));
 
-    expect(terminalIO.deliver).toHaveBeenCalledTimes(1);
-    expect(terminalIO.deliver).toHaveBeenCalledWith(
+    expect(terminalIO.deliverGuarded).toHaveBeenCalledTimes(1);
+    expect(terminalIO.deliverGuarded).toHaveBeenCalledWith(
       { name: 'tmux-1' },
       'Deliver after the race',
       expect.objectContaining({ agentId: 'agent-1' }),
+      undefined,
+      expect.any(Object),
     );
     expect(service.getPoolStats()).toEqual([]);
+  });
+
+  it('awaits the Nest activation listener until pooled protected work is exact-session bound', async () => {
+    await service.enqueue('agent-1', 'pooled before typing', {
+      source: 'agent-message',
+      deferWhileHumanTyping: true,
+    });
+    const draft = humanPromptState.recordPromptText('tmux-1');
+
+    await emitHumanPromptStateChangedBarrier(eventEmitter, {
+      sessionId: 'session-1',
+      tmuxSessionName: 'tmux-1',
+      generation: draft.generation,
+      phase: 'draft_active',
+    });
+
+    expect(service.getPoolDetails()).toEqual([
+      expect.objectContaining({ humanHeldMessageCount: 1 }),
+    ]);
+    await service.flushNow('agent-1');
+    expect(terminalIO.deliver).not.toHaveBeenCalled();
+  });
+
+  it('finishes activation promotion before a queued replacement acquires the agent lock', async () => {
+    await service.enqueue('agent-1', 'pooled before concurrent replacement', {
+      source: 'agent-message',
+      deferWhileHumanTyping: true,
+    });
+    const draft = humanPromptState.recordPromptText('tmux-1');
+
+    const activation = emitHumanPromptStateChangedBarrier(eventEmitter, {
+      sessionId: 'session-1',
+      tmuxSessionName: 'tmux-1',
+      generation: draft.generation,
+      phase: 'draft_active',
+    });
+    let heldCountSeenByReplacement = -1;
+    const replacement = coordinator.withAgentLock('agent-1', async () => {
+      heldCountSeenByReplacement = service.getPoolDetails()[0]?.humanHeldMessageCount ?? 0;
+      currentSession = {
+        ...currentSession,
+        id: 'session-2',
+        tmuxSessionId: 'tmux-2',
+      };
+    });
+
+    await Promise.all([activation, replacement]);
+
+    expect(heldCountSeenByReplacement).toBe(1);
+    expect(service.getPoolDetails()).toEqual([
+      expect.objectContaining({ humanHeldMessageCount: 1 }),
+    ]);
+    expect(terminalIO.deliver).not.toHaveBeenCalled();
+  });
+
+  it('completes an explicit mobile submit without reacquiring the agent lock', async () => {
+    await service.enqueue('agent-1', 'held autonomous', {
+      source: 'agent-message',
+      deferWhileHumanTyping: true,
+    });
+    const draft = humanPromptState.recordPromptText('tmux-1');
+    await emitHumanPromptStateChangedBarrier(eventEmitter, {
+      sessionId: 'session-1',
+      tmuxSessionName: 'tmux-1',
+      generation: draft.generation,
+      phase: 'draft_active',
+    });
+
+    await expect(
+      service.enqueue('agent-1', 'mobile reply', {
+        source: 'mobile',
+        deliveryMode: 'immediate',
+        humanPromptSubmit: true,
+      }),
+    ).resolves.toMatchObject({ status: 'delivered' });
+
+    expect(humanPromptState.getState('tmux-1')).toEqual(
+      expect.objectContaining({ phase: 'awaiting_stable_idle', generation: 2 }),
+    );
+    expect(terminalIO.deliverImmediate).toHaveBeenCalledTimes(1);
   });
 });

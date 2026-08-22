@@ -136,6 +136,11 @@ export class AgentMessageDeliveryService {
           projectId: message.projectId,
           agentName: undefined,
           clientMessageId: message.clientMessageId,
+          deferWhileHumanTyping:
+            message.kind === 'pooled' ||
+            message.senderType === 'agent' ||
+            message.senderType === 'guest',
+          humanPromptSubmit: message.senderType === 'user',
           ...(message.kind === 'mcp.project' ? { failureDisclosure: 'project-safe' as const } : {}),
         },
       ]);

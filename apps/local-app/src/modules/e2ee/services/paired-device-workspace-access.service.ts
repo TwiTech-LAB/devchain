@@ -21,6 +21,20 @@ export interface PairedDeviceWorkspaceAccess {
   readonly workspaceIds: string[];
 }
 
+/**
+ * The ONE workspace-access predicate. Shared by RPC authorization
+ * (`MobileRpcWorkspaceAccessService.assertWorkspaceAllowed`) and notification
+ * recipient enumeration (`NotificationRecipientResolverService`) so implicit
+ * Default-only and explicit-grant semantics can never diverge between the two
+ * callers. Pure — takes the resolved access snapshot, not a kid.
+ */
+export function canAccessWorkspace(
+  access: Pick<PairedDeviceWorkspaceAccess, 'workspaceIds'>,
+  workspaceId: string,
+): boolean {
+  return access.workspaceIds.includes(workspaceId);
+}
+
 @Injectable()
 export class PairedDeviceWorkspaceAccessService {
   private readonly sqlite: Database.Database;

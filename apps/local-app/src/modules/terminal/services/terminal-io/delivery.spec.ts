@@ -1,6 +1,8 @@
 import { TerminalIOService } from './terminal-io.service';
 import { FakeProcessExecutor } from '../process-executor/fake-process-executor';
 import type { SessionTarget, DeliveryOptions } from './types';
+import type { EventsService } from '../../../events/services/events.service';
+import { HumanPromptStateService } from '../human-prompt-state.service';
 
 jest.mock('../../../../common/delivery-nonce', () => ({
   generateDeliveryNonce: () => 'abc1234',
@@ -11,8 +13,10 @@ const NONCE = 'abc1234';
 
 function makeService() {
   const fake = new FakeProcessExecutor();
-  const svc = new TerminalIOService(fake);
-  return { fake, svc };
+  const events = { publish: jest.fn() } as unknown as EventsService;
+  const promptState = new HumanPromptStateService();
+  const svc = new TerminalIOService(fake, events, promptState);
+  return { fake, promptState, svc };
 }
 
 describe('TerminalIOService delivery', () => {
@@ -343,6 +347,80 @@ describe('TerminalIOService delivery', () => {
       );
       expect(loadBufferCall?.[0].input).toBe('\x1b[200~first line\rsecond line\x1b[201~');
       expect(fake.calls.filter((call) => call.argv[1] === 'send-keys')).toHaveLength(0);
+    });
+  });
+
+  describe('deliverGuarded', () => {
+    function quietSnapshot(promptState: HumanPromptStateService) {
+      const draft = promptState.recordPromptText(target.name);
+      promptState.transitionToAwaiting(target.name, draft.generation);
+      return promptState.getQuietSnapshot(target.name)!;
+    }
+
+    it('preserves nonce confirmation after the prepared baseline', async () => {
+      const { fake, promptState, svc } = makeService();
+      fake.enqueueResponse({ type: 'success', stdout: 'baseline' });
+      fake.enqueueResponse({ type: 'success' });
+      fake.enqueueResponse({ type: 'success' });
+      fake.enqueueResponse({ type: 'success' });
+      fake.enqueueResponse({ type: 'success', stdout: `output [MsgId:${NONCE}]` });
+      fake.enqueueResponse({ type: 'success' });
+
+      const result = await svc.deliverGuarded(
+        target,
+        'guarded',
+        { agentId: 'a1', confirm: true, postPasteDelayMs: 0 },
+        quietSnapshot(promptState),
+      );
+
+      expect(result).toEqual(
+        expect.objectContaining({ confirmed: true, method: 'nonce', retryCount: 0 }),
+      );
+      expect(promptState.getState(target.name).phase).toBe('inactive');
+      expect(fake.calls.map((call) => call.argv[1])).toEqual([
+        'capture-pane',
+        'load-buffer',
+        'paste-buffer',
+        'delete-buffer',
+        'capture-pane',
+        'send-keys',
+      ]);
+    });
+
+    it('preserves repair and retry after the guarded first mutation starts', async () => {
+      const { fake, promptState, svc } = makeService();
+      fake.enqueueResponse({ type: 'success', stdout: 'baseline' });
+      fake.enqueueResponse({ type: 'success' });
+      fake.enqueueResponse({ type: 'success' });
+      fake.enqueueResponse({ type: 'success' });
+      fake.enqueueResponse({ type: 'success', stdout: 'not confirmed' });
+      fake.enqueueResponse({ type: 'success' });
+      fake.enqueueResponse({ type: 'success', stdout: 'retry baseline' });
+      fake.enqueueResponse({ type: 'success' });
+      fake.enqueueResponse({ type: 'success' });
+      fake.enqueueResponse({ type: 'success' });
+      fake.enqueueResponse({ type: 'success', stdout: `output [MsgId:${NONCE}]` });
+      fake.enqueueResponse({ type: 'success' });
+
+      const result = await svc.deliverGuarded(
+        target,
+        'guarded retry',
+        {
+          agentId: 'a1',
+          confirm: true,
+          confirmTimeoutMs: 0,
+          maxAttempts: 2,
+          postPasteDelayMs: 0,
+        },
+        quietSnapshot(promptState),
+      );
+
+      expect(result).toEqual(
+        expect.objectContaining({ confirmed: true, method: 'nonce', retryCount: 1 }),
+      );
+      expect(
+        fake.calls.some((call) => call.argv[1] === 'send-keys' && call.argv.includes('Escape')),
+      ).toBe(true);
     });
   });
 

@@ -1,11 +1,24 @@
 import type { Stats } from 'fs';
 import * as fs from 'fs/promises';
 import Database from 'better-sqlite3';
-import { SeedPreparationService } from './seed-preparation.service';
+import { SeedIsolationError, SeedPreparationService } from './seed-preparation.service';
 import { getDbConfig } from '../../../storage/db/db.config';
 
 const mockBackup = jest.fn();
 const mockClose = jest.fn();
+const mockExec = jest.fn();
+const mockPragma = jest.fn();
+const mockSqlEvents: string[] = [];
+const mockPrepare = jest.fn((sql: string) => ({
+  run: jest.fn(() => {
+    mockSqlEvents.push(sql);
+  }),
+  get: jest.fn(() => {
+    mockSqlEvents.push(sql);
+    return { count: 0 };
+  }),
+  sql,
+}));
 
 jest.mock('fs/promises', () => ({
   mkdir: jest.fn(),
@@ -19,6 +32,10 @@ jest.mock('better-sqlite3', () => {
   return jest.fn().mockImplementation(() => ({
     backup: mockBackup,
     close: mockClose,
+    exec: mockExec,
+    pragma: mockPragma,
+    prepare: mockPrepare,
+    transaction: jest.fn((callback: () => void) => callback),
   }));
 });
 
@@ -67,6 +84,21 @@ describe('SeedPreparationService', () => {
   beforeEach(() => {
     process.env.HOME = hostHome;
     jest.clearAllMocks();
+    mockSqlEvents.length = 0;
+
+    mockExec.mockImplementation((sql: string) => {
+      mockSqlEvents.push(sql);
+    });
+    mockPragma.mockImplementation((statement: string) => {
+      mockSqlEvents.push(`PRAGMA ${statement}`);
+      if (statement === 'wal_checkpoint(TRUNCATE)') {
+        return [{ busy: 0, log: 0, checkpointed: 0 }];
+      }
+      if (statement === 'integrity_check') {
+        return 'ok';
+      }
+      return undefined;
+    });
 
     getDbConfigMock.mockReturnValue({
       dbPath: '/host/.devchain/devchain.db',
@@ -117,14 +149,84 @@ describe('SeedPreparationService', () => {
     const tempPath = mockBackup.mock.calls[0][0] as string;
     expect(tempPath).toMatch(/^\/target\/worktrees\/feature\/data\/\.devchain\.db\.tmp-/);
     expect(fsMock.rename).toHaveBeenCalledWith(tempPath, targetDbPath);
-    expect(mockClose).toHaveBeenCalledTimes(1);
+    expect(mockClose).toHaveBeenCalledTimes(2);
 
     expect(fsMock.cp).toHaveBeenCalledWith(hostSkillsPath, targetSkillsPath, {
       recursive: true,
       force: true,
     });
     expect(migrationSpy).toHaveBeenCalledWith(targetDbPath);
+
+    const preparedSql = mockPrepare.mock.calls.map(([sql]) => sql);
+    expect(preparedSql.indexOf('DELETE FROM external_task_links')).toBeGreaterThanOrEqual(0);
+    expect(preparedSql.indexOf('DELETE FROM integration_connections')).toBeGreaterThan(
+      preparedSql.indexOf('DELETE FROM external_task_links'),
+    );
+    expect(preparedSql).toContain('SELECT COUNT(*) AS count FROM external_task_links');
+    expect(preparedSql).toContain('SELECT COUNT(*) AS count FROM integration_connections');
+    expect(mockExec).toHaveBeenCalledWith('VACUUM');
+    expect(mockPragma).toHaveBeenCalledWith('wal_checkpoint(TRUNCATE)');
+    expect(mockPragma).toHaveBeenCalledWith('integrity_check', { simple: true });
+
+    expect(mockSqlEvents.indexOf('DELETE FROM integration_connections')).toBeLessThan(
+      mockSqlEvents.indexOf('VACUUM'),
+    );
+    expect(mockSqlEvents.indexOf('VACUUM')).toBeLessThan(
+      mockSqlEvents.indexOf('PRAGMA wal_checkpoint(TRUNCATE)'),
+    );
   });
+
+  it.each(['compaction', 'checkpoint', 'post-verification'] as const)(
+    'fails closed when copied-database %s fails',
+    async (failureStage) => {
+      fsMock.stat.mockImplementation(async (path) => {
+        if (path === hostPreferredDbPath) {
+          return makeFileStats();
+        }
+        throw makeNotFoundError(String(path));
+      });
+
+      if (failureStage === 'compaction') {
+        mockExec.mockImplementationOnce(() => {
+          throw new Error('unsafe database detail');
+        });
+      } else if (failureStage === 'checkpoint') {
+        mockPragma.mockImplementation((statement: string) => {
+          if (statement === 'wal_checkpoint(TRUNCATE)') {
+            throw new Error('unsafe checkpoint detail');
+          }
+          if (statement === 'integrity_check') {
+            return 'ok';
+          }
+          return undefined;
+        });
+      } else {
+        mockPragma.mockImplementation((statement: string) => {
+          if (statement === 'wal_checkpoint(TRUNCATE)') {
+            return [{ busy: 0, log: 0, checkpointed: 0 }];
+          }
+          if (statement === 'integrity_check') {
+            return 'corrupt';
+          }
+          return undefined;
+        });
+      }
+
+      const service = new SeedPreparationService();
+      jest
+        .spyOn(
+          service as unknown as { runMigrationsOnCopy: (dbPath: string) => Promise<void> },
+          'runMigrationsOnCopy',
+        )
+        .mockResolvedValue(undefined);
+
+      await expect(service.prepareSeedData(targetDataPath)).rejects.toMatchObject({
+        name: SeedIsolationError.name,
+        message: 'Security validation failed while isolating worktree seed data',
+      });
+      expect(mockClose).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it('creates an empty target skills directory when host skills directory is missing', async () => {
     fsMock.stat.mockImplementation(async (path) => {

@@ -1,13 +1,15 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { EpicFormData } from '@/ui/components/board/EpicFormDialog';
 import { useToast } from '@/ui/hooks/use-toast';
 import { useOptionalWorktreeTab } from '@/ui/hooks/useWorktreeTab';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
+import { useIntegrationAvailability } from '@/ui/hooks/useIntegrationAvailability';
 import { useBoardData } from '@/ui/hooks/useBoardData';
 import { useBoardSync } from '@/ui/hooks/useBoardSync';
 import { useBoardMutations } from '@/ui/hooks/useBoardMutations';
 import { useBoardDragDrop } from '@/ui/hooks/useBoardDragDrop';
+import { useEpicExternalSourcesBatch } from '@/ui/hooks/useEpicExternalSourcesBatch';
 import { useBoardBulkEdit } from '@/ui/hooks/board/useBoardBulkEdit';
 import { useBoardRouteState } from '@/ui/hooks/board/useBoardRouteState';
 import { useBoardViewPreferences } from '@/ui/hooks/board/useBoardViewPreferences';
@@ -39,6 +41,7 @@ export function useBoardPageController(): BoardPagePresentation {
   const [columnPickerOpen, setColumnPickerOpen] = useState(false);
   const [filterPopoverOpen, setFilterPopoverOpen] = useState(false);
   const bulkEdit = useBoardBulkEdit({ selectedProjectId });
+  const integrationAvailability = useIntegrationAvailability();
 
   const routeState = useBoardRouteState({ selectedProjectId });
   const { filters } = routeState;
@@ -197,6 +200,26 @@ export function useBoardPageController(): BoardPagePresentation {
   }, [bulkDeleteIds, deleteEpicsByIds, toast]);
 
   useBoardSync({ selectedProjectId, parentFilter: filters.parent });
+
+  // Source IDs come from the loaded Board context BEFORE status and search
+  // filters so filter changes never create a new batch key. A parent filter
+  // batches the loaded sub-epics; otherwise the loaded root epics.
+  const sourceEpicIds = useMemo(() => {
+    const items = filters.parent
+      ? ((subEpicsData?.items ?? []) as Epic[])
+      : ((epicsData?.items ?? []) as Epic[]).filter((epic) => !epic.parentId);
+    // Deduplication and sort belong to the batch hook, which owns the cache key.
+    return items.map((epic) => epic.id);
+  }, [filters.parent, epicsData, subEpicsData]);
+
+  // One bounded local read; worktree, unresolved, admission-off, and empty
+  // contexts issue no request and see no cached data. Failures leave the map
+  // empty — source notes are decoration, never a Board blocker.
+  const { sources: externalSources } = useEpicExternalSourcesBatch(sourceEpicIds, {
+    enabled: integrationAvailability.canUseIntegrations,
+  });
+  const externalSourceMap = externalSources ?? new Map();
+
   const {
     draggedEpic,
     activeDropStatusId,
@@ -319,6 +342,7 @@ export function useBoardPageController(): BoardPagePresentation {
       ...common,
       kind: 'expanded',
       draggedEpic,
+      externalSources: externalSourceMap,
       collapse: () => viewPreferences.toggleColumnCollapse(status.id),
       keyboardMove: handleKeyboardMove,
     };
@@ -361,6 +385,7 @@ export function useBoardPageController(): BoardPagePresentation {
         await mutateUpdateEpicAgentAsync(epic, agentId);
       },
       moveToWorktree: handleMoveToWorktree,
+      externalSources: externalSourceMap,
     };
   }
 

@@ -126,6 +126,16 @@ describe('TerminalActivityService', () => {
         );
       });
 
+      it('does not treat a split ANSI sequence as visible output', () => {
+        stream.emit('frame', { type: 'data', sessionId, payload: { data: '\x1b[' } });
+        stream.emit('frame', { type: 'data', sessionId, payload: { data: '31' } });
+        stream.emit('frame', { type: 'data', sessionId, payload: { data: 'm' } });
+
+        expect(mockDb.prepare).not.toHaveBeenCalledWith(
+          expect.stringContaining('last_activity_at'),
+        );
+      });
+
       it('ignores non-data frame types', () => {
         stream.emit('frame', { type: 'seed_ansi', sessionId, payload: { data: 'hello' } });
         expect(mockDb.prepare).not.toHaveBeenCalledWith(

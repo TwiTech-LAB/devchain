@@ -42,6 +42,7 @@ import { MessageActivityStreamService } from '../sessions/services/message-activ
 import { MessageEnqueueService } from '../sessions/services/message-enqueue.service';
 import { MessageLogService } from '../sessions/services/message-log.service';
 import { SessionsMessagePoolService } from '../sessions/services/sessions-message-pool.service';
+import { HumanPromptStateService } from '../terminal/services/human-prompt-state.service';
 import { createMockAgent } from '../../../test/factories/agent';
 import { createMockProject } from '../../../test/factories/project';
 import { ProjectCommunicationService } from './project-communication.service';
@@ -133,6 +134,18 @@ describe('project delivery failure redaction workflow', () => {
           status: 'running',
         },
       ]),
+      getActiveSessionForAgent: jest.fn().mockImplementation((agentId: string) =>
+        agentId === TARGET_OWNER_ID
+          ? {
+              id: 'target-session',
+              agentId: TARGET_OWNER_ID,
+              tmuxSessionId: 'tmux-target',
+              status: 'running',
+              activityState: 'busy',
+            }
+          : null,
+      ),
+      getSession: jest.fn(),
     };
     const coordinator = {
       withAgentLock: jest
@@ -178,6 +191,7 @@ describe('project delivery failure redaction workflow', () => {
       providerAdapterFactory as never,
       messageLog,
       notifier,
+      new HumanPromptStateService(),
     );
     messageEnqueue = new MessageEnqueueService(pool);
 

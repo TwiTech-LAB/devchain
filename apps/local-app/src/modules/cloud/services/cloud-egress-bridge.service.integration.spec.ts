@@ -9,6 +9,7 @@ import { CloudSessionManagerService } from './cloud-session-manager.service';
 import { EgressQueueService } from './egress-queue.service';
 import { EventMapperService } from './event-mapper.service';
 import { ProjectEgressConfigService } from './project-egress-config.service';
+import type { NotificationRecipientResolverService } from './notification-recipient-resolver.service';
 import { GUEST_SANDBOX_ROOT_PATH } from '../../guests/constants';
 import type { WorkspaceModeCoordinatorService } from '../../workspaces/services/workspace-mode-coordinator.service';
 
@@ -30,6 +31,7 @@ describe('CloudEgressBridgeService', () => {
   let egressQueue: jest.Mocked<EgressQueueService>;
   let projectConfig: ProjectEgressConfigService;
   let workspaceMode: { getSnapshot: jest.Mock };
+  let recipientResolver: { resolveProjectRecipientRoutingKids: jest.Mock };
 
   beforeEach(() => {
     sqlite = new Database(':memory:');
@@ -56,6 +58,9 @@ describe('CloudEgressBridgeService', () => {
         .fn()
         .mockResolvedValue({ multiWorkspaceMode: false, failClosedPending: false }),
     };
+    recipientResolver = {
+      resolveProjectRecipientRoutingKids: jest.fn().mockResolvedValue([]),
+    };
 
     bridge = new CloudEgressBridgeService(
       cloudSession,
@@ -63,6 +68,7 @@ describe('CloudEgressBridgeService', () => {
       new EventMapperService(),
       projectConfig,
       workspaceMode as unknown as WorkspaceModeCoordinatorService,
+      recipientResolver as unknown as NotificationRecipientResolverService,
     );
 
     mockEventMetadata.clear();
@@ -112,25 +118,123 @@ describe('CloudEgressBridgeService', () => {
     expect(enqueued.projectId).toBe('p1');
   });
 
-  it.each([
-    { multiWorkspaceMode: true, failClosedPending: false },
-    { multiWorkspaceMode: false, failClosedPending: true },
-  ])(
-    'suppresses project and session notification egress while workspace delivery is restricted',
-    async (mode) => {
-      workspaceMode.getSnapshot.mockResolvedValue(mode);
-      const epic = withMetadata(
-        { epicId: 'e1', projectId: 'p1', title: 'Test', statusId: null },
-        'evt-scoped',
-      );
-      const session = withMetadata({ sessionId: 's1', sessionName: 'test' }, 'evt-session');
+  it('suppresses ALL egress while failClosedPending (hard stop)', async () => {
+    workspaceMode.getSnapshot.mockResolvedValue({
+      multiWorkspaceMode: false,
+      failClosedPending: true,
+    });
+    const epic = withMetadata(
+      { epicId: 'e1', projectId: 'p1', title: 'Test', statusId: null },
+      'evt-scoped',
+    );
+    const session = withMetadata({ sessionId: 's1', sessionName: 'test' }, 'evt-session');
 
-      await bridge.onEpicCreated(epic);
-      await bridge.onSessionCrashed(session);
+    await bridge.onEpicCreated(epic);
+    await bridge.onSessionCrashed(session);
 
-      expect(egressQueue.enqueue).not.toHaveBeenCalled();
-    },
-  );
+    expect(egressQueue.enqueue).not.toHaveBeenCalled();
+    expect(recipientResolver.resolveProjectRecipientRoutingKids).not.toHaveBeenCalled();
+  });
+
+  it('multi-workspace: enqueues a project event with exactly the authorized recipient routing kids', async () => {
+    workspaceMode.getSnapshot.mockResolvedValue({
+      multiWorkspaceMode: true,
+      failClosedPending: false,
+    });
+    recipientResolver.resolveProjectRecipientRoutingKids.mockResolvedValue(['kid-a', 'kid-b']);
+    const payload = withMetadata(
+      { epicId: 'e1', projectId: 'p1', title: 'Test', statusId: null },
+      'evt-mw-1',
+    );
+
+    await bridge.onEpicCreated(payload);
+
+    expect(recipientResolver.resolveProjectRecipientRoutingKids).toHaveBeenCalledWith('p1');
+    expect(egressQueue.enqueue).toHaveBeenCalledTimes(1);
+    const enqueued = egressQueue.enqueue.mock.calls[0][0];
+    expect(enqueued.recipientDeviceKids).toEqual(['kid-a', 'kid-b']);
+  });
+
+  it('multi-workspace: does NOT enqueue a project event with no authorized recipient', async () => {
+    workspaceMode.getSnapshot.mockResolvedValue({
+      multiWorkspaceMode: true,
+      failClosedPending: false,
+    });
+    recipientResolver.resolveProjectRecipientRoutingKids.mockResolvedValue([]);
+    const payload = withMetadata(
+      { epicId: 'e1', projectId: 'p1', title: 'Test', statusId: null },
+      'evt-mw-2',
+    );
+
+    await bridge.onEpicCreated(payload);
+
+    expect(egressQueue.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('multi-workspace: keeps projectless session events suppressed', async () => {
+    workspaceMode.getSnapshot.mockResolvedValue({
+      multiWorkspaceMode: true,
+      failClosedPending: false,
+    });
+    recipientResolver.resolveProjectRecipientRoutingKids.mockResolvedValue(['kid-a']);
+    const payload = withMetadata({ sessionId: 's1', sessionName: 'test' }, 'evt-mw-3');
+
+    await bridge.onSessionCrashed(payload);
+
+    expect(egressQueue.enqueue).not.toHaveBeenCalled();
+    expect(recipientResolver.resolveProjectRecipientRoutingKids).not.toHaveBeenCalled();
+  });
+
+  it('multi-workspace: the per-project forwarding switch still stops egress (no resolution)', async () => {
+    workspaceMode.getSnapshot.mockResolvedValue({
+      multiWorkspaceMode: true,
+      failClosedPending: false,
+    });
+    projectConfig.setEnabled('p1', false);
+    recipientResolver.resolveProjectRecipientRoutingKids.mockResolvedValue(['kid-a']);
+    const payload = withMetadata(
+      { epicId: 'e1', projectId: 'p1', title: 'Test', statusId: null },
+      'evt-mw-4',
+    );
+
+    await bridge.onEpicCreated(payload);
+
+    expect(egressQueue.enqueue).not.toHaveBeenCalled();
+    expect(recipientResolver.resolveProjectRecipientRoutingKids).not.toHaveBeenCalled();
+  });
+
+  it('multi-workspace: a resolver failure skips the event (never enqueues untargeted)', async () => {
+    workspaceMode.getSnapshot.mockResolvedValue({
+      multiWorkspaceMode: true,
+      failClosedPending: false,
+    });
+    recipientResolver.resolveProjectRecipientRoutingKids.mockRejectedValue(
+      new Error('storage unavailable'),
+    );
+    const payload = withMetadata(
+      { epicId: 'e1', projectId: 'p1', title: 'Test', statusId: null },
+      'evt-mw-5',
+    );
+
+    await bridge.onEpicCreated(payload);
+
+    expect(egressQueue.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('single-workspace: events stay account-wide (no recipient target set)', async () => {
+    const payload = withMetadata(
+      { epicId: 'e1', projectId: 'p1', title: 'Test', statusId: null },
+      'evt-sw-1',
+    );
+
+    await bridge.onEpicCreated(payload);
+
+    expect(recipientResolver.resolveProjectRecipientRoutingKids).not.toHaveBeenCalled();
+    expect(egressQueue.enqueue).toHaveBeenCalledTimes(1);
+    const enqueued = egressQueue.enqueue.mock.calls[0][0];
+    expect('recipientDeviceKids' in enqueued).toBe(false);
+    expect(enqueued.recipientHints).toEqual([]);
+  });
 
   it('should skip events when not connected', async () => {
     cloudSession.getStatus.mockReturnValue({

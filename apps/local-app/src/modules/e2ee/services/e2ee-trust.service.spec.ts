@@ -216,6 +216,43 @@ describe('E2eeTrustService (Task:8 — safety-number + TOFU + verify)', () => {
     });
   });
 
+  describe('bindNotificationRoutingIdentity', () => {
+    const ROUTING_KID = 'kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k';
+
+    it('stores the routing kid beside the paired device and reports bound', () => {
+      service.adoptPeerKeyTofu({ kid: deviceKid, publicKeyB64: devicePubB64 });
+
+      const res = service.bindNotificationRoutingIdentity(deviceKid, ROUTING_KID);
+
+      expect(res).toEqual({ kid: deviceKid, routingKid: ROUTING_KID, bound: true });
+      expect(deviceStore.get(deviceKid)?.notificationRoutingKid).toBe(ROUTING_KID);
+    });
+
+    it('rebinding the same device is deterministic (same stored value)', () => {
+      service.adoptPeerKeyTofu({ kid: deviceKid, publicKeyB64: devicePubB64 });
+      service.bindNotificationRoutingIdentity(deviceKid, ROUTING_KID);
+
+      const again = service.bindNotificationRoutingIdentity(deviceKid, ROUTING_KID);
+
+      expect(again).toEqual({ kid: deviceKid, routingKid: ROUTING_KID, bound: true });
+      expect(deviceStore.get(deviceKid)?.notificationRoutingKid).toBe(ROUTING_KID);
+    });
+
+    it('throws NotFound for an unknown device and rejects malformed inputs', () => {
+      expect(() => service.bindNotificationRoutingIdentity('missing', ROUTING_KID)).toThrow(
+        NotFoundError,
+      );
+      expect(() => service.bindNotificationRoutingIdentity('', ROUTING_KID)).toThrow(
+        ValidationError,
+      );
+      service.adoptPeerKeyTofu({ kid: deviceKid, publicKeyB64: devicePubB64 });
+      expect(() => service.bindNotificationRoutingIdentity(deviceKid, 'short')).toThrow(
+        ValidationError,
+      );
+      expect(deviceStore.get(deviceKid)?.notificationRoutingKid).toBeUndefined();
+    });
+  });
+
   describe('verifyDevice', () => {
     it('marks a TOFU-adopted device verified via safety-number', () => {
       service.adoptPeerKeyTofu({ kid: deviceKid, publicKeyB64: devicePubB64 });

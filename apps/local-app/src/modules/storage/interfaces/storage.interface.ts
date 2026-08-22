@@ -78,7 +78,17 @@ import {
   CreateScheduledEpicRun,
   UpdateScheduledEpicRun,
   ScheduledEpicRunStatus,
+  CreateExternalTaskLink,
+  ExternalTaskLink,
+  IntegrationConnection,
+  IntegrationCredentials,
+  IntegrationProvider,
+  ReplaceIntegrationConnection,
+  CreateEpicWithExternalTaskLink,
+  CreateEpicWithExternalTaskLinkResult,
 } from '../models/domain.models';
+
+export type VerifyIntegrationCredentials = (credentials: IntegrationCredentials) => Promise<void>;
 
 export interface ListOptions {
   limit?: number;
@@ -633,6 +643,34 @@ export interface SessionStorage {
   ): Promise<void>;
 }
 
+export interface IntegrationStorage {
+  replaceIntegrationConnection(
+    data: ReplaceIntegrationConnection,
+    verify: VerifyIntegrationCredentials,
+  ): Promise<IntegrationConnection>;
+  getIntegrationConnection(provider: IntegrationProvider): Promise<IntegrationConnection | null>;
+  listIntegrationConnections(): Promise<IntegrationConnection[]>;
+  getIntegrationConnectionCredentials(
+    provider: IntegrationProvider,
+  ): Promise<IntegrationCredentials | null>;
+  disconnectIntegrationConnection(provider: IntegrationProvider): Promise<boolean>;
+  createExternalTaskLink(data: CreateExternalTaskLink): Promise<ExternalTaskLink>;
+  createEpicWithExternalTaskLink(
+    data: CreateEpicWithExternalTaskLink,
+  ): Promise<CreateEpicWithExternalTaskLinkResult>;
+  findExternalTaskLink(
+    provider: IntegrationProvider,
+    remoteScopeKey: string,
+    remoteTaskId: string,
+  ): Promise<ExternalTaskLink | null>;
+  listExternalTaskLinksByRemoteScope(
+    provider: IntegrationProvider,
+    remoteScopeKey: string,
+  ): Promise<ExternalTaskLink[]>;
+  listExternalTaskLinksForEpic(epicId: string): Promise<ExternalTaskLink[]>;
+  listExternalTaskLinksForEpics(epicIds: string[]): Promise<ExternalTaskLink[]>;
+}
+
 export interface StorageService
   extends ProjectStorage,
     ProjectWorkspaceStorage,
@@ -653,6 +691,7 @@ export interface StorageService
     SubscriberStorage,
     ReviewStorage,
     ScheduledEpicStorage,
-    SessionStorage {}
+    SessionStorage,
+    IntegrationStorage {}
 
 export const STORAGE_SERVICE = 'STORAGE_SERVICE';

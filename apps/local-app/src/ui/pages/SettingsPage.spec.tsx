@@ -6,6 +6,15 @@ import { SettingsPage } from './SettingsPage';
 
 const toastSpy = jest.fn();
 const useSelectedProjectMock = jest.fn();
+let canUseIntegrations = true;
+
+jest.mock('@/ui/hooks/useIntegrationAvailability', () => ({
+  useIntegrationAvailability: () => ({
+    canUseIntegrations,
+    runtimeResolved: true,
+    reason: null,
+  }),
+}));
 
 jest.mock('@/ui/hooks/useProjectSelection', () => ({
   useSelectedProject: () => useSelectedProjectMock(),
@@ -120,6 +129,17 @@ function createBaseFetchMock(overrides?: {
     if (url.startsWith('/api/prompts')) {
       return { ok: true, json: async () => prompts } as Response;
     }
+    if (url.startsWith('/api/integrations/connections')) {
+      return {
+        ok: true,
+        json: async () => ({
+          items: [
+            { provider: 'clickup', connected: false, generation: null, updatedAt: null },
+            { provider: 'jira', connected: false, generation: null, updatedAt: null },
+          ],
+        }),
+      } as Response;
+    }
     if (url.startsWith('/api/preflight')) {
       return {
         ok: true,
@@ -192,6 +212,7 @@ describe('SettingsPage sub-navigation', () => {
   const originalFetch = global.fetch;
 
   beforeEach(() => {
+    canUseIntegrations = true;
     useSelectedProjectMock.mockReturnValue({
       selectedProjectId: null,
       selectedProject: null,
@@ -235,6 +256,43 @@ describe('SettingsPage sub-navigation', () => {
     });
 
     expect(await screen.findByText(/Terminal Settings/i)).toBeInTheDocument();
+  });
+
+  it('deep-links to the shared Integrations section', async () => {
+    const { Wrapper } = createWrapper(['/settings?section=integrations']);
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <SettingsPage />
+        </Wrapper>,
+      );
+    });
+
+    expect(await screen.findByRole('heading', { name: 'ClickUp' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Jira' })).toBeInTheDocument();
+  });
+
+  it('renders no cached integration UI or request when runtime access is unavailable', async () => {
+    canUseIntegrations = false;
+    const { Wrapper, queryClient } = createWrapper(['/settings?section=integrations']);
+    queryClient.setQueryData(['integration-connections', 'list'], {
+      items: [{ provider: 'clickup', connected: true, generation: 1, updatedAt: null }],
+    });
+
+    render(
+      <Wrapper>
+        <SettingsPage />
+      </Wrapper>,
+    );
+
+    expect(await screen.findByText('Integrations unavailable')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'ClickUp' })).not.toBeInTheDocument();
+    expect(
+      (global.fetch as jest.Mock).mock.calls.some(([input]) =>
+        String(input).startsWith('/api/integrations'),
+      ),
+    ).toBe(false);
   });
 
   it('falls back to GeneralSection for invalid ?section=bogus', async () => {

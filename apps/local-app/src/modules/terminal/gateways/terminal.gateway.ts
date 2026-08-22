@@ -9,7 +9,7 @@ import {
   WsException,
 } from '@nestjs/websockets';
 import { Injectable, Inject, forwardRef, OnModuleInit } from '@nestjs/common';
-import { OnEvent } from '@nestjs/event-emitter';
+import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { Server, Socket } from 'socket.io';
 import { createHash } from 'node:crypto';
 import { createLogger } from '../../../common/logging/logger';
@@ -23,6 +23,10 @@ import { TerminalIOService } from '../services/terminal-io/terminal-io.service';
 import { TerminalSessionRegistry } from '../services/terminal-session/terminal-session-registry';
 import { TerminalSeedDelivery, TerminalSeedService } from '../services/terminal-seed.service';
 import { isControlKey, toTmuxKeys } from '../utils/control-keys';
+import {
+  countPlainTerminalInputCharacters,
+  hasPrintableTerminalInput,
+} from '../utils/terminal-activity';
 import { SettingsService } from '../../settings/services/settings.service';
 import {
   createEnvelope,
@@ -49,6 +53,8 @@ import {
   TerminalSendSchedulerService,
   type TerminalSendAdmissionResult,
 } from '../services/terminal-send-scheduler.service';
+import { HumanPromptStateService } from '../services/human-prompt-state.service';
+import { emitHumanPromptStateChangedBarrier } from '../../events/catalog/session.human-prompt-state-changed';
 
 const logger = createLogger('TerminalGateway');
 
@@ -179,6 +185,8 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
     private readonly seedService: TerminalSeedService,
     @Inject(forwardRef(() => TerminalIOService))
     private readonly terminalIO: TerminalIOService,
+    private readonly humanPromptState: HumanPromptStateService,
+    private readonly eventEmitter: EventEmitter2,
     private readonly registry: TerminalSessionRegistry,
     private readonly sessionTerminalRuntime: SessionTerminalRuntimeService,
     private readonly realtimeBroadcast: RealtimeBroadcastService,
@@ -985,25 +993,72 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
 
     this.trackInputRate(client.id, sessionId, data.length);
 
+    // Enter must observe the generation that existed before the liveness await:
+    // newer text arriving during that await keeps its newer draft_active generation.
+    const promptStateBeforeInput = this.humanPromptState.getState(session.tmuxSessionName);
+    const expectedPromptGeneration =
+      promptStateBeforeInput.phase === 'draft_active' ? promptStateBeforeInput.generation : null;
+    const providerName =
+      data === '\x03' ? this.sessionTerminalRuntime.getProviderNameAtLaunch(sessionId) : null;
+
     const tmuxAlive = await this.terminalIO.sessionExists({ name: session.tmuxSessionName });
     if (!tmuxAlive) {
       await this.handleDeadTmuxSession(sessionId, client);
       return;
     }
 
-    session.signalInput();
     const target = { name: session.tmuxSessionName };
 
     if (isControlKey(data)) {
-      await this.terminalIO.sendControl(target, toTmuxKeys(data));
+      const tmuxKeys = toTmuxKeys(data);
+      session.signalInput();
+      await this.terminalIO.sendControl(target, tmuxKeys);
+      if (expectedPromptGeneration !== null) {
+        if (this.isSubmitInput(data)) {
+          await this.transitionHumanPromptToAwaiting(session, expectedPromptGeneration);
+        } else {
+          await this.recordPromptControlInput(
+            session,
+            expectedPromptGeneration,
+            tmuxKeys[0]!,
+            providerName,
+          );
+        }
+      }
     } else if (ttyMode) {
+      const isPrintableInput = hasPrintableTerminalInput(data);
+      let activatedGeneration: number | null = null;
+      if (isPrintableInput) {
+        const characterCount = countPlainTerminalInputCharacters(data);
+        activatedGeneration = await this.activateHumanPrompt(session, characterCount ?? undefined);
+      }
+      session.signalInput();
       await this.terminalIO.sendControl(target, ['-l', '--', data]);
+      if (activatedGeneration !== null) {
+        this.humanPromptState.confirmPromptTextWritten(
+          session.tmuxSessionName,
+          activatedGeneration,
+        );
+      }
+      if (!isPrintableInput && expectedPromptGeneration !== null) {
+        await this.recordPromptControlInput(
+          session,
+          expectedPromptGeneration,
+          'Unknown',
+          providerName,
+        );
+      }
     } else {
+      const expectedGeneration = await this.activateHumanPrompt(session);
+      session.signalInput();
       try {
         await this.terminalIO.deliverImmediate(target, data, { bracketed: true });
       } catch (error) {
         logger.warn({ sessionId, error: String(error) }, 'deliverImmediate failed');
+        return;
       }
+      this.humanPromptState.confirmPromptTextWritten(session.tmuxSessionName, expectedGeneration);
+      await this.transitionHumanPromptToAwaiting(session, expectedGeneration);
     }
   }
 
@@ -1094,6 +1149,7 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
   ): Promise<TerminalPromptPasteAck> {
     try {
       const target = { name: session.tmuxSessionName };
+      const activatedGeneration = await this.activateHumanPrompt(session);
       const tmuxAlive = await this.terminalIO.sessionExists(target);
       if (!tmuxAlive) {
         await this.handleDeadTmuxSession(payload.sessionId, client);
@@ -1105,6 +1161,7 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
         bracketed: true,
         submitKeys: [],
       });
+      this.humanPromptState.confirmPromptTextWritten(session.tmuxSessionName, activatedGeneration);
       return { ok: true, code: 'OK', requestId: payload.requestId };
     } catch (error) {
       logger.warn(
@@ -1113,6 +1170,68 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
       );
       return this.promptPasteFailure(payload.requestId, 'DELIVERY_ERROR');
     }
+  }
+
+  private async activateHumanPrompt(
+    session: TerminalSession,
+    plainTextCharacterCount?: number,
+  ): Promise<number> {
+    const state = this.humanPromptState.recordPromptText(
+      session.tmuxSessionName,
+      plainTextCharacterCount,
+      true,
+    );
+    await emitHumanPromptStateChangedBarrier(this.eventEmitter, {
+      sessionId: session.sessionId,
+      tmuxSessionName: session.tmuxSessionName,
+      generation: state.generation,
+      phase: 'draft_active',
+    });
+    return state.generation;
+  }
+
+  private async recordPromptControlInput(
+    session: TerminalSession,
+    expectedGeneration: number,
+    tmuxKey: string,
+    providerName: string | null,
+  ): Promise<void> {
+    const result = this.humanPromptState.recordControlInput(
+      session.tmuxSessionName,
+      expectedGeneration,
+      tmuxKey,
+      providerName,
+    );
+    if (!result.accepted) return;
+
+    await emitHumanPromptStateChangedBarrier(this.eventEmitter, {
+      sessionId: session.sessionId,
+      tmuxSessionName: session.tmuxSessionName,
+      generation: result.state.generation,
+      phase: result.state.phase,
+    });
+  }
+
+  private async transitionHumanPromptToAwaiting(
+    session: TerminalSession,
+    expectedGeneration: number,
+  ): Promise<void> {
+    const result = this.humanPromptState.transitionToAwaiting(
+      session.tmuxSessionName,
+      expectedGeneration,
+    );
+    if (!result.accepted) return;
+
+    await emitHumanPromptStateChangedBarrier(this.eventEmitter, {
+      sessionId: session.sessionId,
+      tmuxSessionName: session.tmuxSessionName,
+      generation: result.state.generation,
+      phase: 'awaiting_stable_idle',
+    });
+  }
+
+  private isSubmitInput(data: string): boolean {
+    return data === '\r' || data === '\n';
   }
 
   private promptPasteFailure(

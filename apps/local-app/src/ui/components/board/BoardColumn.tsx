@@ -1,4 +1,5 @@
 import { AlertCircle, Edit, GitBranch, ListChecks, Plus, Search, Trash2 } from 'lucide-react';
+import type { ExternalTaskSourceSummary } from '@/modules/external-integrations/models/external-provider.models';
 import { Button } from '@/ui/components/ui/button';
 import EpicPreview from '@/ui/components/shared/EpicPreview';
 import { EpicContextMenu } from '@/ui/components/board/EpicContextMenu';
@@ -30,6 +31,8 @@ export interface BoardColumnProps {
   hasRunningWorktrees?: boolean;
   isLightColor: (hex: string) => boolean;
   getSubEpicCountsByStatus?: (epicId: string) => Record<string, number> | undefined;
+  /** Stored external sources by Epic ID for imported cards in this column. */
+  externalSources?: ReadonlyMap<string, ExternalTaskSourceSummary>;
 }
 
 export function BoardColumn({
@@ -56,6 +59,7 @@ export function BoardColumn({
   hasRunningWorktrees = false,
   isLightColor,
   getSubEpicCountsByStatus,
+  externalSources,
 }: BoardColumnProps) {
   return (
     <div
@@ -137,6 +141,7 @@ export function BoardColumn({
               onOpenEpicDetails={onOpenEpicDetails}
               statuses={statusOrder}
               subEpicCountsByStatus={getSubEpicCountsByStatus?.(epic.id)}
+              source={externalSources?.get(epic.id)}
               renderPreview={() => {
                 const agentName = getAgentName(epic.agentId);
                 const showFilterToggle = epic.parentId === null;

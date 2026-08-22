@@ -25,6 +25,8 @@ import { PtyService } from '../../terminal/services/pty.service';
 import { TerminalSeedService } from '../../terminal/services/terminal-seed.service';
 import { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
 import { TerminalSessionRegistry } from '../../terminal/services/terminal-session/terminal-session-registry';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { HumanPromptStateService } from '../../terminal/services/human-prompt-state.service';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -56,7 +58,8 @@ function createGateway() {
     invalidateCache: jest.fn(),
   } as unknown as TerminalSeedService;
   const terminalIO = {} as TerminalIOService;
-  const registry = new TerminalSessionRegistry();
+  const humanPromptState = new HumanPromptStateService();
+  const registry = new TerminalSessionRegistry(undefined, humanPromptState);
 
   const gateway = new TerminalGateway(
     streamService,
@@ -64,6 +67,8 @@ function createGateway() {
     ptyService,
     seedService,
     terminalIO,
+    humanPromptState,
+    new EventEmitter2(),
     registry,
     {} as never,
     { setServer: jest.fn(), broadcastEvent: jest.fn() } as never,

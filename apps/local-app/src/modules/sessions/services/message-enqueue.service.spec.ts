@@ -60,6 +60,8 @@ describe('MessageEnqueueService', () => {
           projectId: 'project-1',
           agentName: 'Agent One',
           failureDisclosure: 'project-safe',
+          deferWhileHumanTyping: true,
+          humanPromptSubmit: false,
         },
         {
           agentId: 'agent-2',
@@ -85,6 +87,8 @@ describe('MessageEnqueueService', () => {
       agentName: 'Agent One',
       failureDisclosure: 'project-safe',
       clientMessageId: undefined,
+      deferWhileHumanTyping: true,
+      humanPromptSubmit: false,
     });
     expect(pool.enqueue).toHaveBeenNthCalledWith(2, 'agent-2', 'world', {
       source: 'test',
