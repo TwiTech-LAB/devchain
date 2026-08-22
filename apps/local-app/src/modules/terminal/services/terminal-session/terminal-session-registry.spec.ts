@@ -1,6 +1,7 @@
 import { TerminalSessionRegistry } from './terminal-session-registry';
 import type { TerminalIORef } from './terminal-session';
 import type { FrameEvent } from './terminal-frame-stream';
+import { HumanPromptStateService } from '../human-prompt-state.service';
 
 describe('TerminalSessionRegistry', () => {
   it('creates a session and retrieves it by id', () => {
@@ -55,6 +56,18 @@ describe('TerminalSessionRegistry', () => {
 
     expect(registry.get('s1')).toBeUndefined();
     expect(session.hasSubscriber('client-1')).toBe(false);
+  });
+
+  it('wires prompt clocks into sessions and clears state on dispose', () => {
+    const promptState = new HumanPromptStateService();
+    const registry = new TerminalSessionRegistry(undefined, promptState);
+    const session = registry.create('s1', 'tmux-s1');
+
+    session.signalInput();
+    expect(promptState.getState('tmux-s1').executedInputEpoch).toBe(1);
+
+    registry.dispose('s1');
+    expect(promptState.getState('tmux-s1').executedInputEpoch).toBe(0);
   });
 
   it('dispose of nonexistent session is a no-op', () => {

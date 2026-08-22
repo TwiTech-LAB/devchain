@@ -10,11 +10,17 @@ jest.mock('@/ui/components/board/EpicCard', () => ({
   EpicCard: ({
     renderPreview,
     isActiveParent,
+    source,
   }: {
     renderPreview?: () => ReactNode;
     isActiveParent: boolean;
+    source?: { remoteKey: string };
   }) => (
-    <div data-testid="epic-card" data-active-parent={String(isActiveParent)}>
+    <div
+      data-testid="epic-card"
+      data-active-parent={String(isActiveParent)}
+      data-source-key={source?.remoteKey ?? ''}
+    >
       {renderPreview?.()}
     </div>
   ),
@@ -84,5 +90,39 @@ describe('BoardColumn preview adapter', () => {
     expect(documentClick).not.toHaveBeenCalled();
     expect(screen.getByTestId('epic-card')).toHaveAttribute('data-active-parent', 'true');
     document.removeEventListener('click', documentClick);
+  });
+
+  it('passes one stored source per imported Epic and none for native Epics', () => {
+    const nativeEpic = epic;
+    const importedEpic = { ...epic, id: 'epic-2' };
+    const props: BoardColumnProps = {
+      status,
+      epics: [nativeEpic, importedEpic],
+      onAddEpic: jest.fn(),
+      onEditEpic: jest.fn(),
+      onDeleteEpic: jest.fn(),
+      onDragStart: jest.fn(),
+      onDragEnd: jest.fn(),
+      onDragOver: jest.fn(),
+      onDrop: jest.fn(),
+      isActiveDrop: false,
+      draggedEpic: null,
+      onKeyboardMove: jest.fn(),
+      onToggleParentFilter: jest.fn(),
+      activeParentId: null,
+      statusOrder: [status],
+      getAgentName: jest.fn(() => null),
+      onCollapseColumn: jest.fn(),
+      onBulkEdit: jest.fn(),
+      onOpenEpicDetails: jest.fn(),
+      isLightColor: jest.fn(() => true),
+      externalSources: new Map([['epic-2', { remoteKey: 'ENG-2', provider: 'jira' } as never]]),
+    };
+    render(<BoardColumn {...props} />);
+
+    const cards = screen.getAllByTestId('epic-card');
+    expect(cards).toHaveLength(2);
+    expect(cards[0]).toHaveAttribute('data-source-key', '');
+    expect(cards[1]).toHaveAttribute('data-source-key', 'ENG-2');
   });
 });

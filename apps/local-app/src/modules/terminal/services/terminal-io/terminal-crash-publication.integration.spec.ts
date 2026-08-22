@@ -6,6 +6,7 @@ import { SessionTerminalRuntimeService } from '../../../session-terminal-runtime
 import { TerminalGateway } from '../../gateways/terminal.gateway';
 import { FakeProcessExecutor } from '../process-executor/fake-process-executor';
 import { TerminalIOService } from './terminal-io.service';
+import { HumanPromptStateService } from '../human-prompt-state.service';
 
 jest.mock('../../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() }),
@@ -41,7 +42,7 @@ describe('terminal crash publication retry', () => {
   });
 
   afterEach(() => {
-    terminalIO?.onModuleDestroy();
+    terminalIO?.beforeApplicationShutdown();
     sqlite.close();
     jest.useRealTimers();
   });
@@ -58,7 +59,7 @@ describe('terminal crash publication retry', () => {
     const events = new EventsService(emitter, eventLogService as never);
     const executor = new FakeProcessExecutor();
     executor.setDefaultResponse({ type: 'failure', stderr: `can't find session: tmux-1` });
-    terminalIO = new TerminalIOService(executor, events);
+    terminalIO = new TerminalIOService(executor, events, new HumanPromptStateService());
 
     const sessionTerminalRuntime = new SessionTerminalRuntimeService(
       db,

@@ -11,14 +11,25 @@ import type { IngestPayload } from './event-mapper.service';
 const logger = createLogger('EgressQueue');
 
 const MAX_QUEUE_SIZE = 1000;
-const MAX_DELIVERY_ATTEMPTS = 3;
 const DRAIN_INTERVAL_MS = 100;
 const BASE_BACKOFF_MS = 1000;
+const MAX_BACKOFF_MS = 30_000;
+/**
+ * Total in-process retry window. EXACT GUARANTEE: a transient failure (network error,
+ * 429, 5xx) is retried with capped exponential backoff until either this much time has
+ * elapsed since the entry's FIRST attempt — or 1,000 subsequent events force a queue
+ * overflow that drops it — whichever happens first, while this Local App process
+ * remains alive. There is NO crash or restart durability: a killed process loses the
+ * queue, and that loss is accepted (durable egress is a separate backlog item).
+ */
+const MAX_RETRY_WINDOW_MS = 10 * 60 * 1000;
 
 interface QueueEntry {
   payload: IngestPayload;
   attempts: number;
   nextAttemptAt: number;
+  /** Wall-clock start of this entry's first delivery attempt (retry-window anchor). */
+  firstAttemptAt: number;
 }
 
 @Injectable()
@@ -49,7 +60,7 @@ export class EgressQueueService implements OnModuleDestroy {
       this.queue.shift();
       logger.warn('Queue overflow — dropped oldest entry');
     }
-    this.queue.push({ payload, attempts: 0, nextAttemptAt: Date.now() });
+    this.queue.push({ payload, attempts: 0, nextAttemptAt: Date.now(), firstAttemptAt: 0 });
   }
 
   get length(): number {
@@ -66,6 +77,8 @@ export class EgressQueueService implements OnModuleDestroy {
     const token = this.cloudSession.getAccessToken();
     if (!token) return;
 
+    if (entry.firstAttemptAt === 0) entry.firstAttemptAt = now;
+
     try {
       // Read at call-time (consistent with devices-proxy / preferences-proxy /
       // project-activity-reporter), so an env override is honored without a module reload.
@@ -80,9 +93,10 @@ export class EgressQueueService implements OnModuleDestroy {
         body: JSON.stringify(entry.payload),
       });
 
-      if (response.ok || response.status === 409) {
+      // ONLY a successful 2xx removes an entry as delivered. 200/201/`retried:true`
+      // are all successful ingest outcomes from this producer's point of view.
+      if (response.ok) {
         this.queue.shift();
-        this.pauseBackoffMs = BASE_BACKOFF_MS;
         return;
       }
 
@@ -91,33 +105,63 @@ export class EgressQueueService implements OnModuleDestroy {
         return;
       }
 
-      entry.attempts++;
-      if (entry.attempts >= MAX_DELIVERY_ATTEMPTS) {
-        this.queue.shift();
-        logger.warn(
-          { sourceEventId: entry.payload.sourceEventId, attempts: entry.attempts },
-          'Dropping event after max delivery attempts',
-        );
+      // A classified 409 (intake context mismatch) or any other non-authentication 4xx
+      // is a TERMINAL producer failure: retrying the same serialized payload can never
+      // succeed, so log safely (no payload/token/routing-kid content), emit the existing
+      // failure broadcast, and remove the entry WITHOUT labeling it delivered.
+      if (response.status !== 429 && response.status < 500) {
+        this.failEntry(entry, `terminal_response_${response.status}`);
         return;
       }
 
-      entry.nextAttemptAt = now + BASE_BACKOFF_MS * Math.pow(2, entry.attempts - 1);
-      logger.debug(
-        { sourceEventId: entry.payload.sourceEventId, attempt: entry.attempts },
-        'Delivery failed — scheduling retry',
-      );
+      // Transient (429 / 5xx): bounded retry.
+      this.scheduleRetryOrExpire(entry, `transient_response_${response.status}`);
     } catch (error) {
-      entry.attempts++;
-      if (entry.attempts >= MAX_DELIVERY_ATTEMPTS) {
-        this.queue.shift();
-        logger.warn(
-          { sourceEventId: entry.payload.sourceEventId, error },
-          'Dropping event after network error',
-        );
-        return;
-      }
-      entry.nextAttemptAt = now + BASE_BACKOFF_MS * Math.pow(2, entry.attempts - 1);
+      // Network error: bounded retry.
+      this.scheduleRetryOrExpire(entry, 'network_error', error);
     }
+  }
+
+  /**
+   * Bounded transient retry: capped exponential backoff until the 10-minute in-process
+   * window expires, then a safe failure outcome (removed, never labeled delivered).
+   */
+  private scheduleRetryOrExpire(entry: QueueEntry, reason: string, error?: unknown): void {
+    const now = Date.now();
+    if (now - entry.firstAttemptAt >= MAX_RETRY_WINDOW_MS) {
+      this.failEntry(entry, `retry_window_expired_after_${reason}`);
+      return;
+    }
+
+    entry.attempts++;
+    const backoff = Math.min(BASE_BACKOFF_MS * Math.pow(2, entry.attempts - 1), MAX_BACKOFF_MS);
+    entry.nextAttemptAt = now + backoff;
+    logger.debug(
+      {
+        sourceEventId: entry.payload.sourceEventId,
+        attempt: entry.attempts,
+        backoffMs: backoff,
+        reason,
+        ...(error !== undefined ? { errorName: (error as Error)?.name } : {}),
+      },
+      'Delivery failed — scheduling retry',
+    );
+  }
+
+  /**
+   * Terminal outcome: the entry is removed and the existing cloud failure broadcast is
+   * emitted. This is a producer failure, never a delivery.
+   */
+  private failEntry(entry: QueueEntry, reason: string): void {
+    this.queue.shift();
+    logger.warn(
+      { sourceEventId: entry.payload.sourceEventId, reason },
+      'Event delivery failed terminally',
+    );
+    this.broadcaster.broadcastEvent('cloud', 'egress_disconnected', {
+      reason: 'delivery_failed',
+      detail: reason,
+    });
   }
 
   private async handle401(): Promise<void> {

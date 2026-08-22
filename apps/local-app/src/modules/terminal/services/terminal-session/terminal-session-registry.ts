@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { TerminalSession, TerminalIORef } from './terminal-session';
+import { HumanPromptStateService } from '../human-prompt-state.service';
 
 export interface TerminalSessionCreateOptions {
   readonly normalizeCapturedLineEndings?: boolean;
@@ -10,7 +11,10 @@ export class TerminalSessionRegistry {
   private readonly sessions = new Map<string, TerminalSession>();
   private readonly idleTimeoutResolver?: () => number | undefined;
 
-  constructor(idleTimeoutResolver?: () => number | undefined) {
+  constructor(
+    idleTimeoutResolver?: () => number | undefined,
+    private readonly humanPromptState?: HumanPromptStateService,
+  ) {
     this.idleTimeoutResolver = idleTimeoutResolver;
   }
 
@@ -28,6 +32,7 @@ export class TerminalSessionRegistry {
       tmuxSessionName,
       idleAfterMs: this.idleTimeoutResolver?.(),
       normalizeCapturedLineEndings: options?.normalizeCapturedLineEndings,
+      humanPromptState: this.humanPromptState,
     });
 
     this.sessions.set(sessionId, session);
@@ -52,6 +57,7 @@ export class TerminalSessionRegistry {
 
     session.dispose();
     this.sessions.delete(sessionId);
+    this.humanPromptState?.clearSession(session.tmuxSessionName);
   }
 
   list(): string[] {

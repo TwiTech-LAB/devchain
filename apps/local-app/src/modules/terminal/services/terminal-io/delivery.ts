@@ -1,5 +1,10 @@
 import type { ProcessExecutor } from '../process-executor/process-executor.port';
-import type { SessionTarget, DeliveryOptions, DeliveryResult } from './types';
+import type {
+  SessionTarget,
+  DeliveryOptions,
+  DeliveryResult,
+  GuardedDeliveryResult,
+} from './types';
 import { captureStrict } from './capture';
 import { generateDeliveryNonce } from '../../../../common/delivery-nonce';
 
@@ -9,6 +14,14 @@ const DEFAULT_MAX_ATTEMPTS = 2;
 const DEFAULT_CONFIRM_TIMEOUT_MS = 2000;
 const CONFIRM_POLL_INTERVAL_MS = 150;
 const CONFIRM_TAIL_LINES = 10;
+
+interface ConfirmationBaseline {
+  readonly output: string | undefined;
+}
+
+interface PreparedBuffer {
+  readonly name: string;
+}
 
 function clampDelay(raw: number | undefined, fallback: number): number {
   const v = raw ?? fallback;
@@ -146,64 +159,90 @@ async function pasteAndSubmit(
     confirm: boolean;
     nonce?: string;
     confirmTimeoutMs: number;
+    confirmationBaseline?: ConfirmationBaseline;
+    preparedBuffer?: PreparedBuffer;
   },
 ): Promise<{ method?: 'nonce' | 'paste_indicator' | 'paste_changed' }> {
-  if (options.preKeys?.length) {
-    await sendKeys(executor, target, options.preKeys);
-    if (options.preDelayMs && options.preDelayMs > 0) {
-      await new Promise((r) => setTimeout(r, options.preDelayMs));
-    }
-  }
-
-  let baseline: string | undefined;
-  if (options.confirm && options.nonce) {
-    const baselineResult = await captureStrict(executor, target, CONFIRM_TAIL_LINES);
-    if (baselineResult.ok) {
-      baseline = baselineResult.output;
-    }
-  }
-
-  const prepared = text.replace(/\r?\n/g, '\r');
-  const payload = options.bracketed ? `\x1b[200~${prepared}\x1b[201~` : prepared;
-
-  const safeSession = target.name.replace(/[^a-zA-Z0-9_.-]/g, '');
-  const bufferName = `devchain-${safeSession}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-
-  await loadBuffer(executor, bufferName, payload);
-  await pasteBuffer(executor, bufferName, target.name);
-  await deleteBuffer(executor, bufferName);
-
-  if (options.confirm && options.nonce) {
-    const confirmation = await confirmPasteDelivery(
-      executor,
-      target,
-      options.nonce,
-      baseline,
-      options.confirmTimeoutMs,
-    );
-
-    if (confirmation.confirmed) {
-      if (options.postPasteDelayMs > 0) {
-        await new Promise((r) => setTimeout(r, options.postPasteDelayMs));
+  let preparedBufferNeedsCleanup = Boolean(options.preparedBuffer);
+  try {
+    if (options.preKeys?.length) {
+      await sendKeys(executor, target, options.preKeys);
+      if (options.preDelayMs && options.preDelayMs > 0) {
+        await new Promise((r) => setTimeout(r, options.preDelayMs));
       }
-    } else if (confirmation.captureError) {
+    }
+
+    let baseline: string | undefined;
+    if (options.confirm && options.nonce) {
+      if (options.confirmationBaseline) {
+        baseline = options.confirmationBaseline.output;
+      } else {
+        const baselineResult = await captureStrict(executor, target, CONFIRM_TAIL_LINES);
+        if (baselineResult.ok) {
+          baseline = baselineResult.output;
+        }
+      }
+    }
+
+    const preparedBuffer =
+      options.preparedBuffer ?? (await prepareBuffer(executor, target, text, options.bracketed));
+
+    await pasteBuffer(executor, preparedBuffer.name, target.name);
+    await deleteBuffer(executor, preparedBuffer.name);
+    preparedBufferNeedsCleanup = false;
+
+    if (options.confirm && options.nonce) {
+      const confirmation = await confirmPasteDelivery(
+        executor,
+        target,
+        options.nonce,
+        baseline,
+        options.confirmTimeoutMs,
+      );
+
+      if (confirmation.confirmed) {
+        if (options.postPasteDelayMs > 0) {
+          await new Promise((r) => setTimeout(r, options.postPasteDelayMs));
+        }
+      } else if (confirmation.captureError) {
+        await new Promise((r) => setTimeout(r, options.postPasteDelayMs));
+      } else {
+        throw new PasteNotConfirmedError(target.name, options.nonce);
+      }
+
+      await sendSubmitKeysWithRetry(executor, target, options.submitKeys);
+
+      return { method: confirmation.method };
+    }
+
+    if (options.postPasteDelayMs > 0) {
       await new Promise((r) => setTimeout(r, options.postPasteDelayMs));
-    } else {
-      throw new PasteNotConfirmedError(target.name, options.nonce);
     }
 
     await sendSubmitKeysWithRetry(executor, target, options.submitKeys);
 
-    return { method: confirmation.method };
+    return {};
+  } catch (error) {
+    if (preparedBufferNeedsCleanup && options.preparedBuffer) {
+      await deleteBuffer(executor, options.preparedBuffer.name);
+    }
+    throw error;
   }
+}
 
-  if (options.postPasteDelayMs > 0) {
-    await new Promise((r) => setTimeout(r, options.postPasteDelayMs));
-  }
+async function prepareBuffer(
+  executor: ProcessExecutor,
+  target: SessionTarget,
+  text: string,
+  bracketed: boolean,
+): Promise<PreparedBuffer> {
+  const prepared = text.replace(/\r?\n/g, '\r');
+  const payload = bracketed ? `\x1b[200~${prepared}\x1b[201~` : prepared;
+  const safeSession = target.name.replace(/[^a-zA-Z0-9_.-]/g, '');
+  const name = `devchain-${safeSession}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
 
-  await sendSubmitKeysWithRetry(executor, target, options.submitKeys);
-
-  return {};
+  await loadBuffer(executor, name, payload);
+  return { name };
 }
 
 export class PasteNotConfirmedError extends Error {
@@ -234,13 +273,38 @@ export interface SendGap {
   clear(): void;
 }
 
-export async function deliver(
+async function captureConfirmationBaseline(
+  executor: ProcessExecutor,
+  target: SessionTarget,
+): Promise<ConfirmationBaseline> {
+  const result = await captureStrict(executor, target, CONFIRM_TAIL_LINES);
+  return { output: result.ok ? result.output : undefined };
+}
+
+function deliverWithFirstMutationGuard(
   executor: ProcessExecutor,
   gap: SendGap,
   target: SessionTarget,
   text: string,
   options: DeliveryOptions,
-): Promise<DeliveryResult> {
+  firstMutationGuard: undefined,
+): Promise<DeliveryResult>;
+function deliverWithFirstMutationGuard(
+  executor: ProcessExecutor,
+  gap: SendGap,
+  target: SessionTarget,
+  text: string,
+  options: DeliveryOptions,
+  firstMutationGuard: () => boolean,
+): Promise<GuardedDeliveryResult>;
+async function deliverWithFirstMutationGuard(
+  executor: ProcessExecutor,
+  gap: SendGap,
+  target: SessionTarget,
+  text: string,
+  options: DeliveryOptions,
+  firstMutationGuard: (() => boolean) | undefined,
+): Promise<GuardedDeliveryResult> {
   const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
   const submitKeys = options.submitKeys ?? ['Enter'];
   const bracketed = options.bracketed ?? true;
@@ -254,9 +318,22 @@ export async function deliver(
     lastNonce = generateDeliveryNonce();
     const textWithNonce = `${text}\n[MsgId:${lastNonce}]`;
 
-    try {
-      await gap.ensureGap(options.agentId);
+    await gap.ensureGap(options.agentId);
 
+    let confirmationBaseline: ConfirmationBaseline | undefined;
+    let preparedBuffer: PreparedBuffer | undefined;
+    if (attempt === 0 && firstMutationGuard && confirm) {
+      confirmationBaseline = await captureConfirmationBaseline(executor, target);
+    }
+    if (attempt === 0 && firstMutationGuard) {
+      preparedBuffer = await prepareBuffer(executor, target, textWithNonce, bracketed);
+    }
+    if (attempt === 0 && firstMutationGuard && !firstMutationGuard()) {
+      await deleteBuffer(executor, preparedBuffer!.name);
+      return { deferred: 'human_draft' };
+    }
+
+    try {
       const result = await pasteAndSubmit(executor, target, textWithNonce, {
         bracketed,
         submitKeys,
@@ -266,6 +343,8 @@ export async function deliver(
         confirm,
         nonce: lastNonce,
         confirmTimeoutMs,
+        confirmationBaseline,
+        preparedBuffer,
       });
 
       return { confirmed: true, nonce: lastNonce, retryCount: attempt, method: result.method };
@@ -290,6 +369,27 @@ export async function deliver(
   }
 
   return { confirmed: false, nonce: lastNonce, retryCount: maxAttempts - 1 };
+}
+
+export async function deliver(
+  executor: ProcessExecutor,
+  gap: SendGap,
+  target: SessionTarget,
+  text: string,
+  options: DeliveryOptions,
+): Promise<DeliveryResult> {
+  return deliverWithFirstMutationGuard(executor, gap, target, text, options, undefined);
+}
+
+export async function deliverGuarded(
+  executor: ProcessExecutor,
+  gap: SendGap,
+  target: SessionTarget,
+  text: string,
+  options: DeliveryOptions,
+  firstMutationGuard: () => boolean,
+): Promise<GuardedDeliveryResult> {
+  return deliverWithFirstMutationGuard(executor, gap, target, text, options, firstMutationGuard);
 }
 
 export async function deliverImmediate(

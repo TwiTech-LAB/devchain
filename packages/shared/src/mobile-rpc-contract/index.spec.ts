@@ -220,6 +220,9 @@ const PARAM_FIXTURES = {
     label: 'Alice’s iPhone',
   },
   'e2ee.revokeDeviceKey': {},
+  'e2ee.bindNotificationRoutingIdentity': {
+    routingKid: 'kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k',
+  },
 } satisfies Record<MobileRpcMethod, unknown>;
 
 const comment = {
@@ -412,22 +415,27 @@ const RESULT_FIXTURES = {
   'terminal.sendKey': { ok: true },
   'e2ee.adoptDeviceKey': { kid: 'kid', trust: 'unverified', verifiedVia: 'email-tofu' },
   'e2ee.revokeDeviceKey': { kid: 'kid', removed: true },
+  'e2ee.bindNotificationRoutingIdentity': {
+    kid: 'kid',
+    routingKid: 'kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k',
+    bound: true,
+  },
 } satisfies Record<MobileRpcMethod, unknown>;
 
 describe('mobile RPC catalog', () => {
-  it('contains exactly 41 methods with the canonical domain counts', () => {
-    expect(MOBILE_RPC_METHODS).toHaveLength(41);
-    expect(new Set(MOBILE_RPC_METHODS).size).toBe(41);
+  it('contains exactly 42 methods with the canonical domain counts', () => {
+    expect(MOBILE_RPC_METHODS).toHaveLength(42);
+    expect(new Set(MOBILE_RPC_METHODS).size).toBe(42);
     expect(Object.keys(MOBILE_RPC_CATALOG)).toEqual(MOBILE_RPC_METHODS);
 
     const counts = Object.groupBy(MOBILE_RPC_METHODS, (method) => method.split('.')[0]);
     expect(counts.board).toHaveLength(12);
     expect(counts.chat).toHaveLength(24);
     expect(counts.terminal).toHaveLength(3);
-    expect(counts.e2ee).toHaveLength(2);
+    expect(counts.e2ee).toHaveLength(3);
   });
 
-  it('has four strict params schemas and 37 passthrough schemas', () => {
+  it('has four strict params schemas and 38 passthrough schemas', () => {
     const strictMethods = MOBILE_RPC_METHODS.filter(
       (method) => MOBILE_RPC_CATALOG[method].paramsMode === MOBILE_RPC_PARAMS_MODES.strict,
     );
@@ -447,14 +455,17 @@ describe('mobile RPC catalog', () => {
       expect(acceptsAdditiveField, method).toBe(!strictMethods.includes(method));
     }
 
-    expect(MOBILE_RPC_METHODS).toHaveLength(strictMethods.length + 37);
+    expect(MOBILE_RPC_METHODS).toHaveLength(strictMethods.length + 38);
   });
 
-  it('has crypto counts 39/1/1 and the exact exceptional methods', () => {
+  it('has crypto counts 39/1/2 and the exact exceptional methods', () => {
     const byMode = Object.groupBy(MOBILE_RPC_METHODS, getMobileRpcCryptoMode);
     expect(byMode[MOBILE_RPC_CRYPTO_MODES.conditionalSeal]).toHaveLength(39);
     expect(byMode[MOBILE_RPC_CRYPTO_MODES.plaintextBootstrap]).toEqual(['e2ee.adoptDeviceKey']);
-    expect(byMode[MOBILE_RPC_CRYPTO_MODES.sealedOnly]).toEqual(['e2ee.revokeDeviceKey']);
+    expect(byMode[MOBILE_RPC_CRYPTO_MODES.sealedOnly]).toEqual([
+      'e2ee.revokeDeviceKey',
+      'e2ee.bindNotificationRoutingIdentity',
+    ]);
   });
 
   it('accepts an optional bounded adopt-device label', () => {
@@ -652,6 +663,9 @@ describe('mobile RPC catalog', () => {
       'e2ee.revokeDeviceKey': [
         MOBILE_RPC_COMPATIBILITY_FACTS.revokeParamsIgnored,
         MOBILE_RPC_COMPATIBILITY_FACTS.revokeIdentityFromVerifiedSenderKid,
+      ],
+      'e2ee.bindNotificationRoutingIdentity': [
+        MOBILE_RPC_COMPATIBILITY_FACTS.bindIdentityFromVerifiedSenderKid,
       ],
     });
   });

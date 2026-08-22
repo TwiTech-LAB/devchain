@@ -1,0 +1,864 @@
+import type { ApiResponseSchemaHost } from '@nestjs/swagger';
+import { INTEGRATION_PROVIDER_IDS } from '../../storage/models/domain.models';
+import {
+  MAX_COMMENT_LENGTH,
+  MAX_STATUS_LENGTH,
+  MAX_TASK_COMMENT_AUTHOR_LENGTH,
+  MAX_TASK_COMMENT_BODY_LENGTH,
+  MAX_TASK_COMMENT_CURSOR_LENGTH,
+  MAX_TASK_COMMENT_ID_LENGTH,
+  MAX_TIME_ENTRY_DURATION_MS,
+  MAX_TIME_ENTRY_HISTORY_ENTRIES,
+  MAX_TIME_ENTRY_NOTE_LENGTH,
+  TIME_ENTRY_HISTORY_WINDOW_DAYS,
+  type ExternalTaskAction,
+} from '../models/external-provider.models';
+
+type SchemaObject = ApiResponseSchemaHost['schema'];
+
+export {
+  INTEGRATION_PROVIDER_IDS,
+  MAX_COMMENT_LENGTH,
+  MAX_STATUS_LENGTH,
+  MAX_TASK_COMMENT_AUTHOR_LENGTH,
+  MAX_TASK_COMMENT_BODY_LENGTH,
+  MAX_TASK_COMMENT_CURSOR_LENGTH,
+  MAX_TASK_COMMENT_ID_LENGTH,
+  MAX_TIME_ENTRY_DURATION_MS,
+  MAX_TIME_ENTRY_NOTE_LENGTH,
+};
+export { MAX_REMOTE_TASK_ID_LENGTH } from '../models/external-provider.models';
+
+const STATUS_CATEGORIES = ['active', 'completed', 'unknown'];
+const TASK_ACTIONS = ['change_status', 'add_comment', 'log_time'];
+const REFRESH_TARGETS = ['my_work', 'task_detail'];
+
+const providerDescriptorSchema: SchemaObject = {
+  type: 'object',
+  required: ['provider', 'displayName', 'capabilities'],
+  properties: {
+    provider: { type: 'string', enum: [...INTEGRATION_PROVIDER_IDS] },
+    displayName: { type: 'string' },
+    capabilities: {
+      type: 'object',
+      required: ['myWork'],
+      properties: { myWork: { type: 'boolean' } },
+    },
+  },
+};
+
+const workAreaColumnSchema: SchemaObject = {
+  type: 'object',
+  required: ['remoteId', 'name', 'color', 'category', 'position'],
+  properties: {
+    remoteId: { type: 'string', nullable: true },
+    remoteStatusIds: { type: 'array', items: { type: 'string' } },
+    name: { type: 'string' },
+    color: { type: 'string' },
+    category: { type: 'string', enum: STATUS_CATEGORIES },
+    position: { type: 'number' },
+  },
+};
+
+// A status option is a work-area column plus its write identity; the column
+// shape is spread so both documents can never drift apart.
+const taskStatusOptionSchema: SchemaObject = {
+  type: 'object',
+  required: ['actionValue', ...(workAreaColumnSchema.required ?? [])],
+  properties: {
+    actionValue: { type: 'string', minLength: 1, maxLength: MAX_STATUS_LENGTH },
+    actionLabel: { type: 'string' },
+    ...workAreaColumnSchema.properties,
+  },
+};
+
+const workAreaSchema: SchemaObject = {
+  type: 'object',
+  required: [
+    'remoteId',
+    'scopeKey',
+    'name',
+    'kind',
+    'description',
+    'assignedTaskCount',
+    'hierarchy',
+    'workflow',
+    'refresh',
+  ],
+  properties: {
+    remoteId: { type: 'string' },
+    scopeKey: { type: 'string' },
+    name: { type: 'string' },
+    kind: { type: 'string', enum: ['list', 'board', 'project'] },
+    description: { type: 'string', nullable: true },
+    assignedTaskCount: { type: 'integer', minimum: 0 },
+    hierarchy: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['kind', 'remoteId', 'name'],
+        properties: {
+          kind: {
+            type: 'string',
+            enum: ['workspace', 'space', 'folder', 'project', 'board'],
+          },
+          remoteId: { type: 'string' },
+          name: { type: 'string' },
+        },
+      },
+    },
+    workflow: {
+      type: 'object',
+      required: ['isOverridden', 'columns'],
+      properties: {
+        isOverridden: { type: 'boolean' },
+        columns: { type: 'array', items: workAreaColumnSchema },
+      },
+    },
+    refresh: {
+      type: 'object',
+      required: ['state', 'refreshedAt', 'retryable', 'retryAt'],
+      properties: {
+        state: { type: 'string', enum: ['fresh', 'stale', 'error'] },
+        refreshedAt: { type: 'string', format: 'date-time', nullable: true },
+        retryable: { type: 'boolean' },
+        retryAt: { type: 'string', format: 'date-time', nullable: true },
+      },
+    },
+  },
+};
+
+const taskSummarySchema: SchemaObject = {
+  type: 'object',
+  required: ['remoteId', 'title', 'status', 'updatedAt', 'dueAt', 'completedAt', 'webUrl'],
+  properties: {
+    remoteId: { type: 'string' },
+    title: { type: 'string' },
+    status: {
+      type: 'object',
+      required: ['name', 'category'],
+      properties: {
+        remoteId: { type: 'string', nullable: true },
+        name: { type: 'string' },
+        category: { type: 'string', enum: STATUS_CATEGORIES },
+      },
+    },
+    updatedAt: { type: 'string', format: 'date-time' },
+    dueAt: { type: 'string', format: 'date-time', nullable: true },
+    completedAt: { type: 'string', format: 'date-time', nullable: true },
+    webUrl: { type: 'string', format: 'uri', nullable: true },
+  },
+};
+
+const exampleWorkArea = {
+  remoteId: '901',
+  scopeKey: '123',
+  name: 'Sprint',
+  kind: 'list',
+  description: 'Current sprint delivery work.',
+  assignedTaskCount: 1,
+  hierarchy: [
+    { kind: 'workspace', remoteId: '123', name: 'Engineering' },
+    { kind: 'space', remoteId: '456', name: 'Product' },
+    { kind: 'folder', remoteId: '789', name: 'Delivery' },
+  ],
+  workflow: {
+    isOverridden: true,
+    columns: [
+      {
+        remoteId: 'progress',
+        name: 'In Progress',
+        color: '#7c4dff',
+        category: 'active',
+        position: 0,
+      },
+    ],
+  },
+  refresh: {
+    state: 'fresh',
+    refreshedAt: '2026-08-19T12:00:00.000Z',
+    retryable: false,
+    retryAt: null,
+  },
+};
+
+export const MY_WORK_RESPONSE_SCHEMA: SchemaObject = {
+  oneOf: [
+    {
+      type: 'object',
+      required: ['provider', 'descriptor', 'supported', 'reason'],
+      properties: {
+        provider: { type: 'string', enum: [...INTEGRATION_PROVIDER_IDS] },
+        descriptor: providerDescriptorSchema,
+        supported: { type: 'boolean', enum: [false] },
+        reason: { type: 'string', enum: ['unsupported'] },
+      },
+      example: {
+        provider: 'jira',
+        descriptor: {
+          provider: 'jira',
+          displayName: 'Jira',
+          capabilities: { myWork: false },
+        },
+        supported: false,
+        reason: 'unsupported',
+      },
+    },
+    {
+      type: 'object',
+      required: [
+        'provider',
+        'descriptor',
+        'supported',
+        'capabilities',
+        'workAreas',
+        'tasks',
+        'refreshedAt',
+      ],
+      properties: {
+        provider: { type: 'string', enum: [...INTEGRATION_PROVIDER_IDS] },
+        descriptor: providerDescriptorSchema,
+        supported: { type: 'boolean', enum: [true] },
+        capabilities: {
+          type: 'object',
+          required: ['timeTrackingEnabled'],
+          properties: { timeTrackingEnabled: { type: 'boolean' } },
+        },
+        workAreas: { type: 'array', items: workAreaSchema },
+        tasks: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['workArea', 'task'],
+            properties: {
+              workArea: workAreaSchema,
+              task: taskSummarySchema,
+            },
+          },
+        },
+        refreshedAt: { type: 'string', format: 'date-time' },
+      },
+      example: {
+        provider: 'clickup',
+        descriptor: {
+          provider: 'clickup',
+          displayName: 'ClickUp',
+          capabilities: { myWork: true },
+        },
+        supported: true,
+        capabilities: { timeTrackingEnabled: true },
+        workAreas: [exampleWorkArea],
+        tasks: [
+          {
+            workArea: exampleWorkArea,
+            task: {
+              remoteId: 'abc123',
+              title: 'Ship provider-neutral work',
+              status: { name: 'in progress', category: 'active' },
+              updatedAt: '2026-08-19T12:00:00.000Z',
+              dueAt: null,
+              completedAt: null,
+              webUrl: 'https://app.clickup.com/t/abc123',
+            },
+          },
+        ],
+        refreshedAt: '2026-08-19T12:00:00.000Z',
+      },
+    },
+  ],
+};
+
+export const TASK_DETAIL_RESPONSE_SCHEMA: SchemaObject = {
+  type: 'object',
+  required: [
+    'remoteId',
+    'remoteKey',
+    'title',
+    'description',
+    'descriptionTruncated',
+    'status',
+    'dueAt',
+    'priority',
+    'taskTotalDurationMs',
+    'webUrl',
+    'location',
+    'allowedStatuses',
+    'actions',
+    'linkState',
+  ],
+  properties: {
+    remoteId: { type: 'string' },
+    remoteKey: { type: 'string' },
+    title: { type: 'string' },
+    description: { type: 'string', nullable: true, maxLength: 65_536 },
+    descriptionTruncated: { type: 'boolean' },
+    status: workAreaColumnSchema,
+    dueAt: { type: 'string', format: 'date-time', nullable: true },
+    priority: {
+      type: 'object',
+      nullable: true,
+      required: ['name', 'color'],
+      properties: { name: { type: 'string' }, color: { type: 'string' } },
+    },
+    taskTotalDurationMs: {
+      type: 'integer',
+      nullable: true,
+      minimum: 0,
+      description: 'Total logged time on the task in ms; null when the provider reports none.',
+    },
+    webUrl: { type: 'string', format: 'uri' },
+    location: {
+      type: 'object',
+      required: ['scopeKey', 'workAreaId', 'workAreaName'],
+      properties: {
+        scopeKey: { type: 'string' },
+        workAreaId: { type: 'string' },
+        workAreaName: { type: 'string' },
+      },
+    },
+    allowedStatuses: { type: 'array', items: taskStatusOptionSchema },
+    actions: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['action', 'supported'],
+        properties: {
+          action: { type: 'string', enum: TASK_ACTIONS },
+          supported: { type: 'boolean' },
+        },
+      },
+    },
+    linkState: {
+      type: 'object',
+      required: ['linked', 'epicId'],
+      properties: {
+        linked: { type: 'boolean' },
+        epicId: { type: 'string', nullable: true },
+      },
+    },
+  },
+};
+
+export const TASK_COMMENT_SCHEMA: SchemaObject = {
+  type: 'object',
+  required: [
+    'remoteId',
+    'author',
+    'body',
+    'bodyTruncated',
+    'rich',
+    'lookupToken',
+    'createdAt',
+    'updatedAt',
+  ],
+  properties: {
+    remoteId: { type: 'string', maxLength: MAX_TASK_COMMENT_ID_LENGTH },
+    author: {
+      type: 'object',
+      required: ['remoteId', 'displayName'],
+      properties: {
+        remoteId: { type: 'string', nullable: true },
+        displayName: { type: 'string', maxLength: MAX_TASK_COMMENT_AUTHOR_LENGTH },
+      },
+    },
+    body: { type: 'string', maxLength: MAX_TASK_COMMENT_BODY_LENGTH },
+    bodyTruncated: { type: 'boolean' },
+    rich: {
+      oneOf: [
+        {
+          type: 'object',
+          required: ['document', 'supported'],
+          description: 'Bounded canonical rich body inside the closed V1 set',
+          properties: {
+            document: { type: 'object' },
+            supported: { type: 'boolean', enum: [true] },
+          },
+        },
+        {
+          type: 'object',
+          required: ['supported', 'readOnlyReason'],
+          description: 'Unsupported provider body; the comment stays read-only',
+          properties: {
+            supported: { type: 'boolean', enum: [false] },
+            readOnlyReason: { type: 'string' },
+          },
+        },
+        { type: 'null', description: 'No provider rich payload present' },
+      ],
+    },
+    lookupToken: {
+      type: 'string',
+      nullable: true,
+      description:
+        'Server-issued ClickUp lookup token binding connection generation, task, comment, and page proof; null on Jira.',
+    },
+    createdAt: { type: 'string', format: 'date-time' },
+    updatedAt: { type: 'string', format: 'date-time', nullable: true },
+  },
+};
+
+export const TASK_COMMENTS_RESPONSE_SCHEMA: SchemaObject = {
+  type: 'object',
+  required: ['comments', 'nextCursor'],
+  properties: {
+    comments: { type: 'array', items: TASK_COMMENT_SCHEMA },
+    nextCursor: { type: 'string', nullable: true, maxLength: MAX_TASK_COMMENT_CURSOR_LENGTH },
+  },
+  example: {
+    comments: [
+      {
+        remoteId: 'comment-1',
+        author: { remoteId: '183', displayName: 'John Doe' },
+        body: 'Plain text only',
+        bodyTruncated: false,
+        createdAt: '2026-08-19T12:00:00.000Z',
+        updatedAt: null,
+      },
+    ],
+    nextCursor: null,
+  },
+};
+
+export const STATUS_INPUT_BODY_SCHEMA: SchemaObject = {
+  type: 'object',
+  required: ['status'],
+  additionalProperties: false,
+  properties: {
+    status: { type: 'string', minLength: 1, maxLength: MAX_STATUS_LENGTH },
+  },
+};
+
+export const COMMENT_INPUT_BODY_SCHEMA: SchemaObject = {
+  type: 'object',
+  required: ['text'],
+  additionalProperties: false,
+  properties: {
+    text: { type: 'string', minLength: 1, maxLength: MAX_COMMENT_LENGTH },
+    notifyAll: { type: 'boolean', default: false },
+  },
+};
+
+export const TIME_ENTRY_INPUT_BODY_SCHEMA: SchemaObject = {
+  type: 'object',
+  required: ['startedAt', 'durationMs'],
+  additionalProperties: false,
+  properties: {
+    startedAt: { type: 'string', format: 'date-time' },
+    durationMs: {
+      type: 'integer',
+      minimum: 1,
+      maximum: MAX_TIME_ENTRY_DURATION_MS,
+    },
+    note: { type: 'string', nullable: true, maxLength: MAX_TIME_ENTRY_NOTE_LENGTH },
+  },
+};
+
+export const TASK_TIME_ENTRY_SCHEMA: SchemaObject = {
+  type: 'object',
+  required: ['remoteId', 'durationMs', 'startedAt', 'note', 'noteTruncated', 'canDelete'],
+  properties: {
+    remoteId: { type: 'string', maxLength: 256 },
+    durationMs: { type: 'integer', minimum: 1, maximum: MAX_TIME_ENTRY_DURATION_MS },
+    startedAt: { type: 'string', format: 'date-time' },
+    note: { type: 'string', nullable: true, maxLength: MAX_TIME_ENTRY_NOTE_LENGTH },
+    noteTruncated: { type: 'boolean' },
+    canDelete: {
+      type: 'boolean',
+      description: 'True only for the current owner with a confirmed provider permission.',
+    },
+  },
+};
+
+export const TASK_TIME_ENTRIES_RESPONSE_SCHEMA: SchemaObject = {
+  type: 'object',
+  required: ['windowDays', 'entries', 'truncated', 'hasRunningTimer'],
+  properties: {
+    windowDays: {
+      type: 'integer',
+      enum: [TIME_ENTRY_HISTORY_WINDOW_DAYS],
+      description: 'Fixed provider-neutral history window in days.',
+    },
+    entries: {
+      type: 'array',
+      maxItems: MAX_TIME_ENTRY_HISTORY_ENTRIES,
+      items: TASK_TIME_ENTRY_SCHEMA,
+    },
+    truncated: {
+      type: 'boolean',
+      description: 'True when coverage of the 30-day own-entry set is incomplete.',
+    },
+    hasRunningTimer: {
+      type: 'boolean',
+      description:
+        'True when the provider reports a running timer; running timers never appear in entries.',
+    },
+  },
+  example: {
+    windowDays: 30,
+    entries: [
+      {
+        remoteId: '10001',
+        durationMs: 3_600_000,
+        startedAt: '2026-08-19T10:00:00.000Z',
+        note: 'Implementation',
+        noteTruncated: false,
+        canDelete: true,
+      },
+    ],
+    truncated: false,
+    hasRunningTimer: false,
+  },
+};
+
+export function taskActionResponseSchema(action: ExternalTaskAction): SchemaObject {
+  return {
+    type: 'object',
+    required: ['remoteTaskId', 'action', 'succeeded', 'refresh'],
+    properties: {
+      remoteTaskId: { type: 'string' },
+      action: { type: 'string', enum: [action] },
+      succeeded: { type: 'boolean', enum: [true] },
+      refresh: {
+        type: 'array',
+        items: { type: 'string', enum: REFRESH_TARGETS },
+      },
+    },
+  };
+}
+
+const TIME_MUTATION_PHASES = [
+  'pending',
+  'dispatched',
+  'outcome_unknown',
+  'succeeded',
+  'failed',
+  'already_deleted',
+  'not_applied',
+  'abandoned_unknown',
+  'superseded',
+];
+
+/** Bounded in-memory operation receipt; process-restart loss is documented
+ * and never triggers an automatic re-dispatch. */
+export const TIME_OPERATION_RECEIPT_SCHEMA: SchemaObject = {
+  type: 'object',
+  required: [
+    'operationId',
+    'kind',
+    'provider',
+    'remoteTaskId',
+    'remoteEntryId',
+    'phase',
+    'createdAt',
+    'updatedAt',
+    'expiresAt',
+  ],
+  properties: {
+    operationId: { type: 'string', maxLength: 128 },
+    kind: { type: 'string', enum: ['create', 'delete'] },
+    provider: { type: 'string', enum: [...INTEGRATION_PROVIDER_IDS] },
+    remoteTaskId: { type: 'string' },
+    remoteEntryId: { type: 'string', nullable: true },
+    phase: { type: 'string', enum: TIME_MUTATION_PHASES },
+    createdAt: { type: 'string', format: 'date-time' },
+    updatedAt: { type: 'string', format: 'date-time' },
+    expiresAt: {
+      type: 'string',
+      format: 'date-time',
+      description: 'End of the unknown guarantee; the receipt expires after this time.',
+    },
+  },
+};
+
+export const TIME_ENTRY_CREATE_RESPONSE_SCHEMA: SchemaObject = {
+  oneOf: [
+    {
+      type: 'object',
+      description: 'Provider-confirmed create; refresh task detail only.',
+      required: ['outcome', 'remoteEntryId', 'refresh', 'receipt'],
+      properties: {
+        outcome: { type: 'string', enum: ['created'] },
+        remoteEntryId: {
+          type: 'string',
+          nullable: true,
+          description:
+            'Null when the provider documented create response confirms the write without naming the created entry.',
+        },
+        refresh: {
+          type: 'array',
+          items: { type: 'string', enum: ['task_detail'] },
+          minItems: 1,
+          maxItems: 1,
+        },
+        receipt: TIME_OPERATION_RECEIPT_SCHEMA,
+      },
+    },
+    {
+      type: 'object',
+      description:
+        'Dispatched with unknown vendor outcome. Never retried automatically; resolve through the operation verify route or acknowledge the duplicate risk.',
+      required: ['outcome', 'receipt'],
+      properties: {
+        outcome: { type: 'string', enum: ['outcome_unknown'] },
+        receipt: TIME_OPERATION_RECEIPT_SCHEMA,
+      },
+    },
+  ],
+};
+
+export const TIME_ENTRY_DELETE_RESPONSE_SCHEMA: SchemaObject = {
+  oneOf: [
+    {
+      type: 'object',
+      required: ['outcome', 'receipt'],
+      properties: {
+        outcome: { type: 'string', enum: ['deleted', 'already_deleted', 'not_applied'] },
+        receipt: TIME_OPERATION_RECEIPT_SCHEMA,
+      },
+    },
+    {
+      type: 'object',
+      description:
+        'Dispatched with unknown vendor outcome; resolution requires the exact-resource read through the verify route.',
+      required: ['outcome', 'receipt'],
+      properties: {
+        outcome: { type: 'string', enum: ['outcome_unknown'] },
+        receipt: TIME_OPERATION_RECEIPT_SCHEMA,
+      },
+    },
+  ],
+};
+
+export const TIME_OPERATION_VERIFY_RESPONSE_SCHEMA: SchemaObject = {
+  type: 'object',
+  required: ['receipt', 'resolved', 'resolution'],
+  properties: {
+    receipt: TIME_OPERATION_RECEIPT_SCHEMA,
+    resolved: { type: 'boolean' },
+    resolution: {
+      type: 'string',
+      enum: [
+        'created',
+        'deleted',
+        'already_deleted',
+        'not_applied',
+        'completeness_not_provable',
+        'unresolved',
+        'connection_superseded',
+        'verify_failed',
+        'already_terminal',
+      ],
+    },
+  },
+};
+
+export const TIME_OPERATION_ACK_RESPONSE_SCHEMA: SchemaObject = {
+  type: 'object',
+  description:
+    'Duplicate-risk acknowledgement: the caller accepts the ambiguity and the receipt becomes terminal abandoned_unknown.',
+  required: ['receipt'],
+  properties: {
+    receipt: TIME_OPERATION_RECEIPT_SCHEMA,
+  },
+};
+
+const EDIT_SESSION_STATES = [
+  'editable',
+  'saved_unverified',
+  'outcome_unknown',
+  'diverged',
+  'invalidated',
+  'expired',
+] as const;
+
+export const EDIT_SESSION_RESPONSE_SCHEMA: SchemaObject = {
+  type: 'object',
+  required: [
+    'sessionId',
+    'kind',
+    'provider',
+    'remoteTaskId',
+    'remoteCommentId',
+    'state',
+    'revision',
+    'baselineFingerprint',
+    'createdAt',
+    'lastActivityAt',
+    'idleExpiresAt',
+    'absoluteExpiresAt',
+  ],
+  properties: {
+    sessionId: { type: 'string', format: 'uuid' },
+    kind: { type: 'string', enum: ['description_edit', 'comment_delete'] },
+    provider: { type: 'string', enum: [...INTEGRATION_PROVIDER_IDS] },
+    remoteTaskId: { type: 'string' },
+    remoteCommentId: { type: 'string', nullable: true },
+    state: { type: 'string', enum: [...EDIT_SESSION_STATES] },
+    revision: { type: 'integer', minimum: 0 },
+    baselineFingerprint: { type: 'string', nullable: true },
+    createdAt: { type: 'string', format: 'date-time' },
+    lastActivityAt: { type: 'string', format: 'date-time' },
+    idleExpiresAt: { type: 'string', format: 'date-time' },
+    absoluteExpiresAt: { type: 'string', format: 'date-time' },
+  },
+  example: {
+    sessionId: '3f2a1b8e-0000-4000-8000-000000000000',
+    kind: 'description_edit',
+    provider: 'jira',
+    remoteTaskId: 'KAN-1',
+    remoteCommentId: null,
+    state: 'editable',
+    revision: 0,
+    baselineFingerprint: '{"version":1,"blocks":[]}',
+    createdAt: '2026-08-22T00:00:00.000Z',
+    lastActivityAt: '2026-08-22T00:00:00.000Z',
+    idleExpiresAt: '2026-08-22T00:15:00.000Z',
+    absoluteExpiresAt: '2026-08-22T02:00:00.000Z',
+  },
+};
+
+export const EDIT_SESSION_VERIFY_RESPONSE_SCHEMA: SchemaObject = {
+  type: 'object',
+  required: ['session', 'remoteState', 'reason'],
+  properties: {
+    session: { ...EDIT_SESSION_RESPONSE_SCHEMA, nullable: true },
+    remoteState: {
+      type: 'string',
+      nullable: true,
+      enum: ['new_payload', 'old_baseline', 'diverged', 'gone'],
+    },
+    reason: {
+      type: 'string',
+      nullable: true,
+      enum: ['session_not_found', 'session_expired'],
+    },
+  },
+};
+
+export const EDIT_SESSION_WRITE_RESPONSE_SCHEMA: SchemaObject = {
+  type: 'object',
+  required: ['outcome'],
+  properties: {
+    outcome: {
+      type: 'string',
+      enum: ['saved', 'saved_unverified', 'outcome_unknown', 'pre_dispatch_rejected'],
+      description:
+        'saved: the post-write verification read confirmed the payload and the baseline advanced exactly once.',
+    },
+    revision: {
+      type: 'integer',
+      minimum: 1,
+      description: 'Present only for outcome saved: the new writable revision.',
+    },
+    reason: {
+      type: 'string',
+      enum: [
+        'session_not_found',
+        'session_expired',
+        'session_not_editable',
+        'revision_conflict',
+        'operation_busy',
+        'connection_superseded',
+        'unsupported_content',
+        'diverged',
+        'target_gone',
+      ],
+    },
+    session: { ...EDIT_SESSION_RESPONSE_SCHEMA, nullable: true },
+  },
+};
+
+export const COMMENT_DELETE_RESPONSE_SCHEMA: SchemaObject = {
+  type: 'object',
+  required: ['outcome'],
+  properties: {
+    outcome: {
+      type: 'string',
+      enum: ['deleted', 'already_deleted', 'outcome_unknown', 'rejected'],
+    },
+    reason: {
+      type: 'string',
+      enum: [
+        'session_not_found',
+        'session_expired',
+        'session_not_editable',
+        'operation_busy',
+        'not_owned',
+        'connection_superseded',
+        'delete_rejected',
+      ],
+    },
+    session: { ...EDIT_SESSION_RESPONSE_SCHEMA, nullable: true },
+  },
+};
+
+export const EDIT_SESSION_RELOAD_RESPONSE_SCHEMA: SchemaObject = {
+  type: 'object',
+  required: ['status', 'session'],
+  properties: {
+    status: { type: 'string', enum: ['reloaded', 'gone', 'unsupported'] },
+    session: { ...EDIT_SESSION_RESPONSE_SCHEMA, nullable: true },
+  },
+};
+
+export const RICH_DESCRIPTION_RESPONSE_SCHEMA: SchemaObject = {
+  type: 'object',
+  required: [
+    'document',
+    'fingerprint',
+    'supported',
+    'readOnlyReason',
+    'canEdit',
+    'canDeleteOwnedComments',
+  ],
+  properties: {
+    document: {
+      type: 'object',
+      nullable: true,
+      description: 'Bounded canonical ExternalRichDocumentV1; null when unsupported.',
+    },
+    fingerprint: { type: 'string', nullable: true },
+    supported: { type: 'boolean' },
+    readOnlyReason: {
+      type: 'string',
+      nullable: true,
+      enum: ['unsupported_content'],
+    },
+    canEdit: {
+      type: 'boolean',
+      description: 'False when the rich-edit capability gate is NO_GO or content is unsupported.',
+    },
+    canDeleteOwnedComments: {
+      type: 'boolean',
+      description: 'False when the owned-delete capability gate is NO_GO.',
+    },
+  },
+};
+
+export const COMMENT_EDIT_SESSION_INPUT_BODY_SCHEMA: SchemaObject = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    lookupToken: {
+      type: 'string',
+      nullable: true,
+      maxLength: 1_024,
+      description:
+        'ClickUp server-issued lookup token from the comment page; Jira omits it and uses its exact-comment endpoint.',
+    },
+  },
+};
+
+export const DELETE_SESSION_INPUT_BODY_SCHEMA: SchemaObject = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    pageProof: {
+      type: 'string',
+      nullable: true,
+      maxLength: MAX_TASK_COMMENT_CURSOR_LENGTH,
+      description:
+        'ClickUp page cursor that produced the comment; bounds deletion lookup to that page plus one adjacent page.',
+    },
+  },
+};

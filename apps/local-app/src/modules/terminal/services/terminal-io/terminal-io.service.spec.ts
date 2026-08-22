@@ -1,14 +1,19 @@
 import { TerminalIOService } from './terminal-io.service';
 import { FakeProcessExecutor } from '../process-executor/fake-process-executor';
 import { TypeCommandFailedError } from './delivery';
+import type { EventsService } from '../../../events/services/events.service';
+import { HumanPromptStateService } from '../human-prompt-state.service';
 
 describe('TerminalIOService', () => {
   let fake: FakeProcessExecutor;
   let svc: TerminalIOService;
+  let humanPromptState: HumanPromptStateService;
 
   beforeEach(() => {
     fake = new FakeProcessExecutor();
-    svc = new TerminalIOService(fake);
+    const events = { publish: jest.fn() } as unknown as EventsService;
+    humanPromptState = new HumanPromptStateService();
+    svc = new TerminalIOService(fake, events, humanPromptState);
   });
 
   // ── Lifecycle ───────────────────────────────────────────────────────────
@@ -78,6 +83,25 @@ describe('TerminalIOService', () => {
       await expect(svc.destroySession({ name: 'gone' })).rejects.toThrow(
         /Failed to destroy tmux session/,
       );
+    });
+
+    it('clears prompt state after successful destruction', async () => {
+      humanPromptState.recordPromptText('my-session');
+      fake.enqueueResponse({ type: 'success' });
+
+      await svc.destroySession({ name: 'my-session' });
+
+      expect(humanPromptState.getState('my-session').phase).toBe('inactive');
+      expect(humanPromptState.getState('my-session').generation).toBe(0);
+    });
+
+    it('keeps prompt state when destruction fails', async () => {
+      humanPromptState.recordPromptText('still-running');
+      fake.enqueueResponse({ type: 'failure', stderr: 'permission denied' });
+
+      await expect(svc.destroySession({ name: 'still-running' })).rejects.toThrow();
+
+      expect(humanPromptState.getState('still-running').phase).toBe('draft_active');
     });
   });
 
@@ -217,7 +241,7 @@ describe('TerminalIOService', () => {
       expect(gap.tailByAgent.size).toBe(0);
       expect(gap.lastByAgent.size).toBe(1);
 
-      svc.onModuleDestroy();
+      svc.beforeApplicationShutdown();
       expect(gap.tailByAgent.size).toBe(0);
       expect(gap.lastByAgent.size).toBe(0);
     });

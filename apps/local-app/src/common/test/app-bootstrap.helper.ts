@@ -172,7 +172,7 @@ function createTerminalIOMock(): Record<string, jest.Mock> {
     getCursorPosition: jest.fn().mockResolvedValue(null),
     waitForOutput: jest.fn().mockResolvedValue({ matched: false, output: '' }),
     healthCheck: jest.fn().mockResolvedValue({ ok: true }),
-    onModuleDestroy: jest.fn(),
+    beforeApplicationShutdown: jest.fn(),
   };
 }
 

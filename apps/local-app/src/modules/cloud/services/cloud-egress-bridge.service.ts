@@ -6,6 +6,7 @@ import { CloudSessionManagerService } from './cloud-session-manager.service';
 import { EgressQueueService } from './egress-queue.service';
 import { EventMapperService } from './event-mapper.service';
 import { ProjectEgressConfigService } from './project-egress-config.service';
+import { NotificationRecipientResolverService } from './notification-recipient-resolver.service';
 import type { EpicCreatedEventPayload } from '../../events/catalog/epic.created';
 import type { EpicDeletedEventPayload } from '../../events/catalog/epic.deleted';
 import type { EpicUpdatedEventPayload } from '../../events/catalog/epic.updated';
@@ -24,6 +25,7 @@ export class CloudEgressBridgeService {
     private readonly eventMapper: EventMapperService,
     private readonly projectConfig: ProjectEgressConfigService,
     private readonly workspaceMode: WorkspaceModeCoordinatorService,
+    private readonly recipientResolver: NotificationRecipientResolverService,
   ) {}
 
   @OnEvent('epic.created', { async: true })
@@ -63,7 +65,7 @@ export class CloudEgressBridgeService {
     if (!status.connected || !status.userId) return;
 
     const mode = await this.workspaceMode.getSnapshot().catch(() => null);
-    if (!mode || mode.multiWorkspaceMode || mode.failClosedPending) return;
+    if (!mode || mode.failClosedPending) return;
 
     const metadata = getEventMetadata(event.payload);
     if (!metadata) {
@@ -79,6 +81,26 @@ export class CloudEgressBridgeService {
 
     if (!ingestPayload.projectId && !this.projectConfig.hasAnyEnabled()) {
       return;
+    }
+
+    // Multi-workspace mode: project notifications target exactly the paired devices with
+    // event-time workspace access. Projectless session events stay suppressed (their
+    // workspace cannot be established). Single-workspace mode keeps account-wide
+    // delivery — no target set on the payload.
+    if (mode.multiWorkspaceMode) {
+      if (!ingestPayload.projectId) return;
+
+      const recipientDeviceKids = await this.recipientResolver
+        .resolveProjectRecipientRoutingKids(ingestPayload.projectId)
+        .catch(() => [] as string[]);
+      if (recipientDeviceKids.length === 0) {
+        logger.debug(
+          { eventName: event.name, sourceEventId: metadata.id },
+          'Skipping event with no authorized workspace recipient',
+        );
+        return;
+      }
+      ingestPayload.recipientDeviceKids = recipientDeviceKids;
     }
 
     this.egressQueue.enqueue(ingestPayload);

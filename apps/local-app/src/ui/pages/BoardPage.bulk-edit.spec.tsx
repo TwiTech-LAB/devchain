@@ -2,6 +2,7 @@ import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { RuntimeProvider } from '@/ui/hooks/useRuntime';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const BoardPage = require('./BoardPage').BoardPage as React.ComponentType;
@@ -64,7 +65,9 @@ function Wrapper({ children }: { children: React.ReactNode }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return (
     <MemoryRouter>
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      <QueryClientProvider client={queryClient}>
+        <RuntimeProvider>{children}</RuntimeProvider>
+      </QueryClientProvider>
     </MemoryRouter>
   );
 }

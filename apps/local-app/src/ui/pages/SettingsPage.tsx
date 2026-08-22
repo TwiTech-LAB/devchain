@@ -1,4 +1,4 @@
-import { Settings, Terminal, MessageSquare, Sparkles, Bell, Shield } from 'lucide-react';
+import { Settings, Terminal, MessageSquare, Sparkles, Bell, Shield, Plug } from 'lucide-react';
 import { PageHeader, SubNavLayout } from '@/ui/components/shared';
 import type { SubNavSection } from '@/ui/components/shared';
 import { useSubNavSearchParam } from '@/ui/hooks/useSubNavSearchParam';
@@ -8,12 +8,27 @@ import { MessagingSection } from './settings/MessagingSection';
 import { SkillsSection } from './settings/SkillsSection';
 import { EventsSection } from './settings/EventsSection';
 import { SystemSection } from './settings/SystemSection';
+import { IntegrationsSection } from './settings/IntegrationsSection';
 
-const SECTION_KEYS = ['general', 'terminal', 'messaging', 'skills', 'events', 'system'] as const;
+const SECTION_KEYS = [
+  'general',
+  'integrations',
+  'terminal',
+  'messaging',
+  'skills',
+  'events',
+  'system',
+] as const;
 type SectionKey = (typeof SECTION_KEYS)[number];
 
 const SETTINGS_SECTIONS: SubNavSection<SectionKey>[] = [
   { key: 'general', label: 'General', icon: Settings, render: () => <GeneralSection /> },
+  {
+    key: 'integrations',
+    label: 'Integrations',
+    icon: Plug,
+    render: () => <IntegrationsSection />,
+  },
   { key: 'terminal', label: 'Terminal', icon: Terminal, render: () => <TerminalSection /> },
   { key: 'messaging', label: 'Messaging', icon: MessageSquare, render: () => <MessagingSection /> },
   { key: 'skills', label: 'Skills', icon: Sparkles, render: () => <SkillsSection /> },

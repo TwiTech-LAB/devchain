@@ -1,10 +1,13 @@
-import { useMemo } from 'react';
+import { forwardRef, useMemo, type ComponentPropsWithoutRef, type KeyboardEvent } from 'react';
+import type { ExternalTaskSourceSummary } from '@/modules/external-integrations/models/external-provider.models';
 import { Card, CardContent, CardHeader, CardTitle } from '@/ui/components/ui/card';
 import { EpicTooltipWrapper } from '@/ui/components/shared/EpicTooltipWrapper';
+import { EpicExternalSourceNote } from '@/ui/components/board/EpicExternalSourceNote';
 import { cn } from '@/ui/lib/utils';
 import type { Epic, Status } from './types';
 
-export interface EpicCardProps {
+export interface EpicCardProps
+  extends Omit<ComponentPropsWithoutRef<'div'>, 'onDragStart' | 'onDragEnd' | 'children'> {
   epic: Epic;
   onEdit: (epic: Epic) => void;
   onDelete: (epic: Epic) => void;
@@ -23,28 +26,44 @@ export interface EpicCardProps {
   onBulkEdit?: (e: React.MouseEvent) => void;
   onMoveToWorktree?: (e: React.MouseEvent) => void;
   subEpicCountsByStatus?: Record<string, number>;
+  /** Stored external source; renders the linked-task footer beside the card. */
+  source?: ExternalTaskSourceSummary;
 }
 
-export function EpicCard({
-  epic,
-  onEdit,
-  onDelete,
-  onDragStart,
-  onDragEnd,
-  isDragging,
-  onKeyboardMove,
-  onToggleParentFilter,
-  isActiveParent,
-  onOpenEpicDetails,
-  statuses,
-  renderPreview = () => null,
-  statusLabel,
-  statusColor,
-  agentName,
-  onBulkEdit,
-  onMoveToWorktree,
-  subEpicCountsByStatus,
-}: EpicCardProps) {
+/**
+ * Root shortcuts run only for direct card interaction: descendants (title
+ * button, source link, tooltip actions) own their keys, so the group never
+ * double-handles a nested Enter or arrow.
+ */
+function isDirectCardEvent(event: KeyboardEvent<HTMLElement>): boolean {
+  return event.target === event.currentTarget;
+}
+
+export const EpicCard = forwardRef<HTMLDivElement, EpicCardProps>(function EpicCard(
+  {
+    epic,
+    onEdit,
+    onDelete,
+    onDragStart,
+    onDragEnd,
+    isDragging,
+    onKeyboardMove,
+    onToggleParentFilter,
+    isActiveParent,
+    onOpenEpicDetails,
+    statuses,
+    renderPreview = () => null,
+    statusLabel,
+    statusColor,
+    agentName,
+    onBulkEdit,
+    onMoveToWorktree,
+    subEpicCountsByStatus,
+    source,
+    ...rest
+  },
+  ref,
+) {
   const showFilterToggle = epic.parentId === null;
 
   const subEpicSummary = useMemo(
@@ -65,36 +84,29 @@ export function EpicCard({
       ? 'text-primary underline decoration-2'
       : 'text-primary hover:underline';
 
-  return (
-    <Card
-      draggable
-      onDragStart={() => onDragStart(epic)}
-      onDragEnd={onDragEnd}
-      tabIndex={0}
-      className={cn(
-        'cursor-move transition-all duration-200 hover:shadow-md group',
-        isDragging && 'opacity-50 scale-95 shadow-lg',
-      )}
-      role="button"
-      aria-label={`Epic: ${epic.title}. Press Enter to open, arrow keys to move between columns, E to edit, Delete to remove.`}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') {
-          onOpenEpicDetails(epic);
-        } else if (e.key === 'e' || e.key === 'E') {
-          e.preventDefault();
-          onEdit(epic);
-        } else if (e.key === 'Delete') {
-          e.preventDefault();
-          onDelete(epic);
-        } else if (e.key === 'ArrowLeft') {
-          e.preventDefault();
-          onKeyboardMove(epic, 'left');
-        } else if (e.key === 'ArrowRight') {
-          e.preventDefault();
-          onKeyboardMove(epic, 'right');
-        }
-      }}
-    >
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
+    if (!isDirectCardEvent(event)) return;
+    if (event.key === 'Enter') {
+      onOpenEpicDetails(epic);
+    } else if (event.key === 'e' || event.key === 'E') {
+      event.preventDefault();
+      onEdit(epic);
+    } else if (event.key === 'Delete') {
+      event.preventDefault();
+      onDelete(epic);
+    } else if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      onKeyboardMove(epic, 'left');
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      onKeyboardMove(epic, 'right');
+    }
+  };
+
+  const ariaLabel = `Epic: ${epic.title}. Press Enter to open, arrow keys to move between columns, E to edit, Delete to remove.`;
+
+  const cardChildren = (
+    <>
       <CardHeader className="p-3 pb-2">
         <div className="flex items-start justify-between gap-2">
           <div className="flex items-start gap-2 flex-1 min-w-0">
@@ -181,6 +193,47 @@ export function EpicCard({
           </div>
         )}
       </CardContent>
-    </Card>
+    </>
   );
-}
+
+  const cardClassName = cn(
+    'cursor-move transition-all duration-200 hover:shadow-md group',
+    !source && isDragging && 'opacity-50 scale-95 shadow-lg',
+    // The wrapper carries the joined border for sourced cards; the card keeps
+    // its top corners only.
+    source && 'rounded-b-none border-b-0',
+  );
+
+  const cardRootProps = {
+    draggable: true,
+    onDragStart: () => onDragStart(epic),
+    onDragEnd,
+    tabIndex: 0,
+    role: 'group' as const,
+    'aria-label': ariaLabel,
+    onKeyDown: handleKeyDown,
+    className: cardClassName,
+  };
+
+  if (!source) {
+    return (
+      <Card ref={ref} {...rest} {...cardRootProps}>
+        {cardChildren}
+      </Card>
+    );
+  }
+
+  // Sourced card: one neutral wrapper (the Radix context-menu trigger target)
+  // with the draggable group and the source footer as siblings. Drag visuals
+  // apply to the complete card so the footer never detaches from it.
+  return (
+    <div
+      ref={ref}
+      {...rest}
+      className={cn('transition-all duration-200', isDragging && 'opacity-50 scale-95 shadow-lg')}
+    >
+      <Card {...cardRootProps}>{cardChildren}</Card>
+      <EpicExternalSourceNote source={source} epicId={epic.id} />
+    </div>
+  );
+});

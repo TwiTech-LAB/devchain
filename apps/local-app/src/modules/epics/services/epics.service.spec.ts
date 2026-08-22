@@ -20,6 +20,10 @@ describe('EpicsService', () => {
     listSubEpics: jest.Mock;
     createEpicComment: jest.Mock;
     deleteEpicCommentScoped: jest.Mock;
+    createEpicWithExternalTaskLink: jest.Mock;
+    getIntegrationConnection: jest.Mock;
+    listExternalTaskLinksForEpic: jest.Mock;
+    listExternalTaskLinksForEpics: jest.Mock;
   };
   let eventsService: { publish: jest.Mock };
   let settingsService: { getSetting: jest.Mock; getAutoCleanStatusIds: jest.Mock };
@@ -57,6 +61,10 @@ describe('EpicsService', () => {
       listSubEpics: jest.fn().mockResolvedValue({ items: [], total: 0 }),
       createEpicComment: jest.fn(),
       deleteEpicCommentScoped: jest.fn(),
+      createEpicWithExternalTaskLink: jest.fn(),
+      getIntegrationConnection: jest.fn(),
+      listExternalTaskLinksForEpic: jest.fn(),
+      listExternalTaskLinksForEpics: jest.fn(),
     };
     eventsService = { publish: jest.fn().mockResolvedValue('event-id') };
     settingsService = {
@@ -88,6 +96,153 @@ describe('EpicsService', () => {
         title: baseEpic.title,
       }),
     );
+  });
+
+  describe('external task imports and sources', () => {
+    const importInput = {
+      projectId: 'project-1',
+      statusId: 'status-1',
+      title: 'Edited title',
+      description: 'Edited description',
+      remote: {
+        provider: 'jira' as const,
+        scopeKey: 'acme.atlassian.net',
+        taskId: 'ENG-1',
+        remoteKey: 'ENG-1',
+        title: 'Remote title',
+        description: 'Remote description',
+        webUrl: 'https://acme.atlassian.net/browse/ENG-1',
+        workAreaId: '42',
+        workAreaName: 'Delivery',
+        statusName: 'In Progress',
+      },
+    };
+
+    it('validates project status ownership and always creates an unassigned atomic import', async () => {
+      storage.getProject.mockResolvedValue({ id: 'project-1', name: 'Product' });
+      storage.getStatus.mockResolvedValue({ id: 'status-1', projectId: 'project-1' });
+      storage.getIntegrationConnection.mockResolvedValue({ id: 'connection-1', provider: 'jira' });
+      storage.createEpicWithExternalTaskLink.mockResolvedValue({
+        epic: baseEpic,
+        externalTaskLink: { id: 'link-1', epicId: baseEpic.id },
+        created: true,
+      });
+
+      await service.importExternalTask(importInput);
+
+      expect(storage.createEpicWithExternalTaskLink).toHaveBeenCalledWith({
+        epic: expect.objectContaining({
+          projectId: 'project-1',
+          statusId: 'status-1',
+          title: 'Edited title',
+          description: 'Edited description',
+          agentId: null,
+          createdBy: null,
+        }),
+        externalTaskLink: {
+          connectionId: 'connection-1',
+          provider: 'jira',
+          remoteScopeKey: 'acme.atlassian.net',
+          remoteTaskId: 'ENG-1',
+          sourceSnapshot: {
+            remoteKey: 'ENG-1',
+            title: 'Remote title',
+            description: 'Remote description',
+            webUrl: 'https://acme.atlassian.net/browse/ENG-1',
+            workAreaId: '42',
+            workAreaName: 'Delivery',
+            statusName: 'In Progress',
+          },
+        },
+      });
+    });
+
+    it('rejects a status from a different project before creating anything', async () => {
+      storage.getProject.mockResolvedValue({ id: 'project-1' });
+      storage.getStatus.mockResolvedValue({ id: 'status-other', projectId: 'project-other' });
+      storage.getIntegrationConnection.mockResolvedValue({ id: 'connection-1', provider: 'jira' });
+
+      await expect(service.importExternalTask(importInput)).rejects.toBeInstanceOf(ValidationError);
+      expect(storage.createEpicWithExternalTaskLink).not.toHaveBeenCalled();
+    });
+
+    it('projects a bounded allowlisted source after the integration disconnects', async () => {
+      storage.listExternalTaskLinksForEpic.mockResolvedValue([
+        {
+          provider: 'jira',
+          remoteTaskId: 'ENG-1',
+          sourceSnapshot: {
+            remoteKey: 'ENG-1',
+            title: 'Remote title',
+            workAreaName: 'Delivery',
+            statusName: 'Done',
+            webUrl: 'https://acme.atlassian.net/browse/ENG-1',
+          },
+          createdAt: '2026-08-19T10:00:00.000Z',
+          connectionId: null,
+        },
+      ]);
+
+      await expect(service.listExternalTaskSources('epic-1')).resolves.toEqual([
+        expect.objectContaining({
+          provider: 'jira',
+          remoteTaskId: 'ENG-1',
+          webUrl: 'https://acme.atlassian.net/browse/ENG-1',
+        }),
+      ]);
+    });
+
+    it('projects a batch through the same bounded projector with epic identity', async () => {
+      storage.listExternalTaskLinksForEpics.mockResolvedValue([
+        {
+          epicId: 'epic-1',
+          provider: 'jira',
+          remoteTaskId: 'ENG-1',
+          sourceSnapshot: {
+            remoteKey: 'ENG-1',
+            title: 'Remote title',
+            workAreaName: 'Delivery',
+            statusName: 'Done',
+            webUrl: 'https://evil.example/ENG-1',
+          },
+          createdAt: '2026-08-19T10:00:00.000Z',
+          connectionId: 'internal-connection',
+          remoteScopeKey: 'internal-scope',
+        },
+      ]);
+
+      await expect(
+        service.listExternalTaskSourcesBatch(['epic-1', 'epic-missing']),
+      ).resolves.toEqual([
+        expect.objectContaining({
+          epicId: 'epic-1',
+          provider: 'jira',
+          remoteTaskId: 'ENG-1',
+          title: 'Remote title',
+          // Untrusted stored URLs are still normalized away in batch form.
+          webUrl: null,
+        }),
+      ]);
+      expect(JSON.stringify(await service.listExternalTaskSourcesBatch(['epic-1']))).not.toMatch(
+        /connectionId|remoteScopeKey|sourceSnapshot/,
+      );
+    });
+
+    it('deduplicates requested Epic IDs before the storage query', async () => {
+      storage.listExternalTaskLinksForEpics.mockResolvedValue([]);
+
+      await expect(
+        service.listExternalTaskSourcesBatch(['epic-1', 'epic-1', 'epic-2']),
+      ).resolves.toEqual([]);
+
+      expect(storage.listExternalTaskLinksForEpics).toHaveBeenCalledTimes(1);
+      expect(storage.listExternalTaskLinksForEpics).toHaveBeenCalledWith(['epic-1', 'epic-2']);
+    });
+
+    it('returns an empty batch without a storage query', async () => {
+      await expect(service.listExternalTaskSourcesBatch([])).resolves.toEqual([]);
+      expect(storage.listExternalTaskLinksForEpics).not.toHaveBeenCalled();
+    });
   });
 
   describe('deleteEpicComment (project-scoped, mobile board)', () => {

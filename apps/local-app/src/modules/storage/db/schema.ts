@@ -341,6 +341,49 @@ export const epics = sqliteTable(
   }),
 );
 
+export const integrationConnections = sqliteTable(
+  'integration_connections',
+  {
+    id: text('id').primaryKey(),
+    provider: text('provider', { enum: ['clickup', 'jira'] }).notNull(),
+    credentialCiphertext: text('credential_ciphertext').notNull(),
+    generation: integer('generation').notNull().default(1),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    providerUnique: unique('integration_connections_provider_unique').on(table.provider),
+  }),
+);
+
+export const externalTaskLinks = sqliteTable(
+  'external_task_links',
+  {
+    id: text('id').primaryKey(),
+    epicId: text('epic_id')
+      .notNull()
+      .references(() => epics.id, { onDelete: 'cascade' }),
+    connectionId: text('connection_id').references(() => integrationConnections.id, {
+      onDelete: 'set null',
+    }),
+    provider: text('provider', { enum: ['clickup', 'jira'] }).notNull(),
+    remoteScopeKey: text('remote_scope_key').notNull(),
+    remoteTaskId: text('remote_task_id').notNull(),
+    sourceSnapshot: text('source_snapshot', { mode: 'json' }).notNull(),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    remoteIdentityUnique: unique('external_task_links_remote_identity_unique').on(
+      table.provider,
+      table.remoteScopeKey,
+      table.remoteTaskId,
+    ),
+    epicIdIdx: index('external_task_links_epic_id_idx').on(table.epicId),
+    connectionIdIdx: index('external_task_links_connection_id_idx').on(table.connectionId),
+  }),
+);
+
 // Scheduled Epic templates.
 // Nullable template references use `on delete set null` because schedules should survive
 // deletion of optional defaults. Generated epics still require epics.statusId to be

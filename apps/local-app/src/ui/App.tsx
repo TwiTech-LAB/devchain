@@ -8,6 +8,9 @@ import { AgentsPage } from './pages/AgentsPage';
 import { TeamsPage } from './pages/TeamsPage';
 import { StatusesPage } from './pages/StatusesPage';
 import { BoardPage } from './pages/BoardPage';
+import { ExternalBoardMyWorkRoute } from './pages/board/ExternalBoardMyWorkPage';
+import { ExternalBoardKanbanPage } from './pages/board/ExternalBoardKanbanPage';
+import { ExternalLinkedTaskRoute } from './pages/board/ExternalLinkedTaskPage';
 import { EpicDetailPage } from './pages/EpicDetailPage';
 import { ChatPage } from './pages/ChatPage';
 import { SettingsPage } from './pages/SettingsPage';
@@ -80,6 +83,12 @@ function AppRoutes() {
                 <Route path="/teams" element={<TeamsPage />} />
                 <Route path="/statuses" element={<StatusesPage />} />
                 <Route path="/board" element={<BoardPage />} />
+                <Route path="/board/:provider" element={<ExternalBoardMyWorkRoute />} />
+                <Route
+                  path="/board/:provider/linked/:epicId"
+                  element={<ExternalLinkedTaskRoute />}
+                />
+                <Route path="/board/:provider/:workAreaId" element={<ExternalBoardKanbanPage />} />
                 <Route
                   path="/chat"
                   element={runtimeLoading ? runtimeLoadingElement : <ChatPage />}

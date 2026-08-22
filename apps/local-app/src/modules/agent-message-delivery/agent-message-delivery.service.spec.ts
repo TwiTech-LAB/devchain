@@ -265,6 +265,35 @@ describe('AgentMessageDeliveryService', () => {
       ]);
     });
 
+    it.each([
+      ['pooled autonomous', { kind: 'pooled' as const }, true, false],
+      ['agent MCP', { kind: 'mcp.direct' as const, senderType: 'agent' as const }, true, false],
+      ['guest MCP', { kind: 'mcp.direct' as const, senderType: 'guest' as const }, true, false],
+      ['explicit user', { kind: 'mcp.direct' as const, senderType: 'user' as const }, false, true],
+      ['untyped MCP', { kind: 'mcp.direct' as const }, false, false],
+    ])(
+      'derives private prompt policy from structured identity for %s',
+      async (_label, identity, deferWhileHumanTyping, humanPromptSubmit) => {
+        const { service, messageEnqueue } = buildService();
+
+        await service.deliver(
+          ['agent-1'],
+          {
+            ...identity,
+            body: 'message',
+            source: 'opaque-source',
+            projectId: 'p1',
+            senderName: 'Sender',
+          },
+          {},
+        );
+
+        expect(messageEnqueue.enqueue).toHaveBeenCalledWith([
+          expect.objectContaining({ deferWhileHumanTyping, humanPromptSubmit }),
+        ]);
+      },
+    );
+
     it('passes deliveryMode to the pool and exposes only its classified failure', async () => {
       const { service, messageEnqueue } = buildService();
       messageEnqueue.enqueue.mockResolvedValue([

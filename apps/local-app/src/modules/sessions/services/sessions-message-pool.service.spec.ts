@@ -24,6 +24,7 @@ import { IOError } from '../../../common/errors/error-types';
 import type { ProviderAdapterFactory } from '../../providers/adapters/provider-adapter.factory';
 import { MessageLogService } from './message-log.service';
 import { DeliveryFailureNotifierService } from './delivery-failure-notifier.service';
+import { HumanPromptStateService } from '../../terminal/services/human-prompt-state.service';
 
 describe('SessionsMessagePoolService', () => {
   let service: SessionsMessagePoolService;
@@ -32,7 +33,7 @@ describe('SessionsMessagePoolService', () => {
   >;
   let mockCoordinator: jest.Mocked<Pick<SessionCoordinatorService, 'withAgentLock'>>;
   let mockTerminalIO: jest.Mocked<
-    Pick<TerminalIOService, 'deliver' | 'deliverImmediate' | 'sendControl'>
+    Pick<TerminalIOService, 'deliver' | 'deliverImmediate' | 'deliverGuarded' | 'sendControl'>
   >;
   let mockSettings: jest.Mocked<
     Pick<SettingsService, 'getMessagePoolConfig' | 'getMessagePoolConfigForProject'>
@@ -42,6 +43,7 @@ describe('SessionsMessagePoolService', () => {
   let mockProviderAdapterFactory: jest.Mocked<
     Pick<ProviderAdapterFactory, 'getPostPasteDelayMsForAgent'>
   >;
+  let humanPromptState: HumanPromptStateService;
 
   const createMockAgent = (overrides: { id?: string; name?: string; projectId?: string } = {}) => ({
     id: overrides.id ?? 'agent-1',
@@ -91,6 +93,15 @@ describe('SessionsMessagePoolService', () => {
       deliverImmediate: jest
         .fn()
         .mockResolvedValue({ confirmed: true, nonce: 'abc1234', retryCount: 0 }),
+      deliverGuarded: jest
+        .fn()
+        .mockImplementation(async (_target, _text, _options, _snapshot, mutationFence) => {
+          if (mutationFence && !mutationFence.canStartMutation()) {
+            return { deferred: 'human_draft' };
+          }
+          mutationFence?.markMutationStarted();
+          return { confirmed: true, nonce: 'abc1234', retryCount: 0 };
+        }),
       sendControl: jest.fn().mockResolvedValue(undefined),
     };
 
@@ -131,6 +142,7 @@ describe('SessionsMessagePoolService', () => {
     const mockFailureNotifier = {
       notifySendersOfFailure: jest.fn().mockResolvedValue(undefined),
     } as unknown as DeliveryFailureNotifierService;
+    humanPromptState = new HumanPromptStateService();
 
     service = new SessionsMessagePoolService(
       mockSessionsService as unknown as SessionsService,
@@ -142,6 +154,7 @@ describe('SessionsMessagePoolService', () => {
       mockProviderAdapterFactory as unknown as ProviderAdapterFactory,
       mockMessageLog,
       mockFailureNotifier,
+      humanPromptState,
     );
   });
 
@@ -387,7 +400,7 @@ describe('SessionsMessagePoolService', () => {
         busySince: null,
       });
 
-      expect(mockTerminalIO.deliver).toHaveBeenCalledTimes(1);
+      expect(mockTerminalIO.deliverGuarded).toHaveBeenCalledTimes(1);
       expect(service.getPoolStats()).toEqual([]);
     });
 
@@ -408,9 +421,10 @@ describe('SessionsMessagePoolService', () => {
       });
 
       expect(result.status).toBe('delivered');
-      expect(mockCoordinator.withAgentLock).toHaveBeenCalledTimes(1);
+      // Claim and completion each use the agent lock so appends during terminal delivery survive.
+      expect(mockCoordinator.withAgentLock).toHaveBeenCalledTimes(2);
       expect(flushNow).not.toHaveBeenCalled();
-      expect(mockTerminalIO.deliver).toHaveBeenCalledTimes(1);
+      expect(mockTerminalIO.deliverGuarded).toHaveBeenCalledTimes(1);
     });
 
     it('replaces and fails an old-session lane without exposing it to delayed old events', async () => {
@@ -473,10 +487,12 @@ describe('SessionsMessagePoolService', () => {
         busySince: null,
       });
 
-      expect(mockTerminalIO.deliver).toHaveBeenCalledWith(
+      expect(mockTerminalIO.deliverGuarded).toHaveBeenCalledWith(
         { name: 'tmux-new' },
         'New session message',
         expect.objectContaining({ agentId: 'agent-1' }),
+        undefined,
+        expect.any(Object),
       );
     });
 
@@ -540,9 +556,11 @@ describe('SessionsMessagePoolService', () => {
         lastActivityAt: new Date().toISOString(),
         busySince: null,
       });
-      expect(mockTerminalIO.deliver).toHaveBeenCalledWith(
+      expect(mockTerminalIO.deliverGuarded).toHaveBeenCalledWith(
         { name: 'tmux-1' },
         'First\n+++\nNow accepted',
+        expect.any(Object),
+        undefined,
         expect.any(Object),
       );
     });
@@ -621,9 +639,11 @@ describe('SessionsMessagePoolService', () => {
         busySince: null,
       });
 
-      expect(mockTerminalIO.deliver).toHaveBeenCalledWith(
+      expect(mockTerminalIO.deliverGuarded).toHaveBeenCalledWith(
         { name: 'tmux-1' },
         'Idle second',
+        expect.any(Object),
+        undefined,
         expect.any(Object),
       );
       expect(service.getPoolDetails()).toEqual([
@@ -659,6 +679,645 @@ describe('SessionsMessagePoolService', () => {
       expect(service.getPoolStats()).toEqual([]);
       expect(service.getMessageLog()[0]).toMatchObject({ status: 'failed' });
     });
+  });
+
+  describe('human-draft exact-session lane', () => {
+    const protectedOptions = {
+      source: 'structured-agent-message',
+      deferWhileHumanTyping: true,
+    } as const;
+
+    async function activate(generation?: number): Promise<number> {
+      const state = generation
+        ? humanPromptState.getState('tmux-1')
+        : humanPromptState.recordPromptText('tmux-1');
+      const activeGeneration = generation ?? state.generation;
+      await service.handleHumanPromptStateChanged({
+        sessionId: 'session-agent-1',
+        tmuxSessionName: 'tmux-1',
+        generation: activeGeneration,
+        phase: 'draft_active',
+      });
+      return activeGeneration;
+    }
+
+    async function submit(expectedGeneration: number): Promise<number> {
+      const result = humanPromptState.transitionToAwaiting('tmux-1', expectedGeneration);
+      if (!result.accepted) throw new Error('test prompt transition rejected');
+      await service.handleHumanPromptStateChanged({
+        sessionId: 'session-agent-1',
+        tmuxSessionName: 'tmux-1',
+        generation: result.state.generation,
+        phase: 'awaiting_stable_idle',
+      });
+      return result.state.generation;
+    }
+
+    async function waitForGuardedDelivery(): Promise<void> {
+      for (
+        let turn = 0;
+        turn < 20 && mockTerminalIO.deliverGuarded.mock.calls.length === 0;
+        turn += 1
+      ) {
+        await Promise.resolve();
+      }
+      expect(mockTerminalIO.deliverGuarded).toHaveBeenCalledTimes(1);
+    }
+
+    async function startBlockedMutatingClaim(text: string): Promise<() => void> {
+      let release!: () => void;
+      const terminalResult = new Promise<{
+        confirmed: true;
+        nonce: string;
+        retryCount: number;
+      }>((resolve) => {
+        release = () => resolve({ confirmed: true, nonce: 'blocked', retryCount: 0 });
+      });
+      mockTerminalIO.deliverGuarded.mockImplementationOnce(
+        async (_target, _text, _options, _snapshot, mutationFence) => {
+          if (!mutationFence?.canStartMutation()) return { deferred: 'human_draft' };
+          mutationFence.markMutationStarted();
+          return terminalResult;
+        },
+      );
+
+      const generation = await activate();
+      await service.enqueue('agent-1', text, protectedOptions);
+      await submit(generation);
+      jest.advanceTimersByTime(2_000);
+      await waitForGuardedDelivery();
+      return release;
+    }
+
+    it('preserves truthful outcomes for unblocked protected delivery modes', async () => {
+      await expect(
+        service.enqueue('agent-1', 'default queued', {
+          ...protectedOptions,
+          deliveryMode: 'default',
+        }),
+      ).resolves.toMatchObject({ status: 'queued' });
+      await expect(
+        service.enqueue('agent-1', 'immediate delivered', {
+          ...protectedOptions,
+          deliveryMode: 'immediate',
+        }),
+      ).resolves.toMatchObject({ status: 'delivered' });
+
+      mockSettings.getMessagePoolConfigForProject.mockReturnValue({
+        enabled: false,
+        delayMs: 10_000,
+        maxWaitMs: 30_000,
+        maxMessages: 10,
+        separator: '\n---\n',
+      });
+      await expect(
+        service.enqueue('agent-1', 'pooling disabled delivered', protectedOptions),
+      ).resolves.toMatchObject({ status: 'delivered' });
+
+      const idleSession = {
+        ...createActiveSession('agent-1'),
+        activityState: 'idle' as const,
+        busySince: null,
+      };
+      mockSessionsService.getActiveSessionForAgent.mockReturnValue(idleSession);
+      mockSessionsService.getSession.mockReturnValue(idleSession);
+      mockSessionsService.listActiveSessions.mockResolvedValue([idleSession]);
+      await expect(
+        service.enqueue('agent-1', 'on idle delivered', {
+          ...protectedOptions,
+          deliveryMode: 'on_idle',
+        }),
+      ).resolves.toMatchObject({ status: 'delivered' });
+    });
+
+    it.each([
+      ['default', { deliveryMode: 'default' as const }],
+      ['immediate', { deliveryMode: 'immediate' as const }],
+    ])('queues blocked %s delivery without terminal mutation', async (_label, mode) => {
+      await activate();
+
+      const result = await service.enqueue('agent-1', `${_label} protected`, {
+        ...protectedOptions,
+        ...mode,
+      });
+
+      expect(result.status).toBe('queued');
+      expect(mockTerminalIO.deliver).not.toHaveBeenCalled();
+      expect(mockTerminalIO.deliverImmediate).not.toHaveBeenCalled();
+      expect(service.getPoolDetails()).toEqual([
+        expect.objectContaining({
+          messageCount: 1,
+          humanHeldMessageCount: 1,
+        }),
+      ]);
+    });
+
+    it('queues protected delivery while pooling is disabled', async () => {
+      mockSettings.getMessagePoolConfigForProject.mockReturnValue({
+        enabled: false,
+        delayMs: 10_000,
+        maxWaitMs: 30_000,
+        maxMessages: 10,
+        separator: '\n---\n',
+      });
+      await activate();
+
+      const result = await service.enqueue('agent-1', 'pooling-disabled protected', {
+        ...protectedOptions,
+        deliveryMode: 'default',
+      });
+
+      expect(result.status).toBe('queued');
+      expect(mockTerminalIO.deliver).not.toHaveBeenCalled();
+    });
+
+    it('never lets maxWait override an active human draft', async () => {
+      await activate();
+      await service.enqueue('agent-1', 'held beyond max wait', protectedOptions);
+
+      await jest.advanceTimersByTimeAsync(120_000);
+
+      expect(mockTerminalIO.deliver).not.toHaveBeenCalled();
+      expect(mockTerminalIO.deliverGuarded).not.toHaveBeenCalled();
+      expect(service.getPoolDetails()[0]).toEqual(
+        expect.objectContaining({ humanHeldMessageCount: 1 }),
+      );
+    });
+
+    it('exposes and accepts explicit release only after 30 seconds of human inactivity', async () => {
+      jest.setSystemTime(new Date('2026-08-23T10:00:00.000Z'));
+      await activate();
+      await service.enqueue('agent-1', 'held for confirmation', protectedOptions);
+
+      expect(service.getPoolDetails()[0]).toEqual(
+        expect.objectContaining({
+          humanHeldMessageCount: 1,
+          humanReleaseEligibleAt: Date.now() + 30_000,
+        }),
+      );
+      await expect(service.releaseHumanHeldMessages('agent-1', 'project-1')).resolves.toEqual({
+        status: 'not_ready',
+        eligibleAt: Date.now() + 30_000,
+      });
+
+      await jest.advanceTimersByTimeAsync(30_000);
+      await expect(service.releaseHumanHeldMessages('agent-1', 'project-1')).resolves.toEqual({
+        status: 'released',
+      });
+      expect(humanPromptState.getState('tmux-1').phase).toBe('awaiting_stable_idle');
+
+      await jest.advanceTimersByTimeAsync(2_000);
+      expect(mockTerminalIO.deliverGuarded).toHaveBeenCalledTimes(1);
+      expect(service.getPoolDetails()).toEqual([]);
+    });
+
+    it('rejects explicit release for a different project', async () => {
+      await activate();
+      await service.enqueue('agent-1', 'held for project one', protectedOptions);
+      await jest.advanceTimersByTimeAsync(30_000);
+
+      await expect(service.releaseHumanHeldMessages('agent-1', 'project-2')).resolves.toEqual({
+        status: 'not_found',
+      });
+    });
+
+    it('drains a held message after matching Backspaces clear an exact draft', async () => {
+      let state = humanPromptState.recordPromptText('tmux-1', 3);
+      await service.handleHumanPromptStateChanged({
+        sessionId: 'session-agent-1',
+        tmuxSessionName: 'tmux-1',
+        generation: state.generation,
+        phase: 'draft_active',
+      });
+      await service.enqueue('agent-1', 'arrived while viewing another agent', protectedOptions);
+
+      for (let index = 0; index < 3; index += 1) {
+        const edit = humanPromptState.recordControlInput('tmux-1', state.generation, 'BSpace');
+        if (!edit.accepted) throw new Error('test Backspace transition rejected');
+        state = edit.state as typeof state;
+        await service.handleHumanPromptStateChanged({
+          sessionId: 'session-agent-1',
+          tmuxSessionName: 'tmux-1',
+          generation: edit.state.generation,
+          phase: edit.state.phase,
+        });
+      }
+
+      expect(humanPromptState.getState('tmux-1').phase).toBe('awaiting_stable_idle');
+      await jest.advanceTimersByTimeAsync(2_000);
+      expect(mockTerminalIO.deliverGuarded).toHaveBeenCalledTimes(1);
+      expect(service.getPoolDetails()).toEqual([]);
+    });
+
+    it('promotes pooled protected work before replacement fails its exact lane', async () => {
+      await service.enqueue('agent-1', 'pooled before typing', protectedOptions);
+      expect(service.getPoolDetails()[0].humanHeldMessageCount).toBe(0);
+
+      await activate();
+      const replacement = {
+        ...createActiveSession('agent-1', 'tmux-new'),
+        id: 'replacement-session',
+      };
+      mockSessionsService.getActiveSessionForAgent.mockReturnValue(replacement);
+      mockSessionsService.listActiveSessions.mockResolvedValue([replacement]);
+      await service.flushNow('agent-1');
+
+      expect(mockTerminalIO.deliver).not.toHaveBeenCalled();
+      expect(service.getPoolDetails()).toEqual([]);
+      expect(service.getMessageLog()[0]).toMatchObject({ status: 'failed' });
+    });
+
+    it('fails an old exact-session hold when a replacement accepts new work', async () => {
+      await activate();
+      await service.enqueue('agent-1', 'old held', protectedOptions);
+      const oldSession = createActiveSession('agent-1');
+      const replacement = {
+        ...createActiveSession('agent-1', 'tmux-new'),
+        id: 'replacement-session',
+      };
+      mockSessionsService.getActiveSessionForAgent.mockReturnValue(replacement);
+      mockSessionsService.getSession.mockImplementation((sessionId) =>
+        sessionId === oldSession.id ? oldSession : replacement,
+      );
+
+      await service.enqueue('agent-1', 'replacement queued', protectedOptions);
+
+      expect(service.getMessageLog().find((entry) => entry.text === 'old held')).toMatchObject({
+        status: 'failed',
+        failureCode: 'no_active_session',
+      });
+      expect(
+        service.getMessageLog().find((entry) => entry.text === 'replacement queued'),
+      ).toMatchObject({ status: 'queued' });
+      expect(mockTerminalIO.deliver).not.toHaveBeenCalled();
+    });
+
+    it('deduplicates before enforcing one shared ordinary/deferred capacity', async () => {
+      mockSettings.getMessagePoolConfigForProject.mockReturnValue({
+        enabled: true,
+        delayMs: 10_000,
+        maxWaitMs: 30_000,
+        maxMessages: 2,
+        separator: '\n---\n',
+      });
+      await service.enqueue('agent-1', 'ordinary protected', {
+        ...protectedOptions,
+        clientMessageId: 'client-1',
+      });
+      await activate();
+      const second = await service.enqueue('agent-1', 'held immediate', {
+        ...protectedOptions,
+        deliveryMode: 'immediate',
+        clientMessageId: 'client-2',
+      });
+
+      await expect(
+        service.enqueue('agent-1', 'duplicate', {
+          ...protectedOptions,
+          deliveryMode: 'immediate',
+          clientMessageId: 'client-2',
+        }),
+      ).resolves.toEqual({ status: 'queued', logEntryId: second.logEntryId });
+      await expect(
+        service.enqueue('agent-1', 'over capacity', {
+          ...protectedOptions,
+          clientMessageId: 'client-3',
+        }),
+      ).resolves.toMatchObject({ status: 'failed', error: 'Message pool capacity reached' });
+      expect(service.getMessageLog()).toHaveLength(2);
+    });
+
+    it('rebinds the complete lane to the latest generation and releases after stable quiet', async () => {
+      const firstGeneration = await activate();
+      await service.enqueue('agent-1', 'first generation', protectedOptions);
+      const secondState = humanPromptState.recordPromptText('tmux-1');
+      await activate(secondState.generation);
+      await service.enqueue('agent-1', 'second generation', protectedOptions);
+      const awaitingGeneration = await submit(secondState.generation);
+
+      await jest.advanceTimersByTimeAsync(1_999);
+      expect(mockTerminalIO.deliverGuarded).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1);
+
+      expect(firstGeneration).toBe(1);
+      expect(awaitingGeneration).toBe(3);
+      expect(mockTerminalIO.deliverGuarded).toHaveBeenCalledWith(
+        { name: 'tmux-1' },
+        'first generation\n---\nsecond generation',
+        expect.objectContaining({ agentId: 'agent-1' }),
+        expect.objectContaining({ expectedGeneration: awaitingGeneration }),
+        expect.any(Object),
+      );
+      expect(service.getPoolDetails()).toEqual([]);
+    });
+
+    it.each([
+      {
+        activity: 'meaningful output',
+        record: (state: HumanPromptStateService) => state.recordMeaningfulOutput('tmux-1'),
+      },
+      {
+        activity: 'executed input',
+        record: (state: HumanPromptStateService) => state.recordExecutedInput('tmux-1'),
+      },
+    ])('restarts a full grace when $activity changes the quiet snapshot', async ({ record }) => {
+      const generation = await activate();
+      await service.enqueue('agent-1', 'wait for true quiet', protectedOptions);
+      await submit(generation);
+
+      await jest.advanceTimersByTimeAsync(1_000);
+      record(humanPromptState);
+      await jest.advanceTimersByTimeAsync(1_000);
+      expect(mockTerminalIO.deliverGuarded).not.toHaveBeenCalled();
+
+      await jest.advanceTimersByTimeAsync(1_999);
+      expect(mockTerminalIO.deliverGuarded).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1);
+      expect(mockTerminalIO.deliverGuarded).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps claimed work and schedules a new full grace after FIFO-head mismatch', async () => {
+      mockTerminalIO.deliverGuarded
+        .mockResolvedValueOnce({ deferred: 'human_draft' })
+        .mockResolvedValueOnce({ confirmed: true, nonce: 'ok', retryCount: 0 });
+      const generation = await activate();
+      await service.enqueue('agent-1', 'retry guarded delivery', protectedOptions);
+      await submit(generation);
+
+      await jest.advanceTimersByTimeAsync(2_000);
+      expect(mockTerminalIO.deliverGuarded).toHaveBeenCalledTimes(1);
+      expect(service.getPoolDetails()[0].humanHeldMessageCount).toBe(1);
+
+      await jest.advanceTimersByTimeAsync(2_000);
+      expect(mockTerminalIO.deliverGuarded).toHaveBeenCalledTimes(2);
+      expect(service.getPoolDetails()).toEqual([]);
+    });
+
+    it('creates the missing grace timer for a protected message arriving after Enter', async () => {
+      const generation = await activate();
+      await submit(generation);
+
+      await service.enqueue('agent-1', 'late arrival', {
+        ...protectedOptions,
+        deliveryMode: 'immediate',
+      });
+      await jest.advanceTimersByTimeAsync(1_999);
+      expect(mockTerminalIO.deliverGuarded).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1);
+      expect(mockTerminalIO.deliverGuarded).toHaveBeenCalledTimes(1);
+    });
+
+    it('lets explicit mobile user delivery bypass the hold and completes it under one agent lock', async () => {
+      await activate();
+      await service.enqueue('agent-1', 'held autonomous', protectedOptions);
+      const lockCountBeforeSubmit = mockCoordinator.withAgentLock.mock.calls.length;
+
+      const result = await service.enqueue('agent-1', 'mobile human reply', {
+        source: 'mobile',
+        deliveryMode: 'immediate',
+        humanPromptSubmit: true,
+        clientMessageId: 'mobile-human-1',
+      });
+
+      expect(result.status).toBe('delivered');
+      expect(mockTerminalIO.deliverImmediate).toHaveBeenCalledWith(
+        { name: 'tmux-1' },
+        'mobile human reply',
+        expect.objectContaining({ confirm: false }),
+      );
+      expect(mockCoordinator.withAgentLock.mock.calls.length).toBe(lockCountBeforeSubmit + 1);
+      expect(humanPromptState.getState('tmux-1').phase).toBe('awaiting_stable_idle');
+
+      await jest.advanceTimersByTimeAsync(2_000);
+      expect(mockTerminalIO.deliverGuarded).toHaveBeenCalledWith(
+        { name: 'tmux-1' },
+        'held autonomous',
+        expect.any(Object),
+        expect.objectContaining({ expectedGeneration: 2 }),
+        expect.any(Object),
+      );
+    });
+
+    it('preserves messages appended while a claimed snapshot is delivering', async () => {
+      let release!: (result: { confirmed: true; nonce: string; retryCount: number }) => void;
+      mockTerminalIO.deliverGuarded.mockReturnValueOnce(
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+      );
+      const generation = await activate();
+      await service.enqueue('agent-1', 'claimed first', protectedOptions);
+      await submit(generation);
+      jest.advanceTimersByTime(2_000);
+      for (
+        let turn = 0;
+        turn < 20 && mockTerminalIO.deliverGuarded.mock.calls.length === 0;
+        turn += 1
+      ) {
+        await Promise.resolve();
+      }
+      expect(mockTerminalIO.deliverGuarded).toHaveBeenCalledTimes(1);
+
+      await service.enqueue('agent-1', 'appended second', protectedOptions);
+      humanPromptState.clearSession('tmux-1');
+      release({ confirmed: true, nonce: 'first', retryCount: 0 });
+      for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+
+      expect(service.getPoolDetails()).toEqual([
+        expect.objectContaining({
+          messageCount: 1,
+          messages: [expect.objectContaining({ preview: 'appended second' })],
+        }),
+      ]);
+    });
+
+    it('cancels and fails a preparing claim before its first pane mutation', async () => {
+      let releasePreflight!: () => void;
+      let markPreflightStarted!: () => void;
+      const preflightStarted = new Promise<void>((resolve) => {
+        markPreflightStarted = resolve;
+      });
+      const preflight = new Promise<void>((resolve) => {
+        releasePreflight = resolve;
+      });
+      const markMutationStarted = jest.fn();
+      mockTerminalIO.deliverGuarded.mockImplementationOnce(
+        async (_target, _text, _options, _snapshot, mutationFence) => {
+          markPreflightStarted();
+          await preflight;
+          if (!mutationFence?.canStartMutation()) return { deferred: 'human_draft' };
+          markMutationStarted();
+          mutationFence.markMutationStarted();
+          return { confirmed: true, nonce: 'unexpected', retryCount: 0 };
+        },
+      );
+
+      const generation = await activate();
+      await service.enqueue('agent-1', 'cancel before mutation', protectedOptions);
+      await submit(generation);
+      jest.advanceTimersByTime(2_000);
+      await preflightStarted;
+
+      await service.handleSessionStopped({
+        sessionId: 'session-agent-1',
+        source: 'subscriber',
+        reason: 'user-requested',
+      });
+
+      expect(service.getMessageLog()[0]).toMatchObject({ status: 'failed' });
+      releasePreflight();
+      for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
+      expect(markMutationStarted).not.toHaveBeenCalled();
+      expect(service.getMessageLog()[0]).toMatchObject({ status: 'failed' });
+    });
+
+    it.each(['stopped', 'crashed'] as const)(
+      'waits for a mutating claim and records its real result when the session %s',
+      async (event) => {
+        const release = await startBlockedMutatingClaim(`${event} in flight`);
+
+        const lifecycle =
+          event === 'stopped'
+            ? service.handleSessionStopped({
+                sessionId: 'session-agent-1',
+                source: 'subscriber',
+                reason: 'user-requested',
+              })
+            : service.handleSessionCrashed({
+                sessionId: 'session-agent-1',
+                sessionName: 'tmux-1',
+              });
+        let settled = false;
+        void lifecycle.then(() => {
+          settled = true;
+        });
+        await Promise.resolve();
+
+        expect(settled).toBe(false);
+        expect(service.getMessageLog()[0]).toMatchObject({ status: 'queued' });
+        release();
+        await lifecycle;
+
+        expect(service.getMessageLog()[0]).toMatchObject({ status: 'delivered' });
+        expect(service.getPoolDetails()).toEqual([]);
+      },
+    );
+
+    it('waits for a mutating claim during shutdown and preserves its delivered result', async () => {
+      const release = await startBlockedMutatingClaim('shutdown in flight');
+
+      const shutdown = service.onModuleDestroy();
+      await Promise.resolve();
+      expect(service.getMessageLog()[0]).toMatchObject({ status: 'queued' });
+      release();
+      await shutdown;
+
+      expect(service.getMessageLog()[0]).toMatchObject({ status: 'delivered' });
+      expect(service.getPoolDetails()).toEqual([]);
+    });
+
+    it('waits for a mutating old-session claim before admitting replacement work', async () => {
+      const release = await startBlockedMutatingClaim('old session in flight');
+      const oldSession = createActiveSession('agent-1');
+      const replacement = {
+        ...oldSession,
+        id: 'replacement-session',
+        tmuxSessionId: 'tmux-2',
+      };
+      mockSessionsService.getActiveSessionForAgent.mockReturnValue(replacement);
+      mockSessionsService.getSession.mockImplementation((sessionId) =>
+        sessionId === oldSession.id ? oldSession : replacement,
+      );
+
+      const replacementEnqueue = service.enqueue('agent-1', 'replacement queued', {
+        source: 'test',
+        deliveryMode: 'on_idle',
+      });
+      let replacementSettled = false;
+      void replacementEnqueue.then(() => {
+        replacementSettled = true;
+      });
+      await Promise.resolve();
+
+      expect(replacementSettled).toBe(false);
+      expect(service.getMessageLog()[0]).toMatchObject({ status: 'queued' });
+      release();
+      await expect(replacementEnqueue).resolves.toMatchObject({ status: 'queued' });
+
+      expect(
+        service.getMessageLog().find((entry) => entry.text === 'old session in flight'),
+      ).toMatchObject({ status: 'delivered' });
+      expect(
+        service.getMessageLog().find((entry) => entry.text === 'replacement queued'),
+      ).toMatchObject({ status: 'queued' });
+    });
+
+    it('requires provider idle and human quiet for mixed on_idle work', async () => {
+      const generation = await activate();
+      await service.enqueue('agent-1', 'mixed idle', {
+        ...protectedOptions,
+        deliveryMode: 'on_idle',
+      });
+      await submit(generation);
+
+      await jest.advanceTimersByTimeAsync(2_000);
+      expect(mockTerminalIO.deliverGuarded).not.toHaveBeenCalled();
+
+      const idleSession = {
+        ...createActiveSession('agent-1'),
+        activityState: 'idle' as const,
+        busySince: null,
+      };
+      mockSessionsService.getSession.mockReturnValue(idleSession);
+      mockSessionsService.getActiveSessionForAgent.mockReturnValue(idleSession);
+      mockSessionsService.listActiveSessions.mockResolvedValue([idleSession]);
+      await service.handleSessionActivityChanged({
+        sessionId: idleSession.id,
+        state: 'idle',
+        lastActivityAt: null,
+        busySince: null,
+      });
+      await jest.advanceTimersByTimeAsync(2_000);
+
+      expect(mockTerminalIO.deliverGuarded).toHaveBeenCalledTimes(1);
+    });
+
+    it('fails human-held work during shutdown without terminal delivery', async () => {
+      await activate();
+      await service.enqueue('agent-1', 'shutdown held', protectedOptions);
+
+      await service.onModuleDestroy();
+
+      expect(mockTerminalIO.deliver).not.toHaveBeenCalled();
+      expect(mockTerminalIO.deliverGuarded).not.toHaveBeenCalled();
+      expect(service.getPoolDetails()).toEqual([]);
+      expect(service.getMessageLog()[0]).toMatchObject({ status: 'failed' });
+    });
+
+    it.each(['stopped', 'crashed'] as const)(
+      'fails human-held work when the exact session %s',
+      async (event) => {
+        await activate();
+        await service.enqueue('agent-1', `${event} held`, protectedOptions);
+
+        if (event === 'stopped') {
+          await service.handleSessionStopped({
+            sessionId: 'session-agent-1',
+            source: 'subscriber',
+            reason: 'user-requested',
+          });
+        } else {
+          await service.handleSessionCrashed({
+            sessionId: 'session-agent-1',
+            sessionName: 'tmux-1',
+          });
+        }
+
+        expect(service.getPoolDetails()).toEqual([]);
+        expect(service.getMessageLog()[0]).toMatchObject({ status: 'failed' });
+        expect(mockTerminalIO.deliverGuarded).not.toHaveBeenCalled();
+      },
+    );
   });
 
   describe('Limit enforcement', () => {
@@ -925,6 +1584,9 @@ describe('SessionsMessagePoolService', () => {
         mockStorage as unknown as StorageService,
         mockActivityStream,
         mockProviderAdapterFactory as unknown as ProviderAdapterFactory,
+        new MessageLogService(),
+        { notifySendersOfFailure: jest.fn() } as unknown as DeliveryFailureNotifierService,
+        new HumanPromptStateService(),
       );
 
       // Should not throw, uses defaults

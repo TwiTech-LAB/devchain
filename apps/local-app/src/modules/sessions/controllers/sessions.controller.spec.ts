@@ -20,7 +20,10 @@ describe('SessionsController', () => {
   let mockSessionsService: jest.Mocked<SessionsService>;
   let mockSessionRuntime: jest.Mocked<SessionRuntime>;
   let mockMessagePoolService: jest.Mocked<
-    Pick<SessionsMessagePoolService, 'getMessageLog' | 'getPoolDetails' | 'getMessageById'>
+    Pick<
+      SessionsMessagePoolService,
+      'getMessageLog' | 'getPoolDetails' | 'getMessageById' | 'releaseHumanHeldMessages'
+    >
   >;
   let mockStorage: { getAgent: jest.Mock };
 
@@ -42,6 +45,7 @@ describe('SessionsController', () => {
     agentName: 'Test Agent',
     projectId: VALID_PROJECT_ID,
     messageCount: 2,
+    humanHeldMessageCount: 0,
     waitingMs: 5000,
     messages: [{ id: 'msg-1', preview: 'Hello', source: 'test', timestamp: Date.now() }],
     ...overrides,
@@ -61,6 +65,7 @@ describe('SessionsController', () => {
       getMessageLog: jest.fn().mockReturnValue([]),
       getPoolDetails: jest.fn().mockReturnValue([]),
       getMessageById: jest.fn().mockReturnValue(null),
+      releaseHumanHeldMessages: jest.fn().mockResolvedValue({ status: 'released' }),
     };
 
     mockStorage = {
@@ -272,6 +277,44 @@ describe('SessionsController', () => {
         expect(error).toBeInstanceOf(BadRequestException);
         expect((error as BadRequestException).message).toContain('projectId must be a valid UUID');
       }
+    });
+  });
+
+  describe('POST /pools/:agentId/release-human-hold', () => {
+    it('releases an eligible human-held lane in the requested project', async () => {
+      await expect(
+        controller.releaseHumanHold(VALID_AGENT_ID, { projectId: VALID_PROJECT_ID }),
+      ).resolves.toEqual({ released: true });
+      expect(mockMessagePoolService.releaseHumanHeldMessages).toHaveBeenCalledWith(
+        VALID_AGENT_ID,
+        VALID_PROJECT_ID,
+      );
+    });
+
+    it('maps missing and not-ready lanes to explicit transport errors', async () => {
+      mockMessagePoolService.releaseHumanHeldMessages.mockResolvedValueOnce({
+        status: 'not_found',
+      });
+      await expect(
+        controller.releaseHumanHold(VALID_AGENT_ID, { projectId: VALID_PROJECT_ID }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+
+      mockMessagePoolService.releaseHumanHeldMessages.mockResolvedValueOnce({
+        status: 'not_ready',
+        eligibleAt: Date.now() + 1_000,
+      });
+      await expect(
+        controller.releaseHumanHold(VALID_AGENT_ID, { projectId: VALID_PROJECT_ID }),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('rejects invalid agent and project ids', async () => {
+      await expect(
+        controller.releaseHumanHold('bad-agent', { projectId: VALID_PROJECT_ID }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      await expect(
+        controller.releaseHumanHold(VALID_AGENT_ID, { projectId: 'bad-project' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
     });
   });
 

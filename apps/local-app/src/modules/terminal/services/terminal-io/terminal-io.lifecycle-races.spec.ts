@@ -1,6 +1,7 @@
 import type { EventsService } from '../../../events/services/events.service';
 import { FakeProcessExecutor } from '../process-executor/fake-process-executor';
 import { TerminalIOService } from './terminal-io.service';
+import { HumanPromptStateService } from '../human-prompt-state.service';
 
 interface Deferred<T> {
   readonly promise: Promise<T>;
@@ -23,16 +24,18 @@ describe('TerminalIOService lifecycle monitoring', () => {
   let executor: FakeProcessExecutor;
   let events: { publish: jest.Mock };
   let service: TerminalIOService;
+  let humanPromptState: HumanPromptStateService;
 
   beforeEach(() => {
     jest.useFakeTimers();
     executor = new FakeProcessExecutor();
     events = { publish: jest.fn().mockResolvedValue('event-id') };
-    service = new TerminalIOService(executor, events as unknown as EventsService);
+    humanPromptState = new HumanPromptStateService();
+    service = new TerminalIOService(executor, events as unknown as EventsService, humanPromptState);
   });
 
   afterEach(() => {
-    service.onModuleDestroy();
+    service.beforeApplicationShutdown();
     jest.useRealTimers();
     jest.restoreAllMocks();
   });
@@ -40,11 +43,13 @@ describe('TerminalIOService lifecycle monitoring', () => {
   it.each([`can't find session: exact-name`, 'no server running on /tmp/tmux-1000/default'])(
     'classifies only authoritative tmux absence: %s',
     async (stderr) => {
+      humanPromptState.recordPromptText('exact-name');
       executor.enqueueResponse({ type: 'failure', stderr });
 
       await expect(
         service.destroyExpectedSession({ name: 'exact-name' }, { onUnknownError: 'retire' }),
       ).resolves.toEqual({ outcome: 'known-absent' });
+      expect(humanPromptState.getState('exact-name').phase).toBe('inactive');
     },
   );
 
@@ -175,6 +180,7 @@ describe('TerminalIOService lifecycle monitoring', () => {
   it('rearms only the running-session policy after an unknown kill result', async () => {
     jest.spyOn(service, 'healthCheck').mockResolvedValue({ alive: true });
     service.startHealthCheck('tmux-e', 'session-e', 10);
+    humanPromptState.recordPromptText('tmux-e');
     executor.enqueueResponse({ type: 'failure', stderr: 'permission denied' });
 
     const result = await service.destroyExpectedSession(
@@ -182,6 +188,7 @@ describe('TerminalIOService lifecycle monitoring', () => {
       { onUnknownError: 'rearm', sessionId: 'session-e' },
     );
     expect(result.outcome).toBe('unknown-error');
+    expect(humanPromptState.getState('tmux-e').phase).toBe('draft_active');
 
     jest.advanceTimersByTime(10);
     await settle();
@@ -191,6 +198,7 @@ describe('TerminalIOService lifecycle monitoring', () => {
   it('never rearms rollback cleanup after an unknown kill result', async () => {
     jest.spyOn(service, 'healthCheck').mockResolvedValue({ alive: true });
     service.startHealthCheck('tmux-f', 'session-f', 10);
+    humanPromptState.recordPromptText('tmux-f');
     executor.enqueueResponse({ type: 'failure', stderr: 'permission denied' });
 
     const result = await service.destroyExpectedSession(
@@ -198,6 +206,7 @@ describe('TerminalIOService lifecycle monitoring', () => {
       { onUnknownError: 'retire' },
     );
     expect(result.outcome).toBe('unknown-error');
+    expect(humanPromptState.getState('tmux-f').phase).toBe('inactive');
 
     jest.advanceTimersByTime(100);
     await settle();

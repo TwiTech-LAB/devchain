@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useQueryClient, useQuery } from '@tanstack/react-query';
 import { Loader2, AlertCircle, Terminal as TerminalIcon } from 'lucide-react';
 import type { Preset } from '@/ui/lib/preset-types';
@@ -19,6 +19,7 @@ import { usePresetApply } from '@/ui/hooks/chat/usePresetApply';
 import { useAgentConfigSwitch } from '@/ui/hooks/chat/useAgentConfigSwitch';
 import { useAgentAdminActions } from '@/ui/hooks/chat/useAgentAdminActions';
 import { useWorktreeSocket } from '@/ui/hooks/useWorktreeSocket';
+import { useMessagePools } from '@/ui/hooks/chat/useMessagePools';
 
 // Inline terminal components
 import { InlineTerminalPanel } from '@/ui/components/chat/InlineTerminalPanel';
@@ -93,6 +94,24 @@ interface SelectedWorktreeAgent {
   mainAgentIdAtSelection: string | null;
 }
 
+interface HumanReleaseTarget {
+  agentId: string;
+  agentName: string;
+  messageCount: number;
+}
+
+function recordsEqual<T>(left: Readonly<Record<string, T>>, right: Readonly<Record<string, T>>) {
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return leftKeys.length === rightKeys.length && rightKeys.every((key) => left[key] === right[key]);
+}
+
+function describeHumanRelease(target: HumanReleaseTarget | null): string {
+  if (!target) return '';
+  const noun = target.messageCount === 1 ? 'message' : 'messages';
+  return `${target.messageCount} queued ${noun} will be delivered to ${target.agentName}.`;
+}
+
 interface WorktreeInlineTerminalProps {
   worktreeName: string;
   sessionId: string;
@@ -150,11 +169,12 @@ export function ChatPage() {
   const [mainTerminalHandle, setMainTerminalHandle] = useState<TerminalHandle | null>(null);
   const [worktreeTerminalHandle, setWorktreeTerminalHandle] = useState<TerminalHandle | null>(null);
   const [customPromptPickerOpen, setCustomPromptPickerOpen] = useState(false);
+  const [humanReleaseTarget, setHumanReleaseTarget] = useState<HumanReleaseTarget | null>(null);
 
   // Tick for relative durations (busy badge)
-  const [, setNowTick] = useState(0);
+  const [nowTick, setNowTick] = useState(() => Date.now());
   useEffect(() => {
-    const id = setInterval(() => setNowTick((n) => (n + 1) % 1000000), 1000);
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
 
@@ -171,6 +191,49 @@ export function ChatPage() {
     projectId,
     projectRootPath: selectedProject?.rootPath,
   });
+
+  const {
+    pools: messagePools,
+    releaseHumanHeldMessages,
+    releasingAgentId,
+  } = useMessagePools(projectId);
+
+  // The endpoint recomputes waitingMs on every poll, so the pools array is a
+  // fresh reference even when held counts are identical; retain the previous
+  // record then, or the sidebar data bundle would churn every poll interval.
+  const prevHeldCountsRef = useRef<Record<string, number>>({});
+  const humanHeldMessageCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const pool of messagePools ?? []) {
+      if (pool.humanHeldMessageCount > 0) {
+        counts[pool.agentId] = pool.humanHeldMessageCount;
+      }
+    }
+    const previous = prevHeldCountsRef.current;
+    if (recordsEqual(previous, counts)) {
+      return previous;
+    }
+    prevHeldCountsRef.current = counts;
+    return counts;
+  }, [messagePools]);
+
+  const prevReleaseEligibleRef = useRef<Record<string, true>>({});
+  const humanHeldReleaseEligibleAgentIds = useMemo(() => {
+    const eligible: Record<string, true> = {};
+    for (const pool of messagePools ?? []) {
+      if (
+        pool.humanHeldMessageCount > 0 &&
+        pool.humanReleaseEligibleAt !== undefined &&
+        pool.humanReleaseEligibleAt <= nowTick
+      ) {
+        eligible[pool.agentId] = true;
+      }
+    }
+    const previous = prevReleaseEligibleRef.current;
+    if (recordsEqual(previous, eligible)) return previous;
+    prevReleaseEligibleRef.current = eligible;
+    return eligible;
+  }, [messagePools, nowTick]);
 
   const agentUiState = useAgentConsoleUiState({
     projectId,
@@ -439,6 +502,38 @@ export function ChatPage() {
     },
     [agentUiState.selectedAgentId, toast],
   );
+
+  const handleOpenHumanRelease = useCallback(
+    (agentId: string) => {
+      const pool = messagePools?.find((candidate) => candidate.agentId === agentId);
+      if (!pool || pool.humanHeldMessageCount <= 0) return;
+      setHumanReleaseTarget({
+        agentId,
+        agentName: pool.agentName,
+        messageCount: pool.humanHeldMessageCount,
+      });
+    },
+    [messagePools],
+  );
+
+  const handleConfirmHumanRelease = useCallback(() => {
+    if (!humanReleaseTarget) return;
+    void releaseHumanHeldMessages(humanReleaseTarget.agentId)
+      .then(() => {
+        setHumanReleaseTarget(null);
+        toast({
+          title: 'Queued messages released',
+          description: 'Delivery will begin after the terminal remains quiet for two seconds.',
+        });
+      })
+      .catch((error: unknown) => {
+        toast({
+          title: 'Queued messages are still held',
+          description: error instanceof Error ? error.message : 'Release failed.',
+          variant: 'destructive',
+        });
+      });
+  }, [humanReleaseTarget, releaseHumanHeldMessages, toast]);
 
   const handleSelectMainAgent = useCallback(
     (agentId: string) => {
@@ -860,6 +955,8 @@ export function ChatPage() {
       validatedPresets,
       activePreset,
       projectProfiles: queries.profiles,
+      humanHeldMessageCounts,
+      humanHeldReleaseEligibleAgentIds,
     }),
     [
       projectId,
@@ -880,6 +977,8 @@ export function ChatPage() {
       validatedPresets,
       activePreset,
       queries.profiles,
+      humanHeldMessageCounts,
+      humanHeldReleaseEligibleAgentIds,
     ],
   );
 
@@ -900,6 +999,8 @@ export function ChatPage() {
       onRestartSession: handleRestartSessionWithClear,
       onTerminateConfirm: (agentId, sessionId) =>
         sessionControls.setTerminateConfirm({ agentId, sessionId }),
+      onReleaseHeldMessages: handleOpenHumanRelease,
+      releasingHeldAgentId: releasingAgentId,
       pendingRestartAgentIds,
       onMarkForRestart: markAgentsForRestart,
       worktreeSessionActionsByAgentKey,
@@ -926,6 +1027,8 @@ export function ChatPage() {
       sessionControls.handleLaunchSession,
       handleRestartSessionWithClear,
       sessionControls.setTerminateConfirm,
+      handleOpenHumanRelease,
+      releasingAgentId,
       pendingRestartAgentIds,
       markAgentsForRestart,
       worktreeSessionActionsByAgentKey,
@@ -1311,6 +1414,18 @@ export function ChatPage() {
           onOpenChange={setCustomPromptPickerOpen}
         />
       )}
+      <ConfirmDialog
+        open={humanReleaseTarget !== null}
+        onOpenChange={(open) => {
+          if (!open && releasingAgentId === null) setHumanReleaseTarget(null);
+        }}
+        onConfirm={handleConfirmHumanRelease}
+        title="Release queued messages, my draft is clear"
+        description={describeHumanRelease(humanReleaseTarget)}
+        confirmText="Yes"
+        cancelText="No"
+        loading={releasingAgentId === humanReleaseTarget?.agentId}
+      />
       <ConfirmDialog {...activeSessionDialogProps} />
     </div>
   );

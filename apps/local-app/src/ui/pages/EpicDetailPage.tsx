@@ -5,6 +5,8 @@ import { useToast } from '../hooks/use-toast';
 import { getErrorMessage } from '@/ui/lib/toast-helpers';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
+import { useIntegrationAvailability } from '@/ui/hooks/useIntegrationAvailability';
+import { useEpicExternalSources } from '@/ui/hooks/useEpicExternalSources';
 import { resolveSkillSlugs, type SkillSummary } from '@/ui/lib/skills';
 import { getMergedWorktree, isMergedTag } from '@/ui/lib/epic-tags';
 import { useTerminalWindowManager } from '@/ui/terminal-windows';
@@ -35,6 +37,7 @@ import { Breadcrumbs } from '@/ui/components/shared/Breadcrumbs';
 import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
 import { CategoryBadge } from '@/ui/components/skills/CategoryBadge';
 import { SkillDetailDrawer } from '@/ui/components/skills/SkillDetailDrawer';
+import { ExternalTaskSourcePanel } from '@/ui/components/epics/ExternalTaskSourcePanel';
 import {
   Play,
   Square,
@@ -375,6 +378,7 @@ export function EpicDetailPage() {
   const openTerminalWindow = useTerminalWindowManager();
   const queryClient = useQueryClient();
   const apiFetch = useFetchFactory();
+  const integrationAvailability = useIntegrationAvailability();
 
   const [selectedAgentId, setSelectedAgentId] = useState('');
   const [preflightResult, setPreflightResult] = useState<PreflightResult | null>(null);
@@ -396,6 +400,9 @@ export function EpicDetailPage() {
     queryKey: ['epic', id],
     queryFn: () => fetchEpic(id!, apiFetch),
     enabled: !!id,
+  });
+  const externalSources = useEpicExternalSources(id, {
+    enabled: integrationAvailability.canUseIntegrations,
   });
 
   // Fetch parent epic for breadcrumb navigation (only when epic has a parent)
@@ -1180,6 +1187,9 @@ export function EpicDetailPage() {
         </div>
 
         <aside className="space-y-8">
+          {externalSources.data?.items?.length ? (
+            <ExternalTaskSourcePanel items={externalSources.data.items} />
+          ) : null}
           {epicSessions.length > 0 && (
             <Card>
               <CardHeader>

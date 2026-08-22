@@ -56,6 +56,61 @@ export interface Epic {
   updatedAt: string;
 }
 
+export const INTEGRATION_PROVIDER_IDS = ['clickup', 'jira'] as const;
+export type IntegrationProvider = (typeof INTEGRATION_PROVIDER_IDS)[number];
+
+export interface ClickUpIntegrationCredentials {
+  provider: 'clickup';
+  token: string;
+}
+
+export interface JiraIntegrationCredentials {
+  provider: 'jira';
+  siteUrl: string;
+  email: string;
+  token: string;
+}
+
+export type IntegrationCredentials = ClickUpIntegrationCredentials | JiraIntegrationCredentials;
+
+export interface IntegrationConnection {
+  id: string;
+  provider: IntegrationProvider;
+  generation: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReplaceIntegrationConnection {
+  provider: IntegrationProvider;
+  credentials: IntegrationCredentials;
+}
+
+export interface ExternalTaskLink {
+  id: string;
+  epicId: string;
+  connectionId: string | null;
+  provider: IntegrationProvider;
+  remoteScopeKey: string;
+  remoteTaskId: string;
+  sourceSnapshot: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type CreateExternalTaskLink = Omit<ExternalTaskLink, 'id' | 'createdAt' | 'updatedAt'>;
+
+export interface CreateEpicWithExternalTaskLink {
+  epic: CreateEpic;
+  externalTaskLink: Omit<CreateExternalTaskLink, 'epicId'>;
+}
+
+export interface CreateEpicWithExternalTaskLinkResult {
+  epic: Epic;
+  externalTaskLink: ExternalTaskLink;
+  created: boolean;
+}
+
 export type SkillStatus = 'available' | 'outdated' | 'sync_error';
 
 export interface Skill {

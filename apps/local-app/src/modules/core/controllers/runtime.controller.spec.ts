@@ -9,6 +9,8 @@ describe('RuntimeController', () => {
   beforeEach(() => {
     process.env = { ...originalEnv };
     delete process.env.DEVCHAIN_MODE;
+    delete process.env.HOST;
+    delete process.env.CONTAINER_PROJECT_ID;
     delete process.env.DATABASE_URL;
     delete process.env.REPO_ROOT;
     delete process.env.RUNTIME_TOKEN;
@@ -33,6 +35,10 @@ describe('RuntimeController', () => {
       features: {
         cloudUi: true,
       },
+      integrationAdmission: {
+        allowed: true,
+        reason: null,
+      },
     });
   });
 
@@ -50,6 +56,10 @@ describe('RuntimeController', () => {
       dockerAvailable: false,
       features: {
         cloudUi: true,
+      },
+      integrationAdmission: {
+        allowed: true,
+        reason: null,
       },
     });
   });
@@ -79,6 +89,30 @@ describe('RuntimeController', () => {
     const result = await controller.getRuntime();
 
     expect(result.features).toEqual({ cloudUi: false });
+  });
+
+  it('reports why integration operations are unavailable in a child runtime', async () => {
+    process.env.CONTAINER_PROJECT_ID = '11111111-1111-4111-8111-111111111111';
+    resetEnvConfig();
+
+    const result = await controller.getRuntime();
+
+    expect(result.integrationAdmission).toEqual({
+      allowed: false,
+      reason: 'child_runtime',
+    });
+  });
+
+  it('reports why integration operations are unavailable on a non-loopback host', async () => {
+    process.env.HOST = '0.0.0.0';
+    resetEnvConfig();
+
+    const result = await controller.getRuntime();
+
+    expect(result.integrationAdmission).toEqual({
+      allowed: false,
+      reason: 'non_loopback_host',
+    });
   });
 
   it('includes runtimeToken when RUNTIME_TOKEN is set', async () => {

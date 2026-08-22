@@ -11,13 +11,31 @@ jest.mock('@/ui/components/board/CollapsedColumn', () => ({
   CollapsedColumn: ({ status }: { status: Status }) => <div>Collapsed {status.label}</div>,
 }));
 jest.mock('@/ui/components/board/BoardColumn', () => ({
-  BoardColumn: ({ status, activeParentId }: { status: Status; activeParentId: string | null }) => (
-    <div data-active-parent-id={activeParentId ?? ''}>Expanded {status.label}</div>
+  BoardColumn: ({
+    status,
+    activeParentId,
+    externalSources,
+  }: {
+    status: Status;
+    activeParentId: string | null;
+    externalSources?: ReadonlyMap<string, unknown>;
+  }) => (
+    <div data-active-parent-id={activeParentId ?? ''} data-has-sources={externalSources?.size ?? 0}>
+      Expanded {status.label}
+    </div>
   ),
 }));
 jest.mock('@/ui/components/board/BoardListView', () => ({
-  BoardListView: ({ epics }: { epics: Epic[] }) => (
-    <div>List fixture: {epics.map((epic) => epic.title).join(', ')}</div>
+  BoardListView: ({
+    epics,
+    externalSources,
+  }: {
+    epics: Epic[];
+    externalSources?: ReadonlyMap<string, unknown>;
+  }) => (
+    <div data-has-sources={externalSources?.size ?? 0}>
+      List fixture: {epics.map((epic) => epic.title).join(', ')}
+    </div>
   ),
 }));
 jest.mock('@/ui/components/board/BulkEditDialog', () => ({
@@ -186,6 +204,7 @@ describe('BoardPageView presentation', () => {
               status: { ...status, id: 'done', label: 'Done' },
               kind: 'expanded',
               draggedEpic: null,
+              externalSources: new Map([['epic-1', { remoteKey: 'ENG-1' }]]),
               collapse: noop,
               keyboardMove: noop,
             },
@@ -195,6 +214,7 @@ describe('BoardPageView presentation', () => {
     );
     expect(screen.getByText('Collapsed Todo')).toBeInTheDocument();
     expect(screen.getByText('Expanded Done')).toHaveAttribute('data-active-parent-id', epic.id);
+    expect(screen.getByText('Expanded Done')).toHaveAttribute('data-has-sources', '1');
 
     rerender(
       <BoardPageView
@@ -218,10 +238,12 @@ describe('BoardPageView presentation', () => {
           changeStatus: asyncNoop,
           changeAgent: asyncNoop,
           moveToWorktree: noop,
+          externalSources: new Map(),
         })}
       />,
     );
     expect(screen.getByText('List fixture: Fixture epic')).toBeInTheDocument();
+    expect(screen.getByText('List fixture: Fixture epic')).toHaveAttribute('data-has-sources', '0');
   });
 
   it('wires paired dialog models without receiving implementation objects', () => {

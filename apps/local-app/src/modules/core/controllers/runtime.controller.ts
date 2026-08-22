@@ -3,6 +3,7 @@ import { ModuleRef } from '@nestjs/core';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
+import { getIntegrationAdmission } from '../../../common/config/container-scope';
 import { getEnvConfig } from '../../../common/config/env.config';
 import { PROCESS_BOOT_ID } from '../../../common/process-identity';
 import { OrchestratorDockerService } from '../../orchestrator/docker/services/docker.service';
@@ -61,6 +62,7 @@ export class RuntimeController {
       features: {
         cloudUi: env.DEVCHAIN_CLOUD_UI_ENABLED,
       },
+      integrationAdmission: getIntegrationAdmission(env),
       ...(runtimeToken ? { runtimeToken } : {}),
     };
   }

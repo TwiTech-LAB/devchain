@@ -364,6 +364,26 @@ describe('Phase 7 architecture invariants', () => {
     expect(offenders).toEqual([]);
   });
 
+  it('terminal prompt protection never synthesizes editor preservation keys', () => {
+    const forbiddenFragments = [
+      ['st', 'ash'].join(''),
+      ['ya', 'nk'].join(''),
+      ['prompt', 'clear'].join('-'),
+      ['kill', 'ring'].join('-'),
+      ['C', 'u'].join('-'),
+      ['C', 'k'].join('-'),
+      ['C', 'y'].join('-'),
+      ['M', 'y'].join('-'),
+    ];
+    const offenders = listTypeScriptFiles(SRC_ROOT).flatMap((file) => {
+      const content = readText(file);
+      const hits = forbiddenFragments.filter((fragment) => content.includes(fragment));
+      return hits.length > 0 ? [`${relative(APP_ROOT, file)} contains ${hits.join(', ')}`] : [];
+    });
+
+    expect(offenders).toEqual([]);
+  });
+
   it('PtyService does not import TerminalGateway', () => {
     const ptyService = readText(join(MODULES_ROOT, 'terminal', 'services', 'pty.service.ts'));
 

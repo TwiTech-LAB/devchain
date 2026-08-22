@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { FolderOpen, Pencil, Trash2 } from 'lucide-react';
+import type { ExternalTaskSourceSummary } from '@/modules/external-integrations/models/external-provider.models';
 import {
   Table,
   TableBody,
@@ -62,6 +63,8 @@ export interface BoardListViewProps {
   onMoveToWorktree?: (epic: Epic) => void;
   /** Whether running worktrees exist (main mode only) */
   hasRunningWorktrees?: boolean;
+  /** Stored external sources by Epic ID; main rows only, never sub-epic rows. */
+  externalSources?: ReadonlyMap<string, ExternalTaskSourceSummary>;
   /** Optional className for container */
   className?: string;
 }
@@ -100,6 +103,7 @@ export function BoardListView({
   subEpicCounts,
   onMoveToWorktree,
   hasRunningWorktrees,
+  externalSources,
   className,
 }: BoardListViewProps) {
   // Track which epics are expanded (by epic ID)
@@ -399,6 +403,7 @@ export function BoardListView({
                   onStatusChange={onStatusChange}
                   onAgentChange={onAgentChange}
                   subEpicCount={subEpicCounts?.[epic.id] ?? 0}
+                  externalSource={externalSources?.get(epic.id)}
                 />
               ))
             )}

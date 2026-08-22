@@ -1,11 +1,13 @@
 import { TerminalKeyInputFacade } from './terminal-key-input.facade';
 import { AppError } from '../../../../common/errors/error-types';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { HumanPromptStateService } from '../human-prompt-state.service';
 
 /**
  * TerminalKeyInputFacade — unit tests.
  *
- * Layer: module-unit. The facade is a thin orchestrator over three collaborators
- * (registry, terminalIO, and the session object), so mocking those three and asserting
+ * Layer: module-unit. The facade is a thin orchestrator over terminal registry/IO,
+ * prompt state, the event barrier, and the session object, so isolating those seams and asserting
  * the dispatch sequence + typed AppError codes is the cheapest layer that proves every
  * acceptance behavior (whitelist, liveness, ordering, per-session rate gap). No tmux, no
  * DB, no Nest DI graph needed.
@@ -38,8 +40,15 @@ describe('TerminalKeyInputFacade', () => {
     const session = overrides.session ?? makeSession();
     const io = overrides.io ?? makeIO();
     const registry = makeRegistry(session);
-    const facade = new TerminalKeyInputFacade(registry as never, io as never);
-    return { facade, registry, io, session };
+    const humanPromptState = new HumanPromptStateService();
+    const eventEmitter = new EventEmitter2();
+    const facade = new TerminalKeyInputFacade(
+      registry as never,
+      io as never,
+      humanPromptState,
+      eventEmitter,
+    );
+    return { facade, registry, io, session, humanPromptState, eventEmitter };
   }
 
   describe('whitelist → tmux argv', () => {
@@ -87,6 +96,8 @@ describe('TerminalKeyInputFacade', () => {
       const facade = new TerminalKeyInputFacade(
         { get: jest.fn(() => undefined) } as never,
         io as never,
+        new HumanPromptStateService(),
+        new EventEmitter2(),
       );
       await expect(
         facade.sendKey('00000000-0000-4000-8000-0000000000a1', 'Up'),
@@ -115,7 +126,12 @@ describe('TerminalKeyInputFacade', () => {
     it('pins to the EXACT requested sessionId (registry.get receives it verbatim)', async () => {
       const session = makeSession();
       const registry = { get: jest.fn(() => session) };
-      const facade = new TerminalKeyInputFacade(registry as never, makeIO() as never);
+      const facade = new TerminalKeyInputFacade(
+        registry as never,
+        makeIO() as never,
+        new HumanPromptStateService(),
+        new EventEmitter2(),
+      );
       const exact = '00000000-0000-4000-8000-0000000000c3';
       await facade.sendKey(exact, 'Enter');
       expect(registry.get).toHaveBeenCalledWith(exact);
@@ -164,7 +180,12 @@ describe('TerminalKeyInputFacade', () => {
       const registry = {
         get: jest.fn((id: string) => (id.endsWith('aa') ? sessionA : sessionB)),
       };
-      const facade = new TerminalKeyInputFacade(registry as never, io as never);
+      const facade = new TerminalKeyInputFacade(
+        registry as never,
+        io as never,
+        new HumanPromptStateService(),
+        new EventEmitter2(),
+      );
 
       await expect(facade.sendKey('00000000-0000-4000-8000-0000000000aa', 'Up')).resolves.toEqual({
         ok: true,
@@ -187,6 +208,8 @@ describe('TerminalKeyInputFacade', () => {
       const facade = new TerminalKeyInputFacade(
         { get: jest.fn(() => session) } as never,
         io as never,
+        new HumanPromptStateService(),
+        new EventEmitter2(),
       );
       const sessionId = '00000000-0000-4000-8000-0000000000f6';
 
@@ -210,6 +233,189 @@ describe('TerminalKeyInputFacade', () => {
         expect(io.sendControl).toHaveBeenCalledTimes(20);
       },
     );
+  });
+
+  describe('human prompt tracking', () => {
+    it('activates a digit and awaits promotion before terminal delivery', async () => {
+      const { facade, io, humanPromptState, eventEmitter } = makeFacade();
+      const sessionId = 'prompt-digit-barrier';
+      let release!: () => void;
+      const promotion = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      eventEmitter.on('session.human-prompt-state-changed', () => promotion);
+
+      const send = facade.sendKey(sessionId, '7');
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(humanPromptState.getState(TMUX_NAME).phase).toBe('draft_active');
+      expect(io.sendControl).not.toHaveBeenCalled();
+
+      release();
+      await send;
+      expect(io.sendControl).toHaveBeenCalledWith({ name: TMUX_NAME }, ['-l', '--', '7']);
+    });
+
+    it('transitions Enter only after its terminal write succeeds', async () => {
+      const { facade, io, humanPromptState } = makeFacade();
+      const sessionId = 'prompt-enter-success';
+      const draft = humanPromptState.recordPromptText(TMUX_NAME);
+      let release!: () => void;
+      io.sendControl.mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+      );
+
+      const send = facade.sendKey(sessionId, 'Enter');
+      await Promise.resolve();
+      expect(humanPromptState.getState(TMUX_NAME)).toEqual(draft);
+
+      release();
+      await send;
+      expect(humanPromptState.getState(TMUX_NAME)).toEqual(
+        expect.objectContaining({ phase: 'awaiting_stable_idle', generation: 2 }),
+      );
+    });
+
+    it('does not let a delayed Enter clear a newer mobile digit', async () => {
+      const { facade, io, humanPromptState } = makeFacade();
+      const sessionId = 'prompt-enter-race';
+      humanPromptState.recordPromptText(TMUX_NAME);
+      let releaseEnter!: () => void;
+      io.sendControl.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            releaseEnter = resolve;
+          }),
+      );
+
+      const enter = facade.sendKey(sessionId, 'Enter');
+      await Promise.resolve();
+      await facade.sendKey(sessionId, '8');
+      const newer = humanPromptState.getState(TMUX_NAME);
+
+      releaseEnter();
+      await enter;
+      expect(humanPromptState.getState(TMUX_NAME)).toEqual(newer);
+      expect(newer).toEqual(expect.objectContaining({ phase: 'draft_active', generation: 2 }));
+    });
+
+    it('captures the Enter generation before delayed liveness so a newer digit keeps its draft', async () => {
+      const { facade, io, humanPromptState, eventEmitter } = makeFacade();
+      const sessionId = 'prompt-enter-liveness-race';
+      humanPromptState.recordPromptText(TMUX_NAME);
+
+      // Block the newer digit's activation barrier so its pane write waits.
+      let releaseDigit!: () => void;
+      const promotion = new Promise<void>((resolve) => {
+        releaseDigit = resolve;
+      });
+      eventEmitter.on('session.human-prompt-state-changed', () => promotion);
+
+      // Delay only Enter's liveness check.
+      let releaseLiveness!: (alive: boolean) => void;
+      io.sessionExists.mockImplementationOnce(
+        () =>
+          new Promise<boolean>((resolve) => {
+            releaseLiveness = resolve;
+          }),
+      );
+
+      const enter = facade.sendKey(sessionId, 'Enter');
+      await Promise.resolve();
+
+      const digit = facade.sendKey(sessionId, '8');
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // The newer digit already bumped the generation; its write is parked at the barrier.
+      expect(humanPromptState.getState(TMUX_NAME)).toEqual(
+        expect.objectContaining({ phase: 'draft_active', generation: 2 }),
+      );
+      expect(io.sendControl).not.toHaveBeenCalled();
+
+      releaseLiveness(true);
+      await enter;
+
+      // Enter observed generation 1, so it cannot clear the newer generation-2 draft.
+      expect(humanPromptState.getState(TMUX_NAME)).toEqual(
+        expect.objectContaining({ phase: 'draft_active', generation: 2 }),
+      );
+
+      releaseDigit();
+      await digit;
+
+      const enterWriteIndex = io.sendControl.mock.calls.findIndex(
+        (call) => JSON.stringify(call[1]) === JSON.stringify(['Enter']),
+      );
+      const digitWriteIndex = io.sendControl.mock.calls.findIndex(
+        (call) => JSON.stringify(call[1]) === JSON.stringify(['-l', '--', '8']),
+      );
+      expect(enterWriteIndex).toBeGreaterThanOrEqual(0);
+      expect(digitWriteIndex).toBeGreaterThanOrEqual(0);
+      expect(io.sendControl.mock.invocationCallOrder[enterWriteIndex]).toBeLessThan(
+        io.sendControl.mock.invocationCallOrder[digitWriteIndex],
+      );
+    });
+
+    it('leaves the observed draft unchanged when Enter liveness fails', async () => {
+      const { facade, io, humanPromptState } = makeFacade();
+      const sessionId = 'prompt-enter-dead';
+      const draft = humanPromptState.recordPromptText(TMUX_NAME);
+      io.sessionExists.mockResolvedValueOnce(false);
+
+      await expect(facade.sendKey(sessionId, 'Enter')).rejects.toMatchObject({
+        code: 'SESSION_NOT_RUNNING',
+      });
+
+      expect(io.sendControl).not.toHaveBeenCalled();
+      expect(humanPromptState.getState(TMUX_NAME)).toEqual(
+        expect.objectContaining({ phase: 'draft_active', generation: draft.generation }),
+      );
+    });
+
+    it('leaves digit activation blocking when terminal delivery fails', async () => {
+      const { facade, io, humanPromptState } = makeFacade();
+      io.sendControl.mockRejectedValueOnce(new Error('tmux failed'));
+
+      await expect(facade.sendKey('prompt-digit-failure', '3')).rejects.toThrow('tmux failed');
+
+      expect(humanPromptState.getState(TMUX_NAME).phase).toBe('draft_active');
+    });
+
+    it('leaves the observed draft unchanged when Enter delivery fails', async () => {
+      const { facade, io, humanPromptState } = makeFacade();
+      const draft = humanPromptState.recordPromptText(TMUX_NAME);
+      io.sendControl.mockRejectedValueOnce(new Error('tmux failed'));
+
+      await expect(facade.sendKey('prompt-enter-failure', 'Enter')).rejects.toThrow('tmux failed');
+
+      expect(humanPromptState.getState(TMUX_NAME)).toEqual(draft);
+    });
+
+    it('does not release a draft for one Escape', async () => {
+      const { facade, humanPromptState } = makeFacade();
+      humanPromptState.recordPromptText(TMUX_NAME);
+
+      await facade.sendKey('prompt-escape', 'Escape');
+
+      expect(humanPromptState.getState(TMUX_NAME)).toEqual(
+        expect.objectContaining({ phase: 'draft_active', generation: 2 }),
+      );
+    });
+
+    it('releases a draft for double Escape', async () => {
+      const { facade, humanPromptState } = makeFacade();
+      humanPromptState.recordPromptText(TMUX_NAME);
+
+      await facade.sendKey('prompt-double-escape', 'Escape');
+      await new Promise((resolve) => setTimeout(resolve, 151));
+      await facade.sendKey('prompt-double-escape', 'Escape');
+
+      expect(humanPromptState.getState(TMUX_NAME).phase).toBe('awaiting_stable_idle');
+    });
   });
 
   it('resolves with { ok: true } on a successful named key', async () => {

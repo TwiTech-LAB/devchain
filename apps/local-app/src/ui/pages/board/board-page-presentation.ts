@@ -1,8 +1,16 @@
 import type { FormEvent } from 'react';
 import type { EpicFormData } from '@/ui/components/board/EpicFormDialog';
+import type { EpicExternalSourceMap } from '@/ui/hooks/useEpicExternalSourcesBatch';
 import type { BoardFilterParams } from '@/ui/lib/url-filters';
 import type { Agent, Epic, Status } from '@/ui/types';
 import type { BoardBulkEditController } from '@/ui/types/board-bulk-edit';
+
+/**
+ * Stored external sources by Epic ID for the loaded Board context. One
+ * bounded batch read; native Epics simply have no entry. The shape is owned by
+ * the hook that produces it — this is the Board-facing name for it.
+ */
+export type BoardExternalSourceMap = EpicExternalSourceMap;
 
 export interface BoardHeaderModel {
   readonly hasProject: boolean;
@@ -68,6 +76,8 @@ export interface BoardCollapsedColumnModel extends BoardKanbanColumnBase {
 export interface BoardExpandedColumnModel extends BoardKanbanColumnBase {
   readonly kind: 'expanded';
   readonly draggedEpic: Epic | null;
+  /** Sources for this column's imported Epics; collapsed columns show none. */
+  readonly externalSources: BoardExternalSourceMap;
   collapse(): void;
   keyboardMove(epic: Epic, direction: 'left' | 'right'): void;
 }
@@ -99,6 +109,8 @@ export interface BoardListContentModel {
   changeStatus(epic: Epic, statusId: string): Promise<void>;
   changeAgent(epic: Epic, agentId: string | null): Promise<void>;
   moveToWorktree(epic: Epic): void;
+  /** Sources for main rows; lazily expanded sub-epic rows show none. */
+  readonly externalSources: BoardExternalSourceMap;
 }
 
 export type BoardContentModel =

@@ -238,6 +238,71 @@ describe('E2eeDeviceStoreService', () => {
     });
   });
 
+  describe('notification routing kid binding', () => {
+    const pub = (fill: number) => Buffer.from(new Uint8Array(32).fill(fill)).toString('base64');
+    const ROUTING_KID = 'kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k';
+    const OTHER_ROUTING_KID = '7yNmI0TBXyYpXOZcaxXw8f3VvKdQmZLpR1sEgHtJbAo';
+
+    it('binds a routing kid to a known device and persists it across restart', () => {
+      const kid = 'p'.repeat(32);
+      service.add({ kid, publicKeyB64: pub(6) });
+
+      expect(service.setNotificationRoutingKid(kid, ROUTING_KID)).toMatchObject({
+        kid,
+        notificationRoutingKid: ROUTING_KID,
+      });
+      expect(new E2eeDeviceStoreService(drizzle(sqlite)).get(kid)?.notificationRoutingKid).toBe(
+        ROUTING_KID,
+      );
+    });
+
+    it('rebinding is deterministic and rebinding a new kid overwrites the old one', () => {
+      const kid = 'q'.repeat(32);
+      service.add({ kid, publicKeyB64: pub(7) });
+
+      service.setNotificationRoutingKid(kid, ROUTING_KID);
+      const rebound = service.setNotificationRoutingKid(kid, ROUTING_KID);
+      expect(rebound?.notificationRoutingKid).toBe(ROUTING_KID);
+
+      service.setNotificationRoutingKid(kid, OTHER_ROUTING_KID);
+      expect(service.get(kid)?.notificationRoutingKid).toBe(OTHER_ROUTING_KID);
+    });
+
+    it('returns null for an unknown device or a malformed routing kid', () => {
+      const kid = 'r'.repeat(32);
+      service.add({ kid, publicKeyB64: pub(8) });
+
+      expect(service.setNotificationRoutingKid('missing', ROUTING_KID)).toBeNull();
+      expect(service.setNotificationRoutingKid(kid, 'short')).toBeNull();
+      expect(service.setNotificationRoutingKid(kid, `+/${'x'.repeat(41)}=`)).toBeNull();
+      expect(service.get(kid)?.notificationRoutingKid).toBeUndefined();
+    });
+
+    it('keeps the routing kid while same-kid add/reconcile refresh trust state', () => {
+      const kid = 's'.repeat(32);
+      service.add({ kid, publicKeyB64: pub(9) });
+      service.setNotificationRoutingKid(kid, ROUTING_KID);
+
+      const readded = service.add({ kid, publicKeyB64: pub(9) });
+      expect(readded.notificationRoutingKid).toBe(ROUTING_KID);
+
+      const reconciled = service.reconcile({ kid, publicKeyB64: pub(9) });
+      expect(reconciled.notificationRoutingKid).toBe(ROUTING_KID);
+
+      expect(service.markVerified(kid)?.notificationRoutingKid).toBe(ROUTING_KID);
+    });
+
+    it('drops the routing kid with the row on revoke', () => {
+      const kid = 't'.repeat(32);
+      service.add({ kid, publicKeyB64: pub(10) });
+      service.setNotificationRoutingKid(kid, ROUTING_KID);
+
+      service.revoke(kid);
+      service.add({ kid, publicKeyB64: pub(10) });
+      expect(service.get(kid)?.notificationRoutingKid).toBeUndefined();
+    });
+  });
+
   describe('idempotent re-pair (Task:7)', () => {
     it('overwrites a same-kid record in place on explicit re-pair — no duplicate', () => {
       const kid = 'p'.repeat(32);

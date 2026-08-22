@@ -8,6 +8,7 @@
 
 import { SessionsMessagePoolService } from './sessions-message-pool.service';
 import { MessageLogService } from './message-log.service';
+import { HumanPromptStateService } from '../../terminal/services/human-prompt-state.service';
 
 describe('SessionsMessagePoolService characterization', () => {
   function createHarness(
@@ -19,10 +20,17 @@ describe('SessionsMessagePoolService characterization', () => {
       separator: '\n---\n',
     },
   ) {
+    const activeSession = {
+      id: 'session-1',
+      agentId: 'agent-1',
+      tmuxSessionId: 'tmux-1',
+      status: 'running',
+      activityState: 'busy',
+    };
     const sessions = {
-      listActiveSessions: jest
-        .fn()
-        .mockResolvedValue([{ id: 'session-1', agentId: 'agent-1', tmuxSessionId: 'tmux-1' }]),
+      listActiveSessions: jest.fn().mockResolvedValue([activeSession]),
+      getActiveSessionForAgent: jest.fn().mockReturnValue(activeSession),
+      getSession: jest.fn().mockReturnValue(activeSession),
     };
     const coordinator = {
       withAgentLock: jest
@@ -32,6 +40,9 @@ describe('SessionsMessagePoolService characterization', () => {
     const terminalIO = {
       deliver: jest.fn().mockResolvedValue({ confirmed: true, nonce: 'nonce-1', retryCount: 0 }),
       deliverImmediate: jest
+        .fn()
+        .mockResolvedValue({ confirmed: true, nonce: 'nonce-1', retryCount: 0 }),
+      deliverGuarded: jest
         .fn()
         .mockResolvedValue({ confirmed: true, nonce: 'nonce-1', retryCount: 0 }),
     };
@@ -66,6 +77,7 @@ describe('SessionsMessagePoolService characterization', () => {
       providerAdapterFactory as never,
       messageLog,
       failureNotifier as never,
+      new HumanPromptStateService(),
     );
 
     return { service, sessions, terminalIO, messageLog, failureNotifier };

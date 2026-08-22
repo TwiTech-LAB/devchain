@@ -62,9 +62,17 @@ export interface E2eePeerDevice {
    * and old-client adopts. Never logged (minimize unauthenticated metadata).
    */
   installId?: string;
+  /**
+   * Notification routing kid (RFC 7638 JWK thumbprint, base64url) this device registered with
+   * the notifications service and bound to this paired X25519 identity over the sealed lane.
+   * Addressing metadata for notification delivery — never a trust or workspace-authority input.
+   * Absent until the device's first sealed bind. Preserved across key-trust updates.
+   */
+  notificationRoutingKid?: string;
 }
 
-type StoredE2eeTrustRecord = E2eeTrustRecord & Pick<E2eePeerDevice, 'installId' | 'localAlias'>;
+type StoredE2eeTrustRecord = E2eeTrustRecord &
+  Pick<E2eePeerDevice, 'installId' | 'localAlias' | 'notificationRoutingKid'>;
 
 interface StoredDirectory {
   v: number;
@@ -84,6 +92,16 @@ const CANONICAL_UUID_RE =
 
 function isCanonicalUuid(value: unknown): value is string {
   return typeof value === 'string' && CANONICAL_UUID_RE.test(value);
+}
+
+/**
+ * RFC 7638 JWK thumbprint shape: base64url-unpadded, 43 chars (a 32-byte digest). A
+ * routing kid that fails this shape is never persisted.
+ */
+const ROUTING_KID_RE = /^[A-Za-z0-9_-]{43}$/;
+
+function isRoutingKid(value: unknown): value is string {
+  return typeof value === 'string' && ROUTING_KID_RE.test(value);
 }
 
 /**
@@ -134,6 +152,9 @@ export class E2eeDeviceStoreService {
       const dir = this.load();
       const existing = dir.devices[record.kid];
       if (existing?.localAlias !== undefined) record.localAlias = existing.localAlias;
+      if (existing?.notificationRoutingKid !== undefined) {
+        record.notificationRoutingKid = existing.notificationRoutingKid;
+      }
       if (!existing) this.deleteWorkspaceGrants(record.kid);
       dir.devices[record.kid] = record;
       const evicted = this.supersedeByInstallId(
@@ -237,6 +258,9 @@ export class E2eeDeviceStoreService {
       ...(rec.label !== undefined ? { label: rec.label } : {}),
       ...(rec.localAlias !== undefined ? { localAlias: rec.localAlias } : {}),
       ...(rec.installId !== undefined ? { installId: rec.installId } : {}),
+      ...(rec.notificationRoutingKid !== undefined
+        ? { notificationRoutingKid: rec.notificationRoutingKid }
+        : {}),
     };
   }
 
@@ -296,6 +320,26 @@ export class E2eeDeviceStoreService {
       this.save(dir);
       return existing;
     });
+  }
+
+  /**
+   * Bind a notification routing kid to a known paired device. Idempotent: rebinding the
+   * same kid is a no-op write; binding a new kid overwrites the old one (one routing
+   * identity per paired device). Returns the updated record, or `null` if the device is
+   * unknown or the routing kid is malformed.
+   */
+  setNotificationRoutingKid(kid: string, routingKid: string): E2eePeerDevice | null {
+    if (!isRoutingKid(routingKid)) return null;
+    const record = this.transactionRunner.runImmediate(() => {
+      const dir = this.load();
+      const existing = dir.devices[kid];
+      if (!existing) return null;
+      existing.notificationRoutingKid = routingKid;
+      this.save(dir);
+      return existing;
+    });
+    if (record) logger.info({ kid }, 'Notification routing kid bound to paired device');
+    return record;
   }
 
   /** Remove a peer device's public key (unpair / revoke). No-op if unknown. */

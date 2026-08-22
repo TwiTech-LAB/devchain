@@ -4,6 +4,7 @@ import {
   PROMPT_PASTE_RETRY_WINDOW_MS,
 } from './terminal.gateway';
 import { WsException } from '@nestjs/websockets';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import { TerminalStreamService, type FrameReplayResult } from '../services/terminal-stream.service';
 import {
@@ -45,6 +46,8 @@ import {
   TerminalSendSchedulerService,
 } from '../services/terminal-send-scheduler.service';
 import { TerminalSocketDrainAdapter } from '../services/terminal-socket-drain.adapter';
+import { HumanPromptStateService } from '../services/human-prompt-state.service';
+import { sessionHumanPromptStateChangedEvent } from '../../events/catalog/session.human-prompt-state-changed';
 
 /** The stable sequence-domain epoch the mock stream service reports for every session. */
 const MOCK_SEQUENCE_EPOCH = 'epoch-1';
@@ -293,12 +296,15 @@ const createGateway = (options?: {
 
   const sessionTerminalRuntime: Partial<SessionTerminalRuntimeService> = {
     retireConfirmedLoss: jest.fn(),
+    getProviderNameAtLaunch: jest.fn().mockReturnValue(null),
     getDescriptor: jest
       .fn()
       .mockImplementation((sessionId: string) => runtimeDescriptor(sessionId)),
   };
 
-  const registry = new TerminalSessionRegistry();
+  const humanPromptState = new HumanPromptStateService();
+  const eventEmitter = new EventEmitter2();
+  const registry = new TerminalSessionRegistry(undefined, humanPromptState);
   const originalGet = registry.get.bind(registry);
   registry.get = (sessionId: string) => {
     let session = originalGet(sessionId);
@@ -343,6 +349,8 @@ const createGateway = (options?: {
     ptyService as PtyService,
     seedService as TerminalSeedService,
     terminalIO as TerminalIOService,
+    humanPromptState,
+    eventEmitter,
     registry,
     sessionTerminalRuntime as SessionTerminalRuntimeService,
     mockRealtimeBroadcast as never,
@@ -371,6 +379,8 @@ const createGateway = (options?: {
     ptyService,
     seedService,
     terminalIO,
+    humanPromptState,
+    eventEmitter,
     sessionTerminalRuntime,
     registry,
     roomEmit,
@@ -3250,6 +3260,439 @@ describe('TerminalGateway.handleInput authority guard', () => {
     expect(terminalIO.deliverImmediate).not.toHaveBeenCalled();
   });
 
+  it('activates printable TTY text and awaits promotion before joining the pane FIFO', async () => {
+    const { gateway, terminalIO, humanPromptState, eventEmitter } = createGateway();
+    const client = createMockSocket('authority-client-tty-barrier');
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'tty-barrier',
+      rows: 24,
+      cols: 80,
+    });
+    gateway.handleFocus(client as unknown as Socket, { sessionId: 'tty-barrier' });
+
+    let release!: () => void;
+    const promotion = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    eventEmitter.on(sessionHumanPromptStateChangedEvent.name, () => promotion);
+
+    const input = gateway.handleInput(client as unknown as Socket, {
+      sessionId: 'tty-barrier',
+      data: ' ',
+      ttyMode: true,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(humanPromptState.getState('tmux_tty-barrier').phase).toBe('draft_active');
+    expect(terminalIO.sendControl).not.toHaveBeenCalled();
+
+    release();
+    await input;
+    expect(terminalIO.sendControl).toHaveBeenCalledWith({ name: 'tmux_tty-barrier' }, [
+      '-l',
+      '--',
+      ' ',
+    ]);
+  });
+
+  it('does not let Backspace clear text whose activation write is still blocked', async () => {
+    const { gateway, terminalIO, humanPromptState, eventEmitter } = createGateway();
+    const client = createMockSocket('authority-client-pending-text-backspace');
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'pending-text-backspace',
+      rows: 24,
+      cols: 80,
+    });
+    gateway.handleFocus(client as unknown as Socket, { sessionId: 'pending-text-backspace' });
+
+    let release!: () => void;
+    const promotion = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    eventEmitter.on(sessionHumanPromptStateChangedEvent.name, () => promotion);
+
+    const text = gateway.handleInput(client as unknown as Socket, {
+      sessionId: 'pending-text-backspace',
+      data: 'a',
+      ttyMode: true,
+    });
+    await Promise.resolve();
+    const backspace = gateway.handleInput(client as unknown as Socket, {
+      sessionId: 'pending-text-backspace',
+      data: '\x7f',
+      ttyMode: true,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(terminalIO.sendControl).toHaveBeenCalledWith({ name: 'tmux_pending-text-backspace' }, [
+      'BSpace',
+    ]);
+    expect(humanPromptState.getState('tmux_pending-text-backspace').phase).toBe('draft_active');
+
+    release();
+    await Promise.all([text, backspace]);
+    expect(humanPromptState.getState('tmux_pending-text-backspace').phase).toBe('draft_active');
+  });
+
+  it('keeps newer TTY text active when an earlier Enter completes late', async () => {
+    const { gateway, terminalIO, humanPromptState } = createGateway();
+    const client = createMockSocket('authority-client-enter-race');
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'enter-race',
+      rows: 24,
+      cols: 80,
+    });
+    gateway.handleFocus(client as unknown as Socket, { sessionId: 'enter-race' });
+    humanPromptState.recordPromptText('tmux_enter-race');
+
+    let releaseEnter!: () => void;
+    (terminalIO.sendControl as jest.Mock).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseEnter = resolve;
+        }),
+    );
+    const enter = gateway.handleInput(client as unknown as Socket, {
+      sessionId: 'enter-race',
+      data: '\r',
+      ttyMode: true,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await gateway.handleInput(client as unknown as Socket, {
+      sessionId: 'enter-race',
+      data: 'newer',
+      ttyMode: true,
+    });
+    const newer = humanPromptState.getState('tmux_enter-race');
+    expect(newer).toEqual(expect.objectContaining({ phase: 'draft_active', generation: 2 }));
+
+    releaseEnter();
+    await enter;
+    expect(humanPromptState.getState('tmux_enter-race')).toEqual(newer);
+  });
+
+  it('captures the Enter generation before delayed liveness so newer text keeps its draft', async () => {
+    const { gateway, terminalIO, humanPromptState, eventEmitter } = createGateway();
+    const client = createMockSocket('authority-client-enter-liveness-race');
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'enter-liveness-race',
+      rows: 24,
+      cols: 80,
+    });
+    gateway.handleFocus(client as unknown as Socket, { sessionId: 'enter-liveness-race' });
+    humanPromptState.recordPromptText('tmux_enter-liveness-race');
+
+    // Block the newer text's activation barrier so its pane write waits.
+    let releaseText!: () => void;
+    const promotion = new Promise<void>((resolve) => {
+      releaseText = resolve;
+    });
+    eventEmitter.on(sessionHumanPromptStateChangedEvent.name, () => promotion);
+
+    // Delay only Enter's liveness check.
+    let releaseLiveness!: (alive: boolean) => void;
+    (terminalIO.sessionExists as jest.Mock).mockImplementationOnce(
+      () =>
+        new Promise<boolean>((resolve) => {
+          releaseLiveness = resolve;
+        }),
+    );
+
+    const enter = gateway.handleInput(client as unknown as Socket, {
+      sessionId: 'enter-liveness-race',
+      data: '\r',
+      ttyMode: true,
+    });
+    await Promise.resolve();
+
+    const text = gateway.handleInput(client as unknown as Socket, {
+      sessionId: 'enter-liveness-race',
+      data: 'newer',
+      ttyMode: true,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The newer text already bumped the generation; its write is parked at the barrier.
+    expect(humanPromptState.getState('tmux_enter-liveness-race')).toEqual(
+      expect.objectContaining({ phase: 'draft_active', generation: 2 }),
+    );
+    expect(terminalIO.sendControl).not.toHaveBeenCalled();
+
+    releaseLiveness(true);
+    await enter;
+
+    // Enter observed generation 1, so it cannot clear the newer generation-2 draft.
+    expect(humanPromptState.getState('tmux_enter-liveness-race')).toEqual(
+      expect.objectContaining({ phase: 'draft_active', generation: 2 }),
+    );
+
+    releaseText();
+    await text;
+
+    const sendControlMock = terminalIO.sendControl as jest.Mock;
+    const enterWriteIndex = sendControlMock.mock.calls.findIndex(
+      (call) => JSON.stringify(call[1]) === JSON.stringify(['Enter']),
+    );
+    const textWriteIndex = sendControlMock.mock.calls.findIndex(
+      (call) => JSON.stringify(call[1]) === JSON.stringify(['-l', '--', 'newer']),
+    );
+    expect(enterWriteIndex).toBeGreaterThanOrEqual(0);
+    expect(textWriteIndex).toBeGreaterThanOrEqual(0);
+    expect(sendControlMock.mock.invocationCallOrder[enterWriteIndex]).toBeLessThan(
+      sendControlMock.mock.invocationCallOrder[textWriteIndex],
+    );
+  });
+
+  it('leaves the observed draft unchanged when Enter liveness fails', async () => {
+    const { gateway, terminalIO, humanPromptState } = createGateway();
+    const client = createMockSocket('authority-client-enter-dead');
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'enter-dead',
+      rows: 24,
+      cols: 80,
+    });
+    gateway.handleFocus(client as unknown as Socket, { sessionId: 'enter-dead' });
+    humanPromptState.recordPromptText('tmux_enter-dead');
+    (terminalIO.sessionExists as jest.Mock).mockResolvedValueOnce(false);
+
+    await gateway.handleInput(client as unknown as Socket, {
+      sessionId: 'enter-dead',
+      data: '\r',
+      ttyMode: true,
+    });
+
+    expect(terminalIO.sendControl).not.toHaveBeenCalled();
+    // Dead-session cleanup owns state removal here; Enter itself must never
+    // transition the draft to awaiting_stable_idle.
+    expect(humanPromptState.getState('tmux_enter-dead').phase).toBe('inactive');
+  });
+
+  it('leaves the observed draft unchanged when the Enter write fails', async () => {
+    const { gateway, terminalIO, humanPromptState } = createGateway();
+    const client = createMockSocket('authority-client-enter-write-failure');
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'enter-write-failure',
+      rows: 24,
+      cols: 80,
+    });
+    gateway.handleFocus(client as unknown as Socket, { sessionId: 'enter-write-failure' });
+    const draft = humanPromptState.recordPromptText('tmux_enter-write-failure');
+    (terminalIO.sendControl as jest.Mock).mockRejectedValueOnce(new Error('send failed'));
+
+    await expect(
+      gateway.handleInput(client as unknown as Socket, {
+        sessionId: 'enter-write-failure',
+        data: '\r',
+        ttyMode: true,
+      }),
+    ).rejects.toThrow('send failed');
+
+    expect(humanPromptState.getState('tmux_enter-write-failure')).toEqual(
+      expect.objectContaining({ phase: 'draft_active', generation: draft.generation }),
+    );
+  });
+
+  it('keeps a draft held after one Escape and a non-Codex Ctrl+C', async () => {
+    const { gateway, humanPromptState } = createGateway();
+    const client = createMockSocket('authority-client-cancel-keys');
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'cancel-keys',
+      rows: 24,
+      cols: 80,
+    });
+    gateway.handleFocus(client as unknown as Socket, { sessionId: 'cancel-keys' });
+    humanPromptState.recordPromptText('tmux_cancel-keys', 4);
+
+    await gateway.handleInput(client as unknown as Socket, {
+      sessionId: 'cancel-keys',
+      data: '\x1b',
+      ttyMode: true,
+    });
+    await gateway.handleInput(client as unknown as Socket, {
+      sessionId: 'cancel-keys',
+      data: '\x03',
+      ttyMode: true,
+    });
+
+    expect(humanPromptState.getState('tmux_cancel-keys')).toEqual(
+      expect.objectContaining({ phase: 'draft_active', generation: 3 }),
+    );
+  });
+
+  it('clears a tracked draft after double Escape', async () => {
+    const { gateway, humanPromptState } = createGateway();
+    const client = createMockSocket('authority-client-double-escape');
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'double-escape',
+      rows: 24,
+      cols: 80,
+    });
+    gateway.handleFocus(client as unknown as Socket, { sessionId: 'double-escape' });
+    humanPromptState.recordPromptText('tmux_double-escape', 4);
+
+    for (let index = 0; index < 2; index += 1) {
+      await gateway.handleInput(client as unknown as Socket, {
+        sessionId: 'double-escape',
+        data: '\x1b',
+        ttyMode: true,
+      });
+    }
+
+    expect(humanPromptState.getState('tmux_double-escape').phase).toBe('awaiting_stable_idle');
+  });
+
+  it('clears a Codex draft after Ctrl+C', async () => {
+    const { gateway, humanPromptState, sessionTerminalRuntime } = createGateway();
+    (sessionTerminalRuntime.getProviderNameAtLaunch as jest.Mock).mockReturnValue('codex');
+    const client = createMockSocket('authority-client-codex-cancel');
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'codex-cancel',
+      rows: 24,
+      cols: 80,
+    });
+    gateway.handleFocus(client as unknown as Socket, { sessionId: 'codex-cancel' });
+    humanPromptState.recordPromptText('tmux_codex-cancel', 4);
+
+    await gateway.handleInput(client as unknown as Socket, {
+      sessionId: 'codex-cancel',
+      data: '\x03',
+      ttyMode: true,
+    });
+
+    expect(humanPromptState.getState('tmux_codex-cancel').phase).toBe('awaiting_stable_idle');
+  });
+
+  it('clears exact typed text after the matching number of Backspaces', async () => {
+    const { gateway, humanPromptState } = createGateway();
+    const client = createMockSocket('authority-client-balanced-backspace');
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'balanced-backspace',
+      rows: 24,
+      cols: 80,
+    });
+    gateway.handleFocus(client as unknown as Socket, { sessionId: 'balanced-backspace' });
+
+    await gateway.handleInput(client as unknown as Socket, {
+      sessionId: 'balanced-backspace',
+      data: 'abc',
+      ttyMode: true,
+    });
+    for (let index = 0; index < 3; index += 1) {
+      await gateway.handleInput(client as unknown as Socket, {
+        sessionId: 'balanced-backspace',
+        data: '\x7f',
+        ttyMode: true,
+      });
+    }
+
+    expect(humanPromptState.getState('tmux_balanced-backspace').phase).toBe('awaiting_stable_idle');
+  });
+
+  it('transitions a successful form submit to awaiting stable idle', async () => {
+    const { gateway, terminalIO, humanPromptState, eventEmitter } = createGateway();
+    const client = createMockSocket('authority-client-form');
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'form-submit',
+      rows: 24,
+      cols: 80,
+    });
+    gateway.handleFocus(client as unknown as Socket, { sessionId: 'form-submit' });
+
+    let release!: () => void;
+    const promotion = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    eventEmitter.on(sessionHumanPromptStateChangedEvent.name, () => promotion);
+    const submit = gateway.handleInput(client as unknown as Socket, {
+      sessionId: 'form-submit',
+      data: 'submitted prompt',
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(terminalIO.deliverImmediate).not.toHaveBeenCalled();
+    release();
+    await submit;
+
+    expect(humanPromptState.getState('tmux_form-submit')).toEqual(
+      expect.objectContaining({ phase: 'awaiting_stable_idle', generation: 2 }),
+    );
+  });
+
+  it('does not let a late form completion clear newer TTY text', async () => {
+    const { gateway, terminalIO, humanPromptState } = createGateway();
+    const client = createMockSocket('authority-client-form-race');
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'form-race',
+      rows: 24,
+      cols: 80,
+    });
+    gateway.handleFocus(client as unknown as Socket, { sessionId: 'form-race' });
+
+    let releaseForm!: () => void;
+    (terminalIO.deliverImmediate as jest.Mock).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseForm = resolve;
+        }),
+    );
+    const form = gateway.handleInput(client as unknown as Socket, {
+      sessionId: 'form-race',
+      data: 'form prompt',
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await gateway.handleInput(client as unknown as Socket, {
+      sessionId: 'form-race',
+      data: 'newer',
+      ttyMode: true,
+    });
+    const newer = humanPromptState.getState('tmux_form-race');
+    releaseForm();
+    await form;
+
+    expect(humanPromptState.getState('tmux_form-race')).toEqual(newer);
+    expect(newer.phase).toBe('draft_active');
+  });
+
+  it('leaves a failed form write in its blocking draft state', async () => {
+    const { gateway, terminalIO, humanPromptState } = createGateway();
+    const client = createMockSocket('authority-client-form-failure');
+    gateway.handleConnection(client as unknown as Socket);
+    await gateway.handleSubscribe(client as unknown as Socket, {
+      sessionId: 'form-failure',
+      rows: 24,
+      cols: 80,
+    });
+    gateway.handleFocus(client as unknown as Socket, { sessionId: 'form-failure' });
+    (terminalIO.deliverImmediate as jest.Mock).mockRejectedValueOnce(new Error('write failed'));
+
+    await gateway.handleInput(client as unknown as Socket, {
+      sessionId: 'form-failure',
+      data: 'unsafe to release',
+    });
+
+    expect(humanPromptState.getState('tmux_form-failure').phase).toBe('draft_active');
+  });
+
   it('rejects control key input from subscriber without authority', async () => {
     const { gateway, terminalIO } = createGateway();
     const authorityClient = createMockSocket('client-a');
@@ -3377,6 +3820,9 @@ describe('TerminalGateway prompt-paste acknowledgement and idempotency', () => {
 
     const first = gateway.handleInput(client, payload);
     const second = gateway.handleInput(client, payload);
+    for (let turn = 0; turn < 10 && !terminalIO.sessionExists.mock.calls.length; turn += 1) {
+      await Promise.resolve();
+    }
     expect(terminalIO.sessionExists).toHaveBeenCalledTimes(1);
     releaseExists(true);
 
@@ -3406,7 +3852,7 @@ describe('TerminalGateway prompt-paste acknowledgement and idempotency', () => {
   });
 
   it('caches a delivery-stage failure because tmux may already have pasted', async () => {
-    const { gateway, client, terminalIO } =
+    const { gateway, client, terminalIO, humanPromptState } =
       await createAuthorizedPromptClient('prompt-delivery-error');
     (terminalIO.deliverImmediate as jest.Mock).mockRejectedValueOnce(new Error('paste uncertain'));
     const payload = promptPastePayload('prompt-delivery-error');
@@ -3421,6 +3867,29 @@ describe('TerminalGateway prompt-paste acknowledgement and idempotency', () => {
     });
     expect(replay).toEqual(first);
     expect(terminalIO.deliverImmediate).toHaveBeenCalledTimes(1);
+    expect(humanPromptState.getState('tmux_prompt-delivery-error').phase).toBe('draft_active');
+  });
+
+  it('activates and awaits promotion before prompt-paste liveness admission', async () => {
+    const { gateway, client, terminalIO, humanPromptState, eventEmitter } =
+      await createAuthorizedPromptClient('prompt-barrier');
+    (terminalIO.sessionExists as jest.Mock).mockClear();
+    let release!: () => void;
+    const promotion = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    eventEmitter.on(sessionHumanPromptStateChangedEvent.name, () => promotion);
+
+    const result = gateway.handleInput(client, promptPastePayload('prompt-barrier'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(humanPromptState.getState('tmux_prompt-barrier').phase).toBe('draft_active');
+    expect(terminalIO.sessionExists).not.toHaveBeenCalled();
+    expect(terminalIO.deliverImmediate).not.toHaveBeenCalled();
+
+    release();
+    await expect(result).resolves.toMatchObject({ ok: true, code: 'OK' });
   });
 
   it('revalidates authority before replaying a completed request', async () => {

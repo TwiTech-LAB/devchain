@@ -38,6 +38,7 @@ import { sessionCloudDisconnectedEvent } from './session.cloud-disconnected';
 import { sessionPresenceChangedEvent } from './session.presence.changed';
 import { sessionRecommendationEvent } from './session.recommendation';
 import { scheduledEpicExecutedEvent } from './scheduled-epic.executed';
+import { sessionHumanPromptStateChangedEvent } from './session.human-prompt-state-changed';
 
 // Re-export individual event definitions for direct import
 export { settingsTerminalChangedEvent } from './settings.terminal.changed';
@@ -47,6 +48,12 @@ export type { SessionRestoredEventPayload } from './session.restored';
 export { scheduledEpicExecutedEvent } from './scheduled-epic.executed';
 export { agentMessageSentEvent } from './agent.message.sent';
 export type { AgentMessageSentEventPayload } from './agent.message.sent';
+export { sessionHumanPromptStateChangedEvent } from './session.human-prompt-state-changed';
+export type {
+  HumanPromptActivationBarrierPayload,
+  HumanPromptSubmitBarrierPayload,
+  SessionHumanPromptStateChangedEventPayload,
+} from './session.human-prompt-state-changed';
 export type {
   ScheduledEpicExecutedEventPayload,
   ScheduledEpicErrorCode,
@@ -92,6 +99,7 @@ export const eventCatalog = {
   [sessionPresenceChangedEvent.name]: sessionPresenceChangedEvent.schema,
   [sessionRecommendationEvent.name]: sessionRecommendationEvent.schema,
   [scheduledEpicExecutedEvent.name]: scheduledEpicExecutedEvent.schema,
+  [sessionHumanPromptStateChangedEvent.name]: sessionHumanPromptStateChangedEvent.schema,
 } as const;
 
 export type EventName = keyof typeof eventCatalog;

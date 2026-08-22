@@ -2,6 +2,7 @@ import React from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { RuntimeProvider } from '@/ui/hooks/useRuntime';
 
 // Import as ComponentType to avoid strict JSX component typing complaints in isolated TS
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -64,7 +65,9 @@ function Wrapper({
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return (
     <MemoryRouter initialEntries={initialEntries}>
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      <QueryClientProvider client={queryClient}>
+        <RuntimeProvider>{children}</RuntimeProvider>
+      </QueryClientProvider>
     </MemoryRouter>
   );
 }

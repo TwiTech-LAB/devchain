@@ -79,6 +79,6 @@ describe('mobile RPC contract generator', () => {
     expect(bridge).toContain('export const ALLOWED_METHODS: ReadonlySet<string>');
     expect(bridge).toContain('export function isMobileRpcMethod');
     expect(bridge).not.toMatch(/\b(?:zod|paramsSchema|resultSchema|compatibility|cryptoMode)\b/i);
-    expect(bridge?.match(/"(?:board|chat|terminal|e2ee)\.[^"]+"/g)).toHaveLength(41);
+    expect(bridge?.match(/"(?:board|chat|terminal|e2ee)\.[^"]+"/g)).toHaveLength(42);
   });
 });

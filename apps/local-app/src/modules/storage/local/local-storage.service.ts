@@ -1,4 +1,4 @@
-import { Injectable, Inject } from '@nestjs/common';
+import { Injectable, Inject, Optional } from '@nestjs/common';
 import { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { DB_CONNECTION } from '../db/db.provider';
 import {
@@ -26,6 +26,7 @@ import {
   type CreateSkillSourceOptions,
   type DeleteAgentOptions,
   type UpdateScheduledEpicOptions,
+  type VerifyIntegrationCredentials,
 } from '../interfaces/storage.interface';
 import type { SnapshotPromptWriter } from '../interfaces/snapshot-prompt-writer.interface';
 import {
@@ -103,6 +104,14 @@ import {
   ScheduledEpicRun,
   CreateScheduledEpicRun,
   UpdateScheduledEpicRun,
+  CreateExternalTaskLink,
+  ExternalTaskLink,
+  IntegrationConnection,
+  IntegrationCredentials,
+  IntegrationProvider,
+  ReplaceIntegrationConnection,
+  CreateEpicWithExternalTaskLink,
+  CreateEpicWithExternalTaskLinkResult,
 } from '../models/domain.models';
 import { createLogger } from '../../../common/logging/logger';
 import {
@@ -131,6 +140,8 @@ import { SubscriberStorageDelegate } from './delegates/subscriber.delegate';
 import { TagStorageDelegate } from './delegates/tag.delegate';
 import { ScheduledEpicStorageDelegate } from './delegates/scheduled-epic.delegate';
 import { SessionStorageDelegate } from './delegates/session.delegate';
+import { IntegrationStorageDelegate } from './delegates/integration.delegate';
+import { IntegrationCredentialCipher } from './integration-credential-cipher';
 import { WatcherStorageDelegate } from './delegates/watcher.delegate';
 
 const logger = createLogger('LocalStorageService');
@@ -167,8 +178,12 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
   private readonly providerPluginPolicyDelegate: ProviderPluginPolicyStorageDelegate;
   private readonly scheduledEpicDelegate: ScheduledEpicStorageDelegate;
   private readonly sessionDelegate: SessionStorageDelegate;
+  private readonly integrationDelegate: IntegrationStorageDelegate;
 
-  constructor(@Inject(DB_CONNECTION) private readonly db: BetterSQLite3Database) {
+  constructor(
+    @Inject(DB_CONNECTION) private readonly db: BetterSQLite3Database,
+    @Optional() integrationCredentialCipher?: IntegrationCredentialCipher,
+  ) {
     const context = createStorageDelegateContext(this.db);
     this.projectDelegate = new ProjectStorageDelegate(context);
     this.projectWorkspaceDelegate = new ProjectWorkspaceStorageDelegate(context);
@@ -215,6 +230,15 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
     this.reviewDelegate = new ReviewStorageDelegate(context);
     this.scheduledEpicDelegate = new ScheduledEpicStorageDelegate(context);
     this.sessionDelegate = new SessionStorageDelegate(context);
+    this.integrationDelegate = new IntegrationStorageDelegate(
+      context,
+      integrationCredentialCipher ?? new IntegrationCredentialCipher(),
+      {
+        createEpicInCurrentTransaction: (data) =>
+          this.epicDelegate.createEpicInCurrentTransaction(data),
+        getEpic: (id) => this.epicDelegate.getEpic(id),
+      },
+    );
     logger.info('LocalStorageService initialized');
   }
 
@@ -1131,5 +1155,65 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
     toDelete: string[],
   ): Promise<void> {
     return this.sessionDelegate.applySessionPlan(toReassign, toDelete);
+  }
+
+  async replaceIntegrationConnection(
+    data: ReplaceIntegrationConnection,
+    verify: VerifyIntegrationCredentials,
+  ): Promise<IntegrationConnection> {
+    return this.integrationDelegate.replaceIntegrationConnection(data, verify);
+  }
+
+  async getIntegrationConnection(
+    provider: IntegrationProvider,
+  ): Promise<IntegrationConnection | null> {
+    return this.integrationDelegate.getIntegrationConnection(provider);
+  }
+
+  async listIntegrationConnections(): Promise<IntegrationConnection[]> {
+    return this.integrationDelegate.listIntegrationConnections();
+  }
+
+  async getIntegrationConnectionCredentials(
+    provider: IntegrationProvider,
+  ): Promise<IntegrationCredentials | null> {
+    return this.integrationDelegate.getIntegrationConnectionCredentials(provider);
+  }
+
+  async disconnectIntegrationConnection(provider: IntegrationProvider): Promise<boolean> {
+    return this.integrationDelegate.disconnectIntegrationConnection(provider);
+  }
+
+  async createExternalTaskLink(data: CreateExternalTaskLink): Promise<ExternalTaskLink> {
+    return this.integrationDelegate.createExternalTaskLink(data);
+  }
+
+  async createEpicWithExternalTaskLink(
+    data: CreateEpicWithExternalTaskLink,
+  ): Promise<CreateEpicWithExternalTaskLinkResult> {
+    return this.integrationDelegate.createEpicWithExternalTaskLink(data);
+  }
+
+  async findExternalTaskLink(
+    provider: IntegrationProvider,
+    remoteScopeKey: string,
+    remoteTaskId: string,
+  ): Promise<ExternalTaskLink | null> {
+    return this.integrationDelegate.findExternalTaskLink(provider, remoteScopeKey, remoteTaskId);
+  }
+
+  async listExternalTaskLinksByRemoteScope(
+    provider: IntegrationProvider,
+    remoteScopeKey: string,
+  ): Promise<ExternalTaskLink[]> {
+    return this.integrationDelegate.listExternalTaskLinksByRemoteScope(provider, remoteScopeKey);
+  }
+
+  async listExternalTaskLinksForEpic(epicId: string): Promise<ExternalTaskLink[]> {
+    return this.integrationDelegate.listExternalTaskLinksForEpic(epicId);
+  }
+
+  async listExternalTaskLinksForEpics(epicIds: string[]): Promise<ExternalTaskLink[]> {
+    return this.integrationDelegate.listExternalTaskLinksForEpics(epicIds);
   }
 }

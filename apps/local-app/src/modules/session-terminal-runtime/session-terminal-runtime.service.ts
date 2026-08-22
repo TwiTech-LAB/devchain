@@ -35,19 +35,7 @@ export class SessionTerminalRuntimeService {
   }
 
   getDescriptor(sessionId: string): SessionTerminalRuntimeDescriptor {
-    let row: SessionTerminalRow | undefined;
-    try {
-      row = this.sqlite
-        .prepare(
-          `SELECT tmux_session_id, provider_name_at_launch, status
-           FROM sessions
-           WHERE id = ?`,
-        )
-        .get(sessionId) as SessionTerminalRow | undefined;
-    } catch (error) {
-      logger.warn({ error, sessionId }, 'Failed to resolve durable session terminal context');
-      return this.safeDescriptor(sessionId, null);
-    }
+    const row = this.readSessionTerminalRow(sessionId);
 
     const tmuxSessionName = row?.tmux_session_id ?? null;
     if (!row || row.status !== 'running' || !tmuxSessionName || !row.provider_name_at_launch) {
@@ -67,6 +55,11 @@ export class SessionTerminalRuntimeService {
     } catch {
       return this.safeDescriptor(sessionId, tmuxSessionName);
     }
+  }
+
+  getProviderNameAtLaunch(sessionId: string): string | null {
+    const row = this.readSessionTerminalRow(sessionId);
+    return row?.status === 'running' ? row.provider_name_at_launch : null;
   }
 
   listStartupSessions(): readonly SessionTerminalStartupEntry[] {
@@ -122,5 +115,20 @@ export class SessionTerminalRuntimeService {
       normalizeLf: true,
       usesAlternateScreen: false,
     });
+  }
+
+  private readSessionTerminalRow(sessionId: string): SessionTerminalRow | undefined {
+    try {
+      return this.sqlite
+        .prepare(
+          `SELECT tmux_session_id, provider_name_at_launch, status
+           FROM sessions
+           WHERE id = ?`,
+        )
+        .get(sessionId) as SessionTerminalRow | undefined;
+    } catch (error) {
+      logger.warn({ error, sessionId }, 'Failed to resolve durable session terminal context');
+      return undefined;
+    }
   }
 }

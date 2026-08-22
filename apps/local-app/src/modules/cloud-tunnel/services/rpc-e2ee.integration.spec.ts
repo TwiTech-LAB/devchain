@@ -544,6 +544,72 @@ describe('RPC lane E2EE — backend integration (real :memory: SQLite key servic
       expect(deviceStore.get(mobileKid)).not.toBeNull(); // nothing revoked
     });
   });
+
+  // ── Phase 16 Task:2 sealed-only routing-identity bind ────────────────────────────
+  describe('e2ee.bindNotificationRoutingIdentity (sealed-only)', () => {
+    const BIND = 'e2ee.bindNotificationRoutingIdentity';
+    const ROUTING_KID = 'kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k';
+
+    it('binds the routing kid to EXACTLY the verified sender kid (ignoring decoy sender params)', async () => {
+      // A second paired device — the one a malicious param would try to bind instead.
+      const victim = generateX25519KeyPair(makeRng(0x7777));
+      deviceStore.add({
+        kid: victim.kid,
+        publicKeyB64: bytesToBase64(victim.publicKey),
+        label: 'victim',
+      });
+
+      // The phone seals a bind whose PARAMS name a decoy sender — must be ignored.
+      const sealedParams = (await mobileEnvelope.seal(
+        { routingKid: ROUTING_KID, kid: victim.kid, __senderKid: victim.kid },
+        reqCtx(BIND),
+      )) as E2eeEnvelope;
+
+      // Dispatch mirrors the real handler: bind ONLY cryptoCtx.senderKid.
+      let ctxSeen: { senderKid: string } | undefined;
+      const dispatch = jest.fn(
+        async (plain: JsonRpcRequestLike, cryptoCtx?: { senderKid: string }) => {
+          ctxSeen = cryptoCtx;
+          deviceStore.setNotificationRoutingKid(cryptoCtx!.senderKid, ROUTING_KID);
+          return {
+            jsonrpc: '2.0' as const,
+            id: plain.id,
+            result: { kid: cryptoCtx!.senderKid, routingKid: ROUTING_KID, bound: true },
+          };
+        },
+      );
+
+      const resp = await svc.handle(
+        { jsonrpc: '2.0', id: 'bd1', method: BIND, params: sealedParams },
+        INSTANCE_ID,
+        dispatch,
+      );
+
+      // senderKid is the VERIFIED envelope kid (the sealer), never the decoy param kid.
+      expect(ctxSeen).toEqual({ senderKid: mobileKid });
+      // The routing kid landed on the sender's row; the victim row stays unbound.
+      expect(deviceStore.get(mobileKid)?.notificationRoutingKid).toBe(ROUTING_KID);
+      expect(deviceStore.get(victim.kid)?.notificationRoutingKid).toBeUndefined();
+      expect(resp.error).toBeUndefined();
+      const opened = (await mobileEnvelope.open(resp.result, resCtx(BIND))) as SealedRpcResult;
+      expect(opened).toEqual({
+        ok: true,
+        data: { kid: mobileKid, routingKid: ROUTING_KID, bound: true },
+      });
+    });
+
+    it('rejects a PLAINTEXT bind (no dispatch, no write) even though e2eeRequired is false', async () => {
+      const dispatch = jest.fn();
+      const resp = await svc.handle(
+        { jsonrpc: '2.0', id: 'bd2', method: BIND, params: { routingKid: ROUTING_KID } },
+        INSTANCE_ID,
+        dispatch,
+      );
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(resp.error).toEqual({ code: -32603, message: 'E2EE required' });
+      expect(deviceStore.get(mobileKid)?.notificationRoutingKid).toBeUndefined();
+    });
+  });
 });
 
 // ──────────────────────────────────────────────────────────────────────────────────

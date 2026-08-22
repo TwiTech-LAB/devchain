@@ -56,6 +56,10 @@ const PoolsQuerySchema = z.object({
   projectId: z.string().uuid('projectId must be a valid UUID').optional(),
 });
 
+const ReleaseHumanHoldSchema = z.object({
+  projectId: z.string().uuid('projectId must be a valid UUID'),
+});
+
 /** Query params for GET /sessions and GET /sessions/agents/presence */
 const ProjectIdQuerySchema = z.object({
   projectId: z.string().uuid('projectId must be a valid UUID').optional(),
@@ -359,6 +363,34 @@ export class SessionsController {
       }
       throw error;
     }
+  }
+
+  @Post('pools/:agentId/release-human-hold')
+  async releaseHumanHold(
+    @Param('agentId') agentId: string,
+    @Body() body: unknown,
+  ): Promise<{ released: true }> {
+    const parsedAgentId = z.string().uuid('agentId must be a valid UUID').safeParse(agentId);
+    const parsedBody = ReleaseHumanHoldSchema.safeParse(body);
+    if (!parsedAgentId.success || !parsedBody.success) {
+      const errors = [
+        ...(parsedAgentId.success ? [] : parsedAgentId.error.errors),
+        ...(parsedBody.success ? [] : parsedBody.error.errors),
+      ];
+      throw new BadRequestException(errors.map((error) => error.message).join(', '));
+    }
+
+    const result = await this.messagePoolService.releaseHumanHeldMessages(
+      parsedAgentId.data,
+      parsedBody.data.projectId,
+    );
+    if (result.status === 'not_found') {
+      throw new NotFoundException('No human-held messages exist for this agent and project');
+    }
+    if (result.status === 'not_ready') {
+      throw new ConflictException('Human input must remain idle for 30 seconds before release');
+    }
+    return { released: true };
   }
 
   /**

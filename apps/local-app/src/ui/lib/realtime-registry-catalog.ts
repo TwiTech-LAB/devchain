@@ -72,7 +72,7 @@ export const nonRegistryBroadcastCatalog: RegistryCatalogEntry[] = [
     topicPattern: 'messages/pools',
     type: 'updated',
     kind: 'invalidate',
-    owner: 'CurrentPoolsPanel',
+    owner: 'useMessagePools',
   },
 
   // ── System ──

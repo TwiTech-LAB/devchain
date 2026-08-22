@@ -59,7 +59,7 @@ export class SessionApiError extends Error {
   }
 }
 
-type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+export type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 const defaultFetch: FetchFn = (input, init) => {
   if (typeof window !== 'undefined' && typeof window.fetch === 'function') {

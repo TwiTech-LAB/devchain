@@ -46,8 +46,6 @@ export class AllExceptionsFilter implements ExceptionFilter {
         }
       }
       code = 'http_exception';
-    } else if (exception instanceof Error) {
-      message = exception.message;
     }
 
     // Downgrade noisy, expected statuses to avoid scary logs on normal flows
@@ -60,8 +58,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
       statusCode: status,
       code,
       message,
-      // Only include stack traces for server errors
-      stack: !isClientError && exception instanceof Error ? exception.stack : undefined,
+      // Raw Error stacks can repeat upstream response bodies or secrets.
+      stack:
+        !isClientError && (exception instanceof AppError || exception instanceof HttpException)
+          ? exception.stack
+          : undefined,
     } as const;
 
     if (isNotFound) {

@@ -29,6 +29,14 @@ import type { SessionActivityChangedEventPayload } from '../../events/catalog/se
 import type { SessionStoppedEventPayload } from '../../events/catalog/session.stopped';
 import type { SessionCrashedEventPayload } from '../../events/catalog/session.crashed';
 import {
+  sessionHumanPromptStateChangedEvent,
+  type SessionHumanPromptStateChangedEventPayload,
+} from '../../events/catalog/session.human-prompt-state-changed';
+import {
+  HumanPromptStateService,
+  type HumanPromptQuietSnapshot,
+} from '../../terminal/services/human-prompt-state.service';
+import {
   classifyDeliveryFailure,
   getStrictestFailureDisclosure,
   PROJECT_SAFE_DELIVERY_ERROR,
@@ -58,13 +66,82 @@ interface AgentPool {
   projectId: string;
 }
 
-interface AgentIdleLane {
+interface AgentDeferredLane {
   readonly sessionId: string;
+  readonly tmuxSessionName: string;
   readonly agentId: string;
   readonly projectId: string;
   readonly messages: PooledMessage[];
-  readonly firstEnqueueTime: number;
   separator: string;
+  requiredGeneration: number | null;
+  quietTimer: NodeJS.Timeout | null;
+  quietBaseline: HumanPromptQuietSnapshot | null;
+  activeClaim: DeferredLaneClaim | null;
+}
+
+interface ResolvedEnqueueInput {
+  readonly agentId: string;
+  readonly text: string;
+  readonly source: string;
+  readonly submitKeys: string[];
+  readonly preKeys?: string[];
+  readonly preDelayMs?: number;
+  readonly senderAgentId?: string;
+  readonly clientMessageId?: string;
+  readonly failureDisclosure: FailureDisclosurePolicy;
+  readonly projectId: string;
+  readonly agentName: string;
+  readonly logEntryId: string;
+  readonly timestamp: number;
+  readonly deliveryMode: MessageDeliveryMode;
+  readonly deferWhileHumanTyping: boolean;
+  readonly humanPromptSubmit: boolean;
+}
+
+type DeferredClaimOutcome = 'delivered' | 'unconfirmed' | 'deferred' | 'failed';
+
+type DeferredClaimState =
+  | { readonly phase: 'preparing'; readonly cancellationReason?: string }
+  | { readonly phase: 'mutating' }
+  | { readonly phase: 'complete'; readonly outcome: DeferredClaimOutcome };
+
+interface DeferredLaneClaim {
+  readonly agentId: string;
+  readonly sessionId: string;
+  readonly tmuxSessionName: string;
+  readonly projectId: string;
+  readonly messages: PooledMessage[];
+  readonly separator: string;
+  readonly quietSnapshot: HumanPromptQuietSnapshot | null;
+  state: DeferredClaimState;
+  detachReason?: string;
+  readonly completion: Promise<AgentDeferredLane | null>;
+  readonly resolveCompletion: (failureLane: AgentDeferredLane | null) => void;
+}
+
+interface DeferredLaneDetachment {
+  readonly reason: string;
+  readonly failureLane: AgentDeferredLane | null;
+  readonly claimCompletion: Promise<AgentDeferredLane | null> | null;
+}
+
+export type ManualHumanHoldReleaseResult =
+  | { readonly status: 'released' }
+  | { readonly status: 'not_found' }
+  | { readonly status: 'not_ready'; readonly eligibleAt: number | null };
+
+export const HUMAN_DRAFT_IDLE_GRACE_MS = 2_000;
+
+function canStartDeferredClaimMutation(claim: DeferredLaneClaim): boolean {
+  return claim.state.phase === 'preparing' && !claim.state.cancellationReason;
+}
+
+function deferredClaimCancellationResult(
+  claim: DeferredLaneClaim | undefined,
+  discardedCount: number,
+): FlushResult | null {
+  const reason = claim?.state.phase === 'preparing' ? claim.state.cancellationReason : undefined;
+  return reason ? { success: false, discardedCount, reason } : null;
 }
 
 const DEFAULT_CONFIG: MessagePoolConfig = {
@@ -78,8 +155,9 @@ const DEFAULT_CONFIG: MessagePoolConfig = {
 @Injectable()
 export class SessionsMessagePoolService implements OnModuleDestroy {
   private pools = new Map<string, AgentPool>();
-  private idleLanes = new Map<string, AgentIdleLane>();
+  private deferredLanes = new Map<string, AgentDeferredLane>();
   private config: MessagePoolConfig;
+  private closing = false;
 
   constructor(
     private readonly sessions: SessionsService,
@@ -91,6 +169,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     private readonly providerAdapterFactory: ProviderAdapterFactory,
     private readonly messageLog: MessageLogService,
     private readonly failureNotifier: DeliveryFailureNotifierService,
+    private readonly humanPromptState: HumanPromptStateService,
   ) {
     this.config = this.loadConfigFromSettings();
     logger.info({ config: this.config }, 'SessionsMessagePoolService initialized with config');
@@ -230,12 +309,14 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     const timestamp = Date.now();
     const deliveryMode = this.resolveDeliveryMode(options);
 
-    if (deliveryMode === 'on_idle') {
-      return this.enqueueOnIdle({
+    if (options.deferWhileHumanTyping || options.humanPromptSubmit || deliveryMode === 'on_idle') {
+      return this.enqueueSerialized({
         agentId,
         text,
         source,
         submitKeys,
+        preKeys,
+        preDelayMs,
         senderAgentId,
         clientMessageId,
         failureDisclosure,
@@ -243,6 +324,9 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
         agentName,
         logEntryId,
         timestamp,
+        deliveryMode,
+        deferWhileHumanTyping: options.deferWhileHumanTyping === true,
+        humanPromptSubmit: options.humanPromptSubmit === true,
       });
     }
 
@@ -480,78 +564,105 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     return { status: 'queued', poolSize: pool.messages.length, logEntryId };
   }
 
-  private async enqueueOnIdle(input: {
-    agentId: string;
-    text: string;
-    source: string;
-    submitKeys: string[];
-    senderAgentId?: string;
-    clientMessageId?: string;
-    failureDisclosure: FailureDisclosurePolicy;
-    projectId: string;
-    agentName: string;
-    logEntryId: string;
-    timestamp: number;
-  }): Promise<EnqueueResult> {
-    const activeSession = this.sessions.getActiveSessionForAgent(input.agentId);
-
-    if (input.clientMessageId) {
-      const existing = this.messageLog.findByClientMessageId(
-        input.clientMessageId,
+  private async enqueueSerialized(input: ResolvedEnqueueInput): Promise<EnqueueResult> {
+    while (true) {
+      const step:
+        | { result: EnqueueResult; claim: DeferredLaneClaim | null }
+        | { detachment: DeferredLaneDetachment } = await this.coordinator.withAgentLock(
         input.agentId,
-        input.source,
+        async () => {
+          const activeSession = this.sessions.getActiveSessionForAgent(input.agentId);
+          const existingLane = this.deferredLanes.get(input.agentId);
+          if (existingLane && existingLane.sessionId !== activeSession?.id) {
+            return {
+              detachment: this.detachDeferredLaneUnderAgentLock(
+                existingLane,
+                'Target session was replaced before deferred delivery',
+              ),
+            };
+          }
+          const result = await this.enqueueSerializedUnderAgentLock(input);
+          const claim =
+            result.status === 'queued' &&
+            input.deliveryMode === 'on_idle' &&
+            activeSession?.activityState === 'idle'
+              ? this.claimDeferredLaneUnderAgentLock(input.agentId, activeSession.id, false)
+              : null;
+          return { result, claim };
+        },
       );
-      if (existing) {
-        return { status: existing.status, logEntryId: existing.id };
-      }
-    }
 
-    let detachedLane: AgentIdleLane | undefined;
-    const currentLane = this.idleLanes.get(input.agentId);
-    if (currentLane && currentLane.sessionId !== activeSession?.id) {
-      this.idleLanes.delete(input.agentId);
-      detachedLane = currentLane;
-    }
-
-    if (!activeSession) {
-      const failure = classifyDeliveryFailure(
-        input.failureDisclosure,
-        'No active session',
-        'no_active_session',
-      );
-      if (detachedLane) {
-        await this.failIdleLane(detachedLane, 'Target session is no longer active');
+      if ('result' in step) {
+        if (!step.claim) return step.result;
+        const flushResult = await this.deliverDeferredClaim(step.claim);
+        if (!flushResult.success) {
+          return { status: 'failed', error: flushResult.reason, logEntryId: input.logEntryId };
+        }
+        if (flushResult.deliveredCount === 0) {
+          const logEntry = this.messageLog.getById(input.logEntryId);
+          return {
+            status: logEntry?.status ?? 'queued',
+            ...(logEntry?.error ? { error: logEntry.error } : {}),
+            logEntryId: input.logEntryId,
+          };
+        }
+        return {
+          status: flushResult.outcome === 'unconfirmed' ? 'unconfirmed' : 'delivered',
+          logEntryId: input.logEntryId,
+        };
       }
-      return { status: 'failed', error: failure.error };
+      await this.settleDeferredLaneDetachment(step.detachment);
     }
+  }
+
+  private async enqueueSerializedUnderAgentLock(
+    input: ResolvedEnqueueInput,
+  ): Promise<EnqueueResult> {
+    const duplicate = this.findDuplicate(input);
+    if (duplicate) return duplicate;
 
     const projectConfig = this.getConfigForProject(input.projectId, input.failureDisclosure);
-    let lane = this.idleLanes.get(input.agentId);
-    if (lane) {
-      lane.separator = projectConfig.separator;
-    }
-    if ((lane?.messages.length ?? 0) >= projectConfig.maxMessages) {
-      const failure = classifyDeliveryFailure(
-        input.failureDisclosure,
-        'Message pool capacity reached',
-        'pool_capacity_exceeded',
+    const activeSession = this.sessions.getActiveSessionForAgent(input.agentId);
+    const promptState = activeSession?.tmuxSessionId
+      ? this.humanPromptState.getState(activeSession.tmuxSessionId)
+      : null;
+    const heldGeneration =
+      input.deferWhileHumanTyping && promptState && promptState.phase !== 'inactive'
+        ? promptState.generation
+        : undefined;
+
+    if (heldGeneration !== undefined || input.deliveryMode === 'on_idle') {
+      return this.enqueueDeferredUnderAgentLock(
+        input,
+        projectConfig,
+        activeSession,
+        heldGeneration,
       );
-      return { status: 'failed', error: failure.error };
     }
 
-    if (!lane) {
-      lane = {
-        sessionId: activeSession.id,
-        agentId: input.agentId,
-        projectId: input.projectId,
-        messages: [],
-        firstEnqueueTime: input.timestamp,
-        separator: projectConfig.separator,
-      };
-      this.idleLanes.set(input.agentId, lane);
+    if (input.humanPromptSubmit || input.deliveryMode === 'immediate' || !projectConfig.enabled) {
+      const logEntry = this.createLogEntry(input, true);
+      this.messageLog.addEntry(logEntry);
+      this.activityStream.broadcastEnqueued(logEntry);
+      this.broadcastPoolsUpdate();
+      return this.deliverImmediateUnderAgentLock(input, logEntry);
     }
 
-    const logEntry: MessageLogEntry = {
+    return this.enqueueProtectedPoolUnderAgentLock(input, projectConfig);
+  }
+
+  private findDuplicate(input: ResolvedEnqueueInput): EnqueueResult | null {
+    if (!input.clientMessageId) return null;
+    const existing = this.messageLog.findByClientMessageId(
+      input.clientMessageId,
+      input.agentId,
+      input.source,
+    );
+    return existing ? { status: existing.status, logEntryId: existing.id } : null;
+  }
+
+  private createLogEntry(input: ResolvedEnqueueInput, immediate: boolean): MessageLogEntry {
+    return {
       id: input.logEntryId,
       timestamp: input.timestamp,
       projectId: input.projectId,
@@ -562,10 +673,15 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       senderAgentId: input.senderAgentId,
       clientMessageId: input.clientMessageId,
       status: 'queued',
-      immediate: false,
+      immediate,
     };
-    this.messageLog.addEntry(logEntry);
-    lane.messages.push({
+  }
+
+  private createPooledMessage(
+    input: ResolvedEnqueueInput,
+    options?: { requiresProviderIdle?: boolean; heldGeneration?: number },
+  ): PooledMessage {
+    return {
       text: input.text,
       source: input.source,
       timestamp: input.timestamp,
@@ -574,71 +690,251 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       logEntryId: input.logEntryId,
       clientMessageId: input.clientMessageId,
       failureDisclosure: input.failureDisclosure,
-    });
+      deferWhileHumanTyping: input.deferWhileHumanTyping,
+      requiresProviderIdle: options?.requiresProviderIdle === true,
+      heldGeneration: options?.heldGeneration,
+    };
+  }
+
+  private async enqueueProtectedPoolUnderAgentLock(
+    input: ResolvedEnqueueInput,
+    projectConfig: MessagePoolConfig,
+  ): Promise<EnqueueResult> {
+    if (this.getSharedQueuedCount(input.agentId) >= projectConfig.maxMessages) {
+      return this.capacityFailure(input.failureDisclosure);
+    }
+
+    let pool = this.pools.get(input.agentId);
+    if (!pool) {
+      pool = this.createAgentPool(input.agentId, input.projectId, projectConfig);
+    } else if (!this.configsEqual(pool.config, projectConfig)) {
+      pool.config = projectConfig;
+      if (pool.messages.length > 0) this.resetPoolTimers(input.agentId, pool, projectConfig);
+    }
+
+    const logEntry = this.createLogEntry(input, false);
+    this.messageLog.addEntry(logEntry);
+    pool.messages.push(this.createPooledMessage(input));
     this.activityStream.broadcastEnqueued(logEntry);
     this.broadcastPoolsUpdate();
-    const exactSessionIsIdle = activeSession.activityState === 'idle';
 
-    const detachedFailure = detachedLane
-      ? this.failIdleLane(detachedLane, 'Target session was replaced before idle delivery')
-      : Promise.resolve();
-
-    if (exactSessionIsIdle) {
-      const [, flushResult] = await Promise.all([
-        detachedFailure,
-        this.flushIdleLane(input.agentId, activeSession.id),
-      ]);
-      if (!flushResult.success) {
-        return { status: 'failed', error: flushResult.reason, logEntryId: input.logEntryId };
-      }
-      if (flushResult.deliveredCount === 0) {
-        const logEntry = this.messageLog.getById(input.logEntryId);
+    if (pool.messages.length >= pool.config.maxMessages) {
+      const result = await this.flushPoolUnderAgentLock(input.agentId);
+      if (!result.success) return { status: 'failed', error: result.reason };
+      if (result.outcome === 'deferred') {
         return {
-          status: logEntry?.status ?? 'queued',
-          ...(logEntry?.error ? { error: logEntry.error } : {}),
+          status: 'queued',
+          poolSize: this.getSharedQueuedCount(input.agentId),
           logEntryId: input.logEntryId,
         };
       }
       return {
-        status: flushResult.outcome === 'unconfirmed' ? 'unconfirmed' : 'delivered',
+        status: result.outcome === 'unconfirmed' ? 'unconfirmed' : 'delivered',
         logEntryId: input.logEntryId,
       };
     }
 
-    await detachedFailure;
-    return { status: 'queued', poolSize: lane.messages.length, logEntryId: input.logEntryId };
+    this.schedulePoolDebounce(input.agentId, pool);
+    return {
+      status: 'queued',
+      poolSize: this.getSharedQueuedCount(input.agentId),
+      logEntryId: input.logEntryId,
+    };
+  }
+
+  private async enqueueDeferredUnderAgentLock(
+    input: ResolvedEnqueueInput,
+    projectConfig: MessagePoolConfig,
+    activeSession: ReturnType<SessionsService['getActiveSessionForAgent']>,
+    heldGeneration: number | undefined,
+  ): Promise<EnqueueResult> {
+    if (!activeSession?.tmuxSessionId) {
+      const failure = classifyDeliveryFailure(
+        input.failureDisclosure,
+        'No active session',
+        'no_active_session',
+      );
+      return { status: 'failed', error: failure.error };
+    }
+
+    if (this.getSharedQueuedCount(input.agentId) >= projectConfig.maxMessages) {
+      return this.capacityFailure(input.failureDisclosure);
+    }
+
+    let lane = this.deferredLanes.get(input.agentId);
+    if (!lane) {
+      lane = {
+        sessionId: activeSession.id,
+        tmuxSessionName: activeSession.tmuxSessionId,
+        agentId: input.agentId,
+        projectId: input.projectId,
+        messages: [],
+        separator: projectConfig.separator,
+        requiredGeneration: heldGeneration ?? null,
+        quietTimer: null,
+        quietBaseline: null,
+        activeClaim: null,
+      };
+      this.deferredLanes.set(input.agentId, lane);
+    }
+    lane.separator = projectConfig.separator;
+
+    const logEntry = this.createLogEntry(
+      input,
+      input.deliveryMode === 'immediate' || !projectConfig.enabled,
+    );
+    const message = this.createPooledMessage(input, {
+      requiresProviderIdle: input.deliveryMode === 'on_idle',
+      heldGeneration,
+    });
+    this.messageLog.addEntry(logEntry);
+    lane.messages.push(message);
+    if (heldGeneration !== undefined) this.rebindLaneGeneration(lane, heldGeneration);
+    this.activityStream.broadcastEnqueued(logEntry);
+    this.broadcastPoolsUpdate();
+
+    if (lane.requiredGeneration !== null) {
+      this.ensureHumanQuietTimerUnderAgentLock(lane);
+    }
+
+    return {
+      status: 'queued',
+      poolSize: this.getSharedQueuedCount(input.agentId),
+      logEntryId: input.logEntryId,
+    };
+  }
+
+  private capacityFailure(failureDisclosure: FailureDisclosurePolicy): EnqueueResult {
+    const failure = classifyDeliveryFailure(
+      failureDisclosure,
+      'Message pool capacity reached',
+      'pool_capacity_exceeded',
+    );
+    return { status: 'failed', error: failure.error };
+  }
+
+  private getSharedQueuedCount(agentId: string): number {
+    return (
+      (this.pools.get(agentId)?.messages.length ?? 0) +
+      (this.deferredLanes.get(agentId)?.messages.length ?? 0)
+    );
+  }
+
+  private createAgentPool(
+    agentId: string,
+    projectId: string,
+    config: MessagePoolConfig,
+  ): AgentPool {
+    const pool: AgentPool = {
+      messages: [],
+      timer: null,
+      maxWaitTimer: null,
+      firstEnqueueTime: Date.now(),
+      config,
+      projectId,
+    };
+    this.pools.set(agentId, pool);
+    pool.maxWaitTimer = setTimeout(() => {
+      void this.flushNow(agentId);
+    }, config.maxWaitMs);
+    return pool;
+  }
+
+  private schedulePoolDebounce(agentId: string, pool: AgentPool): void {
+    if (pool.timer) clearTimeout(pool.timer);
+    pool.timer = setTimeout(() => {
+      void this.flushNow(agentId);
+    }, pool.config.delayMs);
   }
 
   async flushNow(agentId: string): Promise<FlushResult> {
+    while (true) {
+      const step: { result: FlushResult } | { detachment: DeferredLaneDetachment } =
+        await this.coordinator.withAgentLock(agentId, async () => {
+          const activeSession = this.sessions.getActiveSessionForAgent(agentId);
+          const existingLane = this.deferredLanes.get(agentId);
+          if (existingLane && existingLane.sessionId !== activeSession?.id) {
+            return {
+              detachment: this.detachDeferredLaneUnderAgentLock(
+                existingLane,
+                'Target session was replaced before deferred delivery',
+              ),
+            };
+          }
+          return { result: await this.flushPoolUnderAgentLock(agentId) };
+        });
+
+      if ('result' in step) return step.result;
+      await this.settleDeferredLaneDetachment(step.detachment);
+    }
+  }
+
+  private async flushPoolUnderAgentLock(agentId: string): Promise<FlushResult> {
     const pool = this.pools.get(agentId);
     if (!pool || pool.messages.length === 0) {
-      logger.debug({ agentId }, 'No messages to flush');
       return { success: true, deliveredCount: 0 };
     }
 
-    if (pool.timer) {
-      clearTimeout(pool.timer);
-      pool.timer = null;
-    }
-    if (pool.maxWaitTimer) {
-      clearTimeout(pool.maxWaitTimer);
-      pool.maxWaitTimer = null;
-    }
-
-    const messages = [...pool.messages];
-    const poolConfig = pool.config;
+    this.clearPoolTimers(pool);
     this.pools.delete(agentId);
+    const activeSession = this.sessions.getActiveSessionForAgent(agentId);
+    const promptState = activeSession?.tmuxSessionId
+      ? this.humanPromptState.getState(activeSession.tmuxSessionId)
+      : null;
+    const protectedMessages =
+      promptState?.phase !== 'inactive'
+        ? pool.messages.filter((message) => message.deferWhileHumanTyping)
+        : [];
+    const deliverableMessages =
+      protectedMessages.length > 0
+        ? pool.messages.filter((message) => !message.deferWhileHumanTyping)
+        : [...pool.messages];
 
-    logger.info(
-      { agentId, projectId: pool.projectId, messageCount: messages.length },
-      'Flushing message pool',
-    );
+    if (
+      protectedMessages.length > 0 &&
+      activeSession?.tmuxSessionId &&
+      promptState &&
+      !this.closing
+    ) {
+      await this.moveMessagesToDeferredLaneUnderAgentLock(
+        agentId,
+        pool.projectId,
+        pool.config.separator,
+        activeSession,
+        protectedMessages,
+        promptState.generation,
+      );
+    } else if (protectedMessages.length > 0 && this.closing) {
+      await this.failDeferredLane(
+        {
+          sessionId: activeSession?.id ?? 'shutdown',
+          tmuxSessionName: activeSession?.tmuxSessionId ?? 'shutdown',
+          agentId,
+          projectId: pool.projectId,
+          messages: protectedMessages,
+          separator: pool.config.separator,
+          requiredGeneration: promptState?.generation ?? null,
+          quietTimer: null,
+          quietBaseline: null,
+          activeClaim: null,
+        },
+        'Service stopped before human-held delivery',
+        false,
+      );
+    }
 
-    let result: FlushResult = { success: true, deliveredCount: messages.length };
-    await this.coordinator.withAgentLock(agentId, async () => {
-      result = await this.deliverBatch(agentId, messages, poolConfig.separator);
-    });
-    return result;
+    if (deliverableMessages.length === 0) {
+      this.broadcastPoolsUpdate();
+      return this.closing
+        ? {
+            success: false,
+            discardedCount: protectedMessages.length,
+            reason: 'Service stopped before human-held delivery',
+          }
+        : { success: true, deliveredCount: 0, outcome: 'deferred' };
+    }
+
+    return this.deliverBatch(agentId, deliverableMessages, pool.config.separator);
   }
 
   async flushAll(): Promise<void> {
@@ -662,17 +958,17 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
 
   getPoolStats(): { agentId: string; messageCount: number; waitingMs: number }[] {
     const now = Date.now();
-    const agentIds = new Set([...this.pools.keys(), ...this.idleLanes.keys()]);
+    const agentIds = new Set([...this.pools.keys(), ...this.deferredLanes.keys()]);
     return Array.from(agentIds).map((agentId) => {
       const pool = this.pools.get(agentId);
-      const idleLane = this.idleLanes.get(agentId);
+      const deferredLane = this.deferredLanes.get(agentId);
       const oldestMessageTime = Math.min(
         pool?.messages[0]?.timestamp ?? Number.POSITIVE_INFINITY,
-        idleLane?.firstEnqueueTime ?? Number.POSITIVE_INFINITY,
+        deferredLane?.messages[0]?.timestamp ?? Number.POSITIVE_INFINITY,
       );
       return {
         agentId,
-        messageCount: (pool?.messages.length ?? 0) + (idleLane?.messages.length ?? 0),
+        messageCount: (pool?.messages.length ?? 0) + (deferredLane?.messages.length ?? 0),
         waitingMs: now - oldestMessageTime,
       };
     });
@@ -683,11 +979,11 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     const PREVIEW_LENGTH = 100;
     const details: PoolDetails[] = [];
 
-    const agentIds = new Set([...this.pools.keys(), ...this.idleLanes.keys()]);
+    const agentIds = new Set([...this.pools.keys(), ...this.deferredLanes.keys()]);
     for (const agentId of agentIds) {
       const pool = this.pools.get(agentId);
-      const idleLane = this.idleLanes.get(agentId);
-      const pooledMessages = [...(pool?.messages ?? []), ...(idleLane?.messages ?? [])].sort(
+      const deferredLane = this.deferredLanes.get(agentId);
+      const pooledMessages = [...(pool?.messages ?? []), ...(deferredLane?.messages ?? [])].sort(
         (a, b) => a.timestamp - b.timestamp,
       );
       if (pooledMessages.length === 0) continue;
@@ -696,7 +992,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       const logEntry = this.messageLog.getById(firstMessage.logEntryId);
 
       const poolProjectId =
-        logEntry?.projectId ?? pool?.projectId ?? idleLane?.projectId ?? 'unknown';
+        logEntry?.projectId ?? pool?.projectId ?? deferredLane?.projectId ?? 'unknown';
       const agentName = logEntry?.agentName ?? 'unknown';
 
       if (projectId && poolProjectId !== projectId) continue;
@@ -711,28 +1007,86 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
           timestamp: msg.timestamp,
         };
       });
+      const humanHeldMessageCount =
+        deferredLane && deferredLane.requiredGeneration !== null ? deferredLane.messages.length : 0;
+      const humanReleaseEligibleAt =
+        humanHeldMessageCount > 0 && deferredLane
+          ? this.humanPromptState.getManualReleaseEligibleAt(deferredLane.tmuxSessionName)
+          : null;
 
-      details.push({
+      const detail: PoolDetails = {
         agentId,
         agentName,
         projectId: poolProjectId,
         messageCount: pooledMessages.length,
+        humanHeldMessageCount,
         waitingMs: now - firstMessage.timestamp,
         messages,
-      });
+      };
+      if (humanReleaseEligibleAt !== null) {
+        detail.humanReleaseEligibleAt = humanReleaseEligibleAt;
+      }
+      details.push(detail);
     }
 
     details.sort((a, b) => b.waitingMs - a.waitingMs);
     return details;
   }
 
+  async releaseHumanHeldMessages(
+    agentId: string,
+    projectId: string,
+  ): Promise<ManualHumanHoldReleaseResult> {
+    return this.coordinator.withAgentLock(agentId, async () => {
+      const lane = this.deferredLanes.get(agentId);
+      const activeSession = this.sessions.getActiveSessionForAgent(agentId);
+      if (
+        !lane ||
+        lane.projectId !== projectId ||
+        !activeSession?.tmuxSessionId ||
+        activeSession.id !== lane.sessionId ||
+        activeSession.tmuxSessionId !== lane.tmuxSessionName ||
+        lane.requiredGeneration === null
+      ) {
+        return { status: 'not_found' };
+      }
+
+      const eligibleAt = this.humanPromptState.getManualReleaseEligibleAt(lane.tmuxSessionName);
+      if (eligibleAt === null || Date.now() < eligibleAt) {
+        return { status: 'not_ready', eligibleAt };
+      }
+
+      const state = this.humanPromptState.getState(lane.tmuxSessionName);
+      if (state.phase !== 'draft_active') {
+        return { status: 'not_ready', eligibleAt: null };
+      }
+      const transition = this.humanPromptState.transitionToAwaiting(
+        lane.tmuxSessionName,
+        state.generation,
+        true,
+      );
+      if (!transition.accepted) {
+        return { status: 'not_ready', eligibleAt: null };
+      }
+
+      await this.handleHumanPromptStateChangedUnderAgentLock(agentId, {
+        sessionId: lane.sessionId,
+        tmuxSessionName: lane.tmuxSessionName,
+        generation: transition.state.generation,
+        phase: 'awaiting_stable_idle',
+      });
+      return { status: 'released' };
+    });
+  }
+
   async onModuleDestroy(): Promise<void> {
+    this.closing = true;
     const poolStats = this.getPoolStats();
     const totalMessages = poolStats.reduce((sum, p) => sum + p.messageCount, 0);
 
     logger.info(
       { agentCount: poolStats.length, totalMessages },
-      'Shutting down message pool, flushing default lanes and clearing idle lanes...',
+      'Shutting down message pool, flushing default lanes and failing deferred lanes...',
     );
 
     for (const [agentId, pool] of this.pools.entries()) {
@@ -747,30 +1101,42 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       logger.debug({ agentId }, 'Cleared timers for agent pool');
     }
 
-    const idleLanes = Array.from(this.idleLanes.values());
-    this.idleLanes.clear();
-    if (idleLanes.length > 0) {
+    const deferredLanes = Array.from(this.deferredLanes.values());
+    const deferredSettlements: Promise<void>[] = [];
+    for (const lane of deferredLanes) {
+      const detachment = await this.coordinator.withAgentLock(lane.agentId, async () => {
+        const current = this.deferredLanes.get(lane.agentId);
+        return current === lane
+          ? this.detachDeferredLaneUnderAgentLock(lane, 'Service stopped before deferred delivery')
+          : null;
+      });
+      if (lane.requiredGeneration !== null) {
+        this.humanPromptState.clearSession(lane.tmuxSessionName);
+      }
+      if (detachment) {
+        deferredSettlements.push(this.settleDeferredLaneDetachment(detachment, false));
+      }
+    }
+    if (deferredLanes.length > 0) {
       logger.info(
         {
-          agentCount: idleLanes.length,
-          totalMessages: idleLanes.reduce((sum, lane) => sum + lane.messages.length, 0),
+          agentCount: deferredLanes.length,
+          totalMessages: deferredLanes.reduce((sum, lane) => sum + lane.messages.length, 0),
         },
-        'Clearing idle delivery lanes without terminal delivery',
-      );
-      await Promise.all(
-        idleLanes.map((lane) =>
-          this.failIdleLane(lane, 'Service stopped before idle delivery', false),
-        ),
+        'Settling deferred delivery lanes before terminal shutdown',
       );
     }
 
     const SHUTDOWN_TIMEOUT_MS = 5000;
-    const flushPromise = this.flushAll();
-    const timeoutPromise = new Promise<void>((resolve) =>
-      setTimeout(() => {
+    const shutdownWork = Promise.all([...deferredSettlements, this.flushAll()]).then(
+      () => undefined,
+    );
+    let timeout: NodeJS.Timeout | undefined;
+    const timeoutPromise = new Promise<void>((resolve) => {
+      timeout = setTimeout(() => {
         const remainingPools = this.pools.size;
-        const remainingMessages = Array.from(this.pools.values()).reduce(
-          (sum, p) => sum + p.messages.length,
+        const remainingMessages = this.getPoolStats().reduce(
+          (sum, pool) => sum + pool.messageCount,
           0,
         );
         if (remainingMessages > 0) {
@@ -780,10 +1146,14 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
           );
         }
         resolve();
-      }, SHUTDOWN_TIMEOUT_MS),
-    );
+      }, SHUTDOWN_TIMEOUT_MS);
+    });
 
-    await Promise.race([flushPromise, timeoutPromise]);
+    await Promise.race([shutdownWork, timeoutPromise]);
+    if (timeout) clearTimeout(timeout);
+    void shutdownWork.catch((error: unknown) =>
+      logger.error({ error }, 'Message pool shutdown settlement failed'),
+    );
     logger.info('Message pool shutdown complete');
   }
 
@@ -807,23 +1177,118 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     return this.messageLog.getMessageById(messageId);
   }
 
+  @OnEvent(sessionHumanPromptStateChangedEvent.name, { suppressErrors: false })
+  async handleHumanPromptStateChanged(
+    event: SessionHumanPromptStateChangedEventPayload,
+  ): Promise<void> {
+    const session = this.sessions.getSession(event.sessionId);
+    if (!session?.agentId || session.tmuxSessionId !== event.tmuxSessionName) return;
+    const agentId = session.agentId;
+
+    while (true) {
+      const step: { done: true } | { detachment: DeferredLaneDetachment } =
+        await this.coordinator.withAgentLock(agentId, async () => {
+          const activeSession = this.sessions.getActiveSessionForAgent(agentId);
+          const existingLane = this.deferredLanes.get(agentId);
+          if (
+            activeSession?.id === event.sessionId &&
+            existingLane &&
+            existingLane.sessionId !== event.sessionId
+          ) {
+            return {
+              detachment: this.detachDeferredLaneUnderAgentLock(
+                existingLane,
+                'Target session was replaced before deferred delivery',
+              ),
+            };
+          }
+          await this.handleHumanPromptStateChangedUnderAgentLock(agentId, event);
+          return { done: true };
+        });
+      if ('done' in step) return;
+      await this.settleDeferredLaneDetachment(step.detachment);
+    }
+  }
+
+  private async handleHumanPromptStateChangedUnderAgentLock(
+    agentId: string,
+    event: SessionHumanPromptStateChangedEventPayload,
+  ): Promise<void> {
+    if (event.phase === 'draft_active') {
+      await this.promoteProtectedPoolMessagesUnderAgentLock(agentId, event);
+    }
+
+    const lane = this.deferredLanes.get(agentId);
+    if (
+      !lane ||
+      lane.sessionId !== event.sessionId ||
+      lane.tmuxSessionName !== event.tmuxSessionName
+    ) {
+      return;
+    }
+
+    this.rebindLaneGeneration(lane, event.generation);
+    if (event.phase === 'draft_active') {
+      this.clearDeferredLaneTimer(lane);
+    } else {
+      this.ensureHumanQuietTimerUnderAgentLock(lane);
+    }
+    this.broadcastPoolsUpdate();
+  }
+
+  private async promoteProtectedPoolMessagesUnderAgentLock(
+    agentId: string,
+    event: SessionHumanPromptStateChangedEventPayload,
+  ): Promise<void> {
+    const pool = this.pools.get(agentId);
+    if (!pool) return;
+    const protectedMessages = pool.messages.filter((message) => message.deferWhileHumanTyping);
+    if (protectedMessages.length === 0) return;
+
+    const session = this.sessions.getSession(event.sessionId);
+    const activeSession = this.sessions.getActiveSessionForAgent(agentId);
+    if (
+      !session?.tmuxSessionId ||
+      session.tmuxSessionId !== event.tmuxSessionName ||
+      activeSession?.id !== event.sessionId
+    ) {
+      return;
+    }
+
+    pool.messages = pool.messages.filter((message) => !message.deferWhileHumanTyping);
+    if (pool.messages.length === 0) {
+      this.clearPoolTimers(pool);
+      this.pools.delete(agentId);
+    }
+
+    await this.moveMessagesToDeferredLaneUnderAgentLock(
+      agentId,
+      pool.projectId,
+      pool.config.separator,
+      activeSession,
+      protectedMessages,
+      event.generation,
+    );
+  }
+
   @OnEvent('session.activity.changed', { async: true })
   async handleSessionActivityChanged(event: SessionActivityChangedEventPayload): Promise<void> {
     const session = this.sessions.getSession(event.sessionId);
     if (!session?.agentId || event.state !== 'idle') return;
 
-    await this.flushIdleLane(session.agentId, event.sessionId);
+    await this.flushDeferredLane(session.agentId, event.sessionId);
   }
 
   @OnEvent('session.stopped', { async: true })
   async handleSessionStopped(event: SessionStoppedEventPayload): Promise<void> {
     const session = this.sessions.getSession(event.sessionId);
     if (!session?.agentId) return;
+    const agentId = session.agentId;
 
-    await this.failMatchingIdleLane(
-      session.agentId,
+    await this.failMatchingDeferredLane(
+      agentId,
       event.sessionId,
-      'Target session stopped before idle delivery',
+      'Target session stopped before deferred delivery',
     );
   }
 
@@ -831,56 +1296,287 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
   async handleSessionCrashed(event: SessionCrashedEventPayload): Promise<void> {
     const session = this.sessions.getSession(event.sessionId);
     if (!session?.agentId) return;
+    const agentId = session.agentId;
 
-    await this.failMatchingIdleLane(
-      session.agentId,
+    await this.failMatchingDeferredLane(
+      agentId,
       event.sessionId,
-      'Target session crashed before idle delivery',
+      'Target session crashed before deferred delivery',
     );
   }
 
   // ─── Private delivery methods ──────────────────────────────────────────
 
-  private async flushIdleLane(agentId: string, expectedSessionId: string): Promise<FlushResult> {
-    let result: FlushResult = { success: true, deliveredCount: 0 };
-    await this.coordinator.withAgentLock(agentId, async () => {
-      const expectedSession = this.sessions.getSession(expectedSessionId);
-      const activeSession = this.sessions.getActiveSessionForAgent(agentId);
-      const lane = this.idleLanes.get(agentId);
+  private async flushDeferredLane(
+    agentId: string,
+    expectedSessionId: string,
+    quietGraceElapsed = false,
+  ): Promise<FlushResult> {
+    const claim = await this.coordinator.withAgentLock(agentId, async () =>
+      this.claimDeferredLaneUnderAgentLock(agentId, expectedSessionId, quietGraceElapsed),
+    );
+    if (!claim) return { success: true, deliveredCount: 0 };
 
-      if (
-        !lane ||
-        lane.sessionId !== expectedSessionId ||
-        expectedSession?.status !== 'running' ||
-        expectedSession.activityState !== 'idle' ||
-        activeSession?.id !== expectedSessionId
-      ) {
-        return;
-      }
+    return this.deliverDeferredClaim(claim);
+  }
 
-      this.idleLanes.delete(agentId);
-      result = await this.deliverBatch(agentId, [...lane.messages], lane.separator);
-    });
+  private async deliverDeferredClaim(claim: DeferredLaneClaim): Promise<FlushResult> {
+    const result = await this.deliverBatchToTarget(
+      claim.agentId,
+      claim.messages,
+      claim.separator,
+      { sessionId: claim.sessionId, tmuxSessionName: claim.tmuxSessionName },
+      claim.quietSnapshot ?? undefined,
+      claim,
+    );
+
+    await this.coordinator.withAgentLock(claim.agentId, async () =>
+      this.completeDeferredClaimUnderAgentLock(claim, result),
+    );
     return result;
   }
 
-  private async failMatchingIdleLane(
+  private claimDeferredLaneUnderAgentLock(
+    agentId: string,
+    expectedSessionId: string,
+    quietGraceElapsed: boolean,
+  ): DeferredLaneClaim | null {
+    const lane = this.deferredLanes.get(agentId);
+    const expectedSession = this.sessions.getSession(expectedSessionId);
+    const activeSession = this.sessions.getActiveSessionForAgent(agentId);
+    if (
+      !lane ||
+      lane.activeClaim ||
+      lane.sessionId !== expectedSessionId ||
+      expectedSession?.status !== 'running' ||
+      expectedSession.tmuxSessionId !== lane.tmuxSessionName ||
+      activeSession?.id !== expectedSessionId
+    ) {
+      return null;
+    }
+
+    let quietSnapshot: HumanPromptQuietSnapshot | null = null;
+    if (lane.requiredGeneration !== null) {
+      quietSnapshot = this.humanPromptState.getQuietSnapshot(lane.tmuxSessionName);
+      if (
+        !quietGraceElapsed ||
+        !quietSnapshot ||
+        quietSnapshot.expectedGeneration !== lane.requiredGeneration ||
+        !lane.quietBaseline ||
+        !this.quietSnapshotsEqual(lane.quietBaseline, quietSnapshot)
+      ) {
+        const current = this.humanPromptState.getState(lane.tmuxSessionName);
+        if (current.phase === 'inactive') {
+          lane.requiredGeneration = null;
+          lane.quietBaseline = null;
+        } else {
+          this.rebindLaneGeneration(lane, current.generation);
+          if (current.phase === 'awaiting_stable_idle') {
+            this.ensureHumanQuietTimerUnderAgentLock(lane, true);
+          }
+          return null;
+        }
+      }
+    }
+
+    if (
+      lane.messages.some((message) => message.requiresProviderIdle) &&
+      expectedSession.activityState !== 'idle'
+    ) {
+      if (lane.requiredGeneration !== null) {
+        this.ensureHumanQuietTimerUnderAgentLock(lane, true);
+      }
+      return null;
+    }
+
+    this.clearDeferredLaneTimer(lane);
+    let resolveCompletion!: (failureLane: AgentDeferredLane | null) => void;
+    const completion = new Promise<AgentDeferredLane | null>((resolve) => {
+      resolveCompletion = resolve;
+    });
+    const claim: DeferredLaneClaim = {
+      agentId,
+      sessionId: lane.sessionId,
+      tmuxSessionName: lane.tmuxSessionName,
+      projectId: lane.projectId,
+      messages: [...lane.messages],
+      separator: lane.separator,
+      quietSnapshot: lane.requiredGeneration !== null ? quietSnapshot : null,
+      state: { phase: 'preparing' },
+      completion,
+      resolveCompletion,
+    };
+    lane.activeClaim = claim;
+    return claim;
+  }
+
+  private completeDeferredClaimUnderAgentLock(claim: DeferredLaneClaim, result: FlushResult): void {
+    if (claim.state.phase === 'complete') return;
+    const cancellationReason =
+      claim.state.phase === 'preparing' ? claim.state.cancellationReason : undefined;
+    const lane = this.deferredLanes.get(claim.agentId);
+    const ownsLane =
+      lane?.sessionId === claim.sessionId && lane.activeClaim === claim ? lane : null;
+    if (ownsLane) ownsLane.activeClaim = null;
+
+    if (cancellationReason) {
+      claim.state = { phase: 'complete', outcome: 'failed' };
+      claim.resolveCompletion(null);
+      return;
+    }
+
+    if (ownsLane && result.outcome !== 'deferred') {
+      const claimedIds = new Set(claim.messages.map((message) => message.logEntryId));
+      ownsLane.messages.splice(
+        0,
+        ownsLane.messages.length,
+        ...ownsLane.messages.filter((message) => !claimedIds.has(message.logEntryId)),
+      );
+    }
+
+    const outcome: DeferredClaimOutcome = result.success
+      ? (result.outcome ?? 'delivered')
+      : 'failed';
+    claim.state = { phase: 'complete', outcome };
+
+    if (!ownsLane) {
+      const failureLane =
+        claim.detachReason && result.outcome === 'deferred'
+          ? this.copyDeferredLaneWithMessages(claim, claim.messages)
+          : null;
+      claim.resolveCompletion(failureLane);
+      return;
+    }
+
+    if (ownsLane.messages.length === 0) {
+      this.clearDeferredLaneTimer(ownsLane);
+      this.deferredLanes.delete(claim.agentId);
+      this.broadcastPoolsUpdate();
+      claim.resolveCompletion(null);
+      return;
+    }
+
+    const state = this.humanPromptState.getState(ownsLane.tmuxSessionName);
+    if (state.phase === 'inactive') {
+      ownsLane.requiredGeneration = null;
+      ownsLane.quietBaseline = null;
+      setTimeout(() => {
+        void this.flushDeferredLane(claim.agentId, ownsLane.sessionId).catch((error) =>
+          logger.error({ agentId: claim.agentId, error }, 'Deferred follow-up delivery failed'),
+        );
+      }, 0);
+    } else {
+      this.rebindLaneGeneration(ownsLane, state.generation);
+      if (state.phase === 'awaiting_stable_idle') {
+        this.ensureHumanQuietTimerUnderAgentLock(ownsLane, true);
+      }
+    }
+    this.broadcastPoolsUpdate();
+    claim.resolveCompletion(null);
+  }
+
+  private async failMatchingDeferredLane(
     agentId: string,
     sessionId: string,
     reason: string,
+    notifySenders = true,
   ): Promise<void> {
-    const lane = this.idleLanes.get(agentId);
-    if (!lane || lane.sessionId !== sessionId) return;
-
-    this.idleLanes.delete(agentId);
-    await this.failIdleLane(lane, reason);
+    const detachment = await this.coordinator.withAgentLock(agentId, async () => {
+      const lane = this.deferredLanes.get(agentId);
+      return !lane || lane.sessionId !== sessionId
+        ? null
+        : this.detachDeferredLaneUnderAgentLock(lane, reason);
+    });
+    if (detachment) {
+      await this.settleDeferredLaneDetachment(detachment, notifySenders);
+    }
   }
 
-  private async failIdleLane(
-    lane: AgentIdleLane,
+  private detachDeferredLaneUnderAgentLock(
+    lane: AgentDeferredLane,
+    reason: string,
+  ): DeferredLaneDetachment {
+    if (this.deferredLanes.get(lane.agentId) === lane) {
+      this.deferredLanes.delete(lane.agentId);
+    }
+    this.clearDeferredLaneTimer(lane);
+
+    const claim = lane.activeClaim;
+    lane.activeClaim = null;
+    if (!claim || claim.state.phase === 'complete') {
+      return {
+        reason,
+        failureLane: this.copyDeferredLaneWithMessages(lane, lane.messages),
+        claimCompletion: null,
+      };
+    }
+
+    claim.detachReason = reason;
+    if (claim.state.phase === 'preparing') {
+      claim.state = { phase: 'preparing', cancellationReason: reason };
+      return {
+        reason,
+        failureLane: this.copyDeferredLaneWithMessages(lane, lane.messages),
+        claimCompletion: null,
+      };
+    }
+
+    const claimedIds = new Set(claim.messages.map((message) => message.logEntryId));
+    const unclaimedMessages = lane.messages.filter(
+      (message) => !claimedIds.has(message.logEntryId),
+    );
+    return {
+      reason,
+      failureLane:
+        unclaimedMessages.length > 0
+          ? this.copyDeferredLaneWithMessages(lane, unclaimedMessages)
+          : null,
+      claimCompletion: claim.completion,
+    };
+  }
+
+  private async settleDeferredLaneDetachment(
+    detachment: DeferredLaneDetachment,
+    notifySenders = true,
+  ): Promise<void> {
+    if (detachment.failureLane) {
+      await this.failDeferredLane(detachment.failureLane, detachment.reason, notifySenders);
+    }
+    if (!detachment.claimCompletion) return;
+
+    const lateFailureLane = await detachment.claimCompletion;
+    if (lateFailureLane) {
+      await this.failDeferredLane(lateFailureLane, detachment.reason, notifySenders);
+    }
+  }
+
+  private copyDeferredLaneWithMessages(
+    lane: Pick<
+      AgentDeferredLane,
+      'sessionId' | 'tmuxSessionName' | 'agentId' | 'projectId' | 'separator'
+    >,
+    messages: PooledMessage[],
+  ): AgentDeferredLane {
+    return {
+      sessionId: lane.sessionId,
+      tmuxSessionName: lane.tmuxSessionName,
+      agentId: lane.agentId,
+      projectId: lane.projectId,
+      messages: [...messages],
+      separator: lane.separator,
+      requiredGeneration: null,
+      quietTimer: null,
+      quietBaseline: null,
+      activeClaim: null,
+    };
+  }
+
+  private async failDeferredLane(
+    lane: AgentDeferredLane,
     reason: string,
     notifySenders = true,
   ): Promise<void> {
+    this.clearDeferredLaneTimer(lane);
     const batchId = randomUUID();
     const failureDisclosure = getStrictestFailureDisclosure(lane.messages);
     const batchFailure = classifyDeliveryFailure(failureDisclosure, reason, 'no_active_session');
@@ -909,7 +1605,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
         messageCount: lane.messages.length,
         error: batchFailure.error,
       },
-      'Idle delivery lane discarded',
+      'Deferred delivery lane discarded',
     );
 
     if (!notifySenders) return;
@@ -924,6 +1620,87 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
           'Failure notification error (best-effort)',
         ),
       );
+  }
+
+  private clearPoolTimers(pool: AgentPool): void {
+    if (pool.timer) clearTimeout(pool.timer);
+    if (pool.maxWaitTimer) clearTimeout(pool.maxWaitTimer);
+    pool.timer = null;
+    pool.maxWaitTimer = null;
+  }
+
+  private clearDeferredLaneTimer(lane: AgentDeferredLane): void {
+    if (lane.quietTimer) clearTimeout(lane.quietTimer);
+    lane.quietTimer = null;
+    lane.quietBaseline = null;
+  }
+
+  private rebindLaneGeneration(lane: AgentDeferredLane, generation: number): void {
+    if (lane.requiredGeneration !== generation) this.clearDeferredLaneTimer(lane);
+    lane.requiredGeneration = generation;
+    for (const message of lane.messages) message.heldGeneration = generation;
+  }
+
+  private ensureHumanQuietTimerUnderAgentLock(lane: AgentDeferredLane, restart = false): void {
+    if (lane.activeClaim) return;
+    if (restart) this.clearDeferredLaneTimer(lane);
+    if (lane.quietTimer) return;
+
+    const snapshot = this.humanPromptState.getQuietSnapshot(lane.tmuxSessionName);
+    if (!snapshot || snapshot.expectedGeneration !== lane.requiredGeneration) return;
+    lane.quietBaseline = snapshot;
+    lane.quietTimer = setTimeout(() => {
+      lane.quietTimer = null;
+      void this.flushDeferredLane(lane.agentId, lane.sessionId, true).catch((error) =>
+        logger.error({ agentId: lane.agentId, error }, 'Human-quiet delivery failed'),
+      );
+    }, HUMAN_DRAFT_IDLE_GRACE_MS);
+  }
+
+  private quietSnapshotsEqual(
+    left: HumanPromptQuietSnapshot,
+    right: HumanPromptQuietSnapshot,
+  ): boolean {
+    return (
+      left.expectedGeneration === right.expectedGeneration &&
+      left.executedInputEpoch === right.executedInputEpoch &&
+      left.meaningfulOutputEpoch === right.meaningfulOutputEpoch
+    );
+  }
+
+  private async moveMessagesToDeferredLaneUnderAgentLock(
+    agentId: string,
+    projectId: string,
+    separator: string,
+    activeSession: NonNullable<ReturnType<SessionsService['getActiveSessionForAgent']>>,
+    messages: PooledMessage[],
+    generation: number,
+  ): Promise<void> {
+    if (!activeSession.tmuxSessionId) return;
+
+    let lane = this.deferredLanes.get(agentId);
+    if (!lane) {
+      lane = {
+        sessionId: activeSession.id,
+        tmuxSessionName: activeSession.tmuxSessionId,
+        agentId,
+        projectId,
+        messages: [],
+        separator,
+        requiredGeneration: generation,
+        quietTimer: null,
+        quietBaseline: null,
+        activeClaim: null,
+      };
+      this.deferredLanes.set(agentId, lane);
+    }
+    lane.separator = separator;
+    lane.messages.push(...messages);
+    this.rebindLaneGeneration(lane, generation);
+
+    const state = this.humanPromptState.getState(lane.tmuxSessionName);
+    if (state.phase === 'awaiting_stable_idle') this.ensureHumanQuietTimerUnderAgentLock(lane);
+    this.broadcastPoolsUpdate();
   }
 
   private async deliverBatch(
@@ -980,24 +1757,59 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       return { success: false, discardedCount: messages.length, reason: batchFailure.error };
     }
 
-    const tmuxSessionId = session.tmuxSessionId;
-    const baseText = messages.map((m) => m.text).join(separator);
+    return this.deliverBatchToTarget(agentId, messages, separator, {
+      sessionId: session.id,
+      tmuxSessionName: session.tmuxSessionId,
+    });
+  }
+
+  private async deliverBatchToTarget(
+    agentId: string,
+    messages: PooledMessage[],
+    separator: string,
+    target: { sessionId: string; tmuxSessionName: string },
+    quietSnapshot?: HumanPromptQuietSnapshot,
+    claim?: DeferredLaneClaim,
+  ): Promise<FlushResult> {
+    const batchId = randomUUID();
+    const failureDisclosure = getStrictestFailureDisclosure(messages);
+    const baseText = messages.map((message) => message.text).join(separator);
     const submitKeys = messages[messages.length - 1]?.submitKeys ?? ['Enter'];
 
     try {
       const postPasteDelayMs =
         await this.providerAdapterFactory.getPostPasteDelayMsForAgent(agentId);
-      const result = await this.terminalIO.deliver({ name: tmuxSessionId }, baseText, {
-        agentId,
-        submitKeys,
-        postPasteDelayMs,
-      });
+      const result = claim
+        ? await this.terminalIO.deliverGuarded(
+            { name: target.tmuxSessionName },
+            baseText,
+            { agentId, submitKeys, postPasteDelayMs },
+            quietSnapshot,
+            {
+              canStartMutation: () => canStartDeferredClaimMutation(claim),
+              markMutationStarted: () => {
+                if (canStartDeferredClaimMutation(claim)) {
+                  claim.state = { phase: 'mutating' };
+                }
+              },
+            },
+          )
+        : await this.terminalIO.deliver({ name: target.tmuxSessionName }, baseText, {
+            agentId,
+            submitKeys,
+            postPasteDelayMs,
+          });
+      const cancellation = deferredClaimCancellationResult(claim, messages.length);
+      if (cancellation) return cancellation;
+      if ('deferred' in result) {
+        return { success: true, deliveredCount: 0, outcome: 'deferred' };
+      }
 
       const deliveredAt = Date.now();
       const status = result.confirmed ? 'delivered' : 'unconfirmed';
       const entries: MessageLogEntry[] = [];
-      for (const msg of messages) {
-        this.messageLog.update(msg.logEntryId, {
+      for (const message of messages) {
+        this.messageLog.update(message.logEntryId, {
           status,
           batchId,
           deliveredAt,
@@ -1006,7 +1818,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
           retryCount: result.retryCount,
           failureCode: result.confirmed ? undefined : 'paste_not_confirmed',
         });
-        const entry = this.messageLog.getById(msg.logEntryId);
+        const entry = this.messageLog.getById(message.logEntryId);
         if (entry) entries.push(entry);
       }
 
@@ -1016,18 +1828,6 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
         this.activityStream.broadcastUnconfirmed(batchId, entries);
       }
       this.broadcastPoolsUpdate();
-
-      logger.info(
-        {
-          agentId,
-          sessionId: session.id,
-          messageCount: messages.length,
-          batchId,
-          confirmed: result.confirmed,
-        },
-        'Batch delivered to agent session',
-      );
-
       return {
         success: true,
         deliveredCount: messages.length,
@@ -1035,33 +1835,36 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       };
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
+      const cancellation = deferredClaimCancellationResult(claim, messages.length);
+      if (cancellation) return cancellation;
       const failureCode: DeliveryFailureCode = errorMsg.includes('send keys')
         ? 'send_keys_failed'
         : 'tmux_error';
       const batchFailure = classifyDeliveryFailure(failureDisclosure, errorMsg, failureCode);
       logger.error(
-        { agentId, sessionId: session.id, error: batchFailure.error },
-        'Failed to deliver batch to agent session',
+        { agentId, sessionId: target.sessionId, error: batchFailure.error },
+        'Failed to deliver batch to exact agent session',
       );
-      for (const msg of messages) {
-        const failure = classifyDeliveryFailure(msg.failureDisclosure, errorMsg, failureCode);
-        this.messageLog.update(msg.logEntryId, {
+      for (const message of messages) {
+        const failure = classifyDeliveryFailure(message.failureDisclosure, errorMsg, failureCode);
+        this.messageLog.update(message.logEntryId, {
           status: 'failed',
           batchId,
           error: failure.error,
           failureCode: failure.failureCode,
         });
-        const entry = this.messageLog.getById(msg.logEntryId);
+        const entry = this.messageLog.getById(message.logEntryId);
         if (entry) this.activityStream.broadcastFailed(entry);
       }
       this.broadcastPoolsUpdate();
       await this.failureNotifier
         .notifySendersOfFailure(messages, agentId, batchFailure.error)
-        .catch((err: unknown) =>
+        .catch((notifyError: unknown) =>
           logger.warn(
             {
               agentId,
-              error: failureDisclosure === 'project-safe' ? PROJECT_SAFE_DELIVERY_ERROR : err,
+              error:
+                failureDisclosure === 'project-safe' ? PROJECT_SAFE_DELIVERY_ERROR : notifyError,
             },
             'Failure notification error (best-effort)',
           ),
@@ -1076,56 +1879,154 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     submitKeys: string[],
     opts?: { skipConfirmation?: boolean; preKeys?: string[]; preDelayMs?: number },
   ): Promise<{ nonce: string; unconfirmed?: boolean; skipped?: boolean; retryCount: number }> {
+    return this.coordinator.withAgentLock(agentId, () =>
+      this.deliverMessageUnderAgentLock(agentId, text, submitKeys, opts),
+    );
+  }
+
+  private async deliverMessageUnderAgentLock(
+    agentId: string,
+    text: string,
+    submitKeys: string[],
+    opts?: { skipConfirmation?: boolean; preKeys?: string[]; preDelayMs?: number },
+  ): Promise<{
+    nonce: string;
+    unconfirmed?: boolean;
+    skipped?: boolean;
+    retryCount: number;
+    sessionId: string;
+    tmuxSessionName: string;
+  }> {
     const activeSessions = await this.sessions.listActiveSessions();
-    const session = activeSessions.find((s) => s.agentId === agentId);
+    const session = activeSessions.find((candidate) => candidate.agentId === agentId);
+    if (!session?.tmuxSessionId) throw new Error(`No active session for agent ${agentId}`);
 
-    if (!session || !session.tmuxSessionId) {
-      throw new Error(`No active session for agent ${agentId}`);
-    }
-
-    let result: { nonce: string; unconfirmed?: boolean; skipped?: boolean; retryCount: number } = {
-      nonce: '',
-      retryCount: 0,
-    };
-
-    await this.coordinator.withAgentLock(agentId, async () => {
-      const postPasteDelayMs =
-        await this.providerAdapterFactory.getPostPasteDelayMsForAgent(agentId);
-      if (opts?.skipConfirmation) {
-        const delivery = await this.terminalIO.deliverImmediate(
-          { name: session.tmuxSessionId! },
-          text,
-          {
-            submitKeys,
-            postPasteDelayMs,
-            confirm: false,
-            preKeys: opts?.preKeys,
-            preDelayMs: opts?.preDelayMs,
-          },
-        );
-        result = { nonce: delivery.nonce, skipped: true, retryCount: 0 };
-      } else {
-        const delivery = await this.terminalIO.deliver({ name: session.tmuxSessionId! }, text, {
-          agentId,
+    const postPasteDelayMs = await this.providerAdapterFactory.getPostPasteDelayMsForAgent(agentId);
+    if (opts?.skipConfirmation) {
+      const delivery = await this.terminalIO.deliverImmediate(
+        { name: session.tmuxSessionId },
+        text,
+        {
           submitKeys,
           postPasteDelayMs,
-          preKeys: opts?.preKeys,
-          preDelayMs: opts?.preDelayMs,
-        });
-        result = {
-          nonce: delivery.nonce,
-          unconfirmed: !delivery.confirmed,
-          retryCount: delivery.retryCount,
-        };
-      }
+          confirm: false,
+          preKeys: opts.preKeys,
+          preDelayMs: opts.preDelayMs,
+        },
+      );
+      return {
+        nonce: delivery.nonce,
+        skipped: true,
+        retryCount: 0,
+        sessionId: session.id,
+        tmuxSessionName: session.tmuxSessionId,
+      };
+    }
+
+    const delivery = await this.terminalIO.deliver({ name: session.tmuxSessionId }, text, {
+      agentId,
+      submitKeys,
+      postPasteDelayMs,
+      preKeys: opts?.preKeys,
+      preDelayMs: opts?.preDelayMs,
     });
+    return {
+      nonce: delivery.nonce,
+      unconfirmed: !delivery.confirmed,
+      retryCount: delivery.retryCount,
+      sessionId: session.id,
+      tmuxSessionName: session.tmuxSessionId,
+    };
+  }
 
-    logger.info(
-      { agentId, sessionId: session.id, unconfirmed: result.unconfirmed },
-      'Immediate message delivered',
+  private async deliverImmediateUnderAgentLock(
+    input: ResolvedEnqueueInput,
+    logEntry: MessageLogEntry,
+  ): Promise<EnqueueResult> {
+    try {
+      const activeSession = this.sessions.getActiveSessionForAgent(input.agentId);
+      const expectedSubmit =
+        input.humanPromptSubmit && activeSession?.tmuxSessionId
+          ? {
+              sessionId: activeSession.id,
+              tmuxSessionName: activeSession.tmuxSessionId,
+              generation: this.humanPromptState.getState(activeSession.tmuxSessionId).generation,
+            }
+          : null;
+      const delivery = await this.deliverMessageUnderAgentLock(
+        input.agentId,
+        input.text,
+        input.submitKeys,
+        {
+          skipConfirmation: input.deliveryMode === 'immediate',
+          preKeys: input.preKeys,
+          preDelayMs: input.preDelayMs,
+        },
+      );
+      const status = delivery.unconfirmed ? 'unconfirmed' : 'delivered';
+      const deliveredAt = Date.now();
+      this.messageLog.update(logEntry.id, {
+        status,
+        deliveredAt,
+        nonce: delivery.skipped ? undefined : delivery.nonce,
+        confirmedAt: delivery.skipped || delivery.unconfirmed ? undefined : deliveredAt,
+        retryCount: delivery.retryCount,
+        failureCode: delivery.unconfirmed ? 'paste_not_confirmed' : undefined,
+      });
+      const updated = this.messageLog.getById(logEntry.id);
+      if (updated) {
+        if (delivery.unconfirmed) this.activityStream.broadcastUnconfirmed(logEntry.id, [updated]);
+        else this.activityStream.broadcastDelivered(logEntry.id, [updated]);
+      }
+
+      if (
+        expectedSubmit &&
+        expectedSubmit.sessionId === delivery.sessionId &&
+        expectedSubmit.tmuxSessionName === delivery.tmuxSessionName
+      ) {
+        await this.completeHumanSubmitUnderAgentLock(
+          input.agentId,
+          delivery.sessionId,
+          delivery.tmuxSessionName,
+          expectedSubmit.generation,
+        );
+      }
+      return { status, logEntryId: logEntry.id };
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      const failure = classifyDeliveryFailure(input.failureDisclosure, errorMsg, 'tmux_error');
+      logger.error(
+        { agentId: input.agentId, source: input.source, error: failure.error },
+        'Immediate delivery failed',
+      );
+      this.messageLog.update(logEntry.id, {
+        status: 'failed',
+        error: failure.error,
+        failureCode: failure.failureCode,
+      });
+      const failed = this.messageLog.getById(logEntry.id);
+      if (failed) this.activityStream.broadcastFailed(failed);
+      return { status: 'failed', error: failure.error, logEntryId: logEntry.id };
+    }
+  }
+
+  private async completeHumanSubmitUnderAgentLock(
+    agentId: string,
+    sessionId: string,
+    tmuxSessionName: string,
+    expectedGeneration: number,
+  ): Promise<void> {
+    const transition = this.humanPromptState.transitionToAwaiting(
+      tmuxSessionName,
+      expectedGeneration,
     );
-
-    return result;
+    if (!transition.accepted) return;
+    await this.handleHumanPromptStateChangedUnderAgentLock(agentId, {
+      sessionId,
+      tmuxSessionName,
+      generation: transition.state.generation,
+      phase: 'awaiting_stable_idle',
+    });
   }
 
   private broadcastPoolsUpdate(): void {

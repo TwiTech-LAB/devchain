@@ -30,6 +30,7 @@ export const MOBILE_RPC_COMPATIBILITY_FACTS = {
   trustImplementationValidatesKeyAndKid: 'trust-implementation-validates-key-and-kid',
   revokeParamsIgnored: 'revoke-params-ignored',
   revokeIdentityFromVerifiedSenderKid: 'revoke-identity-from-verified-sender-kid',
+  bindIdentityFromVerifiedSenderKid: 'bind-identity-from-verified-sender-kid',
 } as const;
 
 export type MobileRpcCompatibilityFact =
@@ -1126,6 +1127,21 @@ const e2eeCatalog = {
     cryptoMode: sealedOnly,
     compatibility: [facts.revokeParamsIgnored, facts.revokeIdentityFromVerifiedSenderKid],
   },
+  'e2ee.bindNotificationRoutingIdentity': {
+    // RFC 7638 JWK thumbprint of the mobile notification routing key: 32-byte
+    // SHA-256 digest, base64url-unpadded (43 chars).
+    paramsSchema: z.object({ routingKid: z.string().regex(/^[A-Za-z0-9_-]{43}$/) }).passthrough(),
+    resultSchema: z
+      .object({
+        kid: z.string().min(1),
+        routingKid: z.string().min(1),
+        bound: z.boolean(),
+      })
+      .passthrough(),
+    paramsMode: passthrough,
+    cryptoMode: sealedOnly,
+    compatibility: [facts.bindIdentityFromVerifiedSenderKid],
+  },
 } as const satisfies Record<string, MobileRpcCatalogEntry>;
 
 export const MOBILE_RPC_CATALOG: typeof boardCatalog &
@@ -1184,6 +1200,7 @@ export const MOBILE_RPC_METHODS = [
   'terminal.sendKey',
   'e2ee.adoptDeviceKey',
   'e2ee.revokeDeviceKey',
+  'e2ee.bindNotificationRoutingIdentity',
 ] as const satisfies readonly MobileRpcMethod[];
 
 export type MobileRpcParams<M extends MobileRpcMethod> = z.input<

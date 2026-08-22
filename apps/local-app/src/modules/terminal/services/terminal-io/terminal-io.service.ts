@@ -1,4 +1,4 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { BeforeApplicationShutdown, Injectable } from '@nestjs/common';
 import { createLogger } from '../../../../common/logging/logger';
 import { EventsService } from '../../../events/services/events.service';
 import { ProcessExecutor } from '../process-executor/process-executor.port';
@@ -13,6 +13,8 @@ import type {
   DeliveryResult,
   ExpectedSessionDestroyPolicy,
   ExpectedSessionDestroyResult,
+  GuardedDeliveryResult,
+  GuardedDeliveryMutationFence,
 } from './types';
 import * as lifecycle from './lifecycle';
 import * as capture from './capture';
@@ -21,6 +23,11 @@ import * as deliveryMod from './delivery';
 import type { SendGap } from './delivery';
 import { TypeCommandFailedError } from './delivery';
 import { quoteShellArg } from './quote-shell-arg';
+import {
+  HumanPromptStateService,
+  type HumanPromptQuietSnapshot,
+  sanitizeTmuxSessionName,
+} from '../human-prompt-state.service';
 
 const logger = createLogger('TerminalIOService');
 
@@ -40,29 +47,53 @@ interface SessionLifecycleState {
   observers: number;
 }
 
+interface PaneDeliveryState {
+  tail: Promise<void>;
+  pendingOperations: number;
+}
+
+export class TerminalIOClosingError extends Error {
+  constructor() {
+    super('Terminal IO is shutting down');
+    this.name = 'TerminalIOClosingError';
+  }
+}
+
 @Injectable()
-export class TerminalIOService implements OnModuleDestroy {
+export class TerminalIOService implements BeforeApplicationShutdown {
   private readonly gap: SendGap;
   private readonly healthMonitors = new Map<string, HealthMonitorRecord>();
   private readonly lifecycleStates = new Map<string, SessionLifecycleState>();
+  private readonly paneDeliveryStates = new Map<string, PaneDeliveryState>();
   private nextMonitorToken = 0;
   private destroyed = false;
+  private closing = false;
 
   constructor(
     private readonly executor: ProcessExecutor,
     private readonly eventsService: EventsService,
+    private readonly humanPromptState: HumanPromptStateService,
   ) {
     this.gap = new InMemorySendGap();
   }
 
-  onModuleDestroy(): void {
+  async beforeApplicationShutdown(): Promise<void> {
+    this.closing = true;
     this.destroyed = true;
     for (const monitor of this.healthMonitors.values()) {
       clearInterval(monitor.interval);
     }
     this.healthMonitors.clear();
+
+    const deliveryTails = [...this.paneDeliveryStates.values()].map((state) => state.tail);
+    if (deliveryTails.length > 0) {
+      await Promise.all(deliveryTails);
+    }
+
+    this.paneDeliveryStates.clear();
     this.lifecycleStates.clear();
     this.gap.clear();
+    this.humanPromptState.clear();
   }
 
   // ── Lifecycle ───────────────────────────────────────────────────────────
@@ -76,7 +107,8 @@ export class TerminalIOService implements OnModuleDestroy {
   }
 
   async destroySession(target: SessionTarget): Promise<void> {
-    return lifecycle.destroySession(this.executor, target);
+    await lifecycle.destroySession(this.executor, target);
+    this.humanPromptState.clearSession(target.name);
   }
 
   async destroyExpectedSession(
@@ -101,6 +133,9 @@ export class TerminalIOService implements OnModuleDestroy {
           policy.intervalMs ?? retiredMonitor?.intervalMs ?? 5000,
           state,
         );
+      }
+      if (result.outcome !== 'unknown-error' || policy.onUnknownError === 'retire') {
+        this.humanPromptState.clearSession(target.name);
       }
       return result;
     });
@@ -396,7 +431,9 @@ export class TerminalIOService implements OnModuleDestroy {
     text: string,
     options: DeliveryOptions,
   ): Promise<DeliveryResult> {
-    return deliveryMod.deliver(this.executor, this.gap, target, text, options);
+    return this.runPaneOperation(target, () =>
+      deliveryMod.deliver(this.executor, this.gap, target, text, options),
+    );
   }
 
   async deliverImmediate(
@@ -404,11 +441,62 @@ export class TerminalIOService implements OnModuleDestroy {
     text: string,
     options: Omit<DeliveryOptions, 'agentId'>,
   ): Promise<DeliveryResult> {
-    return deliveryMod.deliverImmediate(this.executor, target, text, options);
+    return this.runPaneOperation(target, () =>
+      deliveryMod.deliverImmediate(this.executor, target, text, options),
+    );
   }
 
   async sendControl(target: SessionTarget, keys: readonly string[]): Promise<void> {
-    return deliveryMod.sendControl(this.executor, target, keys);
+    return this.runPaneOperation(target, () =>
+      deliveryMod.sendControl(this.executor, target, keys),
+    );
+  }
+
+  async deliverGuarded(
+    target: SessionTarget,
+    text: string,
+    options: DeliveryOptions,
+    quietSnapshot: HumanPromptQuietSnapshot | undefined,
+    mutationFence?: GuardedDeliveryMutationFence,
+  ): Promise<GuardedDeliveryResult> {
+    return this.runPaneOperation<GuardedDeliveryResult>(target, () =>
+      deliveryMod.deliverGuarded(this.executor, this.gap, target, text, options, () => {
+        // Cancellation, prompt release, and claim mutation form one synchronous commit boundary.
+        if (mutationFence && !mutationFence.canStartMutation()) return false;
+        if (quietSnapshot && !this.humanPromptState.releaseIfQuiet(target.name, quietSnapshot)) {
+          return false;
+        }
+        mutationFence?.markMutationStarted();
+        return true;
+      }),
+    );
+  }
+
+  private runPaneOperation<T>(target: SessionTarget, operation: () => Promise<T> | T): Promise<T> {
+    if (this.closing) return Promise.reject(new TerminalIOClosingError());
+
+    const key = sanitizeTmuxSessionName(target.name);
+    if (!key) return Promise.reject(new Error('Tmux session name must contain a safe character'));
+
+    let state = this.paneDeliveryStates.get(key);
+    if (!state) {
+      state = { tail: Promise.resolve(), pendingOperations: 0 };
+      this.paneDeliveryStates.set(key, state);
+    }
+
+    state.pendingOperations += 1;
+    const result = state.tail.then(operation);
+    state.tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+
+    return result.finally(() => {
+      state.pendingOperations -= 1;
+      if (state.pendingOperations === 0 && this.paneDeliveryStates.get(key) === state) {
+        this.paneDeliveryStates.delete(key);
+      }
+    });
   }
 }
 

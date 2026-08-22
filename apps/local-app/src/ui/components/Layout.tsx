@@ -132,7 +132,16 @@ const navSections: NavSection[] = [
         hidden: true,
       },
       { label: 'Chat', path: '/chat', icon: MessageSquare },
-      { label: 'Board', path: '/board', icon: LayoutGrid },
+      {
+        label: 'Board',
+        path: '/board',
+        icon: LayoutGrid,
+        // Epic detail pages are reached from the board, so they keep it active.
+        activeMatch: (loc) =>
+          loc.pathname === '/board' ||
+          loc.pathname.startsWith('/board/') ||
+          loc.pathname.startsWith('/epics/'),
+      },
       { label: 'Reviews', path: '/reviews', icon: GitCompareArrows },
       { label: 'Registry', path: '/registry', icon: Package, mainModeOnly: true },
       { label: 'Skills', path: '/skills', icon: Sparkles },
@@ -909,9 +918,6 @@ function LayoutShell({
   const isActive = (item: NavItem) => {
     if (item.activeMatch)
       return item.activeMatch({ pathname: location.pathname, search: location.search });
-    if (item.path === '/board') {
-      return location.pathname === item.path || location.pathname.startsWith('/epics/');
-    }
     return location.pathname === item.path || location.pathname.startsWith(item.path + '/');
   };
 

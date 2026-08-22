@@ -119,6 +119,7 @@ describe('MessageActivityStreamService', () => {
           agentName: 'Test Agent',
           projectId: 'project-1',
           messageCount: 2,
+          humanHeldMessageCount: 0,
           waitingMs: 5000,
           messages: [
             { id: 'msg-1', preview: 'Hello', source: 'test', timestamp: Date.now() },

@@ -1,7 +1,10 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { AppError, ForbiddenError, NotFoundError } from '../../../common/errors/error-types';
 import { E2eeKeypairService } from '../../e2ee/services/e2ee-keypair.service';
-import { PairedDeviceWorkspaceAccessService } from '../../e2ee/services/paired-device-workspace-access.service';
+import {
+  PairedDeviceWorkspaceAccessService,
+  canAccessWorkspace,
+} from '../../e2ee/services/paired-device-workspace-access.service';
 import { DEFAULT_PROJECT_WORKSPACE_ID } from '../../storage/db/schema';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
 import { WorkspaceModeCoordinatorService } from '../../workspaces/services/workspace-mode-coordinator.service';
@@ -11,7 +14,7 @@ import { ViewportStreamerService } from './viewport-streamer.service';
 
 type WorkspaceBearingMobileRpcMethod = Exclude<
   MobileRpcMethod,
-  'e2ee.adoptDeviceKey' | 'e2ee.revokeDeviceKey'
+  'e2ee.adoptDeviceKey' | 'e2ee.revokeDeviceKey' | 'e2ee.bindNotificationRoutingIdentity'
 >;
 
 export type MobileRpcWorkspaceScope =
@@ -89,7 +92,11 @@ export class MobileRpcWorkspaceAccessService {
     params: Record<string, unknown>,
     cryptoCtx?: RpcCryptoContext,
   ): Promise<MobileRpcWorkspaceAuthorization> {
-    if (method === 'e2ee.adoptDeviceKey' || method === 'e2ee.revokeDeviceKey') {
+    if (
+      method === 'e2ee.adoptDeviceKey' ||
+      method === 'e2ee.revokeDeviceKey' ||
+      method === 'e2ee.bindNotificationRoutingIdentity'
+    ) {
       return UNRESTRICTED_AUTHORIZATION;
     }
 
@@ -196,7 +203,10 @@ export class MobileRpcWorkspaceAccessService {
     workspaceId: string,
     allowedWorkspaceIds: ReadonlySet<string>,
   ): void {
-    if (!allowedWorkspaceIds.has(workspaceId)) throw this.accessDenied();
+    // Same predicate the notification recipient resolver uses — one access model.
+    if (!canAccessWorkspace({ workspaceIds: [...allowedWorkspaceIds] }, workspaceId)) {
+      throw this.accessDenied();
+    }
   }
 
   private accessDenied(): ForbiddenError {

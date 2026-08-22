@@ -19,6 +19,13 @@ const PREFERRED_HOST_DB_FILENAME = 'devchain.db';
 const LEGACY_HOST_DB_FILENAME = 'local.db';
 const TEMP_DB_PREFIX = '.devchain.db.tmp-';
 
+export class SeedIsolationError extends Error {
+  constructor() {
+    super('Security validation failed while isolating worktree seed data');
+    this.name = 'SeedIsolationError';
+  }
+}
+
 @Injectable()
 export class SeedPreparationService {
   async prepareSeedData(targetDataPath: string): Promise<void> {
@@ -33,6 +40,7 @@ export class SeedPreparationService {
     await this.copySkillsDirectory(sourceSkillsPath, targetSkillsPath);
 
     await this.runMigrationsOnCopy(targetDbPath);
+    this.scrubIntegrationData(targetDbPath);
 
     logger.info(
       {
@@ -116,6 +124,55 @@ export class SeedPreparationService {
     } finally {
       sqlite.pragma('foreign_keys = ON');
       sqlite.close();
+    }
+  }
+
+  private scrubIntegrationData(dbPath: string): void {
+    const sqlite = new Database(dbPath, { fileMustExist: true });
+
+    try {
+      sqlite.pragma('foreign_keys = ON');
+      const scrub = sqlite.transaction(() => {
+        sqlite.prepare('DELETE FROM external_task_links').run();
+        sqlite.prepare('DELETE FROM integration_connections').run();
+      });
+      scrub();
+
+      this.assertIntegrationDataRemoved(sqlite);
+      sqlite.exec('VACUUM');
+
+      const checkpoint = sqlite.pragma('wal_checkpoint(TRUNCATE)') as Array<{
+        busy: number;
+      }>;
+      if (checkpoint.length !== 1 || checkpoint[0].busy !== 0) {
+        throw new SeedIsolationError();
+      }
+
+      this.assertIntegrationDataRemoved(sqlite);
+      const integrity = sqlite.pragma('integrity_check', { simple: true }) as string;
+      if (integrity !== 'ok') {
+        throw new SeedIsolationError();
+      }
+    } catch (error) {
+      if (error instanceof SeedIsolationError) {
+        throw error;
+      }
+      throw new SeedIsolationError();
+    } finally {
+      sqlite.close();
+    }
+  }
+
+  private assertIntegrationDataRemoved(sqlite: Database.Database): void {
+    const externalTaskLinks = sqlite
+      .prepare('SELECT COUNT(*) AS count FROM external_task_links')
+      .get() as { count: number };
+    const integrationConnections = sqlite
+      .prepare('SELECT COUNT(*) AS count FROM integration_connections')
+      .get() as { count: number };
+
+    if (externalTaskLinks.count !== 0 || integrationConnections.count !== 0) {
+      throw new SeedIsolationError();
     }
   }
 

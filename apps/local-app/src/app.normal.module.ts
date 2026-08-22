@@ -42,6 +42,7 @@ import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { EventsCoreModule } from './modules/events/events-core.module';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 import { AllWsExceptionsFilter } from './common/filters/ws-exception.filter';
+import { ExternalIntegrationsModule } from './modules/external-integrations/external-integrations.module';
 
 @Module({
   imports: [
@@ -84,6 +85,7 @@ import { AllWsExceptionsFilter } from './common/filters/ws-exception.filter';
     CloudTunnelModule,
     E2eeModule,
     AgentMessageDeliveryModule,
+    ExternalIntegrationsModule,
   ],
   controllers: [],
   providers: [
