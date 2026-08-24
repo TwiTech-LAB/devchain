@@ -23,6 +23,7 @@ export interface SettingsResponse {
     scrollbackLines?: number;
     seedingMaxBytes?: number;
     inputMode?: 'form' | 'tty';
+    suppressCtrlCWithSelection?: boolean;
   };
   messagePool?: {
     enabled?: boolean;
@@ -117,11 +118,16 @@ export function useSettingsData() {
       scrollbackLines,
       seedingMaxBytes,
       inputMode,
+      suppressCtrlCWithSelection,
     }: {
       scrollbackLines: number;
       seedingMaxBytes: number;
       inputMode?: 'form' | 'tty';
-    }) => updateSettingsRequest({ terminal: { scrollbackLines, seedingMaxBytes, inputMode } }),
+      suppressCtrlCWithSelection?: boolean;
+    }) =>
+      updateSettingsRequest({
+        terminal: { scrollbackLines, seedingMaxBytes, inputMode, suppressCtrlCWithSelection },
+      }),
     onSuccess: () => {
       invalidateSettings();
       toast({ title: 'Terminal settings updated' });

@@ -18,7 +18,10 @@ import { termLog } from '@/ui/lib/debug';
 import { useAppSocket } from '@/ui/hooks/useAppSocket';
 import type { WsEnvelope } from '@/ui/lib/socket';
 import { useAppTheme } from '@/ui/hooks/useAppTheme';
-import { DEFAULT_TERMINAL_SCROLLBACK } from '@/common/constants/terminal';
+import {
+  DEFAULT_TERMINAL_SCROLLBACK,
+  DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION,
+} from '@/common/constants/terminal';
 import {
   useXterm,
   useTerminalResize,
@@ -99,6 +102,9 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
   const appTheme = useAppTheme();
   const [input, setInput] = useState<string>('');
   const [inputMode, setInputMode] = useState<'form' | 'tty' | null>(null); // null = loading
+  const [suppressCtrlCWithSelection, setSuppressCtrlCWithSelection] = useState(
+    DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION,
+  );
   const [scrollbackLines, setScrollbackLines] = useState<number>(DEFAULT_TERMINAL_SCROLLBACK); // Default until loaded
   const [isTerminalReady, setIsTerminalReady] = useState(false);
   const [conn, dispatchConn] = useReducer(connectionReducer, {
@@ -144,6 +150,12 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
         const scrollback = json?.terminal?.scrollbackLines;
         if (typeof scrollback === 'number' && scrollback > 0) {
           setScrollbackLines(scrollback);
+        }
+
+        // Ctrl+C handling while text is selected
+        const suppress = json?.terminal?.suppressCtrlCWithSelection;
+        if (typeof suppress === 'boolean') {
+          setSuppressCtrlCWithSelection(suppress);
         }
       })
       .catch((error) => {
@@ -270,6 +282,7 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
     writePump.setTerminal,
     setScrollIntentController,
     isAuthorityRef,
+    suppressCtrlCWithSelection,
   );
 
   // Seed management

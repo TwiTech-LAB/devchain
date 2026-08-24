@@ -13,9 +13,11 @@ import { createScrollHistoryDetector } from '../scroll-history-detector';
 import { createScrollIntentBinding, type ScrollIntentController } from '../scroll-intent-binding';
 import {
   DEFAULT_TERMINAL_SCROLLBACK,
+  DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION,
   MIN_TERMINAL_SCROLLBACK,
   MAX_TERMINAL_SCROLLBACK,
 } from '@/common/constants/terminal';
+import { shouldWithholdCtrlC } from '../suppress-ctrl-c';
 import { resolveTerminalSocket } from '../socket';
 import { resolveTerminalTheme } from '../terminal-themes';
 import type { ThemeValue } from '@/ui/components/ThemeSelect';
@@ -68,6 +70,7 @@ const RESHOW_RESTORE_SETTLE_MS = 300;
  * @param isHistoryInFlightRef - Ref tracking if history request is in-flight (for buffering)
  * @param pendingHistoryFramesRef - Ref to buffer frames during in-flight for sequence-based dedup
  * @param scrollbackLines - Number of scrollback lines (from settings, fixed at mount)
+ * @param suppressCtrlCWithSelection - Withhold Ctrl+C from the pane while text is selected
  */
 export function useXterm(
   terminalRef: React.RefObject<HTMLDivElement>,
@@ -87,6 +90,7 @@ export function useXterm(
   onTerminalChange?: (terminal: Terminal | null) => void,
   onScrollIntentController?: (controller: ScrollIntentController | null) => void,
   isAuthorityRef?: React.MutableRefObject<boolean>,
+  suppressCtrlCWithSelection: boolean = DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION,
 ) {
   useEffect(() => {
     // C1: Clamp scrollbackLines to valid range before using
@@ -169,6 +173,26 @@ export function useXterm(
         // malformed base64 — ignore
       }
       return true;
+    });
+
+    // Ctrl+C reaches the provider as an interrupt, which clears an unsent prompt.
+    // With a selection present that costs the user their draft and gains nothing,
+    // since the selection has already been copied below. Withhold it and clear the
+    // selection instead, so a second press — now with nothing selected — interrupts
+    // as usual.
+    terminal.attachCustomKeyEventHandler((event) => {
+      if (!shouldWithholdCtrlC(event, terminal.hasSelection(), suppressCtrlCWithSelection)) {
+        return true;
+      }
+      const selected = terminal.getSelection();
+      if (selected && navigator.clipboard?.writeText) {
+        void navigator.clipboard.writeText(selected).catch((err: unknown) => {
+          const reason = err instanceof Error ? err.message : String(err);
+          termLog('ctrl_c_copy_failed', { sessionId, reason, textLen: selected.length });
+        });
+      }
+      terminal.clearSelection();
+      return false;
     });
 
     // Auto-copy on selection. xterm.js exposes only a highlight by default, and

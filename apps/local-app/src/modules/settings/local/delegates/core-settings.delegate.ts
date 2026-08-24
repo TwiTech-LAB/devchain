@@ -16,6 +16,7 @@ import {
   MIN_TERMINAL_SEED_MAX_BYTES,
   MAX_TERMINAL_SEED_MAX_BYTES,
   DEFAULT_TERMINAL_INPUT_MODE,
+  DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION,
   MIN_MESSAGE_POOL_DELAY_MS,
   MAX_MESSAGE_POOL_DELAY_MS,
   MIN_MESSAGE_POOL_MAX_WAIT_MS,
@@ -141,6 +142,10 @@ export class CoreSettingsDelegate {
           settings.terminal = settings.terminal ?? {};
           settings.terminal.inputMode = inputMode;
         }
+      } else if (row.key === 'terminal.suppressCtrlCWithSelection') {
+        settings.terminal = settings.terminal ?? {};
+        settings.terminal.suppressCtrlCWithSelection =
+          this.decodeStringSetting(row.value) === 'true';
       } else if (row.key === 'activity.idleTimeoutMs') {
         const valueStr = this.decodeStringSetting(row.value);
         const parsed = Number(valueStr);
@@ -258,6 +263,9 @@ export class CoreSettingsDelegate {
       scrollbackLines: effectiveScrollback,
       seedingMaxBytes: effectiveSeedMaxBytes,
       inputMode,
+      suppressCtrlCWithSelection:
+        terminalSettings.suppressCtrlCWithSelection ??
+        DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION,
     };
 
     logger.debug({ settings }, 'Retrieved settings');
@@ -371,6 +379,17 @@ export class CoreSettingsDelegate {
           ? inputMode
           : DEFAULT_TERMINAL_INPUT_MODE;
         stmt.run(randomUUID(), 'terminal.inputMode', inputModeToStore, now, now);
+      }
+
+      const suppressCtrlCWithSelection = settings.terminal?.suppressCtrlCWithSelection;
+      if (suppressCtrlCWithSelection !== undefined) {
+        stmt.run(
+          randomUUID(),
+          'terminal.suppressCtrlCWithSelection',
+          String(suppressCtrlCWithSelection),
+          now,
+          now,
+        );
       }
 
       if (settings.autoClean?.statusIds !== undefined) {

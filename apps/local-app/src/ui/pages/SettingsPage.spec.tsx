@@ -669,8 +669,11 @@ describe('SettingsPage terminal streaming settings', () => {
     await waitFor(() => expect(seedMaxInput).toHaveValue(1024));
     fireEvent.change(seedMaxInput, { target: { value: '2048' } });
 
-    const saveButton = seedMaxInput.parentElement?.parentElement?.querySelector('button');
-    expect(saveButton).not.toBeNull();
+    // Select by name: the section also contains toggle switches, which render as buttons.
+    const saveButton = Array.from(
+      seedMaxInput.parentElement?.parentElement?.querySelectorAll('button') ?? [],
+    ).find((button) => /save/i.test(button.textContent ?? ''));
+    expect(saveButton).toBeDefined();
     fireEvent.click(saveButton!);
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/settings', expect.anything()));

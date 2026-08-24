@@ -8,6 +8,7 @@ import {
   MAX_TERMINAL_SEED_MAX_BYTES,
   MIN_TERMINAL_SEED_MAX_BYTES,
   DEFAULT_TERMINAL_INPUT_MODE,
+  DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION,
   MIN_TERMINAL_SCROLLBACK,
   MAX_TERMINAL_SCROLLBACK,
   DEFAULT_SKILLS_SYNC_ON_STARTUP,
@@ -1346,6 +1347,7 @@ describe('SettingsService — Characterization: getSettings() comprehensive', ()
       scrollbackLines: DEFAULT_TERMINAL_SCROLLBACK,
       seedingMaxBytes: DEFAULT_TERMINAL_SEED_MAX_BYTES,
       inputMode: DEFAULT_TERMINAL_INPUT_MODE,
+      suppressCtrlCWithSelection: DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION,
     });
     expect(s.claudeBinaryPath).toBeUndefined();
     expect(s.codexBinaryPath).toBeUndefined();
@@ -1381,6 +1383,7 @@ describe('SettingsService — Characterization: getSettings() comprehensive', ()
       scrollbackLines: DEFAULT_TERMINAL_SCROLLBACK,
       seedingMaxBytes: DEFAULT_TERMINAL_SEED_MAX_BYTES,
       inputMode: DEFAULT_TERMINAL_INPUT_MODE,
+      suppressCtrlCWithSelection: DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION,
     });
   });
 
@@ -1610,6 +1613,30 @@ describe('SettingsService — Characterization: updateSettings() round-trip', ()
       terminal: { inputMode: 'unknown-mode' as 'tty' },
     });
     expect(service.getSettings().terminal?.inputMode).toBe(DEFAULT_TERMINAL_INPUT_MODE);
+  });
+
+  // The setting defaults to on, so only turning it OFF proves it round-trips.
+  // Adding the field to the DTO alone was accepted by the API and silently dropped,
+  // because the store persists and rebuilds an explicit list of terminal keys.
+  it('persists suppressCtrlCWithSelection when turned off', async () => {
+    expect(service.getSettings().terminal?.suppressCtrlCWithSelection).toBe(
+      DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION,
+    );
+
+    await service.updateSettings({ terminal: { suppressCtrlCWithSelection: false } });
+    expect(service.getSettings().terminal?.suppressCtrlCWithSelection).toBe(false);
+
+    await service.updateSettings({ terminal: { suppressCtrlCWithSelection: true } });
+    expect(service.getSettings().terminal?.suppressCtrlCWithSelection).toBe(true);
+  });
+
+  it('leaves suppressCtrlCWithSelection alone when other terminal settings are saved', async () => {
+    await service.updateSettings({ terminal: { suppressCtrlCWithSelection: false } });
+    await service.updateSettings({ terminal: { scrollbackLines: 12000 } });
+
+    const s = service.getSettings();
+    expect(s.terminal?.scrollbackLines).toBe(12000);
+    expect(s.terminal?.suppressCtrlCWithSelection).toBe(false);
   });
 
   it('handles initialSessionPromptId with projectId (per-project mapping)', async () => {

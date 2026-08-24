@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Button } from '@/ui/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/ui/components/ui/card';
 import { Label } from '@/ui/components/ui/label';
+import { Switch } from '@/ui/components/ui/switch';
 import {
   Select,
   SelectContent,
@@ -14,6 +15,7 @@ import {
   DEFAULT_TERMINAL_SCROLLBACK,
   MIN_TERMINAL_SCROLLBACK,
   MAX_TERMINAL_SCROLLBACK,
+  DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION,
 } from '@/common/constants/terminal';
 import { useSettingsData } from './useSettingsData';
 
@@ -28,6 +30,9 @@ export function TerminalSection() {
   const [seedMaxKb, setSeedMaxKb] = useState<number | ''>('');
   const [terminalInputMode, setTerminalInputMode] = useState<'form' | 'tty'>('form');
   const [idleTimeoutSec, setIdleTimeoutSec] = useState<number | ''>('');
+  const [suppressCtrlC, setSuppressCtrlC] = useState(
+    DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION,
+  );
 
   useEffect(() => {
     if (!settings) return;
@@ -36,6 +41,10 @@ export function TerminalSection() {
     const maxBytes = settings.terminal?.seedingMaxBytes ?? DEFAULT_TERMINAL_SEED_MAX_BYTES;
     setSeedMaxKb(Math.round(maxBytes / 1024));
     setTerminalInputMode(settings.terminal?.inputMode ?? 'form');
+    setSuppressCtrlC(
+      settings.terminal?.suppressCtrlCWithSelection ??
+        DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION,
+    );
   }, [settings]);
 
   useEffect(() => {
@@ -105,6 +114,24 @@ export function TerminalSection() {
                 max {MAX_TERMINAL_SCROLLBACK}).
               </p>
             </div>
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-1">
+                <Label htmlFor="terminal-suppress-ctrl-c">
+                  Suppress Ctrl+C when text is selected
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Selecting text already copies it. With this on, Ctrl+C is not passed to the agent
+                  while a selection exists, so it cannot clear a message you have typed but not
+                  sent. Press it again with nothing selected to interrupt the agent.
+                </p>
+              </div>
+              <Switch
+                id="terminal-suppress-ctrl-c"
+                checked={suppressCtrlC}
+                onCheckedChange={setSuppressCtrlC}
+              />
+            </div>
+
             <div className="space-y-2">
               <Label htmlFor="terminal-seed-max">Seed snapshot cap (KB)</Label>
               <input
@@ -156,6 +183,7 @@ export function TerminalSection() {
                     scrollbackLines: coercedLines,
                     seedingMaxBytes: coercedSeedKb * 1024,
                     inputMode: terminalInputMode,
+                    suppressCtrlCWithSelection: suppressCtrlC,
                   });
                 }}
               >

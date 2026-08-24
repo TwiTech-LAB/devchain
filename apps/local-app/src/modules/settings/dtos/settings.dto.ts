@@ -33,6 +33,8 @@ const TerminalSettingsSchema = z.object({
     .max(4 * 1024 * 1024)
     .optional(),
   inputMode: z.enum(TERMINAL_INPUT_MODES).optional(),
+  /** Withhold Ctrl+C from the provider while the terminal has a selection. */
+  suppressCtrlCWithSelection: z.boolean().optional(),
 });
 
 // Auto-clean settings for automatic agent unassignment
