@@ -22,10 +22,38 @@ import { NotFoundError, ValidationError } from '../../../common/errors/error-typ
 import { SettingsService } from '../../settings/services/settings.service';
 import { normalizeExternalTaskSourceUrl } from '../../external-integrations/models/external-task-source';
 import type { ExternalTaskSourceSummary } from '../../external-integrations/models/external-provider.models';
+import type { PreparedEvent } from '../../events/services/durable-event-registry.service';
 interface EpicBroadcastPayload {
   projectId: string;
   type: 'created' | 'updated' | 'deleted' | 'comment.created';
   data: unknown;
+}
+
+type EpicUpdatedChanges = PreparedEvent<'epic.updated'>['payload']['changes'];
+
+interface EpicUpdatedChangeNames {
+  statusId?: { previousName?: string; currentName?: string };
+  agentId?: { previousName?: string; currentName?: string };
+  parentId?: { previousTitle?: string; currentTitle?: string };
+}
+
+interface EpicCreatedNames {
+  projectName?: string;
+  statusName?: string;
+  agentName?: string;
+  parentTitle?: string;
+  parentAgentId?: string;
+  parentAgentName?: string;
+  creatorName?: string;
+}
+
+interface EpicCreatedLookup {
+  id?: string;
+  projectId: string;
+  statusId?: string;
+  agentId?: string | null;
+  parentId?: string | null;
+  createdBy?: string | null;
 }
 
 /**
@@ -77,13 +105,16 @@ export class EpicsService {
   async createEpic(data: CreateEpic, context?: EpicOperationContext): Promise<Epic> {
     // Clear agentId if creating in an auto-clean status
     this.applyAutoCleanIfNeeded(data.projectId, data.statusId, data);
+    const createData = { ...data, createdBy: this.deriveCreatedBy(context) };
+    const names = await this.resolveEpicCreatedNames(createData, context?.actor);
 
-    const epic = await this.storage.createEpic({
-      ...data,
-      createdBy: this.deriveCreatedBy(context),
-    });
+    let prepared: PreparedEvent<'epic.created'> | null = null;
+    const epic = await this.storage.createEpic(
+      createData,
+      (created) => (prepared = this.prepareEpicCreatedEvent(created, context, names)),
+    );
 
-    await this.publishEpicCreated(epic, context);
+    this.emitPreparedCreated(prepared);
 
     return epic;
   }
@@ -94,16 +125,22 @@ export class EpicsService {
   ): Promise<CreateEpicWithExternalTaskLinkResult> {
     const epic = { ...data.epic };
     this.applyAutoCleanIfNeeded(epic.projectId, epic.statusId, epic);
+    const createData = { ...epic, createdBy: this.deriveCreatedBy(context) };
+    const names = await this.resolveEpicCreatedNames(createData, context?.actor);
 
-    const result = await this.storage.createEpicWithExternalTaskLink({
-      ...data,
-      epic: {
-        ...epic,
-        createdBy: this.deriveCreatedBy(context),
+    let prepared: PreparedEvent<'epic.created'> | null = null;
+    const result = await this.storage.createEpicWithExternalTaskLink(
+      {
+        ...data,
+        epic: createData,
       },
-    });
+      (created) =>
+        created.created
+          ? (prepared = this.prepareEpicCreatedEvent(created.epic, context, names))
+          : null,
+    );
     if (result.created) {
-      await this.publishEpicCreated(result.epic, context);
+      this.emitPreparedCreated(prepared);
     }
     return result;
   }
@@ -240,13 +277,40 @@ export class EpicsService {
   ): Promise<Epic> {
     // Clear agentId if creating in an auto-clean status
     this.applyAutoCleanIfNeeded(projectId, input.statusId, input);
-
-    const epic = await this.storage.createEpicForProject(projectId, {
+    const statusSnapshot = await this.resolveEpicCreatedStatusSnapshot(projectId, input.statusId);
+    let agentId = input.agentId;
+    let agentName: string | undefined;
+    if (!agentId && input.agentName?.trim()) {
+      const agent = await this.storage.getAgentByName(projectId, input.agentName);
+      agentId = agent.id;
+      agentName = agent.name;
+    }
+    const createInput = {
       ...input,
+      statusId: statusSnapshot.statusId,
+      agentId,
       createdBy: this.deriveCreatedBy(context),
-    });
+    };
+    const names = await this.resolveEpicCreatedNames(
+      {
+        projectId,
+        statusId: createInput.statusId,
+        agentId: createInput.agentId ?? null,
+        parentId: createInput.parentId ?? null,
+        createdBy: createInput.createdBy,
+      },
+      context?.actor,
+      { statusName: statusSnapshot.statusName, agentName },
+    );
 
-    await this.publishEpicCreated(epic, context);
+    let prepared: PreparedEvent<'epic.created'> | null = null;
+    const epic = await this.storage.createEpicForProject(
+      projectId,
+      createInput,
+      (created) => (prepared = this.prepareEpicCreatedEvent(created, context, names)),
+    );
+
+    this.emitPreparedCreated(prepared);
 
     return epic;
   }
@@ -275,43 +339,54 @@ export class EpicsService {
       this.applyAutoCleanIfNeeded(before.projectId, data.statusId, data);
     }
 
-    const updated = await this.storage.updateEpic(id, data, expectedVersion);
+    const changeNames = await this.resolveEpicUpdatedChangeNames(
+      before,
+      {
+        statusId: data.statusId ?? before.statusId,
+        agentId: data.agentId !== undefined ? data.agentId : before.agentId,
+        parentId: data.parentId !== undefined ? data.parentId : before.parentId,
+      },
+      data,
+    );
 
-    // Publish epic.updated event (best-effort persisted event - failures logged but don't block update)
+    let projectName: string | undefined;
     try {
-      const changes = await this.buildEpicChangesWithNames(before, updated, data);
-      const tagsChanged = !this.haveSameExactTags(before.tags, updated.tags);
-      if (Object.keys(changes).length > 0 || tagsChanged) {
-        // Resolve project name for context
-        let projectName: string | undefined;
-        try {
-          const project = await this.storage.getProject(updated.projectId);
-          projectName = project.name;
-        } catch (error) {
-          this.logger.warn(
-            { epicId: updated.id, projectId: updated.projectId, error },
-            'Failed to resolve project name for epic.updated',
-          );
-        }
+      projectName = (await this.storage.getProject(before.projectId)).name;
+    } catch (error) {
+      this.logger.warn(
+        { epicId: before.id, projectId: before.projectId, error },
+        'Failed to resolve project name for epic.updated',
+      );
+    }
 
-        await this.eventsService.publish('epic.updated', {
-          epicId: updated.id,
-          projectId: updated.projectId,
-          parentId: updated.parentId ?? null,
-          version: updated.version,
-          epicTitle: updated.title,
+    let prepared: PreparedEvent<'epic.updated'> | null = null;
+    const updated = await this.storage.updateEpic(
+      id,
+      data,
+      expectedVersion,
+      (current, previous) => {
+        const changes = this.buildEpicChanges(previous, current, data, changeNames);
+        const tagsChanged = !this.haveSameExactTags(previous.tags, current.tags);
+        if (Object.keys(changes).length === 0 && !tagsChanged) {
+          return null;
+        }
+        prepared = this.eventsService.prepareCommitted('epic.updated', {
+          epicId: current.id,
+          projectId: current.projectId,
+          parentId: current.parentId ?? null,
+          version: current.version,
+          epicTitle: current.title,
           projectName,
           actor: context?.actor ?? null,
           recipientIds: this.buildAgentRecipientIds(changes.agentId?.current, context?.actor),
           changes,
         });
-      }
-    } catch (error) {
-      this.logger.error(
-        { epicId: updated.id, projectId: updated.projectId, error },
-        'Failed to publish epic.updated event',
-      );
-      // Don't fail the update - gracefully continue
+        return prepared;
+      },
+    );
+
+    if (prepared) {
+      this.eventsService.emitCommitted(prepared);
     }
 
     // CASCADE: Clear all sub-epics' agents when parent moves to auto-clean status
@@ -429,22 +504,24 @@ export class EpicsService {
   }
 
   async deleteEpic(id: string, context?: EpicOperationContext): Promise<void> {
-    const epic = await this.storage.getEpic(id);
-    await this.storage.deleteEpic(id);
-
-    try {
-      await this.eventsService.publish('epic.deleted', {
-        epicId: epic.id,
-        projectId: epic.projectId,
-        title: epic.title,
-        parentId: epic.parentId ?? null,
+    await this.storage.getEpic(id);
+    const prepared: Array<PreparedEvent<'epic.deleted'>> = [];
+    await this.storage.deleteEpic(id, (deleted) => {
+      const event = this.eventsService.prepareCommitted('epic.deleted', {
+        epicId: deleted.id,
+        projectId: deleted.projectId,
+        title: deleted.title,
+        parentId: deleted.parentId ?? null,
         actor: context?.actor ?? null,
       });
-    } catch (error) {
-      this.logger.error(
-        { epicId: epic.id, projectId: epic.projectId, error },
-        'Failed to publish epic.deleted event',
-      );
+      prepared.push(event);
+      return event;
+    });
+
+    if (prepared.length > 0) {
+      for (const event of prepared) {
+        this.eventsService.emitCommitted(event);
+      }
     }
   }
 
@@ -650,31 +727,16 @@ export class EpicsService {
    * Returns partial object with resolved names; missing lookups are omitted (graceful degradation).
    */
   private async resolveEpicCreatedNames(
-    epic: Epic,
+    epic: EpicCreatedLookup,
     actor?: EpicOperationContext['actor'],
-  ): Promise<{
-    projectName?: string;
-    statusName?: string;
-    agentName?: string;
-    parentTitle?: string;
-    parentAgentId?: string;
-    parentAgentName?: string;
-    creatorName?: string;
-  }> {
-    const result: {
-      projectName?: string;
-      statusName?: string;
-      agentName?: string;
-      parentTitle?: string;
-      parentAgentId?: string;
-      parentAgentName?: string;
-      creatorName?: string;
-    } = {};
+    knownNames: EpicCreatedNames = {},
+  ): Promise<EpicCreatedNames> {
+    const result: EpicCreatedNames = { ...knownNames };
 
     // Resolve project name
     try {
       const project = await this.storage.getProject(epic.projectId);
-      result.projectName = project.name;
+      result.projectName ??= project.name;
     } catch (error) {
       this.logger.warn(
         { epicId: epic.id, projectId: epic.projectId, error },
@@ -683,7 +745,7 @@ export class EpicsService {
     }
 
     // Resolve status name (if statusId is set)
-    if (epic.statusId) {
+    if (epic.statusId && !result.statusName) {
       try {
         const status = await this.storage.getStatus(epic.statusId);
         result.statusName = status.label;
@@ -696,7 +758,7 @@ export class EpicsService {
     }
 
     // Resolve agent name (if agentId is set)
-    if (epic.agentId) {
+    if (epic.agentId && !result.agentName) {
       try {
         const agent = await this.storage.getAgent(epic.agentId);
         result.agentName = agent.name;
@@ -709,7 +771,7 @@ export class EpicsService {
     }
 
     // Resolve parent title (if parentId is set)
-    if (epic.parentId) {
+    if (epic.parentId && !result.parentTitle) {
       try {
         const parent = await this.storage.getEpic(epic.parentId);
         result.parentTitle = parent.title;
@@ -755,31 +817,56 @@ export class EpicsService {
     return result;
   }
 
-  private async publishEpicCreated(epic: Epic, context?: EpicOperationContext): Promise<void> {
+  private prepareEpicCreatedEvent(
+    epic: Epic,
+    context?: EpicOperationContext,
+    names: EpicCreatedNames = {},
+  ): PreparedEvent<'epic.created'> {
+    return this.eventsService.prepareCommitted('epic.created', {
+      epicId: epic.id,
+      projectId: epic.projectId,
+      title: epic.title,
+      epicTitle: epic.title,
+      statusId: epic.statusId ?? null,
+      agentId: epic.agentId ?? null,
+      parentId: epic.parentId ?? null,
+      actor: context?.actor ?? null,
+      assignmentRecipientIds: this.buildAgentRecipientIds(epic.agentId, context?.actor),
+      subEpicRecipientIds: this.buildAgentRecipientIds(names.parentAgentId, context?.actor),
+      ...names,
+    });
+  }
+
+  private async resolveEpicCreatedStatusSnapshot(
+    projectId: string,
+    statusId?: string,
+  ): Promise<{ statusId: string | undefined; statusName: string | undefined }> {
     try {
-      const resolvedNames = await this.resolveEpicCreatedNames(epic, context?.actor);
-      await this.eventsService.publish('epic.created', {
-        epicId: epic.id,
-        projectId: epic.projectId,
-        title: epic.title,
-        epicTitle: epic.title,
-        statusId: epic.statusId ?? null,
-        agentId: epic.agentId ?? null,
-        parentId: epic.parentId ?? null,
-        actor: context?.actor ?? null,
-        assignmentRecipientIds: this.buildAgentRecipientIds(epic.agentId, context?.actor),
-        subEpicRecipientIds: this.buildAgentRecipientIds(
-          resolvedNames.parentAgentId,
-          context?.actor,
-        ),
-        ...resolvedNames,
-      });
+      if (statusId) {
+        const status = await this.storage.getStatus(statusId);
+        return { statusId, statusName: status?.label };
+      }
+
+      const statuses = await this.storage.listStatuses(projectId, { limit: 1, offset: 0 });
+      const defaultStatus = statuses.items[0];
+      return {
+        statusId: defaultStatus?.id,
+        statusName: defaultStatus?.label,
+      };
     } catch (error) {
-      this.logger.error(
-        { epicId: epic.id, projectId: epic.projectId, error },
-        'Failed to publish epic.created event',
+      this.logger.warn(
+        { projectId, statusId, error },
+        'Failed to resolve status name before epic.created commit',
       );
+      return { statusId, statusName: undefined };
     }
+  }
+
+  private emitPreparedCreated(prepared: PreparedEvent<'epic.created'> | null): void {
+    if (!prepared) {
+      throw new Error('Storage did not append the required epic.created event.');
+    }
+    this.eventsService.emitCommitted(prepared);
   }
 
   private deriveCreatedBy(context?: EpicOperationContext): string | null {
@@ -834,66 +921,51 @@ export class EpicsService {
     return leftSet.size === rightSet.size && [...leftSet].every((tag) => rightSet.has(tag));
   }
 
-  /**
-   * Builds epic changes with resolved names for event publishing.
-   * Includes parentId tracking and human-readable names for status, agent, and parent.
-   *
-   * Uses parallel lookups (Promise.allSettled) for performance optimization.
-   * Individual lookup failures are logged but don't affect other resolutions.
-   */
-  private async buildEpicChangesWithNames(
+  private buildEpicChanges(
     before: Epic,
     after: Epic,
     data?: UpdateEpic,
-  ): Promise<{
-    title?: { previous: string; current: string };
-    statusId?: {
-      previous: string | null;
-      current: string | null;
-      previousName?: string;
-      currentName?: string;
-    };
-    agentId?: {
-      previous: string | null;
-      current: string | null;
-      previousName?: string;
-      currentName?: string;
-    };
-    parentId?: {
-      previous: string | null;
-      current: string | null;
-      previousTitle?: string;
-      currentTitle?: string;
-    };
-  }> {
-    const changes: {
-      title?: { previous: string; current: string };
-      statusId?: {
-        previous: string | null;
-        current: string | null;
-        previousName?: string;
-        currentName?: string;
-      };
-      agentId?: {
-        previous: string | null;
-        current: string | null;
-        previousName?: string;
-        currentName?: string;
-      };
-      parentId?: {
-        previous: string | null;
-        current: string | null;
-        previousTitle?: string;
-        currentTitle?: string;
-      };
-    } = {};
-
-    // Track title changes (no async lookup needed)
+    names: EpicUpdatedChangeNames = {},
+  ): EpicUpdatedChanges {
+    const changes: EpicUpdatedChanges = {};
     if (before.title !== after.title) {
       changes.title = { previous: before.title, current: after.title };
     }
+    if (before.description !== after.description) {
+      changes.description = {
+        previous: before.description ?? null,
+        current: after.description ?? null,
+      };
+    }
+    if (before.statusId !== after.statusId) {
+      changes.statusId = {
+        previous: before.statusId ?? null,
+        current: after.statusId ?? null,
+        ...names.statusId,
+      };
+    }
+    if (before.agentId !== after.agentId || (data !== undefined && 'agentId' in data)) {
+      changes.agentId = {
+        previous: before.agentId ?? null,
+        current: after.agentId ?? null,
+        ...names.agentId,
+      };
+    }
+    if (before.parentId !== after.parentId) {
+      changes.parentId = {
+        previous: before.parentId ?? null,
+        current: after.parentId ?? null,
+        ...names.parentId,
+      };
+    }
+    return changes;
+  }
 
-    // Determine which lookups are needed
+  private async resolveEpicUpdatedChangeNames(
+    before: Epic,
+    after: Pick<Epic, 'statusId' | 'agentId' | 'parentId'>,
+    data?: UpdateEpic,
+  ): Promise<EpicUpdatedChangeNames> {
     const statusChanged = before.statusId !== after.statusId;
     const agentChanged =
       before.agentId !== after.agentId || (data !== undefined && 'agentId' in data);
@@ -974,37 +1046,29 @@ export class EpicsService {
       }
     }
 
-    // Build statusId change object
+    const names: EpicUpdatedChangeNames = {};
     if (statusChanged) {
-      changes.statusId = {
-        previous: before.statusId ?? null,
-        current: after.statusId ?? null,
+      names.statusId = {
         previousName: resolved.prevStatus,
         currentName: resolved.currStatus,
       };
     }
 
-    // Build agentId change object
     if (agentChanged) {
-      changes.agentId = {
-        previous: before.agentId ?? null,
-        current: after.agentId ?? null,
+      names.agentId = {
         previousName: resolved.prevAgent,
         currentName: resolved.currAgent,
       };
     }
 
-    // Build parentId change object
     if (parentChanged) {
-      changes.parentId = {
-        previous: before.parentId ?? null,
-        current: after.parentId ?? null,
+      names.parentId = {
         previousTitle: resolved.prevParent,
         currentTitle: resolved.currParent,
       };
     }
 
-    return changes;
+    return names;
   }
 
   private emitBroadcast(

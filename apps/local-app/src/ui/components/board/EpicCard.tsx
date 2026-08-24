@@ -3,6 +3,7 @@ import type { ExternalTaskSourceSummary } from '@/modules/external-integrations/
 import { Card, CardContent, CardHeader, CardTitle } from '@/ui/components/ui/card';
 import { EpicTooltipWrapper } from '@/ui/components/shared/EpicTooltipWrapper';
 import { EpicExternalSourceNote } from '@/ui/components/board/EpicExternalSourceNote';
+import { EpicTimeBadge } from '@/ui/components/board/EpicTimeBadge';
 import { cn } from '@/ui/lib/utils';
 import type { Epic, Status } from './types';
 
@@ -26,6 +27,8 @@ export interface EpicCardProps
   onBulkEdit?: (e: React.MouseEvent) => void;
   onMoveToWorktree?: (e: React.MouseEvent) => void;
   subEpicCountsByStatus?: Record<string, number>;
+  /** Estimated-time total in whole minutes; rendered for root epics only. */
+  timeTotalMinutes?: number;
   /** Stored external source; renders the linked-task footer beside the card. */
   source?: ExternalTaskSourceSummary;
 }
@@ -59,6 +62,7 @@ export const EpicCard = forwardRef<HTMLDivElement, EpicCardProps>(function EpicC
     onBulkEdit,
     onMoveToWorktree,
     subEpicCountsByStatus,
+    timeTotalMinutes,
     source,
     ...rest
   },
@@ -79,6 +83,8 @@ export const EpicCard = forwardRef<HTMLDivElement, EpicCardProps>(function EpicC
 
   const hasSubEpicSummary = subEpicSummary.length > 0;
   const totalSubEpicCount = subEpicSummary.reduce((sum, entry) => sum + entry.count, 0);
+  const showTimeBadge =
+    epic.parentId === null && timeTotalMinutes !== undefined && timeTotalMinutes > 0;
   const titleClassName =
     showFilterToggle && isActiveParent
       ? 'text-primary underline decoration-2'
@@ -178,18 +184,28 @@ export const EpicCard = forwardRef<HTMLDivElement, EpicCardProps>(function EpicC
       </CardHeader>
       <CardContent className="p-3 pt-0 space-y-2 text-sm">
         {renderPreview(totalSubEpicCount)}
-        {showFilterToggle && hasSubEpicSummary && (
-          <div className="flex flex-wrap gap-2 pt-1">
-            {subEpicSummary.map(({ status, count }) => (
-              <div
-                key={status.id}
-                className="flex items-center gap-1 text-xs text-muted-foreground"
-                title={status.label}
-              >
-                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: status.color }} />
-                <span className="font-medium text-foreground">{count}</span>
+        {showFilterToggle && (hasSubEpicSummary || showTimeBadge) && (
+          <div className="flex items-center justify-between gap-2 pt-1">
+            <div className="flex min-w-0 flex-wrap gap-2">
+              {subEpicSummary.map(({ status, count }) => (
+                <div
+                  key={status.id}
+                  className="flex items-center gap-1 text-xs text-muted-foreground"
+                  title={status.label}
+                >
+                  <span
+                    className="h-2 w-2 rounded-full"
+                    style={{ backgroundColor: status.color }}
+                  />
+                  <span className="font-medium text-foreground">{count}</span>
+                </div>
+              ))}
+            </div>
+            {showTimeBadge ? (
+              <div className="ml-auto shrink-0">
+                <EpicTimeBadge minutes={timeTotalMinutes} />
               </div>
-            ))}
+            ) : null}
           </div>
         )}
       </CardContent>

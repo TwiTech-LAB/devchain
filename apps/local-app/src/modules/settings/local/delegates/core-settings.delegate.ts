@@ -10,13 +10,13 @@ import {
   DEFAULT_TERMINAL_SCROLLBACK,
   MIN_TERMINAL_SCROLLBACK,
   MAX_TERMINAL_SCROLLBACK,
+  DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION,
 } from '../../../../common/constants/terminal';
 import {
   DEFAULT_TERMINAL_SEED_MAX_BYTES,
   MIN_TERMINAL_SEED_MAX_BYTES,
   MAX_TERMINAL_SEED_MAX_BYTES,
   DEFAULT_TERMINAL_INPUT_MODE,
-  DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION,
   MIN_MESSAGE_POOL_DELAY_MS,
   MAX_MESSAGE_POOL_DELAY_MS,
   MIN_MESSAGE_POOL_MAX_WAIT_MS,
@@ -143,9 +143,11 @@ export class CoreSettingsDelegate {
           settings.terminal.inputMode = inputMode;
         }
       } else if (row.key === 'terminal.suppressCtrlCWithSelection') {
+        const valueStr = this.decodeStringSetting(row.value);
+        // Strict 'true' comparison so a stored 'false' is never coerced back
+        // to the default by truthy handling.
         settings.terminal = settings.terminal ?? {};
-        settings.terminal.suppressCtrlCWithSelection =
-          this.decodeStringSetting(row.value) === 'true';
+        settings.terminal.suppressCtrlCWithSelection = valueStr === 'true';
       } else if (row.key === 'activity.idleTimeoutMs') {
         const valueStr = this.decodeStringSetting(row.value);
         const parsed = Number(valueStr);
@@ -259,13 +261,17 @@ export class CoreSettingsDelegate {
       ? (storedInputMode as TerminalInputMode)
       : DEFAULT_TERMINAL_INPUT_MODE;
 
+    // Must be ?? and not ||: a stored false is a deliberate user choice and
+    // has to survive every read path.
+    const suppressCtrlCWithSelection =
+      terminalSettings.suppressCtrlCWithSelection ??
+      DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION;
+
     settings.terminal = {
       scrollbackLines: effectiveScrollback,
       seedingMaxBytes: effectiveSeedMaxBytes,
       inputMode,
-      suppressCtrlCWithSelection:
-        terminalSettings.suppressCtrlCWithSelection ??
-        DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION,
+      suppressCtrlCWithSelection,
     };
 
     logger.debug({ settings }, 'Retrieved settings');

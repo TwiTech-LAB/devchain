@@ -8,6 +8,7 @@ import {
   waitFor,
 } from '@testing-library/react';
 import { createRef } from 'react';
+import { Terminal } from '@xterm/xterm';
 
 jest.mock('@xterm/xterm/css/xterm.css', () => ({}), { virtual: true });
 const xtermScrollCallbacks: Array<() => void> = [];
@@ -27,10 +28,11 @@ jest.mock('@xterm/xterm', () => {
         length: 0,
       };
 
-      return {
+      const terminal = {
         loadAddon: jest.fn(),
         open: jest.fn((el: HTMLElement) => {
           container = el;
+          terminal.element = el;
         }),
         write: jest.fn((data: string, cb?: () => void) => {
           if (container) container.textContent = (container.textContent || '') + data;
@@ -50,11 +52,12 @@ jest.mock('@xterm/xterm', () => {
         }),
         rows: 24,
         cols: 80,
-        element: null,
+        element: null as HTMLElement | null,
         scrollLines: jest.fn(),
         scrollToBottom: jest.fn(),
         scrollToLine: jest.fn(),
         focus: jest.fn(),
+        attachCustomKeyEventHandler: jest.fn(),
         attachCustomWheelEventHandler: jest.fn(),
         onScroll: jest.fn((cb: () => void) => {
           xtermScrollCallbacks.push(cb);
@@ -69,15 +72,15 @@ jest.mock('@xterm/xterm', () => {
           return { dispose: jest.fn() };
         }),
         onSelectionChange: jest.fn().mockReturnValue({ dispose: jest.fn() }),
-        getSelection: jest.fn().mockReturnValue(''),
-        attachCustomKeyEventHandler: jest.fn(),
-        clearSelection: jest.fn(),
         hasSelection: jest.fn().mockReturnValue(false),
+        getSelection: jest.fn().mockReturnValue(''),
+        clearSelection: jest.fn(),
         parser: { registerOscHandler: jest.fn() },
         options: { scrollback: 10000 },
         modes: { mouseTrackingMode: 'none' },
         buffer: { active: bufferActive },
       };
+      return terminal;
     }),
   };
 });
@@ -292,6 +295,54 @@ describe('ChatTerminal', () => {
       });
     });
   };
+
+  // UI jsdom is the cheapest reliable layer for the settings promise-to-hook construction seam.
+  it('stores the Ctrl+C setting before inputMode unlocks one terminal construction', async () => {
+    let resolveSettings: ((value: unknown) => void) | undefined;
+    (global.fetch as jest.Mock).mockResolvedValueOnce({
+      json: () =>
+        new Promise((resolve) => {
+          resolveSettings = resolve;
+        }),
+    });
+    const socket = createMockSocket();
+    currentAppSocket = socket as unknown as Socket;
+
+    const view = render(<ChatTerminal sessionId="settings-session" socket={currentAppSocket} />);
+    expect(Terminal).not.toHaveBeenCalled();
+    await waitFor(() => expect(resolveSettings).toBeDefined());
+
+    await act(async () => {
+      resolveSettings?.({
+        terminal: { inputMode: 'tty', suppressCtrlCWithSelection: false },
+      });
+    });
+
+    await waitFor(() => expect(Terminal).toHaveBeenCalledTimes(1));
+    const terminal = (Terminal as unknown as jest.Mock).mock.results[0]?.value as {
+      attachCustomKeyEventHandler: jest.Mock;
+      hasSelection: jest.Mock;
+    };
+    terminal.hasSelection.mockReturnValue(true);
+    const handler = terminal.attachCustomKeyEventHandler.mock.calls[0]?.[0] as (
+      event: KeyboardEvent,
+    ) => boolean;
+    const event = {
+      type: 'keydown',
+      keyCode: 67,
+      ctrlKey: true,
+      altKey: false,
+      metaKey: false,
+      shiftKey: false,
+      preventDefault: jest.fn(),
+    } as unknown as KeyboardEvent;
+
+    expect(handler(event)).toBe(true);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(Terminal).toHaveBeenCalledTimes(1);
+    view.rerender(<ChatTerminal sessionId="settings-session" socket={currentAppSocket} />);
+    expect(Terminal).toHaveBeenCalledTimes(1);
+  });
 
   it('returns the fallback main-socket refcount to baseline across mount cycles', () => {
     const socket = createMockSocket();

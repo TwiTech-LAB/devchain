@@ -12,6 +12,8 @@ import type {
 } from '../dtos/event-log.dto';
 import { transientEventNames } from '../catalog';
 import { EventsStreamService } from './events-stream.service';
+import { CommittedEventStore } from './committed-event.store';
+import type { PreparedEvent } from './durable-event-registry.service';
 
 const logger = createLogger('EventLogService');
 const EVENT_RETENTION_MS = 30 * 86_400_000;
@@ -58,6 +60,7 @@ export class EventLogService implements OnModuleInit, OnModuleDestroy {
   constructor(
     @Inject(DB_CONNECTION) private readonly db: BetterSQLite3Database,
     private readonly eventsStreamService: EventsStreamService,
+    private readonly committedEventStore: CommittedEventStore,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -80,8 +83,8 @@ export class EventLogService implements OnModuleInit, OnModuleDestroy {
 
   async cleanupExpiredEvents(): Promise<number> {
     const cutoffIso = new Date(Date.now() - EVENT_RETENTION_MS).toISOString();
-    const { events } = await import('../../storage/db/schema');
-    const { inArray, lt } = await import('drizzle-orm');
+    const { events, eventHandlers } = await import('../../storage/db/schema');
+    const { and, eq, inArray, isNotNull, lt, notExists } = await import('drizzle-orm');
 
     const transientResult = await this.db
       .delete(events)
@@ -95,7 +98,23 @@ export class EventLogService implements OnModuleInit, OnModuleDestroy {
 
     const agedResult = await this.db
       .delete(events)
-      .where(lt(events.publishedAt, cutoffIso))
+      .where(
+        and(
+          lt(events.publishedAt, cutoffIso),
+          notExists(
+            this.db
+              .select({ id: eventHandlers.id })
+              .from(eventHandlers)
+              .where(
+                and(
+                  eq(eventHandlers.eventId, events.id),
+                  isNotNull(eventHandlers.deliveryKey),
+                  inArray(eventHandlers.status, ['pending', 'running', 'retry']),
+                ),
+              ),
+          ),
+        ),
+      )
       .limit(remaining);
     return transientDeleted + agedResult.changes;
   }
@@ -136,28 +155,35 @@ export class EventLogService implements OnModuleInit, OnModuleDestroy {
     publishedAt?: string;
     id?: string;
   }): Promise<{ id: string; publishedAt: string }> {
-    const { events } = await import('../../storage/db/schema');
     const eventId = params.id ?? randomUUID();
     const publishedAt = params.publishedAt ?? new Date().toISOString();
-
-    await this.db.insert(events).values({
+    const prepared = {
       id: eventId,
       name: params.name,
-      payloadJson: safeStringify(params.payload) ?? 'null',
-      requestId: params.requestId ?? null,
-      publishedAt,
-    });
-
-    this.eventsStreamService.broadcastEventCreated({
-      id: eventId,
-      name: params.name,
-      publishedAt,
-      requestId: params.requestId ?? null,
       payload: params.payload,
+      requestId: params.requestId ?? null,
+      publishedAt,
+    } as PreparedEvent;
+    await this.recordPrepared(prepared);
+    return { id: eventId, publishedAt };
+  }
+
+  async recordPrepared(event: PreparedEvent): Promise<void> {
+    await this.committedEventStore.appendCommitted(event);
+
+    this.announceCommitted(event);
+  }
+
+  announceCommitted(event: PreparedEvent): void {
+    this.eventsStreamService.broadcastEventCreated({
+      id: event.id,
+      name: event.name,
+      publishedAt: event.publishedAt,
+      requestId: event.requestId,
+      payload: event.payload,
     });
 
-    logger.debug({ eventId, name: params.name }, 'Recorded published event');
-    return { id: eventId, publishedAt };
+    logger.debug({ eventId: event.id, name: event.name }, 'Recorded published event');
   }
 
   async recordHandledOk(params: {
@@ -229,7 +255,7 @@ export class EventLogService implements OnModuleInit, OnModuleDestroy {
 
   async listEvents(filters: EventLogListFilters): Promise<EventLogListResult> {
     const { events, eventHandlers } = await import('../../storage/db/schema');
-    const { and, eq, gte, lte, inArray, sql, desc } = await import('drizzle-orm');
+    const { and, eq, gte, lte, inArray, isNull, sql, desc } = await import('drizzle-orm');
     const { safeJsonFieldEquals } = await import('../../storage/db/sqlite-json');
 
     const limit = filters.limit ?? 50;
@@ -257,6 +283,7 @@ export class EventLogService implements OnModuleInit, OnModuleDestroy {
     let handlerEventIds: string[] | undefined;
     if (filters.handler || filters.status) {
       const handlerConditions: SQL<unknown>[] = [];
+      handlerConditions.push(isNull(eventHandlers.deliveryKey));
       if (filters.handler) {
         handlerConditions.push(eq(eventHandlers.handler, filters.handler));
       }
@@ -343,7 +370,7 @@ export class EventLogService implements OnModuleInit, OnModuleDestroy {
               endedAt: eventHandlers.endedAt,
             })
             .from(eventHandlers)
-            .where(inArray(eventHandlers.eventId, eventIds))
+            .where(and(inArray(eventHandlers.eventId, eventIds), isNull(eventHandlers.deliveryKey)))
             .orderBy(eventHandlers.startedAt)
         : [];
 

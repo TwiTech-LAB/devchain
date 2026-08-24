@@ -136,6 +136,7 @@ export const broadcastRegistry: Record<string, BroadcastRegistryTopicEntry<P>[]>
       payloadProjection: (p) => ({
         epicId: p.epicId,
         projectId: p.projectId,
+        parentId: p.parentId ?? null,
         version: p.version,
         epicTitle: p.epicTitle,
         changes: p.changes,

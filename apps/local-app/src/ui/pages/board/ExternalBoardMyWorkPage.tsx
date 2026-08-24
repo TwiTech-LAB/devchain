@@ -1,5 +1,5 @@
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { AlertTriangle, RefreshCw } from 'lucide-react';
+import { AlertTriangle, ExternalLink, RefreshCw } from 'lucide-react';
 import { ExternalBoardNav } from '@/ui/components/board/ExternalBoardNav';
 import {
   ExternalWorkAreaCardGrid,
@@ -54,7 +54,22 @@ export function ExternalBoardMyWorkPage({ provider }: ExternalBoardMyWorkPagePro
     <div className="flex h-full flex-col">
       <ExternalBoardNav />
       <div className="flex-1 overflow-y-auto px-4 py-6">
-        <h1 className="text-2xl font-semibold">{label} My Work</h1>
+        <div className="flex items-center gap-1">
+          <h1 className="text-2xl font-semibold">{label}</h1>
+          {landing.sourceUrl ? (
+            <Button asChild variant="ghost" size="icon">
+              <a
+                href={landing.sourceUrl}
+                target="_blank"
+                rel="noreferrer"
+                title={`Open ${label}`}
+                aria-label={`Open ${label}`}
+              >
+                <ExternalLink className="h-4 w-4" aria-hidden="true" />
+              </a>
+            </Button>
+          ) : null}
+        </div>
 
         {landing.status === 'unavailable' ? (
           <p className="mt-2 text-sm text-muted-foreground">

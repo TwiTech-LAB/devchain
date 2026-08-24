@@ -30,6 +30,8 @@ const ExternalRichEditor = lazy(() =>
 
 type RichEditController = ReturnType<typeof useExternalRichDescriptionEdit>;
 
+const descriptionSectionClassName = 'space-y-3 rounded-lg border bg-card p-4 sm:p-5';
+
 function statusMessage(controller: RichEditController): string | null {
   const { state } = controller;
   if (state.error !== null) {
@@ -128,7 +130,10 @@ export function ExternalTaskRichDescription({
         : (controller.description?.document ?? { version: 1, blocks: [] });
     const initial = canonicalToTipTapJson(seedSource) as Content;
     return (
-      <section className="space-y-3" aria-labelledby="external-task-description-heading">
+      <section
+        className={descriptionSectionClassName}
+        aria-labelledby="external-task-description-heading"
+      >
         <div className="flex items-center justify-between">
           <h3 id="external-task-description-heading" className="font-semibold">
             Description
@@ -327,7 +332,10 @@ export function ExternalTaskRichDescription({
 
   if (state.phase === 'saved') {
     return (
-      <section className="space-y-3" aria-labelledby="external-task-description-heading">
+      <section
+        className={descriptionSectionClassName}
+        aria-labelledby="external-task-description-heading"
+      >
         <h3 id="external-task-description-heading" className="font-semibold">
           Description
         </h3>
@@ -347,7 +355,10 @@ export function ExternalTaskRichDescription({
   }
 
   return (
-    <section className="space-y-3" aria-labelledby="external-task-description-heading">
+    <section
+      className={descriptionSectionClassName}
+      aria-labelledby="external-task-description-heading"
+    >
       <div className="flex items-center justify-between">
         <h3 id="external-task-description-heading" className="font-semibold">
           Description

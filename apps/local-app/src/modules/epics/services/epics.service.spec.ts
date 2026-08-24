@@ -15,8 +15,10 @@ describe('EpicsService', () => {
     deleteEpic: jest.Mock;
     getProject: jest.Mock;
     getAgent: jest.Mock;
+    getAgentByName: jest.Mock;
     getGuest: jest.Mock;
     getStatus: jest.Mock;
+    listStatuses: jest.Mock;
     listSubEpics: jest.Mock;
     createEpicComment: jest.Mock;
     deleteEpicCommentScoped: jest.Mock;
@@ -25,7 +27,11 @@ describe('EpicsService', () => {
     listExternalTaskLinksForEpic: jest.Mock;
     listExternalTaskLinksForEpics: jest.Mock;
   };
-  let eventsService: { publish: jest.Mock };
+  let eventsService: {
+    publish: jest.Mock;
+    prepareCommitted?: jest.Mock;
+    emitCommitted?: jest.Mock;
+  };
   let settingsService: { getSetting: jest.Mock; getAutoCleanStatusIds: jest.Mock };
   let eventEmitter: { emit: jest.Mock };
   let service: EpicsService;
@@ -56,8 +62,10 @@ describe('EpicsService', () => {
       deleteEpic: jest.fn(),
       getProject: jest.fn(),
       getAgent: jest.fn(),
+      getAgentByName: jest.fn(),
       getGuest: jest.fn(),
       getStatus: jest.fn(),
+      listStatuses: jest.fn(),
       listSubEpics: jest.fn().mockResolvedValue({ items: [], total: 0 }),
       createEpicComment: jest.fn(),
       deleteEpicCommentScoped: jest.fn(),
@@ -66,15 +74,93 @@ describe('EpicsService', () => {
       listExternalTaskLinksForEpic: jest.fn(),
       listExternalTaskLinksForEpics: jest.fn(),
     };
-    eventsService = { publish: jest.fn().mockResolvedValue('event-id') };
+    eventsService = {
+      publish: jest.fn().mockResolvedValue('event-id'),
+      prepareCommitted: jest.fn((name, payload) => ({
+        id: 'prepared-event',
+        name,
+        payload,
+        requestId: null,
+        publishedAt: '2026-08-24T00:00:00.000Z',
+      })),
+      emitCommitted: jest.fn((event) => {
+        void eventsService.publish(event.name, event.payload).catch(() => undefined);
+      }),
+    };
     settingsService = {
       getSetting: jest.fn(),
       getAutoCleanStatusIds: jest.fn().mockReturnValue([]),
     };
     eventEmitter = { emit: jest.fn() };
 
+    const trackCallback = <TArgs extends unknown[], TResult>(
+      callback: ((...args: TArgs) => TResult) | undefined,
+    ) => {
+      let called = false;
+      return {
+        callback: callback
+          ? (...args: TArgs) => {
+              called = true;
+              return callback(...args);
+            }
+          : undefined,
+        callIfNeeded: (...args: TArgs): void => {
+          if (callback && !called) callback(...args);
+        },
+        wasCalled: (): boolean => called,
+      };
+    };
+
+    const observedEpics = new Map<string, Epic>();
+    const storageAdapter: StorageService = {
+      ...(storage as unknown as StorageService),
+      getEpic: async (id) => {
+        const epic = await storage.getEpic(id);
+        observedEpics.set(id, epic);
+        return epic;
+      },
+      createEpic: async (data, eventFactory) => {
+        const tracked = trackCallback(eventFactory);
+        const epic = await storage.createEpic(data, tracked.callback);
+        tracked.callIfNeeded(epic);
+        return epic;
+      },
+      createEpicForProject: async (projectId, input, eventFactory) => {
+        const tracked = trackCallback(eventFactory);
+        const epic = await storage.createEpicForProject(projectId, input, tracked.callback);
+        tracked.callIfNeeded(epic);
+        return epic;
+      },
+      createEpicWithExternalTaskLink: async (data, eventFactory) => {
+        const tracked = trackCallback(eventFactory);
+        const result = await storage.createEpicWithExternalTaskLink(data, tracked.callback);
+        if (result.created) tracked.callIfNeeded(result);
+        return result;
+      },
+      updateEpic: async (id, data, expectedVersion, eventFactory) => {
+        const previous = observedEpics.get(id);
+        const tracked = trackCallback(eventFactory);
+        const current = await storage.updateEpic(id, data, expectedVersion, tracked.callback);
+        if (eventFactory && !tracked.wasCalled()) {
+          if (!previous) throw new Error(`Test storage did not observe Epic ${id} before update.`);
+          tracked.callIfNeeded(current, previous);
+        }
+        observedEpics.set(id, current);
+        return current;
+      },
+      deleteEpic: async (id, eventFactory) => {
+        const deleted = observedEpics.get(id);
+        const tracked = trackCallback(eventFactory);
+        await storage.deleteEpic(id, tracked.callback);
+        if (eventFactory && !tracked.wasCalled()) {
+          if (!deleted) throw new Error(`Test storage did not observe Epic ${id} before delete.`);
+          tracked.callIfNeeded(deleted);
+        }
+      },
+    };
+
     service = new EpicsService(
-      storage as unknown as StorageService,
+      storageAdapter,
       eventsService as unknown as EventsService,
       settingsService as unknown as SettingsService,
       eventEmitter as unknown as EventEmitter2,
@@ -130,31 +216,34 @@ describe('EpicsService', () => {
 
       await service.importExternalTask(importInput);
 
-      expect(storage.createEpicWithExternalTaskLink).toHaveBeenCalledWith({
-        epic: expect.objectContaining({
-          projectId: 'project-1',
-          statusId: 'status-1',
-          title: 'Edited title',
-          description: 'Edited description',
-          agentId: null,
-          createdBy: null,
-        }),
-        externalTaskLink: {
-          connectionId: 'connection-1',
-          provider: 'jira',
-          remoteScopeKey: 'acme.atlassian.net',
-          remoteTaskId: 'ENG-1',
-          sourceSnapshot: {
-            remoteKey: 'ENG-1',
-            title: 'Remote title',
-            description: 'Remote description',
-            webUrl: 'https://acme.atlassian.net/browse/ENG-1',
-            workAreaId: '42',
-            workAreaName: 'Delivery',
-            statusName: 'In Progress',
+      expect(storage.createEpicWithExternalTaskLink).toHaveBeenCalledWith(
+        {
+          epic: expect.objectContaining({
+            projectId: 'project-1',
+            statusId: 'status-1',
+            title: 'Edited title',
+            description: 'Edited description',
+            agentId: null,
+            createdBy: null,
+          }),
+          externalTaskLink: {
+            connectionId: 'connection-1',
+            provider: 'jira',
+            remoteScopeKey: 'acme.atlassian.net',
+            remoteTaskId: 'ENG-1',
+            sourceSnapshot: {
+              remoteKey: 'ENG-1',
+              title: 'Remote title',
+              description: 'Remote description',
+              webUrl: 'https://acme.atlassian.net/browse/ENG-1',
+              workAreaId: '42',
+              workAreaName: 'Delivery',
+              statusName: 'In Progress',
+            },
           },
         },
-      });
+        expect.any(Function),
+      );
     });
 
     it('rejects a status from a different project before creating anything', async () => {
@@ -327,6 +416,7 @@ describe('EpicsService', () => {
       expect(storage.createEpicForProject).toHaveBeenCalledWith(
         baseEpic.projectId,
         expect.objectContaining({ title: baseEpic.title, skillsRequired: ['openai/review'] }),
+        expect.any(Function),
       );
     });
 
@@ -342,7 +432,11 @@ describe('EpicsService', () => {
       storage.getAgent.mockRejectedValue(new Error('Agent was deleted after insert'));
 
       await service.createEpic(
-        { ...baseEpic, createdBy: 'Spoofed Input' } as unknown as CreateEpic,
+        {
+          ...baseEpic,
+          agentId: 'creator-agent',
+          createdBy: 'Spoofed Input',
+        } as unknown as CreateEpic,
         {
           actor: { type: 'agent', id: 'creator-agent' },
           creatorAgentName: 'Creator Snapshot',
@@ -351,6 +445,7 @@ describe('EpicsService', () => {
 
       expect(storage.createEpic).toHaveBeenCalledWith(
         expect.objectContaining({ createdBy: 'Creator Snapshot' }),
+        expect.any(Function),
       );
       expect(eventsService.publish).toHaveBeenCalledWith(
         'epic.created',
@@ -372,7 +467,7 @@ describe('EpicsService', () => {
 
       await service.createEpicForProject(
         baseEpic.projectId,
-        { title: baseEpic.title, createdBy: 'Spoofed Input' },
+        { title: baseEpic.title, agentId: 'creator-agent', createdBy: 'Spoofed Input' },
         {
           actor: { type: 'agent', id: 'creator-agent' },
           creatorAgentName: 'Creator Snapshot',
@@ -382,6 +477,7 @@ describe('EpicsService', () => {
       expect(storage.createEpicForProject).toHaveBeenCalledWith(
         baseEpic.projectId,
         expect.objectContaining({ createdBy: 'Creator Snapshot' }),
+        expect.any(Function),
       );
       expect(eventsService.publish).toHaveBeenCalledWith(
         'epic.created',
@@ -404,7 +500,10 @@ describe('EpicsService', () => {
         { actor: { type: 'guest', id: 'guest-1' } },
       );
 
-      expect(storage.createEpic).toHaveBeenCalledWith(expect.objectContaining({ createdBy: null }));
+      expect(storage.createEpic).toHaveBeenCalledWith(
+        expect.objectContaining({ createdBy: null }),
+        expect.any(Function),
+      );
       expect(eventsService.publish).toHaveBeenCalledWith(
         'epic.created',
         expect.objectContaining({ creatorName: 'Guest' }),
@@ -428,7 +527,10 @@ describe('EpicsService', () => {
         context,
       );
 
-      expect(storage.createEpic).toHaveBeenCalledWith(expect.objectContaining({ createdBy: null }));
+      expect(storage.createEpic).toHaveBeenCalledWith(
+        expect.objectContaining({ createdBy: null }),
+        expect.any(Function),
+      );
       if (context?.actor.type === 'agent') {
         expect(eventsService.publish).toHaveBeenCalledWith(
           'epic.created',
@@ -693,6 +795,38 @@ describe('EpicsService', () => {
       expect(eventsService.publish).not.toHaveBeenCalled();
     });
 
+    it('prepares a description-only fact inside the versioned storage mutation', async () => {
+      const updated = { ...baseEpic, description: 'New description', version: 2 };
+      const prepared = {
+        id: 'description-event',
+        name: 'epic.updated',
+        payload: {},
+        requestId: null,
+        publishedAt: '2026-08-23T00:00:00.000Z',
+      };
+      eventsService.prepareCommitted = jest.fn().mockReturnValue(prepared);
+      eventsService.emitCommitted = jest.fn();
+      storage.getEpic.mockResolvedValue(baseEpic);
+      storage.getProject.mockResolvedValue({ id: baseEpic.projectId, name: 'Project' });
+      storage.updateEpic.mockImplementation(async (_id, _data, _version, eventFactory) => {
+        eventFactory(updated, baseEpic);
+        return updated;
+      });
+
+      await service.updateEpic(baseEpic.id, { description: 'New description' }, baseEpic.version);
+
+      expect(eventsService.prepareCommitted).toHaveBeenCalledWith(
+        'epic.updated',
+        expect.objectContaining({
+          changes: {
+            description: { previous: null, current: 'New description' },
+          },
+        }),
+      );
+      expect(eventsService.emitCommitted).toHaveBeenCalledWith(prepared);
+      expect(eventsService.publish).not.toHaveBeenCalled();
+    });
+
     it('publishes epic.updated with empty changes when the stored tag set changes', async () => {
       storage.getEpic.mockResolvedValue({ ...baseEpic, tags: ['Alpha'] });
       storage.updateEpic.mockResolvedValue({
@@ -953,7 +1087,7 @@ describe('EpicsService', () => {
     storage.getEpic.mockResolvedValue(baseEpic);
     storage.deleteEpic.mockResolvedValue(undefined);
     await service.deleteEpic(baseEpic.id);
-    expect(storage.deleteEpic).toHaveBeenCalledWith(baseEpic.id);
+    expect(storage.deleteEpic).toHaveBeenCalledWith(baseEpic.id, expect.any(Function));
     expect(eventsService.publish).toHaveBeenCalledWith(
       'epic.deleted',
       expect.objectContaining({

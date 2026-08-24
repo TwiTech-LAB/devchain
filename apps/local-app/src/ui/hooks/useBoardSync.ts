@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { type QueryClient, useQueryClient } from '@tanstack/react-query';
 import type { WsEnvelope } from '@/ui/lib/socket';
 import { useAppSocket } from './useAppSocket';
 import {
@@ -10,6 +10,12 @@ import {
 type EpicEventPayload = {
   epic?: { parentId?: string | null } | null;
   parentId?: string | null;
+  changes?: {
+    parentId?: {
+      previous?: string | null;
+      current?: string | null;
+    };
+  };
 };
 
 export interface UseBoardSyncArgs {
@@ -17,9 +23,27 @@ export interface UseBoardSyncArgs {
   parentFilter: string | undefined;
 }
 
-function extractParentId(payload: Record<string, unknown>): string | null {
+function extractAffectedParentIds(payload: Record<string, unknown>): string[] {
   const typed = payload as unknown as EpicEventPayload;
-  return typed.epic?.parentId ?? typed.parentId ?? null;
+  const parentIds = new Set<string>();
+  const currentParentId = typed.epic?.parentId ?? typed.parentId ?? null;
+  if (currentParentId) {
+    parentIds.add(currentParentId);
+  }
+  const parentChange = typed.changes?.parentId;
+  if (parentChange?.previous) {
+    parentIds.add(parentChange.previous);
+  }
+  if (parentChange?.current) {
+    parentIds.add(parentChange.current);
+  }
+  return [...parentIds];
+}
+
+function invalidateSubEpicCounts(queryClient: QueryClient): void {
+  void queryClient.invalidateQueries({
+    predicate: (query) => query.queryKey[0] === 'epics' && query.queryKey[2] === 'sub-counts',
+  });
 }
 
 export function useBoardSync({ selectedProjectId, parentFilter }: UseBoardSyncArgs): void {
@@ -36,13 +60,11 @@ export function useBoardSync({ selectedProjectId, parentFilter }: UseBoardSyncAr
           payload: Record<string, unknown>,
           qc: import('@tanstack/react-query').QueryClient,
         ) => {
-          const pid = extractParentId(payload);
-          if (pid) {
-            qc.invalidateQueries({ queryKey: ['epics', pid, 'sub-counts'] });
-            if (parentFilter === pid) {
-              qc.invalidateQueries({ queryKey: ['epics', 'parent', parentFilter] });
-            }
-          } else if (parentFilter) {
+          const parentIds = extractAffectedParentIds(payload);
+          for (const parentId of parentIds) {
+            qc.invalidateQueries({ queryKey: ['epics', parentId, 'sub-counts'] });
+          }
+          if (parentFilter && (parentIds.length === 0 || parentIds.includes(parentFilter))) {
             qc.invalidateQueries({ queryKey: ['epics', 'parent', parentFilter] });
           }
         },
@@ -66,6 +88,7 @@ export function useBoardSync({ selectedProjectId, parentFilter }: UseBoardSyncAr
   const handleSocketConnect = useCallback(() => {
     if (!selectedProjectId) return;
     queryClient.invalidateQueries({ queryKey: ['epics', selectedProjectId] });
+    invalidateSubEpicCounts(queryClient);
     if (parentFilter) {
       queryClient.invalidateQueries({ queryKey: ['epics', 'parent', parentFilter] });
     }
@@ -80,6 +103,7 @@ export function useBoardSync({ selectedProjectId, parentFilter }: UseBoardSyncAr
     if (!selectedProjectId) return;
     const interval = setInterval(() => {
       queryClient.invalidateQueries({ queryKey: ['epics', selectedProjectId] });
+      invalidateSubEpicCounts(queryClient);
       if (parentFilter) {
         queryClient.invalidateQueries({ queryKey: ['epics', 'parent', parentFilter] });
       }

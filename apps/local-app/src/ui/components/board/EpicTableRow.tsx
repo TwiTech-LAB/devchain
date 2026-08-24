@@ -11,6 +11,7 @@ import { getMergedWorktree, isMergedTag } from '@/ui/lib/epic-tags';
 import { EpicTooltipWrapper } from '@/ui/components/shared/EpicTooltipWrapper';
 import { EpicContextMenu } from './EpicContextMenu';
 import { EpicExternalSourceNote } from './EpicExternalSourceNote';
+import { EpicTimeBadge } from './EpicTimeBadge';
 import { InlineStatusSelect } from './InlineStatusSelect';
 import { InlineAgentSelect } from './InlineAgentSelect';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
@@ -83,6 +84,8 @@ export interface EpicTableRowProps {
    * expanded sub-epic rows intentionally render no source note.
    */
   externalSource?: ExternalTaskSourceSummary;
+  /** Estimated-time total in whole minutes; root rows only, never sub-rows. */
+  timeTotalMinutes?: number;
 }
 
 /**
@@ -117,6 +120,7 @@ export function EpicTableRow({
   isSubEpic = false,
   subEpicCount = 0,
   externalSource,
+  timeTotalMinutes,
 }: EpicTableRowProps) {
   const apiFetch = useFetchFactory();
 
@@ -356,6 +360,9 @@ export function EpicTableRow({
                   {epic.title}
                 </button>
               </EpicTooltipWrapper>
+              {isParentEpic && timeTotalMinutes !== undefined && timeTotalMinutes > 0 && (
+                <EpicTimeBadge minutes={timeTotalMinutes} />
+              )}
               {externalSource ? (
                 <EpicExternalSourceNote
                   source={externalSource}

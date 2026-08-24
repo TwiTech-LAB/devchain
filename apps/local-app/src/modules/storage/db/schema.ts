@@ -348,6 +348,10 @@ export const integrationConnections = sqliteTable(
     provider: text('provider', { enum: ['clickup', 'jira'] }).notNull(),
     credentialCiphertext: text('credential_ciphertext').notNull(),
     generation: integer('generation').notNull().default(1),
+    subtaskSyncEnabled: integer('subtask_sync_enabled', { mode: 'boolean' })
+      .notNull()
+      .default(false),
+    syncSettingRevision: integer('sync_setting_revision').notNull().default(1),
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
   },
@@ -381,6 +385,69 @@ export const externalTaskLinks = sqliteTable(
     ),
     epicIdIdx: index('external_task_links_epic_id_idx').on(table.epicId),
     connectionIdIdx: index('external_task_links_connection_id_idx').on(table.connectionId),
+  }),
+);
+
+export const externalManagedSubtaskLinks = sqliteTable(
+  'external_managed_subtask_links',
+  {
+    id: text('id').primaryKey(),
+    epicId: text('epic_id').references(() => epics.id, { onDelete: 'set null' }),
+    epicIdSnapshot: text('epic_id_snapshot').notNull(),
+    parentEpicIdSnapshot: text('parent_epic_id_snapshot').notNull(),
+    parentSourceLinkIdSnapshot: text('parent_source_link_id_snapshot').notNull(),
+    connectionIdSnapshot: text('connection_id_snapshot').notNull(),
+    provider: text('provider', { enum: ['clickup', 'jira'] }).notNull(),
+    remoteScopeKey: text('remote_scope_key').notNull(),
+    workAreaRemoteId: text('work_area_remote_id').notNull(),
+    parentRemoteTaskId: text('parent_remote_task_id').notNull(),
+    connectionGeneration: integer('connection_generation').notNull(),
+    syncSettingRevision: integer('sync_setting_revision').notNull(),
+    ownershipToken: text('ownership_token').notNull(),
+    remoteTaskId: text('remote_task_id'),
+    remoteKey: text('remote_key'),
+    desiredVersion: integer('desired_version').notNull(),
+    confirmedVersion: integer('confirmed_version'),
+    desiredFingerprint: text('desired_fingerprint').notNull(),
+    confirmedFingerprint: text('confirmed_fingerprint'),
+    operationPhase: text('operation_phase', {
+      enum: [
+        'pre_dispatch',
+        'dispatch_admitted',
+        'outcome_unknown',
+        'confirmed',
+        'needs_attention',
+      ],
+    })
+      .notNull()
+      .default('pre_dispatch'),
+    safeErrorCode: text('safe_error_code'),
+    retryAt: text('retry_at'),
+    tombstoneState: text('tombstone_state', {
+      enum: ['active', 'local_deleted', 'move_out', 'orphan_risk'],
+    })
+      .notNull()
+      .default('active'),
+    tombstonedAt: text('tombstoned_at'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    projectionUnique: unique('external_managed_subtask_projection_unique').on(
+      table.epicIdSnapshot,
+      table.parentSourceLinkIdSnapshot,
+    ),
+    epicIdIdx: index('external_managed_subtask_epic_id_idx').on(table.epicId),
+    providerPhaseIdx: index('external_managed_subtask_provider_phase_idx').on(
+      table.provider,
+      table.operationPhase,
+    ),
+    remoteIdentityIdx: index('external_managed_subtask_remote_identity_idx').on(
+      table.provider,
+      table.remoteScopeKey,
+      table.remoteTaskId,
+    ),
+    retryAtIdx: index('external_managed_subtask_retry_at_idx').on(table.retryAt),
   }),
 );
 
@@ -838,6 +905,90 @@ export const sessions = sqliteTable(
   }),
 );
 
+export const epicTimeSegments = sqliteTable(
+  'epic_time_segments',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    epicId: text('epic_id').references(() => epics.id, { onDelete: 'cascade' }),
+    sessionIdSnapshot: text('session_id_snapshot').notNull(),
+    agentIdSnapshot: text('agent_id_snapshot').notNull(),
+    agentNameSnapshot: text('agent_name_snapshot').notNull(),
+    startedAt: text('started_at').notNull(),
+    lastActivityAt: text('last_activity_at').notNull(),
+    closedAt: text('closed_at'),
+    durationMs: integer('duration_ms').notNull().default(0),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    openSessionUnique: uniqueIndex('epic_time_segments_open_session_unique')
+      .on(table.sessionIdSnapshot)
+      .where(sql`${table.closedAt} IS NULL`),
+    projectEpicClosedIdx: index('epic_time_segments_project_epic_closed_idx').on(
+      table.projectId,
+      table.epicId,
+      table.closedAt,
+      table.lastActivityAt,
+    ),
+    projectAgentIdx: index('epic_time_segments_project_agent_idx').on(
+      table.projectId,
+      table.agentIdSnapshot,
+      table.lastActivityAt,
+    ),
+  }),
+);
+
+export const epicTimeSessionWatermarks = sqliteTable(
+  'epic_time_session_watermarks',
+  {
+    sessionId: text('session_id')
+      .primaryKey()
+      .references(() => sessions.id, { onDelete: 'cascade' }),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    lastActivityAt: text('last_activity_at').notNull(),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    projectActivityIdx: index('epic_time_watermarks_project_activity_idx').on(
+      table.projectId,
+      table.lastActivityAt,
+    ),
+  }),
+);
+
+export const epicTimeBufferClaims = sqliteTable(
+  'epic_time_buffer_claims',
+  {
+    claimSequence: integer('claim_sequence').primaryKey({ autoIncrement: true }),
+    committedEventId: text('committed_event_id').notNull().unique(),
+    eventName: text('event_name').notNull(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    agentIdSnapshot: text('agent_id_snapshot').notNull(),
+    agentNameSnapshot: text('agent_name_snapshot').notNull(),
+    targetEpicIdSnapshot: text('target_epic_id_snapshot').notNull(),
+    targetEpicTitleSnapshot: text('target_epic_title_snapshot').notNull(),
+    publishedAt: text('published_at').notNull(),
+    sourceEventRowId: integer('source_event_row_id'),
+    createdAt: text('created_at').notNull(),
+  },
+  (table) => ({
+    projectAgentPublishedIdx: index('epic_time_claims_project_agent_published_idx').on(
+      table.projectId,
+      table.agentIdSnapshot,
+      table.publishedAt,
+      table.claimSequence,
+    ),
+  }),
+);
+
 // Transcripts (session logs)
 export const transcripts = sqliteTable('transcripts', {
   id: text('id').primaryKey(),
@@ -874,6 +1025,11 @@ export const eventHandlers = sqliteTable(
       .references(() => events.id, { onDelete: 'cascade' }),
     handler: text('handler').notNull(),
     status: text('status').notNull(),
+    deliveryKey: text('delivery_key'),
+    attempts: integer('attempts').notNull().default(0),
+    retryAt: text('retry_at'),
+    leaseOwner: text('lease_owner'),
+    leaseExpiresAt: text('lease_expires_at'),
     detail: text('detail'),
     startedAt: text('started_at').notNull(),
     endedAt: text('ended_at'),
@@ -882,6 +1038,10 @@ export const eventHandlers = sqliteTable(
     eventIdIdx: index('event_handlers_event_id_idx').on(table.eventId),
     handlerIdx: index('event_handlers_handler_idx').on(table.handler),
     statusIdx: index('event_handlers_status_idx').on(table.status),
+    retryAtIdx: index('event_handlers_retry_at_idx').on(table.retryAt),
+    deliveryUnique: uniqueIndex('event_handlers_event_delivery_unique')
+      .on(table.eventId, table.deliveryKey)
+      .where(sql`${table.deliveryKey} IS NOT NULL`),
   }),
 );
 

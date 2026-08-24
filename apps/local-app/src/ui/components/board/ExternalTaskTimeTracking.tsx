@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { ExternalLink } from 'lucide-react';
+import { useEffect, useRef, useState, type FormEvent, type SyntheticEvent } from 'react';
+import { ChevronRight, ExternalLink } from 'lucide-react';
 import type { ExternalTaskTimeEntry } from '@/modules/external-integrations/models/external-provider.models';
 import type { ExternalTimeEntryDeleteResult } from '@/modules/external-integrations/models/external-time-mutation.models';
+import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
 import { Alert, AlertDescription, AlertTitle } from '@/ui/components/ui/alert';
 import { Button } from '@/ui/components/ui/button';
 import {
@@ -14,9 +15,16 @@ import {
 import { Input } from '@/ui/components/ui/input';
 import { Label } from '@/ui/components/ui/label';
 import { Textarea } from '@/ui/components/ui/textarea';
-import { useExternalTaskTimeEntries } from '@/ui/hooks/board/useExternalTaskTimeEntries';
+import type { ExternalTaskTimeEntriesController } from '@/ui/hooks/board/useExternalTaskTimeEntries';
+import { useEpicTimeDetail } from '@/ui/hooks/useEpicTimeDetail';
 import type { ExternalBoardProvider } from '@/ui/lib/external-board';
-import { formatDurationMs, parseDurationInput, resolveStartedAtMs } from '@/ui/lib/external-time';
+import {
+  formatDurationMs,
+  MAX_TRACKED_DURATION_MS,
+  parseDurationInput,
+  resolveStartedAtMs,
+} from '@/ui/lib/external-time';
+import { formatEpicTimeMinutes } from '@/ui/lib/epic-time';
 import type { IntegrationConnectionEpoch } from '@/ui/lib/integration-connections';
 import { getErrorMessage } from '@/ui/lib/toast-helpers';
 
@@ -26,6 +34,7 @@ const INVALID_DURATION_MESSAGE =
 export interface ExternalTaskTimeTrackingProps {
   provider: ExternalBoardProvider;
   taskId: string | null;
+  linkedEpicId: string | null;
   connectionEpoch: IntegrationConnectionEpoch | null;
   enabled: boolean;
   identityAccepted: boolean;
@@ -34,6 +43,14 @@ export interface ExternalTaskTimeTrackingProps {
   /** From task detail, so the summary total survives history failures. */
   taskTotalDurationMs: number | null;
   sourceUrl: string | null;
+  timeEntries: ExternalTaskTimeEntriesController;
+  onHistoryOpenChange: (open: boolean) => void;
+}
+
+interface EstimateConfirmationSnapshot {
+  durationMs: number;
+  durationLabel: string;
+  scopeLabel: string;
 }
 
 function verifyResolutionMessage(resolution: string): string {
@@ -67,29 +84,40 @@ function deleteOutcomeMessage(outcome: ExternalTimeEntryDeleteResult['outcome'])
 }
 
 /**
- * The "Time tracked" block: a collapsed summary of the task's total tracked
- * time and an expanded duration-first form plus the connected user's own
- * last-30-days entries with safe owned-entry deletion. Every state —
- * loading, empty, error, incomplete, running timer, unknown outcome — stays
- * local to this block.
+ * The "Time tracked" block: a collapsed task-total heading that expands to a
+ * duration-first form plus a separate, lazy disclosure for the connected
+ * user's own last-30-days entries with safe owned-entry deletion. Every state
+ * — loading, empty, error, incomplete, running timer, unknown outcome — stays
+ * local here.
  */
 export function ExternalTaskTimeTracking({
   provider,
   taskId,
+  linkedEpicId = null,
   connectionEpoch,
   enabled,
   identityAccepted,
   timeTrackingEnabled,
   taskTotalDurationMs,
   sourceUrl,
+  timeEntries,
+  onHistoryOpenChange,
 }: ExternalTaskTimeTrackingProps) {
-  const [expanded, setExpanded] = useState(false);
+  const disclosureScope = `${provider}:${connectionEpoch ?? ''}:${taskId ?? ''}`;
+  const [timeDisclosure, setTimeDisclosure] = useState({
+    scope: disclosureScope,
+    open: false,
+  });
+  const [historyDisclosure, setHistoryDisclosure] = useState({
+    scope: disclosureScope,
+    open: false,
+  });
+  const timeOpen = timeDisclosure.scope === disclosureScope && timeDisclosure.open;
+  const historyOpen =
+    timeOpen && historyDisclosure.scope === disclosureScope && historyDisclosure.open;
   const blockAccepted = enabled && identityAccepted;
-  const timeEntries = useExternalTaskTimeEntries(provider, taskId, {
-    enabled: enabled && expanded,
-    connectionEpoch,
-    identityAccepted,
-    timeTrackingEnabled,
+  const epicTime = useEpicTimeDetail(linkedEpicId, {
+    enabled: blockAccepted && timeOpen && timeTrackingEnabled && linkedEpicId !== null,
   });
   const [duration, setDuration] = useState('');
   const [note, setNote] = useState('');
@@ -99,6 +127,9 @@ export function ExternalTaskTimeTracking({
   const [announcement, setAnnouncement] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<ExternalTaskTimeEntry | null>(null);
   const [focusRestoreIndex, setFocusRestoreIndex] = useState<number | null>(null);
+  const [estimateSnapshot, setEstimateSnapshot] = useState<EstimateConfirmationSnapshot | null>(
+    null,
+  );
 
   const headingRef = useRef<HTMLHeadingElement | null>(null);
   const durationInputRef = useRef<HTMLInputElement | null>(null);
@@ -112,7 +143,30 @@ export function ExternalTaskTimeTracking({
     setDurationError(null);
     setAnnouncement('');
     setDeleteTarget(null);
-  }, [taskId, connectionEpoch]);
+    setEstimateSnapshot(null);
+  }, [taskId, connectionEpoch, provider]);
+
+  useEffect(
+    () => () => {
+      onHistoryOpenChange(false);
+    },
+    [onHistoryOpenChange],
+  );
+
+  const toggleTimeDisclosure = () => {
+    const open = !timeOpen;
+    setTimeDisclosure({ scope: disclosureScope, open });
+    if (!open) {
+      setHistoryDisclosure({ scope: disclosureScope, open: false });
+      onHistoryOpenChange(false);
+    }
+  };
+
+  const handleHistoryToggle = (event: SyntheticEvent<HTMLDetailsElement>) => {
+    const open = event.currentTarget.open;
+    setHistoryDisclosure({ scope: disclosureScope, open });
+    onHistoryOpenChange(open);
+  };
 
   // Focus restoration runs only after the confirmation dialog has closed, so
   // focus never moves behind an active modal: the next remaining row's
@@ -154,24 +208,31 @@ export function ExternalTaskTimeTracking({
       return;
     }
     setDurationError(null);
-    timeEntries.submitCreate({
-      startedAt: new Date(startedAtMs).toISOString(),
-      durationMs,
-      note: note.trim() || null,
-    });
+    timeEntries.submitCreate(
+      {
+        startedAt: new Date(startedAtMs).toISOString(),
+        durationMs,
+        note: note.trim() || null,
+      },
+      'manual',
+    );
   };
 
   useEffect(() => {
-    if (timeEntries.create.isSuccess && timeEntries.create.data.outcome === 'created') {
-      setDuration('');
-      setNote('');
-      setExactStart('');
-      setAnnouncement('Time entry added.');
+    if (timeEntries.create.isSuccess && timeEntries.create.data?.outcome === 'created') {
+      if (timeEntries.createOrigin === 'manual') {
+        setDuration('');
+        setNote('');
+        setExactStart('');
+        setAnnouncement('Time entry added.');
+      } else if (timeEntries.createOrigin === 'estimate') {
+        setAnnouncement('DevChain estimate added.');
+      }
     }
-  }, [timeEntries.create.isSuccess, timeEntries.create.data]);
+  }, [timeEntries.create.isSuccess, timeEntries.create.data, timeEntries.createOrigin]);
 
   useEffect(() => {
-    if (timeEntries.delete.isSuccess) {
+    if (timeEntries.delete.isSuccess && timeEntries.delete.data) {
       const outcome = timeEntries.delete.data.outcome;
       setAnnouncement(deleteOutcomeMessage(outcome));
       if (outcome === 'outcome_unknown') {
@@ -190,7 +251,7 @@ export function ExternalTaskTimeTracking({
   }, [timeEntries.delete.isError]);
 
   useEffect(() => {
-    if (timeEntries.verify.isSuccess) {
+    if (timeEntries.verify.isSuccess && timeEntries.verify.data) {
       setAnnouncement(verifyResolutionMessage(timeEntries.verify.data.resolution));
     }
   }, [timeEntries.verify.isSuccess, timeEntries.verify.data]);
@@ -210,246 +271,404 @@ export function ExternalTaskTimeTracking({
     // settles so the error renderer survives a rejection.
   };
 
+  const openEstimateConfirmation = () => {
+    const summary = epicTime.summary;
+    if (!summary || summary.totalMinutes <= 0 || timeEntries.writeBlocked) return;
+    const durationMs = summary.totalMinutes * 60_000;
+    if (durationMs > MAX_TRACKED_DURATION_MS) return;
+    setEstimateSnapshot({
+      durationMs,
+      durationLabel: formatEpicTimeMinutes(summary.totalMinutes),
+      scopeLabel: summary.isRoot
+        ? 'Total including sub-epics'
+        : (summary.taskItems[0]?.epicTitle ?? 'Task total'),
+    });
+  };
+
+  const confirmEstimate = () => {
+    if (!estimateSnapshot || timeEntries.writeBlocked) return;
+    const confirmedAtMs = Date.now();
+    const startedAtMs = resolveStartedAtMs(estimateSnapshot.durationMs, '', confirmedAtMs);
+    if (startedAtMs === null) return;
+    timeEntries.submitCreate(
+      {
+        startedAt: new Date(startedAtMs).toISOString(),
+        durationMs: estimateSnapshot.durationMs,
+        note: 'DevChain estimated agent time',
+      },
+      'estimate',
+    );
+  };
+
   const history = timeEntries.history;
   const summaryTotal =
     taskTotalDurationMs !== null ? formatDurationMs(taskTotalDurationMs) : 'No time tracked';
+  const manualCreatePending = timeEntries.create.isPending && timeEntries.createOrigin === 'manual';
+  const manualCreateError = timeEntries.create.isError && timeEntries.createOrigin === 'manual';
+  const estimateCreateError = timeEntries.create.isError && timeEntries.createOrigin === 'estimate';
 
   return (
-    <details
-      className="group rounded-md border"
-      onToggle={(event) => setExpanded((event.target as HTMLDetailsElement).open)}
+    <section
+      className="space-y-4 rounded-md border border-l-4 border-l-primary bg-card p-4"
+      aria-labelledby="external-task-time-heading"
     >
-      <summary
-        className="cursor-pointer select-none p-3 text-sm font-medium"
-        onClick={() => setExpanded((value) => !value)}
-      >
-        Time tracked <span className="ml-1 font-normal text-muted-foreground">{summaryTotal}</span>
-      </summary>
-      {blockAccepted ? (
-        <div className="space-y-4 p-3 pt-0">
-          <h4
-            id="external-task-time-heading"
-            ref={headingRef}
-            tabIndex={-1}
-            className="text-sm font-semibold"
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3
+          id="external-task-time-heading"
+          ref={headingRef}
+          tabIndex={-1}
+          className="text-base font-semibold text-balance"
+        >
+          Time tracked
+        </h3>
+        <div className="flex items-center gap-2">
+          <p className="text-sm text-muted-foreground">{summaryTotal}</p>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            aria-label={`${timeOpen ? 'Collapse' : 'Expand'} Time tracked`}
+            aria-expanded={timeOpen}
+            aria-controls="external-task-time-content"
+            onClick={toggleTimeDisclosure}
           >
-            Time tracked
-          </h4>
-          {timeTrackingEnabled ? (
-            <>
-              <form className="space-y-3" onSubmit={handleSubmit} aria-label="Log time">
-                <div className="space-y-1.5">
-                  <Label htmlFor="external-task-duration">Duration</Label>
-                  <Input
-                    id="external-task-duration"
-                    ref={durationInputRef}
-                    type="text"
-                    inputMode="numeric"
-                    placeholder="15m, 5h, 1h 30m, or 30"
-                    value={duration}
-                    onChange={(event) => {
-                      setDuration(event.target.value);
-                      if (durationError) setDurationError(null);
-                    }}
-                    aria-invalid={durationError !== null}
-                    aria-describedby={durationError ? 'external-task-duration-error' : undefined}
-                    disabled={timeEntries.create.isPending}
-                  />
-                  {durationError ? (
-                    <p id="external-task-duration-error" className="text-xs text-destructive">
-                      {durationError}
-                    </p>
-                  ) : null}
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="external-task-time-note">Note (optional)</Label>
-                  <Textarea
-                    id="external-task-time-note"
-                    value={note}
-                    onChange={(event) => setNote(event.target.value)}
-                    maxLength={10_000}
-                    disabled={timeEntries.create.isPending}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <button
-                    type="button"
-                    className="text-xs underline underline-offset-4"
-                    aria-expanded={showExactStart}
-                    onClick={() => setShowExactStart((value) => !value)}
+            <ChevronRight
+              className={timeOpen ? 'h-4 w-4 rotate-90' : 'h-4 w-4'}
+              aria-hidden="true"
+            />
+          </Button>
+        </div>
+      </div>
+      <div id="external-task-time-content" hidden={!timeOpen}>
+        {blockAccepted ? (
+          <div className="space-y-4">
+            {timeTrackingEnabled ? (
+              <>
+                {linkedEpicId !== null ? (
+                  <section
+                    className="space-y-3 rounded-md border bg-muted/30 p-3"
+                    aria-labelledby="devchain-time-estimate-heading"
                   >
-                    Add exact start time (optional)
-                  </button>
-                  {showExactStart ? (
-                    <div className="space-y-1.5">
-                      <Label htmlFor="external-task-started-at">Started at</Label>
-                      <Input
-                        id="external-task-started-at"
-                        type="datetime-local"
-                        value={exactStart}
-                        onChange={(event) => setExactStart(event.target.value)}
-                        disabled={timeEntries.create.isPending}
-                      />
-                    </div>
-                  ) : null}
-                </div>
-                <Button
-                  type="submit"
-                  disabled={timeEntries.create.isPending || timeEntries.blockedByUnknown}
-                >
-                  {timeEntries.create.isPending ? 'Submitting…' : 'Log time'}
-                </Button>
-                {timeEntries.create.isError ? (
-                  <p role="alert" className="text-xs text-destructive">
-                    {getErrorMessage(
-                      timeEntries.create.error,
-                      'The time entry could not be submitted.',
-                    )}
-                  </p>
-                ) : null}
-              </form>
-
-              {timeEntries.blockedByUnknown && timeEntries.unknownOperationId ? (
-                <Alert variant="destructive">
-                  <AlertTitle>Last submission unconfirmed</AlertTitle>
-                  <AlertDescription>
-                    <p>
-                      The provider was contacted but the result is unknown, so this form is locked.
-                      Check the entry in the source before logging time again.
-                    </p>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => timeEntries.verifyUnknown(timeEntries.unknownOperationId!)}
-                        disabled={timeEntries.verify.isPending}
-                      >
-                        {timeEntries.verify.isPending ? 'Verifying…' : 'Verify'}
-                      </Button>
-                      {sourceUrl ? (
-                        <Button asChild type="button" size="sm" variant="outline">
-                          <a href={sourceUrl} target="_blank" rel="noreferrer">
-                            Open in source{' '}
-                            <ExternalLink className="ml-1 h-3.5 w-3.5" aria-hidden="true" />
-                          </a>
-                        </Button>
-                      ) : null}
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() =>
-                          timeEntries.acknowledgeUnknown(timeEntries.unknownOperationId!)
-                        }
-                        disabled={timeEntries.acknowledge.isPending}
-                      >
-                        Acknowledge duplicate risk
-                      </Button>
-                    </div>
-                    <p className="mt-2 text-xs">
-                      Acknowledging accepts that the provider may hold a duplicate entry; it unlocks
-                      this form without sending anything.
-                    </p>
-                  </AlertDescription>
-                </Alert>
-              ) : null}
-
-              <div className="space-y-2">
-                <p className="text-sm font-medium">Your entries · last 30 days</p>
-                {history.isLoading ? (
-                  <p className="text-sm text-muted-foreground" role="status">
-                    Loading time entries…
-                  </p>
-                ) : null}
-                {history.isError ? (
-                  <Alert variant="destructive">
-                    <AlertTitle>Time entries unavailable</AlertTitle>
-                    <AlertDescription>
-                      {getErrorMessage(history.error, 'Time entries could not be loaded.')}
-                    </AlertDescription>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      className="mt-2"
-                      onClick={() => void history.refetch()}
-                    >
-                      Retry
-                    </Button>
-                  </Alert>
-                ) : null}
-                {history.data ? (
-                  <>
-                    {history.data.hasRunningTimer ? (
-                      <p className="text-xs text-muted-foreground" role="status">
-                        A running timer is active in the provider.
-                      </p>
-                    ) : null}
-                    {history.data.truncated ? (
+                    <div className="space-y-1">
+                      <h4 id="devchain-time-estimate-heading" className="text-sm font-semibold">
+                        DevChain estimated time tracked
+                      </h4>
                       <p className="text-xs text-muted-foreground">
-                        Incomplete list — the provider did not return the full 30-day window.
+                        DevChain derives this estimate from agent activity.
+                      </p>
+                    </div>
+                    {epicTime.query.isLoading ? (
+                      <p className="text-sm text-muted-foreground" role="status">
+                        Loading DevChain estimate…
                       </p>
                     ) : null}
-                    {history.data.entries.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">
-                        No entries in the last 30 days.
+                    {epicTime.query.isError ? (
+                      <p className="text-sm text-destructive" role="alert">
+                        DevChain estimate is unavailable.
                       </p>
-                    ) : (
-                      <ul ref={listRef} className="space-y-2" aria-label="Your time entries">
-                        {history.data.entries.map((entry) => (
-                          <li
-                            key={entry.remoteId}
-                            data-entry-id={entry.remoteId}
-                            className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 rounded-md border px-3 py-2 text-sm"
-                          >
-                            <div className="min-w-0">
+                    ) : null}
+                    {epicTime.summary ? (
+                      <>
+                        {epicTime.summary.totalMinutes === 0 ? (
+                          <p className="text-sm text-muted-foreground">
+                            No estimated agent time recorded yet.
+                          </p>
+                        ) : (
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between gap-3 text-sm">
                               <span className="font-medium">
-                                {formatDurationMs(entry.durationMs)}
+                                {epicTime.summary.isRoot ? 'Total including sub-epics' : 'Total'}
                               </span>
-                              <span className="ml-2 text-xs text-muted-foreground">
-                                <time dateTime={entry.startedAt}>
-                                  {new Date(entry.startedAt).toLocaleString()}
-                                </time>
+                              <span className="font-semibold tabular-nums">
+                                {formatEpicTimeMinutes(epicTime.summary.totalMinutes)}
                               </span>
-                              {entry.note ? (
-                                <p className="mt-0.5 break-words text-xs text-muted-foreground">
-                                  {entry.note}
-                                  {entry.noteTruncated ? ' (note was shortened)' : ''}
-                                </p>
-                              ) : null}
                             </div>
-                            {entry.canDelete ? (
+                            <ul className="space-y-1" aria-label="Contributing DevChain tasks">
+                              {epicTime.summary.taskItems.map((item) => (
+                                <li
+                                  key={item.epicId}
+                                  className="flex items-center justify-between gap-3 text-sm text-muted-foreground"
+                                >
+                                  <span className="min-w-0 break-words">{item.epicTitle}</span>
+                                  <span className="shrink-0 tabular-nums">
+                                    {formatEpicTimeMinutes(item.minutes)}
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+                            {epicTime.summary.totalMinutes * 60_000 > MAX_TRACKED_DURATION_MS ? (
+                              <p className="text-xs text-destructive">
+                                The estimate exceeds the 7-day limit for one time entry.
+                              </p>
+                            ) : (
                               <Button
                                 type="button"
-                                variant="ghost"
                                 size="sm"
-                                className="h-7 px-2 text-xs text-destructive"
-                                data-entry-delete
-                                onClick={() => requestDeleteConfirmation(entry)}
-                                disabled={
-                                  timeEntries.delete.isPending || timeEntries.blockedByUnknown
-                                }
+                                onClick={openEstimateConfirmation}
+                                disabled={timeEntries.writeBlocked}
                               >
-                                Delete
+                                Log full estimate —{' '}
+                                {formatEpicTimeMinutes(epicTime.summary.totalMinutes)}
                               </Button>
+                            )}
+                            {estimateCreateError ? (
+                              <p role="alert" className="text-xs text-destructive">
+                                {getErrorMessage(
+                                  timeEntries.create.error,
+                                  'The DevChain estimate could not be submitted.',
+                                )}
+                              </p>
                             ) : null}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </>
+                          </div>
+                        )}
+                      </>
+                    ) : null}
+                  </section>
                 ) : null}
-              </div>
-            </>
-          ) : (
-            <p className="text-sm text-muted-foreground">Time tracking is unavailable.</p>
-          )}
-          <p role="status" className="sr-only">
-            {announcement}
-          </p>
-        </div>
-      ) : null}
+                <form className="space-y-3" onSubmit={handleSubmit} aria-label="Log time">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="external-task-duration">Duration</Label>
+                    <Input
+                      id="external-task-duration"
+                      ref={durationInputRef}
+                      type="text"
+                      name="duration"
+                      autoComplete="off"
+                      inputMode="numeric"
+                      placeholder="Example: 15m, 5h, 1h 30m, or 30…"
+                      value={duration}
+                      onChange={(event) => {
+                        setDuration(event.target.value);
+                        if (durationError) setDurationError(null);
+                      }}
+                      aria-invalid={durationError !== null}
+                      aria-describedby={durationError ? 'external-task-duration-error' : undefined}
+                      disabled={manualCreatePending}
+                    />
+                    {durationError ? (
+                      <p id="external-task-duration-error" className="text-xs text-destructive">
+                        {durationError}
+                      </p>
+                    ) : null}
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="external-task-time-note">Note (optional)</Label>
+                    <Textarea
+                      id="external-task-time-note"
+                      name="note"
+                      autoComplete="off"
+                      value={note}
+                      onChange={(event) => setNote(event.target.value)}
+                      maxLength={10_000}
+                      disabled={manualCreatePending}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      aria-expanded={showExactStart}
+                      aria-controls="external-task-exact-start"
+                      onClick={() => setShowExactStart((value) => !value)}
+                    >
+                      {showExactStart ? 'Hide exact start time' : 'Add exact start time (optional)'}
+                    </Button>
+                    {showExactStart ? (
+                      <div id="external-task-exact-start" className="space-y-1.5">
+                        <Label htmlFor="external-task-started-at">Started at</Label>
+                        <Input
+                          id="external-task-started-at"
+                          type="datetime-local"
+                          name="startedAt"
+                          autoComplete="off"
+                          value={exactStart}
+                          onChange={(event) => setExactStart(event.target.value)}
+                          disabled={manualCreatePending}
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+                  <Button type="submit" disabled={timeEntries.writeBlocked}>
+                    {manualCreatePending ? 'Submitting…' : 'Log time'}
+                  </Button>
+                  {manualCreateError ? (
+                    <p role="alert" className="text-xs text-destructive">
+                      {getErrorMessage(
+                        timeEntries.create.error,
+                        'The time entry could not be submitted.',
+                      )}
+                    </p>
+                  ) : null}
+                </form>
+
+                {timeEntries.blockedByUnknown && timeEntries.unknownOperationId ? (
+                  <Alert variant="destructive">
+                    <AlertTitle>Last submission unconfirmed</AlertTitle>
+                    <AlertDescription>
+                      <p>
+                        The provider was contacted but the result is unknown, so this form is
+                        locked. Check the entry in the source before logging time again.
+                      </p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => timeEntries.verifyUnknown(timeEntries.unknownOperationId!)}
+                          disabled={timeEntries.verify.isPending}
+                          hidden={!timeEntries.canVerifyUnknown}
+                        >
+                          {timeEntries.verify.isPending ? 'Verifying…' : 'Verify'}
+                        </Button>
+                        {sourceUrl ? (
+                          <Button asChild size="sm" variant="outline">
+                            <a href={sourceUrl} target="_blank" rel="noreferrer">
+                              Open in source{' '}
+                              <ExternalLink className="ml-1 h-3.5 w-3.5" aria-hidden="true" />
+                            </a>
+                          </Button>
+                        ) : null}
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            timeEntries.acknowledgeUnknown(timeEntries.unknownOperationId!)
+                          }
+                          disabled={timeEntries.acknowledge.isPending}
+                        >
+                          Acknowledge duplicate risk
+                        </Button>
+                      </div>
+                      <p className="mt-2 text-xs">
+                        Acknowledging accepts that the provider may hold a duplicate entry; it
+                        unlocks this form without sending anything.
+                      </p>
+                    </AlertDescription>
+                  </Alert>
+                ) : null}
+
+                <details
+                  open={historyOpen}
+                  className="rounded-md border bg-background/40"
+                  onToggle={handleHistoryToggle}
+                >
+                  <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
+                    Recent time entries
+                  </summary>
+                  <div className="space-y-2 border-t px-3 py-3">
+                    <p className="text-sm font-medium">Your entries · last 30 days</p>
+                    {history.isLoading ? (
+                      <p className="text-sm text-muted-foreground" role="status">
+                        Loading time entries…
+                      </p>
+                    ) : null}
+                    {history.isError ? (
+                      <Alert variant="destructive">
+                        <AlertTitle>Time entries unavailable</AlertTitle>
+                        <AlertDescription>
+                          {getErrorMessage(history.error, 'Time entries could not be loaded.')}
+                        </AlertDescription>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="mt-2"
+                          onClick={() => void history.refetch()}
+                        >
+                          Retry
+                        </Button>
+                      </Alert>
+                    ) : null}
+                    {history.data ? (
+                      <>
+                        {history.data.hasRunningTimer ? (
+                          <p className="text-xs text-muted-foreground" role="status">
+                            A running timer is active in the provider.
+                          </p>
+                        ) : null}
+                        {history.data.truncated ? (
+                          <p className="text-xs text-muted-foreground">
+                            Incomplete list — the provider did not return the full 30-day window.
+                          </p>
+                        ) : null}
+                        {history.data.entries.length === 0 ? (
+                          <p className="text-sm text-muted-foreground">
+                            No entries in the last 30 days.
+                          </p>
+                        ) : (
+                          <ul ref={listRef} className="space-y-2" aria-label="Your time entries">
+                            {history.data.entries.map((entry) => (
+                              <li
+                                key={entry.remoteId}
+                                data-entry-id={entry.remoteId}
+                                className="grid min-w-0 gap-3 rounded-md border px-3 py-2 text-sm sm:grid-cols-[minmax(5rem,auto)_minmax(10rem,1fr)_minmax(0,2fr)_auto] sm:items-center"
+                              >
+                                <div className="min-w-0">
+                                  <span className="block text-xs text-muted-foreground sm:sr-only">
+                                    Duration
+                                  </span>
+                                  <span className="block font-medium tabular-nums">
+                                    {formatDurationMs(entry.durationMs)}
+                                  </span>
+                                </div>
+                                <div className="min-w-0">
+                                  <span className="block text-xs text-muted-foreground sm:sr-only">
+                                    Started
+                                  </span>
+                                  <time
+                                    dateTime={entry.startedAt}
+                                    className="block text-xs text-muted-foreground tabular-nums"
+                                  >
+                                    {new Date(entry.startedAt).toLocaleString()}
+                                  </time>
+                                </div>
+                                <div className="min-w-0">
+                                  <span className="block text-xs text-muted-foreground sm:sr-only">
+                                    Note
+                                  </span>
+                                  {entry.note ? (
+                                    <p className="break-words text-xs text-muted-foreground">
+                                      {entry.note}
+                                      {entry.noteTruncated ? ' (note was shortened)' : ''}
+                                    </p>
+                                  ) : (
+                                    <span className="text-xs text-muted-foreground">No note</span>
+                                  )}
+                                </div>
+                                {entry.canDelete ? (
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    className="justify-self-start text-destructive sm:justify-self-end"
+                                    data-entry-delete
+                                    aria-label={`Delete ${formatDurationMs(entry.durationMs)} entry started ${new Date(entry.startedAt).toLocaleString()}`}
+                                    onClick={() => requestDeleteConfirmation(entry)}
+                                    disabled={timeEntries.writeBlocked}
+                                  >
+                                    Delete
+                                  </Button>
+                                ) : null}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </>
+                    ) : null}
+                  </div>
+                </details>
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">Time tracking is unavailable.</p>
+            )}
+            <p role="status" className="sr-only">
+              {announcement}
+            </p>
+          </div>
+        ) : null}
+      </div>
 
       {deleteTarget ? (
         <Dialog
@@ -495,7 +714,7 @@ export function ExternalTaskTimeTracking({
                 variant="destructive"
                 size="sm"
                 onClick={confirmDelete}
-                disabled={timeEntries.delete.isPending || timeEntries.blockedByUnknown}
+                disabled={timeEntries.writeBlocked}
               >
                 {timeEntries.delete.isPending ? 'Deleting…' : 'Delete entry'}
               </Button>
@@ -508,6 +727,34 @@ export function ExternalTaskTimeTracking({
           </DialogContent>
         </Dialog>
       ) : null}
-    </details>
+      <ConfirmDialog
+        open={estimateSnapshot !== null}
+        onOpenChange={(open) => {
+          if (!open) setEstimateSnapshot(null);
+        }}
+        title="Log the full DevChain estimate?"
+        description={
+          estimateSnapshot ? (
+            <span className="space-y-2">
+              <span className="block font-medium text-foreground">
+                {estimateSnapshot.scopeLabel}: {estimateSnapshot.durationLabel}
+              </span>
+              <span className="block">
+                This creates a new full-total time entry. DevChain does not deduct existing provider
+                time or earlier estimate entries.
+              </span>
+              <span className="block">
+                Confirming again later creates another full-total entry.
+              </span>
+            </span>
+          ) : (
+            ''
+          )
+        }
+        confirmText="Log full estimate"
+        cancelText="Cancel"
+        onConfirm={confirmEstimate}
+      />
+    </section>
   );
 }

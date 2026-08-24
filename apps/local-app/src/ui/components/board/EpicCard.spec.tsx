@@ -156,6 +156,70 @@ describe('EpicCard detail intent', () => {
   });
 });
 
+describe('EpicCard estimated-time badge', () => {
+  function renderCardWithTime(
+    epic = createEpic(),
+    overrides: Partial<EpicCardProps> = {},
+  ): EpicCardProps {
+    const props: EpicCardProps = {
+      epic,
+      onEdit: jest.fn(),
+      onDelete: jest.fn(),
+      onDragStart: jest.fn(),
+      onDragEnd: jest.fn(),
+      isDragging: false,
+      onKeyboardMove: jest.fn(),
+      onToggleParentFilter: jest.fn(),
+      isActiveParent: false,
+      onOpenEpicDetails: jest.fn(),
+      statuses: [status],
+      ...overrides,
+    };
+    render(
+      <main>
+        <EpicCard {...props} />
+      </main>,
+    );
+    return props;
+  }
+
+  it('badges a root card with the estimated total', () => {
+    renderCardWithTime(createEpic(), { timeTotalMinutes: 90 });
+
+    const badge = screen.getByTitle('Estimated agent time');
+    expect(badge).toHaveTextContent('1h 30m');
+  });
+
+  it('places sub-epic counts left and estimated time right in one footer row', () => {
+    renderCardWithTime(createEpic(), {
+      timeTotalMinutes: 90,
+      subEpicCountsByStatus: { [status.id]: 2 },
+    });
+
+    const statusSummary = screen.getByTitle(status.label);
+    const badge = screen.getByTitle('Estimated agent time');
+    const footer = statusSummary.parentElement?.parentElement;
+    expect(footer).toBe(badge.parentElement?.parentElement);
+    expect(footer).toHaveClass('justify-between');
+    expect(statusSummary.parentElement).toHaveClass('flex-wrap');
+    expect(badge.parentElement).toHaveClass('ml-auto', 'shrink-0');
+  });
+
+  it('never badges child cards even when a total is provided', () => {
+    renderCardWithTime(createEpic({ title: 'Child epic', parentId: 'parent-1' }), {
+      timeTotalMinutes: 90,
+    });
+
+    expect(screen.queryByTitle('Estimated agent time')).not.toBeInTheDocument();
+  });
+
+  it('renders no badge without a positive total', () => {
+    renderCardWithTime(createEpic(), { timeTotalMinutes: 0 });
+
+    expect(screen.queryByTitle('Estimated agent time')).not.toBeInTheDocument();
+  });
+});
+
 describe('EpicCard sourced composition', () => {
   function cardGroup() {
     return screen.getByRole('group', { name: /^Epic: Parent epic/ });

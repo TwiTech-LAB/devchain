@@ -106,8 +106,7 @@ export function AddBoardButton({
               ))}
             </div>
           ) : (
-            // Only disconnected providers reach this dialog; credential replacement and
-            // disconnect stay in Settings → Integrations, so the disconnect action is inert here.
+            // Only disconnected providers reach this dialog, so disconnect is inert here.
             <IntegrationConnectionForm
               provider={effectiveSelected}
               connection={

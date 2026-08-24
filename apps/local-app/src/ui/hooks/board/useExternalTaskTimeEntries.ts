@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   ExternalTaskTimeEntryHistory,
@@ -21,6 +21,46 @@ function timeOperationId(): string {
   return window.crypto.randomUUID();
 }
 
+export type TimeEntrySubmissionOrigin = 'manual' | 'estimate';
+type TimeEntryWriteKind = 'create' | 'delete';
+
+interface OperationContext {
+  operationId: string;
+  taskScope: string;
+  operationScope: string;
+  provider: ExternalBoardProvider;
+  taskId: string;
+  connectionEpoch: IntegrationConnectionEpoch;
+  generation: string;
+}
+
+interface CreateRequest extends OperationContext {
+  input: ExternalTaskTimeEntryInput;
+  origin: TimeEntrySubmissionOrigin;
+}
+
+interface DeleteRequest extends OperationContext {
+  remoteEntryId: string;
+}
+
+type ResolutionRequest = OperationContext;
+
+type TaskWriteGuard = OperationContext & {
+  status: 'pending' | 'unknown';
+  kind: TimeEntryWriteKind;
+};
+
+function mutationHeaders(
+  request: OperationContext,
+  operationId = request.operationId,
+): Record<string, string> {
+  return {
+    'X-DevChain-Connection-Epoch': request.generation,
+    'Content-Type': 'application/json',
+    'Idempotency-Key': operationId,
+  };
+}
+
 /**
  * Duration-first time-entry management for one remote task: history loading,
  * entry creation, operation verification, and entry deletion — all behind
@@ -29,17 +69,21 @@ function timeOperationId(): string {
  * Suppression contract: while the epoch, task identity, or `log_time`
  * capability is unaccepted, no history request runs, cached history stays
  * hidden, and every mutation refuses to dispatch.
+ * History visibility is narrower: a closed history disclosure suppresses
+ * only the history query and cached-history exposure, never mutations.
  */
 export function useExternalTaskTimeEntries(
   provider: ExternalBoardProvider,
   taskId: string | null,
   {
     enabled,
+    historyOpen,
     connectionEpoch,
     identityAccepted,
     timeTrackingEnabled,
   }: {
     enabled: boolean;
+    historyOpen: boolean;
     connectionEpoch: IntegrationConnectionEpoch | null;
     identityAccepted: boolean;
     timeTrackingEnabled: boolean;
@@ -50,28 +94,32 @@ export function useExternalTaskTimeEntries(
   const encodedTaskId = taskId ? encodeURIComponent(taskId) : '';
   const generation = integrationConnectionGeneration(connectionEpoch);
   const accepted = enabled && generation !== null && taskId !== null && identityAccepted;
+  const historyAccepted = accepted && timeTrackingEnabled && historyOpen;
+  // Duplicate risk survives credential replacement for the same provider task;
+  // pending/error/success presentation remains bound to the admitted epoch.
+  const taskScope = `${provider}\u0000${taskId ?? ''}`;
+  const operationScope = `${provider}\u0000${connectionEpoch ?? ''}\u0000${taskId ?? ''}`;
+  const currentTaskScopeRef = useRef(taskScope);
+  const currentOperationScopeRef = useRef(operationScope);
+  currentTaskScopeRef.current = taskScope;
+  currentOperationScopeRef.current = operationScope;
 
   const timeEntriesKey = useMemo(
     () => externalMyWorkQueryKeys.taskTimeEntries(provider, connectionEpoch, taskId ?? ''),
     [provider, connectionEpoch, taskId],
   );
-  const taskDetailKey = useMemo(
-    () => externalMyWorkQueryKeys.taskDetail(provider, connectionEpoch, taskId ?? ''),
-    [provider, connectionEpoch, taskId],
-  );
+  const [writeGuard, setWriteGuardState] = useState<TaskWriteGuard | null>(null);
+  const writeGuardRef = useRef<TaskWriteGuard | null>(null);
+  const setWriteGuard = useCallback((guard: TaskWriteGuard | null): void => {
+    writeGuardRef.current = guard;
+    setWriteGuardState(guard);
+  }, []);
 
-  // A create whose outcome stayed unknown blocks new creates until the user
-  // acknowledges the duplicate risk (verify or abandon) — the receipt store
-  // guarantees the same operation id can never re-dispatch.
-  const [unknownOperationId, setUnknownOperationId] = useState<string | null>(null);
-
-  const timeHeaders = useMemo<Record<string, string>>(
-    () => ({
-      'X-DevChain-Connection-Epoch': generation ?? '',
-      'Content-Type': 'application/json',
-    }),
-    [generation],
-  );
+  useEffect(() => {
+    if (writeGuardRef.current && writeGuardRef.current.taskScope !== taskScope) {
+      setWriteGuard(null);
+    }
+  }, [setWriteGuard, taskScope]);
 
   const historyQuery = useQuery({
     queryKey: timeEntriesKey,
@@ -83,154 +131,277 @@ export function useExternalTaskTimeEntries(
         '',
         apiFetch,
       ),
-    enabled: accepted && timeTrackingEnabled,
+    enabled: historyAccepted,
   });
 
-  const refetchAfterWrite = useCallback(async (): Promise<void> => {
-    // Writes change exactly two things: this task's history and its total.
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: timeEntriesKey, exact: true }),
-      queryClient.invalidateQueries({ queryKey: taskDetailKey, exact: true }),
-    ]);
-  }, [queryClient, timeEntriesKey, taskDetailKey]);
+  const refetchAfterWrite = useCallback(
+    async (request: OperationContext): Promise<void> => {
+      if (
+        currentTaskScopeRef.current !== request.taskScope ||
+        currentOperationScopeRef.current !== request.operationScope
+      ) {
+        return;
+      }
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: externalMyWorkQueryKeys.taskTimeEntries(
+            request.provider,
+            request.connectionEpoch,
+            request.taskId,
+          ),
+          exact: true,
+        }),
+        queryClient.invalidateQueries({
+          queryKey: externalMyWorkQueryKeys.taskDetail(
+            request.provider,
+            request.connectionEpoch,
+            request.taskId,
+          ),
+          exact: true,
+        }),
+      ]);
+    },
+    [queryClient],
+  );
+
+  const clearMatchingGuard = useCallback(
+    (request: OperationContext): void => {
+      if (
+        currentTaskScopeRef.current === request.taskScope &&
+        writeGuardRef.current?.operationId === request.operationId
+      ) {
+        setWriteGuard(null);
+      }
+    },
+    [setWriteGuard],
+  );
+
+  const retainUnknownGuard = useCallback(
+    (request: OperationContext, operationId: string, kind: TimeEntryWriteKind): void => {
+      if (
+        currentTaskScopeRef.current === request.taskScope &&
+        writeGuardRef.current?.operationId === request.operationId
+      ) {
+        setWriteGuard({ ...request, operationId, kind, status: 'unknown' });
+      }
+    },
+    [setWriteGuard],
+  );
 
   const createMutation = useMutation({
-    mutationFn: async (input: ExternalTaskTimeEntryInput): Promise<ExternalTimeEntryCreateResult> =>
+    mutationFn: async (request: CreateRequest): Promise<ExternalTimeEntryCreateResult> =>
       fetchJsonOrThrow<ExternalTimeEntryCreateResult>(
-        `/api/integrations/my-work/${provider}/tasks/${encodedTaskId}/time-entries`,
+        `/api/integrations/my-work/${request.provider}/tasks/${encodeURIComponent(request.taskId)}/time-entries`,
         {
           method: 'POST',
-          headers: { ...timeHeaders, 'Idempotency-Key': timeOperationId() },
-          body: JSON.stringify(input),
+          headers: mutationHeaders(request),
+          body: JSON.stringify(request.input),
         },
         'The time entry could not be submitted.',
         '',
         apiFetch,
       ),
-    onSuccess: async (result) => {
+    onSuccess: async (result, request) => {
       if (result.outcome === 'outcome_unknown') {
-        setUnknownOperationId(result.receipt.operationId);
+        retainUnknownGuard(request, result.receipt.operationId, 'create');
         return;
       }
-      await refetchAfterWrite();
+      clearMatchingGuard(request);
+      await refetchAfterWrite(request);
     },
+    onError: (_error, request) => clearMatchingGuard(request),
   });
 
   const verifyMutation = useMutation({
-    mutationFn: async (operationId: string): Promise<ExternalTimeOperationVerifyResult> =>
+    mutationFn: async (request: ResolutionRequest): Promise<ExternalTimeOperationVerifyResult> =>
       fetchJsonOrThrow<ExternalTimeOperationVerifyResult>(
-        `/api/integrations/my-work/${provider}/time-operations/${encodeURIComponent(operationId)}/verify`,
+        `/api/integrations/my-work/${request.provider}/time-operations/${encodeURIComponent(request.operationId)}/verify`,
         {
           method: 'POST',
-          headers: { ...timeHeaders, 'Idempotency-Key': timeOperationId() },
+          headers: mutationHeaders(request, timeOperationId()),
         },
         'The operation could not be verified.',
         '',
         apiFetch,
       ),
-    onSuccess: async (result) => {
+    onSuccess: async (result, request) => {
       if (result.resolved) {
-        setUnknownOperationId(null);
-        await refetchAfterWrite();
+        clearMatchingGuard(request);
+        await refetchAfterWrite(request);
       }
     },
   });
 
   const acknowledgeMutation = useMutation({
-    mutationFn: async (operationId: string): Promise<ExternalTimeOperationReceiptView> =>
+    mutationFn: async (request: ResolutionRequest): Promise<ExternalTimeOperationReceiptView> =>
       fetchJsonOrThrow<ExternalTimeOperationReceiptView>(
-        `/api/integrations/my-work/${provider}/time-operations/${encodeURIComponent(operationId)}/acknowledge`,
+        `/api/integrations/my-work/${request.provider}/time-operations/${encodeURIComponent(request.operationId)}/acknowledge`,
         {
           method: 'POST',
-          headers: { ...timeHeaders, 'Idempotency-Key': timeOperationId() },
+          headers: mutationHeaders(request, timeOperationId()),
         },
         'The duplicate risk could not be acknowledged.',
         '',
         apiFetch,
       ),
-    onSuccess: async () => {
-      setUnknownOperationId(null);
-      await refetchAfterWrite();
+    onSuccess: async (_result, request) => {
+      clearMatchingGuard(request);
+      await refetchAfterWrite(request);
     },
   });
 
   const deleteMutation = useMutation({
-    mutationFn: async (remoteEntryId: string): Promise<ExternalTimeEntryDeleteResult> =>
+    mutationFn: async (request: DeleteRequest): Promise<ExternalTimeEntryDeleteResult> =>
       fetchJsonOrThrow<ExternalTimeEntryDeleteResult>(
-        `/api/integrations/my-work/${provider}/tasks/${encodedTaskId}/time-entries/${encodeURIComponent(remoteEntryId)}`,
+        `/api/integrations/my-work/${request.provider}/tasks/${encodeURIComponent(request.taskId)}/time-entries/${encodeURIComponent(request.remoteEntryId)}`,
         {
           method: 'DELETE',
-          headers: { ...timeHeaders, 'Idempotency-Key': timeOperationId() },
+          headers: mutationHeaders(request),
         },
         'The time entry could not be deleted.',
         '',
         apiFetch,
       ),
-    onSuccess: async (result) => {
+    onSuccess: async (result, request) => {
       if (result.outcome === 'outcome_unknown') {
-        setUnknownOperationId(result.receipt.operationId);
+        retainUnknownGuard(request, result.receipt.operationId, 'delete');
         return;
       }
-      await refetchAfterWrite();
+      clearMatchingGuard(request);
+      await refetchAfterWrite(request);
     },
+    onError: (_error, request) => clearMatchingGuard(request),
   });
 
-  // An unknown outcome belongs to exactly one task on one provider: the
-  // dialog reuses this hook instance across task switches, so the lock and
-  // every operation surface must reset before the next task renders, never
-  // carrying a prior task's ambiguity into its form.
-  useEffect(() => {
-    setUnknownOperationId(null);
-    createMutation.reset();
-    deleteMutation.reset();
-    verifyMutation.reset();
-    acknowledgeMutation.reset();
-  }, [taskId, provider]);
+  const operationContext = useCallback((): OperationContext | null => {
+    if (!accepted || taskId === null || connectionEpoch === null || generation === null) {
+      return null;
+    }
+    return {
+      operationId: timeOperationId(),
+      taskScope,
+      operationScope,
+      provider,
+      taskId,
+      connectionEpoch,
+      generation,
+    };
+  }, [accepted, connectionEpoch, generation, operationScope, provider, taskId, taskScope]);
 
   const submitCreate = useCallback(
-    (input: ExternalTaskTimeEntryInput): void => {
-      if (!accepted || !timeTrackingEnabled || unknownOperationId !== null) return;
-      createMutation.mutate(input);
+    (input: ExternalTaskTimeEntryInput, origin: TimeEntrySubmissionOrigin = 'manual'): void => {
+      const context = operationContext();
+      if (!context || !timeTrackingEnabled || writeGuardRef.current?.taskScope === taskScope) {
+        return;
+      }
+      setWriteGuard({ ...context, kind: 'create', status: 'pending' });
+      createMutation.mutate({ ...context, input, origin });
     },
-    [accepted, timeTrackingEnabled, unknownOperationId, createMutation],
+    [createMutation, operationContext, setWriteGuard, taskScope, timeTrackingEnabled],
   );
 
   const submitDelete = useCallback(
     (remoteEntryId: string): void => {
-      if (!accepted || !timeTrackingEnabled) return;
-      deleteMutation.mutate(remoteEntryId);
+      const context = operationContext();
+      if (!context || !timeTrackingEnabled || writeGuardRef.current?.taskScope === taskScope) {
+        return;
+      }
+      setWriteGuard({ ...context, kind: 'delete', status: 'pending' });
+      deleteMutation.mutate({ ...context, remoteEntryId });
     },
-    [accepted, timeTrackingEnabled, deleteMutation],
+    [deleteMutation, operationContext, setWriteGuard, taskScope, timeTrackingEnabled],
   );
 
   const verifyUnknown = useCallback(
     (operationId: string): void => {
-      if (!accepted) return;
-      verifyMutation.mutate(operationId);
+      const context = operationContext();
+      const guard = writeGuardRef.current;
+      if (
+        !context ||
+        !timeTrackingEnabled ||
+        guard?.status !== 'unknown' ||
+        guard.operationId !== operationId ||
+        guard.operationScope !== operationScope
+      ) {
+        return;
+      }
+      verifyMutation.mutate({ ...context, operationId });
     },
-    [accepted, verifyMutation],
+    [operationContext, operationScope, timeTrackingEnabled, verifyMutation],
   );
 
   const acknowledgeUnknown = useCallback(
     (operationId: string): void => {
-      if (!accepted) return;
-      acknowledgeMutation.mutate(operationId);
+      const context = operationContext();
+      const guard = writeGuardRef.current;
+      if (
+        !context ||
+        !timeTrackingEnabled ||
+        guard?.status !== 'unknown' ||
+        guard.operationId !== operationId ||
+        guard.taskScope !== taskScope
+      ) {
+        return;
+      }
+      acknowledgeMutation.mutate({ ...context, operationId });
     },
-    [accepted, acknowledgeMutation],
+    [acknowledgeMutation, operationContext, taskScope, timeTrackingEnabled],
   );
+
+  const activeGuard = writeGuard?.taskScope === taskScope ? writeGuard : null;
+  const createPresented = createMutation.variables?.operationScope === operationScope;
+  const deletePresented = deleteMutation.variables?.operationScope === operationScope;
+  const verifyPresented = verifyMutation.variables?.operationScope === operationScope;
+  const acknowledgePresented = acknowledgeMutation.variables?.operationScope === operationScope;
 
   return {
     // Cached data stays hidden while the block is suppressed.
-    history: accepted && timeTrackingEnabled ? historyQuery : { ...historyQuery, data: undefined },
-    create: createMutation,
+    history: historyAccepted ? historyQuery : { ...historyQuery, data: undefined },
+    create: {
+      ...createMutation,
+      data: createPresented ? createMutation.data : undefined,
+      error: createPresented ? createMutation.error : null,
+      isPending: createPresented && createMutation.isPending,
+      isError: createPresented && createMutation.isError,
+      isSuccess: createPresented && createMutation.isSuccess,
+      isIdle: !createPresented || createMutation.isIdle,
+    },
+    createOrigin: createPresented ? (createMutation.variables?.origin ?? null) : null,
     submitCreate,
-    delete: deleteMutation,
+    delete: {
+      ...deleteMutation,
+      data: deletePresented ? deleteMutation.data : undefined,
+      error: deletePresented ? deleteMutation.error : null,
+      isPending: deletePresented && deleteMutation.isPending,
+      isError: deletePresented && deleteMutation.isError,
+      isSuccess: deletePresented && deleteMutation.isSuccess,
+      isIdle: !deletePresented || deleteMutation.isIdle,
+    },
     submitDelete,
-    verify: verifyMutation,
+    verify: {
+      ...verifyMutation,
+      data: verifyPresented ? verifyMutation.data : undefined,
+      error: verifyPresented ? verifyMutation.error : null,
+      isPending: verifyPresented && verifyMutation.isPending,
+      isError: verifyPresented && verifyMutation.isError,
+      isSuccess: verifyPresented && verifyMutation.isSuccess,
+    },
     verifyUnknown,
-    acknowledge: acknowledgeMutation,
+    acknowledge: {
+      ...acknowledgeMutation,
+      data: acknowledgePresented ? acknowledgeMutation.data : undefined,
+      error: acknowledgePresented ? acknowledgeMutation.error : null,
+      isPending: acknowledgePresented && acknowledgeMutation.isPending,
+      isError: acknowledgePresented && acknowledgeMutation.isError,
+      isSuccess: acknowledgePresented && acknowledgeMutation.isSuccess,
+    },
     acknowledgeUnknown,
-    unknownOperationId,
-    blockedByUnknown: unknownOperationId !== null,
+    unknownOperationId: activeGuard?.status === 'unknown' ? activeGuard.operationId : null,
+    blockedByUnknown: activeGuard?.status === 'unknown',
+    canVerifyUnknown:
+      activeGuard?.status === 'unknown' && activeGuard.operationScope === operationScope,
+    writeBlocked: activeGuard !== null,
   };
 }
+
+export type ExternalTaskTimeEntriesController = ReturnType<typeof useExternalTaskTimeEntries>;

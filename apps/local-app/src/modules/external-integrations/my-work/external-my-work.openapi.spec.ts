@@ -1,4 +1,5 @@
 import {
+  MY_WORK_RESPONSE_SCHEMA,
   TASK_DETAIL_RESPONSE_SCHEMA,
   TASK_TIME_ENTRIES_RESPONSE_SCHEMA,
   TIME_ENTRY_CREATE_RESPONSE_SCHEMA,
@@ -54,5 +55,32 @@ describe('external My Work OpenAPI time-entry schemas', () => {
     expect(
       (TASK_TIME_ENTRIES_RESPONSE_SCHEMA.properties!.entries as Record<string, unknown>).items,
     ).not.toHaveProperty('taskTotalDurationMs');
+  });
+
+  it('documents required provider-neutral hierarchy fields', () => {
+    const supported = MY_WORK_RESPONSE_SCHEMA.oneOf![1] as {
+      properties: {
+        tasks: { items: { properties: { task: { required: string[]; properties: object } } } };
+      };
+    };
+    const summary = supported.properties.tasks.items.properties.task;
+    expect(summary.required).toContain('parentRemoteTaskId');
+    expect(summary.properties).toMatchObject({
+      parentRemoteTaskId: { type: 'string', nullable: true },
+    });
+
+    expect(TASK_DETAIL_RESPONSE_SCHEMA.required).toEqual(
+      expect.arrayContaining(['subtasks', 'subtasksTruncated']),
+    );
+    expect(TASK_DETAIL_RESPONSE_SCHEMA.properties).toMatchObject({
+      subtasks: {
+        type: 'array',
+        maxItems: 100,
+        items: {
+          required: ['remoteId', 'remoteKey', 'title', 'status', 'webUrl'],
+        },
+      },
+      subtasksTruncated: { type: 'boolean' },
+    });
   });
 });

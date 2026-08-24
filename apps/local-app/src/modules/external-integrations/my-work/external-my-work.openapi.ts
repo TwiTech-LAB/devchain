@@ -7,6 +7,7 @@ import {
   MAX_TASK_COMMENT_BODY_LENGTH,
   MAX_TASK_COMMENT_CURSOR_LENGTH,
   MAX_TASK_COMMENT_ID_LENGTH,
+  MAX_TASK_DETAIL_SUBTASKS,
   MAX_TIME_ENTRY_DURATION_MS,
   MAX_TIME_ENTRY_HISTORY_ENTRIES,
   MAX_TIME_ENTRY_NOTE_LENGTH,
@@ -130,9 +131,19 @@ const workAreaSchema: SchemaObject = {
 
 const taskSummarySchema: SchemaObject = {
   type: 'object',
-  required: ['remoteId', 'title', 'status', 'updatedAt', 'dueAt', 'completedAt', 'webUrl'],
+  required: [
+    'remoteId',
+    'parentRemoteTaskId',
+    'title',
+    'status',
+    'updatedAt',
+    'dueAt',
+    'completedAt',
+    'webUrl',
+  ],
   properties: {
     remoteId: { type: 'string' },
+    parentRemoteTaskId: { type: 'string', nullable: true },
     title: { type: 'string' },
     status: {
       type: 'object',
@@ -253,6 +264,7 @@ export const MY_WORK_RESPONSE_SCHEMA: SchemaObject = {
             workArea: exampleWorkArea,
             task: {
               remoteId: 'abc123',
+              parentRemoteTaskId: null,
               title: 'Ship provider-neutral work',
               status: { name: 'in progress', category: 'active' },
               updatedAt: '2026-08-19T12:00:00.000Z',
@@ -279,6 +291,8 @@ export const TASK_DETAIL_RESPONSE_SCHEMA: SchemaObject = {
     'status',
     'dueAt',
     'priority',
+    'subtasks',
+    'subtasksTruncated',
     'taskTotalDurationMs',
     'webUrl',
     'location',
@@ -299,6 +313,33 @@ export const TASK_DETAIL_RESPONSE_SCHEMA: SchemaObject = {
       nullable: true,
       required: ['name', 'color'],
       properties: { name: { type: 'string' }, color: { type: 'string' } },
+    },
+    subtasks: {
+      type: 'array',
+      maxItems: MAX_TASK_DETAIL_SUBTASKS,
+      items: {
+        type: 'object',
+        required: ['remoteId', 'remoteKey', 'title', 'status', 'webUrl'],
+        properties: {
+          remoteId: { type: 'string' },
+          remoteKey: { type: 'string' },
+          title: { type: 'string' },
+          status: {
+            type: 'object',
+            required: ['name', 'category'],
+            properties: {
+              remoteId: { type: 'string', nullable: true },
+              name: { type: 'string' },
+              category: { type: 'string', enum: STATUS_CATEGORIES },
+            },
+          },
+          webUrl: { type: 'string', format: 'uri', nullable: true },
+        },
+      },
+    },
+    subtasksTruncated: {
+      type: 'boolean',
+      description: 'True when the provider-neutral direct-child list may be incomplete.',
     },
     taskTotalDurationMs: {
       type: 'integer',

@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Put, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Put, Query, UseGuards } from '@nestjs/common';
 import { z } from 'zod';
 import { ValidationError } from '../../../common/errors/error-types';
 import { IntegrationAdmissionGuard } from '../../../common/guards/integration-admission.guard';
@@ -16,6 +16,8 @@ const replaceConnectionSchema = z.discriminatedUnion('provider', [
     .object({
       provider: z.literal('clickup'),
       token: tokenSchema,
+      subtaskSyncEnabled: z.boolean().optional(),
+      acknowledgeOrphanRisk: z.boolean().optional(),
     })
     .strict(),
   z
@@ -24,12 +26,18 @@ const replaceConnectionSchema = z.discriminatedUnion('provider', [
       token: tokenSchema,
       siteUrl: z.string().trim().url('Enter a valid Jira site URL.').max(2048).optional(),
       email: z.string().trim().email('Enter a valid account email.').max(320).optional(),
+      subtaskSyncEnabled: z.boolean().optional(),
+      acknowledgeOrphanRisk: z.boolean().optional(),
     })
     .strict(),
 ]);
 const providerSchema = z.enum(INTEGRATION_PROVIDER_IDS);
+const syncSettingsSchema = z.object({ subtaskSyncEnabled: z.boolean() }).strict();
+const orphanRiskAcknowledgementSchema = z
+  .union([z.literal('true'), z.undefined()])
+  .transform((value) => value === 'true');
 
-function parseOrThrow<T>(schema: z.ZodType<T>, value: unknown): T {
+function parseOrThrow<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, value: unknown): T {
   return parseWithFallback(schema, value, 'Invalid integration connection request.');
 }
 
@@ -68,7 +76,22 @@ export class IntegrationConnectionsController {
   @Delete(':provider')
   async disconnectConnection(
     @Param('provider') provider: string,
+    @Query('acknowledgeOrphanRisk') acknowledgeOrphanRisk?: string,
   ): Promise<IntegrationConnectionState> {
-    return this.connections.disconnectConnection(parseOrThrow(providerSchema, provider));
+    return this.connections.disconnectConnection(
+      parseOrThrow(providerSchema, provider),
+      parseOrThrow(orphanRiskAcknowledgementSchema, acknowledgeOrphanRisk),
+    );
+  }
+
+  @Patch(':provider/settings')
+  async updateSyncSettings(
+    @Param('provider') provider: string,
+    @Body() body: unknown,
+  ): Promise<IntegrationConnectionState> {
+    return this.connections.updateSyncSettings(
+      parseOrThrow(providerSchema, provider),
+      parseOrThrow(syncSettingsSchema, body),
+    );
   }
 }

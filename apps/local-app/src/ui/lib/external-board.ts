@@ -1,5 +1,9 @@
 import type { IntegrationProvider } from '@/ui/hooks/useIntegrationConnections';
-import { normalizeExternalTaskSourceUrl } from '@/modules/external-integrations/models/external-task-source';
+import {
+  normalizeExternalProviderSourceUrl,
+  normalizeExternalTaskSourceUrl,
+  normalizeExternalWorkAreaSourceUrl,
+} from '@/modules/external-integrations/models/external-task-source';
 import { INTEGRATION_PROVIDER_IDS } from '@/ui/lib/integration-connections';
 
 export type ExternalBoardProvider = IntegrationProvider;
@@ -48,6 +52,29 @@ export function safeExternalTaskUrl(
   value: string | null | undefined,
 ): string | null {
   return normalizeExternalTaskSourceUrl(provider, value);
+}
+
+export function externalWorkAreaSourceUrl(
+  provider: ExternalBoardProvider,
+  workArea: { remoteId: string; scopeKey: string },
+): string | null {
+  if (provider === 'jira' && workArea.remoteId === 'other-assigned') {
+    return null;
+  }
+  const candidate =
+    provider === 'clickup'
+      ? `https://app.clickup.com/${encodeURIComponent(workArea.scopeKey)}/v/li/${encodeURIComponent(workArea.remoteId)}`
+      : `https://${workArea.scopeKey}/secure/RapidBoard.jspa?rapidView=${encodeURIComponent(workArea.remoteId)}`;
+  return normalizeExternalWorkAreaSourceUrl(provider, candidate);
+}
+
+export function externalProviderSourceUrl(
+  provider: ExternalBoardProvider,
+  scopeKey?: string,
+): string | null {
+  const candidate =
+    provider === 'clickup' ? 'https://app.clickup.com' : scopeKey ? `https://${scopeKey}` : null;
+  return normalizeExternalProviderSourceUrl(provider, candidate);
 }
 
 /** True only when the URL explicitly requests completed-inclusive work. */

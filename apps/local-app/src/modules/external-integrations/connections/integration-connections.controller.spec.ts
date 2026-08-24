@@ -9,6 +9,7 @@ describe('IntegrationConnectionsController', () => {
     listConnections: jest.fn(),
     replaceConnection: jest.fn(),
     disconnectConnection: jest.fn(),
+    updateSyncSettings: jest.fn(),
   };
   const controller = new IntegrationConnectionsController(
     service as unknown as IntegrationConnectionsService,
@@ -52,5 +53,48 @@ describe('IntegrationConnectionsController', () => {
       details: { field: 'provider' },
     });
     expect(service.disconnectConnection).not.toHaveBeenCalled();
+  });
+
+  it('accepts the optional sync toggle during connection PUT', async () => {
+    service.replaceConnection.mockResolvedValue({ provider: 'clickup' });
+
+    await controller.replaceConnection({
+      provider: 'clickup',
+      token: 'token',
+      subtaskSyncEnabled: true,
+    });
+
+    expect(service.replaceConnection).toHaveBeenCalledWith({
+      provider: 'clickup',
+      token: 'token',
+      subtaskSyncEnabled: true,
+    });
+  });
+
+  it('PATCH accepts only the boolean sync setting and no credentials', async () => {
+    service.updateSyncSettings.mockResolvedValue({ provider: 'jira' });
+
+    await controller.updateSyncSettings('jira', { subtaskSyncEnabled: false });
+
+    expect(service.updateSyncSettings).toHaveBeenCalledWith('jira', {
+      subtaskSyncEnabled: false,
+    });
+    await expect(
+      controller.updateSyncSettings('jira', {
+        subtaskSyncEnabled: true,
+        token: 'must-not-be-accepted',
+      }),
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it('requires an explicit true orphan-risk acknowledgement on DELETE', async () => {
+    service.disconnectConnection.mockResolvedValue({ provider: 'jira' });
+
+    await controller.disconnectConnection('jira', 'true');
+
+    expect(service.disconnectConnection).toHaveBeenCalledWith('jira', true);
+    await expect(controller.disconnectConnection('jira', 'false')).rejects.toBeInstanceOf(
+      ValidationError,
+    );
   });
 });

@@ -361,6 +361,7 @@ describe('Jira task time totals', () => {
           statusCategory: { key: 'indeterminate' },
         },
         project: { id: 'project-1', key: 'ENG', name: 'Engineering' },
+        subtasks: [],
         ...fields,
       },
     };

@@ -3,9 +3,10 @@ import { DbModule } from './db/db.module';
 import { LocalStorageService } from './local/local-storage.service';
 import { STORAGE_SERVICE } from './interfaces/storage.interface';
 import { SNAPSHOT_PROMPT_WRITER } from './interfaces/snapshot-prompt-writer.interface';
+import { EventsInfraModule } from '../events/events-infra.module';
 
 @Module({
-  imports: [DbModule],
+  imports: [DbModule, EventsInfraModule],
   providers: [
     LocalStorageService,
     {

@@ -73,6 +73,19 @@ function formatDate(value: string): string {
   return DUE_DATE_FORMAT.format(new Date(value));
 }
 
+function groupedSubtaskCountText(count: number): string {
+  return count === 1 ? '1 subtask' : `${count} subtasks`;
+}
+
+function openTaskLabel(task: ExternalKanbanTask): string {
+  const parts = [`Open ${task.title}`];
+  if (task.isSubtask) parts.push('Subtask');
+  if (task.groupedSubtaskCount > 0) {
+    parts.push(`with ${groupedSubtaskCountText(task.groupedSubtaskCount)} grouped under it`);
+  }
+  return parts.join(', ');
+}
+
 export function ExternalTaskKanban({
   columns,
   onOpenTask,
@@ -197,9 +210,11 @@ export function ExternalTaskKanban({
               const quickImportAvailable =
                 Boolean(onQuickImport) && !linksFetching && !linksError && link?.linked === false;
               const quickImportPending = quickImportPendingTaskId !== null;
+              const hasGroupedSubtasks = task.groupedSubtaskCount > 0;
+              const taskLabel = openTaskLabel(task);
               const ariaLabel = moves?.keyboardMovesEnabled
-                ? `Open ${task.title}. Press Enter for details, press Left or Right arrow keys to move between columns.`
-                : `Open ${task.title}`;
+                ? `${taskLabel}. Press Enter for details, press Left or Right arrow keys to move between columns.`
+                : taskLabel;
               return (
                 <article
                   key={task.remoteId}
@@ -240,7 +255,19 @@ export function ExternalTaskKanban({
                     ref={(element) => registerCard(task.remoteId, element)}
                   >
                     <span className="min-w-0 space-y-2">
-                      <span className="block text-xs text-muted-foreground">{task.remoteId}</span>
+                      <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <span>{task.remoteId}</span>
+                        {task.isSubtask ? (
+                          <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                            Subtask
+                          </span>
+                        ) : null}
+                        {hasGroupedSubtasks ? (
+                          <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                            {groupedSubtaskCountText(task.groupedSubtaskCount)}
+                          </span>
+                        ) : null}
+                      </span>
                       <span className="block font-medium leading-snug">{task.title}</span>
                       <span className="block text-xs text-muted-foreground">
                         Status:{' '}

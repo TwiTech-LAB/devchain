@@ -22,6 +22,9 @@ import type {
   ExternalTaskLinkStateSummary,
   ExternalTaskStatusInput,
   ExternalTaskStatusOption,
+  ExternalTaskStatus,
+  ExternalTaskSubtaskSummary,
+  ExternalTaskSummary,
   ExternalTaskTimeEntryHistory,
   ExternalWorkAreaColumn,
 } from '../models/external-provider.models';
@@ -60,7 +63,10 @@ export class ExternalMyWorkService {
       supported: true,
       capabilities: snapshot.capabilities,
       workAreas: snapshot.workAreas,
-      tasks: snapshot.tasks,
+      tasks: snapshot.tasks.map(({ workArea, task }) => ({
+        workArea,
+        task: this.projectTaskSummary(task),
+      })),
       refreshedAt: snapshot.refreshedAt,
     };
   }
@@ -396,11 +402,44 @@ export class ExternalMyWorkService {
       status: this.projectColumn(detail.status),
       dueAt: detail.dueAt,
       priority: detail.priority ? { ...detail.priority } : null,
+      subtasks: detail.subtasks.map((subtask) => this.projectSubtaskSummary(subtask)),
+      subtasksTruncated: detail.subtasksTruncated,
       taskTotalDurationMs: detail.taskTotalDurationMs,
       webUrl: detail.webUrl,
       location: { ...detail.location },
       allowedStatuses: detail.allowedStatuses.map((option) => this.projectStatusOption(option)),
       actions: detail.actions.map((action) => ({ ...action })),
+    };
+  }
+
+  private projectTaskSummary(task: ExternalTaskSummary): ExternalTaskSummary {
+    return {
+      remoteId: task.remoteId,
+      parentRemoteTaskId: task.parentRemoteTaskId,
+      title: task.title,
+      status: this.projectTaskStatus(task.status),
+      updatedAt: task.updatedAt,
+      dueAt: task.dueAt,
+      completedAt: task.completedAt,
+      webUrl: task.webUrl,
+    };
+  }
+
+  private projectSubtaskSummary(subtask: ExternalTaskSubtaskSummary): ExternalTaskSubtaskSummary {
+    return {
+      remoteId: subtask.remoteId,
+      remoteKey: subtask.remoteKey,
+      title: subtask.title,
+      status: this.projectTaskStatus(subtask.status),
+      webUrl: subtask.webUrl,
+    };
+  }
+
+  private projectTaskStatus(status: ExternalTaskStatus): ExternalTaskStatus {
+    return {
+      ...(status.remoteId !== undefined ? { remoteId: status.remoteId } : {}),
+      name: status.name,
+      category: status.category,
     };
   }
 

@@ -15,6 +15,11 @@ const titleChangeSchema = z.object({
   current: z.string(),
 });
 
+const descriptionChangeSchema = z.object({
+  previous: z.string().nullable(),
+  current: z.string().nullable(),
+});
+
 const statusIdChangeSchema = z.object({
   previous: z.string().nullable(),
   current: z.string().nullable(),
@@ -49,6 +54,7 @@ export const epicUpdatedEvent = {
     recipientIds: z.array(z.string().min(1)).optional(),
     changes: z.object({
       title: titleChangeSchema.optional(),
+      description: descriptionChangeSchema.optional(),
       statusId: statusIdChangeSchema.optional(),
       agentId: agentIdChangeSchema.optional(),
       parentId: parentIdChangeSchema.optional(),

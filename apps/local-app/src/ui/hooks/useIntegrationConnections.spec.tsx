@@ -31,6 +31,8 @@ const oldJiraConnection: IntegrationConnectionState = {
   connected: true,
   connectionId: 'connection-jira-a',
   generation: 1,
+  subtaskSyncEnabled: false,
+  syncSettingRevision: 1,
   updatedAt: '2026-08-19T00:00:00.000Z',
 };
 const replacementJiraConnection: IntegrationConnectionState = {
@@ -38,6 +40,8 @@ const replacementJiraConnection: IntegrationConnectionState = {
   connected: true,
   connectionId: 'connection-jira-a',
   generation: 2,
+  subtaskSyncEnabled: true,
+  syncSettingRevision: 2,
   updatedAt: '2026-08-19T01:00:00.000Z',
 };
 const oldEpoch = getIntegrationConnectionEpoch(oldJiraConnection)!;
@@ -191,6 +195,62 @@ describe('useIntegrationConnections', () => {
     });
   });
 
+  it('updates only the managed-subtask setting without sending credentials', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ items: [oldJiraConnection] }),
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => replacementJiraConnection })
+      .mockResolvedValue({
+        ok: true,
+        json: async () => ({ items: [replacementJiraConnection] }),
+      });
+    const { result } = renderHook(() => useIntegrationConnections(), {
+      wrapper: wrapper(queryClient),
+    });
+    await waitFor(() => expect(result.current.connections).toEqual([oldJiraConnection]));
+
+    await act(async () => {
+      await result.current.updateSubtaskSync('jira', true);
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/integrations/connections/jira/settings', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subtaskSyncEnabled: true }),
+    });
+    expect(fetchMock.mock.calls[1]?.[1]?.body).not.toContain('token');
+  });
+
+  it('sends explicit orphan-risk acknowledgement only on a confirmed disconnect', async () => {
+    fetchMock
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ items: [oldJiraConnection] }) })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          ...oldJiraConnection,
+          connected: false,
+          connectionId: null,
+          generation: null,
+        }),
+      })
+      .mockResolvedValue({ ok: true, json: async () => ({ items: [] }) });
+    const { result } = renderHook(() => useIntegrationConnections(), {
+      wrapper: wrapper(queryClient),
+    });
+    await waitFor(() => expect(result.current.connections).toEqual([oldJiraConnection]));
+
+    await act(async () => {
+      await result.current.disconnectConnection('jira', true);
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/integrations/connections/jira?acknowledgeOrphanRisk=true',
+      { method: 'DELETE' },
+    );
+  });
+
   it('preserves field and provider reason metadata from safe API errors', async () => {
     fetchMock
       .mockResolvedValueOnce({ ok: true, json: async () => ({ items: [] }) })
@@ -279,6 +339,8 @@ describe('useIntegrationConnections', () => {
         connected: false,
         connectionId: null,
         generation: null,
+        subtaskSyncEnabled: false,
+        syncSettingRevision: null,
         updatedAt: null,
       }),
     ).toBeNull();
@@ -333,6 +395,8 @@ describe('useIntegrationConnections', () => {
       connected: false,
       connectionId: null,
       generation: null,
+      subtaskSyncEnabled: false,
+      syncSettingRevision: null,
       updatedAt: null,
     };
     fetchMock

@@ -16,17 +16,23 @@ const columns = [
     tasks: [
       {
         remoteId: 'ENG-1',
+        isSubtask: false,
         title: 'Render exact status',
         statusName: 'Ready for development',
         statusCategory: 'active' as const,
         updatedAt: '2026-08-19T10:00:00.000Z',
         dueAt: '2026-08-20T10:00:00.000Z',
         webUrl: 'https://acme.atlassian.net/browse/ENG-1',
+        groupedSubtaskCount: 0,
       },
     ],
   },
 ];
 
+// Layer: UI component unit (jsdom + RTL). The card contract is rendered
+// output — visible badge text, Subtask marker, accessible names, activation,
+// and focus registration — which only a mounted component can prove; the
+// move controller is passed in or mocked because its wiring has its own suite.
 describe('ExternalTaskKanban', () => {
   it('renders exact task status and activates the card without drag affordances', async () => {
     const user = userEvent.setup();
@@ -50,6 +56,96 @@ describe('ExternalTaskKanban', () => {
     const { container } = render(<ExternalTaskKanban columns={columns} onOpenTask={jest.fn()} />);
 
     expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it('marks a standalone parented task as a Subtask without changing card activation', async () => {
+    const user = userEvent.setup();
+    const onOpenTask = jest.fn();
+    const subtaskColumns = [
+      {
+        ...columns[0],
+        tasks: [{ ...columns[0].tasks[0], isSubtask: true }],
+      },
+    ];
+    render(<ExternalTaskKanban columns={subtaskColumns} onOpenTask={onOpenTask} />);
+
+    expect(screen.getByText('Subtask')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Open Render exact status, Subtask' }));
+    expect(onOpenTask).toHaveBeenCalledWith(subtaskColumns[0].tasks[0]);
+  });
+
+  it('renders the grouped count badge for one and many children and hides it at zero', () => {
+    const countColumns = [
+      {
+        ...columns[0],
+        tasks: [
+          { ...columns[0].tasks[0], title: 'Lonely card', groupedSubtaskCount: 0 },
+          { ...columns[0].tasks[0], title: 'Single parent', groupedSubtaskCount: 1 },
+          { ...columns[0].tasks[0], title: 'Busy parent', groupedSubtaskCount: 3 },
+        ],
+      },
+    ];
+    render(<ExternalTaskKanban columns={countColumns} onOpenTask={jest.fn()} />);
+
+    expect(screen.getByText('1 subtask')).toBeInTheDocument();
+    expect(screen.getByText('3 subtasks')).toBeInTheDocument();
+    expect(screen.queryByText('0 subtasks')).not.toBeInTheDocument();
+  });
+
+  it('keeps the Subtask marker and the grouped count separate on a dual-meaning card', () => {
+    const dualColumns = [
+      {
+        ...columns[0],
+        tasks: [
+          {
+            ...columns[0].tasks[0],
+            title: 'Dual meaning',
+            isSubtask: true,
+            groupedSubtaskCount: 2,
+          },
+        ],
+      },
+    ];
+    render(<ExternalTaskKanban columns={dualColumns} onOpenTask={jest.fn()} />);
+
+    expect(screen.getByText('Subtask')).toBeInTheDocument();
+    expect(screen.getByText('2 subtasks')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', {
+        name: 'Open Dual meaning, Subtask, with 2 subtasks grouped under it',
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it('places the grouped count before the card keyboard instructions in the accessible name', () => {
+    render(
+      <ExternalTaskKanban
+        columns={[
+          {
+            ...columns[0],
+            tasks: [{ ...columns[0].tasks[0], title: 'Grouped parent', groupedSubtaskCount: 1 }],
+          },
+        ]}
+        onOpenTask={jest.fn()}
+        moves={{
+          keyboardMovesEnabled: true,
+          dragSource: null,
+          pendingTaskId: null,
+          isReceivingColumn: () => false,
+          onCardDragStart: jest.fn(),
+          onCardDragEnd: jest.fn(),
+          onCardDrop: jest.fn(),
+          onKeyboardMove: jest.fn(),
+          onKeyboardBoundary: jest.fn(),
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByRole('button', {
+        name: 'Open Grouped parent, with 1 subtask grouped under it. Press Enter for details, press Left or Right arrow keys to move between columns.',
+      }),
+    ).toBeInTheDocument();
   });
 
   it('shows the linked DevChain project and a direct open action from batch state', () => {
@@ -137,12 +233,14 @@ describe('ExternalTaskKanban move interactions', () => {
       tasks: [
         {
           remoteId: 'ENG-1',
+          isSubtask: false,
           title: 'Draggable card',
           statusName: 'To do',
           statusCategory: 'active' as const,
           updatedAt: '2026-08-19T10:00:00.000Z',
           dueAt: null,
           webUrl: null,
+          groupedSubtaskCount: 0,
         },
       ],
     },

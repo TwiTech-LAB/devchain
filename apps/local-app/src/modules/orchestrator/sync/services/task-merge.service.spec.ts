@@ -863,7 +863,7 @@ describe('TaskMergeService', () => {
 
     await service.mergeTasksFromContainer('wt-1');
 
-    expect(execMock).toHaveBeenNthCalledWith(1, 'BEGIN IMMEDIATE TRANSACTION');
+    expect(execMock).toHaveBeenNthCalledWith(1, 'BEGIN IMMEDIATE');
     expect(execMock).toHaveBeenNthCalledWith(2, 'COMMIT');
     expect(execMock).not.toHaveBeenCalledWith('ROLLBACK');
     expect((dbWithInsert.transaction as unknown as jest.Mock).mock.calls).toHaveLength(0);
@@ -907,7 +907,7 @@ describe('TaskMergeService', () => {
     }) as unknown as typeof fetch;
 
     await expect(service.mergeTasksFromContainer('wt-1')).rejects.toThrow('sqlite write failed');
-    expect(execMock).toHaveBeenNthCalledWith(1, 'BEGIN IMMEDIATE TRANSACTION');
+    expect(execMock).toHaveBeenNthCalledWith(1, 'BEGIN IMMEDIATE');
     expect(execMock).toHaveBeenNthCalledWith(2, 'ROLLBACK');
     expect(execMock).not.toHaveBeenCalledWith('COMMIT');
     expect((dbWithFailingInsert.transaction as unknown as jest.Mock).mock.calls).toHaveLength(0);

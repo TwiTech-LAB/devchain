@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { MoreVertical, Pencil, Trash2 } from 'lucide-react';
 import type { ExternalTaskComment } from '@/modules/external-integrations/models/external-provider.models';
 import { Button } from '@/ui/components/ui/button';
 import {
@@ -14,6 +15,13 @@ import { canonicalToTipTapJson, tipTapJsonToCanonical } from '@/ui/lib/rich/tipt
 import type { useOwnedCommentActions } from '@/ui/hooks/board/useOwnedCommentActions';
 import { getAgentInitials } from '@/ui/lib/multiavatar';
 import { Avatar, AvatarFallback } from '@/ui/components/ui/avatar';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/ui/components/ui/dropdown-menu';
 
 /**
  * The editor chunk is shared with the description editor and only imported
@@ -24,6 +32,19 @@ const ExternalRichEditor = lazy(() =>
     default: module.ExternalRichEditor,
   })),
 );
+
+const commentTimestampFormatter = new Intl.DateTimeFormat(undefined, {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+});
+
+const commentTimestampTitleFormatter = new Intl.DateTimeFormat(undefined, {
+  dateStyle: 'full',
+  timeStyle: 'long',
+});
 
 type OwnedActions = ReturnType<typeof useOwnedCommentActions>;
 
@@ -63,32 +84,47 @@ export function OwnedCommentActions({
   const canEdit = capabilities.richEdit && isOwned && comment.rich?.supported === true;
   const canDelete = capabilities.ownedDelete && isOwned;
 
+  if (!canEdit && !canDelete) {
+    return deletingThis ? <DeleteConfirmation comment={comment} actions={actions} /> : null;
+  }
+
   return (
     <>
-      {canEdit ? (
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="h-7 px-2 text-xs"
-          onClick={() => actions.edit.start(comment)}
-          disabled={actions.edit.pending}
-        >
-          Edit
-        </Button>
-      ) : null}
-      {canDelete ? (
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="h-7 px-2 text-xs text-destructive"
-          onClick={() => actions.delete.request(comment)}
-          disabled={actions.delete.pending}
-        >
-          Delete
-        </Button>
-      ) : null}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="shrink-0 text-muted-foreground hover:text-foreground"
+            aria-label={`Comment actions for comment by ${comment.author.displayName}`}
+          >
+            <MoreVertical className="h-4 w-4" aria-hidden="true" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          {canEdit ? (
+            <DropdownMenuItem
+              onSelect={() => actions.edit.start(comment)}
+              disabled={actions.edit.pending}
+            >
+              <Pencil className="mr-2 h-4 w-4" aria-hidden="true" />
+              Edit
+            </DropdownMenuItem>
+          ) : null}
+          {canEdit && canDelete ? <DropdownMenuSeparator /> : null}
+          {canDelete ? (
+            <DropdownMenuItem
+              className="text-destructive focus:text-destructive"
+              onSelect={() => actions.delete.request(comment)}
+              disabled={actions.delete.pending}
+            >
+              <Trash2 className="mr-2 h-4 w-4" aria-hidden="true" />
+              Delete
+            </DropdownMenuItem>
+          ) : null}
+        </DropdownMenuContent>
+      </DropdownMenu>
       {deletingThis ? <DeleteConfirmation comment={comment} actions={actions} /> : null}
     </>
   );
@@ -383,6 +419,17 @@ export function CommentBody({ comment }: { comment: ExternalTaskComment }) {
   return <p className="select-none text-xs italic text-muted-foreground">No text content</p>;
 }
 
+function formatCommentTimestamp(value: string): { label: string; title: string } {
+  const timestamp = new Date(value);
+  if (!Number.isFinite(timestamp.getTime())) {
+    return { label: value, title: value };
+  }
+  return {
+    label: commentTimestampFormatter.format(timestamp),
+    title: commentTimestampTitleFormatter.format(timestamp),
+  };
+}
+
 /** Comment row: avatar, author, timestamp, body, and owned actions. */
 export function OwnedCommentItem({
   comment,
@@ -390,32 +437,42 @@ export function OwnedCommentItem({
   capabilities,
   isOwned,
 }: OwnedCommentActionProps) {
+  const editingThis = actions.edit.target === comment.remoteId;
+  const timestamp = formatCommentTimestamp(comment.createdAt);
+
   return (
     <li className="flex gap-3">
-      <Avatar className="h-8 w-8" aria-label={comment.author.displayName}>
+      <Avatar className="h-8 w-8 shrink-0" aria-label={comment.author.displayName}>
         <AvatarFallback className="text-xs">
           {getAgentInitials(comment.author.displayName)}
         </AvatarFallback>
       </Avatar>
       <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-baseline justify-between gap-x-2">
-          <span className="text-sm font-medium">{comment.author.displayName}</span>
-          <span className="text-xs text-muted-foreground">
-            <time dateTime={comment.createdAt}>{new Date(comment.createdAt).toLocaleString()}</time>
-            {/* Only a provider-reported edit time renders; providers without
-                one show nothing rather than an invented timestamp. */}
-            {comment.updatedAt ? ' (edited)' : ''}
+        <div className="flex flex-wrap items-start justify-between gap-x-2">
+          <span className="min-w-0 break-words text-sm font-medium">
+            {comment.author.displayName}
           </span>
+          <div className="ml-auto flex shrink-0 items-center gap-1">
+            <span className="text-right text-xs text-muted-foreground">
+              <time dateTime={comment.createdAt} title={timestamp.title}>
+                {timestamp.label}
+              </time>
+              {/* Only a provider-reported edit time renders; providers without
+                  one show nothing rather than an invented timestamp. */}
+              {comment.updatedAt ? ' (edited)' : ''}
+            </span>
+            {!editingThis ? (
+              <OwnedCommentActions
+                comment={comment}
+                actions={actions}
+                capabilities={capabilities}
+                isOwned={isOwned}
+              />
+            ) : null}
+          </div>
         </div>
         <CommentBody comment={comment} />
-        <div className="mt-1 flex items-center gap-1">
-          <OwnedCommentActions
-            comment={comment}
-            actions={actions}
-            capabilities={capabilities}
-            isOwned={isOwned}
-          />
-        </div>
+        {editingThis ? <CommentEditSurface comment={comment} actions={actions} /> : null}
       </div>
     </li>
   );

@@ -3,6 +3,8 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { EventLogService } from './event-log.service';
 import { EventsStreamService } from './events-stream.service';
+import { CommittedEventStore } from './committed-event.store';
+import { DurableEventRegistryService } from './durable-event-registry.service';
 
 // Layer: backend integration. Real in-memory SQLite is the cheapest reliable proof
 // of limited DELETE behavior, query plans, and foreign-key cascades.
@@ -31,6 +33,11 @@ describe('EventLogService', () => {
         event_id TEXT NOT NULL,
         handler TEXT NOT NULL,
         status TEXT NOT NULL,
+        delivery_key TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        retry_at TEXT,
+        lease_owner TEXT,
+        lease_expires_at TEXT,
         detail TEXT,
         started_at TEXT NOT NULL,
         ended_at TEXT,
@@ -53,7 +60,11 @@ describe('EventLogService', () => {
         },
       },
     }) as unknown as BetterSQLite3Database;
-    service = new EventLogService(db, eventsStreamService as unknown as EventsStreamService);
+    service = new EventLogService(
+      db,
+      eventsStreamService as unknown as EventsStreamService,
+      new CommittedEventStore(db, new DurableEventRegistryService()),
+    );
   });
 
   afterEach(() => {
@@ -415,6 +426,28 @@ describe('EventLogService', () => {
 
       await expect(service.cleanupExpiredEvents()).rejects.toThrow('aged delete failed');
       expect(sqlite.prepare('SELECT id FROM events').all()).toEqual([{ id: 'old' }]);
+    });
+
+    it('preserves aged events while durable delivery is pending, running, or retrying', async () => {
+      const old = new Date(Date.parse(nowIso) - 31 * dayMs).toISOString();
+      const insertDelivery = sqlite.prepare(
+        `INSERT INTO event_handlers
+          (id, event_id, handler, status, delivery_key, attempts, retry_at,
+           lease_owner, lease_expires_at, detail, started_at, ended_at)
+         VALUES (?, ?, 'sync', ?, 'managed-subtask-sync', 1, NULL, NULL, NULL, NULL, ?, NULL)`,
+      );
+      for (const status of ['pending', 'running', 'retry', 'delivered']) {
+        insertEvent(`old-${status}`, 'epic.updated', old);
+        insertDelivery.run(`delivery-${status}`, `old-${status}`, status, old);
+      }
+
+      await service.cleanupExpiredEvents();
+
+      expect(sqlite.prepare('SELECT id FROM events ORDER BY id').all()).toEqual([
+        { id: 'old-pending' },
+        { id: 'old-retry' },
+        { id: 'old-running' },
+      ]);
     });
 
     it('uses parameterized limited deletes and both production covering indexes', async () => {

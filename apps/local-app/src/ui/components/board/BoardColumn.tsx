@@ -33,6 +33,8 @@ export interface BoardColumnProps {
   getSubEpicCountsByStatus?: (epicId: string) => Record<string, number> | undefined;
   /** Stored external sources by Epic ID for imported cards in this column. */
   externalSources?: ReadonlyMap<string, ExternalTaskSourceSummary>;
+  /** Estimated-time totals in whole minutes by Epic ID (root epics only). */
+  timeTotals?: ReadonlyMap<string, number>;
 }
 
 export function BoardColumn({
@@ -60,6 +62,7 @@ export function BoardColumn({
   isLightColor,
   getSubEpicCountsByStatus,
   externalSources,
+  timeTotals,
 }: BoardColumnProps) {
   return (
     <div
@@ -142,6 +145,7 @@ export function BoardColumn({
               statuses={statusOrder}
               subEpicCountsByStatus={getSubEpicCountsByStatus?.(epic.id)}
               source={externalSources?.get(epic.id)}
+              timeTotalMinutes={timeTotals?.get(epic.id)}
               renderPreview={() => {
                 const agentName = getAgentName(epic.agentId);
                 const showFilterToggle = epic.parentId === null;

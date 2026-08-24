@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { ValidationError } from '../../../common/errors/error-types';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
 import type {
@@ -9,18 +9,34 @@ import type {
 import { ExternalTaskProviderRegistry } from '../external-task-provider.registry';
 import { ExternalEditSessionStore } from '../sessions/external-edit-session.store';
 import { ProviderOperationGate } from '../sessions/provider-operation-gate';
+import { EventsService } from '../../events/services/events.service';
+import type { PreparedEvent } from '../../events/services/durable-event-registry.service';
 
 export interface IntegrationConnectionState {
   provider: IntegrationProvider;
   connected: boolean;
   connectionId: string | null;
   generation: number | null;
+  subtaskSyncEnabled: boolean;
+  syncSettingRevision: number | null;
   updatedAt: string | null;
 }
 
 export type ReplaceConnectionInput =
-  | { provider: 'clickup'; token: string }
-  | { provider: 'jira'; token: string; siteUrl?: string; email?: string };
+  | {
+      provider: 'clickup';
+      token: string;
+      subtaskSyncEnabled?: boolean;
+      acknowledgeOrphanRisk?: boolean;
+    }
+  | {
+      provider: 'jira';
+      token: string;
+      siteUrl?: string;
+      email?: string;
+      subtaskSyncEnabled?: boolean;
+      acknowledgeOrphanRisk?: boolean;
+    };
 
 @Injectable()
 export class IntegrationConnectionsService {
@@ -29,6 +45,7 @@ export class IntegrationConnectionsService {
     private readonly providers: ExternalTaskProviderRegistry,
     private readonly operationGate: ProviderOperationGate,
     private readonly editSessions: ExternalEditSessionStore,
+    @Optional() private readonly eventsService?: EventsService,
   ) {}
 
   async listConnections(): Promise<{ items: IntegrationConnectionState[] }> {
@@ -46,22 +63,124 @@ export class IntegrationConnectionsService {
     // mutations, so a session write can never interleave with a token swap.
     return this.operationGate.run(input.provider, async () => {
       const credentials = await this.resolveCredentials(input);
+      let prepared: PreparedEvent<
+        'integration.connection.created' | 'integration.connection.updated'
+      > | null = null;
       const connection = await this.storage.replaceIntegrationConnection(
-        { provider: input.provider, credentials },
+        {
+          provider: input.provider,
+          credentials,
+          ...(input.subtaskSyncEnabled !== undefined
+            ? { subtaskSyncEnabled: input.subtaskSyncEnabled }
+            : {}),
+          ...(input.acknowledgeOrphanRisk !== undefined
+            ? { acknowledgeOrphanRisk: input.acknowledgeOrphanRisk }
+            : {}),
+        },
         async (candidate) => {
           await this.providers.get(candidate.provider).verifyCredentials(candidate);
         },
+        (current, previous) => {
+          if (!this.eventsService) {
+            return null;
+          }
+          prepared = previous
+            ? this.eventsService.prepareCommitted('integration.connection.updated', {
+                connectionId: current.id,
+                provider: current.provider,
+                previousGeneration: previous.generation,
+                generation: current.generation,
+                previousSubtaskSyncEnabled: previous.subtaskSyncEnabled,
+                subtaskSyncEnabled: current.subtaskSyncEnabled,
+                previousSyncSettingRevision: previous.syncSettingRevision,
+                syncSettingRevision: current.syncSettingRevision,
+                createdAt: current.createdAt,
+                updatedAt: current.updatedAt,
+              })
+            : this.eventsService.prepareCommitted('integration.connection.created', {
+                connectionId: current.id,
+                provider: current.provider,
+                generation: current.generation,
+                subtaskSyncEnabled: current.subtaskSyncEnabled,
+                syncSettingRevision: current.syncSettingRevision,
+                createdAt: current.createdAt,
+                updatedAt: current.updatedAt,
+              });
+          return prepared;
+        },
       );
+      if (prepared) {
+        this.eventsService?.emitCommitted(prepared);
+      }
       this.editSessions.invalidateProvider(input.provider);
       return this.toState(input.provider, connection);
     });
   }
 
-  async disconnectConnection(provider: IntegrationProvider): Promise<IntegrationConnectionState> {
+  async disconnectConnection(
+    provider: IntegrationProvider,
+    acknowledgeOrphanRisk = false,
+  ): Promise<IntegrationConnectionState> {
     return this.operationGate.run(provider, async () => {
-      await this.storage.disconnectIntegrationConnection(provider);
+      let prepared: PreparedEvent<'integration.connection.deleted'> | null = null;
+      await this.storage.disconnectIntegrationConnection(
+        provider,
+        (connection) => {
+          if (!this.eventsService) {
+            return null;
+          }
+          prepared = this.eventsService.prepareCommitted('integration.connection.deleted', {
+            connectionId: connection.id,
+            provider: connection.provider,
+            generation: connection.generation,
+            subtaskSyncEnabled: connection.subtaskSyncEnabled,
+            syncSettingRevision: connection.syncSettingRevision,
+            deletedAt: new Date().toISOString(),
+          });
+          return prepared;
+        },
+        { acknowledgeOrphanRisk },
+      );
+      if (prepared) {
+        this.eventsService?.emitCommitted(prepared);
+      }
       this.editSessions.invalidateProvider(provider);
       return this.toState(provider);
+    });
+  }
+
+  async updateSyncSettings(
+    provider: IntegrationProvider,
+    input: { subtaskSyncEnabled: boolean },
+  ): Promise<IntegrationConnectionState> {
+    return this.operationGate.run(provider, async () => {
+      let prepared: PreparedEvent<'integration.connection.updated'> | null = null;
+      const connection = await this.storage.updateIntegrationConnectionSyncSetting(
+        provider,
+        input.subtaskSyncEnabled,
+        (current, previous) => {
+          if (!this.eventsService) {
+            return null;
+          }
+          prepared = this.eventsService.prepareCommitted('integration.connection.updated', {
+            connectionId: current.id,
+            provider: current.provider,
+            previousGeneration: previous.generation,
+            generation: current.generation,
+            previousSubtaskSyncEnabled: previous.subtaskSyncEnabled,
+            subtaskSyncEnabled: current.subtaskSyncEnabled,
+            previousSyncSettingRevision: previous.syncSettingRevision,
+            syncSettingRevision: current.syncSettingRevision,
+            createdAt: current.createdAt,
+            updatedAt: current.updatedAt,
+          });
+          return prepared;
+        },
+      );
+      if (prepared) {
+        this.eventsService?.emitCommitted(prepared);
+      }
+      return this.toState(provider, connection);
     });
   }
 
@@ -101,6 +220,8 @@ export class IntegrationConnectionsService {
       connected: connection !== undefined,
       connectionId: connection?.id ?? null,
       generation: connection?.generation ?? null,
+      subtaskSyncEnabled: connection?.subtaskSyncEnabled ?? false,
+      syncSettingRevision: connection?.syncSettingRevision ?? null,
       updatedAt: connection?.updatedAt ?? null,
     };
   }

@@ -13,6 +13,7 @@ import {
   type ExternalTaskCommentAuthor,
   type ExternalTaskCommentInput,
   type ExternalTaskStatusInput,
+  type ExternalTaskSubtaskSummary,
   type ExternalTaskTimeEntryInput,
   type ExternalWorkArea,
 } from '../models/external-provider.models';
@@ -40,6 +41,18 @@ export function compareRemoteIds(left: string, right: string): number {
     return Number(left) - Number(right);
   }
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/** Provider-neutral direct-child order used by every exact task detail. */
+export function compareTaskSubtaskSummaries(
+  left: ExternalTaskSubtaskSummary,
+  right: ExternalTaskSubtaskSummary,
+): number {
+  return (
+    left.title.localeCompare(right.title) ||
+    left.remoteKey.localeCompare(right.remoteKey) ||
+    compareRemoteIds(left.remoteId, right.remoteId)
+  );
 }
 
 export const UNKNOWN_COMMENT_AUTHOR_NAME = 'Unknown user';

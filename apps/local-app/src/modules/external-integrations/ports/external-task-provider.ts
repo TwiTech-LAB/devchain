@@ -8,6 +8,7 @@ import type {
   ExternalOwnedMutationsCapability,
   ExternalProviderAccount,
   ExternalProviderDescriptor,
+  ExternalSubtaskSyncCapability,
   ExternalTimeEntryMutationsCapability,
 } from '../models/external-provider.models';
 
@@ -19,6 +20,7 @@ export interface ExternalTaskProvider {
   readonly myWork?: ExternalMyWorkCapability;
   readonly ownedMutations?: ExternalOwnedMutationsCapability;
   readonly descriptionEdit?: ExternalDescriptionEditCapability;
+  readonly subtaskSync?: ExternalSubtaskSyncCapability;
   readonly timeEntryMutations?: ExternalTimeEntryMutationsCapability;
   verifyCredentials(credentials: IntegrationCredentials): Promise<ExternalProviderAccount>;
 }

@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.21.0",
+  "version": "0.22.1",
   "description": "AI driven development platform",
   "homepage": "https://devchain.cc/",
   "repository": {
@@ -8,6 +8,16 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.22.1": [
+      "[Impr] Dev Template: tasks now go to a Coder matching the task's tier instead of staying with an overqualified worker"
+    ],
+    "0.22.0": [
+      "ClickUp and Jira Integration — assigned work appears on the Board, import tasks as Epics, subtasks, time logging",
+      "Board: Estimated agent time totals for Epics and their sub-epics, more compact cards",
+      "Terminal: agent messages wait while you have an unsent draft, and Ctrl+C with a selection copies instead of interrupting the agent",
+      "Notifications: phone alerts now work in multi-workspace mode and follow each device's workspace access",
+      "Mobile app 1.8.0: unified workspace/project switcher, more stable reconnections"
+    ],
     "0.21.0": [
       "Workspaces: group your projects into workspaces, and give each agent and paired phone access to only the workspaces it needs",
       "Dev Template: better task routing to Coders and clearer Coder instructions, with automatic cleanup for sub-agents and automatic compact for the Epic Manager and Code Reviewer",

@@ -10,6 +10,7 @@ import { useEpicExternalSources } from '@/ui/hooks/useEpicExternalSources';
 import { resolveSkillSlugs, type SkillSummary } from '@/ui/lib/skills';
 import { getMergedWorktree, isMergedTag } from '@/ui/lib/epic-tags';
 import { useTerminalWindowManager } from '@/ui/terminal-windows';
+import { useEpicTimeDetail } from '@/ui/hooks/useEpicTimeDetail';
 import { Button } from '@/ui/components/ui/button';
 import { Badge } from '@/ui/components/ui/badge';
 import { Input } from '@/ui/components/ui/input';
@@ -38,6 +39,7 @@ import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
 import { CategoryBadge } from '@/ui/components/skills/CategoryBadge';
 import { SkillDetailDrawer } from '@/ui/components/skills/SkillDetailDrawer';
 import { ExternalTaskSourcePanel } from '@/ui/components/epics/ExternalTaskSourcePanel';
+import { EpicTimeCard } from '@/ui/components/epics/EpicTimeCard';
 import {
   Play,
   Square,
@@ -404,6 +406,7 @@ export function EpicDetailPage() {
   const externalSources = useEpicExternalSources(id, {
     enabled: integrationAvailability.canUseIntegrations,
   });
+  const epicTime = useEpicTimeDetail(id ?? null);
 
   // Fetch parent epic for breadcrumb navigation (only when epic has a parent)
   const { data: parentEpic, isLoading: parentEpicLoading } = useQuery({
@@ -1544,6 +1547,15 @@ export function EpicDetailPage() {
                 </div>
               </CardContent>
             </Card>
+          )}
+
+          {epicTime.admitted && (
+            <EpicTimeCard
+              isRoot={epic.parentId === null}
+              summary={epicTime.summary}
+              isLoading={epicTime.query.isLoading}
+              isError={epicTime.query.isError}
+            />
           )}
 
           <Card>

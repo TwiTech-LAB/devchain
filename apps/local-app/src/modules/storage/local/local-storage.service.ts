@@ -112,6 +112,11 @@ import {
   ReplaceIntegrationConnection,
   CreateEpicWithExternalTaskLink,
   CreateEpicWithExternalTaskLinkResult,
+  CreateExternalManagedSubtaskLink,
+  UpdateExternalManagedSubtaskLink,
+  ExternalManagedSubtaskLink,
+  ConfirmExternalManagedSubtaskLink,
+  ConfirmExternalManagedSubtaskLinkResult,
 } from '../models/domain.models';
 import { createLogger } from '../../../common/logging/logger';
 import {
@@ -143,6 +148,11 @@ import { SessionStorageDelegate } from './delegates/session.delegate';
 import { IntegrationStorageDelegate } from './delegates/integration.delegate';
 import { IntegrationCredentialCipher } from './integration-credential-cipher';
 import { WatcherStorageDelegate } from './delegates/watcher.delegate';
+import { ExternalManagedSubtaskStorageDelegate } from './delegates/external-managed-subtask.delegate';
+import { CommittedEventStore } from '../../events/services/committed-event.store';
+import { DurableEventRegistryService } from '../../events/services/durable-event-registry.service';
+import type { PreparedEvent } from '../../events/services/durable-event-registry.service';
+import type { FactualEventFactory } from '../interfaces/storage.interface';
 
 const logger = createLogger('LocalStorageService');
 
@@ -179,12 +189,16 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
   private readonly scheduledEpicDelegate: ScheduledEpicStorageDelegate;
   private readonly sessionDelegate: SessionStorageDelegate;
   private readonly integrationDelegate: IntegrationStorageDelegate;
+  private readonly externalManagedSubtaskDelegate: ExternalManagedSubtaskStorageDelegate;
 
   constructor(
     @Inject(DB_CONNECTION) private readonly db: BetterSQLite3Database,
     @Optional() integrationCredentialCipher?: IntegrationCredentialCipher,
+    @Optional() committedEventStore?: CommittedEventStore,
   ) {
     const context = createStorageDelegateContext(this.db);
+    const eventStore =
+      committedEventStore ?? new CommittedEventStore(this.db, new DurableEventRegistryService());
     this.projectDelegate = new ProjectStorageDelegate(context);
     this.projectWorkspaceDelegate = new ProjectWorkspaceStorageDelegate(context);
     this.statusDelegate = new StatusStorageDelegate(context);
@@ -201,6 +215,7 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
       getAgent: (id) => this.agentDelegate.getAgentSync(id),
       getAgentByName: (projectId, name) => this.getAgentByName(projectId, name),
       getStatus: (id) => this.statusDelegate.getStatus(id),
+      appendEvent: (event) => eventStore.appendInCurrentTransaction(event),
     });
     this.providerDelegate = new ProviderStorageDelegate(context, {
       updateProvider: (id, data) => this.updateProvider(id, data),
@@ -230,6 +245,7 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
     this.reviewDelegate = new ReviewStorageDelegate(context);
     this.scheduledEpicDelegate = new ScheduledEpicStorageDelegate(context);
     this.sessionDelegate = new SessionStorageDelegate(context);
+    this.externalManagedSubtaskDelegate = new ExternalManagedSubtaskStorageDelegate(context);
     this.integrationDelegate = new IntegrationStorageDelegate(
       context,
       integrationCredentialCipher ?? new IntegrationCredentialCipher(),
@@ -237,6 +253,12 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
         createEpicInCurrentTransaction: (data) =>
           this.epicDelegate.createEpicInCurrentTransaction(data),
         getEpic: (id) => this.epicDelegate.getEpic(id),
+        appendEvent: (event) => eventStore.appendInCurrentTransaction(event),
+        handleProviderConnectionMutation: (provider, acknowledgeOrphanRisk) =>
+          this.externalManagedSubtaskDelegate.handleProviderConnectionMutationSync(
+            provider,
+            acknowledgeOrphanRisk,
+          ),
       },
     );
     logger.info('LocalStorageService initialized');
@@ -339,8 +361,18 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
   }
 
   // Epics (with optimistic locking)
-  async createEpic(data: CreateEpic): Promise<Epic> {
-    return this.epicDelegate.createEpic(data);
+  async createEpic(
+    data: CreateEpic,
+    eventFactory?: (epic: Epic) => PreparedEvent | null,
+  ): Promise<Epic> {
+    return this.epicDelegate.createEpic(data, eventFactory);
+  }
+
+  async createEpicWithinTransaction(
+    data: CreateEpic,
+    eventFactory?: (epic: Epic) => PreparedEvent | null,
+  ): Promise<Epic> {
+    return this.epicDelegate.createEpicInCurrentTransaction(data, eventFactory);
   }
 
   async getEpic(id: string): Promise<Epic> {
@@ -369,16 +401,25 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
     return this.epicDelegate.listAssignedEpics(projectId, options);
   }
 
-  async createEpicForProject(projectId: string, input: CreateEpicForProjectInput): Promise<Epic> {
-    return this.epicDelegate.createEpicForProject(projectId, input);
+  async createEpicForProject(
+    projectId: string,
+    input: CreateEpicForProjectInput,
+    eventFactory?: (epic: Epic) => PreparedEvent | null,
+  ): Promise<Epic> {
+    return this.epicDelegate.createEpicForProject(projectId, input, eventFactory);
   }
 
-  async updateEpic(id: string, data: UpdateEpic, expectedVersion: number): Promise<Epic> {
-    return this.epicDelegate.updateEpic(id, data, expectedVersion);
+  async updateEpic(
+    id: string,
+    data: UpdateEpic,
+    expectedVersion: number,
+    eventFactory?: FactualEventFactory<Epic, Epic>,
+  ): Promise<Epic> {
+    return this.epicDelegate.updateEpic(id, data, expectedVersion, eventFactory);
   }
 
-  async deleteEpic(id: string): Promise<void> {
-    return this.epicDelegate.deleteEpic(id);
+  async deleteEpic(id: string, eventFactory?: (epic: Epic) => PreparedEvent | null): Promise<void> {
+    return this.epicDelegate.deleteEpic(id, eventFactory);
   }
 
   async listSubEpics(parentId: string, options: ListOptions = {}): Promise<ListResult<Epic>> {
@@ -1160,8 +1201,9 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
   async replaceIntegrationConnection(
     data: ReplaceIntegrationConnection,
     verify: VerifyIntegrationCredentials,
+    eventFactory?: FactualEventFactory<IntegrationConnection, IntegrationConnection | null>,
   ): Promise<IntegrationConnection> {
-    return this.integrationDelegate.replaceIntegrationConnection(data, verify);
+    return this.integrationDelegate.replaceIntegrationConnection(data, verify, eventFactory);
   }
 
   async getIntegrationConnection(
@@ -1180,8 +1222,28 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
     return this.integrationDelegate.getIntegrationConnectionCredentials(provider);
   }
 
-  async disconnectIntegrationConnection(provider: IntegrationProvider): Promise<boolean> {
-    return this.integrationDelegate.disconnectIntegrationConnection(provider);
+  async disconnectIntegrationConnection(
+    provider: IntegrationProvider,
+    eventFactory?: (connection: IntegrationConnection) => PreparedEvent | null,
+    options?: { acknowledgeOrphanRisk?: boolean },
+  ): Promise<boolean> {
+    return this.integrationDelegate.disconnectIntegrationConnection(
+      provider,
+      eventFactory,
+      options,
+    );
+  }
+
+  async updateIntegrationConnectionSyncSetting(
+    provider: IntegrationProvider,
+    subtaskSyncEnabled: boolean,
+    eventFactory?: FactualEventFactory<IntegrationConnection, IntegrationConnection>,
+  ): Promise<IntegrationConnection> {
+    return this.integrationDelegate.updateIntegrationConnectionSyncSetting(
+      provider,
+      subtaskSyncEnabled,
+      eventFactory,
+    );
   }
 
   async createExternalTaskLink(data: CreateExternalTaskLink): Promise<ExternalTaskLink> {
@@ -1190,8 +1252,9 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
 
   async createEpicWithExternalTaskLink(
     data: CreateEpicWithExternalTaskLink,
+    eventFactory?: (result: CreateEpicWithExternalTaskLinkResult) => PreparedEvent | null,
   ): Promise<CreateEpicWithExternalTaskLinkResult> {
-    return this.integrationDelegate.createEpicWithExternalTaskLink(data);
+    return this.integrationDelegate.createEpicWithExternalTaskLink(data, eventFactory);
   }
 
   async findExternalTaskLink(
@@ -1215,5 +1278,58 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
 
   async listExternalTaskLinksForEpics(epicIds: string[]): Promise<ExternalTaskLink[]> {
     return this.integrationDelegate.listExternalTaskLinksForEpics(epicIds);
+  }
+
+  async createExternalManagedSubtaskLink(
+    data: CreateExternalManagedSubtaskLink,
+  ): Promise<ExternalManagedSubtaskLink> {
+    return this.externalManagedSubtaskDelegate.create(data);
+  }
+
+  async getExternalManagedSubtaskLink(id: string): Promise<ExternalManagedSubtaskLink> {
+    return this.externalManagedSubtaskDelegate.get(id);
+  }
+
+  async listExternalManagedSubtaskLinksByProvider(
+    provider: IntegrationProvider,
+  ): Promise<ExternalManagedSubtaskLink[]> {
+    return this.externalManagedSubtaskDelegate.listByProvider(provider);
+  }
+
+  async listExternalManagedSubtaskLinksForEpicSnapshot(
+    epicIdSnapshot: string,
+  ): Promise<ExternalManagedSubtaskLink[]> {
+    return this.externalManagedSubtaskDelegate.listForEpicSnapshot(epicIdSnapshot);
+  }
+
+  async updateExternalManagedSubtaskLink(
+    id: string,
+    data: UpdateExternalManagedSubtaskLink,
+  ): Promise<ExternalManagedSubtaskLink> {
+    return this.externalManagedSubtaskDelegate.update(id, data);
+  }
+
+  async findRecognizedManagedSubtask(
+    epicId: string,
+    provider: IntegrationProvider,
+    remoteScopeKey: string,
+    remoteTaskId: string,
+  ): Promise<ExternalManagedSubtaskLink | null> {
+    return this.externalManagedSubtaskDelegate.findRecognition(
+      epicId,
+      provider,
+      remoteScopeKey,
+      remoteTaskId,
+    );
+  }
+
+  async confirmExternalManagedSubtaskLink(
+    data: ConfirmExternalManagedSubtaskLink,
+  ): Promise<ConfirmExternalManagedSubtaskLinkResult> {
+    return this.externalManagedSubtaskDelegate.confirm(data);
+  }
+
+  async removeExternalManagedSubtaskLink(id: string): Promise<boolean> {
+    return this.externalManagedSubtaskDelegate.remove(id);
   }
 }

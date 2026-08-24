@@ -24,6 +24,7 @@ import {
 } from '../events/task-merge.events';
 import { TaskMergeResult } from '../dtos/task-merge.dto';
 import { getRawSqliteClient } from '../../../storage/db/sqlite-raw';
+import { TransactionRunner } from '../../../storage/db/transaction-runner';
 import { MainProjectBootstrapService } from '../../../projects/services/main-project-bootstrap.service';
 import { STORAGE_SERVICE, StorageService } from '../../../storage/interfaces/storage.interface';
 import { Epic, Status } from '../../../storage/models/domain.models';
@@ -93,8 +94,6 @@ interface ResolvedStatus {
 
 @Injectable()
 export class TaskMergeService {
-  private sqliteMergeImportQueue: Promise<void> = Promise.resolve();
-
   constructor(
     @Inject(WORKTREES_STORE) private readonly store: WorktreesStore,
     @Inject(ORCHESTRATOR_DB_CONNECTION) private readonly db: OrchestratorDatabase,
@@ -270,19 +269,8 @@ export class TaskMergeService {
       return;
     }
 
-    await this.runWithSqliteMergeLock(() => {
-      rawSqlite.exec('BEGIN IMMEDIATE TRANSACTION');
-      try {
-        persist(this.db as InsertTarget);
-        rawSqlite.exec('COMMIT');
-      } catch (error) {
-        try {
-          rawSqlite.exec('ROLLBACK');
-        } catch {
-          // best-effort rollback; rethrow original error below
-        }
-        throw error;
-      }
+    await new TransactionRunner(rawSqlite).runImmediateQueued(() => {
+      persist(this.db as InsertTarget);
     });
   }
 
@@ -651,35 +639,17 @@ export class TaskMergeService {
       `,
     );
 
-    return this.runWithSqliteMergeLock(async () => {
-      // Concurrency model:
-      // - Service-level queue prevents overlapping transactions on the same SQLite connection.
-      // - BEGIN IMMEDIATE acquires a write lock and serializes the check+insert section.
-      // - We re-check mergedFrom existence inside this transaction and insert only when absent.
-      rawSqlite.exec('BEGIN IMMEDIATE TRANSACTION');
-      try {
-        const existing = existingLookup.get(
-          input.projectId,
-          input.worktreeId,
-          input.sourceEpicId,
-        ) as { id: string } | undefined;
+    return new TransactionRunner(rawSqlite).runImmediateAsync(async () => {
+      const existing = existingLookup.get(input.projectId, input.worktreeId, input.sourceEpicId) as
+        | { id: string }
+        | undefined;
 
-        if (existing?.id) {
-          rawSqlite.exec('COMMIT');
-          return { epicId: existing.id, inserted: false };
-        }
-
-        const created = await storage.createEpic(input.createInput);
-        rawSqlite.exec('COMMIT');
-        return { epicId: created.id, inserted: true };
-      } catch (error) {
-        try {
-          rawSqlite.exec('ROLLBACK');
-        } catch {
-          // best-effort rollback; rethrow original error below
-        }
-        throw error;
+      if (existing?.id) {
+        return { epicId: existing.id, inserted: false };
       }
+
+      const created = await storage.createEpicWithinTransaction(input.createInput);
+      return { epicId: created.id, inserted: true };
     });
   }
 
@@ -907,21 +877,6 @@ export class TaskMergeService {
       return raw;
     } catch {
       return null;
-    }
-  }
-
-  private async runWithSqliteMergeLock<T>(fn: () => T | Promise<T>): Promise<T> {
-    const previous = this.sqliteMergeImportQueue;
-    let release!: () => void;
-    this.sqliteMergeImportQueue = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-
-    await previous;
-    try {
-      return await fn();
-    } finally {
-      release();
     }
   }
 

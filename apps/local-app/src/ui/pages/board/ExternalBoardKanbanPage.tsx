@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, RefreshCw } from 'lucide-react';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { ExternalLink, RefreshCw } from 'lucide-react';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import type { ExternalTaskDetail } from '@/modules/external-integrations/models/external-provider.models';
 import { ExternalBoardNav } from '@/ui/components/board/ExternalBoardNav';
 import { ExternalTaskDetailDialog } from '@/ui/components/board/ExternalTaskDetailDialog';
@@ -22,6 +22,7 @@ import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import {
   buildExternalBoardMyWorkPath,
   externalBoardProviderLabel,
+  externalWorkAreaSourceUrl,
   isExternalBoardProvider,
   readExternalCompletedParam,
 } from '@/ui/lib/external-board';
@@ -73,6 +74,9 @@ function ValidExternalBoardKanbanPage({ provider, workAreaId }: ValidExternalBoa
     includeCompleted,
   });
   const visibleBoard = availability.canUseIntegrations ? board.data : undefined;
+  const sourceUrl = visibleBoard
+    ? externalWorkAreaSourceUrl(provider, visibleBoard.workArea)
+    : null;
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [importDetail, setImportDetail] = useState<ExternalTaskDetail | null>(null);
   const [quickImportPendingTaskId, setQuickImportPendingTaskId] = useState<string | null>(null);
@@ -261,14 +265,24 @@ function ValidExternalBoardKanbanPage({ provider, workAreaId }: ValidExternalBoa
 
         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
-            <Button asChild variant="ghost" size="sm" className="mb-1 -ml-3">
-              <Link to={buildExternalBoardMyWorkPath(provider, includeCompleted)}>
-                <ArrowLeft className="mr-2 h-4 w-4" aria-hidden="true" /> Back to {label} My Work
-              </Link>
-            </Button>
-            <h1 className="text-2xl font-semibold">
-              {visibleBoard?.workArea.name ?? `${label} board`}
-            </h1>
+            <div className="flex items-center gap-1">
+              <h1 className="text-2xl font-semibold">
+                {visibleBoard?.workArea.name ?? `${label} board`}
+              </h1>
+              {sourceUrl && visibleBoard ? (
+                <Button asChild variant="ghost" size="icon">
+                  <a
+                    href={sourceUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    title={`Open ${visibleBoard.workArea.name} in ${label}`}
+                    aria-label={`Open ${visibleBoard.workArea.name} in ${label}`}
+                  >
+                    <ExternalLink className="h-4 w-4" aria-hidden="true" />
+                  </a>
+                </Button>
+              ) : null}
+            </div>
             {visibleBoard?.workArea.description ? (
               <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
                 {visibleBoard.workArea.description}

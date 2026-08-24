@@ -108,9 +108,16 @@ describe('ExternalTaskCommentsPanel', () => {
     expect(screen.getByText('John Doe')).toBeInTheDocument();
     expect(screen.getByText('AL')).toBeInTheDocument();
     expect(screen.getByText('JD')).toBeInTheDocument();
-    expect(
-      screen.getByText(new Date('2026-08-19T10:00:00.000Z').toLocaleString()),
-    ).toBeInTheDocument();
+    const oldestTimestamp = baseElement.querySelector('time[datetime="2026-08-19T10:00:00.000Z"]');
+    expect(oldestTimestamp).toHaveTextContent(
+      new Intl.DateTimeFormat(undefined, {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+      }).format(new Date('2026-08-19T10:00:00.000Z')),
+    );
     // Vendor markup renders as literal text, never as elements.
     expect(screen.getByText(/alert\(1\)/)).toBeInTheDocument();
     expect(baseElement.querySelector('script')).toBeNull();
@@ -135,8 +142,12 @@ describe('ExternalTaskCommentsPanel', () => {
     const view = renderPanel(loading);
 
     const region = historyRegion();
+    expect(region.className).toContain('max-h-96');
+    expect(region.className).toContain('flex-none');
     expect(region.className).toContain('overflow-y-auto');
     expect(region.className).toContain('overscroll-contain');
+    expect(region.className).toContain('lg:max-h-none');
+    expect(region.className).toContain('lg:flex-1');
 
     const writes: number[] = [];
     Object.defineProperty(region, 'scrollHeight', { configurable: true, value: 480 });
@@ -357,13 +368,26 @@ describe('ExternalTaskCommentsPanel', () => {
     );
   });
 
-  it('hides Notify everyone for Jira and shows it only for ClickUp', () => {
-    const { unmount } = renderPanel(controllerValue());
+  it('hides Notify everyone for Jira and submits the ClickUp-only preference when toggled', async () => {
+    const user = userEvent.setup();
+    const jiraController = controllerValue({ commentText: 'Jira draft' });
+    const { unmount } = renderPanel(jiraController);
     expect(screen.queryByLabelText('Notify everyone')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Add comment' }));
+    expect(jiraController.mutation.mutate).toHaveBeenCalledWith(
+      { action: 'add_comment', input: { text: 'Jira draft', notifyAll: false } },
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    );
     unmount();
 
-    renderPanel(controllerValue(), { provider: 'clickup' });
-    expect(screen.getByLabelText('Notify everyone')).toBeInTheDocument();
+    const clickUpController = controllerValue({ commentText: 'Broadcast update' });
+    renderPanel(clickUpController, { provider: 'clickup' });
+    await user.click(screen.getByLabelText('Notify everyone'));
+    await user.click(screen.getByRole('button', { name: 'Add comment' }));
+    expect(clickUpController.mutation.mutate).toHaveBeenCalledWith(
+      { action: 'add_comment', input: { text: 'Broadcast update', notifyAll: true } },
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    );
   });
 
   it('announces loading, chase progress, and success through live regions', () => {
@@ -399,6 +423,7 @@ describe('ExternalTaskCommentsPanel', () => {
         'Comment added.',
       ]),
     );
+    expect(screen.getByText('Comment added.')).toHaveClass('text-primary');
   });
 
   it('disables the composer while a creation is pending and when unsupported', () => {

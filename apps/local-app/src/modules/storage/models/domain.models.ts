@@ -77,6 +77,8 @@ export interface IntegrationConnection {
   id: string;
   provider: IntegrationProvider;
   generation: number;
+  subtaskSyncEnabled: boolean;
+  syncSettingRevision: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -84,6 +86,8 @@ export interface IntegrationConnection {
 export interface ReplaceIntegrationConnection {
   provider: IntegrationProvider;
   credentials: IntegrationCredentials;
+  subtaskSyncEnabled?: boolean;
+  acknowledgeOrphanRisk?: boolean;
 }
 
 export interface ExternalTaskLink {
@@ -109,6 +113,104 @@ export interface CreateEpicWithExternalTaskLinkResult {
   epic: Epic;
   externalTaskLink: ExternalTaskLink;
   created: boolean;
+}
+
+export const EXTERNAL_MANAGED_SUBTASK_OPERATION_PHASES = [
+  'pre_dispatch',
+  'dispatch_admitted',
+  'outcome_unknown',
+  'confirmed',
+  'needs_attention',
+] as const;
+export type ExternalManagedSubtaskOperationPhase =
+  (typeof EXTERNAL_MANAGED_SUBTASK_OPERATION_PHASES)[number];
+
+export const EXTERNAL_MANAGED_SUBTASK_TOMBSTONE_STATES = [
+  'active',
+  'local_deleted',
+  'move_out',
+  'orphan_risk',
+] as const;
+export type ExternalManagedSubtaskTombstoneState =
+  (typeof EXTERNAL_MANAGED_SUBTASK_TOMBSTONE_STATES)[number];
+
+export interface ExternalManagedSubtaskLink {
+  id: string;
+  epicId: string | null;
+  epicIdSnapshot: string;
+  parentEpicIdSnapshot: string;
+  parentSourceLinkIdSnapshot: string;
+  connectionIdSnapshot: string;
+  provider: IntegrationProvider;
+  remoteScopeKey: string;
+  workAreaRemoteId: string;
+  parentRemoteTaskId: string;
+  connectionGeneration: number;
+  syncSettingRevision: number;
+  ownershipToken: string;
+  remoteTaskId: string | null;
+  remoteKey: string | null;
+  desiredVersion: number;
+  confirmedVersion: number | null;
+  desiredFingerprint: string;
+  confirmedFingerprint: string | null;
+  operationPhase: ExternalManagedSubtaskOperationPhase;
+  safeErrorCode: string | null;
+  retryAt: string | null;
+  tombstoneState: ExternalManagedSubtaskTombstoneState;
+  tombstonedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateExternalManagedSubtaskLink {
+  epicId: string;
+  epicIdSnapshot: string;
+  parentEpicIdSnapshot: string;
+  parentSourceLinkIdSnapshot: string;
+  connectionIdSnapshot: string;
+  provider: IntegrationProvider;
+  remoteScopeKey: string;
+  workAreaRemoteId: string;
+  parentRemoteTaskId: string;
+  connectionGeneration: number;
+  syncSettingRevision: number;
+  ownershipToken: string;
+  desiredVersion: number;
+  desiredFingerprint: string;
+  operationPhase?: ExternalManagedSubtaskOperationPhase;
+  tombstoneState?: ExternalManagedSubtaskTombstoneState;
+}
+
+export interface UpdateExternalManagedSubtaskLink {
+  connectionIdSnapshot?: string;
+  connectionGeneration?: number;
+  syncSettingRevision?: number;
+  remoteTaskId?: string | null;
+  remoteKey?: string | null;
+  desiredVersion?: number;
+  confirmedVersion?: number | null;
+  desiredFingerprint?: string;
+  confirmedFingerprint?: string | null;
+  operationPhase?: ExternalManagedSubtaskOperationPhase;
+  safeErrorCode?: string | null;
+  retryAt?: string | null;
+  tombstoneState?: ExternalManagedSubtaskTombstoneState;
+  tombstonedAt?: string | null;
+}
+
+export interface ConfirmExternalManagedSubtaskLink {
+  managedLinkId: string;
+  remoteTaskId: string;
+  remoteKey: string;
+  confirmedVersion: number;
+  confirmedFingerprint: string;
+  sourceSnapshot: Record<string, unknown>;
+}
+
+export interface ConfirmExternalManagedSubtaskLinkResult {
+  managedLink: ExternalManagedSubtaskLink;
+  externalTaskLink: ExternalTaskLink;
 }
 
 export type SkillStatus = 'available' | 'outdated' | 'sync_error';

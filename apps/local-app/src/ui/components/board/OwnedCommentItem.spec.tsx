@@ -89,10 +89,15 @@ function item(
 }
 
 describe('OwnedCommentItem', () => {
-  it('shows Edit and Delete for a server-confirmed owned supported comment', () => {
+  it('shows Edit and Delete in one menu for a server-confirmed owned supported comment', async () => {
+    const user = userEvent.setup();
     render(item(comment(), actionsWith(), { richEdit: true, ownedDelete: true }));
-    expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+    const trigger = screen.getByRole('button', { name: /comment actions for comment by me/i });
+    expect(trigger).toHaveClass('h-10', 'w-10');
+    expect(screen.queryByRole('menuitem', { name: 'Edit' })).toBeNull();
+    await user.click(trigger);
+    expect(screen.getByRole('menuitem', { name: 'Edit' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Delete' })).toBeInTheDocument();
   });
 
   it('hides both actions for comments owned by someone else', () => {
@@ -101,25 +106,31 @@ describe('OwnedCommentItem', () => {
     expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
   });
 
-  it('applies the capability gates independently', () => {
+  it('applies the capability gates independently', async () => {
+    const user = userEvent.setup();
     const { rerender } = render(
       item(comment(), actionsWith(), { richEdit: false, ownedDelete: true }),
     );
-    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /comment actions/i }));
+    expect(screen.queryByRole('menuitem', { name: 'Edit' })).toBeNull();
+    expect(screen.getByRole('menuitem', { name: 'Delete' })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
 
     rerender(item(comment(), actionsWith(), { richEdit: true, ownedDelete: false }));
-    expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: /comment actions/i }));
+    expect(screen.getByRole('menuitem', { name: 'Edit' })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: 'Delete' })).toBeNull();
   });
 
-  it('hides Edit for an unsupported rich body (read-only), keeps Delete per gate', () => {
+  it('hides Edit for an unsupported rich body (read-only), keeps Delete per gate', async () => {
+    const user = userEvent.setup();
     const unsupported = comment({
       rich: { supported: false, readOnlyReason: 'unsupported_node' },
     });
     render(item(unsupported, actionsWith(), { richEdit: true, ownedDelete: true }));
-    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /comment actions/i }));
+    expect(screen.queryByRole('menuitem', { name: 'Edit' })).toBeNull();
+    expect(screen.getByRole('menuitem', { name: 'Delete' })).toBeInTheDocument();
     // The plain bounded preview renders.
     expect(screen.getByText('plain body')).toBeInTheDocument();
   });
@@ -193,6 +204,23 @@ describe('OwnedCommentItem', () => {
     // Without one, no marker is invented.
     view.rerender(item(comment(), actionsWith(), { richEdit: false, ownedDelete: false }));
     expect(view.container.textContent).not.toContain('(edited)');
+  });
+
+  it('formats the visible timestamp without seconds and preserves the exact value', () => {
+    const createdAt = '2026-08-22T12:21:15.000Z';
+    render(item(comment({ createdAt }), actionsWith(), { richEdit: false, ownedDelete: false }));
+    const time = screen.getByText(
+      new Intl.DateTimeFormat(undefined, {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+      }).format(new Date(createdAt)),
+    );
+    expect(time).toHaveAttribute('datetime', createdAt);
+    expect(time).toHaveAttribute('title');
+    expect(time.textContent).not.toContain(':15');
   });
 
   it('an editing comment renders the lazy editor surface with Save and Cancel', async () => {

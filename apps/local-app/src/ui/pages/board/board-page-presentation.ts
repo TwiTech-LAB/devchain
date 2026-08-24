@@ -1,6 +1,7 @@
 import type { FormEvent } from 'react';
 import type { EpicFormData } from '@/ui/components/board/EpicFormDialog';
 import type { EpicExternalSourceMap } from '@/ui/hooks/useEpicExternalSourcesBatch';
+import type { EpicTimeTotalsMap } from '@/ui/hooks/useEpicTimeSummariesBatch';
 import type { BoardFilterParams } from '@/ui/lib/url-filters';
 import type { Agent, Epic, Status } from '@/ui/types';
 import type { BoardBulkEditController } from '@/ui/types/board-bulk-edit';
@@ -11,6 +12,12 @@ import type { BoardBulkEditController } from '@/ui/types/board-bulk-edit';
  * the hook that produces it — this is the Board-facing name for it.
  */
 export type BoardExternalSourceMap = EpicExternalSourceMap;
+
+/**
+ * Estimated-time totals (whole minutes) by Epic ID for root items of the
+ * loaded Board context. One guarded batch read; failures leave it empty.
+ */
+export type BoardEpicTimeTotalsMap = EpicTimeTotalsMap;
 
 export interface BoardHeaderModel {
   readonly hasProject: boolean;
@@ -54,6 +61,8 @@ interface BoardKanbanColumnBase {
   readonly subEpicCounts: Readonly<Record<string, number>>;
   readonly subEpicStatusCountsByEpicId: Readonly<Record<string, Readonly<Record<string, number>>>>;
   readonly hasRunningWorktrees: boolean;
+  /** Root-Epic estimated-time totals; collapsed rows badge them too. */
+  readonly timeTotals?: BoardEpicTimeTotalsMap;
   getAgentName(agentId: string | null): string | null;
   addEpic(statusId: string): void;
   editEpic(epic: Epic): void;
@@ -111,6 +120,8 @@ export interface BoardListContentModel {
   moveToWorktree(epic: Epic): void;
   /** Sources for main rows; lazily expanded sub-epic rows show none. */
   readonly externalSources: BoardExternalSourceMap;
+  /** Root-Epic estimated-time totals for main rows. */
+  readonly timeTotals?: BoardEpicTimeTotalsMap;
 }
 
 export type BoardContentModel =

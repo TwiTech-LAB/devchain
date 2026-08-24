@@ -24,7 +24,7 @@ export interface ExternalTaskCommentsPanelProps {
   ownedDeleteEnabled?: boolean;
   /** Overrides for the section wrapper; a flex column lets the history fill a dialog column. */
   className?: string;
-  /** Overrides for the history scroll container; dialogs pass `max-h-none flex-1` to fill height. */
+  /** Overrides for the history scroll container. */
   historyClassName?: string;
 }
 
@@ -140,7 +140,7 @@ export function ExternalTaskCommentsPanel({
         role="region"
         aria-label="Comments history"
         className={cn(
-          'max-h-96 min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain',
+          'min-h-24 max-h-96 flex-none space-y-3 overflow-y-auto overscroll-contain lg:max-h-none lg:min-h-0 lg:flex-1',
           historyClassName,
         )}
       >
@@ -200,12 +200,12 @@ export function ExternalTaskCommentsPanel({
         </ol>
 
         {ownedActions.edit.state.status === 'saved' ? (
-          <p role="status" className="text-xs text-emerald-600">
+          <p role="status" className="text-xs font-medium text-primary">
             Comment saved. Some providers do not report edit timestamps.
           </p>
         ) : null}
         {ownedActions.delete.status === 'deleted' ? (
-          <p role="status" className="text-xs text-emerald-600">
+          <p role="status" className="text-xs font-medium text-primary">
             Comment deleted. Comments reloaded from the newest page.
           </p>
         ) : null}
@@ -225,6 +225,8 @@ export function ExternalTaskCommentsPanel({
           <Label htmlFor="external-task-comment">Comment</Label>
           <Textarea
             id="external-task-comment"
+            name="comment"
+            autoComplete="off"
             value={commentText}
             onChange={(event) => controller.setCommentText(event.target.value)}
             maxLength={10_000}
@@ -234,6 +236,7 @@ export function ExternalTaskCommentsPanel({
             <div className="flex items-center gap-2">
               <Checkbox
                 id="external-task-notify-all"
+                name="notifyAll"
                 checked={notifyAll}
                 onCheckedChange={(checked) => setNotifyAll(checked === true)}
               />
@@ -259,7 +262,7 @@ export function ExternalTaskCommentsPanel({
         </Alert>
       ) : null}
       {creationSucceeded ? (
-        <p className="text-sm text-emerald-600" role="status">
+        <p className="text-sm font-medium text-primary" role="status">
           Comment added.
         </p>
       ) : null}

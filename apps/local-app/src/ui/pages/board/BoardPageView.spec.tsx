@@ -8,19 +8,31 @@ jest.mock('@/ui/components/board/BoardToolbar', () => ({
   BoardToolbar: () => <div>Toolbar fixture</div>,
 }));
 jest.mock('@/ui/components/board/CollapsedColumn', () => ({
-  CollapsedColumn: ({ status }: { status: Status }) => <div>Collapsed {status.label}</div>,
+  CollapsedColumn: ({
+    status,
+    timeTotals,
+  }: {
+    status: Status;
+    timeTotals?: ReadonlyMap<string, number>;
+  }) => <div data-has-time-totals={timeTotals?.size ?? 0}>Collapsed {status.label}</div>,
 }));
 jest.mock('@/ui/components/board/BoardColumn', () => ({
   BoardColumn: ({
     status,
     activeParentId,
     externalSources,
+    timeTotals,
   }: {
     status: Status;
     activeParentId: string | null;
     externalSources?: ReadonlyMap<string, unknown>;
+    timeTotals?: ReadonlyMap<string, number>;
   }) => (
-    <div data-active-parent-id={activeParentId ?? ''} data-has-sources={externalSources?.size ?? 0}>
+    <div
+      data-active-parent-id={activeParentId ?? ''}
+      data-has-sources={externalSources?.size ?? 0}
+      data-has-time-totals={timeTotals?.size ?? 0}
+    >
       Expanded {status.label}
     </div>
   ),
@@ -29,11 +41,13 @@ jest.mock('@/ui/components/board/BoardListView', () => ({
   BoardListView: ({
     epics,
     externalSources,
+    timeTotals,
   }: {
     epics: Epic[];
     externalSources?: ReadonlyMap<string, unknown>;
+    timeTotals?: ReadonlyMap<string, number>;
   }) => (
-    <div data-has-sources={externalSources?.size ?? 0}>
+    <div data-has-sources={externalSources?.size ?? 0} data-has-time-totals={timeTotals?.size ?? 0}>
       List fixture: {epics.map((epic) => epic.title).join(', ')}
     </div>
   ),
@@ -158,6 +172,7 @@ const columnBase = {
   subEpicCounts: {},
   subEpicStatusCountsByEpicId: {},
   hasRunningWorktrees: false,
+  timeTotals: new Map([['epic-1', 90]]),
   getAgentName: () => null,
   addEpic: noop,
   editEpic: noop,
@@ -213,8 +228,10 @@ describe('BoardPageView presentation', () => {
       />,
     );
     expect(screen.getByText('Collapsed Todo')).toBeInTheDocument();
+    expect(screen.getByText('Collapsed Todo')).toHaveAttribute('data-has-time-totals', '1');
     expect(screen.getByText('Expanded Done')).toHaveAttribute('data-active-parent-id', epic.id);
     expect(screen.getByText('Expanded Done')).toHaveAttribute('data-has-sources', '1');
+    expect(screen.getByText('Expanded Done')).toHaveAttribute('data-has-time-totals', '1');
 
     rerender(
       <BoardPageView
@@ -239,11 +256,16 @@ describe('BoardPageView presentation', () => {
           changeAgent: asyncNoop,
           moveToWorktree: noop,
           externalSources: new Map(),
+          timeTotals: new Map([['epic-1', 90]]),
         })}
       />,
     );
     expect(screen.getByText('List fixture: Fixture epic')).toBeInTheDocument();
     expect(screen.getByText('List fixture: Fixture epic')).toHaveAttribute('data-has-sources', '0');
+    expect(screen.getByText('List fixture: Fixture epic')).toHaveAttribute(
+      'data-has-time-totals',
+      '1',
+    );
   });
 
   it('wires paired dialog models without receiving implementation objects', () => {

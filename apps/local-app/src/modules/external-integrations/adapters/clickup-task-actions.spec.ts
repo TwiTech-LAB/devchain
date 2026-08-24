@@ -37,6 +37,7 @@ function taskDetail(overrides: Record<string, unknown> = {}): Record<string, unk
     team_id: 'workspace-1',
     list: { id: 'list-1', name: 'Sprint' },
     assignees: [{ id: 42, email: 'private@example.com' }],
+    subtasks: [],
     ...overrides,
   };
 }
@@ -72,6 +73,18 @@ function listDetail(): Record<string, unknown> {
   };
 }
 
+function childDetail(id: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id,
+    parent: 'task-1',
+    custom_id: `DEV-${id}`,
+    name: `Child ${id}`,
+    status: { id: 'todo', status: 'To Do', type: 'open' },
+    url: `https://app.clickup.com/t/${id}`,
+    ...overrides,
+  };
+}
+
 function providerWith(requestJson: jest.Mock): ClickUpExternalTaskProvider {
   return new ClickUpExternalTaskProvider({ requestJson } as unknown as SafeVendorHttpClient);
 }
@@ -82,6 +95,7 @@ describe('ClickUp task detail and remote actions', () => {
     const requestJson = jest.fn(async (request: SafeVendorJsonRequest) => {
       const path = new URL(request.url).pathname;
       if (path === '/api/v2/task/task-1') {
+        expect(new URL(request.url).searchParams.get('include_subtasks')).toBe('true');
         return taskDetail({ text_content: oversized });
       }
       if (path === '/api/v2/list/list-1') {
@@ -108,6 +122,8 @@ describe('ClickUp task detail and remote actions', () => {
       },
       dueAt: '2026-08-22T12:00:00.000Z',
       priority: { name: 'normal', color: '#f8ae00' },
+      subtasks: [],
+      subtasksTruncated: false,
       taskTotalDurationMs: 3_600_000,
       webUrl: 'https://app.clickup.com/t/task-1',
       location: {
@@ -153,6 +169,91 @@ describe('ClickUp task detail and remote actions', () => {
     expect(JSON.stringify(result)).not.toMatch(
       /text_content|team_id|assignees|private@example.com|authorization/i,
     );
+    expect(
+      requestJson.mock.calls.filter(
+        ([request]) => new URL(request.url).pathname === '/api/v2/task/task-1',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('normalizes only direct children, drops malformed rows, and sorts by title, key, then id', async () => {
+    const requestJson = jest.fn(async (request: SafeVendorJsonRequest) => {
+      const path = new URL(request.url).pathname;
+      if (path === '/api/v2/task/task-1') {
+        return taskDetail({
+          subtasks: [
+            childDetail('3', { custom_id: 'DEV-3', name: 'Bravo' }),
+            childDetail('2', {
+              custom_id: 'DEV-2',
+              name: 'Alpha',
+              url: 'https://unsafe.example/task/2',
+            }),
+            childDetail('1', { custom_id: 'DEV-1', name: 'Alpha' }),
+            childDetail('deeper', { parent: 'task-2', name: 'Ignored descendant' }),
+            childDetail('malformed', { status: null }),
+          ],
+        });
+      }
+      if (path === '/api/v2/list/list-1') return listDetail();
+      throw new Error(`unexpected request: ${request.url}`);
+    });
+
+    const result = await providerWith(requestJson).myWork!.getTaskDetail!(
+      credentials,
+      context,
+      'task-1',
+    );
+
+    expect(result.subtasks.map(({ remoteId }) => remoteId)).toEqual(['1', '2', '3']);
+    expect(result.subtasks[1]).toMatchObject({ remoteKey: 'DEV-2', webUrl: null });
+    expect(result.subtasksTruncated).toBe(true);
+  });
+
+  it('inspects the complete ClickUp child array before reporting an uncapped result', async () => {
+    const requestJson = jest.fn(async (request: SafeVendorJsonRequest) => {
+      const path = new URL(request.url).pathname;
+      if (path === '/api/v2/task/task-1') {
+        return taskDetail({
+          subtasks: [
+            ...Array.from({ length: 100 }, (_, index) => childDetail(String(index + 1))),
+            childDetail('malformed-tail', { status: null }),
+          ],
+        });
+      }
+      if (path === '/api/v2/list/list-1') return listDetail();
+      throw new Error(`unexpected request: ${request.url}`);
+    });
+
+    const result = await providerWith(requestJson).myWork!.getTaskDetail!(
+      credentials,
+      context,
+      'task-1',
+    );
+
+    expect(result.subtasks).toHaveLength(100);
+    expect(result.subtasksTruncated).toBe(true);
+  });
+
+  it('caps ClickUp direct children at 100', async () => {
+    const requestJson = jest.fn(async (request: SafeVendorJsonRequest) => {
+      const path = new URL(request.url).pathname;
+      if (path === '/api/v2/task/task-1') {
+        return taskDetail({
+          subtasks: Array.from({ length: 101 }, (_, index) => childDetail(String(index + 1))),
+        });
+      }
+      if (path === '/api/v2/list/list-1') return listDetail();
+      throw new Error(`unexpected request: ${request.url}`);
+    });
+
+    const result = await providerWith(requestJson).myWork!.getTaskDetail!(
+      credentials,
+      context,
+      'task-1',
+    );
+
+    expect(result.subtasks).toHaveLength(100);
+    expect(result.subtasksTruncated).toBe(true);
   });
 
   it('keeps status-name write identity and omits remoteStatusIds when a status has no id', async () => {

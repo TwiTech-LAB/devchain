@@ -1,4 +1,5 @@
 import { EpicTooltipWrapper } from '@/ui/components/shared/EpicTooltipWrapper';
+import { EpicTimeBadge } from '@/ui/components/board/EpicTimeBadge';
 import { cn } from '@/ui/lib/utils';
 import { getMergedWorktree, isMergedTag } from '@/ui/lib/epic-tags';
 import type { Epic, Status } from './types';
@@ -8,6 +9,8 @@ export interface CollapsedColumnProps {
   count: number;
   epics: Epic[];
   subEpicCounts?: Record<string, number>;
+  /** Estimated-time totals in whole minutes by Epic ID (root epics only). */
+  timeTotals?: ReadonlyMap<string, number>;
   onExpand: () => void;
   onAddEpic: (statusId: string) => void;
   onDragOver: () => void;
@@ -29,6 +32,7 @@ export function CollapsedColumn({
   count,
   epics,
   subEpicCounts,
+  timeTotals,
   onExpand,
   onAddEpic,
   onDragOver,
@@ -44,6 +48,11 @@ export function CollapsedColumn({
   onEpicToggleParentFilter,
   isLightColor,
 }: CollapsedColumnProps) {
+  let countTextColor: string | undefined;
+  if (count > 0) {
+    countTextColor = isLightColor(status.color) ? '#1f2937' : '#ffffff';
+  }
+
   return (
     <button
       onClick={onExpand}
@@ -80,7 +89,7 @@ export function CollapsedColumn({
           )}
           style={{
             backgroundColor: status.color,
-            color: count > 0 ? (isLightColor(status.color) ? '#1f2937' : '#ffffff') : undefined,
+            color: countTextColor,
           }}
         >
           {count > 0 && count}
@@ -92,6 +101,8 @@ export function CollapsedColumn({
           {epics.map((epic) => {
             const mergedFromWorktree = getMergedWorktree(epic.tags ?? []);
             const visibleTags = (epic.tags ?? []).filter((tag) => !isMergedTag(tag));
+            const timeMinutes = epic.parentId === null ? timeTotals?.get(epic.id) : undefined;
+            const hasTimeBadge = timeMinutes !== undefined && timeMinutes > 0;
 
             return (
               <div
@@ -101,45 +112,55 @@ export function CollapsedColumn({
                 onDragStart={() => onDragStartEpic(epic)}
                 onDragEnd={onDragEndEpic}
               >
-                <EpicTooltipWrapper
-                  title={epic.title || 'Untitled'}
-                  statusLabel={status.label}
-                  statusColor={status.color}
-                  agentName={getAgentName(epic.agentId)}
-                  description={epic.description ?? undefined}
-                  showFilterToggle={epic.parentId === null}
-                  showBulkEdit={epic.parentId === null}
-                  showOpenDetails
-                  onBulkEdit={(e) => {
-                    e.stopPropagation();
-                    onEpicBulkEdit(epic);
-                  }}
-                  onEdit={(e) => {
-                    e.stopPropagation();
-                    onEpicEdit(epic);
-                  }}
-                  onDelete={(e) => {
-                    e.stopPropagation();
-                    onEpicDelete(epic);
-                  }}
-                  onViewDetails={(e) => {
-                    e.stopPropagation();
-                    onEpicViewDetails(epic);
-                  }}
-                  onToggleParentFilter={(e) => {
-                    e.stopPropagation();
-                    onEpicToggleParentFilter(epic);
-                  }}
-                  dynamicSide
-                  dynamicSideThreshold={360}
-                  delayDuration={100}
-                  sideOffset={10}
-                  contentClassName="w-[340px] max-h-[70vh] overflow-auto space-y-2"
-                >
-                  <div className="truncate font-semibold cursor-pointer">
-                    {epic.title || 'Untitled'}
+                {/* The time badge stays on the title line so a timed root
+                    without tags or sub-epics keeps the compact one-line row
+                    height. */}
+                <div className="flex items-center gap-1">
+                  <div className="min-w-0 flex-1">
+                    <EpicTooltipWrapper
+                      title={epic.title || 'Untitled'}
+                      statusLabel={status.label}
+                      statusColor={status.color}
+                      agentName={getAgentName(epic.agentId)}
+                      description={epic.description ?? undefined}
+                      showFilterToggle={epic.parentId === null}
+                      showBulkEdit={epic.parentId === null}
+                      showOpenDetails
+                      onBulkEdit={(e) => {
+                        e.stopPropagation();
+                        onEpicBulkEdit(epic);
+                      }}
+                      onEdit={(e) => {
+                        e.stopPropagation();
+                        onEpicEdit(epic);
+                      }}
+                      onDelete={(e) => {
+                        e.stopPropagation();
+                        onEpicDelete(epic);
+                      }}
+                      onViewDetails={(e) => {
+                        e.stopPropagation();
+                        onEpicViewDetails(epic);
+                      }}
+                      onToggleParentFilter={(e) => {
+                        e.stopPropagation();
+                        onEpicToggleParentFilter(epic);
+                      }}
+                      dynamicSide
+                      dynamicSideThreshold={360}
+                      delayDuration={100}
+                      sideOffset={10}
+                      contentClassName="w-[340px] max-h-[70vh] overflow-auto space-y-2"
+                    >
+                      <div className="truncate font-semibold cursor-pointer">
+                        {epic.title || 'Untitled'}
+                      </div>
+                    </EpicTooltipWrapper>
                   </div>
-                </EpicTooltipWrapper>
+                  {hasTimeBadge && timeMinutes !== undefined && (
+                    <EpicTimeBadge minutes={timeMinutes} />
+                  )}
+                </div>
                 {((subEpicCounts?.[epic.id] ?? 0) > 0 || (epic.tags && epic.tags.length > 0)) && (
                   <div className="mt-1 flex flex-wrap gap-1">
                     {mergedFromWorktree && (

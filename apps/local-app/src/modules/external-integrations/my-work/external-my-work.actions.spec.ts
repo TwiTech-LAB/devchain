@@ -61,6 +61,16 @@ describe('ExternalMyWorkService task details and actions', () => {
     },
     dueAt: '2026-08-22T12:00:00.000Z',
     priority: { name: 'normal', color: '#f8ae00' },
+    subtasks: [
+      {
+        remoteId: 'child-1',
+        remoteKey: 'DEV-2',
+        title: 'Child task',
+        status: { remoteId: 'todo', name: 'To Do', category: 'active' as const },
+        webUrl: 'https://app.clickup.com/t/child-1',
+      },
+    ],
+    subtasksTruncated: false,
     taskTotalDurationMs: 3_600_000,
     webUrl: 'https://app.clickup.com/t/task-1',
     location: {
@@ -145,6 +155,11 @@ describe('ExternalMyWorkService task details and actions', () => {
   it('returns an unlinked state without exposing storage or vendor extras', async () => {
     getTaskDetail.mockResolvedValue({
       ...detail,
+      subtasks: detail.subtasks.map((subtask) => ({
+        ...subtask,
+        providerExtra: 'child-secret',
+        status: { ...subtask.status, providerStatusExtra: 'status-secret' },
+      })),
       allowedStatuses: detail.allowedStatuses.map((option) => ({
         ...option,
         vendorExtra: 'internal',
@@ -155,9 +170,10 @@ describe('ExternalMyWorkService task details and actions', () => {
     const result = await service.getTaskDetail('clickup', 'task-1');
 
     expect(result.linkState).toEqual({ linked: false, epicId: null });
+    expect(result.subtasks).toEqual(detail.subtasks);
     expect(result.allowedStatuses).toEqual(detail.allowedStatuses);
     expect(JSON.stringify(result)).not.toMatch(
-      /connectionId|sourceSnapshot|secret-token|vendorExtra|transitionUrl/,
+      /connectionId|sourceSnapshot|secret-token|vendorExtra|transitionUrl|providerExtra|child-secret|providerStatusExtra|status-secret/,
     );
   });
 

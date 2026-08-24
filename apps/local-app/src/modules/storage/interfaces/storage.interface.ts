@@ -1,4 +1,5 @@
 import type { FeatureFlagConfig } from '../../../common/config/feature-flags';
+import type { PreparedEvent } from '../../events/services/durable-event-registry.service';
 import {
   Project,
   CreateProject,
@@ -86,6 +87,11 @@ import {
   ReplaceIntegrationConnection,
   CreateEpicWithExternalTaskLink,
   CreateEpicWithExternalTaskLinkResult,
+  CreateExternalManagedSubtaskLink,
+  UpdateExternalManagedSubtaskLink,
+  ExternalManagedSubtaskLink,
+  ConfirmExternalManagedSubtaskLink,
+  ConfirmExternalManagedSubtaskLinkResult,
 } from '../models/domain.models';
 
 export type VerifyIntegrationCredentials = (credentials: IntegrationCredentials) => Promise<void>;
@@ -247,6 +253,11 @@ export interface CreateSkillSourceOptions {
   seedExistingProjectsDisabled?: boolean;
 }
 
+export type FactualEventFactory<TCurrent, TPrevious = never> = (
+  current: TCurrent,
+  previous: TPrevious,
+) => PreparedEvent | null;
+
 export interface ProjectStorage {
   createProject(data: CreateProject): Promise<Project>;
   /**
@@ -301,7 +312,11 @@ export interface StatusStorage {
 }
 
 export interface EpicStorage {
-  createEpic(data: CreateEpic): Promise<Epic>;
+  createEpic(data: CreateEpic, eventFactory?: (epic: Epic) => PreparedEvent | null): Promise<Epic>;
+  createEpicWithinTransaction(
+    data: CreateEpic,
+    eventFactory?: (epic: Epic) => PreparedEvent | null,
+  ): Promise<Epic>;
   getEpic(id: string): Promise<Epic>;
   listEpics(projectId: string, options?: ListOptions): Promise<ListResult<Epic>>;
   listEpicsByStatus(statusId: string, options?: ListOptions): Promise<ListResult<Epic>>;
@@ -310,9 +325,18 @@ export interface EpicStorage {
     projectId: string,
     options: ListAssignedEpicsOptions,
   ): Promise<ListResult<Epic>>;
-  createEpicForProject(projectId: string, input: CreateEpicForProjectInput): Promise<Epic>;
-  updateEpic(id: string, data: UpdateEpic, expectedVersion: number): Promise<Epic>;
-  deleteEpic(id: string): Promise<void>;
+  createEpicForProject(
+    projectId: string,
+    input: CreateEpicForProjectInput,
+    eventFactory?: (epic: Epic) => PreparedEvent | null,
+  ): Promise<Epic>;
+  updateEpic(
+    id: string,
+    data: UpdateEpic,
+    expectedVersion: number,
+    eventFactory?: FactualEventFactory<Epic, Epic>,
+  ): Promise<Epic>;
+  deleteEpic(id: string, eventFactory?: (epic: Epic) => PreparedEvent | null): Promise<void>;
   listSubEpics(parentId: string, options?: ListOptions): Promise<ListResult<Epic>>;
   listParentChildren(
     parentId: string,
@@ -647,16 +671,27 @@ export interface IntegrationStorage {
   replaceIntegrationConnection(
     data: ReplaceIntegrationConnection,
     verify: VerifyIntegrationCredentials,
+    eventFactory?: FactualEventFactory<IntegrationConnection, IntegrationConnection | null>,
   ): Promise<IntegrationConnection>;
   getIntegrationConnection(provider: IntegrationProvider): Promise<IntegrationConnection | null>;
   listIntegrationConnections(): Promise<IntegrationConnection[]>;
   getIntegrationConnectionCredentials(
     provider: IntegrationProvider,
   ): Promise<IntegrationCredentials | null>;
-  disconnectIntegrationConnection(provider: IntegrationProvider): Promise<boolean>;
+  disconnectIntegrationConnection(
+    provider: IntegrationProvider,
+    eventFactory?: (connection: IntegrationConnection) => PreparedEvent | null,
+    options?: { acknowledgeOrphanRisk?: boolean },
+  ): Promise<boolean>;
+  updateIntegrationConnectionSyncSetting(
+    provider: IntegrationProvider,
+    subtaskSyncEnabled: boolean,
+    eventFactory?: FactualEventFactory<IntegrationConnection, IntegrationConnection>,
+  ): Promise<IntegrationConnection>;
   createExternalTaskLink(data: CreateExternalTaskLink): Promise<ExternalTaskLink>;
   createEpicWithExternalTaskLink(
     data: CreateEpicWithExternalTaskLink,
+    eventFactory?: (result: CreateEpicWithExternalTaskLinkResult) => PreparedEvent | null,
   ): Promise<CreateEpicWithExternalTaskLinkResult>;
   findExternalTaskLink(
     provider: IntegrationProvider,
@@ -669,6 +704,30 @@ export interface IntegrationStorage {
   ): Promise<ExternalTaskLink[]>;
   listExternalTaskLinksForEpic(epicId: string): Promise<ExternalTaskLink[]>;
   listExternalTaskLinksForEpics(epicIds: string[]): Promise<ExternalTaskLink[]>;
+  createExternalManagedSubtaskLink(
+    data: CreateExternalManagedSubtaskLink,
+  ): Promise<ExternalManagedSubtaskLink>;
+  getExternalManagedSubtaskLink(id: string): Promise<ExternalManagedSubtaskLink>;
+  listExternalManagedSubtaskLinksByProvider(
+    provider: IntegrationProvider,
+  ): Promise<ExternalManagedSubtaskLink[]>;
+  listExternalManagedSubtaskLinksForEpicSnapshot(
+    epicIdSnapshot: string,
+  ): Promise<ExternalManagedSubtaskLink[]>;
+  updateExternalManagedSubtaskLink(
+    id: string,
+    data: UpdateExternalManagedSubtaskLink,
+  ): Promise<ExternalManagedSubtaskLink>;
+  findRecognizedManagedSubtask(
+    epicId: string,
+    provider: IntegrationProvider,
+    remoteScopeKey: string,
+    remoteTaskId: string,
+  ): Promise<ExternalManagedSubtaskLink | null>;
+  confirmExternalManagedSubtaskLink(
+    data: ConfirmExternalManagedSubtaskLink,
+  ): Promise<ConfirmExternalManagedSubtaskLinkResult>;
+  removeExternalManagedSubtaskLink(id: string): Promise<boolean>;
 }
 
 export interface StorageService

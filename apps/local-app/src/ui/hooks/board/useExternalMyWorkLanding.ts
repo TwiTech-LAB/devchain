@@ -10,10 +10,12 @@ import { useExternalMyWork } from '@/ui/hooks/board/useExternalMyWork';
 import { externalMyWorkQueryKeys } from '@/ui/lib/external-my-work';
 import {
   EXTERNAL_COMPLETED_QUERY_PARAM,
+  externalProviderSourceUrl,
   readExternalCompletedParam,
   type ExternalBoardProvider,
 } from '@/ui/lib/external-board';
 import { getIntegrationConnectionEpoch } from '@/ui/lib/integration-connections';
+import { projectWorkAreaTaskHierarchy } from '@/ui/lib/external-work-area';
 
 export type ExternalWorkAreaCardModel = {
   key: string;
@@ -40,6 +42,7 @@ export type ExternalMyWorkLandingStatus =
 
 export interface ExternalMyWorkLanding {
   status: ExternalMyWorkLandingStatus;
+  sourceUrl: string | null;
   cards: ExternalWorkAreaCardModel[];
   visibleCardCount: number;
   search: string;
@@ -72,7 +75,10 @@ function workflowSummary(workArea: ExternalWorkArea): string {
   return names.length > 5 ? `${shown} → +${names.length - 5} more` : shown;
 }
 
-function toCardModel(workArea: ExternalWorkArea): ExternalWorkAreaCardModel {
+function toCardModel(
+  workArea: ExternalWorkArea,
+  assignedTaskCount: number,
+): ExternalWorkAreaCardModel {
   return {
     key: `${workArea.scopeKey}:${workArea.remoteId}`,
     remoteId: workArea.remoteId,
@@ -80,7 +86,7 @@ function toCardModel(workArea: ExternalWorkArea): ExternalWorkAreaCardModel {
     name: workArea.name,
     kindLabel: KIND_LABELS[workArea.kind],
     description: workArea.description,
-    assignedTaskCount: workArea.assignedTaskCount,
+    assignedTaskCount,
     locationLabel: locationLabel(workArea),
     workflowSummary: workflowSummary(workArea),
     refreshState: workArea.refresh.state,
@@ -154,7 +160,15 @@ export function useExternalMyWorkLanding(
   }, [connectionEpoch, enabled, provider, query.data, query.isError, queryClient]);
 
   const cards = useMemo(
-    () => (effectiveSnapshot ? effectiveSnapshot.workAreas.map(toCardModel) : []),
+    () =>
+      effectiveSnapshot
+        ? effectiveSnapshot.workAreas.map((workArea) =>
+            toCardModel(
+              workArea,
+              projectWorkAreaTaskHierarchy(effectiveSnapshot.tasks, workArea).visibleTasks.length,
+            ),
+          )
+        : [],
     [effectiveSnapshot],
   );
 
@@ -185,8 +199,14 @@ export function useExternalMyWorkLanding(
                 ? 'empty'
                 : 'ready';
 
+  const sourceUrl =
+    enabled && connected
+      ? externalProviderSourceUrl(provider, effectiveSnapshot?.workAreas[0]?.scopeKey)
+      : null;
+
   return {
     status,
+    sourceUrl,
     cards: filteredCards,
     visibleCardCount: cards.length,
     search,

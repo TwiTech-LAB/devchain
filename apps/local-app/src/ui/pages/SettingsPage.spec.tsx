@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { SettingsPage } from './SettingsPage';
@@ -581,6 +581,8 @@ describe('SettingsPage events template editor', () => {
 describe('SettingsPage terminal streaming settings', () => {
   const originalFetch = global.fetch;
   const fetchMock = jest.fn();
+  let deferTerminalPut = false;
+  let releaseTerminalPut: (() => void) | undefined;
 
   beforeEach(() => {
     useSelectedProjectMock.mockReturnValue({
@@ -597,6 +599,7 @@ describe('SettingsPage terminal streaming settings', () => {
       terminal: {
         scrollbackLines: 8000,
         seedingMaxBytes: 1024 * 1024,
+        suppressCtrlCWithSelection: false,
       },
     };
 
@@ -624,11 +627,16 @@ describe('SettingsPage terminal streaming settings', () => {
 
       if (url === '/api/settings' && init?.method === 'PUT') {
         const payload = init.body ? JSON.parse(init.body.toString()) : {};
-        currentSettings = { ...currentSettings, ...payload };
-        return {
-          ok: true,
-          json: async () => currentSettings,
-        } as Response;
+        const respond = () => {
+          currentSettings = { ...currentSettings, ...payload };
+          return { ok: true, json: async () => currentSettings } as Response;
+        };
+        if (deferTerminalPut) {
+          return new Promise<Response>((resolve) => {
+            releaseTerminalPut = () => resolve(respond());
+          });
+        }
+        return respond();
       }
 
       return {
@@ -644,12 +652,21 @@ describe('SettingsPage terminal streaming settings', () => {
     global.fetch = originalFetch;
     fetchMock.mockReset();
     toastSpy.mockReset();
+    deferTerminalPut = false;
+    releaseTerminalPut = undefined;
   });
 
-  it('updates scrollback lines and seed max bytes', async () => {
-    // Deep-link to terminal section
-    const { Wrapper } = createWrapper(['/settings?section=terminal']);
+  async function findTerminalSettingsControls() {
+    const ctrlCSwitch = await screen.findByRole('switch', {
+      name: /Ctrl\+C copies selected text/i,
+    });
+    const card = ctrlCSwitch.closest('.max-w-md') as HTMLElement;
+    const saveButton = within(card).getByRole('button', { name: /^Save$/i });
+    return { ctrlCSwitch, saveButton };
+  }
 
+  async function renderTerminalSettings() {
+    const { Wrapper } = createWrapper(['/settings?section=terminal']);
     await act(async () => {
       render(
         <Wrapper>
@@ -657,6 +674,10 @@ describe('SettingsPage terminal streaming settings', () => {
         </Wrapper>,
       );
     });
+  }
+
+  it('updates scrollback lines and seed max bytes', async () => {
+    await renderTerminalSettings();
 
     // Note: seed mode selector removed (tmux-based seeding is now implicit)
     // Wait for settings to load and populate the inputs
@@ -669,12 +690,9 @@ describe('SettingsPage terminal streaming settings', () => {
     await waitFor(() => expect(seedMaxInput).toHaveValue(1024));
     fireEvent.change(seedMaxInput, { target: { value: '2048' } });
 
-    // Select by name: the section also contains toggle switches, which render as buttons.
-    const saveButton = Array.from(
-      seedMaxInput.parentElement?.parentElement?.querySelectorAll('button') ?? [],
-    ).find((button) => /save/i.test(button.textContent ?? ''));
-    expect(saveButton).toBeDefined();
-    fireEvent.click(saveButton!);
+    const card = seedMaxInput.closest('.max-w-md') as HTMLElement;
+    const saveButton = within(card).getByRole('button', { name: /^Save$/i });
+    fireEvent.click(saveButton);
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/settings', expect.anything()));
     const putCall = fetchMock.mock.calls.find(
@@ -688,6 +706,57 @@ describe('SettingsPage terminal streaming settings', () => {
     expect(toastSpy).toHaveBeenCalledWith(
       expect.objectContaining({ title: 'Terminal settings updated' }),
     );
+  });
+
+  it('loads the stored value and saves the exact boolean', async () => {
+    // Layer note: a jsdom component test is the cheapest reliable layer here —
+    // the contract is settings-response-to-switch hydration plus the exact PUT
+    // body, both observable through fetch interception with no backend.
+    await renderTerminalSettings();
+
+    const { ctrlCSwitch, saveButton } = await findTerminalSettingsControls();
+    await waitFor(() => expect(ctrlCSwitch).toHaveAttribute('aria-checked', 'false'));
+
+    fireEvent.click(ctrlCSwitch);
+    await waitFor(() => expect(ctrlCSwitch).toHaveAttribute('aria-checked', 'true'));
+
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/settings',
+        expect.objectContaining({ method: 'PUT' }),
+      ),
+    );
+    const putCall = fetchMock.mock.calls.find(
+      ([input, init]) =>
+        input === '/api/settings' && init && (init as RequestInit).method === 'PUT',
+    );
+    expect(putCall).toBeDefined();
+    const body = JSON.parse((putCall?.[1] as RequestInit).body as string);
+    expect(body.terminal.suppressCtrlCWithSelection).toBe(true);
+  });
+
+  it('disables the Ctrl+C switch while the terminal mutation is pending', async () => {
+    // Layer note: the disabled-during-mutation contract is React state
+    // wiring between useMutation and a controlled input; jsdom observes the
+    // disabled attribute across the mutation lifecycle without a browser.
+    deferTerminalPut = true;
+    await renderTerminalSettings();
+
+    const { ctrlCSwitch, saveButton } = await findTerminalSettingsControls();
+    await waitFor(() => expect(ctrlCSwitch).not.toBeDisabled());
+
+    fireEvent.click(saveButton);
+
+    await waitFor(() => expect(ctrlCSwitch).toBeDisabled());
+    expect(saveButton).toBeDisabled();
+
+    await act(async () => {
+      releaseTerminalPut?.();
+    });
+
+    await waitFor(() => expect(ctrlCSwitch).not.toBeDisabled());
   });
 });
 

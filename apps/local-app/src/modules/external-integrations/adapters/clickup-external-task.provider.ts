@@ -6,10 +6,15 @@ import {
   MAX_TASK_COMMENT_BODY_LENGTH,
   MAX_TASK_COMMENT_CURSOR_LENGTH,
   MAX_TASK_COMMENT_ID_LENGTH,
+  MAX_TASK_DETAIL_SUBTASKS,
   MAX_TASK_DETAIL_TEXT_LENGTH,
+  MAX_EXTERNAL_SUBTASK_DESCRIPTION_LENGTH,
+  MAX_EXTERNAL_SUBTASK_OWNERSHIP_TOKEN_LENGTH,
+  MAX_EXTERNAL_SUBTASK_TITLE_LENGTH,
   MAX_TIME_ENTRY_HISTORY_ENTRIES,
   MAX_TIME_ENTRY_NOTE_LENGTH,
   TIME_ENTRY_HISTORY_WINDOW_DAYS,
+  EXTERNAL_SUBTASK_MANAGEMENT_NOTE,
   type ExternalDescriptionEditCapability,
   type ExternalMyWorkCapability,
   type ExternalMyWorkOptions,
@@ -18,12 +23,20 @@ import {
   type ExternalOwnedMutationsCapability,
   type ExternalProviderConnectionContext,
   type ExternalProviderTaskDetail,
+  type ExternalSubtaskChildrenResult,
+  type ExternalSubtaskCreateInput,
+  type ExternalSubtaskDeleteResult,
+  type ExternalSubtaskOwnershipProof,
+  type ExternalSubtaskSnapshot,
+  type ExternalSubtaskSyncCapability,
+  type ExternalSubtaskUpdateInput,
   type ExternalTaskComment,
   type ExternalTaskCommentInput,
   type ExternalTaskCommentPage,
   type ExternalTaskStatusCategory,
   type ExternalTaskStatusInput,
   type ExternalTaskStatusOption,
+  type ExternalTaskSubtaskSummary,
   type ExternalTaskTimeEntry,
   type ExternalTaskTimeEntryHistory,
   type ExternalTaskTimeEntryInput,
@@ -52,6 +65,7 @@ import {
   WORK_AREA_METADATA_CACHE_MAX_ENTRIES,
   WORK_AREA_METADATA_TTL_MS,
   compareRemoteIds,
+  compareTaskSubtaskSummaries,
   createVendorValidators,
   isRecord,
   mapVendorTransportError,
@@ -66,6 +80,10 @@ const CLICKUP_ORIGIN = 'https://api.clickup.com';
 const CLICKUP_TASK_PAGE_SIZE = 100;
 const CLICKUP_MAX_TASK_PAGES = 1_000;
 const CLICKUP_COMMENT_PAGE_SIZE = 25;
+const CLICKUP_SUBTASK_PAGE_SIZE = 100;
+const CLICKUP_SUBTASK_MAX_PAGES = 10;
+const CLICKUP_OWNERSHIP_PREFIX = 'DevChain ownership token: `';
+const CLICKUP_OWNERSHIP_SUFFIX = '`';
 const CLICKUP_COMMENT_CURSOR_PATTERN = /^[A-Za-z0-9_-]+$/;
 const CLICKUP_COMMENT_AUTHOR: VendorCommentAuthorSpec = {
   nameKey: 'username',
@@ -154,6 +172,336 @@ export class ClickUpExternalTaskProvider implements ExternalTaskProvider {
     writeDescription: (credentials, context, remoteTaskId, raw) =>
       this.writeDescription(credentials, context, remoteTaskId, raw),
   };
+
+  readonly subtaskSync: ExternalSubtaskSyncCapability = {
+    create: (credentials, context, input) => this.createSubtask(credentials, context, input),
+    readExact: (credentials, context, remoteTaskId) =>
+      this.readSubtaskExact(credentials, context, remoteTaskId),
+    update: (credentials, context, input) => this.updateSubtask(credentials, context, input),
+    delete: (credentials, context, proof) => this.deleteSubtask(credentials, context, proof),
+    listOwnedDirectChildren: (credentials, context, parentRemoteTaskId, ownershipToken) =>
+      this.listOwnedDirectChildren(credentials, context, parentRemoteTaskId, ownershipToken),
+    assertOwned: (credentials, context, proof) =>
+      this.assertOwnedSubtask(credentials, context, proof),
+  };
+
+  private async createSubtask(
+    credentials: IntegrationCredentials,
+    _context: ExternalProviderConnectionContext,
+    input: ExternalSubtaskCreateInput,
+  ): Promise<ExternalSubtaskSnapshot> {
+    const token = this.requireToken(credentials);
+    const parentTaskId = this.validate.requiredTaskId(input.parentRemoteTaskId);
+    const ownershipToken = this.requireSubtaskOwnershipToken(input.ownershipToken);
+    const title = this.requireSubtaskTitle(input.title);
+    const description = this.requireSubtaskDescription(input.description);
+    const parent = await this.readClickUpTaskExact(token, parentTaskId);
+    if (parent === null) {
+      throw new ClickUpProviderError('not_found');
+    }
+    const ownerRemoteId = await this.getCurrentOwnerRemoteId(credentials);
+    const ownerId = Number(ownerRemoteId);
+    if (!/^\d+$/.test(ownerRemoteId) || !Number.isSafeInteger(ownerId) || ownerId <= 0) {
+      throw new ClickUpProviderError('invalid_response');
+    }
+    const payload = await this.requestJson(
+      token,
+      `${CLICKUP_ORIGIN}/api/v2/list/${encodeURIComponent(parent.workAreaRemoteId)}/task`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          name: title,
+          markdown_content: this.managedMarkdown(description, ownershipToken),
+          parent: parentTaskId,
+          assignees: [ownerId],
+        }),
+      },
+    );
+    try {
+      if (!isRecord(payload) || !isRecord(payload.list)) {
+        throw new ClickUpProviderError('invalid_response');
+      }
+      const remoteTaskId = this.validate.requiredIdentifier(payload.id);
+      const parentRemoteTaskId = this.validate.requiredIdentifier(payload.parent);
+      const workAreaRemoteId = this.validate.requiredIdentifier(payload.list.id);
+      if (
+        parentRemoteTaskId !== parentTaskId ||
+        workAreaRemoteId !== parent.workAreaRemoteId ||
+        this.validate.requiredString(payload.name) !== title
+      ) {
+        throw new ClickUpProviderError('invalid_response');
+      }
+      return {
+        remoteTaskId,
+        remoteKey: this.optionalIdentifier(payload.custom_id) ?? remoteTaskId,
+        parentRemoteTaskId,
+        workAreaRemoteId,
+        ownershipToken,
+        title,
+        description,
+      };
+    } catch (error) {
+      if (error instanceof ClickUpProviderError) {
+        throw new ClickUpProviderError('invalid_response', undefined, true);
+      }
+      throw error;
+    }
+  }
+
+  private async readSubtaskExact(
+    credentials: IntegrationCredentials,
+    _context: ExternalProviderConnectionContext,
+    remoteTaskId: string,
+  ): Promise<ExternalSubtaskSnapshot | null> {
+    return this.readClickUpTaskExact(
+      this.requireToken(credentials),
+      this.validate.requiredTaskId(remoteTaskId),
+    );
+  }
+
+  private async readClickUpTaskExact(
+    token: string,
+    taskId: string,
+  ): Promise<ExternalSubtaskSnapshot | null> {
+    const url = new URL(`${CLICKUP_ORIGIN}/api/v2/task/${encodeURIComponent(taskId)}`);
+    url.searchParams.set('include_markdown_description', 'true');
+    try {
+      const payload = await this.requestJson(token, url.toString());
+      const snapshot = this.normalizeManagedSubtask(payload);
+      if (snapshot.remoteTaskId !== taskId) {
+        throw new ClickUpProviderError('invalid_response');
+      }
+      return snapshot;
+    } catch (error) {
+      if (error instanceof ClickUpProviderError && error.details?.reason === 'not_found') {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  private async updateSubtask(
+    credentials: IntegrationCredentials,
+    context: ExternalProviderConnectionContext,
+    input: ExternalSubtaskUpdateInput,
+  ): Promise<void> {
+    const current = await this.assertOwnedSubtask(credentials, context, input);
+    const body: Record<string, unknown> = {};
+    if (input.title !== undefined) {
+      body.name = this.requireSubtaskTitle(input.title);
+    }
+    if (input.description !== undefined) {
+      body.markdown_content = this.managedMarkdown(
+        this.requireSubtaskDescription(input.description),
+        this.requireSubtaskOwnershipToken(input.ownershipToken),
+      );
+    }
+    if (Object.keys(body).length === 0) {
+      throw new ClickUpProviderError('request_rejected');
+    }
+    const payload = await this.requestJson(
+      this.requireToken(credentials),
+      `${CLICKUP_ORIGIN}/api/v2/task/${encodeURIComponent(current.remoteTaskId)}`,
+      { method: 'PUT', body: JSON.stringify(body) },
+    );
+    if (
+      !isRecord(payload) ||
+      this.validate.requiredIdentifier(payload.id) !== current.remoteTaskId
+    ) {
+      throw new ClickUpProviderError('invalid_response', undefined, true);
+    }
+  }
+
+  private async deleteSubtask(
+    credentials: IntegrationCredentials,
+    context: ExternalProviderConnectionContext,
+    proof: ExternalSubtaskOwnershipProof,
+  ): Promise<ExternalSubtaskDeleteResult> {
+    const current = await this.readSubtaskExact(credentials, context, proof.remoteTaskId);
+    if (current === null) {
+      return { outcome: 'already_absent' };
+    }
+    this.assertSubtaskProof(current, proof);
+    try {
+      await this.requestNoContent(
+        this.requireToken(credentials),
+        `${CLICKUP_ORIGIN}/api/v2/task/${encodeURIComponent(current.remoteTaskId)}`,
+        { method: 'DELETE' },
+      );
+    } catch (error) {
+      if (error instanceof ClickUpProviderError && error.details?.reason === 'not_found') {
+        return { outcome: 'already_absent' };
+      }
+      throw error;
+    }
+    return { outcome: 'deleted' };
+  }
+
+  private async listOwnedDirectChildren(
+    credentials: IntegrationCredentials,
+    _context: ExternalProviderConnectionContext,
+    parentRemoteTaskId: string,
+    ownershipToken: string,
+  ): Promise<ExternalSubtaskChildrenResult> {
+    const token = this.requireToken(credentials);
+    const parentTaskId = this.validate.requiredTaskId(parentRemoteTaskId);
+    const normalizedToken = this.requireSubtaskOwnershipToken(ownershipToken);
+    const parent = await this.readClickUpTaskExact(token, parentTaskId);
+    if (parent === null) {
+      throw new ClickUpProviderError('not_found');
+    }
+    const items = new Map<string, ExternalSubtaskSnapshot>();
+    for (let page = 0; page < CLICKUP_SUBTASK_MAX_PAGES; page += 1) {
+      const url = new URL(
+        `${CLICKUP_ORIGIN}/api/v2/list/${encodeURIComponent(parent.workAreaRemoteId)}/task`,
+      );
+      url.searchParams.set('page', String(page));
+      url.searchParams.set('subtasks', 'true');
+      url.searchParams.set('include_closed', 'true');
+      url.searchParams.set('include_markdown_description', 'true');
+      const payload = await this.requestJson(token, url.toString());
+      if (
+        !isRecord(payload) ||
+        !Array.isArray(payload.tasks) ||
+        payload.tasks.length > CLICKUP_SUBTASK_PAGE_SIZE
+      ) {
+        throw new ClickUpProviderError('invalid_response');
+      }
+      for (const raw of payload.tasks) {
+        const child = this.normalizeManagedSubtask(raw);
+        if (child.parentRemoteTaskId === parentTaskId && child.ownershipToken === normalizedToken) {
+          items.set(child.remoteTaskId, child);
+        }
+      }
+      if (payload.tasks.length < CLICKUP_SUBTASK_PAGE_SIZE) {
+        return { items: [...items.values()], complete: true };
+      }
+    }
+    return { items: [...items.values()], complete: false };
+  }
+
+  private async assertOwnedSubtask(
+    credentials: IntegrationCredentials,
+    context: ExternalProviderConnectionContext,
+    proof: ExternalSubtaskOwnershipProof,
+  ): Promise<ExternalSubtaskSnapshot> {
+    const current = await this.readSubtaskExact(credentials, context, proof.remoteTaskId);
+    if (current === null) {
+      throw new ClickUpProviderError('not_found');
+    }
+    this.assertSubtaskProof(current, proof);
+    return current;
+  }
+
+  private assertSubtaskProof(
+    current: ExternalSubtaskSnapshot,
+    proof: ExternalSubtaskOwnershipProof,
+  ): void {
+    const ownershipToken = this.requireSubtaskOwnershipToken(proof.ownershipToken);
+    const expectedParent = this.validate.requiredTaskId(proof.expectedParentRemoteTaskId);
+    if (current.ownershipToken !== ownershipToken) {
+      throw new ClickUpProviderError('ownership_mismatch');
+    }
+    if (current.parentRemoteTaskId !== expectedParent) {
+      throw new ClickUpProviderError('parent_mismatch');
+    }
+  }
+
+  private normalizeManagedSubtask(value: unknown): ExternalSubtaskSnapshot {
+    if (!isRecord(value) || !isRecord(value.list)) {
+      throw new ClickUpProviderError('invalid_response');
+    }
+    const remoteTaskId = this.validate.requiredIdentifier(value.id);
+    const customId = this.optionalIdentifier(value.custom_id);
+    const parentRemoteTaskId =
+      value.parent === null || value.parent === undefined
+        ? null
+        : this.validate.requiredIdentifier(value.parent);
+    const markdown = value.markdown_description;
+    if (markdown !== null && markdown !== undefined && typeof markdown !== 'string') {
+      throw new ClickUpProviderError('invalid_response');
+    }
+    const managed = this.parseManagedMarkdown(markdown ?? null);
+    return {
+      remoteTaskId,
+      remoteKey: customId ?? remoteTaskId,
+      parentRemoteTaskId,
+      workAreaRemoteId: this.validate.requiredIdentifier(value.list.id),
+      ownershipToken: managed.ownershipToken,
+      title: this.validate.requiredString(value.name),
+      description: managed.description,
+    };
+  }
+
+  private managedMarkdown(description: string | null, ownershipToken: string): string {
+    const footer = `${EXTERNAL_SUBTASK_MANAGEMENT_NOTE}\n\n${CLICKUP_OWNERSHIP_PREFIX}${ownershipToken}${CLICKUP_OWNERSHIP_SUFFIX}`;
+    return description === null ? footer : `${description}\n\n${footer}`;
+  }
+
+  private parseManagedMarkdown(value: string | null): {
+    description: string | null;
+    ownershipToken: string | null;
+  } {
+    if (value === null || value === '') {
+      return { description: null, ownershipToken: null };
+    }
+    const notePosition = value.lastIndexOf(`\n\n${EXTERNAL_SUBTASK_MANAGEMENT_NOTE}\n\n`);
+    const startsWithNote = value.startsWith(`${EXTERNAL_SUBTASK_MANAGEMENT_NOTE}\n\n`);
+    const markerStart =
+      notePosition >= 0
+        ? notePosition + 2 + EXTERNAL_SUBTASK_MANAGEMENT_NOTE.length + 2
+        : startsWithNote
+          ? EXTERNAL_SUBTASK_MANAGEMENT_NOTE.length + 2
+          : -1;
+    if (markerStart < 0 || !value.startsWith(CLICKUP_OWNERSHIP_PREFIX, markerStart)) {
+      return { description: value || null, ownershipToken: null };
+    }
+    const tokenStart = markerStart + CLICKUP_OWNERSHIP_PREFIX.length;
+    if (!value.endsWith(CLICKUP_OWNERSHIP_SUFFIX)) {
+      return { description: value || null, ownershipToken: null };
+    }
+    const token = value.slice(tokenStart, -CLICKUP_OWNERSHIP_SUFFIX.length);
+    if (!this.isSubtaskOwnershipToken(token)) {
+      return { description: value || null, ownershipToken: null };
+    }
+    const description = notePosition > 0 ? value.slice(0, notePosition) : null;
+    return { description: description || null, ownershipToken: token };
+  }
+
+  private requireSubtaskTitle(value: unknown): string {
+    if (
+      typeof value !== 'string' ||
+      !value.trim() ||
+      value.length > MAX_EXTERNAL_SUBTASK_TITLE_LENGTH
+    ) {
+      throw new ClickUpProviderError('request_rejected');
+    }
+    return value.trim();
+  }
+
+  private requireSubtaskDescription(value: unknown): string | null {
+    if (value === null || value === '') {
+      return null;
+    }
+    if (typeof value !== 'string' || value.length > MAX_EXTERNAL_SUBTASK_DESCRIPTION_LENGTH) {
+      throw new ClickUpProviderError('request_rejected');
+    }
+    return value;
+  }
+
+  private isSubtaskOwnershipToken(value: string): boolean {
+    return (
+      value.length <= MAX_EXTERNAL_SUBTASK_OWNERSHIP_TOKEN_LENGTH &&
+      /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)
+    );
+  }
+
+  private requireSubtaskOwnershipToken(value: unknown): string {
+    if (typeof value !== 'string' || !this.isSubtaskOwnershipToken(value)) {
+      throw new ClickUpProviderError('request_rejected');
+    }
+    return value;
+  }
 
   private async getCurrentOwnerRemoteId(credentials: IntegrationCredentials): Promise<string> {
     const token = this.requireToken(credentials);
@@ -356,10 +704,9 @@ export class ClickUpExternalTaskProvider implements ExternalTaskProvider {
   ): Promise<ExternalProviderTaskDetail> {
     const token = this.requireToken(credentials);
     const taskId = this.validate.requiredTaskId(remoteTaskId);
-    const payload = await this.requestJson(
-      token,
-      `${CLICKUP_ORIGIN}/api/v2/task/${encodeURIComponent(taskId)}`,
-    );
+    const taskUrl = new URL(`${CLICKUP_ORIGIN}/api/v2/task/${encodeURIComponent(taskId)}`);
+    taskUrl.searchParams.set('include_subtasks', 'true');
+    const payload = await this.requestJson(token, taskUrl.toString());
     if (!isRecord(payload) || !isRecord(payload.status) || !isRecord(payload.list)) {
       throw new ClickUpProviderError('invalid_response');
     }
@@ -372,6 +719,7 @@ export class ClickUpExternalTaskProvider implements ExternalTaskProvider {
     const description = this.boundedTaskDescription(payload.text_content);
     const webUrl = this.requiredTaskUrl(payload.url);
     const allowedStatuses = await this.loadAllowedStatuses(token, workAreaId);
+    const childResult = this.normalizeTaskSubtasks(payload.subtasks, taskId);
     const customId = payload.custom_id;
     if (customId !== null && customId !== undefined && typeof customId !== 'string') {
       throw new ClickUpProviderError('invalid_response');
@@ -386,6 +734,8 @@ export class ClickUpExternalTaskProvider implements ExternalTaskProvider {
       status: this.normalizeColumn(payload.status),
       dueAt: this.optionalTimestamp(payload.due_date),
       priority: this.normalizePriority(payload.priority),
+      subtasks: childResult.items,
+      subtasksTruncated: childResult.truncated,
       taskTotalDurationMs: this.taskTotalDurationMs(payload.time_spent),
       webUrl,
       location: {
@@ -1115,6 +1465,7 @@ export class ClickUpExternalTaskProvider implements ExternalTaskProvider {
       workArea,
       task: {
         remoteId,
+        parentRemoteTaskId: this.optionalTaskParentId(value.parent),
         title: this.validate.requiredString(value.name),
         status: {
           remoteId:
@@ -1130,6 +1481,92 @@ export class ClickUpExternalTaskProvider implements ExternalTaskProvider {
         webUrl: this.safeTaskUrl(value.url),
       },
     };
+  }
+
+  private normalizeTaskSubtasks(
+    value: unknown,
+    parentRemoteTaskId: string,
+  ): { items: ExternalTaskSubtaskSummary[]; truncated: boolean } {
+    if (value === null || value === undefined) {
+      return { items: [], truncated: false };
+    }
+    if (!Array.isArray(value)) {
+      return { items: [], truncated: true };
+    }
+
+    const items: ExternalTaskSubtaskSummary[] = [];
+    let truncated = false;
+    for (const candidate of value) {
+      if (!isRecord(candidate)) {
+        truncated = true;
+        continue;
+      }
+      const candidateParentId = this.optionalTaskParentId(candidate.parent);
+      if (candidateParentId === null) {
+        truncated = true;
+        continue;
+      }
+      if (candidateParentId !== parentRemoteTaskId) {
+        continue;
+      }
+      try {
+        items.push(this.normalizeTaskSubtask(candidate));
+      } catch (error) {
+        if (!(error instanceof ClickUpProviderError)) {
+          throw error;
+        }
+        truncated = true;
+      }
+    }
+
+    items.sort(compareTaskSubtaskSummaries);
+    // ClickUp supplies neither a child total nor a completeness marker. False
+    // therefore means only that this returned array showed no detectable loss.
+    return {
+      items: items.slice(0, MAX_TASK_DETAIL_SUBTASKS),
+      truncated: truncated || items.length > MAX_TASK_DETAIL_SUBTASKS,
+    };
+  }
+
+  private normalizeTaskSubtask(value: Record<string, unknown>): ExternalTaskSubtaskSummary {
+    if (!isRecord(value.status)) {
+      throw new ClickUpProviderError('invalid_response');
+    }
+    const remoteId = this.validate.requiredIdentifier(value.id);
+    const customId = value.custom_id;
+    if (customId !== null && customId !== undefined && typeof customId !== 'string') {
+      throw new ClickUpProviderError('invalid_response');
+    }
+    return {
+      remoteId,
+      remoteKey: typeof customId === 'string' && customId.trim() ? customId.trim() : remoteId,
+      title: this.validate.requiredString(value.name),
+      status: {
+        remoteId:
+          value.status.id === null || value.status.id === undefined
+            ? null
+            : this.validate.requiredIdentifier(value.status.id),
+        name: this.validate.requiredString(value.status.status),
+        category: this.classifyStatus(
+          this.validate.requiredString(value.status.type).toLowerCase(),
+        ),
+      },
+      webUrl: this.safeTaskUrl(value.url),
+    };
+  }
+
+  private optionalTaskParentId(value: unknown): string | null {
+    if (value === null || value === undefined || value === '') {
+      return null;
+    }
+    try {
+      return this.validate.requiredIdentifier(value);
+    } catch (error) {
+      if (error instanceof ClickUpProviderError) {
+        return null;
+      }
+      throw error;
+    }
   }
 
   private addTasks(
@@ -1464,6 +1901,30 @@ export class ClickUpExternalTaskProvider implements ExternalTaskProvider {
           accept: 'application/json',
           authorization: token,
           ...(request.body !== undefined ? { 'content-type': 'application/json' } : {}),
+        },
+      });
+    } catch (error) {
+      throw mapVendorTransportError(
+        error,
+        (reason, retryAt, dispatched) => new ClickUpProviderError(reason, retryAt, dispatched),
+      );
+    }
+  }
+
+  private async requestNoContent(
+    token: string,
+    url: string,
+    request: Pick<SafeVendorJsonRequest, 'method' | 'body'>,
+  ): Promise<void> {
+    try {
+      await this.http.requestNoContent({
+        url,
+        allowedOrigins: [CLICKUP_ORIGIN],
+        ...request,
+        headers: {
+          accept: 'application/json',
+          authorization: token,
+          ...(request.body === undefined ? {} : { 'content-type': 'application/json' }),
         },
       });
     } catch (error) {

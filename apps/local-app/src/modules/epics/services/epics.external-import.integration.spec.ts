@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,10 +21,15 @@ describe('EpicsService external task import', () => {
   let sqlite: Database.Database;
   let storage: LocalStorageService;
   let service: EpicsService;
-  let eventsService: { publish: jest.Mock };
+  let eventsService: {
+    publish: jest.Mock;
+    prepareCommitted?: jest.Mock;
+    emitCommitted?: jest.Mock;
+  };
   let secretDirectory: string;
   let projectId: string;
   let statusId: string;
+  let statusName: string;
 
   beforeEach(async () => {
     sqlite = new Database(':memory:');
@@ -38,6 +44,7 @@ describe('EpicsService external task import', () => {
       }),
     );
     eventsService = { publish: jest.fn().mockResolvedValue('event-id') };
+    enableAtomicEventPath();
     service = new EpicsService(
       storage,
       eventsService as unknown as EventsService,
@@ -51,7 +58,9 @@ describe('EpicsService external task import', () => {
       rootPath: '/tmp/external-import-project',
     });
     projectId = project.id;
-    statusId = (await storage.listStatuses(projectId)).items[0].id;
+    const defaultStatus = (await storage.listStatuses(projectId)).items[0];
+    statusId = defaultStatus.id;
+    statusName = defaultStatus.label;
   });
 
   afterEach(() => {
@@ -84,18 +93,133 @@ describe('EpicsService external task import', () => {
     };
   }
 
-  it('commits the Epic and link in one outer transaction before publishing epic.created', async () => {
-    const runImmediateAsync = jest.spyOn(TransactionRunner.prototype, 'runImmediateAsync');
-    eventsService.publish.mockImplementation(async (name: string, payload: { epicId: string }) => {
-      expect(name).toBe('epic.created');
-      expect(sqlite.inTransaction).toBe(false);
-      expect(
-        sqlite
-          .prepare('SELECT COUNT(*) AS count FROM external_task_links WHERE epic_id = ?')
-          .get(payload.epicId),
-      ).toEqual({ count: 1 });
-      return 'event-id';
+  function enableAtomicEventPath(): void {
+    eventsService.prepareCommitted = jest.fn((name: string, payload: Record<string, unknown>) => {
+      expect(sqlite.inTransaction).toBe(true);
+      return {
+        id: randomUUID(),
+        name,
+        payload,
+        requestId: null,
+        publishedAt: new Date().toISOString(),
+      };
     });
+    eventsService.emitCommitted = jest.fn();
+  }
+
+  function persistedEpicCreatedPayload(): Record<string, unknown> {
+    const row = sqlite
+      .prepare(
+        "SELECT payload_json FROM events WHERE name = 'epic.created' ORDER BY rowid DESC LIMIT 1",
+      )
+      .get() as { payload_json: string } | undefined;
+    expect(row).toBeDefined();
+    return JSON.parse(row!.payload_json) as Record<string, unknown>;
+  }
+
+  function persistedEpicUpdatedPayload(): Record<string, unknown> {
+    const row = sqlite
+      .prepare(
+        "SELECT payload_json FROM events WHERE name = 'epic.updated' ORDER BY rowid DESC LIMIT 1",
+      )
+      .get() as { payload_json: string } | undefined;
+    expect(row).toBeDefined();
+    return JSON.parse(row!.payload_json) as Record<string, unknown>;
+  }
+
+  describe('transactional epic.created status snapshot', () => {
+    it('persists statusName through createEpic', async () => {
+      enableAtomicEventPath();
+
+      await service.createEpic({
+        projectId,
+        title: 'Direct creation',
+        description: null,
+        statusId,
+        data: null,
+        tags: [],
+      });
+
+      expect(persistedEpicCreatedPayload()).toMatchObject({
+        projectName: 'External import project',
+        statusId,
+        statusName,
+      });
+      expect(eventsService.publish).not.toHaveBeenCalled();
+      expect(eventsService.emitCommitted).toHaveBeenCalledTimes(1);
+    });
+
+    it('persists the resolved default statusName through createEpicForProject', async () => {
+      enableAtomicEventPath();
+
+      await service.createEpicForProject(projectId, { title: 'Project creation' });
+
+      expect(persistedEpicCreatedPayload()).toMatchObject({
+        projectName: 'External import project',
+        statusId,
+        statusName,
+      });
+      expect(eventsService.publish).not.toHaveBeenCalled();
+      expect(eventsService.emitCommitted).toHaveBeenCalledTimes(1);
+    });
+
+    it('persists statusName through createEpicWithExternalTaskLink', async () => {
+      enableAtomicEventPath();
+
+      await service.createEpicWithExternalTaskLink(importInput());
+
+      expect(persistedEpicCreatedPayload()).toMatchObject({
+        projectName: 'External import project',
+        statusId,
+        statusName,
+      });
+      expect(eventsService.publish).not.toHaveBeenCalled();
+      expect(eventsService.emitCommitted).toHaveBeenCalledTimes(1);
+    });
+
+    it('persists status names inside an epic.updated status change', async () => {
+      const statuses = (await storage.listStatuses(projectId)).items;
+      const previousStatus = statuses[0];
+      const currentStatus = statuses[1];
+      expect(currentStatus).toBeDefined();
+      const epic = await service.createEpic({
+        projectId,
+        title: 'Status update',
+        description: null,
+        statusId: previousStatus.id,
+        data: null,
+        tags: [],
+      });
+
+      await service.updateEpic(epic.id, { statusId: currentStatus.id }, epic.version);
+
+      expect(persistedEpicUpdatedPayload()).toMatchObject({
+        changes: {
+          statusId: {
+            previous: previousStatus.id,
+            current: currentStatus.id,
+            previousName: previousStatus.label,
+            currentName: currentStatus.label,
+          },
+        },
+      });
+      expect(eventsService.publish).not.toHaveBeenCalled();
+    });
+  });
+
+  it('commits the Epic and link in one outer transaction before emitting epic.created', async () => {
+    const runImmediateAsync = jest.spyOn(TransactionRunner.prototype, 'runImmediateAsync');
+    eventsService.emitCommitted!.mockImplementation(
+      (event: { name: string; payload: { epicId: string } }) => {
+        expect(event.name).toBe('epic.created');
+        expect(sqlite.inTransaction).toBe(false);
+        expect(
+          sqlite
+            .prepare('SELECT COUNT(*) AS count FROM external_task_links WHERE epic_id = ?')
+            .get(event.payload.epicId),
+        ).toEqual({ count: 1 });
+      },
+    );
 
     const result = await service.createEpicWithExternalTaskLink(importInput());
 
@@ -113,7 +237,8 @@ describe('EpicsService external task import', () => {
       skillsRequired: ['openai/review'],
     });
     expect(runImmediateAsync).toHaveBeenCalledTimes(1);
-    expect(eventsService.publish).toHaveBeenCalledTimes(1);
+    expect(eventsService.publish).not.toHaveBeenCalled();
+    expect(eventsService.emitCommitted).toHaveBeenCalledTimes(1);
     expect(sqlite.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
   });
 
@@ -137,10 +262,16 @@ describe('EpicsService external task import', () => {
       count: 0,
     });
     expect(eventsService.publish).not.toHaveBeenCalled();
+    expect(eventsService.emitCommitted).not.toHaveBeenCalled();
+    expect(
+      sqlite.prepare("SELECT COUNT(*) AS count FROM events WHERE name = 'epic.created'").get(),
+    ).toEqual({
+      count: 0,
+    });
     expect(sqlite.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
   });
 
-  it('recovers a link uniqueness race after rollback and publishes only for the winner', async () => {
+  it('recovers a link uniqueness race after rollback and emits only for the winner', async () => {
     const firstInput = importInput();
     const movedTaskInput = importInput({
       epic: { ...firstInput.epic, title: 'Duplicate import attempt' },
@@ -162,7 +293,8 @@ describe('EpicsService external task import', () => {
     expect(sqlite.prepare('SELECT COUNT(*) AS count FROM external_task_links').get()).toEqual({
       count: 1,
     });
-    expect(eventsService.publish).toHaveBeenCalledTimes(1);
+    expect(eventsService.publish).not.toHaveBeenCalled();
+    expect(eventsService.emitCommitted).toHaveBeenCalledTimes(1);
     expect(sqlite.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
   });
 });

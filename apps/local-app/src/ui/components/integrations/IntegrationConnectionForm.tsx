@@ -1,4 +1,4 @@
-import { useState, type ChangeEvent, type FormEvent } from 'react';
+import { useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react';
 import { CheckCircle2, Link2Off } from 'lucide-react';
 import { Alert, AlertDescription } from '@/ui/components/ui/alert';
 import { Badge } from '@/ui/components/ui/badge';
@@ -6,6 +6,7 @@ import { Button } from '@/ui/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/ui/components/ui/card';
 import { Input } from '@/ui/components/ui/input';
 import { Label } from '@/ui/components/ui/label';
+import { Switch } from '@/ui/components/ui/switch';
 import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
 import {
   IntegrationConnectionApiError,
@@ -20,9 +21,14 @@ interface IntegrationConnectionFormProps {
   provider: IntegrationProvider;
   connection: IntegrationConnectionState;
   onReplace: (input: ReplaceIntegrationConnectionInput) => Promise<unknown>;
-  onDisconnect: (provider: IntegrationProvider) => Promise<unknown>;
+  onDisconnect: (
+    provider: IntegrationProvider,
+    acknowledgeOrphanRisk?: boolean,
+  ) => Promise<unknown>;
   isReplacing?: boolean;
   isDisconnecting?: boolean;
+  requiresOrphanRiskAcknowledgement?: boolean;
+  connectionControls?: ReactNode;
 }
 
 type FieldName = 'token' | 'siteUrl' | 'email';
@@ -35,14 +41,20 @@ export function IntegrationConnectionForm({
   onDisconnect,
   isReplacing = false,
   isDisconnecting = false,
+  requiresOrphanRiskAcknowledgement = false,
+  connectionControls,
 }: IntegrationConnectionFormProps) {
   const [token, setToken] = useState('');
   const [siteUrl, setSiteUrl] = useState('');
   const [email, setEmail] = useState('');
+  const [subtaskSyncEnabled, setSubtaskSyncEnabled] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const [confirmReplacement, setConfirmReplacement] = useState(false);
+  const [serverRequiresOrphanAcknowledgement, setServerRequiresOrphanAcknowledgement] =
+    useState(false);
   const label = externalBoardProviderLabel(provider);
 
   const clearFieldError = (field: FieldName) => {
@@ -77,34 +89,45 @@ export function IntegrationConnectionForm({
     return errors;
   };
 
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const errors = validate();
-    if (Object.keys(errors).length > 0) {
-      setFieldErrors(errors);
-      return;
-    }
+  const buildReplacementInput = (): ReplaceIntegrationConnectionInput =>
+    provider === 'clickup'
+      ? {
+          provider,
+          token: token.trim(),
+          ...(!connection.connected ? { subtaskSyncEnabled } : {}),
+        }
+      : {
+          provider,
+          token: token.trim(),
+          ...(siteUrl.trim() && email.trim()
+            ? { siteUrl: siteUrl.trim(), email: email.trim() }
+            : {}),
+          ...(!connection.connected ? { subtaskSyncEnabled } : {}),
+        };
 
-    const input: ReplaceIntegrationConnectionInput =
-      provider === 'clickup'
-        ? { provider, token: token.trim() }
-        : {
-            provider,
-            token: token.trim(),
-            ...(siteUrl.trim() && email.trim()
-              ? { siteUrl: siteUrl.trim(), email: email.trim() }
-              : {}),
-          };
-
+  const performReplacement = async (acknowledgeOrphanRisk = false) => {
+    const input = buildReplacementInput();
     try {
       setFieldErrors({});
       setFormError(null);
-      await onReplace(input);
+      await onReplace({ ...input, ...(acknowledgeOrphanRisk ? { acknowledgeOrphanRisk } : {}) });
       setToken('');
       setSiteUrl('');
       setEmail('');
+      setSubtaskSyncEnabled(false);
+      setConfirmReplacement(false);
+      setServerRequiresOrphanAcknowledgement(false);
       setSuccessMessage(`${label} credentials saved.`);
     } catch (error) {
+      if (
+        error instanceof IntegrationConnectionApiError &&
+        error.providerReason === 'orphan_risk_ack_required' &&
+        !acknowledgeOrphanRisk
+      ) {
+        setServerRequiresOrphanAcknowledgement(true);
+        setConfirmReplacement(true);
+        return;
+      }
       if (error instanceof IntegrationConnectionApiError && error.field) {
         const field = error.field as FieldName;
         if (field === 'token' || field === 'siteUrl' || field === 'email') {
@@ -114,6 +137,20 @@ export function IntegrationConnectionForm({
       }
       setFormError(getErrorMessage(error, `${label} credentials could not be saved.`));
     }
+  };
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const errors = validate();
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      return;
+    }
+    if (connection.connected && requiresOrphanRiskAcknowledgement) {
+      setConfirmReplacement(true);
+      return;
+    }
+    await performReplacement();
   };
 
   const handleSiteUrlChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -134,14 +171,29 @@ export function IntegrationConnectionForm({
   const handleOpenDisconnect = () => setConfirmDisconnect(true);
 
   const handleDisconnect = () => {
-    void onDisconnect(provider)
+    const acknowledgeOrphanRisk =
+      requiresOrphanRiskAcknowledgement || serverRequiresOrphanAcknowledgement;
+    void onDisconnect(provider, acknowledgeOrphanRisk)
       .then(() => {
         setConfirmDisconnect(false);
+        setServerRequiresOrphanAcknowledgement(false);
         setSuccessMessage(`${label} disconnected.`);
       })
       .catch((error: unknown) => {
+        if (
+          error instanceof IntegrationConnectionApiError &&
+          error.providerReason === 'orphan_risk_ack_required'
+        ) {
+          setServerRequiresOrphanAcknowledgement(true);
+          setConfirmDisconnect(true);
+          return;
+        }
         setFormError(getErrorMessage(error, `${label} could not be disconnected.`));
       });
+  };
+
+  const handleConfirmedReplacement = () => {
+    void performReplacement(true);
   };
 
   const submitLabel = connection.connected ? `Replace ${label} credentials` : `Connect ${label}`;
@@ -237,6 +289,26 @@ export function IntegrationConnectionForm({
             )}
           </div>
 
+          {!connection.connected && (
+            <div className="flex items-start justify-between gap-4 rounded-md border bg-muted/30 p-3">
+              <div className="space-y-1">
+                <Label htmlFor={`${provider}-managed-subtask-sync`}>
+                  Sync DevChain sub-epics as managed subtasks
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  One-way sync of parent, title, description, creation, and deletion. Status and
+                  comments stay unchanged.
+                </p>
+              </div>
+              <Switch
+                id={`${provider}-managed-subtask-sync`}
+                checked={subtaskSyncEnabled}
+                onCheckedChange={setSubtaskSyncEnabled}
+                disabled={isReplacing}
+              />
+            </div>
+          )}
+
           {connection.connected && provider === 'jira' && (
             <p className="text-xs text-muted-foreground">
               Leave both site URL and email blank to reuse the encrypted saved values.
@@ -272,6 +344,7 @@ export function IntegrationConnectionForm({
             )}
           </div>
         </form>
+        {connectionControls}
       </CardContent>
 
       <ConfirmDialog
@@ -279,10 +352,28 @@ export function IntegrationConnectionForm({
         onOpenChange={setConfirmDisconnect}
         onConfirm={handleDisconnect}
         title={`Disconnect ${label}?`}
-        description="The saved credential will be removed. Existing linked Epic snapshots remain available."
-        confirmText="Disconnect"
+        description={
+          requiresOrphanRiskAcknowledgement || serverRequiresOrphanAcknowledgement
+            ? 'Unresolved admitted sync work may already exist remotely. Disconnecting removes the only usable credential context and can leave remote subtasks orphaned.'
+            : 'The saved credential will be removed. Existing linked Epic snapshots remain available.'
+        }
+        confirmText={
+          requiresOrphanRiskAcknowledgement || serverRequiresOrphanAcknowledgement
+            ? 'Acknowledge possible remote orphan'
+            : 'Disconnect'
+        }
         variant="destructive"
         loading={isDisconnecting}
+      />
+      <ConfirmDialog
+        open={confirmReplacement}
+        onOpenChange={setConfirmReplacement}
+        onConfirm={handleConfirmedReplacement}
+        title={`Replace ${label} credentials?`}
+        description="Unresolved admitted sync work may already exist remotely. Replacing the only usable credential context can leave remote subtasks orphaned. Continue only after checking the provider."
+        confirmText="Acknowledge possible remote orphan"
+        variant="destructive"
+        loading={isReplacing}
       />
     </Card>
   );

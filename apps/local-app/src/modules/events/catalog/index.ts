@@ -39,6 +39,9 @@ import { sessionPresenceChangedEvent } from './session.presence.changed';
 import { sessionRecommendationEvent } from './session.recommendation';
 import { scheduledEpicExecutedEvent } from './scheduled-epic.executed';
 import { sessionHumanPromptStateChangedEvent } from './session.human-prompt-state-changed';
+import { integrationConnectionCreatedEvent } from './integration.connection.created';
+import { integrationConnectionUpdatedEvent } from './integration.connection.updated';
+import { integrationConnectionDeletedEvent } from './integration.connection.deleted';
 
 // Re-export individual event definitions for direct import
 export { settingsTerminalChangedEvent } from './settings.terminal.changed';
@@ -100,6 +103,9 @@ export const eventCatalog = {
   [sessionRecommendationEvent.name]: sessionRecommendationEvent.schema,
   [scheduledEpicExecutedEvent.name]: scheduledEpicExecutedEvent.schema,
   [sessionHumanPromptStateChangedEvent.name]: sessionHumanPromptStateChangedEvent.schema,
+  [integrationConnectionCreatedEvent.name]: integrationConnectionCreatedEvent.schema,
+  [integrationConnectionUpdatedEvent.name]: integrationConnectionUpdatedEvent.schema,
+  [integrationConnectionDeletedEvent.name]: integrationConnectionDeletedEvent.schema,
 } as const;
 
 export type EventName = keyof typeof eventCatalog;

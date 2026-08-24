@@ -1,7 +1,17 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import { Settings2 } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 import { cn } from '@/ui/lib/utils';
 import { AddBoardButton } from '@/ui/components/board/AddBoardButton';
+import { ProviderIntegrationSettings } from '@/ui/components/integrations/ProviderIntegrationSettings';
+import { Button } from '@/ui/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/ui/components/ui/dialog';
 import {
   EXTERNAL_BOARD_PROVIDERS,
   externalBoardMyWorkPath,
@@ -66,10 +76,19 @@ function rememberBoardRoute(source: BoardSource, route: string): void {
 
 export function ExternalBoardNav({ className }: ExternalBoardNavProps) {
   const { canUseIntegrations } = useIntegrationAvailability();
-  const { connections, isLoading, replaceConnection, replacingProvider } =
-    useIntegrationConnections({ enabled: canUseIntegrations });
+  const {
+    connections,
+    isLoading,
+    replaceConnection,
+    disconnectConnection,
+    updateSubtaskSync,
+    replacingProvider,
+    disconnectingProvider,
+    updatingSyncProvider,
+  } = useIntegrationConnections({ enabled: canUseIntegrations });
   const { pathname, search } = useLocation();
   const currentSource = boardSourceForPath(pathname);
+  const [settingsProvider, setSettingsProvider] = useState<ExternalBoardProvider | null>(null);
 
   useEffect(() => {
     if (currentSource) rememberBoardRoute(currentSource, `${pathname}${search}`);
@@ -80,58 +99,119 @@ export function ExternalBoardNav({ className }: ExternalBoardNavProps) {
   const connectedProviders = canUseIntegrations
     ? EXTERNAL_BOARD_PROVIDERS.filter((provider) => connectionFor(provider)?.connected)
     : [];
+  const settingsConnection = settingsProvider ? connectionFor(settingsProvider) : undefined;
+
+  useEffect(() => {
+    if (settingsProvider && (!canUseIntegrations || !settingsConnection?.connected)) {
+      setSettingsProvider(null);
+    }
+  }, [canUseIntegrations, settingsConnection?.connected, settingsProvider]);
+
+  const handleDisconnect = async (
+    provider: ExternalBoardProvider,
+    acknowledgeOrphanRisk = false,
+  ) => {
+    const connection = await disconnectConnection(provider, acknowledgeOrphanRisk);
+    setSettingsProvider(null);
+    return connection;
+  };
 
   return (
-    <nav
-      aria-label="Board source"
-      className={cn('flex items-center gap-1 border-b border-border px-4 py-2', className)}
-    >
-      <Link
-        to={readLastBoardRoute('devchain', '/board')}
-        aria-current={pathname === '/board' ? 'page' : undefined}
-        className={cn(
-          'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
-          pathname === '/board'
-            ? 'bg-secondary text-secondary-foreground'
-            : 'text-muted-foreground hover:bg-muted',
-        )}
+    <>
+      <nav
+        aria-label="Board source"
+        className={cn('flex items-center gap-1 border-b border-border px-4 py-2', className)}
       >
-        DevChain
-      </Link>
-      {connectedProviders.map((provider) => {
-        const defaultPath = externalBoardMyWorkPath(provider);
-        const path = readLastBoardRoute(provider, defaultPath);
-        const active = isPathActive(pathname, defaultPath);
+        <Link
+          to={readLastBoardRoute('devchain', '/board')}
+          aria-current={pathname === '/board' ? 'page' : undefined}
+          className={cn(
+            'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+            pathname === '/board'
+              ? 'bg-secondary text-secondary-foreground'
+              : 'text-muted-foreground hover:bg-muted',
+          )}
+        >
+          DevChain
+        </Link>
+        {connectedProviders.map((provider) => {
+          const defaultPath = externalBoardMyWorkPath(provider);
+          const path = readLastBoardRoute(provider, defaultPath);
+          const active = isPathActive(pathname, defaultPath);
+          const label = externalBoardProviderLabel(provider);
 
-        return (
-          <Link
-            key={provider}
-            to={path}
-            aria-current={active ? 'page' : undefined}
-            className={cn(
-              'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
-              active
-                ? 'bg-secondary text-secondary-foreground'
-                : 'text-muted-foreground hover:bg-muted',
-            )}
-          >
-            {externalBoardProviderLabel(provider)}
-            {!isLoading ? (
-              <span className="ml-2 inline-flex items-center rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-normal text-emerald-600">
-                Connected
-              </span>
-            ) : null}
-          </Link>
-        );
-      })}
-      {canUseIntegrations ? (
-        <AddBoardButton
-          connections={connections}
-          isLoading={isLoading}
-          onConnect={replaceConnection}
-          replacingProvider={replacingProvider}
-        />
-      ) : null}
-    </nav>
+          return (
+            <div
+              key={provider}
+              className={cn(
+                'inline-flex items-center rounded-md transition-colors',
+                active
+                  ? 'bg-secondary text-secondary-foreground'
+                  : 'text-muted-foreground hover:bg-muted',
+              )}
+            >
+              <Link
+                to={path}
+                aria-current={active ? 'page' : undefined}
+                className="px-3 py-1.5 text-sm font-medium"
+              >
+                {label}
+              </Link>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="mr-1 h-6 w-6 shrink-0"
+                onClick={() => setSettingsProvider(provider)}
+                aria-label={`Open ${label} board settings`}
+                aria-haspopup="dialog"
+              >
+                <Settings2 className="h-3.5 w-3.5" aria-hidden="true" />
+              </Button>
+            </div>
+          );
+        })}
+        {canUseIntegrations ? (
+          <AddBoardButton
+            connections={connections}
+            isLoading={isLoading}
+            onConnect={replaceConnection}
+            replacingProvider={replacingProvider}
+          />
+        ) : null}
+      </nav>
+
+      <Dialog
+        open={settingsProvider !== null && settingsConnection?.connected === true}
+        onOpenChange={(open) => {
+          if (!open) setSettingsProvider(null);
+        }}
+      >
+        <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-2xl">
+          {settingsProvider && settingsConnection ? (
+            <>
+              <DialogHeader>
+                <DialogTitle>
+                  {externalBoardProviderLabel(settingsProvider)} board settings
+                </DialogTitle>
+                <DialogDescription>
+                  Update this board connection without leaving the Board.
+                </DialogDescription>
+              </DialogHeader>
+              <ProviderIntegrationSettings
+                provider={settingsProvider}
+                connection={settingsConnection}
+                onReplace={replaceConnection}
+                onDisconnect={handleDisconnect}
+                onUpdateSync={updateSubtaskSync}
+                isReplacing={replacingProvider === settingsProvider}
+                isDisconnecting={disconnectingProvider === settingsProvider}
+                isUpdatingSync={updatingSyncProvider === settingsProvider}
+              />
+            </>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

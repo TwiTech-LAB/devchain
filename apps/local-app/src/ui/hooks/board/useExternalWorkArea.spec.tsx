@@ -86,6 +86,7 @@ describe('useExternalWorkArea', () => {
     };
     const completedTask = {
       remoteId: 'task-9',
+      parentRemoteTaskId: null,
       title: 'Shipped feature',
       status: { name: 'Done', category: 'completed', remoteId: 'st-done' },
       updatedAt: '2026-08-19T09:00:00.000Z',

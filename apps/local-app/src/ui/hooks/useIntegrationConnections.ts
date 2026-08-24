@@ -6,6 +6,7 @@ import {
   type IntegrationConnectionState,
   type IntegrationProvider,
 } from '@/ui/lib/integration-connections';
+import { managedSubtaskSyncQueryKeys } from '@/ui/lib/managed-subtask-sync';
 
 export type {
   IntegrationConnectionState,
@@ -13,8 +14,25 @@ export type {
 } from '@/ui/lib/integration-connections';
 
 export type ReplaceIntegrationConnectionInput =
-  | { provider: 'clickup'; token: string }
-  | { provider: 'jira'; token: string; siteUrl?: string; email?: string };
+  | {
+      provider: 'clickup';
+      token: string;
+      subtaskSyncEnabled?: boolean;
+      acknowledgeOrphanRisk?: boolean;
+    }
+  | {
+      provider: 'jira';
+      token: string;
+      siteUrl?: string;
+      email?: string;
+      subtaskSyncEnabled?: boolean;
+      acknowledgeOrphanRisk?: boolean;
+    };
+
+export interface DisconnectIntegrationConnectionInput {
+  provider: IntegrationProvider;
+  acknowledgeOrphanRisk?: boolean;
+}
 
 interface IntegrationConnectionErrorOptions {
   code?: string;
@@ -64,7 +82,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-async function throwConnectionError(response: Response): Promise<never> {
+export async function throwIntegrationApiError(response: Response): Promise<never> {
   const payload = (await response.json().catch(() => null)) as ErrorPayload | null;
   const details = asRecord(payload?.details);
   const code = typeof payload?.code === 'string' ? payload.code : undefined;
@@ -95,7 +113,7 @@ export function useIntegrationConnections({ enabled = true }: { enabled?: boolea
     queryFn: async ({ signal }): Promise<IntegrationConnectionList> => {
       const response = await apiFetch('/api/integrations/connections', { signal });
       if (!response.ok) {
-        return throwConnectionError(response);
+        return throwIntegrationApiError(response);
       }
       return response.json();
     },
@@ -113,6 +131,9 @@ export function useIntegrationConnections({ enabled = true }: { enabled?: boolea
     queryClient.setQueryData<IntegrationConnectionList>(listKey, (current) =>
       withConnectionState(current, connection),
     );
+    await queryClient.invalidateQueries({
+      queryKey: managedSubtaskSyncQueryKeys.provider(connection.provider),
+    });
     await queryClient.invalidateQueries({ queryKey: listKey });
   };
 
@@ -125,7 +146,7 @@ export function useIntegrationConnections({ enabled = true }: { enabled?: boolea
         body: JSON.stringify(input),
       });
       if (!response.ok) {
-        return throwConnectionError(response);
+        return throwIntegrationApiError(response);
       }
       return (await response.json()) as IntegrationConnectionState;
     },
@@ -133,14 +154,38 @@ export function useIntegrationConnections({ enabled = true }: { enabled?: boolea
   });
 
   const disconnectMutation = useMutation({
-    mutationFn: async (provider: IntegrationProvider) => {
+    mutationFn: async ({
+      provider,
+      acknowledgeOrphanRisk = false,
+    }: DisconnectIntegrationConnectionInput) => {
       if (!enabled) throw new IntegrationConnectionApiError('Integrations are unavailable.');
-      const response = await apiFetch(`/api/integrations/connections/${provider}`, {
-        method: 'DELETE',
-      });
+      const response = await apiFetch(
+        `/api/integrations/connections/${provider}${acknowledgeOrphanRisk ? '?acknowledgeOrphanRisk=true' : ''}`,
+        { method: 'DELETE' },
+      );
       if (!response.ok) {
-        return throwConnectionError(response);
+        return throwIntegrationApiError(response);
       }
+      return (await response.json()) as IntegrationConnectionState;
+    },
+    onSuccess: applyConnectionIdentity,
+  });
+
+  const syncSettingMutation = useMutation({
+    mutationFn: async ({
+      provider,
+      subtaskSyncEnabled,
+    }: {
+      provider: IntegrationProvider;
+      subtaskSyncEnabled: boolean;
+    }) => {
+      if (!enabled) throw new IntegrationConnectionApiError('Integrations are unavailable.');
+      const response = await apiFetch(`/api/integrations/connections/${provider}/settings`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subtaskSyncEnabled }),
+      });
+      if (!response.ok) return throwIntegrationApiError(response);
       return (await response.json()) as IntegrationConnectionState;
     },
     onSuccess: applyConnectionIdentity,
@@ -151,8 +196,16 @@ export function useIntegrationConnections({ enabled = true }: { enabled?: boolea
     isLoading: enabled && query.isLoading,
     error: enabled ? query.error : null,
     replaceConnection: replaceMutation.mutateAsync,
-    disconnectConnection: disconnectMutation.mutateAsync,
+    disconnectConnection: (provider: IntegrationProvider, acknowledgeOrphanRisk = false) =>
+      disconnectMutation.mutateAsync({ provider, acknowledgeOrphanRisk }),
+    updateSubtaskSync: (provider: IntegrationProvider, subtaskSyncEnabled: boolean) =>
+      syncSettingMutation.mutateAsync({ provider, subtaskSyncEnabled }),
     replacingProvider: replaceMutation.isPending ? replaceMutation.variables?.provider : undefined,
-    disconnectingProvider: disconnectMutation.isPending ? disconnectMutation.variables : undefined,
+    disconnectingProvider: disconnectMutation.isPending
+      ? disconnectMutation.variables?.provider
+      : undefined,
+    updatingSyncProvider: syncSettingMutation.isPending
+      ? syncSettingMutation.variables?.provider
+      : undefined,
   };
 }

@@ -39,6 +39,8 @@ function issue(key: string, overrides: Record<string, unknown> = {}): Record<str
       duedate: '2026-08-22',
       resolutiondate: null,
       project: { id: 'project-1', key: 'ENG', name: 'Engineering' },
+      parent: null,
+      issuetype: { id: '10000', name: 'Task', subtask: false },
       ...((overrides.fields as Record<string, unknown> | undefined) ?? {}),
     },
     ...Object.fromEntries(Object.entries(overrides).filter(([key]) => key !== 'fields')),
@@ -134,7 +136,20 @@ describe('Jira My Work capability', () => {
         searchBodies.push(body);
         if (!body.nextPageToken) {
           return {
-            issues: [issue('ENG-1'), issue('ENG-2')],
+            issues: [
+              issue('ENG-1', {
+                fields: {
+                  parent: { id: '9999', key: 'ENG-0' },
+                  issuetype: { id: '10001', name: 'Subtask', subtask: true },
+                },
+              }),
+              issue('ENG-2', {
+                fields: {
+                  parent: { id: '9000', key: 'ENG-EPIC' },
+                  issuetype: { id: '10000', name: 'Story', subtask: false },
+                },
+              }),
+            ],
             nextPageToken: 'page-2',
           };
         }
@@ -149,6 +164,8 @@ describe('Jira My Work capability', () => {
                   statusCategory: { key: 'done' },
                 },
                 resolutiondate: '2026-08-10T12:00:00.000Z',
+                parent: { id: 'malformed-key', key: 42 },
+                issuetype: { id: '10001', name: 'Subtask', subtask: true },
               },
             }),
             issue('OLD-1', {
@@ -200,6 +217,7 @@ describe('Jira My Work capability', () => {
     ]);
     expect(result.tasks[0].task).toEqual({
       remoteId: 'ENG-1',
+      parentRemoteTaskId: 'ENG-0',
       title: 'Issue ENG-1',
       status: { remoteId: 'status-progress', name: 'In Progress', category: 'active' },
       updatedAt: '2026-08-19T10:00:00.000Z',
@@ -207,6 +225,8 @@ describe('Jira My Work capability', () => {
       completedAt: null,
       webUrl: 'https://acme.atlassian.net/browse/ENG-1',
     });
+    expect(result.tasks[1].task.parentRemoteTaskId).toBeNull();
+    expect(result.tasks[2].task.parentRemoteTaskId).toBeNull();
     expect(searchBodies).toEqual([
       {
         jql: 'assignee = currentUser() AND (statusCategory != Done OR resolutiondate >= -30d) ORDER BY updated DESC',
@@ -218,6 +238,8 @@ describe('Jira My Work capability', () => {
           'duedate',
           'resolutiondate',
           'project',
+          'parent',
+          'issuetype',
         ],
         maxResults: 100,
       },

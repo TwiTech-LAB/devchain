@@ -175,6 +175,7 @@ function baseConnectionsValue(connections: unknown[] = []) {
 function landingValue(overrides: Partial<ExternalMyWorkLanding> = {}): ExternalMyWorkLanding {
   return {
     status: 'ready',
+    sourceUrl: null,
     cards: [],
     visibleCardCount: 0,
     search: '',
@@ -287,17 +288,33 @@ describe('ExternalBoardMyWorkPage', () => {
     cleanup();
   });
 
-  it('renders the provider My Work heading with the board source nav', () => {
+  it('renders the provider heading with the board source nav', () => {
     renderMyWork('clickup');
 
-    expect(screen.getByRole('heading', { name: 'ClickUp My Work' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'ClickUp' })).toBeInTheDocument();
     expect(screen.getByRole('navigation', { name: 'Board source' })).toBeInTheDocument();
   });
 
-  it('renders the Jira My Work heading for the jira route', () => {
+  it('renders the Jira heading for the jira route', () => {
     renderMyWork('jira');
 
-    expect(screen.getByRole('heading', { name: 'Jira My Work' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Jira' })).toBeInTheDocument();
+  });
+
+  it.each([
+    ['clickup' as const, 'ClickUp', 'https://app.clickup.com/'],
+    ['jira' as const, 'Jira', 'https://acme.atlassian.net/'],
+  ])('opens %s from the provider title in a new tab', (provider, label, sourceUrl) => {
+    useExternalMyWorkLandingMock.mockReturnValue(landingValue({ sourceUrl }));
+
+    renderMyWork(provider);
+
+    expect(screen.getByRole('link', { name: `Open ${label}` })).toHaveAttribute('href', sourceUrl);
+    expect(screen.getByRole('link', { name: `Open ${label}` })).toHaveAttribute('target', '_blank');
+    expect(screen.getByRole('link', { name: `Open ${label}` })).toHaveAttribute(
+      'rel',
+      'noreferrer',
+    );
   });
 
   it('shows the Settings connect hint when the provider is disconnected', () => {
@@ -467,10 +484,23 @@ describe('ExternalBoardKanbanPage', () => {
     renderKanbanAt('/board/clickup/space-901');
 
     expect(screen.getByRole('heading', { name: 'Sprint delivery' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Back to ClickUp My Work' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Open Sprint delivery in ClickUp' })).toHaveAttribute(
+      'href',
+      'https://app.clickup.com/workspace-1/v/li/space-901',
+    );
+    expect(screen.getByRole('link', { name: 'Open Sprint delivery in ClickUp' })).toHaveAttribute(
+      'target',
+      '_blank',
+    );
+    expect(screen.getByRole('link', { name: 'Open Sprint delivery in ClickUp' })).toHaveAttribute(
+      'rel',
+      'noreferrer',
+    );
+    expect(screen.getByRole('link', { name: 'ClickUp My Work' })).toHaveAttribute(
       'href',
       '/board/clickup',
     );
+    expect(screen.queryByRole('link', { name: 'Back to ClickUp My Work' })).toBeNull();
     expect(screen.getByRole('heading', { name: 'OPEN' })).toBeInTheDocument();
     expect(screen.getByText('Status:')).toHaveTextContent('Status: OPEN');
     expect(screen.getByRole('navigation', { name: 'Board source' })).toBeInTheDocument();
@@ -1332,10 +1362,9 @@ describe('External board completed scope through navigation', () => {
     expect(screen.getByRole('heading', { name: 'Done' })).toBeInTheDocument();
     expect(screen.getByText('Shipped feature')).toBeInTheDocument();
 
-    const backLink = screen.getByRole('link', { name: 'Back to ClickUp My Work' });
-    expect(backLink).toHaveAttribute('href', '/board/clickup?completed=1');
     const breadcrumb = screen.getByRole('link', { name: 'ClickUp My Work' });
     expect(breadcrumb).toHaveAttribute('href', '/board/clickup?completed=1');
+    expect(screen.queryByRole('link', { name: 'Back to ClickUp My Work' })).toBeNull();
   });
 
   it('keeps active-only scope on the work-area request when completed is not selected', async () => {

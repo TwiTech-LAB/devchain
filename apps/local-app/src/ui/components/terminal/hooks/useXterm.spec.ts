@@ -17,38 +17,43 @@ import type { Socket } from 'socket.io-client';
 jest.mock('@xterm/xterm', () => {
   let container: HTMLElement | null = null;
   return {
-    Terminal: jest.fn().mockImplementation(() => ({
-      loadAddon: jest.fn(),
-      open: jest.fn((el: HTMLElement) => {
-        container = el;
-      }),
-      write: jest.fn((data: string, cb?: () => void) => {
-        if (container) container.textContent = (container.textContent || '') + data;
-        if (cb) cb();
-      }),
-      reset: jest.fn(() => {
-        if (container) container.textContent = '';
-      }),
-      dispose: jest.fn(),
-      attachCustomWheelEventHandler: jest.fn(),
-      scrollLines: jest.fn(),
-      scrollToBottom: jest.fn(),
-      scrollToLine: jest.fn(),
-      onKey: jest.fn().mockReturnValue({ dispose: jest.fn() }),
-      onData: jest.fn().mockReturnValue({ dispose: jest.fn() }),
-      onScroll: jest.fn().mockReturnValue({ dispose: jest.fn() }),
-      onSelectionChange: jest.fn().mockReturnValue({ dispose: jest.fn() }),
-      getSelection: jest.fn().mockReturnValue(''),
-      attachCustomKeyEventHandler: jest.fn(),
-      clearSelection: jest.fn(),
-      hasSelection: jest.fn().mockReturnValue(false),
-      parser: { registerOscHandler: jest.fn().mockReturnValue({ dispose: jest.fn() }) },
-      buffer: { active: { viewportY: 0, baseY: 0, cursorY: 0, length: 24 } },
-      options: { scrollback: 10000 },
-      modes: { mouseTrackingMode: 'none' },
-      rows: 24,
-      cols: 80,
-    })),
+    Terminal: jest.fn().mockImplementation(() => {
+      const terminal = {
+        loadAddon: jest.fn(),
+        open: jest.fn((el: HTMLElement) => {
+          container = el;
+          terminal.element = el;
+        }),
+        write: jest.fn((data: string, cb?: () => void) => {
+          if (container) container.textContent = (container.textContent || '') + data;
+          if (cb) cb();
+        }),
+        reset: jest.fn(() => {
+          if (container) container.textContent = '';
+        }),
+        dispose: jest.fn(),
+        element: null as HTMLElement | null,
+        attachCustomKeyEventHandler: jest.fn(),
+        attachCustomWheelEventHandler: jest.fn(),
+        scrollLines: jest.fn(),
+        scrollToBottom: jest.fn(),
+        scrollToLine: jest.fn(),
+        onKey: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+        onData: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+        onScroll: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+        onSelectionChange: jest.fn(() => ({ dispose: jest.fn() })),
+        hasSelection: jest.fn().mockReturnValue(false),
+        getSelection: jest.fn().mockReturnValue(''),
+        clearSelection: jest.fn(),
+        parser: { registerOscHandler: jest.fn().mockReturnValue({ dispose: jest.fn() }) },
+        buffer: { active: { viewportY: 0, baseY: 0, cursorY: 0, length: 24 } },
+        options: { scrollback: 10000 },
+        modes: { mouseTrackingMode: 'none' },
+        rows: 24,
+        cols: 80,
+      };
+      return terminal;
+    }),
   };
 });
 
@@ -159,6 +164,29 @@ describe('useXterm', () => {
     expect(termLog).toHaveBeenCalledWith('terminal_dispose', { sessionId });
   });
 
+  // Hook-level jsdom is the cheapest reliable layer for construction and cleanup wiring.
+  it('installs and disposes the Ctrl+C selection binding with the terminal lifecycle', () => {
+    const terminalRef = { current: mockContainerElement };
+
+    const { result, unmount } = renderHook(() => {
+      const xtermRef = useRef<Terminal | null>(null);
+      const fitAddonRef = useRef<FitAddon | null>(null);
+      useXterm(terminalRef, 'binding-session', xtermRef, fitAddonRef);
+      return { xtermRef };
+    });
+
+    const terminal = result.current.xtermRef.current!;
+    expect(terminal.attachCustomKeyEventHandler).toHaveBeenCalledTimes(1);
+    const selectionDisposables = (terminal.onSelectionChange as jest.Mock).mock.results.map(
+      ({ value }) => value.dispose as jest.Mock,
+    );
+
+    unmount();
+
+    expect(selectionDisposables).toHaveLength(2);
+    selectionDisposables.forEach((dispose) => expect(dispose).toHaveBeenCalledTimes(1));
+  });
+
   it('should populate terminal and fitAddon refs', () => {
     const terminalRef = { current: mockContainerElement };
     const sessionId = 'test-session';
@@ -213,6 +241,51 @@ describe('useXterm', () => {
         description: '1 character from the terminal',
       }),
     );
+  });
+
+  // Hook-level jsdom is the cheapest reliable layer for production clipboard-blocked feedback.
+  it('keeps the selection and shows feedback when selected Ctrl+C fallback is blocked', async () => {
+    const terminalRef = { current: mockContainerElement };
+    const blocked = new Error('denied');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: jest.fn().mockRejectedValue(blocked) },
+    });
+
+    const { result } = renderHook(() => {
+      const xtermRef = useRef<Terminal | null>(null);
+      const fitAddonRef = useRef<FitAddon | null>(null);
+      useXterm(terminalRef, 'blocked-copy-session', xtermRef, fitAddonRef);
+      return { xtermRef };
+    });
+    const terminal = result.current.xtermRef.current!;
+    (terminal.hasSelection as jest.Mock).mockReturnValue(true);
+    (terminal.getSelection as jest.Mock).mockReturnValue('keep me selected');
+    const handler = (terminal.attachCustomKeyEventHandler as jest.Mock).mock.calls[0]?.[0] as (
+      event: KeyboardEvent,
+    ) => boolean;
+
+    expect(
+      handler({
+        type: 'keydown',
+        keyCode: 67,
+        ctrlKey: true,
+        altKey: false,
+        metaKey: false,
+        shiftKey: false,
+        preventDefault: jest.fn(),
+      } as unknown as KeyboardEvent),
+    ).toBe(false);
+
+    const { toast } = jest.requireMock('@/ui/hooks/use-toast') as { toast: jest.Mock };
+    await waitFor(() =>
+      expect(toast).toHaveBeenCalledWith({
+        title: 'Clipboard write blocked',
+        description: 'The selection was kept. Allow clipboard access, then try again.',
+        variant: 'destructive',
+      }),
+    );
+    expect(terminal.clearSelection).not.toHaveBeenCalled();
   });
 
   it('should not reinitialize if terminal already exists', () => {

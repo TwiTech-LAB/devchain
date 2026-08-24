@@ -45,6 +45,7 @@ function renderTimeEntries(
     () =>
       useExternalTaskTimeEntries('jira', 'ENG-1', {
         enabled: true,
+        historyOpen: true,
         connectionEpoch,
         identityAccepted: true,
         timeTrackingEnabled: true,
@@ -99,6 +100,7 @@ describe('useExternalTaskTimeEntries', () => {
     ['identity unaccepted', { identityAccepted: false }],
     ['log_time capability off', { timeTrackingEnabled: false }],
     ['disabled', { enabled: false }],
+    ['history closed', { historyOpen: false }],
   ])('issues no request and hides cached data while %s', async (_case, overrides) => {
     fetchMock.mockResolvedValue(jsonResponse(historyPayload));
 
@@ -115,7 +117,7 @@ describe('useExternalTaskTimeEntries', () => {
     suppressed.unmount();
   });
 
-  it('creates with both headers and refetches history plus exact task detail only', async () => {
+  it('creates while history is closed and invalidates history plus exact task detail only', async () => {
     queryClient.setQueryData(externalMyWorkQueryKeys.taskDetail('jira', connectionEpoch, 'ENG-1'), {
       remoteId: 'ENG-1',
     });
@@ -136,8 +138,9 @@ describe('useExternalTaskTimeEntries', () => {
       throw new Error(`unexpected fetch: ${url}`);
     });
 
-    const { result } = renderTimeEntries(queryClient);
-    await waitFor(() => expect(result.current.history.isSuccess).toBe(true));
+    const { result } = renderTimeEntries(queryClient, { historyOpen: false });
+    expect(result.current.history.data).toBeUndefined();
+    expect(historyCalls()).toHaveLength(0);
     invalidate.mockClear();
     fetchMock.mockClear();
 
@@ -159,6 +162,7 @@ describe('useExternalTaskTimeEntries', () => {
     expect((createCall[1] as RequestInit).body).toBe(
       JSON.stringify({ startedAt: '2026-08-22T11:30:00.000Z', durationMs: 1_800_000, note: null }),
     );
+    expect(historyCalls()).toHaveLength(0);
 
     // Exactly two invalidations: the sibling history and the exact detail —
     // never comments or the landing family.
@@ -198,8 +202,7 @@ describe('useExternalTaskTimeEntries', () => {
       throw new Error(`unexpected fetch: ${url}`);
     });
 
-    const { result } = renderTimeEntries(queryClient);
-    await waitFor(() => expect(result.current.history.isSuccess).toBe(true));
+    const { result } = renderTimeEntries(queryClient, { historyOpen: false });
 
     await act(async () => {
       result.current.submitCreate({
@@ -248,7 +251,7 @@ describe('useExternalTaskTimeEntries', () => {
       return Promise.resolve(jsonResponse(historyPayload));
     });
 
-    const { result } = renderTimeEntries(queryClient);
+    const { result } = renderTimeEntries(queryClient, { historyOpen: false });
     await act(async () => {
       result.current.submitCreate({
         startedAt: '2026-08-22T11:30:00.000Z',
@@ -286,6 +289,7 @@ describe('useExternalTaskTimeEntries', () => {
       ({ provider, taskId }) =>
         useExternalTaskTimeEntries(provider, taskId, {
           enabled: true,
+          historyOpen: true,
           connectionEpoch,
           identityAccepted: true,
           timeTrackingEnabled: true,
@@ -310,6 +314,264 @@ describe('useExternalTaskTimeEntries', () => {
     expect(result.current.unknownOperationId).toBeNull();
     expect(result.current.create.data).toBeUndefined();
     expect(result.current.create.isSuccess).toBe(false);
+  });
+
+  it('keeps a pending create guarded across an epoch change and carries a late unknown lock', async () => {
+    let resolveCreate:
+      | ((response: { ok: boolean; json: () => Promise<unknown> }) => void)
+      | undefined;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).endsWith('/time-entries') && init?.method === 'POST') {
+        return new Promise((resolve) => {
+          resolveCreate = resolve;
+        });
+      }
+      if (String(url).includes('/acknowledge')) {
+        return Promise.resolve(
+          jsonResponse({ operationId: 'op-late', phase: 'abandoned_unknown' }),
+        );
+      }
+      return Promise.resolve(jsonResponse(historyPayload));
+    });
+    const initialProps = { connectionEpoch };
+    const { result, rerender } = renderHook(
+      ({ connectionEpoch: epoch }) =>
+        useExternalTaskTimeEntries('jira', 'ENG-1', {
+          enabled: true,
+          historyOpen: false,
+          connectionEpoch: epoch,
+          identityAccepted: true,
+          timeTrackingEnabled: true,
+        }),
+      { initialProps, wrapper: wrapper(queryClient) },
+    );
+
+    act(() => {
+      result.current.submitCreate(
+        {
+          startedAt: '2026-08-22T11:30:00.000Z',
+          durationMs: 1_800_000,
+          note: null,
+        },
+        'estimate',
+      );
+    });
+    await waitFor(() => expect(result.current.create.isPending).toBe(true));
+
+    rerender({ connectionEpoch: 'connection-jira-b:5' });
+    expect(result.current.create.isPending).toBe(false);
+    expect(result.current.writeBlocked).toBe(true);
+    const callsBeforeCompetingWrite = fetchMock.mock.calls.length;
+    act(() => result.current.submitDelete('10001'));
+    expect(fetchMock.mock.calls).toHaveLength(callsBeforeCompetingWrite);
+
+    resolveCreate!(
+      jsonResponse({
+        outcome: 'outcome_unknown',
+        receipt: { operationId: 'op-late', phase: 'outcome_unknown' },
+      }),
+    );
+    await waitFor(() => expect(result.current.unknownOperationId).toBe('op-late'));
+    expect(result.current.blockedByUnknown).toBe(true);
+    expect(result.current.canVerifyUnknown).toBe(false);
+
+    const callsBeforeVerify = fetchMock.mock.calls.length;
+    act(() => result.current.verifyUnknown('op-late'));
+    expect(fetchMock.mock.calls).toHaveLength(callsBeforeVerify);
+
+    act(() => result.current.acknowledgeUnknown('op-late'));
+    await waitFor(() => expect(result.current.blockedByUnknown).toBe(false));
+    const acknowledgeCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).includes('/time-operations/op-late/acknowledge'),
+    )!;
+    expect(
+      ((acknowledgeCall[1] as RequestInit).headers as Record<string, string>)[
+        'X-DevChain-Connection-Epoch'
+      ],
+    ).toBe('5');
+  });
+
+  it('keeps a pending delete guarded across an epoch change without stale invalidation', async () => {
+    let resolveDelete:
+      | ((response: { ok: boolean; json: () => Promise<unknown> }) => void)
+      | undefined;
+    const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
+    fetchMock.mockImplementation((_url: string, init?: RequestInit) => {
+      if (init?.method === 'DELETE') {
+        return new Promise((resolve) => {
+          resolveDelete = resolve;
+        });
+      }
+      return Promise.resolve(jsonResponse(historyPayload));
+    });
+    const initialProps = { connectionEpoch };
+    const { result, rerender } = renderHook(
+      ({ connectionEpoch: epoch }) =>
+        useExternalTaskTimeEntries('jira', 'ENG-1', {
+          enabled: true,
+          historyOpen: false,
+          connectionEpoch: epoch,
+          identityAccepted: true,
+          timeTrackingEnabled: true,
+        }),
+      { initialProps, wrapper: wrapper(queryClient) },
+    );
+
+    act(() => result.current.submitDelete('10001'));
+    await waitFor(() => expect(result.current.delete.isPending).toBe(true));
+    rerender({ connectionEpoch: 'connection-jira-b:5' });
+    expect(result.current.delete.isPending).toBe(false);
+    expect(result.current.writeBlocked).toBe(true);
+    const callsBeforeCompetingWrite = fetchMock.mock.calls.length;
+    act(() =>
+      result.current.submitCreate({
+        startedAt: '2026-08-22T12:00:00.000Z',
+        durationMs: 60_000,
+        note: null,
+      }),
+    );
+    expect(fetchMock.mock.calls).toHaveLength(callsBeforeCompetingWrite);
+
+    invalidate.mockClear();
+    resolveDelete!(
+      jsonResponse({
+        outcome: 'deleted',
+        receipt: { operationId: 'generated-operation-id', phase: 'succeeded' },
+      }),
+    );
+    await waitFor(() => expect(result.current.writeBlocked).toBe(false));
+    expect(invalidate).not.toHaveBeenCalled();
+  });
+
+  it('clears a retained guard on a late known error without exposing stale failure state', async () => {
+    let resolveCreate:
+      | ((response: { ok: boolean; status: number; json: () => Promise<unknown> }) => void)
+      | undefined;
+    fetchMock.mockImplementation((_url: string, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        return new Promise((resolve) => {
+          resolveCreate = resolve;
+        });
+      }
+      return Promise.resolve(jsonResponse(historyPayload));
+    });
+    const initialProps = { connectionEpoch };
+    const { result, rerender } = renderHook(
+      ({ connectionEpoch: epoch }) =>
+        useExternalTaskTimeEntries('jira', 'ENG-1', {
+          enabled: true,
+          historyOpen: false,
+          connectionEpoch: epoch,
+          identityAccepted: true,
+          timeTrackingEnabled: true,
+        }),
+      { initialProps, wrapper: wrapper(queryClient) },
+    );
+
+    act(() =>
+      result.current.submitCreate({
+        startedAt: '2026-08-22T11:30:00.000Z',
+        durationMs: 1_800_000,
+        note: null,
+      }),
+    );
+    await waitFor(() => expect(result.current.writeBlocked).toBe(true));
+    rerender({ connectionEpoch: 'connection-jira-b:5' });
+    expect(result.current.create.isPending).toBe(false);
+
+    resolveCreate!({
+      ok: false,
+      status: 409,
+      json: async () => ({ message: 'The connection epoch was replaced.' }),
+    });
+    await waitFor(() => expect(result.current.writeBlocked).toBe(false));
+    expect(result.current.create.isError).toBe(false);
+    expect(result.current.create.error).toBeNull();
+  });
+
+  it('hides settled operation presentation after the operation scope changes', async () => {
+    fetchMock.mockImplementation((_url: string, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        return Promise.resolve(
+          jsonResponse({ outcome: 'created', remoteEntryId: '10002', refresh: ['task_detail'] }),
+        );
+      }
+      return Promise.resolve(jsonResponse(historyPayload));
+    });
+    const initialProps = { connectionEpoch };
+    const { result, rerender } = renderHook(
+      ({ connectionEpoch: epoch }) =>
+        useExternalTaskTimeEntries('jira', 'ENG-1', {
+          enabled: true,
+          historyOpen: false,
+          connectionEpoch: epoch,
+          identityAccepted: true,
+          timeTrackingEnabled: true,
+        }),
+      { initialProps, wrapper: wrapper(queryClient) },
+    );
+
+    act(() =>
+      result.current.submitCreate({
+        startedAt: '2026-08-22T11:30:00.000Z',
+        durationMs: 1_800_000,
+        note: null,
+      }),
+    );
+    await waitFor(() => expect(result.current.create.isSuccess).toBe(true));
+    expect(result.current.create.data?.outcome).toBe('created');
+
+    rerender({ connectionEpoch: 'connection-jira-b:5' });
+    expect(result.current.create.isSuccess).toBe(false);
+    expect(result.current.create.data).toBeUndefined();
+    expect(result.current.createOrigin).toBeNull();
+  });
+
+  it('ignores a late unknown result after the provider task changes', async () => {
+    let resolveCreate:
+      | ((response: { ok: boolean; json: () => Promise<unknown> }) => void)
+      | undefined;
+    fetchMock.mockImplementation((_url: string, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        return new Promise((resolve) => {
+          resolveCreate = resolve;
+        });
+      }
+      return Promise.resolve(jsonResponse(historyPayload));
+    });
+    const initialProps = { taskId: 'ENG-1' };
+    const { result, rerender } = renderHook(
+      ({ taskId }) =>
+        useExternalTaskTimeEntries('jira', taskId, {
+          enabled: true,
+          historyOpen: false,
+          connectionEpoch,
+          identityAccepted: true,
+          timeTrackingEnabled: true,
+        }),
+      { initialProps, wrapper: wrapper(queryClient) },
+    );
+
+    act(() =>
+      result.current.submitCreate({
+        startedAt: '2026-08-22T11:30:00.000Z',
+        durationMs: 1_800_000,
+        note: null,
+      }),
+    );
+    await waitFor(() => expect(result.current.writeBlocked).toBe(true));
+    rerender({ taskId: 'ENG-2' });
+    await waitFor(() => expect(result.current.writeBlocked).toBe(false));
+
+    resolveCreate!(
+      jsonResponse({
+        outcome: 'outcome_unknown',
+        receipt: { operationId: 'op-old-task', phase: 'outcome_unknown' },
+      }),
+    );
+    await waitFor(() => expect(result.current.create.isPending).toBe(false));
+    expect(result.current.blockedByUnknown).toBe(false);
+    expect(result.current.unknownOperationId).toBeNull();
   });
 
   it('deletes with both headers and refetches the sibling history', async () => {
@@ -348,10 +610,14 @@ describe('useExternalTaskTimeEntries', () => {
     });
   });
 
-  it('refuses create and delete while suppressed', () => {
-    const { result } = renderTimeEntries(queryClient, { identityAccepted: false });
+  it.each([
+    ['identity unaccepted', { identityAccepted: false }],
+    ['time capability off', { timeTrackingEnabled: false }],
+    ['disabled', { enabled: false }],
+  ])('refuses every mutation while %s', async (_case, overrides) => {
+    const { result } = renderTimeEntries(queryClient, overrides);
 
-    act(() => {
+    await act(async () => {
       result.current.submitCreate({
         startedAt: '2026-08-22T11:30:00.000Z',
         durationMs: 60_000,
@@ -360,6 +626,7 @@ describe('useExternalTaskTimeEntries', () => {
       result.current.submitDelete('10001');
       result.current.verifyUnknown('op-x');
       result.current.acknowledgeUnknown('op-x');
+      await Promise.resolve();
     });
 
     expect(fetchMock).not.toHaveBeenCalled();

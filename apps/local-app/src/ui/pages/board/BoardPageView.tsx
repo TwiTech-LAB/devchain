@@ -74,6 +74,7 @@ function BoardContent({ content }: { content: BoardContentModel }) {
                   count={column.epics.length}
                   epics={column.epics}
                   subEpicCounts={column.subEpicCounts}
+                  timeTotals={column.timeTotals}
                   isLightColor={isLightColor}
                   getAgentName={column.getAgentName}
                   onEpicEdit={column.editEpic}
@@ -116,6 +117,7 @@ function BoardContent({ content }: { content: BoardContentModel }) {
                   isLightColor={isLightColor}
                   getSubEpicCountsByStatus={(epicId) => column.subEpicStatusCountsByEpicId[epicId]}
                   externalSources={column.externalSources}
+                  timeTotals={column.timeTotals}
                 />
               ),
             )}
@@ -145,6 +147,7 @@ function BoardContent({ content }: { content: BoardContentModel }) {
           onMoveToWorktree={content.hasRunningWorktrees ? content.moveToWorktree : undefined}
           hasRunningWorktrees={content.hasRunningWorktrees}
           externalSources={content.externalSources}
+          timeTotals={content.timeTotals}
           className="flex-1 min-h-0"
         />
       );

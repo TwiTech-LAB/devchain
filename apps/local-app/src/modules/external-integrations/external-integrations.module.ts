@@ -5,6 +5,7 @@ import { ExternalTaskProviderRegistry } from './external-task-provider.registry'
 import { EXTERNAL_TASK_PROVIDERS, type ExternalTaskProvider } from './ports/external-task-provider';
 import { SafeVendorHttpClient } from './transport/safe-vendor-http-client';
 import { StorageModule } from '../storage/storage.module';
+import { EventsCoreModule } from '../events/events-core.module';
 import { IntegrationConnectionsController } from './connections/integration-connections.controller';
 import { IntegrationConnectionsService } from './connections/integration-connections.service';
 import { ExternalMyWorkController } from './my-work/external-my-work.controller';
@@ -18,10 +19,17 @@ import {
   EXTERNAL_RICH_CAPABILITIES,
   EXTERNAL_RICH_CAPABILITIES_TOKEN,
 } from './models/external-rich-capabilities';
+import { ExternalSubtaskSyncSubscriber } from './subscribers/external-subtask-sync.subscriber';
+import { ManagedSubtaskSyncHealthService } from './subscribers/managed-subtask-sync-health.service';
+import { ManagedSubtaskSyncController } from './connections/managed-subtask-sync.controller';
 
 @Module({
-  imports: [StorageModule],
-  controllers: [IntegrationConnectionsController, ExternalMyWorkController],
+  imports: [StorageModule, EventsCoreModule],
+  controllers: [
+    IntegrationConnectionsController,
+    ManagedSubtaskSyncController,
+    ExternalMyWorkController,
+  ],
   providers: [
     {
       provide: SafeVendorHttpClient,
@@ -51,6 +59,8 @@ import {
     ExternalMyWorkService,
     ExternalEditSessionService,
     ExternalTimeMutationService,
+    ExternalSubtaskSyncSubscriber,
+    ManagedSubtaskSyncHealthService,
   ],
   exports: [ExternalTaskProviderRegistry, EXTERNAL_TASK_PROVIDERS, ProviderOperationGate],
 })

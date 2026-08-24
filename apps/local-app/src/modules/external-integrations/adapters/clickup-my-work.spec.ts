@@ -20,6 +20,7 @@ function listMetadata(
 ): Record<string, unknown> {
   return {
     id,
+    parent: null,
     name: id === 'list-1' ? 'Sprint' : `List ${id}`,
     content: '',
     folder: { id: 'folder-1', name: 'Delivery' },
@@ -74,8 +75,11 @@ describe('ClickUp My Work capability', () => {
       }
       return {
         tasks: [
-          task('open', { status: { id: 'open', status: 'to do', type: 'open' } }),
-          task('custom'),
+          task('open', {
+            parent: 'parent-1',
+            status: { id: 'open', status: 'to do', type: 'open' },
+          }),
+          task('custom', { parent: { malformed: true } }),
           task('unknown', {
             status: { id: 'triage', status: 'triage', type: 'future_type' },
           }),
@@ -104,6 +108,11 @@ describe('ClickUp My Work capability', () => {
       'open',
       'custom',
       'triage',
+    ]);
+    expect(result.tasks.map(({ task: item }) => item.parentRemoteTaskId)).toEqual([
+      'parent-1',
+      null,
+      null,
     ]);
     expect(result.workAreas).toHaveLength(1);
     expect(result.workAreas[0]).toMatchObject({

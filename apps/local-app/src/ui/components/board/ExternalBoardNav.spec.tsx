@@ -11,6 +11,7 @@ import {
 // tab derivation and Add-board composition contract; the hook's query plumbing has
 // its own suite.
 const useIntegrationConnectionsMock = jest.fn();
+const useManagedSubtaskSyncHealthMock = jest.fn();
 let canUseIntegrations = true;
 
 jest.mock('../../hooks/useIntegrationAvailability', () => ({
@@ -25,6 +26,11 @@ jest.mock('../../hooks/useIntegrationConnections', () => ({
   // Keep the real error class and types; only the hook itself is replaced.
   ...jest.requireActual('../../hooks/useIntegrationConnections'),
   useIntegrationConnections: (options?: unknown) => useIntegrationConnectionsMock(options),
+}));
+
+jest.mock('../../hooks/useManagedSubtaskSyncHealth', () => ({
+  useManagedSubtaskSyncHealth: (...args: unknown[]) =>
+    (useManagedSubtaskSyncHealthMock as unknown as (...values: unknown[]) => unknown)(...args),
 }));
 
 function connection(provider: 'clickup' | 'jira', connected: boolean): IntegrationConnectionState {
@@ -42,7 +48,11 @@ function baseHookValue(
     isLoading: boolean;
     error: unknown;
     replaceConnection: ReturnType<typeof jest.fn>;
+    disconnectConnection: ReturnType<typeof jest.fn>;
+    updateSubtaskSync: ReturnType<typeof jest.fn>;
     replacingProvider: 'clickup' | 'jira' | undefined;
+    disconnectingProvider: 'clickup' | 'jira' | undefined;
+    updatingSyncProvider: 'clickup' | 'jira' | undefined;
   }> = {},
 ) {
   return {
@@ -51,8 +61,10 @@ function baseHookValue(
     error: null,
     replaceConnection: jest.fn(),
     disconnectConnection: jest.fn(),
+    updateSubtaskSync: jest.fn(),
     replacingProvider: undefined,
     disconnectingProvider: undefined,
+    updatingSyncProvider: undefined,
     ...overrides,
   };
 }
@@ -80,6 +92,18 @@ function renderNav(initialEntry = '/board') {
     </MemoryRouter>,
   );
 }
+
+beforeEach(() => {
+  useManagedSubtaskSyncHealthMock.mockReset();
+  useManagedSubtaskSyncHealthMock.mockReturnValue({
+    health: undefined,
+    isLoading: false,
+    error: null,
+    verify: jest.fn(),
+    retry: jest.fn(),
+    pendingAction: undefined,
+  });
+});
 
 describe('ExternalBoardNav', () => {
   beforeEach(() => {
@@ -126,7 +150,7 @@ describe('ExternalBoardNav', () => {
     expect(screen.queryByRole('button', { name: 'Add board' })).not.toBeInTheDocument();
   });
 
-  it('shows connected state only for rendered provider tabs', () => {
+  it('replaces connection badges with settings controls for rendered provider tabs', () => {
     useIntegrationConnectionsMock.mockReturnValue(
       baseHookValue({
         connections: [
@@ -143,18 +167,20 @@ describe('ExternalBoardNav', () => {
 
     renderNav();
 
-    expect(screen.getByText('Connected')).toBeInTheDocument();
-    expect(screen.queryByText('Not connected')).not.toBeInTheDocument();
+    expect(screen.queryByText('Connected')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open ClickUp board settings' })).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Open Jira board settings' }),
+    ).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /^Jira/ })).not.toBeInTheDocument();
   });
 
-  it('omits connection badges while the connection query is loading', () => {
+  it('omits provider settings controls while the connection query is loading', () => {
     useIntegrationConnectionsMock.mockReturnValue(baseHookValue({ isLoading: true }));
 
     renderNav();
 
-    expect(screen.queryByText('Connected')).not.toBeInTheDocument();
-    expect(screen.queryByText('Not connected')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /board settings/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /^ClickUp/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /^Jira/ })).not.toBeInTheDocument();
   });
@@ -189,6 +215,26 @@ describe('ExternalBoardNav', () => {
 
     expect(screen.getByRole('link', { name: /^ClickUp/ })).toHaveAttribute('aria-current', 'page');
     expect(screen.getByRole('link', { name: /^Jira/ })).not.toHaveAttribute('aria-current');
+  });
+
+  it('opens the connected provider settings without navigating away', async () => {
+    const user = userEvent.setup();
+    useIntegrationConnectionsMock.mockReturnValue(
+      baseHookValue({ connections: [connection('clickup', true)] }),
+    );
+    renderNav('/board');
+
+    await user.click(screen.getByRole('button', { name: 'Open ClickUp board settings' }));
+
+    const dialog = screen.getByRole('dialog', { name: 'ClickUp board settings' });
+    expect(withinDialog(dialog).getByLabelText('Personal API token')).toBeInTheDocument();
+    expect(
+      withinDialog(dialog).getByRole('switch', {
+        name: 'Sync DevChain sub-epics as managed subtasks',
+      }),
+    ).toBeInTheDocument();
+    expect(withinDialog(dialog).getByRole('button', { name: 'Disconnect' })).toBeInTheDocument();
+    expect(screen.getByTestId('current-location')).toHaveTextContent('/board');
   });
 
   it('returns each board source to its last full route', async () => {
@@ -368,7 +414,11 @@ describe('ExternalBoardNav Add board', () => {
     await waitFor(() => {
       expect(screen.getByTestId('current-location')).toHaveTextContent('/board/clickup');
     });
-    expect(replaceConnection).toHaveBeenCalledWith({ provider: 'clickup', token: 'good-token' });
+    expect(replaceConnection).toHaveBeenCalledWith({
+      provider: 'clickup',
+      token: 'good-token',
+      subtaskSyncEnabled: false,
+    });
     expect(screen.queryByRole('dialog', { name: 'Add board' })).not.toBeInTheDocument();
   });
 
@@ -401,6 +451,7 @@ describe('ExternalBoardNav Add board', () => {
     await waitFor(() => {
       expect(screen.queryByRole('button', { name: /add board/i })).not.toBeInTheDocument();
     });
-    expect(screen.getAllByText('Connected')).toHaveLength(2);
+    expect(screen.getByRole('button', { name: 'Open ClickUp board settings' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open Jira board settings' })).toBeInTheDocument();
   });
 });

@@ -83,6 +83,7 @@ describe('CatalogBroadcasterService', () => {
     emitter.emit('epic.updated', {
       epicId: 'e1',
       projectId: 'p1',
+      parentId: 'root-1',
       version: 2,
       epicTitle: 'Some epic',
       changes: {},
@@ -91,7 +92,12 @@ describe('CatalogBroadcasterService', () => {
     expect(mockBroadcaster.broadcastEvent).toHaveBeenCalledWith(
       'project/p1/epics',
       'updated',
-      expect.objectContaining({ epicId: 'e1', version: 2, changes: {} }),
+      expect.objectContaining({
+        epicId: 'e1',
+        parentId: 'root-1',
+        version: 2,
+        changes: {},
+      }),
     );
     expect(
       (mockBroadcaster.broadcastEvent as jest.Mock).mock.calls.filter(

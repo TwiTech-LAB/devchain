@@ -1,5 +1,6 @@
 import type { SQL } from 'drizzle-orm';
 import { and as andSync, eq as eqSync, isNull as isNullSync, or as orSync } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
 import {
   type CreateEpicForProjectInput,
   type ListAssignedEpicsOptions,
@@ -8,6 +9,7 @@ import {
   type ListProjectEpicsOptions,
   type ListResult,
   type ListSubEpicsForParentsOptions,
+  type FactualEventFactory,
 } from '../../interfaces/storage.interface';
 import {
   type Agent,
@@ -29,6 +31,7 @@ import { createLogger } from '../../../../common/logging/logger';
 import { epicTags as epicTagsTable, epics as epicsTable, tags as tagsTable } from '../../db/schema';
 import { parseSkillsRequired, serializeSkillsRequired } from '../helpers/storage-helpers';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
+import type { PreparedEvent } from '../../../events/services/durable-event-registry.service';
 
 const logger = createLogger('EpicStorageDelegate');
 
@@ -37,6 +40,7 @@ export interface EpicStorageDelegateDependencies {
   getAgent: (id: string) => Agent;
   getAgentByName: (projectId: string, name: string) => Promise<Agent>;
   getStatus: (id: string) => Promise<Status>;
+  appendEvent: (event: PreparedEvent) => void;
 }
 
 export class EpicStorageDelegate extends BaseStorageDelegate {
@@ -47,21 +51,25 @@ export class EpicStorageDelegate extends BaseStorageDelegate {
     super(context);
   }
 
-  async createEpic(data: CreateEpic): Promise<Epic> {
-    return this.insertEpic(data);
+  async createEpic(
+    data: CreateEpic,
+    eventFactory?: (epic: Epic) => PreparedEvent | null,
+  ): Promise<Epic> {
+    return this.txRunner.runImmediateQueued(() => this.insertEpic(data, eventFactory));
   }
 
-  async createEpicInCurrentTransaction(data: CreateEpic): Promise<Epic> {
+  async createEpicInCurrentTransaction(
+    data: CreateEpic,
+    eventFactory?: (epic: Epic) => PreparedEvent | null,
+  ): Promise<Epic> {
     if (!this.rawClient.inTransaction) {
       throw new StorageError('Epic transaction insert requires an active storage transaction.');
     }
-    return this.insertEpic(data);
+    return this.insertEpic(data, eventFactory);
   }
 
-  private async insertEpic(data: CreateEpic): Promise<Epic> {
-    const { randomUUID } = await import('crypto');
+  private insertEpic(data: CreateEpic, eventFactory?: (epic: Epic) => PreparedEvent | null): Epic {
     const now = new Date().toISOString();
-    const { epics, epicTags, tags } = await import('../../db/schema');
 
     const epicId = randomUUID();
     this.ensureValidEpicParentSync(data.projectId, data.parentId ?? null, epicId);
@@ -84,53 +92,63 @@ export class EpicStorageDelegate extends BaseStorageDelegate {
       updatedAt: now,
     };
 
-    await this.db.insert(epics).values({
-      id: epic.id,
-      projectId: epic.projectId,
-      title: epic.title,
-      description: epic.description,
-      statusId: epic.statusId,
-      parentId: epic.parentId,
-      agentId: epic.agentId,
-      createdBy: epic.createdBy,
-      version: epic.version,
-      data: epic.data,
-      skillsRequired: serializeSkillsRequired(epic.skillsRequired),
-      createdAt: epic.createdAt,
-      updatedAt: epic.updatedAt,
-    });
+    this.db
+      .insert(epicsTable)
+      .values({
+        id: epic.id,
+        projectId: epic.projectId,
+        title: epic.title,
+        description: epic.description,
+        statusId: epic.statusId,
+        parentId: epic.parentId,
+        agentId: epic.agentId,
+        createdBy: epic.createdBy,
+        version: epic.version,
+        data: epic.data,
+        skillsRequired: serializeSkillsRequired(epic.skillsRequired),
+        createdAt: epic.createdAt,
+        updatedAt: epic.updatedAt,
+      })
+      .run();
 
     // Add tags
     if (epic.tags.length) {
       for (const tagName of epic.tags) {
-        const { eq, and, or, isNull } = await import('drizzle-orm');
-        let tag = await this.db
+        let tag = this.db
           .select()
-          .from(tags)
+          .from(tagsTable)
           .where(
-            and(
-              eq(tags.name, tagName),
-              or(eq(tags.projectId, data.projectId), isNull(tags.projectId)),
+            andSync(
+              eqSync(tagsTable.name, tagName),
+              orSync(eqSync(tagsTable.projectId, data.projectId), isNullSync(tagsTable.projectId)),
             ),
           )
-          .limit(1);
+          .limit(1)
+          .all();
 
         if (!tag[0]) {
-          const newTag = await this.dependencies.createTag({
+          const newTag = this.dependencies.createTag({
             projectId: data.projectId,
             name: tagName,
           });
           tag = [newTag];
         }
 
-        await this.db.insert(epicTags).values({
-          epicId: epic.id,
-          tagId: tag[0].id,
-          createdAt: now,
-        });
+        this.db
+          .insert(epicTagsTable)
+          .values({
+            epicId: epic.id,
+            tagId: tag[0].id,
+            createdAt: now,
+          })
+          .run();
       }
     }
 
+    const event = eventFactory?.(epic);
+    if (event) {
+      this.dependencies.appendEvent(event);
+    }
     return epic;
   }
 
@@ -391,7 +409,11 @@ export class EpicStorageDelegate extends BaseStorageDelegate {
     };
   }
 
-  async createEpicForProject(projectId: string, input: CreateEpicForProjectInput): Promise<Epic> {
+  async createEpicForProject(
+    projectId: string,
+    input: CreateEpicForProjectInput,
+    eventFactory?: (epic: Epic) => PreparedEvent | null,
+  ): Promise<Epic> {
     const { statuses } = await import('../../db/schema');
     const { eq, asc } = await import('drizzle-orm');
 
@@ -430,21 +452,29 @@ export class EpicStorageDelegate extends BaseStorageDelegate {
     this.ensureValidAgentSync(projectId, agentId);
     this.ensureValidEpicParentSync(projectId, input.parentId ?? null);
 
-    return this.createEpic({
-      projectId,
-      title: input.title,
-      description: input.description ?? null,
-      statusId,
-      parentId: input.parentId ?? null,
-      agentId,
-      createdBy: input.createdBy ?? null,
-      skillsRequired: input.skillsRequired ?? null,
-      tags: input.tags ?? [],
-      data: null,
-    });
+    return this.createEpic(
+      {
+        projectId,
+        title: input.title,
+        description: input.description ?? null,
+        statusId,
+        parentId: input.parentId ?? null,
+        agentId,
+        createdBy: input.createdBy ?? null,
+        skillsRequired: input.skillsRequired ?? null,
+        tags: input.tags ?? [],
+        data: null,
+      },
+      eventFactory,
+    );
   }
 
-  async updateEpic(id: string, data: UpdateEpic, expectedVersion: number): Promise<Epic> {
+  async updateEpic(
+    id: string,
+    data: UpdateEpic,
+    expectedVersion: number,
+    eventFactory?: FactualEventFactory<Epic, Epic>,
+  ): Promise<Epic> {
     return this.versionedMutationExecutor.execute({
       resource: 'Epic',
       id,
@@ -500,29 +530,45 @@ export class EpicStorageDelegate extends BaseStorageDelegate {
         if (state.requestedTags !== undefined) {
           this.setEpicTagsSync(id, state.requestedTags, current.projectId, state.now);
         }
+        const event = eventFactory?.(this.getEpicSync(id), current);
+        if (event) {
+          this.dependencies.appendEvent(event);
+        }
       },
       loadResult: () => this.getEpicSync(id),
     });
   }
 
-  async deleteEpic(id: string): Promise<void> {
-    const { epics } = await import('../../db/schema');
-    const { eq } = await import('drizzle-orm');
+  async deleteEpic(id: string, eventFactory?: (epic: Epic) => PreparedEvent | null): Promise<void> {
+    return this.txRunner.runImmediateQueued(() => {
+      const rows = this.rawClient
+        .prepare(
+          `WITH RECURSIVE tree(id, depth) AS (
+             SELECT id, 0 FROM epics WHERE id = ?
+             UNION ALL
+             SELECT e.id, tree.depth + 1
+             FROM epics e
+             INNER JOIN tree ON e.parent_id = tree.id
+           )
+           SELECT id, depth FROM tree ORDER BY depth DESC, id`,
+        )
+        .all(id) as Array<{ id: string; depth: number }>;
+      if (rows.length === 0) {
+        throw new NotFoundError('Epic', id);
+      }
 
-    // Find all sub-epics
-    const subEpics = await this.db
-      .select({ id: epics.id })
-      .from(epics)
-      .where(eq(epics.parentId, id));
-
-    // Recursively delete each sub-epic
-    for (const subEpic of subEpics) {
-      await this.deleteEpic(subEpic.id);
-    }
-
-    // Delete the parent epic
-    await this.db.delete(epics).where(eq(epics.id, id));
-    logger.info({ epicId: id, deletedSubEpics: subEpics.length }, 'Deleted epic and sub-epics');
+      for (const row of rows) {
+        const event = eventFactory?.(this.getEpicSync(row.id));
+        if (event) {
+          this.dependencies.appendEvent(event);
+        }
+      }
+      const deleteRow = this.rawClient.prepare('DELETE FROM epics WHERE id = ?');
+      for (const row of rows) {
+        deleteRow.run(row.id);
+      }
+      logger.info({ epicId: id, deletedSubEpics: rows.length - 1 }, 'Deleted epic and sub-epics');
+    });
   }
 
   async listSubEpics(parentId: string, options: ListOptions = {}): Promise<ListResult<Epic>> {

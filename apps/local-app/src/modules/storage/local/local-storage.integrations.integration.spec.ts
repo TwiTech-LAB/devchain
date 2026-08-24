@@ -68,6 +68,8 @@ describe('LocalStorageService integrations', () => {
       id: expect.any(String),
       provider: 'jira',
       generation: 1,
+      subtaskSyncEnabled: false,
+      syncSettingRevision: 1,
       createdAt: expect.any(String),
       updatedAt: expect.any(String),
     });

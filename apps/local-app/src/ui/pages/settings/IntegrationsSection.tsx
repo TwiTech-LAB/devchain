@@ -1,5 +1,5 @@
 import { Alert, AlertDescription, AlertTitle } from '@/ui/components/ui/alert';
-import { IntegrationConnectionForm } from '@/ui/components/integrations/IntegrationConnectionForm';
+import { ProviderIntegrationSettings } from '@/ui/components/integrations/ProviderIntegrationSettings';
 import { useIntegrationConnections } from '@/ui/hooks/useIntegrationConnections';
 import { useIntegrationAvailability } from '@/ui/hooks/useIntegrationAvailability';
 import {
@@ -16,8 +16,10 @@ export function IntegrationsSection() {
     error,
     replaceConnection,
     disconnectConnection,
+    updateSubtaskSync,
     replacingProvider,
     disconnectingProvider,
+    updatingSyncProvider,
   } = useIntegrationConnections({ enabled: availability.canUseIntegrations });
 
   if (!availability.canUseIntegrations) {
@@ -58,20 +60,24 @@ export function IntegrationsSection() {
         </p>
       </div>
       <div className="grid gap-6 xl:grid-cols-2">
-        {INTEGRATION_PROVIDER_IDS.map((provider) => (
-          <IntegrationConnectionForm
-            key={provider}
-            provider={provider}
-            connection={
-              connections.find((item) => item.provider === provider) ??
-              disconnectedConnectionState(provider)
-            }
-            onReplace={replaceConnection}
-            onDisconnect={disconnectConnection}
-            isReplacing={replacingProvider === provider}
-            isDisconnecting={disconnectingProvider === provider}
-          />
-        ))}
+        {INTEGRATION_PROVIDER_IDS.map((provider) => {
+          const connection =
+            connections.find((item) => item.provider === provider) ??
+            disconnectedConnectionState(provider);
+          return (
+            <ProviderIntegrationSettings
+              key={provider}
+              provider={provider}
+              connection={connection}
+              onReplace={replaceConnection}
+              onDisconnect={disconnectConnection}
+              onUpdateSync={updateSubtaskSync}
+              isReplacing={replacingProvider === provider}
+              isDisconnecting={disconnectingProvider === provider}
+              isUpdatingSync={updatingSyncProvider === provider}
+            />
+          );
+        })}
       </div>
     </div>
   );

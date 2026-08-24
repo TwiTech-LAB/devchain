@@ -9,12 +9,15 @@ import { ExternalTaskProviderRegistry } from '../external-task-provider.registry
 import { ExternalEditSessionStore } from '../sessions/external-edit-session.store';
 import { ProviderOperationGate } from '../sessions/provider-operation-gate';
 import { IntegrationConnectionsService } from './integration-connections.service';
+import type { EventsService } from '../../events/services/events.service';
 
 function connection(provider: 'clickup' | 'jira', generation = 1): IntegrationConnection {
   return {
     id: `${provider}-connection`,
     provider,
     generation,
+    subtaskSyncEnabled: false,
+    syncSettingRevision: 1,
     createdAt: '2026-08-19T00:00:00.000Z',
     updatedAt: '2026-08-19T00:00:00.000Z',
   };
@@ -28,6 +31,7 @@ describe('IntegrationConnectionsService', () => {
       | 'replaceIntegrationConnection'
       | 'getIntegrationConnectionCredentials'
       | 'disconnectIntegrationConnection'
+      | 'updateIntegrationConnectionSyncSetting'
     >
   >;
   let clickupProvider: jest.Mocked<ExternalTaskProvider>;
@@ -40,6 +44,7 @@ describe('IntegrationConnectionsService', () => {
       replaceIntegrationConnection: jest.fn(),
       getIntegrationConnectionCredentials: jest.fn(),
       disconnectIntegrationConnection: jest.fn(),
+      updateIntegrationConnectionSyncSetting: jest.fn(),
     };
     clickupProvider = {
       provider: 'clickup',
@@ -79,6 +84,8 @@ describe('IntegrationConnectionsService', () => {
           connected: false,
           connectionId: null,
           generation: null,
+          subtaskSyncEnabled: false,
+          syncSettingRevision: null,
           updatedAt: null,
         },
         {
@@ -86,6 +93,8 @@ describe('IntegrationConnectionsService', () => {
           connected: true,
           connectionId: 'jira-connection',
           generation: 3,
+          subtaskSyncEnabled: false,
+          syncSettingRevision: 1,
           updatedAt: '2026-08-19T00:00:00.000Z',
         },
       ],
@@ -112,6 +121,8 @@ describe('IntegrationConnectionsService', () => {
       connected: true,
       connectionId: 'clickup-connection',
       generation: 1,
+      subtaskSyncEnabled: false,
+      syncSettingRevision: 1,
       updatedAt: '2026-08-19T00:00:00.000Z',
     });
     expect(events).toEqual(['provider-verified', 'storage-mutated']);
@@ -163,6 +174,7 @@ describe('IntegrationConnectionsService', () => {
         },
       },
       expect.any(Function),
+      expect.any(Function),
     );
   });
 
@@ -177,6 +189,45 @@ describe('IntegrationConnectionsService', () => {
     expect(storage.replaceIntegrationConnection).not.toHaveBeenCalled();
   });
 
+  it('prepares and emits the committed connection fact through the storage transaction hook', async () => {
+    const prepared = {
+      id: 'connection-event',
+      name: 'integration.connection.created',
+      payload: {},
+      requestId: null,
+      publishedAt: '2026-08-23T00:00:00.000Z',
+    };
+    const eventsService = {
+      prepareCommitted: jest.fn().mockReturnValue(prepared),
+      emitCommitted: jest.fn(),
+    };
+    service = new IntegrationConnectionsService(
+      storage as unknown as StorageService,
+      new ExternalTaskProviderRegistry([clickupProvider, jiraProvider]),
+      new ProviderOperationGate(),
+      new ExternalEditSessionStore(),
+      eventsService as unknown as EventsService,
+    );
+    storage.replaceIntegrationConnection.mockImplementation(async (data, verify, eventFactory) => {
+      await verify(data.credentials);
+      const created = connection('clickup');
+      eventFactory?.(created, null);
+      return created;
+    });
+
+    await service.replaceConnection({ provider: 'clickup', token: 'token' });
+
+    expect(eventsService.prepareCommitted).toHaveBeenCalledWith(
+      'integration.connection.created',
+      expect.objectContaining({
+        connectionId: 'clickup-connection',
+        provider: 'clickup',
+        generation: 1,
+      }),
+    );
+    expect(eventsService.emitCommitted).toHaveBeenCalledWith(prepared);
+  });
+
   it('disconnects only the live credential so linked snapshots remain storage-owned', async () => {
     storage.disconnectIntegrationConnection.mockResolvedValue(true);
 
@@ -185,14 +236,74 @@ describe('IntegrationConnectionsService', () => {
       connected: false,
       connectionId: null,
       generation: null,
+      subtaskSyncEnabled: false,
+      syncSettingRevision: null,
       updatedAt: null,
     });
-    expect(storage.disconnectIntegrationConnection).toHaveBeenCalledWith('jira');
+    expect(storage.disconnectIntegrationConnection).toHaveBeenCalledWith(
+      'jira',
+      expect.any(Function),
+      { acknowledgeOrphanRisk: false },
+    );
     expect(Object.keys(storage)).toEqual([
       'listIntegrationConnections',
       'replaceIntegrationConnection',
       'getIntegrationConnectionCredentials',
       'disconnectIntegrationConnection',
+      'updateIntegrationConnectionSyncSetting',
     ]);
+  });
+
+  it('updates only sync settings and emits the committed factual transition', async () => {
+    const before = connection('jira');
+    const after = { ...before, subtaskSyncEnabled: true, syncSettingRevision: 2 };
+    const prepared = {
+      id: 'settings-event',
+      name: 'integration.connection.updated',
+      payload: {},
+      requestId: null,
+      publishedAt: '2026-08-23T00:00:00.000Z',
+    };
+    const eventsService = {
+      prepareCommitted: jest.fn().mockReturnValue(prepared),
+      emitCommitted: jest.fn(),
+    };
+    service = new IntegrationConnectionsService(
+      storage as unknown as StorageService,
+      new ExternalTaskProviderRegistry([clickupProvider, jiraProvider]),
+      new ProviderOperationGate(),
+      new ExternalEditSessionStore(),
+      eventsService as unknown as EventsService,
+    );
+    storage.updateIntegrationConnectionSyncSetting.mockImplementation(
+      async (_provider, _enabled, eventFactory) => {
+        eventFactory?.(after, before);
+        return after;
+      },
+    );
+
+    await expect(
+      service.updateSyncSettings('jira', { subtaskSyncEnabled: true }),
+    ).resolves.toMatchObject({
+      subtaskSyncEnabled: true,
+      syncSettingRevision: 2,
+    });
+
+    expect(storage.updateIntegrationConnectionSyncSetting).toHaveBeenCalledWith(
+      'jira',
+      true,
+      expect.any(Function),
+    );
+    expect(eventsService.prepareCommitted).toHaveBeenCalledWith(
+      'integration.connection.updated',
+      expect.objectContaining({
+        previousSubtaskSyncEnabled: false,
+        subtaskSyncEnabled: true,
+        previousSyncSettingRevision: 1,
+        syncSettingRevision: 2,
+      }),
+    );
+    expect(eventsService.emitCommitted).toHaveBeenCalledWith(prepared);
+    expect(jiraProvider.verifyCredentials).not.toHaveBeenCalled();
   });
 });

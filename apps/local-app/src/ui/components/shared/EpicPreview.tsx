@@ -1,8 +1,9 @@
 import React from 'react';
-import { Badge } from '@/ui/components/ui/badge';
+import { Badge, badgeVariants } from '@/ui/components/ui/badge';
 import { User } from 'lucide-react';
 import { cn } from '@/ui/lib/utils';
 import { getMergedWorktree, isMergedTag } from '@/ui/lib/epic-tags';
+import { useToast } from '@/ui/hooks/use-toast';
 
 export type EpicPreviewProps = {
   statusLabel?: string;
@@ -25,11 +26,30 @@ export function EpicPreview({
   maxLines = 2,
   metaRight,
 }: EpicPreviewProps) {
+  const { toast } = useToast();
   const showMeta = Boolean(statusLabel) || Boolean(agentName);
   const showSub = typeof subCount === 'number' && subCount > 0;
   const mergedFromWorktree = getMergedWorktree(tags);
   const visibleTags = tags.filter((tag) => !isMergedTag(tag));
+  const shownTags = visibleTags.slice(0, 3);
+  const hiddenTags = visibleTags.slice(shownTags.length);
   const hasTags = visibleTags.length > 0 || Boolean(mergedFromWorktree);
+
+  const copyTag = async (tag: string): Promise<void> => {
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error('Clipboard unavailable');
+      }
+      await navigator.clipboard.writeText(tag);
+      toast({ title: 'Tag copied', description: tag });
+    } catch {
+      toast({
+        variant: 'destructive',
+        title: 'Tag could not be copied',
+        description: 'Copy the tag manually and try again.',
+      });
+    }
+  };
 
   return (
     <div className="space-y-2 text-left">
@@ -84,24 +104,42 @@ export function EpicPreview({
         </div>
       )}
       {(showSub || hasTags) && (
-        <div className="flex flex-wrap gap-1 text-xs">
+        <div className="flex min-w-0 flex-nowrap gap-1 overflow-hidden text-xs">
           {showSub && (
-            <Badge variant="secondary" className="gap-0.5">
+            <Badge variant="secondary" className="shrink-0 gap-0.5">
               <span className="opacity-60">↳</span>
               {subCount}
             </Badge>
           )}
           {mergedFromWorktree && (
-            <Badge variant="secondary" className="border border-amber-400/40 bg-amber-500/10">
-              Merged from {mergedFromWorktree}
+            <Badge
+              variant="secondary"
+              className="min-w-0 max-w-36 border border-amber-400/40 bg-amber-500/10"
+              title={`Merged from ${mergedFromWorktree}`}
+            >
+              <span className="truncate">Merged from {mergedFromWorktree}</span>
             </Badge>
           )}
-          {visibleTags.slice(0, 3).map((tag) => (
-            <Badge key={tag} variant="outline">
-              {tag}
-            </Badge>
+          {shownTags.map((tag) => (
+            <button
+              key={tag}
+              type="button"
+              className={cn(badgeVariants({ variant: 'outline' }), 'min-w-0 max-w-28 cursor-copy')}
+              title={tag}
+              aria-label={`Copy tag ${tag}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                void copyTag(tag);
+              }}
+            >
+              <span className="truncate">{tag}</span>
+            </button>
           ))}
-          {visibleTags.length > 3 && <Badge variant="outline">+{visibleTags.length - 3}</Badge>}
+          {hiddenTags.length > 0 && (
+            <Badge variant="outline" className="shrink-0" title={hiddenTags.join(', ')}>
+              +{hiddenTags.length}
+            </Badge>
+          )}
         </div>
       )}
     </div>

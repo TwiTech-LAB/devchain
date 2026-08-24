@@ -16,6 +16,13 @@ jest.mock('../../hooks/board/useExternalTaskController', () => ({
   useExternalTaskController: (...args: unknown[]) => useExternalTaskControllerMock(...args),
 }));
 
+const useExternalSubtaskStatusEditorMock = jest.fn();
+
+jest.mock('../../hooks/board/useExternalSubtaskStatusEditor', () => ({
+  useExternalSubtaskStatusEditor: (...args: unknown[]) =>
+    useExternalSubtaskStatusEditorMock(...args),
+}));
+
 const detail: ExternalTaskDetail = {
   remoteId: 'ENG-1',
   remoteKey: 'ENG-1',
@@ -32,6 +39,8 @@ const detail: ExternalTaskDetail = {
   },
   dueAt: null,
   priority: { name: 'High', color: '#ef4444' },
+  subtasks: [],
+  subtasksTruncated: false,
   taskTotalDurationMs: 5_400_000,
   webUrl: 'https://acme.atlassian.net/browse/ENG-1',
   location: { scopeKey: 'acme.atlassian.net', workAreaId: 'board-1', workAreaName: 'Sprint' },
@@ -113,10 +122,15 @@ function renderDialog(props: Partial<React.ComponentProps<typeof ExternalTaskDet
 }
 
 const useExternalTaskTimeEntriesMock = jest.fn();
+const useEpicTimeDetailMock = jest.fn();
 
 jest.mock('@/ui/hooks/board/useExternalTaskTimeEntries', () => ({
   useExternalTaskTimeEntries: (...args: unknown[]) =>
     (useExternalTaskTimeEntriesMock as unknown as (...a: unknown[]) => unknown)(...args),
+}));
+
+jest.mock('@/ui/hooks/useEpicTimeDetail', () => ({
+  useEpicTimeDetail: (...args: unknown[]) => useEpicTimeDetailMock(...args),
 }));
 
 const useExternalRichDescriptionEditMock = jest.fn();
@@ -126,10 +140,24 @@ jest.mock('@/ui/hooks/board/useExternalRichDescriptionEdit', () => ({
     (useExternalRichDescriptionEditMock as unknown as (...a: unknown[]) => unknown)(...args),
 }));
 
+// Layer: UI component unit (jsdom + RTL). This spec owns the dialog's
+// composition contract — panel admission behind the identity gate, status
+// wiring into the lazy child-status controller, layout, and focus — so a
+// mounted render is the cheapest reliable layer; the controller, comments,
+// time, and rich-edit hooks are mocked because each has its own suite.
 describe('ExternalTaskDetailDialog', () => {
   beforeEach(() => {
     useExternalTaskControllerMock.mockReset();
     useExternalTaskControllerMock.mockReturnValue(controllerValue());
+    useExternalSubtaskStatusEditorMock.mockReset();
+    useExternalSubtaskStatusEditorMock.mockReturnValue({
+      editor: null,
+      activate: jest.fn(),
+      retry: jest.fn(),
+      deactivate: jest.fn(),
+      selectStatus: jest.fn(),
+      isStatusPending: false,
+    });
     useExternalTaskTimeEntriesMock.mockReset();
     useExternalTaskTimeEntriesMock.mockReturnValue({
       history: {
@@ -140,6 +168,7 @@ describe('ExternalTaskDetailDialog', () => {
         refetch: jest.fn(),
       },
       create: { isPending: false, isError: false, error: null, isSuccess: false, data: undefined },
+      createOrigin: null,
       submitCreate: jest.fn(),
       delete: { isPending: false, isError: false, error: null, isSuccess: false, data: undefined },
       submitDelete: jest.fn(),
@@ -149,6 +178,14 @@ describe('ExternalTaskDetailDialog', () => {
       acknowledgeUnknown: jest.fn(),
       unknownOperationId: null,
       blockedByUnknown: false,
+      canVerifyUnknown: false,
+      writeBlocked: false,
+    });
+    useEpicTimeDetailMock.mockReset();
+    useEpicTimeDetailMock.mockReturnValue({
+      admitted: false,
+      summary: undefined,
+      query: { isLoading: false, isError: false },
     });
     useExternalRichDescriptionEditMock.mockReset();
     useExternalRichDescriptionEditMock.mockReturnValue({
@@ -179,16 +216,23 @@ describe('ExternalTaskDetailDialog', () => {
     });
   });
 
-  it('opens a centered near-full-screen dialog with the approved 65/35 desktop split', async () => {
+  it('keeps the viewport fallback and uses a minmax 70/30 desktop workspace', async () => {
     const { baseElement } = renderDialog();
 
     const dialog = screen.getByRole('dialog');
     expect(dialog.className).toContain('h-[calc(100vh-2rem)]');
+    expect(dialog.className).toContain('supports-[height:100dvh]:h-[calc(100dvh-2rem)]');
     expect(dialog.className).toContain('w-[calc(100vw-2rem)]');
 
     const columns = dialog.querySelector('.grid.min-h-0.flex-1');
-    expect(columns?.className).toContain('lg:grid-cols-[65fr_35fr]');
+    expect(columns?.className).toContain('lg:grid-cols-[minmax(0,7fr)_minmax(0,3fr)]');
     expect(columns?.className).toContain('grid-cols-1');
+    expect(columns?.className).toContain('overflow-y-auto');
+    expect(columns?.className).toContain('lg:overflow-hidden');
+    expect(Array.from(columns?.children ?? [])).toHaveLength(2);
+    for (const child of Array.from(columns?.children ?? [])) {
+      expect(child.className).toContain('min-w-0');
+    }
 
     expect(baseElement.querySelector('script')).toBeNull();
     expect(baseElement.querySelector('img')).toBeNull();
@@ -213,16 +257,23 @@ describe('ExternalTaskDetailDialog', () => {
     expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument();
   });
 
-  it('shows the current status in the property grid and updates immediately on selection', async () => {
+  it('shows one responsive details band and updates status immediately on selection', async () => {
     const user = userEvent.setup();
     const value = controllerValue();
     useExternalTaskControllerMock.mockReturnValue(value);
     renderDialog();
 
-    const properties = screen.getByRole('region', {
-      name: /properties/i,
+    const detailsBand = screen.getByRole('region', {
+      name: /task details/i,
     });
-    expect(properties).toBeInTheDocument();
+    expect(detailsBand).toBeInTheDocument();
+    expect(within(detailsBand).getAllByText('Status')).toHaveLength(1);
+    expect(within(detailsBand).getAllByText('Priority')).toHaveLength(1);
+    expect(within(detailsBand).getAllByText('Due')).toHaveLength(1);
+    expect(detailsBand.querySelector('dl')?.className).toContain('sm:grid-cols-3');
+    expect(screen.queryByRole('heading', { name: 'Properties' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: /activity/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /more|overflow/i })).not.toBeInTheDocument();
 
     const status = screen.getByRole('combobox', { name: 'Status' });
     expect(status).toHaveDisplayValue('In Progress');
@@ -354,30 +405,174 @@ describe('ExternalTaskDetailDialog', () => {
     );
   });
 
-  it('keeps description primary and Time tracked behind a compact disclosure', async () => {
-    const user = userEvent.setup();
+  it('keeps description primary and composes collapsed time with lazy history', () => {
     renderDialog();
 
-    expect(screen.getByRole('heading', { name: 'Description' })).toBeInTheDocument();
+    const descriptionHeading = screen.getByRole('heading', { name: 'Description' });
+    expect(descriptionHeading).toBeInTheDocument();
+    expect(descriptionHeading.closest('section')).toHaveClass('border', 'bg-card');
     expect(screen.getByText(detail.description!)).toBeInTheDocument();
 
-    const disclosure = screen.getByText('Time tracked', { selector: 'summary' }).closest('details');
-    expect(disclosure).not.toBeNull();
-    expect(disclosure?.open).toBe(false);
-    // The summary total comes from task detail, independent of history.
-    expect(disclosure).toHaveTextContent('1h 30m');
+    const timeHeading = screen.getByRole('heading', { name: 'Time tracked' });
+    expect(timeHeading.closest('section')).toHaveTextContent('1h 30m');
+    expect(screen.getByRole('button', { name: 'Expand Time tracked' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    expect(screen.queryByRole('form', { name: 'Log time' })).toBeNull();
+    expect(screen.getByText('Recent time entries', { selector: 'summary' })).not.toBeVisible();
+  });
 
-    await user.click(screen.getByText('Time tracked', { selector: 'summary' }));
-    expect(disclosure?.open).toBe(true);
+  it('renders subtasks with status-only controls between Description and Time tracked', async () => {
+    const activate = jest.fn();
+    useExternalSubtaskStatusEditorMock.mockReturnValue({
+      editor: null,
+      activate,
+      retry: jest.fn(),
+      deactivate: jest.fn(),
+      selectStatus: jest.fn(),
+      isStatusPending: false,
+    });
+    useExternalTaskControllerMock.mockReturnValue(
+      controllerValue({
+        detail: {
+          data: {
+            ...detail,
+            subtasks: [
+              {
+                remoteId: '10001',
+                remoteKey: 'ENG-2',
+                title: 'Nested child card',
+                status: { remoteId: 'st-progress', name: 'In Progress', category: 'active' },
+                webUrl: 'https://acme.atlassian.net/browse/ENG-2',
+              },
+              {
+                remoteId: '10002',
+                remoteKey: 'ENG-3',
+                title: 'Unlinked child card',
+                status: { name: 'Done', category: 'completed' },
+                webUrl: null,
+              },
+            ],
+          },
+          isLoading: false,
+          isError: false,
+          error: null,
+        },
+      }),
+    );
+    renderDialog();
+
+    const description = screen.getByRole('heading', { name: 'Description' });
+    const subtasksHeading = screen.getByRole('heading', { name: 'Subtasks' });
+    const timeHeading = screen.getByRole('heading', { name: 'Time tracked' });
+    expect(description.compareDocumentPosition(subtasksHeading)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(subtasksHeading.compareDocumentPosition(timeHeading)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+
+    const panel = screen.getByRole('region', { name: 'Subtasks' });
+    expect(within(panel).getByText('ENG-2')).toBeInTheDocument();
+    expect(within(panel).getByText('Nested child card')).toBeInTheDocument();
+    expect(within(panel).getByText('In Progress')).toBeInTheDocument();
+    expect(within(panel).getByText('ENG-3')).toBeInTheDocument();
+    expect(within(panel).getByText('Done')).toBeInTheDocument();
+    expect(within(panel).getByRole('link', { name: 'Open ENG-2 in source' })).toHaveAttribute(
+      'href',
+      'https://acme.atlassian.net/browse/ENG-2',
+    );
+    expect(within(panel).queryByRole('link', { name: /ENG-3/i })).not.toBeInTheDocument();
+
+    // Child rows expose status controls only: no comment, time, import,
+    // DevChain-link, or bulk actions may appear inside the panel.
+    const buttons = within(panel).getAllByRole('button');
+    expect(buttons).toHaveLength(2);
+    for (const button of buttons) {
+      expect(button).toHaveAccessibleName(/Change status for ENG-\d/);
+    }
+    expect(within(panel).queryAllByRole('form')).toHaveLength(0);
+    expect(within(panel).queryAllByRole('combobox')).toHaveLength(0);
+    expect(within(panel).getAllByRole('link')).toHaveLength(1);
+
+    // The row status control runs through the lazy child-status controller.
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Change status for ENG-2' }));
+    expect(activate).toHaveBeenCalledTimes(1);
+    expect(activate).toHaveBeenCalledWith('10001');
+    expect(useExternalSubtaskStatusEditorMock).toHaveBeenCalledWith('jira', {
+      connectionEpoch: 'connection-jira-a:1',
+      parentTaskId: 'ENG-1',
+      enabled: true,
+    });
+  });
+
+  it('renders no Subtasks panel for a task without children', () => {
+    renderDialog();
+
+    expect(screen.queryByRole('region', { name: 'Subtasks' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Subtasks' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the Subtasks panel with only the incomplete notice for a partial empty list', () => {
+    useExternalTaskControllerMock.mockReturnValue(
+      controllerValue({
+        detail: {
+          data: { ...detail, subtasks: [], subtasksTruncated: true },
+          isLoading: false,
+          isError: false,
+          error: null,
+        },
+      }),
+    );
+    renderDialog();
+
+    const panel = screen.getByRole('region', { name: 'Subtasks' });
+    expect(
+      within(panel).getByText(
+        'Incomplete list — the provider did not return every direct subtask.',
+      ),
+    ).toBeInTheDocument();
+    expect(within(panel).queryByRole('listitem')).not.toBeInTheDocument();
   });
 
   it('composes the comments panel in the Comments column', () => {
     useExternalTaskControllerMock.mockReturnValue(controllerValue({ chronologicalComments: [] }));
     renderDialog();
 
-    expect(screen.getByRole('region', { name: 'Comments history' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Comments' })).toBeInTheDocument();
+    const history = screen.getByRole('region', { name: 'Comments history' });
+    expect(history).toHaveClass(
+      'max-h-96',
+      'flex-none',
+      'overflow-y-auto',
+      'overscroll-contain',
+      'lg:max-h-none',
+      'lg:flex-1',
+    );
+    const commentsHeading = screen.getByRole('heading', { name: 'Comments' });
+    expect(commentsHeading.closest('section')).toHaveClass('flex-none', 'lg:flex-1');
     expect(screen.getByRole('textbox', { name: 'Comment' })).toBeInTheDocument();
+  });
+
+  it('announces status success with an existing theme role', () => {
+    useExternalTaskControllerMock.mockReturnValue(
+      controllerValue({
+        mutation: {
+          mutate: jest.fn(),
+          reset: jest.fn(),
+          isPending: false,
+          isError: false,
+          error: null,
+          variables: { action: 'change_status', input: { status: '31' } },
+          data: { remoteTaskId: 'ENG-1', action: 'change_status', succeeded: true, refresh: [] },
+        },
+      }),
+    );
+    renderDialog();
+
+    const success = screen.getByText('Status updated.');
+    expect(success).toHaveAttribute('role', 'status');
+    expect(success).toHaveClass('text-primary');
   });
 
   it('renders detail loading and error states without breaking the layout', () => {
@@ -460,6 +655,36 @@ describe('ExternalTaskDetailDialog', () => {
     expect(screen.getByText(detail.description!)).toBeInTheDocument();
     expect(screen.queryByRole('combobox', { name: 'Status' })).not.toBeInTheDocument();
     expect(screen.getByText(detail.status.name)).toBeInTheDocument();
+  });
+
+  it('keeps the time section as a quiet summary when the provider cannot track time', async () => {
+    useExternalTaskControllerMock.mockReturnValue(
+      controllerValue({
+        detail: {
+          data: {
+            ...detail,
+            actions: detail.actions.map((action) =>
+              action.action === 'log_time' ? { ...action, supported: false } : action,
+            ),
+          },
+          isLoading: false,
+          isError: false,
+          error: null,
+        },
+      }),
+    );
+    const { baseElement } = renderDialog();
+    const user = userEvent.setup();
+
+    const timeSection = screen.getByRole('heading', { name: 'Time tracked' }).closest('section');
+    expect(timeSection).toHaveTextContent('1h 30m');
+    await user.click(screen.getByRole('button', { name: 'Expand Time tracked' }));
+    expect(timeSection).toHaveTextContent('Time tracking is unavailable.');
+    expect(screen.queryByRole('form', { name: 'Log time' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('Recent time entries', { selector: 'summary' }),
+    ).not.toBeInTheDocument();
+    await expect(axe(baseElement)).resolves.toHaveNoViolations();
   });
 
   it('returns focus to the supplied target on close', async () => {
@@ -595,9 +820,12 @@ describe('ExternalTaskDetailDialog', () => {
       screen.queryByRole('link', { name: 'Open linked DevChain task' }),
     ).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /open in source/i })).not.toBeInTheDocument();
+    // An identity mismatch admits no subtask row and no child status action.
+    expect(screen.queryByRole('region', { name: 'Subtasks' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /change status for/i })).not.toBeInTheDocument();
   });
 
-  it('renders the accepted linked workspace without the DevChain link or Create action', () => {
+  it('renders the accepted linked workspace and admits its estimate only after expansion', async () => {
     useExternalTaskControllerMock.mockReturnValue(
       controllerValue({
         detail: {
@@ -621,5 +849,9 @@ describe('ExternalTaskDetailDialog', () => {
     expect(screen.queryByRole('button', { name: 'Create DevChain task' })).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Comments' })).toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Comment' })).toBeInTheDocument();
+    expect(useEpicTimeDetailMock).toHaveBeenCalledWith('epic-1', { enabled: false });
+
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Expand Time tracked' }));
+    expect(useEpicTimeDetailMock).toHaveBeenLastCalledWith('epic-1', { enabled: true });
   });
 });

@@ -65,6 +65,8 @@ export interface BoardListViewProps {
   hasRunningWorktrees?: boolean;
   /** Stored external sources by Epic ID; main rows only, never sub-epic rows. */
   externalSources?: ReadonlyMap<string, ExternalTaskSourceSummary>;
+  /** Estimated-time totals in whole minutes by Epic ID (root epics only). */
+  timeTotals?: ReadonlyMap<string, number>;
   /** Optional className for container */
   className?: string;
 }
@@ -104,6 +106,7 @@ export function BoardListView({
   onMoveToWorktree,
   hasRunningWorktrees,
   externalSources,
+  timeTotals,
   className,
 }: BoardListViewProps) {
   // Track which epics are expanded (by epic ID)
@@ -404,6 +407,7 @@ export function BoardListView({
                   onAgentChange={onAgentChange}
                   subEpicCount={subEpicCounts?.[epic.id] ?? 0}
                   externalSource={externalSources?.get(epic.id)}
+                  timeTotalMinutes={timeTotals?.get(epic.id)}
                 />
               ))
             )}

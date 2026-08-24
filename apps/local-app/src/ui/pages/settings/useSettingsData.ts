@@ -123,7 +123,7 @@ export function useSettingsData() {
       scrollbackLines: number;
       seedingMaxBytes: number;
       inputMode?: 'form' | 'tty';
-      suppressCtrlCWithSelection?: boolean;
+      suppressCtrlCWithSelection: boolean;
     }) =>
       updateSettingsRequest({
         terminal: { scrollbackLines, seedingMaxBytes, inputMode, suppressCtrlCWithSelection },

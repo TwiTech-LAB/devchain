@@ -45,6 +45,7 @@ function issueDetail(overrides: Record<string, unknown> = {}): Record<string, un
       duedate: '2026-08-22',
       priority: { id: '3', name: 'Medium', iconUrl: 'https://private.example/icon.svg' },
       project: { id: 'project-1', key: 'ENG', name: 'Engineering' },
+      subtasks: [],
       timetracking: { timeSpentSeconds: 3_600, timeSpent: '1h' },
     },
     ...overrides,
@@ -79,6 +80,34 @@ function transitions(): Record<string, unknown> {
   };
 }
 
+function richChild(
+  key: string,
+  title: string,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    id: `id-${key}`,
+    key,
+    fields: {
+      summary: title,
+      status: {
+        id: 'status-progress',
+        name: 'In Progress',
+        statusCategory: { key: 'indeterminate' },
+      },
+    },
+    ...overrides,
+  };
+}
+
+function issueDetailWithSubtasks(subtasks: unknown[]): Record<string, unknown> {
+  const base = issueDetail();
+  return {
+    ...base,
+    fields: { ...(base.fields as Record<string, unknown>), subtasks },
+  };
+}
+
 function providerWith(requestJson: jest.Mock): JiraExternalTaskProvider {
   return new JiraExternalTaskProvider({
     requestJson,
@@ -93,7 +122,7 @@ describe('Jira task detail and workflow actions', () => {
       const url = new URL(request.url);
       if (url.pathname === '/rest/api/3/issue/ENG-1') {
         expect(url.searchParams.get('fields')).toBe(
-          'summary,description,status,duedate,priority,project,timetracking',
+          'summary,description,status,duedate,priority,project,subtasks,timetracking',
         );
         return issueDetail({
           fields: {
@@ -134,6 +163,8 @@ describe('Jira task detail and workflow actions', () => {
       },
       dueAt: '2026-08-22T00:00:00.000Z',
       priority: { name: 'Medium', color: '#6b778c' },
+      subtasks: [],
+      subtasksTruncated: false,
       taskTotalDurationMs: 3_600_000,
       webUrl: 'https://acme.atlassian.net/browse/ENG-1',
       location: {
@@ -162,6 +193,204 @@ describe('Jira task detail and workflow actions', () => {
     expect(JSON.stringify(result)).not.toMatch(
       /iconUrl|private\.example|statusCategory|transitions|fields|authorization|ADF/i,
     );
+  });
+
+  it('uses complete Jira child references without fallback reads and sorts the summaries', async () => {
+    const requestJson = jest.fn(async (request: SafeVendorJsonRequest) => {
+      const path = new URL(request.url).pathname;
+      if (path === '/rest/api/3/issue/ENG-1') {
+        return issueDetailWithSubtasks([richChild('ENG-3', 'Bravo'), richChild('ENG-2', 'Alpha')]);
+      }
+      if (path.endsWith('/transitions')) return transitions();
+      if (path === '/rest/api/3/configuration') return { timeTrackingEnabled: true };
+      throw new Error(`unexpected Jira request: ${request.url}`);
+    });
+
+    const result = await providerWith(requestJson).myWork!.getTaskDetail!(
+      credentials,
+      context,
+      'ENG-1',
+    );
+
+    expect(result.subtasks).toEqual([
+      {
+        remoteId: 'ENG-2',
+        remoteKey: 'ENG-2',
+        title: 'Alpha',
+        status: {
+          remoteId: 'status-progress',
+          name: 'In Progress',
+          category: 'active',
+        },
+        webUrl: 'https://acme.atlassian.net/browse/ENG-2',
+      },
+      expect.objectContaining({ remoteId: 'ENG-3', title: 'Bravo' }),
+    ]);
+    expect(result.subtasksTruncated).toBe(false);
+    expect(requestJson).toHaveBeenCalledTimes(3);
+  });
+
+  it('falls back only for an incomplete keyed reference and proves its parent', async () => {
+    const requestJson = jest.fn(async (request: SafeVendorJsonRequest) => {
+      const url = new URL(request.url);
+      if (url.pathname === '/rest/api/3/issue/ENG-1') {
+        return issueDetailWithSubtasks([
+          richChild('ENG-2', 'ignored', {
+            fields: { summary: 'Incomplete reference', status: { id: 'status-progress' } },
+          }),
+        ]);
+      }
+      if (url.pathname === '/rest/api/3/issue/ENG-2') {
+        expect(url.searchParams.get('fields')).toBe('summary,status,parent');
+        return {
+          id: '10002',
+          key: 'ENG-2',
+          fields: {
+            summary: 'Fallback child',
+            status: {
+              id: 'status-done',
+              name: 'Done',
+              statusCategory: { key: 'done' },
+            },
+            parent: { id: '10001', key: 'ENG-1' },
+          },
+        };
+      }
+      if (url.pathname.endsWith('/transitions')) return transitions();
+      if (url.pathname === '/rest/api/3/configuration') return { timeTrackingEnabled: true };
+      throw new Error(`unexpected Jira request: ${request.url}`);
+    });
+
+    const result = await providerWith(requestJson).myWork!.getTaskDetail!(
+      credentials,
+      context,
+      'ENG-1',
+    );
+
+    expect(result.subtasks).toEqual([
+      expect.objectContaining({ remoteId: 'ENG-2', title: 'Fallback child' }),
+    ]);
+    expect(result.subtasksTruncated).toBe(false);
+  });
+
+  it('drops malformed, missing, and parent-mismatched Jira children as an incomplete list', async () => {
+    const requestJson = jest.fn(async (request: SafeVendorJsonRequest) => {
+      const url = new URL(request.url);
+      if (url.pathname === '/rest/api/3/issue/ENG-1') {
+        return issueDetailWithSubtasks([
+          { id: 'missing-key', fields: {} },
+          { id: '10002', key: 'ENG-2', fields: {} },
+          { id: '10003', key: 'ENG-3', fields: {} },
+        ]);
+      }
+      if (url.pathname === '/rest/api/3/issue/ENG-2') {
+        throw new SafeVendorHttpError('http_error', 404);
+      }
+      if (url.pathname === '/rest/api/3/issue/ENG-3') {
+        return {
+          id: '10003',
+          key: 'ENG-3',
+          fields: {
+            summary: 'Wrong parent',
+            status: {
+              id: 'status-progress',
+              name: 'In Progress',
+              statusCategory: { key: 'indeterminate' },
+            },
+            parent: { id: '99999', key: 'OTHER-1' },
+          },
+        };
+      }
+      if (url.pathname.endsWith('/transitions')) return transitions();
+      if (url.pathname === '/rest/api/3/configuration') return { timeTrackingEnabled: true };
+      throw new Error(`unexpected Jira request: ${request.url}`);
+    });
+
+    const result = await providerWith(requestJson).myWork!.getTaskDetail!(
+      credentials,
+      context,
+      'ENG-1',
+    );
+
+    expect(result.subtasks).toEqual([]);
+    expect(result.subtasksTruncated).toBe(true);
+    expect(
+      requestJson.mock.calls.filter(([request]) =>
+        ['/rest/api/3/issue/ENG-2', '/rest/api/3/issue/ENG-3'].includes(
+          new URL(request.url).pathname,
+        ),
+      ),
+    ).toHaveLength(2);
+  });
+
+  it('keeps Jira child fallback provider failures fatal', async () => {
+    const requestJson = jest.fn(async (request: SafeVendorJsonRequest) => {
+      const path = new URL(request.url).pathname;
+      if (path === '/rest/api/3/issue/ENG-1') {
+        return issueDetailWithSubtasks([{ id: '10002', key: 'ENG-2', fields: {} }]);
+      }
+      if (path === '/rest/api/3/issue/ENG-2') throw new SafeVendorHttpError('timeout');
+      if (path.endsWith('/transitions')) return transitions();
+      if (path === '/rest/api/3/configuration') return { timeTrackingEnabled: true };
+      throw new Error(`unexpected Jira request: ${request.url}`);
+    });
+
+    await expect(
+      providerWith(requestJson).myWork!.getTaskDetail!(credentials, context, 'ENG-1'),
+    ).rejects.toMatchObject<JiraProviderError>({
+      code: 'jira_timeout',
+    });
+  });
+
+  it('caps Jira child summaries at 100 and marks the result incomplete', async () => {
+    const requestJson = jest.fn(async (request: SafeVendorJsonRequest) => {
+      const path = new URL(request.url).pathname;
+      if (path === '/rest/api/3/issue/ENG-1') {
+        return issueDetailWithSubtasks(
+          Array.from({ length: 101 }, (_, index) =>
+            richChild(`ENG-${index + 2}`, `Child ${String(index + 1).padStart(3, '0')}`),
+          ),
+        );
+      }
+      if (path.endsWith('/transitions')) return transitions();
+      if (path === '/rest/api/3/configuration') return { timeTrackingEnabled: true };
+      throw new Error(`unexpected Jira request: ${request.url}`);
+    });
+
+    const result = await providerWith(requestJson).myWork!.getTaskDetail!(
+      credentials,
+      context,
+      'ENG-1',
+    );
+
+    expect(result.subtasks).toHaveLength(100);
+    expect(result.subtasksTruncated).toBe(true);
+    expect(requestJson).toHaveBeenCalledTimes(3);
+  });
+
+  it('rejects a malformed Jira child fallback response', async () => {
+    const requestJson = jest.fn(async (request: SafeVendorJsonRequest) => {
+      const path = new URL(request.url).pathname;
+      if (path === '/rest/api/3/issue/ENG-1') {
+        return issueDetailWithSubtasks([{ id: '10002', key: 'ENG-2', fields: {} }]);
+      }
+      if (path === '/rest/api/3/issue/ENG-2') {
+        return {
+          id: '10002',
+          key: 'ENG-2',
+          fields: { summary: 'Missing status', parent: { key: 'ENG-1' } },
+        };
+      }
+      if (path.endsWith('/transitions')) return transitions();
+      if (path === '/rest/api/3/configuration') return { timeTrackingEnabled: true };
+      throw new Error(`unexpected Jira request: ${request.url}`);
+    });
+
+    await expect(
+      providerWith(requestJson).myWork!.getTaskDetail!(credentials, context, 'ENG-1'),
+    ).rejects.toMatchObject<JiraProviderError>({
+      code: 'jira_invalid_response',
+    });
   });
 
   it('keeps two transitions into one destination status distinct', async () => {

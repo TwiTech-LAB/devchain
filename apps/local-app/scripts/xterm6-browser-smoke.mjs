@@ -3,10 +3,14 @@
  *
  * Jest mocks the browser `Terminal`, so it can prove the seam's routing logic but NOT the xterm 6
  * SmoothScrollableElement's real DOM/event coupling. This smoke loads the SAME production modules
- * (`terminal-input-intent-binding`, `scroll-intent-binding`, and `scroll-history-detector`) through
- * the Vite dev server and drives them with TRUSTED Chromium input (not `dispatchEvent`), asserting:
+ * (`terminal-input-intent-binding`, `ctrl-c-selection-binding`, `scroll-intent-binding`, and
+ * `scroll-history-detector`) through the Vite dev server and drives them with TRUSTED Chromium
+ * input (not `dispatchEvent`), asserting:
  *   - physical keys and clipboard/text insertion produce input intent before xterm onData;
  *   - programmatic blur/focus DEC reports reach onData without producing input intent;
+ *   - selected Ctrl+C copies exact text through one xterm-served event and clears in a macrotask;
+ *   - held-key repeat is suppressed, leaves a distinct clipboard sentinel unchanged, and keyup
+ *     restores the next no-selection Ctrl+C ETX;
  *   - a trusted wheel-up from the bottom moves xterm natively and yields exactly ONE decision;
  *   - a trusted scrollbar track click and a slider drag each yield exactly ONE decision;
  *   - terminal-content selection yields none;
@@ -44,6 +48,9 @@ try {
     const { createTerminalInputIntentBinding } = await import(
       '/src/ui/components/terminal/terminal-input-intent-binding.ts'
     );
+    const { createCtrlCSelectionBinding } = await import(
+      '/src/ui/components/terminal/ctrl-c-selection-binding.ts'
+    );
     const { createScrollHistoryDetector, SCROLL_GESTURE_STALE_MS } = await import(
       '/src/ui/components/terminal/scroll-history-detector.ts'
     );
@@ -76,12 +83,38 @@ try {
     const inputTrace = [];
     const domInputTrace = [];
     const keyTrace = [];
+    const keydownTrace = [];
+    const copyTrace = [];
+    const clipboardFailures = [];
     terminal.onData((data) => {
       mouseInput += data;
       inputTrace.push({ marker: 'input', data });
     });
     terminal.onKey(({ key, domEvent }) => {
       keyTrace.push({ key, trusted: domEvent.isTrusted });
+    });
+    host.addEventListener(
+      'keydown',
+      (event) => {
+        keydownTrace.push({
+          keyCode: event.keyCode,
+          repeat: event.repeat,
+          trusted: event.isTrusted,
+        });
+      },
+      { capture: true },
+    );
+    host.addEventListener('copy', (event) => {
+      copyTrace.push({
+        served: event.defaultPrevented,
+        trusted: event.isTrusted,
+        selectionPresent: terminal.hasSelection(),
+      });
+    });
+    const ctrlCSelection = createCtrlCSelectionBinding({
+      terminal,
+      enabled: true,
+      onClipboardBlocked: (error) => clipboardFailures.push(String(error)),
     });
     const inputIntent = createTerminalInputIntentBinding({
       terminal,
@@ -166,11 +199,22 @@ try {
       inputTrace: () => inputTrace.slice(),
       domInputTrace: () => domInputTrace.slice(),
       keyTrace: () => keyTrace.slice(),
+      keydownTrace: () => keydownTrace.slice(),
       resetInputTrace: () => {
         inputTrace.length = 0;
         domInputTrace.length = 0;
         keyTrace.length = 0;
       },
+      prepareCtrlCSelection: async (text) => {
+        terminal.clearSelection();
+        await write(`\r\n${text}`);
+        const row = terminal.buffer.active.baseY + terminal.buffer.active.cursorY;
+        terminal.select(0, row, text.length);
+        return terminal.getSelection();
+      },
+      copyTrace: () => copyTrace.slice(),
+      clipboardFailures: () => clipboardFailures.slice(),
+      hasSelection: () => terminal.hasSelection(),
       focusTerminal: () => terminal.focus(),
       enableDecFocusReporting: () => write('\x1b[?1004h'),
       cycleProgrammaticFocus: () => {
@@ -186,6 +230,7 @@ try {
       }),
       teardown: () => {
         clearInterval(poll);
+        ctrlCSelection.dispose();
         inputIntent.dispose();
         controller.dispose();
         terminal.dispose();
@@ -232,6 +277,15 @@ try {
     }
     if (focusIndex >= inputIndex) {
       throw new Error(`${label} expected focus before input, got ${JSON.stringify(trace)}`);
+    }
+  };
+
+  const assertNoCtrlCLeak = (label, input, keys) => {
+    if (input.some(({ marker, data }) => marker === 'input' && data === '\x03')) {
+      throw new Error(`${label} leaked ETX: ${JSON.stringify(input)}`);
+    }
+    if (keys.length > 0) {
+      throw new Error(`${label} leaked onKey: ${JSON.stringify(keys)}`);
     }
   };
 
@@ -304,6 +358,102 @@ try {
       `Programmatic DEC focus cycle expected ESC[O then ESC[I onData, got ${JSON.stringify(decInput)}`,
     );
   }
+
+  // --- Input phase 5: trusted selected Ctrl+C owns the physical gesture until keyup ---
+  const copiedText = 'trusted-ctrl-c-selection';
+  const initialSentinel = 'clipboard-before-selected-copy';
+  const repeatSentinel = 'clipboard-must-survive-repeat';
+  const selectedText = await smoke(
+    (text) => window.__xterm6Smoke.prepareCtrlCSelection(text),
+    copiedText,
+  );
+  if (selectedText !== copiedText) {
+    throw new Error(`xterm selection setup mismatch: ${JSON.stringify(selectedText)}`);
+  }
+  await page.evaluate((text) => navigator.clipboard.writeText(text), initialSentinel);
+  await smoke(() => window.__xterm6Smoke.resetInputTrace());
+  await page.keyboard.down('Control');
+  await page.keyboard.down('KeyC');
+  await settle();
+  const firstCtrlC = {
+    clipboard: await page.evaluate(() => navigator.clipboard.readText()),
+    copyTrace: await smoke(() => window.__xterm6Smoke.copyTrace()),
+    selectionCleared: !(await smoke(() => window.__xterm6Smoke.hasSelection())),
+    input: await smoke(() => window.__xterm6Smoke.inputTrace()),
+    keys: await smoke(() => window.__xterm6Smoke.keyTrace()),
+  };
+  if (firstCtrlC.clipboard !== copiedText) {
+    throw new Error(
+      `Selected Ctrl+C expected ${JSON.stringify(copiedText)}, got ${JSON.stringify(firstCtrlC.clipboard)}`,
+    );
+  }
+  if (
+    firstCtrlC.copyTrace.length !== 1 ||
+    firstCtrlC.copyTrace[0].served !== true ||
+    firstCtrlC.copyTrace[0].selectionPresent !== true
+  ) {
+    throw new Error(
+      `Selected Ctrl+C expected one served copy event before clear: ${JSON.stringify(firstCtrlC.copyTrace)}`,
+    );
+  }
+  if (!firstCtrlC.selectionCleared) {
+    throw new Error('Selected Ctrl+C did not clear selection in the following macrotask');
+  }
+  assertNoCtrlCLeak('Selected Ctrl+C', firstCtrlC.input, firstCtrlC.keys);
+
+  await page.evaluate((text) => navigator.clipboard.writeText(text), repeatSentinel);
+  await page.keyboard.down('KeyC');
+  await settle();
+  const repeatedCtrlC = {
+    clipboard: await page.evaluate(() => navigator.clipboard.readText()),
+    copyTrace: await smoke(() => window.__xterm6Smoke.copyTrace()),
+    input: await smoke(() => window.__xterm6Smoke.inputTrace()),
+    keys: await smoke(() => window.__xterm6Smoke.keyTrace()),
+    keydowns: (await smoke(() => window.__xterm6Smoke.keydownTrace())).filter(
+      ({ keyCode }) => keyCode === 67,
+    ),
+  };
+  if (repeatedCtrlC.clipboard !== repeatSentinel) {
+    throw new Error(
+      `Held Ctrl+C repeat changed the clipboard: ${JSON.stringify(repeatedCtrlC.clipboard)}`,
+    );
+  }
+  if (repeatedCtrlC.copyTrace.length !== 1) {
+    throw new Error(
+      `Held Ctrl+C repeat produced another copy event: ${JSON.stringify(repeatedCtrlC.copyTrace)}`,
+    );
+  }
+  if (!repeatedCtrlC.keydowns.some(({ repeat, trusted }) => repeat && trusted)) {
+    throw new Error(
+      `Held Ctrl+C did not produce a trusted repeat keydown: ${JSON.stringify(repeatedCtrlC.keydowns)}`,
+    );
+  }
+  assertNoCtrlCLeak('Held Ctrl+C repeat', repeatedCtrlC.input, repeatedCtrlC.keys);
+
+  await page.keyboard.up('KeyC');
+  await page.keyboard.up('Control');
+  await page.keyboard.press('Control+KeyC');
+  await settle();
+  const afterKeyup = {
+    input: await smoke(() => window.__xterm6Smoke.inputTrace()),
+    clipboardFailures: await smoke(() => window.__xterm6Smoke.clipboardFailures()),
+  };
+  if (!afterKeyup.input.some(({ marker, data }) => marker === 'input' && data === '\x03')) {
+    throw new Error(`Ctrl+C after keyup did not emit ETX: ${JSON.stringify(afterKeyup.input)}`);
+  }
+  if (afterKeyup.clipboardFailures.length > 0) {
+    throw new Error(
+      `Selected Ctrl+C unexpectedly used a failing fallback: ${JSON.stringify(afterKeyup.clipboardFailures)}`,
+    );
+  }
+  const ctrlCSelection = {
+    copiedText,
+    initialSentinel,
+    repeatSentinel,
+    firstCtrlC,
+    repeatedCtrlC,
+    afterKeyup,
+  };
 
   // --- Phase 1: trusted wheel-up from the bottom moves xterm natively → exactly one decision ---
   await rearm();
@@ -426,6 +576,7 @@ try {
     clipboardPaste,
     textInsertion,
     decFocus,
+    ctrlCSelection,
     wheel,
     track,
     drag,

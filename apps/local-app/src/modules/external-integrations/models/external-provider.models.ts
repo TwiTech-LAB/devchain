@@ -10,10 +10,16 @@ export const MAX_COMMENT_LENGTH = 10_000;
 export const MAX_TIME_ENTRY_NOTE_LENGTH = 10_000;
 export const MAX_TIME_ENTRY_DURATION_MS = 7 * 24 * 60 * 60 * 1_000;
 export const MAX_TASK_DETAIL_TEXT_LENGTH = 65_536;
+export const MAX_TASK_DETAIL_SUBTASKS = 100;
 export const MAX_TASK_COMMENT_BODY_LENGTH = 8_000;
 export const MAX_TASK_COMMENT_AUTHOR_LENGTH = 256;
 export const MAX_TASK_COMMENT_ID_LENGTH = 256;
 export const MAX_TASK_COMMENT_CURSOR_LENGTH = 1_024;
+export const MAX_EXTERNAL_SUBTASK_TITLE_LENGTH = 255;
+export const MAX_EXTERNAL_SUBTASK_DESCRIPTION_LENGTH = 65_536;
+export const MAX_EXTERNAL_SUBTASK_OWNERSHIP_TOKEN_LENGTH = 256;
+export const EXTERNAL_SUBTASK_MANAGEMENT_NOTE =
+  'Managed by DevChain. Update or delete this subtask in DevChain; remote changes are not imported.';
 export const TIME_ENTRY_HISTORY_WINDOW_DAYS = 30;
 export const MAX_TIME_ENTRY_HISTORY_ENTRIES = 100;
 
@@ -97,11 +103,20 @@ export interface ExternalWorkArea {
 
 export interface ExternalTaskSummary {
   remoteId: string;
+  parentRemoteTaskId: string | null;
   title: string;
   status: ExternalTaskStatus;
   updatedAt: string;
   dueAt: string | null;
   completedAt: string | null;
+  webUrl: string | null;
+}
+
+export interface ExternalTaskSubtaskSummary {
+  remoteId: string;
+  remoteKey: string;
+  title: string;
+  status: ExternalTaskStatus;
   webUrl: string | null;
 }
 
@@ -142,6 +157,8 @@ export interface ExternalProviderTaskDetail {
   status: ExternalWorkAreaColumn;
   dueAt: string | null;
   priority: ExternalTaskPriority | null;
+  subtasks: ExternalTaskSubtaskSummary[];
+  subtasksTruncated: boolean;
   /** Total logged time on the task in ms; null when the provider reports none. */
   taskTotalDurationMs: number | null;
   webUrl: string;
@@ -395,6 +412,81 @@ export interface ExternalTimeEntryMutationsCapability {
     remoteTaskId: string,
     remoteEntryId: string,
   ): Promise<void>;
+}
+
+export interface ExternalSubtaskOwnershipProof {
+  remoteTaskId: string;
+  expectedParentRemoteTaskId: string;
+  ownershipToken: string;
+}
+
+export interface ExternalSubtaskCreateInput {
+  parentRemoteTaskId: string;
+  ownershipToken: string;
+  title: string;
+  description: string | null;
+}
+
+export interface ExternalSubtaskUpdateInput extends ExternalSubtaskOwnershipProof {
+  title?: string;
+  description?: string | null;
+}
+
+/** Provider-neutral proof returned by exact reads and child enumeration. */
+export interface ExternalSubtaskSnapshot {
+  remoteTaskId: string;
+  remoteKey: string;
+  parentRemoteTaskId: string | null;
+  workAreaRemoteId: string;
+  ownershipToken: string | null;
+  title: string;
+  description: string | null;
+}
+
+export interface ExternalSubtaskChildrenResult {
+  items: ExternalSubtaskSnapshot[];
+  /** True only when the provider result proves every direct child was inspected. */
+  complete: boolean;
+}
+
+export type ExternalSubtaskDeleteResult = { outcome: 'deleted' } | { outcome: 'already_absent' };
+
+/**
+ * Internal one-way managed-subtask capability. It deliberately remains
+ * separate from the browser-facing task-action union.
+ */
+export interface ExternalSubtaskSyncCapability {
+  create(
+    credentials: IntegrationCredentials,
+    context: ExternalProviderConnectionContext,
+    input: ExternalSubtaskCreateInput,
+  ): Promise<ExternalSubtaskSnapshot>;
+  readExact(
+    credentials: IntegrationCredentials,
+    context: ExternalProviderConnectionContext,
+    remoteTaskId: string,
+  ): Promise<ExternalSubtaskSnapshot | null>;
+  update(
+    credentials: IntegrationCredentials,
+    context: ExternalProviderConnectionContext,
+    input: ExternalSubtaskUpdateInput,
+  ): Promise<void>;
+  delete(
+    credentials: IntegrationCredentials,
+    context: ExternalProviderConnectionContext,
+    proof: ExternalSubtaskOwnershipProof,
+  ): Promise<ExternalSubtaskDeleteResult>;
+  listOwnedDirectChildren(
+    credentials: IntegrationCredentials,
+    context: ExternalProviderConnectionContext,
+    parentRemoteTaskId: string,
+    ownershipToken: string,
+  ): Promise<ExternalSubtaskChildrenResult>;
+  assertOwned(
+    credentials: IntegrationCredentials,
+    context: ExternalProviderConnectionContext,
+    proof: ExternalSubtaskOwnershipProof,
+  ): Promise<ExternalSubtaskSnapshot>;
 }
 
 /** A comment located through the provider's bounded lookup contract. */

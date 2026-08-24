@@ -17,12 +17,12 @@ import {
   MIN_TERMINAL_SCROLLBACK,
   MAX_TERMINAL_SCROLLBACK,
 } from '@/common/constants/terminal';
-import { shouldWithholdCtrlC } from '../suppress-ctrl-c';
 import { resolveTerminalSocket } from '../socket';
 import { resolveTerminalTheme } from '../terminal-themes';
 import type { ThemeValue } from '@/ui/components/ThemeSelect';
 import type { TerminalHistorySync } from '../terminal-history-sync';
 import { createTerminalInputIntentBinding } from '../terminal-input-intent-binding';
+import { createCtrlCSelectionBinding } from '../ctrl-c-selection-binding';
 
 /**
  * Buffered frame for sequence-based history deduplication
@@ -70,7 +70,7 @@ const RESHOW_RESTORE_SETTLE_MS = 300;
  * @param isHistoryInFlightRef - Ref tracking if history request is in-flight (for buffering)
  * @param pendingHistoryFramesRef - Ref to buffer frames during in-flight for sequence-based dedup
  * @param scrollbackLines - Number of scrollback lines (from settings, fixed at mount)
- * @param suppressCtrlCWithSelection - Withhold Ctrl+C from the pane while text is selected
+ * @param suppressCtrlCWithSelectionRef - Stable pre-mount Ctrl+C selection preference
  */
 export function useXterm(
   terminalRef: React.RefObject<HTMLDivElement>,
@@ -90,7 +90,7 @@ export function useXterm(
   onTerminalChange?: (terminal: Terminal | null) => void,
   onScrollIntentController?: (controller: ScrollIntentController | null) => void,
   isAuthorityRef?: React.MutableRefObject<boolean>,
-  suppressCtrlCWithSelection: boolean = DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION,
+  suppressCtrlCWithSelectionRef?: React.MutableRefObject<boolean>,
 ) {
   useEffect(() => {
     // C1: Clamp scrollbackLines to valid range before using
@@ -175,31 +175,9 @@ export function useXterm(
       return true;
     });
 
-    // Ctrl+C reaches the provider as an interrupt, which clears an unsent prompt.
-    // With a selection present that costs the user their draft and gains nothing,
-    // since the selection has already been copied below. Withhold it and clear the
-    // selection instead, so a second press — now with nothing selected — interrupts
-    // as usual.
-    terminal.attachCustomKeyEventHandler((event) => {
-      if (!shouldWithholdCtrlC(event, terminal.hasSelection(), suppressCtrlCWithSelection)) {
-        return true;
-      }
-      const selected = terminal.getSelection();
-      if (selected && navigator.clipboard?.writeText) {
-        void navigator.clipboard.writeText(selected).catch((err: unknown) => {
-          const reason = err instanceof Error ? err.message : String(err);
-          termLog('ctrl_c_copy_failed', { sessionId, reason, textLen: selected.length });
-        });
-      }
-      terminal.clearSelection();
-      return false;
-    });
-
-    // Auto-copy on selection. xterm.js exposes only a highlight by default, and
-    // Ctrl+C is forwarded to the TUI as an interrupt in TTY mode, so without
-    // this the user's highlighted text never reaches the OS clipboard. The
-    // debounce coalesces the many onSelectionChange events fired during a drag
-    // so we write once when the selection settles.
+    // Mouse selection keeps its existing delayed auto-copy behavior. Explicit Ctrl+C selection
+    // copy is owned separately by the physical-gesture binding below, including reliable copy
+    // confirmation, fallback, and deferred selection clearing.
     let selectionCopyTimer: ReturnType<typeof setTimeout> | undefined;
     let lastCopiedSelection = '';
     const selectionDisposable = terminal.onSelectionChange(() => {
@@ -218,6 +196,21 @@ export function useXterm(
             termLog('selection_copy_failed', { sessionId, reason, textLen: text.length });
           });
       }, 150);
+    });
+
+    const ctrlCSelectionBinding = createCtrlCSelectionBinding({
+      terminal,
+      enabled:
+        suppressCtrlCWithSelectionRef?.current ?? DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION,
+      onClipboardBlocked: (error) => {
+        const reason = error instanceof Error ? error.message : String(error);
+        termLog('ctrl_c_selection_copy_failed', { sessionId, reason });
+        toast({
+          title: 'Clipboard write blocked',
+          description: 'The selection was kept. Allow clipboard access, then try again.',
+          variant: 'destructive',
+        });
+      },
     });
 
     // Detector state (was-at-bottom, in-cycle request latch, cooldown, last-visible position,
@@ -485,6 +478,7 @@ export function useXterm(
       clearTimeout(timeoutId);
       if (selectionCopyTimer) clearTimeout(selectionCopyTimer);
       selectionDisposable.dispose();
+      ctrlCSelectionBinding.dispose();
       scrollDisposable?.dispose();
       inputIntentBinding?.dispose();
       scrollIntent.dispose();
@@ -510,6 +504,7 @@ export function useXterm(
     onTerminalChange,
     onScrollIntentController,
     isAuthorityRef,
+    suppressCtrlCWithSelectionRef,
   ]);
 
   // Live theme update — runs independently of the initialization effect so

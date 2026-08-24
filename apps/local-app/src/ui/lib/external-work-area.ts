@@ -3,17 +3,24 @@ import type {
   ExternalTaskStatusCategory,
   ExternalTaskSummary,
   ExternalWorkArea,
+  ExternalWorkAreaTask,
 } from '@/modules/external-integrations/models/external-provider.models';
 import type { ExternalBoardProvider } from '@/ui/lib/external-board';
 
 export interface ExternalKanbanTask {
   remoteId: string;
+  isSubtask: boolean;
   title: string;
   statusName: string;
   statusCategory: ExternalTaskStatusCategory;
   updatedAt: string;
   dueAt: string | null;
   webUrl: string | null;
+  /**
+   * Assigned child cards hidden under this card by the same work-area
+   * projection — not the provider's total direct-child count.
+   */
+  groupedSubtaskCount: number;
 }
 
 export interface ExternalKanbanColumn {
@@ -44,15 +51,80 @@ type SupportedSnapshot = Extract<ExternalMyWorkResult, { supported: true }>;
 /** Mirrors the Jira adapter's synthetic area for tasks outside a board. */
 const JIRA_OTHER_ASSIGNED_WORK_AREA_ID = 'other-assigned';
 
-function taskModel(task: ExternalTaskSummary): ExternalKanbanTask {
+export interface ExternalTaskHierarchyProjection {
+  visibleTasks: ExternalTaskSummary[];
+  nestedTaskIds: ReadonlySet<string>;
+  /**
+   * Grouped assigned-child count per parent, derived from the same IDs
+   * `nestedTaskIds` hides. Keys are always visible parents in this
+   * projection; the count is scoped to the exact provider scope and work
+   * area the projection received.
+   */
+  groupedChildCountByParentId: ReadonlyMap<string, number>;
+}
+
+/**
+ * Projects one exact work area without recursion. A task nests only when its
+ * present parent has no present parent of its own, keeping deeper and cyclic
+ * relationships conservative and visible.
+ */
+export function projectExternalTaskHierarchy(
+  tasks: readonly ExternalTaskSummary[],
+): ExternalTaskHierarchyProjection {
+  const tasksById = new Map(tasks.map((task) => [task.remoteId, task]));
+  const isEligibleToNest = (task: ExternalTaskSummary): boolean =>
+    task.parentRemoteTaskId !== null && tasksById.has(task.parentRemoteTaskId);
+  const nestedTaskIds = new Set<string>();
+  const groupedChildCountByParentId = new Map<string, number>();
+
+  for (const task of tasks) {
+    if (task.parentRemoteTaskId === null) continue;
+    const parent = tasksById.get(task.parentRemoteTaskId);
+    if (parent && !isEligibleToNest(parent)) {
+      nestedTaskIds.add(task.remoteId);
+      groupedChildCountByParentId.set(
+        parent.remoteId,
+        (groupedChildCountByParentId.get(parent.remoteId) ?? 0) + 1,
+      );
+    }
+  }
+
+  return {
+    visibleTasks: tasks.filter((task) => !nestedTaskIds.has(task.remoteId)),
+    nestedTaskIds,
+    groupedChildCountByParentId,
+  };
+}
+
+export function projectWorkAreaTaskHierarchy(
+  tasks: readonly ExternalWorkAreaTask[],
+  workArea: Pick<ExternalWorkArea, 'remoteId' | 'scopeKey'>,
+): ExternalTaskHierarchyProjection {
+  return projectExternalTaskHierarchy(
+    tasks
+      .filter(
+        (item) =>
+          item.workArea.remoteId === workArea.remoteId &&
+          item.workArea.scopeKey === workArea.scopeKey,
+      )
+      .map((item) => item.task),
+  );
+}
+
+function taskModel(
+  task: ExternalTaskSummary,
+  groupedChildCountByParentId: ReadonlyMap<string, number>,
+): ExternalKanbanTask {
   return {
     remoteId: task.remoteId,
+    isSubtask: task.parentRemoteTaskId !== null,
     title: task.title,
     statusName: task.status.name,
     statusCategory: task.status.category,
     updatedAt: task.updatedAt,
     dueAt: task.dueAt,
     webUrl: task.webUrl,
+    groupedSubtaskCount: groupedChildCountByParentId.get(task.remoteId) ?? 0,
   };
 }
 
@@ -60,20 +132,23 @@ function observedStatusColor(category: ExternalTaskStatusCategory): string {
   return category === 'completed' ? '#36b37e' : '#6b778c';
 }
 
-function observedStatusColumns(tasks: ExternalTaskSummary[]): ExternalKanbanColumn[] {
+function observedStatusColumns(
+  tasks: ExternalTaskSummary[],
+  groupedChildCountByParentId: ReadonlyMap<string, number>,
+): ExternalKanbanColumn[] {
   const columns = new Map<string, ExternalKanbanColumn>();
   for (const task of tasks) {
     const key = task.status.remoteId ?? `name:${task.status.name}`;
     const existing = columns.get(key);
     if (existing) {
-      existing.tasks.push(taskModel(task));
+      existing.tasks.push(taskModel(task, groupedChildCountByParentId));
       continue;
     }
     columns.set(key, {
       key,
       name: task.status.name,
       color: observedStatusColor(task.status.category),
-      tasks: [taskModel(task)],
+      tasks: [taskModel(task, groupedChildCountByParentId)],
       remoteId: task.status.remoteId ?? null,
       remoteStatusIds: task.status.remoteId ? [task.status.remoteId] : [],
       synthetic: false,
@@ -112,16 +187,17 @@ export function buildExternalWorkAreaBoard(
   const workArea = snapshot.workAreas.find((candidate) => candidate.remoteId === workAreaId);
   if (!workArea) return null;
 
-  const tasks = snapshot.tasks
-    .filter(
-      (item) =>
-        item.workArea.remoteId === workArea.remoteId &&
-        item.workArea.scopeKey === workArea.scopeKey,
-    )
-    .map((item) => item.task);
+  const { visibleTasks: tasks, groupedChildCountByParentId } = projectWorkAreaTaskHierarchy(
+    snapshot.tasks,
+    workArea,
+  );
 
   if (provider === 'jira' && workArea.remoteId === JIRA_OTHER_ASSIGNED_WORK_AREA_ID) {
-    return { workArea, columns: observedStatusColumns(tasks), workflowOrdered: false };
+    return {
+      workArea,
+      columns: observedStatusColumns(tasks, groupedChildCountByParentId),
+      workflowOrdered: false,
+    };
   }
 
   const remaining = new Set(tasks.map((task) => task.remoteId));
@@ -134,7 +210,7 @@ export function buildExternalWorkAreaBoard(
         key: column.remoteId ?? `column:${index}:${column.name}`,
         name: column.name,
         color: column.color,
-        tasks: matches.map(taskModel),
+        tasks: matches.map((task) => taskModel(task, groupedChildCountByParentId)),
         remoteId: column.remoteId,
         remoteStatusIds: column.remoteStatusIds ?? [],
         synthetic: false,
@@ -146,7 +222,9 @@ export function buildExternalWorkAreaBoard(
       key: 'other',
       name: 'Other',
       color: '#6b7280',
-      tasks: tasks.filter((task) => remaining.has(task.remoteId)).map(taskModel),
+      tasks: tasks
+        .filter((task) => remaining.has(task.remoteId))
+        .map((task) => taskModel(task, groupedChildCountByParentId)),
       remoteId: null,
       remoteStatusIds: [],
       synthetic: true,

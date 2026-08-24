@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
 import { ExternalLink, Loader2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import type { ExternalTaskDetail } from '@/modules/external-integrations/models/external-provider.models';
 import { ExternalTaskCommentsPanel } from '@/ui/components/board/ExternalTaskCommentsPanel';
+import { ExternalTaskSubtasksPanel } from '@/ui/components/board/ExternalTaskSubtasksPanel';
 import { ExternalTaskTimeTracking } from '@/ui/components/board/ExternalTaskTimeTracking';
 import { Alert, AlertDescription, AlertTitle } from '@/ui/components/ui/alert';
 import { Button } from '@/ui/components/ui/button';
@@ -15,6 +16,7 @@ import {
 } from '@/ui/components/ui/dialog';
 import { Label } from '@/ui/components/ui/label';
 import { useExternalTaskController } from '@/ui/hooks/board/useExternalTaskController';
+import { useExternalTaskTimeEntries } from '@/ui/hooks/board/useExternalTaskTimeEntries';
 import { useExternalRichDescriptionEdit } from '@/ui/hooks/board/useExternalRichDescriptionEdit';
 import { ExternalTaskRichDescription } from '@/ui/components/board/ExternalTaskRichDescription';
 import type { ExternalBoardProvider } from '@/ui/lib/external-board';
@@ -93,6 +95,26 @@ export function ExternalTaskDetailDialog({
     expectedLinkedEpicId,
   });
   const detail = enabled ? controller.detail.data : undefined;
+  const timeWriteScope = `${provider}:${connectionEpoch ?? ''}:${taskId ?? ''}`;
+  const [historyDisclosure, setHistoryDisclosure] = useState({
+    scope: timeWriteScope,
+    open: false,
+  });
+  const historyOpen = historyDisclosure.scope === timeWriteScope && historyDisclosure.open;
+  const handleHistoryOpenChange = useCallback(
+    (historyIsOpen: boolean) => {
+      setHistoryDisclosure({ scope: timeWriteScope, open: historyIsOpen });
+    },
+    [timeWriteScope],
+  );
+  const timeTrackingEnabled = Boolean(detail && supports(detail, 'log_time'));
+  const timeEntries = useExternalTaskTimeEntries(provider, taskId, {
+    enabled: enabled && open,
+    historyOpen,
+    connectionEpoch,
+    identityAccepted: controller.identityAccepted,
+    timeTrackingEnabled,
+  });
   const richEdit = useExternalRichDescriptionEdit(provider, connectionEpoch, taskId, {
     enabled: enabled && open && controller.identityAccepted,
   });
@@ -165,7 +187,7 @@ export function ExternalTaskDetailDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="flex h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-none flex-col gap-0 p-0 sm:rounded-lg"
+        className="flex h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-none flex-col gap-0 overflow-hidden bg-background p-0 supports-[height:100dvh]:h-[calc(100dvh-2rem)] sm:rounded-lg"
         onCloseAutoFocus={(event) => {
           // Prefer the owner's Kanban focus target; fall back to this dialog's
           // heading so focus never lands on document.body.
@@ -176,13 +198,13 @@ export function ExternalTaskDetailDialog({
           }
         }}
       >
-        <DialogHeader className="flex flex-none flex-wrap items-start justify-between gap-3 border-b p-5 pr-14">
+        <DialogHeader className="grid flex-none gap-4 space-y-0 border-b bg-card p-5 pr-14 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
           <div className="min-w-0">
             {/* The fallback ref keeps the last attached node: on unmount React
                 nulls refs before Radix runs onCloseAutoFocus, and the heading
                 must stay resolvable through the close lifecycle. */}
             <DialogTitle
-              className="break-words"
+              className="break-words text-balance"
               tabIndex={-1}
               ref={(node) => {
                 if (node) headingRef.current = node;
@@ -190,11 +212,11 @@ export function ExternalTaskDetailDialog({
             >
               {detail?.title ?? 'Remote task'}
             </DialogTitle>
-            <DialogDescription>
+            <DialogDescription className="break-words">
               {taskDialogDescription(providerLabel, detail, controller.identityMismatch)}
             </DialogDescription>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 sm:justify-end">
             {sourceUrl ? (
               <Button asChild type="button" variant="outline" size="sm">
                 <a href={sourceUrl} target="_blank" rel="noreferrer">
@@ -208,8 +230,78 @@ export function ExternalTaskDetailDialog({
           </div>
         </DialogHeader>
 
-        <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[65fr_35fr]">
-          <div className="min-h-0 space-y-6 overflow-y-auto overscroll-contain p-5">
+        {detail ? (
+          <section
+            className="flex-none border-b bg-muted/40 px-5 py-4"
+            aria-labelledby="external-task-details-heading"
+          >
+            <h3 id="external-task-details-heading" className="sr-only">
+              Task details
+            </h3>
+            <dl className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-3 sm:gap-6">
+              <div className="min-w-0 space-y-1.5">
+                <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  {supports(detail, 'change_status') && detail.allowedStatuses.length > 0 ? (
+                    <Label
+                      htmlFor="external-task-status"
+                      className="text-xs font-medium uppercase tracking-wide"
+                    >
+                      Status
+                    </Label>
+                  ) : (
+                    'Status'
+                  )}
+                </dt>
+                <dd className="min-w-0">
+                  {supports(detail, 'change_status') && detail.allowedStatuses.length > 0 ? (
+                    <select
+                      id="external-task-status"
+                      name="status"
+                      autoComplete="off"
+                      value={status || currentStatusOptionValue(detail)}
+                      onChange={handleStatusChange}
+                      disabled={controller.mutation.isPending}
+                      aria-busy={controller.mutation.isPending}
+                      className="flex h-9 w-full min-w-0 rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-wait disabled:opacity-70"
+                    >
+                      <option value={currentStatusOptionValue(detail)} disabled>
+                        {detail.status.name}
+                      </option>
+                      {detail.allowedStatuses.map((candidate) => (
+                        <option key={candidate.actionValue} value={candidate.actionValue}>
+                          {externalTaskStatusOptionLabel(candidate)}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <span className="inline-flex max-w-full break-words rounded-full border bg-background px-2.5 py-1 text-xs font-medium">
+                      {detail.status.name}
+                    </span>
+                  )}
+                </dd>
+              </div>
+              <div className="min-w-0 space-y-1.5">
+                <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Priority
+                </dt>
+                <dd className="break-words font-medium text-foreground">
+                  {detail.priority?.name ?? 'None'}
+                </dd>
+              </div>
+              <div className="min-w-0 space-y-1.5">
+                <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Due
+                </dt>
+                <dd className="break-words font-medium text-foreground">
+                  {detail.dueAt ? new Date(detail.dueAt).toLocaleString() : 'None'}
+                </dd>
+              </div>
+            </dl>
+          </section>
+        ) : null}
+
+        <div className="grid min-h-0 flex-1 grid-cols-1 overflow-y-auto lg:grid-cols-[minmax(0,7fr)_minmax(0,3fr)] lg:overflow-hidden">
+          <div className="min-w-0 space-y-6 p-5 lg:min-h-0 lg:overflow-y-auto lg:overscroll-contain">
             {controller.detail.isLoading ? (
               <div className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
                 <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> Loading task detail
@@ -242,52 +334,6 @@ export function ExternalTaskDetailDialog({
 
             {detail ? (
               <>
-                <section className="space-y-3" aria-labelledby="external-task-properties-heading">
-                  <h3 id="external-task-properties-heading" className="font-semibold">
-                    Properties
-                  </h3>
-                  <dl className="grid grid-cols-[minmax(5rem,auto)_minmax(0,1fr)] items-center gap-x-4 gap-y-3 text-sm">
-                    <dt className="text-muted-foreground">
-                      {supports(detail, 'change_status') && detail.allowedStatuses.length > 0 ? (
-                        <Label htmlFor="external-task-status">Status</Label>
-                      ) : (
-                        'Status'
-                      )}
-                    </dt>
-                    <dd className="min-w-0">
-                      {supports(detail, 'change_status') && detail.allowedStatuses.length > 0 ? (
-                        <select
-                          id="external-task-status"
-                          value={status || currentStatusOptionValue(detail)}
-                          onChange={handleStatusChange}
-                          disabled={controller.mutation.isPending}
-                          aria-busy={controller.mutation.isPending}
-                          className="flex h-9 w-full max-w-sm rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium disabled:cursor-wait disabled:opacity-70"
-                        >
-                          <option value={currentStatusOptionValue(detail)} disabled>
-                            {detail.status.name}
-                          </option>
-                          {detail.allowedStatuses.map((candidate) => (
-                            <option key={candidate.actionValue} value={candidate.actionValue}>
-                              {externalTaskStatusOptionLabel(candidate)}
-                            </option>
-                          ))}
-                        </select>
-                      ) : (
-                        <span className="inline-flex rounded-full border bg-muted/40 px-2.5 py-1 text-xs font-medium">
-                          {detail.status.name}
-                        </span>
-                      )}
-                    </dd>
-                    <dt className="text-muted-foreground">Priority</dt>
-                    <dd className="font-medium">{detail.priority?.name ?? 'None'}</dd>
-                    <dt className="text-muted-foreground">Due</dt>
-                    <dd className="font-medium">
-                      {detail.dueAt ? new Date(detail.dueAt).toLocaleString() : 'None'}
-                    </dd>
-                  </dl>
-                </section>
-
                 <ExternalTaskRichDescription
                   detail={detail}
                   controller={richEdit}
@@ -296,15 +342,31 @@ export function ExternalTaskDetailDialog({
                   identityAccepted={controller.identityAccepted}
                 />
 
+                <ExternalTaskSubtasksPanel
+                  provider={provider}
+                  subtasks={detail.subtasks}
+                  subtasksTruncated={detail.subtasksTruncated}
+                  connectionEpoch={connectionEpoch}
+                  parentTaskId={taskId}
+                  identityAccepted={controller.identityAccepted}
+                />
+
                 <ExternalTaskTimeTracking
                   provider={provider}
                   taskId={taskId}
+                  linkedEpicId={
+                    controller.identityAccepted && detail.linkState.linked
+                      ? (detail.linkState.epicId ?? null)
+                      : null
+                  }
                   connectionEpoch={connectionEpoch}
                   enabled={enabled && open}
                   identityAccepted={controller.identityAccepted}
-                  timeTrackingEnabled={supports(detail, 'log_time')}
+                  timeTrackingEnabled={timeTrackingEnabled}
                   taskTotalDurationMs={detail.taskTotalDurationMs ?? null}
                   sourceUrl={sourceUrl}
+                  timeEntries={timeEntries}
+                  onHistoryOpenChange={handleHistoryOpenChange}
                 />
 
                 {controller.mutation.isError &&
@@ -320,7 +382,7 @@ export function ExternalTaskDetailDialog({
                   </Alert>
                 ) : null}
                 {successMessage ? (
-                  <p className="text-sm text-emerald-600" role="status">
+                  <p className="text-sm font-medium text-primary" role="status">
                     {successMessage}
                   </p>
                 ) : null}
@@ -332,7 +394,7 @@ export function ExternalTaskDetailDialog({
               must not expose cached comments or a composer, and a disabled
               query would still surface its cached data through the panel. */}
           {controller.identityAccepted ? (
-            <div className="flex min-h-0 flex-col border-t p-5 lg:border-l lg:border-t-0">
+            <div className="flex min-w-0 flex-none flex-col border-t bg-card p-5 lg:min-h-0 lg:border-l lg:border-t-0">
               <ExternalTaskCommentsPanel
                 provider={provider}
                 taskId={taskId}
@@ -340,8 +402,7 @@ export function ExternalTaskDetailDialog({
                 canComment={Boolean(detail && supports(detail, 'add_comment'))}
                 richEditEnabled={Boolean(richEdit.description?.canEdit)}
                 ownedDeleteEnabled={Boolean(richEdit.description?.canDeleteOwnedComments)}
-                className="flex min-h-0 flex-1 flex-col border-t-0 pt-0"
-                historyClassName="max-h-none min-h-24 flex-1"
+                className="flex min-h-0 flex-none flex-col border-t-0 pt-0 lg:flex-1"
               />
             </div>
           ) : null}

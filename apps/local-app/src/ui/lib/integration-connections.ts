@@ -11,13 +11,23 @@ export interface IntegrationConnectionState {
   connected: boolean;
   connectionId: string | null;
   generation: number | null;
+  subtaskSyncEnabled: boolean;
+  syncSettingRevision: number | null;
   updatedAt: string | null;
 }
 
 export function disconnectedConnectionState(
   provider: IntegrationProvider,
 ): IntegrationConnectionState {
-  return { provider, connected: false, connectionId: null, generation: null, updatedAt: null };
+  return {
+    provider,
+    connected: false,
+    connectionId: null,
+    generation: null,
+    subtaskSyncEnabled: false,
+    syncSettingRevision: null,
+    updatedAt: null,
+  };
 }
 
 export const integrationConnectionQueryKeys = {

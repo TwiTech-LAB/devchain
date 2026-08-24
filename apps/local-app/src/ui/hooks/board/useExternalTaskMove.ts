@@ -9,6 +9,7 @@ import type {
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 import type { ExternalBoardProvider } from '@/ui/lib/external-board';
 import { externalMyWorkQueryKeys } from '@/ui/lib/external-my-work';
+import { applyExternalTaskStatusSnapshot } from '@/ui/lib/external-my-work-snapshot';
 import { fetchFreshExternalTaskDetail } from '@/ui/lib/external-task-detail-query';
 import type { IntegrationConnectionEpoch } from '@/ui/lib/integration-connections';
 import { fetchJsonOrThrow } from '@/ui/lib/sessions';
@@ -118,49 +119,7 @@ export function canColumnReceiveMove(
   return column.remoteId !== null || column.remoteStatusIds.length > 0;
 }
 
-/**
- * Applies one optimistic move to a landing snapshot. Every task entry with
- * the moved remote ID is patched. When an active-only snapshot receives a
- * completed-destination option, matching entries are removed instead and each
- * affected work-area count is decremented once, clamped at zero. Entries and
- * work areas untouched by the move keep their original object identity.
- */
-export function applyOptimisticMoveSnapshot(
-  snapshot: SupportedSnapshot,
-  taskId: string,
-  option: ExternalTaskStatusOption,
-  activeOnlyScope: boolean,
-): SupportedSnapshot {
-  const destination = {
-    remoteId: option.remoteId,
-    name: option.name,
-    category: option.category,
-  };
-  if (!activeOnlyScope || option.category !== 'completed') {
-    return {
-      ...snapshot,
-      tasks: snapshot.tasks.map((entry) =>
-        entry.task.remoteId === taskId
-          ? { ...entry, task: { ...entry.task, status: { ...destination } } }
-          : entry,
-      ),
-    };
-  }
-  const removedByWorkArea = new Map<string, number>();
-  const workAreaKey = (scopeKey: string, remoteId: string) => `${scopeKey}\u0000${remoteId}`;
-  const tasks = snapshot.tasks.filter((entry) => {
-    if (entry.task.remoteId !== taskId) return true;
-    const key = workAreaKey(entry.workArea.scopeKey, entry.workArea.remoteId);
-    removedByWorkArea.set(key, (removedByWorkArea.get(key) ?? 0) + 1);
-    return false;
-  });
-  const workAreas = snapshot.workAreas.map((workArea) => {
-    const removed = removedByWorkArea.get(workAreaKey(workArea.scopeKey, workArea.remoteId));
-    if (!removed) return workArea;
-    return { ...workArea, assignedTaskCount: Math.max(0, workArea.assignedTaskCount - removed) };
-  });
-  return { ...snapshot, tasks, workAreas };
-}
+export { applyExternalTaskStatusSnapshot as applyOptimisticMoveSnapshot };
 
 export interface UseExternalTaskMoveOptions {
   connectionEpoch: IntegrationConnectionEpoch | null;
@@ -229,7 +188,7 @@ export function useExternalTaskMove(
       const savedSnapshot = queryClient.getQueryData<SupportedSnapshot>(landingKey);
       queryClient.setQueryData<SupportedSnapshot>(landingKey, (current) =>
         current
-          ? applyOptimisticMoveSnapshot(current, move.taskId, move.option, !includeCompleted)
+          ? applyExternalTaskStatusSnapshot(current, move.taskId, move.option, !includeCompleted)
           : current,
       );
       try {

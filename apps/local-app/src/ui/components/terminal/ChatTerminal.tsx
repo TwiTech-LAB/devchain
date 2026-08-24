@@ -102,10 +102,8 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
   const appTheme = useAppTheme();
   const [input, setInput] = useState<string>('');
   const [inputMode, setInputMode] = useState<'form' | 'tty' | null>(null); // null = loading
-  const [suppressCtrlCWithSelection, setSuppressCtrlCWithSelection] = useState(
-    DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION,
-  );
   const [scrollbackLines, setScrollbackLines] = useState<number>(DEFAULT_TERMINAL_SCROLLBACK); // Default until loaded
+  const suppressCtrlCWithSelectionRef = useRef(DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION);
   const [isTerminalReady, setIsTerminalReady] = useState(false);
   const [conn, dispatchConn] = useReducer(connectionReducer, {
     status: 'connecting',
@@ -138,13 +136,15 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
     fetch('/api/settings')
       .then((res) => res.json())
       .then((json) => {
-        // Input mode
         const mode = json?.terminal?.inputMode;
-        if (mode === 'form' || mode === 'tty') {
-          setInputMode(mode);
-        } else {
-          setInputMode('form'); // Default
-        }
+        const suppressCtrlCWithSelection = json?.terminal?.suppressCtrlCWithSelection;
+
+        // This ref must be populated before inputMode unlocks terminal construction. It is a
+        // mount-time setting and intentionally does not recreate an existing xterm instance.
+        suppressCtrlCWithSelectionRef.current =
+          typeof suppressCtrlCWithSelection === 'boolean'
+            ? suppressCtrlCWithSelection
+            : DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION;
 
         // Scrollback lines
         const scrollback = json?.terminal?.scrollbackLines;
@@ -152,14 +152,11 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
           setScrollbackLines(scrollback);
         }
 
-        // Ctrl+C handling while text is selected
-        const suppress = json?.terminal?.suppressCtrlCWithSelection;
-        if (typeof suppress === 'boolean') {
-          setSuppressCtrlCWithSelection(suppress);
-        }
+        setInputMode(mode === 'form' || mode === 'tty' ? mode : 'form');
       })
       .catch((error) => {
         console.warn('Failed to fetch terminal settings:', error);
+        suppressCtrlCWithSelectionRef.current = DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION;
         setInputMode('form'); // Default on error
       });
   }, []);
@@ -282,7 +279,7 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
     writePump.setTerminal,
     setScrollIntentController,
     isAuthorityRef,
-    suppressCtrlCWithSelection,
+    suppressCtrlCWithSelectionRef,
   );
 
   // Seed management

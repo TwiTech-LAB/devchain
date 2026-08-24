@@ -11,6 +11,9 @@ export type ExternalProviderFailureReason =
   | 'invalid_response'
   | 'request_rejected'
   | 'unsupported_transition'
+  | 'unsupported_subtask_type'
+  | 'ownership_mismatch'
+  | 'parent_mismatch'
   | 'time_tracking_disabled'
   | 'unavailable';
 
@@ -23,6 +26,9 @@ const STATUS_BY_REASON: Record<ExternalProviderFailureReason, number> = {
   invalid_response: 502,
   request_rejected: 400,
   unsupported_transition: 400,
+  unsupported_subtask_type: 422,
+  ownership_mismatch: 409,
+  parent_mismatch: 409,
   time_tracking_disabled: 400,
   unavailable: 502,
 };
@@ -114,6 +120,13 @@ export function mapSafeVendorFailure(error: SafeVendorHttpError): ExternalProvid
     }
     if (error.upstreamStatus === 429) {
       return 'rate_limited';
+    }
+    if (
+      error.upstreamStatus === 400 ||
+      error.upstreamStatus === 409 ||
+      error.upstreamStatus === 422
+    ) {
+      return 'request_rejected';
     }
     return 'unavailable';
   }

@@ -10,6 +10,7 @@ import { useBoardSync } from '@/ui/hooks/useBoardSync';
 import { useBoardMutations } from '@/ui/hooks/useBoardMutations';
 import { useBoardDragDrop } from '@/ui/hooks/useBoardDragDrop';
 import { useEpicExternalSourcesBatch } from '@/ui/hooks/useEpicExternalSourcesBatch';
+import { useEpicTimeSummariesBatch } from '@/ui/hooks/useEpicTimeSummariesBatch';
 import { useBoardBulkEdit } from '@/ui/hooks/board/useBoardBulkEdit';
 import { useBoardRouteState } from '@/ui/hooks/board/useBoardRouteState';
 import { useBoardViewPreferences } from '@/ui/hooks/board/useBoardViewPreferences';
@@ -220,6 +221,18 @@ export function useBoardPageController(): BoardPagePresentation {
   });
   const externalSourceMap = externalSources ?? new Map();
 
+  // Root-only estimated-time totals: sub-Epics never badge, so a parent
+  // filter issues no time request at all. Worktree and unresolved runtimes
+  // are gated inside the hook.
+  const timeSummaryEpicIds = useMemo(() => {
+    if (filters.parent) return [] as string[];
+    return ((epicsData?.items ?? []) as Epic[])
+      .filter((epic) => !epic.parentId)
+      .map((epic) => epic.id);
+  }, [filters.parent, epicsData]);
+  const { totals: epicTimeTotals } = useEpicTimeSummariesBatch(timeSummaryEpicIds);
+  const epicTimeTotalsMap = epicTimeTotals ?? new Map<string, number>();
+
   const {
     draggedEpic,
     activeDropStatusId,
@@ -316,6 +329,7 @@ export function useBoardPageController(): BoardPagePresentation {
       subEpicCounts: subEpicCountsMap,
       subEpicStatusCountsByEpicId,
       hasRunningWorktrees,
+      timeTotals: epicTimeTotalsMap,
       getAgentName,
       addEpic: handleAddEpic,
       editEpic: handleEdit,
@@ -386,6 +400,7 @@ export function useBoardPageController(): BoardPagePresentation {
       },
       moveToWorktree: handleMoveToWorktree,
       externalSources: externalSourceMap,
+      timeTotals: epicTimeTotalsMap,
     };
   }
 

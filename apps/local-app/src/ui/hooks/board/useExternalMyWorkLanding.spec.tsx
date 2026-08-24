@@ -4,7 +4,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import type {
   ExternalMyWorkResult,
+  ExternalTaskSummary,
   ExternalWorkArea,
+  ExternalWorkAreaTask,
 } from '@/modules/external-integrations/models/external-provider.models';
 import { useExternalMyWorkLanding } from './useExternalMyWorkLanding';
 import { integrationConnectionQueryKeys } from '@/ui/lib/integration-connections';
@@ -46,14 +48,17 @@ const connectionItems = (connected: { clickup?: boolean; jira?: boolean }) => [
   },
 ];
 
-function snapshotResult(workAreas: ExternalWorkArea[]): ExternalMyWorkResult {
+function snapshotResult(
+  workAreas: ExternalWorkArea[],
+  tasks: ExternalWorkAreaTask[] = [],
+): ExternalMyWorkResult {
   return {
     provider: 'clickup',
     descriptor: { provider: 'clickup', displayName: 'ClickUp', capabilities: { myWork: true } },
     supported: true,
     capabilities: { timeTrackingEnabled: false },
     workAreas,
-    tasks: [],
+    tasks,
     refreshedAt: '2026-08-19T00:00:00.000Z',
   };
 }
@@ -77,6 +82,22 @@ const workArea = (overrides: Partial<ExternalWorkArea> = {}): ExternalWorkArea =
     ],
   },
   refresh: { state: 'fresh', refreshedAt: null, retryable: false, retryAt: null },
+  ...overrides,
+});
+
+const task = (
+  remoteId: string,
+  parentRemoteTaskId: string | null,
+  overrides: Partial<ExternalTaskSummary> = {},
+): ExternalTaskSummary => ({
+  remoteId,
+  parentRemoteTaskId,
+  title: `Task ${remoteId}`,
+  status: { remoteId: 'c1', name: 'To do', category: 'active' },
+  updatedAt: '2026-08-19T10:00:00.000Z',
+  dueAt: null,
+  completedAt: null,
+  webUrl: null,
   ...overrides,
 });
 
@@ -141,11 +162,23 @@ describe('useExternalMyWorkLanding', () => {
   });
 
   it('derives ready cards with location, workflow summary, and counts', async () => {
+    const area = workArea({ assignedTaskCount: 99 });
     fetchMock.mockImplementation(async (url: string) => {
       if (url.startsWith('/api/integrations/connections')) {
         return { ok: true, json: async () => ({ items: connectionItems({ clickup: true }) }) };
       }
-      return { ok: true, json: async () => snapshotResult([workArea()]) };
+      return {
+        ok: true,
+        json: async () =>
+          snapshotResult(
+            [area],
+            [
+              { workArea: area, task: task('parent', null) },
+              { workArea: area, task: task('child', 'parent') },
+              { workArea: area, task: task('orphan', 'missing') },
+            ],
+          ),
+      };
     });
 
     const { result } = renderLanding();
@@ -157,10 +190,36 @@ describe('useExternalMyWorkLanding', () => {
       kindLabel: 'List',
       locationLabel: 'Workspace / Product',
       workflowSummary: 'To do → Doing',
-      assignedTaskCount: 3,
+      assignedTaskCount: 2,
       description: 'Current sprint work',
       refreshState: 'fresh',
     });
+    expect(result.current.sourceUrl).toBe('https://app.clickup.com/');
+  });
+
+  it('derives the Jira tenant link from the unfiltered provider snapshot', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.startsWith('/api/integrations/connections')) {
+        return { ok: true, json: async () => ({ items: connectionItems({ jira: true }) }) };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          ...snapshotResult([workArea({ scopeKey: 'acme.atlassian.net' })]),
+          provider: 'jira',
+          descriptor: { provider: 'jira', displayName: 'Jira', capabilities: { myWork: true } },
+        }),
+      };
+    });
+
+    const { result } = renderLanding('jira', '/board/jira');
+
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+    expect(result.current.sourceUrl).toBe('https://acme.atlassian.net/');
+
+    act(() => result.current.setSearch('no-match'));
+    expect(result.current.cards).toEqual([]);
+    expect(result.current.sourceUrl).toBe('https://acme.atlassian.net/');
   });
 
   it('classifies first-load failures as error', async () => {

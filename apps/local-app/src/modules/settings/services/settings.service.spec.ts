@@ -115,6 +115,9 @@ describe('SettingsService (terminal settings)', () => {
     expect(settings.terminal?.scrollbackLines).toBe(DEFAULT_TERMINAL_SCROLLBACK);
     expect(settings.terminal?.seedingMaxBytes).toBe(DEFAULT_TERMINAL_SEED_MAX_BYTES);
     expect(settings.terminal?.inputMode).toBe(DEFAULT_TERMINAL_INPUT_MODE);
+    expect(settings.terminal?.suppressCtrlCWithSelection).toBe(
+      DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION,
+    );
   });
 
   it('clamps terminal seeding max bytes when persisted', async () => {
@@ -128,6 +131,59 @@ describe('SettingsService (terminal settings)', () => {
     expect(settings.terminal?.seedingMaxBytes).toBe(MAX_TERMINAL_SEED_MAX_BYTES);
     const raw = service.getSetting('terminal.seeding.maxBytes');
     expect(raw).toBe(String(MAX_TERMINAL_SEED_MAX_BYTES));
+  });
+
+  it('round-trips false and then true through the exact KV key', async () => {
+    // Layer note: the contract under test is KV encode/decode fidelity
+    // ('false' must not collapse to the default), which only a real SQLite
+    // round-trip can prove; mocking the delegate would test the mock.
+    await service.updateSettings({
+      terminal: { suppressCtrlCWithSelection: false },
+    });
+
+    expect(service.getSetting('terminal.suppressCtrlCWithSelection')).toBe('false');
+    expect(service.getSettings().terminal?.suppressCtrlCWithSelection).toBe(false);
+
+    await service.updateSettings({
+      terminal: { suppressCtrlCWithSelection: true },
+    });
+
+    expect(service.getSetting('terminal.suppressCtrlCWithSelection')).toBe('true');
+    expect(service.getSettings().terminal?.suppressCtrlCWithSelection).toBe(true);
+  });
+
+  it('keeps a stored false through an unrelated terminal-setting partial update', async () => {
+    // Layer note: partial-update preservation is a storage-layer merge
+    // property (untouched KV rows must survive sibling writes inside one
+    // transaction); asserting it at the service-over-SQLite layer is the
+    // cheapest reliable proof without controller overhead.
+    await service.updateSettings({
+      terminal: { suppressCtrlCWithSelection: false },
+    });
+
+    await service.updateSettings({
+      terminal: { scrollbackLines: 12000, inputMode: 'form' },
+    });
+
+    expect(service.getSetting('terminal.suppressCtrlCWithSelection')).toBe('false');
+    expect(service.getSettings().terminal?.suppressCtrlCWithSelection).toBe(false);
+    expect(service.getSettings().terminal?.scrollbackLines).toBe(12000);
+    expect(service.getSettings().terminal?.inputMode).toBe('form');
+  });
+
+  it('keeps a stored false across a service reload on the same database', async () => {
+    // Layer note: reload survival requires a fresh read path over persisted
+    // rows; constructing a new service instance over the same SQLite file is
+    // the cheapest reliable simulation of an app restart.
+    await service.updateSettings({
+      terminal: { suppressCtrlCWithSelection: false },
+    });
+
+    const reloaded = new SettingsService(
+      sqlite as unknown as BetterSQLite3Database,
+      mockEventEmitter,
+    );
+    expect(reloaded.getSettings().terminal?.suppressCtrlCWithSelection).toBe(false);
   });
 });
 
@@ -1613,30 +1669,6 @@ describe('SettingsService — Characterization: updateSettings() round-trip', ()
       terminal: { inputMode: 'unknown-mode' as 'tty' },
     });
     expect(service.getSettings().terminal?.inputMode).toBe(DEFAULT_TERMINAL_INPUT_MODE);
-  });
-
-  // The setting defaults to on, so only turning it OFF proves it round-trips.
-  // Adding the field to the DTO alone was accepted by the API and silently dropped,
-  // because the store persists and rebuilds an explicit list of terminal keys.
-  it('persists suppressCtrlCWithSelection when turned off', async () => {
-    expect(service.getSettings().terminal?.suppressCtrlCWithSelection).toBe(
-      DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION,
-    );
-
-    await service.updateSettings({ terminal: { suppressCtrlCWithSelection: false } });
-    expect(service.getSettings().terminal?.suppressCtrlCWithSelection).toBe(false);
-
-    await service.updateSettings({ terminal: { suppressCtrlCWithSelection: true } });
-    expect(service.getSettings().terminal?.suppressCtrlCWithSelection).toBe(true);
-  });
-
-  it('leaves suppressCtrlCWithSelection alone when other terminal settings are saved', async () => {
-    await service.updateSettings({ terminal: { suppressCtrlCWithSelection: false } });
-    await service.updateSettings({ terminal: { scrollbackLines: 12000 } });
-
-    const s = service.getSettings();
-    expect(s.terminal?.scrollbackLines).toBe(12000);
-    expect(s.terminal?.suppressCtrlCWithSelection).toBe(false);
   });
 
   it('handles initialSessionPromptId with projectId (per-project mapping)', async () => {

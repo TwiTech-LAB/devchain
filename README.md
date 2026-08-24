@@ -17,6 +17,7 @@ DevChain is a local-first orchestrator for AI coding agents. It runs Claude Code
 - **Teams that manage themselves** — the Builders team adds Coders when work piles up and picks the right model per task: cheaper models for routine changes, top-tier models for harder work. The Planning team researches plans from several angles in parallel before you approve them.
 - **Real terminals, live** — every agent runs in a tmux session streamed to your browser with full TTY support. Watch it work, scroll back, or take over at any moment.
 - **A board agents actually use** — kanban-style epics and sub-epics with drag-and-drop; agents pick up tasks and update statuses themselves through MCP tools.
+- **ClickUp and Jira integration** — connect your work boards to see assigned tasks in DevChain, import them as Epics with links back to the source, manage statuses and subtasks, and log time without leaving the app.
 - **Code review built in** — live pre-commit diff viewer with inline comments, `@mentions`, and threading, wired into the agent workflow.
 - **Session reader and context tracking** — full transcript viewer for all five providers, with per-turn token usage, cost tracking, and compaction events; live context-window bars for every agent.
 - **Skills and MCP** — sync community skill packs (Anthropic, OpenAI, Vercel, and more) and expose them to agents; the full MCP toolset is auto-configured before each session.

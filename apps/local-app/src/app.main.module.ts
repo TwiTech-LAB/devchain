@@ -48,6 +48,7 @@ import { CloudTunnelModule } from './modules/cloud-tunnel/cloud-tunnel.module';
 import { E2eeModule } from './modules/e2ee/e2ee.module';
 import { MetricsModule } from './modules/metrics/metrics.module';
 import { ExternalIntegrationsModule } from './modules/external-integrations/external-integrations.module';
+import { EpicTimeModule } from './modules/epic-time/epic-time.module';
 
 @Module({
   imports: [
@@ -96,6 +97,7 @@ import { ExternalIntegrationsModule } from './modules/external-integrations/exte
     CloudTunnelModule,
     E2eeModule,
     ExternalIntegrationsModule,
+    EpicTimeModule,
   ],
   controllers: [],
   providers: [

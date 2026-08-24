@@ -56,6 +56,7 @@ describe('ExternalMyWorkService', () => {
         workArea,
         task: {
           remoteId: 'task-1',
+          parentRemoteTaskId: null,
           title: 'Ship provider-neutral work',
           status: { name: 'In progress', category: 'active' },
           updatedAt: '2026-08-19T10:00:00.000Z',
@@ -109,6 +110,10 @@ describe('ExternalMyWorkService', () => {
     storage.getIntegrationConnectionCredentials.mockResolvedValue(credentials);
     discover.mockResolvedValue({
       ...snapshot,
+      tasks: snapshot.tasks.map(({ workArea: taskWorkArea, task }) => ({
+        workArea: taskWorkArea,
+        task: { ...task, vendorRelationship: 'must-not-cross' },
+      })),
       vendorPayload: { token: 'must-not-cross-the-service-boundary' },
     } as ExternalMyWorkSnapshot);
 
@@ -125,7 +130,9 @@ describe('ExternalMyWorkService', () => {
       connectionId: 'connection-clickup',
       connectionGeneration: 7,
     });
-    expect(JSON.stringify(result)).not.toMatch(/vendorPayload|must-not-cross-the-service-boundary/);
+    expect(JSON.stringify(result)).not.toMatch(
+      /vendorPayload|vendorRelationship|must-not-cross-the-service-boundary|must-not-cross/,
+    );
   });
 
   it('returns a safe unsupported result for a connected provider without My Work', async () => {
